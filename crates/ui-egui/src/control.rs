@@ -347,12 +347,26 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             };
             let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(12).max(2);
             let m = modifiers(p);
+            // `touch: true` makes it a finger: the phase events egui-winit sends alongside the
+            // emulated pointer on Android (an arbitered row tells Scroll from Grab by them)
+            let finger = p.get("touch").and_then(Value::as_bool).unwrap_or(false);
+            let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
             app.synthetic.push(egui::Event::ModifiersChanged(m));
+            if finger {
+                app.synthetic.push(touch(egui::TouchPhase::Start, a));
+            }
             app.synthetic.push(egui::Event::PointerMoved(a));
             app.synthetic.push(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: m });
             for i in 1..=steps {
                 let f = i as f32 / steps as f32;
-                app.synthetic.push(egui::Event::PointerMoved(a + (b - a) * f));
+                let pos = a + (b - a) * f;
+                if finger {
+                    app.synthetic.push(touch(egui::TouchPhase::Move, pos));
+                }
+                app.synthetic.push(egui::Event::PointerMoved(pos));
+            }
+            if finger {
+                app.synthetic.push(touch(egui::TouchPhase::End, b));
             }
             app.synthetic.push(egui::Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: false, modifiers: m });
             app.synthetic.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));

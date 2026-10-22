@@ -252,15 +252,31 @@ pub fn list(services: &dyn Services, dir: &str, filter: &str) -> std::io::Result
 }
 
 /// The directory shown: the current one, else the last one, else home, else the first volume.
+/// A host navigation root (Android's shared storage) clamps all of them: the browser starts and
+/// stays inside it.
 pub fn current_dir(s: &Session) -> String {
+    let clamp = |dir: String| -> String {
+        match s.services.browse_root() {
+            Some(root) if under(&dir, &root) => dir,
+            Some(root) => root,
+            None => dir,
+        }
+    };
     if !s.browser.dir.is_empty() {
-        return s.browser.dir.clone();
+        return clamp(s.browser.dir.clone());
     }
     let last = &s.prefs.media_browser.last_dir;
     if !last.is_empty() {
-        return last.clone();
+        return clamp(last.clone());
     }
-    s.services.home_dir().or_else(|| s.services.volumes().first().map(|v| v.path.clone())).unwrap_or_else(|| "/".into())
+    let home = s.services.home_dir().map(clamp);
+    if let Some(h) = home {
+        return h;
+    }
+    match s.services.volumes().first().map(|v| v.path.clone()) {
+        Some(v) => clamp(v),
+        None => clamp("/".into()),
+    }
 }
 
 fn save_prefs(s: &mut Session, prefs: crate::autosave::Preferences) -> Result<()> {
@@ -271,13 +287,18 @@ fn save_prefs(s: &mut Session, prefs: crate::autosave::Preferences) -> Result<()
 }
 
 fn state_json(s: &Session) -> Value {
+    let dir = current_dir(s);
+    let can_up = match s.services.browse_root() {
+        Some(root) => parent_inside(&root, &dir).is_some(),
+        None => parent(&dir).is_some(),
+    };
     json!({
-        "dir": current_dir(s),
+        "dir": dir,
         "canBack": !s.browser.back.is_empty(),
         "canForward": !s.browser.forward.is_empty(),
-        "canUp": parent(&current_dir(s)).is_some(),
+        "canUp": can_up,
         "selection": s.browser.selection,
-        "favorite": s.prefs.media_browser.favorites.contains(&current_dir(s)),
+        "favorite": s.prefs.media_browser.favorites.contains(&dir),
     })
 }
 
@@ -343,10 +364,18 @@ fn navigate(s: &mut Session, p: &Value) -> Result<Value> {
         }
         s.browser.back.push(cur);
     } else if bool_p(p, "up") == Some(true) {
-        let to = parent(&current_dir(s)).ok_or_else(|| bad("mediaBrowser.navigate", "already at the top"))?;
+        // A host that offers a navigation root (Android's shared storage) stops here: up from
+        // the root fails instead of climbing into unreadable territory.
+        let to = up(s, &current_dir(s)).ok_or_else(|| bad("mediaBrowser.navigate", "already at the top"))?;
         go(s, to, true)?;
     } else {
         let path = str_p(p, "path").ok_or_else(|| bad("mediaBrowser.navigate", "need `path`, or `back` / `forward` / `up`"))?;
+        // An offered root clamps typed paths and tree clicks too: it cannot be left.
+        if let Some(root) = s.services.browse_root()
+            && !under(path, &root)
+        {
+            return Err(bad("mediaBrowser.navigate", format!("{path}: outside the browsable root")));
+        }
         go(s, path.to_string(), true)?;
     }
     list_cmd(s, &json!({}))
@@ -718,8 +747,24 @@ pub fn std_list_entries(dir: &str) -> std::io::Result<Vec<DirEntry>> {
         .collect())
 }
 
+/// The Android host's browsable volumes: the one tree an app can reach with "All files access",
+/// already the grant's subject, and nothing else (`/`, `/media`, `/mnt` are not listable by an
+/// app there — advertising them shows nothing but "Permission denied"). A pure function so the
+/// host tests run it; `std_volumes` calls it under `cfg!(target_os = "android")`.
+pub fn android_volumes() -> Vec<Volume> {
+    vec![Volume { name: "Shared storage".into(), path: SHARED_ROOT.unwrap_or("/storage/emulated/0").into(), kind: VolumeKind::Local }]
+}
+
+/// Android's shared-storage root — the Media Browser's navigation root on Android ([`Services::
+/// browse_root`], the option `apps/filmcraft` hands its hooks too), `None` on every other host.
+pub const SHARED_ROOT: Option<&str> = if cfg!(target_os = "android") { Some("/storage/emulated/0") } else { None };
+
 /// Drives and network locations of the desktop host.
 pub fn std_volumes() -> Vec<Volume> {
+    // Android is not a desktop: only the shared tree is listable (see [`android_volumes`]).
+    if cfg!(target_os = "android") {
+        return android_volumes();
+    }
     let mut v = Vec::new();
     let dir_names = |d: &str| -> Vec<String> {
         std::fs::read_dir(d)
@@ -772,4 +817,29 @@ pub fn std_volumes() -> Vec<Volume> {
 pub fn std_home_dir() -> Option<String> {
     let vars = if cfg!(windows) { ["USERPROFILE", "HOME"] } else { ["HOME", "USERPROFILE"] };
     vars.iter().find_map(|v| std::env::var(v).ok().filter(|h| !h.is_empty()))
+}
+
+/// The parent of `dir` while `dir` stays inside `root` and the parent stays inside it too, else
+/// `None` (there is nothing to climb to). A host that offers a navigation root (the Android
+/// build's shared storage) stops there: "Up one level" cannot leave it for unreadable territory
+/// (`/storage`, `/`).
+pub fn parent_inside(root: &str, dir: &str) -> Option<String> {
+    under(dir, root).then(|| parent(dir)).flatten().filter(|p| under(p, root))
+}
+
+/// Up one level from `dir` for a session: its host's navigation root clamps the climb
+/// ([`parent_inside`]), or there is none (the desktop) and [`parent`] answers.
+pub fn up(s: &Session, dir: &str) -> Option<String> {
+    match s.services.browse_root() {
+        Some(root) => parent_inside(&root, dir),
+        None => parent(dir),
+    }
+}
+
+/// Whether `dir` is `root` itself or lies below it (a textual path test: both come from listings
+/// the host returned, so no symlink resolution is needed).
+fn under(dir: &str, root: &str) -> bool {
+    let dir = dir.trim_end_matches('/');
+    let root = root.trim_end_matches('/');
+    dir == root || dir.starts_with(&format!("{root}/"))
 }

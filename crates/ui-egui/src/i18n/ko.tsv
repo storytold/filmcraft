@@ -3603,3 +3603,23 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+	A file with this name already exists: {name}	같은 이름의 파일이 이미 있습니다: {name}
+	Allow "All files access" for FilmCraft on the settings page, then tap Shared storage.	설정 페이지에서 FilmCraft의 "모든 파일 액세스"를 허용한 다음 공유 저장소를 탭하세요.
+	Allow access to all files?	모든 파일에 대한 액세스를 허용할까요?
+	App storage	앱 저장소
+	Choose	선택
+	Choose Folder	폴더 선택
+	Could not create the folder: {error}	폴더를 만들 수 없습니다: {error}
+	Create	만들기
+	FilmCraft needs "All files access" to open and save files in shared storage.	FilmCraft가 공유 저장소의 파일을 열고 저장하려면 "모든 파일 액세스"가 필요합니다.
+	Grant access	액세스 허용
+	Large	크게
+	New Folder	새 폴더
+	No saved projects yet.	아직 저장된 프로젝트가 없습니다.
+	Nothing here.	여기에 아무것도 없습니다.
+	Select at least one file.	파일을 하나 이상 선택하세요.
+	Shared storage	공유 저장소
+	Shared storage (grant access)	공유 저장소(액세스 허용)
+	Small	작게
+	This build can't request shared-storage access.	이 빌드에서는 공유 저장소 액세스를 요청할 수 없습니다.
+	This folder can't be read.	이 폴더를 읽을 수 없습니다.

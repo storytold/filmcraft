@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_engine::media_browser::{self as mb, Entry};
 use filmcraft_project::{ItemId, ItemKind, Label, MediaClip, MediaRef, Project, ProjectItem};
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let nav = [
         (Icon::ChevronLeft, "back", tl!("Go Back"), !app.session.browser.back.is_empty()),
         (Icon::ChevronRight, "forward", tl!("Go Forward"), !app.session.browser.forward.is_empty()),
-        (Icon::ArrowUp, "up", tl!("Up One Level"), mb::parent(&dir).is_some()),
+        (Icon::ArrowUp, "up", tl!("Up One Level"), mb::up(&app.session, &dir).is_some()),
     ];
     for (icon, id, tip, enabled) in nav {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
@@ -224,7 +224,42 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add("mediaBrowser.count", Rect::from_min_size(pos2(list_r.min.x, rect.max.y - 22.0), vec2(160.0, 20.0)), &status);
         }
         Err(e) => {
-            ui.painter().text(list_r.center(), Align2::CENTER_CENTER, tlf!("Cannot open {dir}: {e}", dir, e), Tokens::ui(11.5), t.text_dim);
+            // A shared-storage root the grant does not cover yet is not a broken path: say what
+            // is missing and offer the way to fix it (the settings page), like the file-dialog
+            // browser does — the grant is re-read every frame, so returning from Android's
+            // settings page reopens the listing without a callback.
+            let shared = app.hooks.shared_storage_root.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let granted = app.hooks.shared_storage_granted.as_ref().is_some_and(|g| g());
+            // On Android the browser only ever walks the shared root (`Services::browse_root`
+            // clamps everything else away), so a failed listing there *is* the missing grant.
+            let wants_grant = shared.is_some() && !granted;
+            if wants_grant {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(list_r).id_salt("mb-grant"));
+                child.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.add_space((list_r.height() / 2.0 - 60.0).max(0.0));
+                    ui.label(RichText::new(tl!("This folder can't be read.")).size(13.0).color(t.text_dim));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(tl!("Shared storage needs \"All files access\" to browse.")).size(12.0).color(t.text_dim));
+                    ui.add_space(10.0);
+                    let b = egui::Button::new(RichText::new(tl!("Grant access")).size(13.0).color(Color32::WHITE))
+                        .min_size(vec2(110.0, 28.0))
+                        .corner_radius(egui::CornerRadius::same(14))
+                        .fill(t.accent);
+                    let r = ui.add(b);
+                    app.auto.add("mediaBrowser.grant", r.rect, tl!("Grant access"));
+                    if r.clicked() {
+                        match app.hooks.shared_storage_grant.as_ref() {
+                            Some(g) => {
+                                g();
+                                app.ui.status = tl!("Allow \"All files access\" for FilmCraft on the settings page, then tap Shared storage.").into();
+                            }
+                            None => app.ui.status = tl!("This build can't request shared-storage access.").into(),
+                        }
+                    }
+                });
+            } else {
+                ui.painter().text(list_r.center(), Align2::CENTER_CENTER, tlf!("Cannot open {dir}: {e}", dir, e), Tokens::ui(11.5), t.text_dim);
+            }
         }
     }
     if prefs.view == "thumbnails" {
@@ -376,7 +411,7 @@ fn toggle(app: &mut FilmcraftApp, path: &str, open: bool) {
 // ------------------------------------------------------------------------------------ entries
 
 /// Click / double-click / drag / context menu of an entry.
-fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, e: &Entry, entries: &[Entry]) {
+fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, e: &Entry, entries: &[Entry], area: egui::Id) {
     let ctx = ui.ctx().clone();
     if resp.clicked() {
         let mods = crate::panels::project_views::click_modifiers(ui);
@@ -405,6 +440,15 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
         } else {
             exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
         }
+    }
+    // A finger press on the row is arbitrated: panning skips the row entirely, a hold *then a move*
+    // grabs (Grab), a still hold is left to egui's own long-press (the row's context menu), and a
+    // mouse press grabs on drag_started as it always did. `area` is the enclosing view's scroll
+    // state (passed in by the two viewers).
+    match crate::widgets::touch_row(ui, resp, area) {
+        crate::widgets::TouchRow::Scroll => return,
+        crate::widgets::TouchRow::Grab if !e.is_dir => start_file_drag(app, ui, e),
+        _ => {}
     }
     if resp.drag_started() && !e.is_dir {
         start_file_drag(app, ui, e);
@@ -468,7 +512,9 @@ fn start_file_drag(app: &mut FilmcraftApp, ui: &egui::Ui, e: &Entry) {
     }
     crate::panels::start_drag_item(ui, first);
     if !items.is_empty() {
-        let pos = ui.ctx().pointer_latest_pos().unwrap_or_default();
+        // the press frame of a touch can already be a PointerGone-ish frame (start + move in one);
+        // this position only seeds the cache, a drop overwrites it from `drop_pointer_pos`.
+        let pos = crate::panels::drop_pointer_pos(ui.ctx()).or_else(|| ui.ctx().pointer_latest_pos()).unwrap_or_default();
         let after = app.session.history.undo.len();
         with_cache(ui.ctx(), |c| c.drag = Some((items, after.max(before), pos)));
     }
@@ -483,7 +529,7 @@ fn file_drag_items(known: &[ItemId], imported: &[u64]) -> Vec<ItemId> {
 fn finish_drag(app: &mut FilmcraftApp, ui: &egui::Ui) {
     let Some((items, hist, _)) = with_cache(ui.ctx(), |c| c.drag.clone()) else { return };
     if crate::panels::dragged_project_item(ui).is_some() {
-        if let Some(p) = ui.ctx().pointer_latest_pos() {
+        if let Some(p) = crate::panels::drop_pointer_pos(ui.ctx()) {
             with_cache(ui.ctx(), |c| {
                 if let Some(d) = c.drag.as_mut() {
                     d.2 = p;
@@ -562,7 +608,7 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
                 x += w;
             }
             app.auto.add(&format!("mediaBrowser.entry.{}", e.name), rr.intersect(ui.clip_rect()), &e.name);
-            entry_interactions(app, ui, &resp, e, entries);
+            entry_interactions(app, ui, &resp, e, entries, egui::Id::new("mb-list-scroll"));
         }
         let rest = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(Rect::from_min_size(rest.min, vec2(rest.width(), rest.height().max(30.0))), Sense::click());
@@ -592,7 +638,7 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
 }
 
 /// A preview item for a file's thumbnail (files not in the project), or the project item.
-fn preview_item(
+pub(crate) fn preview_item(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
     e: &Entry,
@@ -684,7 +730,7 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
                     if resp.hovered() {
                         app.ui.media_browser.hover = Some((e.path.clone(), frac));
                     }
-                    let drawn = visible && draw_preview(app, ui, &ctx, e, tr, frac);
+                    let drawn = visible && draw_preview(app, ui.painter(), &ctx, e, tr, frac);
                     if !drawn {
                         let icon = match e.kind {
                             "audio" => Icon::Audio,
@@ -708,13 +754,13 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
                     t.text,
                 );
                 app.auto.add(&format!("mediaBrowser.entry.{}", e.name), tr, &e.name);
-                entry_interactions(app, ui, &resp, e, entries);
+                entry_interactions(app, ui, &resp, e, entries, egui::Id::new("mb-thumb-scroll"));
             }
         }
     });
 }
 
-fn draw_preview(app: &mut FilmcraftApp, ui: &egui::Ui, ctx: &egui::Context, e: &Entry, r: Rect, frac: f32) -> bool {
+fn draw_preview(app: &mut FilmcraftApp, painter: &egui::Painter, ctx: &egui::Context, e: &Entry, r: Rect, frac: f32) -> bool {
     let Some((proj, id, dur, rate, src_w)) = preview_item(app, ctx, e) else { return false };
     let t = filmcraft_time::Tick((dur.0 as f64 * frac as f64) as i64);
     let frame = rate.frame_at(crate::panels::project::quantize(t));
@@ -731,11 +777,42 @@ fn draw_preview(app: &mut FilmcraftApp, ui: &egui::Ui, ctx: &egui::Context, e: &
     };
     match tex {
         Some((tid, sz)) => {
-            ui.painter().image(tid, crate::panels::monitor::fit(r, sz.x, sz.y), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            painter.image(tid, crate::panels::monitor::fit(r, sz.x, sz.y), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             true
         }
         None => false,
     }
+}
+
+/// A media file's thumbnail for a host that lists it outside the Media Browser (the in-app file
+/// picker's icon views): probe the path (at most `budget` new probes per frame, the caller
+/// repaints while the budget lasts), then draw the decoded picture letterboxed into `area` with
+/// this panel's preview pipeline. `false` when there is nothing to show yet — not media, not
+/// probed or not decoded — so the caller can draw an icon or an extension instead.
+pub(crate) fn file_thumbnail(
+    app: &mut FilmcraftApp,
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    path: &str,
+    name: &str,
+    area: Rect,
+    budget: &mut u32,
+) -> bool {
+    // Only video and images have a picture to decode; anything else costs a probe and shows
+    // nothing, so the caller draws its own icon or extension label instead.
+    let Some(kind) = mb::kind_of(name).filter(|k| matches!(*k, "video" | "image")) else { return false };
+    if !app.session.browser.probes.contains_key(path) {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        mb::probe(&mut app.session, path);
+        // A probe landed: draw what it found, and look for the next one on the next frame.
+        ctx.request_repaint();
+    }
+    // A synthetic entry: the picker lists paths, and the pipeline only reads name/path/kind.
+    let e = Entry { name: name.to_string(), path: path.to_string(), is_dir: false, kind, size: None, modified: None, numbered: false };
+    draw_preview(app, painter, ctx, &e, area, 0.3)
 }
 
 // ------------------------------------------------------------------------------------ menu, dialog
@@ -870,6 +947,190 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme;
+
+    /// A temp directory with a sub-folder and media, as the readable tree the host offers.
+    fn fixture(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("filmcraft-mbpanel-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("DCIM/Cam")).unwrap();
+        std::fs::write(dir.join("DCIM").join("IMG_1.jpg"), "x").unwrap();
+        dir
+    }
+
+    /// The grant state, whether the ask fired, and whether listings may read (a real device
+    /// denies them at the FUSE layer until the grant holds — simulated here with the same cell:
+    /// a listing error is the observable of a missing grant).
+    #[derive(Default, Clone)]
+    struct Grant {
+        inner: std::sync::Arc<GrantCells>,
+    }
+    #[derive(Default)]
+    struct GrantCells {
+        granted: std::sync::atomic::AtomicBool,
+        asked: std::sync::atomic::AtomicBool,
+    }
+    impl Grant {
+        fn granted(&self) -> bool {
+            self.inner.granted.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn asked(&self) -> bool {
+            self.inner.asked.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn set_granted(&self, v: bool) {
+            self.inner.granted.store(v, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn mark_asked(&self) {
+            self.inner.asked.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The host: listing over the real filesystem with its volumes and navigation rooted at
+    /// `root` (creating it first: the browser starts there). While the grant does not hold, a
+    /// listing fails with permission denied, like an ungranted device's FUSE does.
+    struct Host {
+        root: String,
+        grant: Grant,
+    }
+    impl Host {
+        fn new(root: std::path::PathBuf, grant: Grant) -> Self {
+            let _ = std::fs::create_dir_all(&root);
+            Self { root: root.to_string_lossy().into_owned(), grant }
+        }
+    }
+    impl filmcraft_engine::Services for Host {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            std::fs::read(path)
+        }
+        fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+            std::fs::write(path, data)
+        }
+        fn list_entries(&self, dir: &str) -> Option<std::io::Result<Vec<mb::DirEntry>>> {
+            if !self.grant.granted() {
+                return Some(Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "not an external storage manager")));
+            }
+            Some(mb::std_list_entries(dir))
+        }
+        fn volumes(&self) -> Vec<mb::Volume> {
+            vec![mb::Volume { name: "Storage".into(), path: self.root.clone(), kind: mb::VolumeKind::Local }]
+        }
+        fn browse_root(&self) -> Option<String> {
+            Some(self.root.clone())
+        }
+    }
+
+    /// The app on `host` with the shared-storage hooks wired to its grant cells (the shared root
+    /// *is* the host's navigation root here, like on a device), drawn the way a panel is: one
+    /// egui pass over a fixed rect.
+    fn setup(tag: &str) -> (FilmcraftApp, egui::Context, Grant, std::path::PathBuf) {
+        let dir = fixture(tag);
+        let grant = Grant::default();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::new(std::sync::Arc::new(Host::new(dir.clone(), grant.clone()))));
+        theme::install(&ctx, &app.tokens);
+        app.hooks.shared_storage_root = Some(dir.clone());
+        app.hooks.shared_storage_granted = Some(Box::new({
+            let g = grant.clone();
+            move || g.granted()
+        }));
+        app.hooks.shared_storage_grant = Some(Box::new({
+            let g = grant.clone();
+            move || g.mark_asked()
+        }));
+        (app, ctx, grant, dir)
+    }
+
+    fn drawn(app: &mut FilmcraftApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+        app.auto.begin_frame();
+        let input = egui::RawInput { events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            crate::panels::media_browser::show(app, ui, egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(600.0, 400.0)));
+        });
+        out.textures_delta.clear();
+    }
+
+    fn frame(app: &mut FilmcraftApp, ctx: &egui::Context) {
+        drawn(app, ctx, Vec::new());
+    }
+
+    /// The automation element `id` as the last frame registered it.
+    fn element(app: &FilmcraftApp, id: &str) -> Option<[f32; 4]> {
+        app.auto.elements.iter().find(|e| e.id == id).map(|e| e.rect)
+    }
+
+    /// Tap the automation element `id` the way a finger does: hover, press, release.
+    fn tap(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) {
+        let Some(rect) = element(app, id) else { panic!("no `{id}` on screen") };
+        let p = egui::pos2(rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+        let press = |pressed: bool| {
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default() },
+            ]
+        };
+        drawn(app, ctx, press(true));
+        drawn(app, ctx, press(false));
+        frame(app, ctx);
+    }
+
+    /// Android at launch: the browser sits on the shared root, the grant does not hold, and the
+    /// listing fails — the panel offers the grant (not a bare "Permission denied"), the button
+    /// asks once and the browser stays put; after the grant lands (returning from the settings
+    /// page) the very same listing draws.
+    #[test]
+    fn the_ungranted_browser_offers_the_grant() {
+        let (mut app, ctx, grant, root) = setup("grant");
+        frame(&mut app, &ctx);
+        frame(&mut app, &ctx);
+        assert_eq!(mb::current_dir(&app.session), root.to_string_lossy(), "the browser starts at the root");
+        assert!(element(&app, "mediaBrowser.grant").is_some(), "the grant is offered where the error was");
+        // asking leaves the browser where it is (the root) and says so
+        tap(&mut app, &ctx, "mediaBrowser.grant");
+        assert!(grant.asked(), "asking opened the settings page");
+        assert!(!app.ui.status.is_empty(), "the user is told what to do next");
+        assert!(element(&app, "mediaBrowser.grant").is_some(), "still asking after a failed grant");
+        // the grant lands: the next frame lists the folder instead
+        grant.set_granted(true);
+        frame(&mut app, &ctx);
+        frame(&mut app, &ctx);
+        assert!(element(&app, "mediaBrowser.grant").is_none(), "no grant button once it holds");
+        assert!(element(&app, "mediaBrowser.count").is_some(), "the listing drew with its count");
+    }
+
+    /// A granted host with a genuinely unreadable current directory keeps the plain error (the
+    /// desktop case): no grant button for a path no grant could fix.
+    #[test]
+    fn a_plain_listing_failure_stays_an_error() {
+        let (mut app, ctx, grant, root) = setup("plain");
+        grant.set_granted(true);
+        // push the browser to a directory that does not exist (below the root, so navigation
+        // accepts it): the listing fails with NotFound, not with the grant
+        app.session.browser.dir = root.join("nope").to_string_lossy().into_owned();
+        frame(&mut app, &ctx);
+        assert!(element(&app, "mediaBrowser.grant").is_none(), "no grant for a missing directory");
+    }
+
+    /// The navigation root clamps the panel: "Up" from the root cannot climb out (the disabled
+    /// button does nothing), and one level down it walks back exactly to the root.
+    #[test]
+    fn the_root_clamps_up() {
+        let (mut app, ctx, grant, root) = setup("up");
+        grant.set_granted(true);
+        frame(&mut app, &ctx);
+        frame(&mut app, &ctx);
+        let root_s = root.to_string_lossy().into_owned();
+        assert_eq!(mb::current_dir(&app.session), root_s, "the browser starts at the root");
+        // the up button answers "at the top": tapping it navigates nowhere
+        tap(&mut app, &ctx, "mediaBrowser.up");
+        assert_eq!(mb::current_dir(&app.session), root_s, "up from the root stays in the root");
+        // one level down, up works and stops back at the root
+        app.session.execute("mediaBrowser.navigate", serde_json::json!({"path": root.join("DCIM").to_string_lossy()})).unwrap();
+        frame(&mut app, &ctx);
+        tap(&mut app, &ctx, "mediaBrowser.up");
+        assert_eq!(mb::current_dir(&app.session), root_s, "back at the root");
+        tap(&mut app, &ctx, "mediaBrowser.up");
+        assert_eq!(mb::current_dir(&app.session), root_s, "and never above it");
+    }
 
     #[test]
     fn dragging_several_files_carries_all_of_them() {

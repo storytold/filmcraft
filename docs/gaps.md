@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (G21: the Android Media Browser and Project lists scroll by finger instead of moving the item, and a touch drop from them onto the Timeline lands) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -313,6 +313,28 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   image-sequence export downloads drop frames in Chrome (#378).
 - **Estimate:** 40–80 h. Doc: [web.md](web.md).
 
+## G21. The Android build has no hardware codecs or store packaging
+
+- **Missing:** the arm64 APK launches, renders, saves and browses, and once the user grants "All
+  files access" it reaches shared storage too — a clip can be picked from the gallery or Downloads
+  and a render can land in a shared folder (verified on a Samsung Tab S11, Android 16, and a TECNO
+  KJ5, Android 13). The Media Browser there offers only shared storage (Android cannot list `/`,
+  `/media` or `/mnt`, so advertising them only produced "Permission denied") and asks for the grant
+  once at launch, with "Not now" remembered. The in-app file picker lists entries as one column of
+  rows or as a grid of icons at three sizes (`List` / `Small` / `Medium` / `Large`, remembered at
+  `general.pickerView`), showing a media file's decoded thumbnail; its lists and a menu taller than
+  the window scroll by dragging any pointer, and Settings ▸ UI scale offers 50% for a small phone.
+  The Media Browser and the Project tab's lists and cards do too — a finger that moves before the
+  hold pans the list, a finger held past 0.55 s picks the row or card up, and a finger drag from
+  them onto the Timeline drops the file (a drop on the release frame reads the pointer's
+  `interact_pos`, which survives the `PointerGone` egui-winit sends beside the emulated mouse-up).
+  What it still lacks: no hardware decode or encode
+  (`platform`'s FFI covers VideoToolbox, Media Foundation / Direct3D 11, VA-API and NVDEC / NVENC
+  only), so the phone decodes and encodes in pure Rust; the grant has to be given by hand from
+  Android's settings page (an app can never hold it silently, and Android can withdraw it); and the
+  APK is signed with a local keystore for `adb install`: no release signing or store packaging yet.
+- **Estimate:** 20–45 h. Doc: [architecture.md](architecture.md#what-the-android-build-changes).
+
 ## Revision history
 
 | Date | Change | Summary |
@@ -320,3 +342,6 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-19 | minor | G21: the Android Media Browser and Project lists scroll by finger instead of moving the item (a hold picks it up), and a touch drop from them onto the Timeline lands (a release-frame drop reads `interact_pos`) |
+| 2026-10-19 | minor | G21: the Android file picker lists entries as rows or as a grid of icons at three sizes, remembered at `general.pickerView` (media files show the Media Browser's decoded thumbnail), its lists and a tall menu scroll by drag, and the UI scale gains 50%; verified on a TECNO KJ5 (Android 13) |
+| 2026-10-19 | minor | G21: the Android Media Browser offers only shared storage (no `/` or mounts, which an app cannot list) and a one-shot launch prompt asks for "All files access", "Not now" remembered; verified on a TECNO KJ5 (Android 13) |

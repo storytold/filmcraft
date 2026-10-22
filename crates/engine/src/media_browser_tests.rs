@@ -291,6 +291,85 @@ fn path_helpers() {
     assert_eq!(media_browser::base_name("/home/me/Movies/"), "Movies");
 }
 
+/// Android's volumes are the one listable tree, not `/` and the mount points (an app cannot
+/// read those, so advertising them shows only "Permission denied").
+#[test]
+fn android_volumes_are_the_shared_tree() {
+    assert_eq!(media_browser::android_volumes(), [Volume { name: "Shared storage".into(), path: "/storage/emulated/0".into(), kind: VolumeKind::Local }]);
+    if cfg!(target_os = "android") {
+        assert_eq!(media_browser::SHARED_ROOT, Some("/storage/emulated/0"));
+    } else {
+        assert_eq!(media_browser::SHARED_ROOT, None);
+    }
+}
+
+/// A navigation root clamps "Up one level": no climb out of the shared storage on Android, but
+/// unchanged on a host without one.
+#[test]
+fn up_stops_at_the_browse_root() {
+    assert_eq!(media_browser::parent_inside("/storage/emulated/0", "/storage/emulated/0"), None, "at the top");
+    assert_eq!(media_browser::parent_inside("/storage/emulated/0", "/storage/emulated/0/DCIM"), Some("/storage/emulated/0".into()));
+    assert_eq!(media_browser::parent_inside("/storage/emulated/0", "/storage/emulated/0/DCIM/Cam"), Some("/storage/emulated/0/DCIM".into()));
+    // outside it (or not under it): nothing to climb to
+    assert_eq!(media_browser::parent_inside("/storage/emulated/0", "/storage"), None);
+    assert_eq!(media_browser::parent_inside("/storage/emulated/0", "/"), None);
+    assert_eq!(media_browser::parent_inside("/storage/emulated/0", "/storage/emulated"), None);
+    // a prefix that is not a path boundary must not count
+    assert_eq!(media_browser::parent_inside("/storage/emulated/0", "/storage/emulated/01"), None);
+    // a path with a trailing slash is the same directory
+    assert_eq!(media_browser::parent_inside("/storage/emulated/0/", "/storage/emulated/0/DCIM/"), Some("/storage/emulated/0".into()));
+}
+
+/// A host that offers a root also clamps the session: "Up" stops there, typed paths and tree
+/// clicks outside it are refused, a stale start directory (preferences from another device)
+/// falls back to the root, and the state's `canUp` answers accordingly.
+#[test]
+fn a_browse_root_clamps_the_session() {
+    struct Rooted;
+    impl Services for Rooted {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, path.to_string()))
+        }
+        fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            Err(std::io::Error::other("no disk"))
+        }
+        fn list_entries(&self, _: &str) -> Option<std::io::Result<Vec<DirEntry>>> {
+            Some(Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied")))
+        }
+        fn volumes(&self) -> Vec<Volume> {
+            vec![Volume { name: "Root".into(), path: "/storage/emulated/0".into(), kind: VolumeKind::Local }]
+        }
+        fn browse_root(&self) -> Option<String> {
+            Some("/storage/emulated/0".into())
+        }
+    }
+    let mut s = Session::new(Arc::new(Rooted));
+    // the start directory falls back into the root (no home anywhere to prefer)
+    assert_eq!(media_browser::current_dir(&s), "/storage/emulated/0");
+    let r = s.execute("mediaBrowser.roots", json!({})).unwrap();
+    assert_eq!(r["localDrives"][0]["path"], "/storage/emulated/0");
+    // up from the root is refused, not into unreadable territory
+    assert!(s.execute("mediaBrowser.navigate", json!({"up": true})).is_err());
+    assert!(s.execute("mediaBrowser.navigate", json!({"path": "/storage"})).is_err(), "outside the root");
+    assert!(s.execute("mediaBrowser.navigate", json!({"path": "/"})).is_err(), "outside the root");
+    assert!(s.execute("mediaBrowser.navigate", json!({"path": "/storage/emulated/01"})).is_err(), "not a prefix boundary");
+    // below the root it navigates (the listing fails, but that is the separate listing error)
+    let e = s.execute("mediaBrowser.navigate", json!({"path": "/storage/emulated/0/DCIM"})).unwrap_err().to_string();
+    assert!(e.contains("/storage/emulated/0/DCIM"), "the listing was attempted at the path: {e}");
+    // a stale last_dir from preferences lands inside the root too
+    s.prefs.media_browser.last_dir = "/data".into();
+    assert_eq!(media_browser::current_dir(&s), "/storage/emulated/0");
+    // and the state reports the clamp
+    assert_eq!(media_browser::up(&s, "/storage/emulated/0"), None, "nothing above the root");
+}
+
+/// A host without a root browses freely (the desktop): `up` answers the plain parent.
+#[test]
+fn no_root_leaves_up_free() {
+    let s = session();
+    assert_eq!(media_browser::up(&s, "/home/me/Movies"), Some("/home/me".into()));
+}
+
 /// #157: browsing a folder read every file no streaming reader takes (an AVI, a WAV) whole into
 /// memory, just to show its properties or to find out it isn't supported. Large ones are now
 /// refused after the head; small ones still show their properties; MP4 is read through its index.

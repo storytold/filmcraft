@@ -19,6 +19,12 @@
 //!   stored state (`app.ui.…`, an egui temporary); when the user has closed that dialog meanwhile
 //!   there is nothing to write into and the path is dropped.
 //!
+//! A host that offers its storage directory but no system picker (the Android build:
+//! [`HostHooks::app_files_dir`]) is served by FilmCraft's own in-app browser
+//! ([`crate::panels::android_file`]), which draws its modal like any other dialog here and
+//! answers on the same channel as [`HostHooks::run_dialog`]: the frame loop keeps running and
+//! the continuation runs on the frame the answer arrives.
+//!
 //! One dialog is open at a time; asking for another one meanwhile is refused.
 
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -75,6 +81,11 @@ impl FileDialog {
 
     /// Whether `hooks` can show this dialog at all (a host without the picker leaves it out).
     pub fn available(&self, hooks: &HostHooks) -> bool {
+        // The in-app browser serves every kind: it is FilmCraft's own dialog, opened on a host
+        // that offers its storage directory but no system picker (`app_files_dir`, Android).
+        if hooks.app_files_dir.is_some() {
+            return true;
+        }
         hooks.run_dialog.is_some()
             || match self {
                 Self::OpenFiles { .. } => hooks.pick_files.is_some(),
@@ -121,6 +132,14 @@ impl FilmcraftApp {
         if self.native_dialog.is_some() {
             return Err(tl!("A file dialog is already open").into());
         }
+        // The in-app browser: FilmCraft's own dialog for a host that offers storage but no system
+        // picker (`app_files_dir`, the Android build). It answers on a channel, so the command
+        // continues on a later frame exactly as with a host's non-blocking dialog.
+        let view = crate::panels::android_file::stored_view(self);
+        if let Some(answer) = self.file_dialogs.android_file.serve(&self.hooks, view, &dialog) {
+            self.native_dialog = Some(PendingDialog { answer, then: Box::new(then) });
+            return Ok(json!({"dialog": "open"}));
+        }
         if let Some(run) = self.hooks.run_dialog.as_mut() {
             self.native_dialog = Some(PendingDialog { answer: run(dialog), then: Box::new(then) });
             return Ok(json!({"dialog": "open"}));
@@ -138,14 +157,20 @@ impl FilmcraftApp {
             self.ui.status = tl!("A file dialog is already open").into();
             return;
         }
-        let answer = match self.hooks.run_dialog.as_mut() {
-            Some(run) => run(dialog),
-            None => {
-                let (tx, rx) = std::sync::mpsc::channel();
-                // the receiver is alive (held here): sending can't fail
-                let _ = tx.send(dialog.run_now(&mut self.hooks));
-                rx
-            }
+        // The in-app browser first (see `pick`), then the host's dialogs.
+        let view = crate::panels::android_file::stored_view(self);
+        let browser = self.file_dialogs.android_file.serve(&self.hooks, view, &dialog);
+        let answer = match browser {
+            Some(answer) => answer,
+            None => match self.hooks.run_dialog.as_mut() {
+                Some(run) => run(dialog),
+                None => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    // the receiver is alive (held here): sending can't fail
+                    let _ = tx.send(dialog.run_now(&mut self.hooks));
+                    rx
+                }
+            },
         };
         let then: Continuation = Box::new(move |app, paths| {
             then(app, paths);

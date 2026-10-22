@@ -405,6 +405,9 @@ impl Preferences {
         self.trim.large_trim_offset = self.trim.large_trim_offset.clamp(1, 1000);
         self.labels.sanitize_labels();
         self.appearance.sync_color_theme();
+        if !settings::PICKER_VIEWS.iter().any(|(k, _)| *k == self.general.picker_view) {
+            self.general.picker_view = "large".into();
+        }
         self.version = settings::PREFS_VERSION;
     }
 

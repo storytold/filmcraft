@@ -308,8 +308,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
-    // a never-saved project is saved through the Save dialog
-    let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some();
+    // a never-saved project is saved through the Save dialog (the host's, or FilmCraft's own
+    // browser on a host that offers storage without a system picker)
+    let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some() || app.hooks.app_files_dir.is_some();
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {

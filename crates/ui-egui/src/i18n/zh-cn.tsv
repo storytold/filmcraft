@@ -3592,3 +3592,24 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Large	大
+	Small	小
+	A file with this name already exists: {name}	已存在同名文件：{name}
+	Choose	选择
+	Choose Folder	选择文件夹
+	Could not create the folder: {error}	无法创建文件夹：{error}
+	Create	创建
+	New Folder	新建文件夹
+	No saved projects yet.	还没有已保存的项目。
+	Nothing here.	这里没有内容。
+	Select at least one file.	请至少选择一个文件。
+	This folder can't be read.	无法读取此文件夹。
+	App storage	应用存储
+	Shared storage	共享存储
+	Shared storage (grant access)	共享存储（授予权限）
+	Grant access	授予权限
+	Allow "All files access" for FilmCraft on the settings page, then tap Shared storage.	在设置页面为 FilmCraft 允许“所有文件访问”，然后点按“共享存储”。
+	This build can't request shared-storage access.	此版本无法请求共享存储访问权限。
+	Shared storage needs "All files access" to browse.	共享存储需要“所有文件访问”权限才能浏览。
+	Allow access to all files?	允许访问所有文件吗？
+	FilmCraft needs "All files access" to open and save files in shared storage.	FilmCraft 需要“所有文件访问”权限才能在共享存储中打开和保存文件。

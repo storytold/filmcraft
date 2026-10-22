@@ -79,7 +79,7 @@ and `filmcraft-cli`.
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
 | `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) and H.265 (Windows, FilmCraft's only H.265 encoder there) encoding behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
-| `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
+| `filmcraft` | L6 | desktop app (library + binary): eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
 
@@ -101,6 +101,28 @@ are exempt):
 egui UI and the web app, so everything up to the engine stays web-portable and the web app builds
 ([web.md](web.md)). `unsafe_code = "forbid"` applies workspace-wide, except in `platform`
 (`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md)).
+
+### What a host with its own storage changes
+
+A host can tell the shared app where its files live instead of relying on the system picker; every
+other difference stays in the host, not in a `cfg` inside the panels:
+
+| Host | Behaviour |
+|---|---|
+| `HostHooks::app_files_dir` set | rfd has no backend there, so *every* file dialog — Save, Save As, Open Project, imports, exports, folder picks, relink — is served by [android_file.rs](../crates/ui-egui/src/panels/android_file.rs), FilmCraft's own browser. It opens on the frame the command asks, answers over the same channel a non-blocking host dialog uses (so the command continues on a later frame), and never leaves the root it is showing. It offers rows or an icon grid with thumbnails, remembers the choice at `general.pickerView`, and follows a finger: a drag scrolls the list, a still hold picks a row up. |
+| `HostHooks::shared_storage_root` set | the same browser gets a second root, entered only while `HostHooks::shared_storage_granted` reports that the host's access is held (re-read every frame, since the page that grants it backgrounds the app). Without it the switcher, or the `Grant access` button inside the unreadable root, calls `HostHooks::shared_storage_grant` instead of navigating. |
+| both unset (desktop, web) | the system picker as before (`rfd`, or the File System Access API in the browser), unchanged. |
+
+The browser's roots are just directories. A host that has an app-private data directory splits it
+once (`apps/filmcraft/src/android_storage.rs` in the Android build):
+
+```text
+<files>/Projects/   saves and projects (Save / Save As, the Open Project list)
+<files>/Exports/    renders and stills: `Session.export_dir`, which `default_export_dir` consults
+                    first — `/` is the working directory on a phone, `HOME` and the temp dir are
+                    unset, so no other fallback lands somewhere writable
+<files>/config/     the data root: settings, auto-save, recovery, logs
+```
 
 ## 2. Time base
 
