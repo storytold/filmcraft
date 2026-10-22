@@ -788,14 +788,26 @@ pub fn read_resampled(src: &[Vec<f32>], src_rate: u32, start: i64, frames: usize
     out
 }
 
-/// A standalone audio file decoded fully into memory (audio files are small next to video).
+/// A standalone audio file decoded fully when opened. Allocated sample bytes count against
+/// the media pool budget, so idle sources can be closed; one active file still decodes whole.
 pub struct AudioFileSource {
     info: MediaInfo,
     rate: u32,
     samples: Vec<Vec<f32>>,
+    resident_bytes: u64,
+}
+
+/// Allocated planar sample storage, measured once rather than scanned under the pool lock.
+pub(crate) fn pcm_resident_bytes(samples: &[Vec<f32>]) -> u64 {
+    samples.iter().fold(0u64, |total, channel| total.saturating_add((channel.capacity() as u64).saturating_mul(size_of::<f32>() as u64)))
 }
 
 impl AudioFileSource {
+    fn decoded(info: MediaInfo, rate: u32, samples: Vec<Vec<f32>>) -> Self {
+        let resident_bytes = pcm_resident_bytes(&samples);
+        Self { info, rate, samples, resident_bytes }
+    }
+
     pub fn decode(name: &str, bytes: Arc<[u8]>) -> Result<Self> {
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         if matches!(ext.as_str(), "mp2" | "mp3")
@@ -812,7 +824,7 @@ impl AudioFileSource {
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
             };
-            return Ok(Self { info, rate, samples });
+            return Ok(Self::decoded(info, rate, samples));
         }
         if ext == "aac" {
             let (rate, samples) = decode_adts(&bytes)?.ok_or_else(|| CodecError::Decode(format!("{name}: no ADTS AAC frames")))?;
@@ -827,7 +839,7 @@ impl AudioFileSource {
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
             };
-            return Ok(Self { info, rate, samples });
+            return Ok(Self::decoded(info, rate, samples));
         }
         let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes.clone())), Default::default());
         let mut hint = Hint::new();
@@ -882,7 +894,7 @@ impl AudioFileSource {
             start_timecode: None,
             file_size: Some(bytes.len() as u64),
         };
-        Ok(Self { info, rate, samples })
+        Ok(Self::decoded(info, rate, samples))
     }
 }
 
@@ -1004,6 +1016,9 @@ fn decode_mpeg_layer12(bytes: &[u8]) -> Option<(u8, u32, Vec<Vec<f32>>)> {
 }
 
 impl MediaSource for AudioFileSource {
+    fn resident_bytes(&self) -> u64 {
+        self.resident_bytes
+    }
     fn info(&self) -> &MediaInfo {
         &self.info
     }
@@ -1353,5 +1368,19 @@ mod gapless_tests {
     fn mp3_encoder_delay_is_trimmed() {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
         assert_eq!(src.samples[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
+    }
+}
+
+#[cfg(test)]
+mod resident_tests {
+    #[test]
+    fn pcm_accounting_counts_capacity_not_only_valid_samples() {
+        let mut samples = vec![Vec::with_capacity(64), Vec::with_capacity(128)];
+        samples[0].push(0.25);
+        samples[1].push(-0.5);
+        let allocated: u64 = samples.iter().map(|channel| channel.capacity() as u64 * 4).sum();
+        assert_eq!(super::pcm_resident_bytes(&samples), allocated);
+        assert!(allocated > 2 * 4, "spare capacity also occupies memory");
+        assert_eq!(super::pcm_resident_bytes(&[]), 0);
     }
 }

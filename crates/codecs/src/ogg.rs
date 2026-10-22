@@ -6,7 +6,8 @@
 //! final page's end trimming is applied, and random access decodes [`crate::audio::OPUS_PRE_ROLL`]
 //! of preceding packets first (so a seek gives the same samples as continuous playback).
 //!
-//! Vorbis: decoded once when opened (audio files are small next to video), aligned to the granule
+//! Vorbis: decoded once when opened, with allocated samples reported to the pool budget,
+//! aligned to the granule
 //! positions (leading samples before the first page's granule and samples after the last page's
 //! granule are dropped).
 
@@ -51,6 +52,7 @@ enum Kind {
     Pcm {
         rate: u32,
         samples: Vec<Vec<f32>>,
+        resident_bytes: u64,
     },
 }
 
@@ -98,7 +100,8 @@ impl OggSource {
             _ => {
                 let (rate, samples) = decode_vorbis(&file, &bytes, stream)?;
                 let ch = samples.len() as u32;
-                (Kind::Pcm { rate, samples }, rate, ch, "Vorbis")
+                let resident_bytes = crate::audio::pcm_resident_bytes(&samples);
+                (Kind::Pcm { rate, samples, resident_bytes }, rate, ch, "Vorbis")
             }
         };
         let frames = match &kind {
@@ -201,6 +204,12 @@ fn decode_vorbis(file: &OggFile, bytes: &crate::Src, s: usize) -> crate::Result<
 }
 
 impl MediaSource for OggSource {
+    fn resident_bytes(&self) -> u64 {
+        match &self.kind {
+            Kind::Pcm { resident_bytes, .. } => *resident_bytes,
+            Kind::Opus { .. } => 0,
+        }
+    }
     fn info(&self) -> &MediaInfo {
         &self.info
     }
@@ -211,7 +220,7 @@ impl MediaSource for OggSource {
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
         let (head, timing, state) = match &self.kind {
-            Kind::Pcm { rate, samples } => return Ok(read_resampled(samples, *rate, start, frames, sample_rate)),
+            Kind::Pcm { rate, samples, .. } => return Ok(read_resampled(samples, *rate, start, frames, sample_rate)),
             Kind::Opus { head, timing, state } => (head, timing, state),
         };
         let ch = head.channels.max(1);

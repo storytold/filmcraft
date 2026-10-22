@@ -167,6 +167,13 @@ pub trait MediaSource: Send + Sync {
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
         if stream == 0 { self.audio(start, frames, sample_rate) } else { Err(MediaError::NoStream("audio")) }
     }
+    /// Memory this source keeps for as long as it is open, in bytes: the decoded picture of a
+    /// still, the frames of an animated image. Sources that decode on demand keep next to nothing
+    /// and report 0. The media pool closes the least recently used sources past its budget by
+    /// this (#2469), asking while it holds its locks: keep it cheap (no decoding, no scans).
+    fn resident_bytes(&self) -> u64 {
+        0
+    }
 }
 
 pub type SharedSource = Arc<dyn MediaSource>;

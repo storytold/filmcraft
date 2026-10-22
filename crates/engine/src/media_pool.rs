@@ -11,12 +11,16 @@
 //!   from it. Proxy frames are smaller; the source still reports the full-resolution size, and the
 //!   compositor derives its pixel scale from the frame it gets, so effects and Motion render the
 //!   same picture at lower resolution. Export asks for [`MediaPool::full_res_provider`].
+//! - Sources that keep decoded pictures in memory (stills, animated images) count against a byte
+//!   budget ([`DEFAULT_RESIDENT_BUDGET`], [`MediaPool::set_resident_budget`]): past it the least
+//!   recently used ones are closed, and opened again from their file when next needed (#2469).
+//!   A render still holding a closed source keeps it alive until it is done.
 //! - Paths that came from a document (the project file, a template, an interchange file) are
 //!   opened through [`crate::doc_path`] ([`MediaPool::follow`]); a refused one renders as missing.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
@@ -59,7 +63,16 @@ pub struct MediaPool {
     /// Media and proxy paths that came from a document, with that document's path (see
     /// [`Self::follow`]).
     stored: RwLock<HashMap<String, Option<PathBuf>>>,
+    /// When each cached source (`true`: a proxy) was last asked for, on [`Self::clock`].
+    used: Mutex<HashMap<(bool, ItemId), u64>>,
+    clock: AtomicU64,
+    /// Bytes of decoded pictures the cached sources may keep before the least recently used
+    /// ones are closed.
+    budget: AtomicU64,
 }
+
+/// How much decoded media the pool keeps open by default (1 GiB, about ten 24-megapixel photos).
+pub const DEFAULT_RESIDENT_BUDGET: u64 = 1 << 30;
 
 impl Default for MediaPool {
     /// A pool with the built-in container/codec openers registered.
@@ -72,6 +85,9 @@ impl Default for MediaPool {
             failures: Arc::default(),
             openers: RwLock::new(filmcraft_codecs::openers()),
             stored: RwLock::default(),
+            used: Mutex::default(),
+            clock: AtomicU64::new(0),
+            budget: AtomicU64::new(DEFAULT_RESIDENT_BUDGET),
         }
     }
 }
@@ -153,11 +169,13 @@ impl MediaPool {
     /// Cache a source for an item, valid whatever the item's reference (generators).
     pub fn insert(&self, item: ItemId, src: SharedSource) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (String::new(), src));
+        self.cached_now(false, item);
     }
 
     /// Cache a source for an item under its [`media_key`].
     pub fn insert_keyed(&self, item: ItemId, key: String, src: SharedSource) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src));
+        self.cached_now(false, item);
     }
 
     /// Cache a source opened from `path` for an item.
@@ -165,6 +183,7 @@ impl MediaPool {
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         let src = self.unsupported_as_slate(item, path, src);
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
+        self.cached_now(false, item);
     }
 
     /// `src` (opened from `path` for `item`) showing the unreadable slate for the frames it
@@ -178,6 +197,70 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         self.proxies.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+        let mut used = self.used.lock().unwrap_or_else(|e| e.into_inner());
+        used.remove(&(false, item));
+        used.remove(&(true, item));
+    }
+
+    /// Record that the cached source of `item` (`proxy`: its proxy) was just asked for.
+    fn touch(&self, proxy: bool, item: ItemId) {
+        let now = self.clock.fetch_add(1, Ordering::Relaxed);
+        self.used.lock().unwrap_or_else(|e| e.into_inner()).insert((proxy, item), now);
+    }
+
+    /// A source was just cached for `item`: it is the most recently used, and the others make
+    /// room for it within the budget.
+    fn cached_now(&self, proxy: bool, item: ItemId) {
+        self.touch(proxy, item);
+        self.trim(Some((proxy, item)));
+    }
+
+    /// Bytes of decoded media the cached sources keep in memory (`perf.stats`).
+    pub fn resident_bytes(&self) -> u64 {
+        let sources = self.sources.read().unwrap_or_else(|e| e.into_inner());
+        let proxies = self.proxies.read().unwrap_or_else(|e| e.into_inner());
+        sources.values().chain(proxies.values()).map(|(_, s)| s.resident_bytes()).fold(0, u64::saturating_add)
+    }
+
+    /// The budget for decoded media kept open (see [`DEFAULT_RESIDENT_BUDGET`]); a smaller one
+    /// closes the least recently used sources at once.
+    pub fn set_resident_budget(&self, bytes: u64) {
+        self.budget.store(bytes, Ordering::Relaxed);
+        self.trim(None);
+    }
+
+    /// Close the least recently used sources that keep decoded media until the rest fit the
+    /// budget. `keep` (the source just cached) stays even when it alone is over budget: it is
+    /// about to be used.
+    fn trim(&self, keep: Option<(bool, ItemId)>) {
+        let budget = self.budget.load(Ordering::Relaxed);
+        let mut sources = self.sources.write().unwrap_or_else(|e| e.into_inner());
+        let mut proxies = self.proxies.write().unwrap_or_else(|e| e.into_inner());
+        let sizes: Vec<((bool, ItemId), u64)> = sources
+            .iter()
+            .map(|(i, (_, s))| ((false, *i), s.resident_bytes()))
+            .chain(proxies.iter().map(|(i, (_, s))| ((true, *i), s.resident_bytes())))
+            .filter(|(_, b)| *b > 0)
+            .collect();
+        let mut total = sizes.iter().map(|(_, b)| *b).fold(0u64, u64::saturating_add);
+        if total <= budget {
+            return;
+        }
+        let mut used = self.used.lock().unwrap_or_else(|e| e.into_inner());
+        let mut oldest: Vec<((bool, ItemId), u64)> = sizes.into_iter().filter(|(k, _)| Some(*k) != keep).collect();
+        oldest.sort_by_key(|(k, _)| used.get(k).copied().unwrap_or(0));
+        for ((proxy, item), bytes) in oldest {
+            if total <= budget {
+                break;
+            }
+            if proxy {
+                proxies.remove(&item)
+            } else {
+                sources.remove(&item)
+            };
+            used.remove(&(proxy, item));
+            total = total.saturating_sub(bytes);
+        }
     }
 
     /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
@@ -233,6 +316,7 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).clear();
         self.proxies.write().unwrap_or_else(|e| e.into_inner()).clear();
         self.offline.write().unwrap_or_else(|e| e.into_inner()).clear();
+        self.used.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     pub fn cached(&self, item: ItemId) -> Option<SharedSource> {
@@ -319,10 +403,10 @@ impl MediaPool {
             return Some(s);
         }
         let key = media_key(m);
-        if let Some((k, s)) = self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item)
-            && (k.is_empty() || *k == key)
-        {
-            return Some(s.clone());
+        let hit = self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item).filter(|(k, _)| k.is_empty() || *k == key).map(|(_, s)| s.clone());
+        if let Some(s) = hit {
+            self.touch(false, item);
+            return Some(s);
         }
         let src: SharedSource = match &m.media {
             MediaRef::Generator(g) => {
@@ -358,6 +442,7 @@ impl MediaPool {
             },
         };
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src.clone()));
+        self.cached_now(false, item);
         Some(src)
     }
 
@@ -367,10 +452,10 @@ impl MediaPool {
 
     fn proxy_source(&self, item: ItemId, path: &str, m: &MediaClip, services: &dyn Services) -> Option<SharedSource> {
         let key = format!("proxy:{path}");
-        if let Some((k, s)) = self.proxies.read().unwrap_or_else(|e| e.into_inner()).get(&item)
-            && *k == key
-        {
-            return Some(s.clone());
+        let hit = self.proxies.read().unwrap_or_else(|e| e.into_inner()).get(&item).filter(|(k, _)| *k == key).map(|(_, s)| s.clone());
+        if let Some(s) = hit {
+            self.touch(true, item);
+            return Some(s);
         }
         match self.follow_media(path).and_then(|file| self.open_file(&file, services)) {
             Ok(s) => {
@@ -388,6 +473,7 @@ impl MediaPool {
                 };
                 let src: SharedSource = Arc::new(ProxySource { proxy: s, info: m.info.clone(), audio_from });
                 self.proxies.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src.clone()));
+                self.cached_now(true, item);
                 Some(src)
             }
             Err(e) => {
@@ -536,6 +622,9 @@ impl MediaSource for UnsupportedAsSlate {
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)
     }
+    fn resident_bytes(&self) -> u64 {
+        self.inner.resident_bytes()
+    }
 }
 
 /// Consecutive failed video frames after which a monitor treats a source as damaged. A single
@@ -584,6 +673,9 @@ impl MediaSource for DamagedAsSlate {
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)
     }
+    fn resident_bytes(&self) -> u64 {
+        self.inner.resident_bytes()
+    }
 }
 
 /// A proxy standing in for its full-resolution media: reports the full-resolution info and hands
@@ -626,6 +718,9 @@ impl MediaSource for ProxySource {
     }
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.audio_from.as_ref().unwrap_or(&self.proxy).audio_stream(stream, start, frames, sample_rate)
+    }
+    fn resident_bytes(&self) -> u64 {
+        self.proxy.resident_bytes().saturating_add(self.audio_from.as_ref().map_or(0, |a| a.resident_bytes()))
     }
 }
 
@@ -712,6 +807,104 @@ mod tests {
         assert!(MediaPool::default().open_file(&p, &crate::FsServices).unwrap().info().has_audio());
         let missing = dir.join("missing.wav").to_string_lossy().to_string();
         assert!(matches!(MediaPool::default().open_file(&missing, &crate::FsServices), Err(MediaError::Offline(_))));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// #2469: decoded stills used to stay open until the project closed; past the budget the
+    /// least recently used ones are closed, and one used again is opened again from its file.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn decoded_stills_past_the_budget_are_closed_least_recently_used_first() {
+        let dir = std::env::temp_dir().join(format!("filmcraft-pool-budget-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h) = (100u32, 80u32);
+        let one = u64::from(w * h * 4);
+        let mut session = crate::Session::default();
+        let mut paths = Vec::new();
+        for i in 0..8u8 {
+            let path = dir.join(format!("still{i}.png"));
+            let png = filmcraft_export::encode_png(vec![i.saturating_mul(30); (w * h * 4) as usize], w, h).unwrap();
+            std::fs::write(&path, png).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        }
+        session.execute("file.import", serde_json::json!({"paths": paths})).unwrap();
+        let project = session.project.clone();
+        let mut items: Vec<ItemId> = project.items.values().filter(|i| i.name.starts_with("still")).map(|i| i.id).collect();
+        items.sort_by_key(|i| project.item(*i).map(|x| x.name.clone()));
+        assert_eq!(items.len(), 8);
+        let pool = MediaPool::default();
+        pool.set_resident_budget(3 * one);
+        let show = |item: ItemId| {
+            pool.source_for(&project, item, &crate::FsServices).unwrap().video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: 1.0 }).unwrap()
+        };
+        for item in &items {
+            assert_eq!((show(*item).width, show(*item).height), (w, h));
+            assert!(pool.resident_bytes() <= 3 * one, "{} bytes kept for a budget of {}", pool.resident_bytes(), 3 * one);
+        }
+        assert_eq!(pool.open_sources(), 3, "only the three most recent stills stay open");
+        // the most recently shown stay; using an older one again brings it back and closes the oldest
+        let last = items[items.len() - 1];
+        assert!(pool.cached(last).is_some());
+        assert!(pool.cached(items[0]).is_none());
+        show(items[5]);
+        show(items[0]);
+        assert!(pool.cached(items[0]).is_some() && pool.cached(items[5]).is_some() && pool.cached(last).is_some());
+        assert!(pool.cached(items[6]).is_none(), "the least recently used one makes room");
+        // a source a render still holds stays usable after the pool closed it
+        let held = pool.source_for(&project, items[1], &crate::FsServices).unwrap();
+        pool.set_resident_budget(0);
+        assert_eq!(pool.open_sources(), 0);
+        assert_eq!(held.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: 1.0 }).unwrap().width, w);
+        // a budget of 0 still keeps the one source being used
+        show(items[2]);
+        assert_eq!(pool.open_sources(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn decoded_audio_is_accounted_evicted_and_reopened_without_sample_changes() {
+        let dir = std::env::temp_dir().join(format!("filmcraft-audio-residency-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = Vec::new();
+        for i in 0..6 {
+            let samples: Vec<f32> = (0..4096).flat_map(|n| [((n + i * 19) % 128) as f32 / 256.0, -((n + i * 7) % 64) as f32 / 128.0]).collect();
+            let path = dir.join(format!("audio{i}.aiff"));
+            let data = filmcraft_export::write_aiff(&samples, 2, 48_000, filmcraft_export::SampleFormat::Int16).unwrap();
+            std::fs::write(&path, data).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        }
+        let mut session = crate::Session::default();
+        session.execute("file.import", serde_json::json!({"paths": paths})).unwrap();
+        let project = session.project.clone();
+        drop(session);
+        let mut items: Vec<_> = project.items.values().filter(|i| i.name.starts_with("audio")).map(|i| i.id).collect();
+        items.sort_by_key(|i| project.item(*i).unwrap().name.clone());
+        assert_eq!(items.len(), 6);
+        let pool = MediaPool::default();
+        let held = pool.source_for(&project, items[0], &crate::FsServices).unwrap();
+        let one = held.resident_bytes();
+        assert!(one >= 4096 * 2 * 4, "standalone decoded samples must count against the budget");
+        let expected = held.audio(137, 256, 48_000).unwrap().channels;
+        pool.set_resident_budget(2 * one);
+        for item in &items {
+            let source = pool.source_for(&project, *item, &crate::FsServices).unwrap();
+            assert_eq!(source.audio(137, 256, 48_000).unwrap().channels.len(), 2);
+            assert!(pool.resident_bytes() <= 2 * one);
+        }
+        assert_eq!(pool.open_sources(), 2);
+        assert!(pool.cached(items[0]).is_none());
+        let reopened = pool.source_for(&project, items[0], &crate::FsServices).unwrap();
+        assert_eq!(reopened.audio(137, 256, 48_000).unwrap().channels, expected);
+        assert!(pool.cached(items[5]).is_some() && pool.cached(items[4]).is_none(), "least recent source makes room");
+        pool.set_resident_budget(0);
+        assert_eq!(pool.resident_bytes(), 0);
+        assert_eq!(pool.open_sources(), 0);
+        // Evicting the pool's ownership must not invalidate a playing source's sample buffer.
+        assert_eq!(held.audio(137, 256, 48_000).unwrap().channels, expected);
+        assert_eq!(reopened.audio(137, 256, 48_000).unwrap().channels, expected);
+        let oversized = pool.source_for(&project, items[1], &crate::FsServices).unwrap();
+        assert_eq!(pool.open_sources(), 1, "the current source is retained even above budget");
+        assert_eq!(oversized.audio(4000, 192, 48_000).unwrap().channels.len(), 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -79,6 +79,8 @@ pub struct AnimatedSource {
     frames: Vec<Arc<VideoFrame>>,
     /// Media time each frame starts at; ascending, `starts[0]` is zero.
     starts: Vec<Tick>,
+    /// Bytes the decoded frames take, summed once: the media pool asks while it holds its locks.
+    resident: u64,
 }
 
 /// Decode `bytes` as an animated image. `None` when it is not an APNG or GIF with at least two
@@ -162,8 +164,9 @@ impl AnimatedSource {
             start_timecode: None,
             file_size: Some(file_size),
         };
-        let frames = pictures.into_iter().map(|(w, h, rgba)| Arc::new(VideoFrame::rgba8(w, h, rgba))).collect();
-        Some(Self { info, frames, starts })
+        let frames: Vec<Arc<VideoFrame>> = pictures.into_iter().map(|(w, h, rgba)| Arc::new(VideoFrame::rgba8(w, h, rgba))).collect();
+        let resident = frames.iter().map(|f| f.byte_size() as u64).fold(0, u64::saturating_add);
+        Some(Self { info, frames, starts, resident })
     }
 
     /// Number of distinct frames kept.
@@ -217,6 +220,10 @@ impl MediaSource for AnimatedSource {
 
     fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> Result<AudioBuffer> {
         Err(MediaError::NoStream("audio"))
+    }
+
+    fn resident_bytes(&self) -> u64 {
+        self.resident
     }
 }
 

@@ -66,7 +66,7 @@ pub fn stats(s: &Session) -> Value {
     json!({
         "decode": decode_json(),
         "export": export_json(),
-        "media": {"openSources": s.media.open_sources()},
+        "media": {"openSources": s.media.open_sources(), "residentBytes": s.media.resident_bytes()},
         "jobs": {"total": s.jobs.len(), "running": running},
     })
 }

@@ -174,3 +174,13 @@ fn clip_rate_follows_the_common_frame_length() {
     assert_eq!(rate_of(&[ms(5_000), ms(5_000)]), FrameRate::FPS_30, "0.2 fps is not a video rate");
     assert_eq!(rate_of(&[]), FrameRate::FPS_30);
 }
+
+#[test]
+fn resident_bytes_are_the_decoded_frames() {
+    // #2469: the media pool budgets by this, so it must count every kept frame
+    let bytes = apng(&[(picture([255, 0, 0], 255), (1, 10)), (picture([0, 255, 0], 255), (1, 10)), (picture([0, 0, 255], 255), (1, 10))]);
+    let s = open_bytes("spin.png", bytes.into(), &[]).unwrap();
+    let kept: u64 = [Tick::ZERO, ms(100), ms(200)].iter().map(|t| s.video_frame(FrameRequest { time: *t, scale: 1.0 }).unwrap().byte_size() as u64).sum();
+    assert!(kept >= u64::from(3 * W * H * 4));
+    assert_eq!(s.resident_bytes(), kept);
+}

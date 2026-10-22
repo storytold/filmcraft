@@ -172,6 +172,11 @@ fn opus_silk_speech_matches_libopus() {
 fn vorbis_matches_ffmpeg() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let f = make(&ff, "ogg_vorbis.ogg");
+    let counted = OggSource::open("ogg_vorbis.ogg", bytes(&f)).unwrap();
+    let info = counted.info();
+    let audio = info.audio().unwrap();
+    let logical = info.duration.to_units_floor(audio.sample_rate as i64).max(0) as u64 * u64::from(audio.channels) * 4;
+    assert!(counted.resident_bytes() >= logical && logical > 0, "Vorbis decoded samples must be accounted");
     let (src, ours, want, ch, rate) = decode_both(&ff, &f, &[]);
     assert_eq!(src.info().audio().unwrap().codec, "Vorbis");
     assert_eq!((rate, ch), (44_100, 2));
