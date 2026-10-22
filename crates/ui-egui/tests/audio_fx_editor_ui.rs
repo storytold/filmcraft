@@ -237,3 +237,34 @@ fn track_fx_editor_from_the_mixer_slot() {
     assert!(xo2 > 2200.0, "crossover after drag: {xo2} ({a1})");
     d.snapshot("fx-editor-multiband");
 }
+
+#[test]
+fn any_mixer_insert_opens_a_parameter_editor() {
+    // #2731: a Studio Reverb in a mixer slot had no way to edit its Room Size, Decay, Dry, Wet…
+    let mut d = Driver::demo();
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "studio_reverb"}));
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.frames(3);
+    d.click("mixer.showEffects");
+    d.click("mixer.A1.fx.0");
+    d.click("mixer.A1.fx.0.edit");
+    d.frames(3);
+    let ids = d.ids("fxEditor.studio_reverb.");
+    for p in ["room", "decay", "damping", "dry", "wet"] {
+        assert!(ids.iter().any(|i| *i == format!("fxEditor.studio_reverb.param.{p}")), "{p} missing from {ids:?}");
+    }
+    let wet = |d: &mut Driver| {
+        let m = d.exec("mixer.inspect", json!({}));
+        let a1 = m["strips"].as_array().unwrap().iter().find(|s| s["ref"] == "A1").unwrap().clone();
+        num(&a1["inserts"][0]["params"]["wet"])
+    };
+    let before = wet(&mut d);
+    let undo0 = d.undo_len();
+    d.drag("fxEditor.studio_reverb.param.wet", 80.0, 0.0, 5);
+    let after = wet(&mut d);
+    assert!(after > before + 5.0, "wet after drag: {before} → {after}");
+    assert_eq!(d.undo_len(), undo0 + 1, "one undo step for the drag");
+    d.snapshot("fx-editor-studio-reverb");
+    d.click("fxEditor.studio_reverb.close");
+    assert!(d.ids("fxEditor.studio_reverb.").is_empty(), "window closed");
+}

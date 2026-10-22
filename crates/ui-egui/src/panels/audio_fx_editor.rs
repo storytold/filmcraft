@@ -1,7 +1,9 @@
 //! Clip / Track Fx Editor windows: graphical editors for the audio effects that need one
 //! (Parametric Equalizer curve, Graphic Equalizer 10/20/30 bands, Multiband Compressor,
 //! Dynamics). Opened from Effect Controls ("Custom Setup ▸ Edit…") and from a track's effect
-//! slot in the Audio Track Mixer.
+//! slot in the Audio Track Mixer. Every other insert in a mixer slot (Studio Reverb, Delay, …)
+//! opens a Track Fx Editor with one control per parameter (#2731): track effects have no
+//! Effect Controls rows to edit them in.
 //!
 //! Curves are computed by the real DSP (`render::audio_fx::configured` →
 //! `AudioEffect::response_db` / `transfer_db`), so what is drawn is what is heard. Drags preview
@@ -35,6 +37,17 @@ pub enum FxTarget {
 /// Effects that have a graphical editor.
 pub fn has_editor(effect: &str) -> bool {
     matches!(effect, "parametric_eq" | "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" | "multiband_compressor" | "dynamics_rack")
+}
+
+/// Effects whose instance can be edited in an editor window: a graphical editor, or (mixer
+/// inserts) the generic parameter list when the effect has any slider, toggle or menu parameter.
+pub fn can_edit(effect: &str) -> bool {
+    has_editor(effect) || filmcraft_project::find_effect(effect).is_some_and(|d| d.params.iter().any(|p| generic_kind(&p.kind)))
+}
+
+/// Parameter kinds the generic editor shows.
+fn generic_kind(k: &ParamKind) -> bool {
+    matches!(k, ParamKind::Float { .. } | ParamKind::Bool | ParamKind::Choice(_))
 }
 
 /// Open (or raise) the editor for a target.
@@ -107,8 +120,12 @@ impl Ed<'_> {
         }
     }
     fn commit(&mut self, pid: &str, v: f64) {
-        let is_bool = matches!(self.inst.def().and_then(|d| d.param(pid)).map(|p| &p.kind), Some(ParamKind::Bool));
-        let val = if is_bool { json!(v >= 0.5) } else { json!(v) };
+        let val = match self.inst.def().and_then(|d| d.param(pid)).map(|p| &p.kind) {
+            Some(ParamKind::Bool) => json!(v >= 0.5),
+            // menu entries are indices (`mixer.setInsert` reads them as integers)
+            Some(ParamKind::Choice(_)) => json!(if v.is_finite() { v.round().max(0.0) as u64 } else { 0 }),
+            _ => json!(v),
+        };
         self.acts.push(set_cmd(self.target, pid, val));
         // keep showing the new value until the project catches up this frame
         self.drafts.insert(pid.to_string(), v);
@@ -183,7 +200,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             close.push(target);
             continue;
         };
-        if !has_editor(&inst.effect) {
+        // clip effects without a graphical editor are edited in Effect Controls
+        let editable = if matches!(target, FxTarget::Clip { .. }) { has_editor(&inst.effect) } else { can_edit(&inst.effect) };
+        if !editable {
             close.push(target);
             continue;
         }
@@ -202,7 +221,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 "parametric_eq" => parametric(ui, &mut ed),
                 "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" => graphic(ui, &mut ed),
                 "multiband_compressor" => multiband(ui, &mut ed),
-                _ => dynamics(ui, &mut ed),
+                "dynamics_rack" => dynamics(ui, &mut ed),
+                _ => generic(ui, &mut ed),
             }
             ui.separator();
             ui.horizontal(|ui| {
@@ -552,5 +572,54 @@ fn dynamics(ui: &mut egui::Ui, ed: &mut Ed) {
             ui.separator();
             ed.slider(ui, "output", tl!("Output Gain"), false);
         });
+    });
+}
+
+// ------------------------------------------------------------------------------- generic
+
+/// One control per parameter, in definition order under their group headings: sliders for
+/// numbers, toggles for switches, menus for choices. Used for inserts without a graphical editor.
+fn generic(ui: &mut egui::Ui, ed: &mut Ed) {
+    // `can_edit` only opens the window for effects with a definition
+    let Some(def) = ed.inst.def() else { return };
+    ui.vertical(|ui| {
+        ui.set_width(360.0);
+        let mut group = None;
+        for p in def.params.iter().filter(|p| generic_kind(&p.kind)) {
+            if p.group != group {
+                group = p.group;
+                if let Some(g) = group {
+                    ui.separator();
+                    ui.strong(crate::i18n::t(g));
+                }
+            }
+            let label = crate::i18n::t(p.label);
+            match &p.kind {
+                ParamKind::Float { min, unit, .. } => {
+                    // frequencies and times spread over decades read best on a log scale
+                    let log = *min > 0.0 && matches!(*unit, "Hz" | "ms");
+                    ed.slider(ui, p.id, label, log);
+                }
+                ParamKind::Bool => ed.toggle(ui, p.id, label),
+                ParamKind::Choice(options) => {
+                    let cur = ed.v(p.id);
+                    let cur = if cur.is_finite() { cur.round().max(0.0) as usize } else { 0 };
+                    let shown = options.get(cur).map_or("", |o| crate::i18n::t(o));
+                    let mut pick = None;
+                    let r = egui::ComboBox::from_label(label).selected_text(shown).show_ui(ui, |ui| {
+                        for (i, o) in options.iter().enumerate() {
+                            if ui.selectable_label(i == cur, crate::i18n::t(o)).clicked() {
+                                pick = Some(i);
+                            }
+                        }
+                    });
+                    ed.auto(format!("fxEditor.{}.param.{}", ed.fx, p.id), r.response.rect, label);
+                    if let Some(i) = pick.filter(|&i| i != cur) {
+                        ed.commit(p.id, i as f64);
+                    }
+                }
+                _ => {}
+            }
+        }
     });
 }
