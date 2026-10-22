@@ -181,7 +181,11 @@ impl FilmcraftApp {
                 }
             }
             Err(e) => {
-                log::warn!("audio output unavailable: {e}");
+                // The timer retries while playing, so warn on the first lost open only:
+                // a device that stays missing must not log every AUDIO_RETRY_S.
+                if self.playback.audio_retry_at == 0.0 {
+                    log::warn!("audio output unavailable: {e}");
+                }
                 self.playback.audio_clock = false;
                 self.playback.audio_retry_at = now + AUDIO_RETRY_S;
             }
