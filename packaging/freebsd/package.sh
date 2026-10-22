@@ -41,8 +41,8 @@ release_arch() {
 # aarch64-unknown-freebsd (craft-common-actions#39): name the archive after the target.
 case "${CARGO_BUILD_TARGET:-}" in
   "") ARCH="$(release_arch "$(uname -m)")" ;;
-  *-unknown-freebsd) ARCH="$(release_arch "${CARGO_BUILD_TARGET%%-*}")" ;;
-  *) echo "CARGO_BUILD_TARGET=$CARGO_BUILD_TARGET is not a FreeBSD target" >&2; exit 2 ;;
+  aarch64-unknown-freebsd | x86_64-unknown-freebsd) ARCH="$(release_arch "${CARGO_BUILD_TARGET%%-*}")" ;;
+  *) echo "CARGO_BUILD_TARGET=$CARGO_BUILD_TARGET is not a supported FreeBSD target" >&2; exit 2 ;;
 esac
 # Only binaries for this machine run here (the --version check at the end); a FreeBSD target built
 # on another OS never does.
