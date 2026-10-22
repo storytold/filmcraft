@@ -3603,3 +3603,35 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+	Zoom Anchor Point	줌 기준점
+	Cursor Position	커서 위치
+	Playhead Position	재생 헤드 위치
+	Step Playhead (Frames)	재생 헤드 이동 (프레임)
+	Disabled	사용 안 함
+	Alt + Scroll	Alt + 스크롤
+	Shift + Scroll	Shift + 스크롤
+	Ctrl + Scroll	Ctrl + 스크롤
+	Move Playhead on Timeline Click	타임라인 클릭 시 재생 헤드 이동
+	Ruler Only	눈금자만
+	Empty Space Only	빈 공간만
+	Anywhere on Timeline	타임라인 어디서나
+	Drag Playhead Line Across Tracks	트랙 위에서 재생 헤드 선 드래그
+	Anywhere, Including Over Clips	어디서나, 클립 위 포함
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	분할 시간 눈금자: 위쪽 절반을 드래그해 시작/끝 설정
+	Program Monitor Mouse Wheel	프로그램 모니터 마우스 휠
+	Source Monitor Mouse Wheel	소스 모니터 마우스 휠
+	Effect Controls Mouse Wheel	효과 컨트롤 마우스 휠
+	Scroll	스크롤
+	Over the Preview	미리보기 위
+	Over the Time Ruler	시간 눈금자 위
+	Timeline Mouse Wheel Behavior	타임라인 마우스 휠 동작
+	Step Frames	프레임 단위 이동
+	Step Keyframes	키프레임 단위 이동
+	Off (Ruler Head Only)	끔 (눈금자 헤드만)
+	Pan Timeline by Dragging With Middle Mouse Button	마우스 가운데 버튼 드래그로 타임라인 이동
+	Navigation…	탐색…
+	Navigation Style	탐색 스타일
+	Alternative	대체
+	Timeline Mouse Wheel	타임라인 마우스 휠
+	Timeline Clicks and Drags	타임라인 클릭과 드래그
+	More Settings…	추가 설정…

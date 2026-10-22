@@ -48,6 +48,7 @@ pub mod timeline_automation;
 pub mod timeline_captions;
 pub mod timeline_hit;
 pub mod timeline_volume;
+pub mod timeline_zoom;
 pub mod tools;
 pub mod transform_handles;
 pub mod transition_controls;

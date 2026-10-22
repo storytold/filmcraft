@@ -101,6 +101,7 @@ fn categories_follow_premiere_order() {
             "playback",
             "plugins",
             "timeline",
+            "navigation",
             "trim"
         ]
     );
@@ -625,6 +626,93 @@ fn drop_import_to_timeline_is_in_the_settings_registry() {
     assert_eq!(settings::field("timeline.dropImportToTimeline").map(|f| f.key), Some("timeline.dropImportToTimeline"));
 }
 
+/// Settings ▸ Navigation ▸ "Zoom Anchor Point" is the cursor until the user changes it.
+#[test]
+fn zoom_anchor_defaults_to_the_cursor() {
+    assert_eq!(settings::NavigationPrefs::default().zoom_anchor, settings::ZoomAnchor::Cursor);
+    assert_eq!(settings::ZoomAnchor::default(), settings::ZoomAnchor::Cursor);
+    assert_eq!(Preferences::default().navigation.zoom_anchor, settings::ZoomAnchor::Cursor);
+}
+
+/// The anchor is written as `zoomAnchor` (`cursor` | `playhead`) and read back.
+#[test]
+fn zoom_anchor_serializes_under_its_key() {
+    let prefs = settings::NavigationPrefs { zoom_anchor: settings::ZoomAnchor::Playhead, ..Default::default() };
+    let v = serde_json::to_value(&prefs).unwrap();
+    assert_eq!(v["zoomAnchor"], json!("playhead"));
+    assert_eq!(serde_json::from_value::<settings::NavigationPrefs>(v).unwrap(), prefs);
+    let d = serde_json::to_value(settings::NavigationPrefs::default()).unwrap();
+    assert_eq!(d["zoomAnchor"], json!("cursor"));
+    for (text, anchor) in [("cursor", settings::ZoomAnchor::Cursor), ("playhead", settings::ZoomAnchor::Playhead)] {
+        let p: settings::NavigationPrefs = serde_json::from_value(json!({ "zoomAnchor": text })).unwrap();
+        assert_eq!(p.zoom_anchor, anchor);
+    }
+}
+
+/// The anchor is saved to the preferences file, read back by `prefs.get`, and hostile values are
+/// refused without touching what is stored.
+#[test]
+fn zoom_anchor_round_trips_through_prefs() {
+    use settings::ZoomAnchor;
+    let dir = tmp_dir("zoom-anchor");
+    let path = dir.join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    set(&mut s, "navigation.zoomAnchor", json!("playhead"));
+    assert_eq!(s.prefs.navigation.zoom_anchor, ZoomAnchor::Playhead);
+    assert_eq!(s.execute("prefs.get", json!({"key": "navigation.zoomAnchor"})).unwrap(), json!("playhead"));
+    assert_eq!(Preferences::load(&path).navigation.zoom_anchor, ZoomAnchor::Playhead);
+    // an anchor that is not one of the two is refused, and the stored one is kept
+    for value in [json!("middle"), json!(""), json!("Cursor"), json!(null), json!(3), json!(true), json!({}), json!("x".repeat(4096))] {
+        assert!(s.execute("prefs.set", json!({"key": "navigation.zoomAnchor", "value": value})).is_err(), "{value}");
+        assert_eq!(s.prefs.navigation.zoom_anchor, ZoomAnchor::Playhead);
+    }
+    set(&mut s, "navigation.zoomAnchor", json!("cursor"));
+    assert_eq!(Preferences::load(&path).navigation.zoom_anchor, ZoomAnchor::Cursor);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Files from before Settings ▸ Navigation existed load its defaults; a damaged anchor goes back to
+/// the cursor and costs nothing else in the file; resetting the category restores it.
+#[test]
+fn navigation_keys_default_for_older_and_damaged_prefs() {
+    use settings::ZoomAnchor;
+    let old = Preferences::from_value(json!({"version": 2, "timeline": {"stillImageDuration": 3}}));
+    assert_eq!(old.navigation, settings::NavigationPrefs::default());
+    assert_eq!(old.timeline.still_image_duration, 3.0);
+    for bad in [json!("middle"), json!(7), json!(null), json!([]), json!({"a": 1}), json!(false), json!("PLAYHEAD")] {
+        let p =
+            Preferences::from_value(json!({"version": 2, "navigation": {"zoomAnchor": bad, "rulerDragInOut": true}, "timeline": {"stillImageDuration": 3}}));
+        assert_eq!(p.navigation.zoom_anchor, ZoomAnchor::Cursor, "{bad}");
+        assert!(p.navigation.ruler_drag_in_out, "{bad}");
+        assert_eq!(p.timeline.still_image_duration, 3.0, "{bad}");
+    }
+    let mut p = Preferences::default();
+    p.navigation.zoom_anchor = ZoomAnchor::Playhead;
+    p.navigation.ruler_drag_in_out = true;
+    p.reset_category("navigation").unwrap();
+    assert_eq!(p.navigation, settings::NavigationPrefs::default());
+}
+
+/// The anchor is a choice of the two anchors in the Navigation category, after Timeline.
+#[test]
+fn zoom_anchor_is_in_the_navigation_category() {
+    use settings::ZoomAnchor;
+    let (cat, f) = settings::fields().into_iter().find(|(_, f)| f.key == "navigation.zoomAnchor").expect("registry field");
+    assert_eq!(cat, "navigation");
+    assert!(f.wired);
+    assert_eq!(f.label, "Zoom Anchor Point");
+    let Kind::Choice(opts) = f.kind else { panic!("the anchor is a choice") };
+    assert_eq!(opts.iter().map(|o| o.0).collect::<Vec<_>>(), ["cursor", "playhead"]);
+    assert_eq!(opts.iter().map(|o| o.1).collect::<Vec<_>>(), ["Cursor Position", "Playhead Position"]);
+    for (value, _) in opts {
+        assert!(serde_json::from_value::<ZoomAnchor>(json!(value)).is_ok(), "{value} is not an anchor");
+    }
+    let ids: Vec<&str> = settings::categories().iter().map(|c| c.id).collect();
+    let at = ids.iter().position(|id| *id == "timeline").expect("timeline");
+    assert_eq!(ids.get(at + 1), Some(&"navigation"), "{ids:?}");
+    assert!(settings::field("timeline.scrollToZoom").is_none(), "the bare wheel's Zoom choice replaces it");
+}
+
 /// New users keep the dark Darkest theme (following the system is opt-in); a file saved before
 /// appearance modes keeps showing its Color Theme as a fixed Dark or Light mode.
 #[test]
@@ -850,4 +938,238 @@ fn builtin_label_presets_are_complete_and_distinct() {
         assert_eq!(labels.name(label), role);
     }
     assert!(!settings::is_builtin_label_preset("Team"));
+}
+
+#[test]
+fn navigation_wheel_playhead_and_panel_settings_round_trip() {
+    let p = Preferences::default();
+    let n = &p.navigation;
+    assert_eq!(n.mouse_scrolling, "vertical");
+    assert_eq!(n.alt_scrolling, "zoom");
+    assert_eq!(n.shift_scrolling, "horizontal");
+    assert_eq!(n.ctrl_scrolling, "horizontal");
+    assert_eq!(n.click_to_move_playhead, "rulerOnly");
+    assert_eq!(n.drag_playhead_line, "emptySpace");
+    assert!(!n.ruler_drag_in_out);
+    assert_eq!((n.program_wheel.as_str(), n.source_wheel.as_str(), n.effect_controls_wheel.as_str()), ("stepFrames", "stepFrames", "stepFrames"));
+    assert_eq!(p.wheel_action(false, false, false), "vertical");
+    assert_eq!(p.wheel_action(false, true, false), "zoom");
+    assert_eq!(p.wheel_action(false, false, true), "horizontal");
+    assert_eq!(p.wheel_action(true, false, false), "horizontal");
+
+    let mut s = Session::default();
+    set(&mut s, "navigation.mouseScrolling", json!("zoom"));
+    set(&mut s, "navigation.altScrolling", json!("horizontal"));
+    set(&mut s, "navigation.shiftScrolling", json!("vertical"));
+    set(&mut s, "navigation.ctrlScrolling", json!("step"));
+    set(&mut s, "navigation.clickToMovePlayhead", json!("anywhere"));
+    set(&mut s, "navigation.dragPlayheadLine", json!("emptySpace"));
+    set(&mut s, "navigation.rulerDragInOut", json!(true));
+    assert_eq!(s.prefs.wheel_action(false, false, false), "zoom");
+    assert_eq!(s.prefs.wheel_action(false, true, false), "horizontal");
+    assert_eq!(s.prefs.wheel_action(false, false, true), "vertical");
+    assert_eq!(s.prefs.wheel_action(true, false, false), "step");
+    // each panel has its own rows, and the monitors one set over the picture and one over the ruler
+    set(&mut s, "navigation.sourceWheel", json!("zoom"));
+    set(&mut s, "navigation.sourceShiftWheel", json!("stepFrames"));
+    set(&mut s, "navigation.sourcePreviewShiftWheel", json!("stepFrames"));
+    set(&mut s, "navigation.programCtrlWheel", json!("stepKeyframes"));
+    set(&mut s, "navigation.programPreviewCtrlWheel", json!("horizontal"));
+    set(&mut s, "navigation.effectControlsAltWheel", json!("off"));
+    let n = &s.prefs.navigation;
+    assert_eq!(n.panel_wheel("source", false, false, false, false), "zoom");
+    assert_eq!(n.panel_wheel("source", false, false, false, true), "stepFrames");
+    assert_eq!(n.panel_wheel("source", true, false, false, true), "stepFrames", "Shift steps over the picture too");
+    assert_eq!(n.panel_wheel("source", true, false, false, false), "zoom", "the bare wheel still zooms the picture");
+    assert_eq!(n.panel_wheel("program", false, false, false, true), "horizontal", "the other panels keep theirs");
+    assert_eq!(n.panel_wheel("program", false, true, false, false), "stepKeyframes");
+    assert_eq!(n.panel_wheel("program", true, true, false, false), "horizontal");
+    assert_eq!(n.panel_wheel("effectControls", false, false, true, false), "off");
+    assert_eq!(n.panel_wheel("effectControls", true, false, true, false), "off", "Effect Controls has no picture");
+    assert_eq!(n.panel_wheel("source", false, false, true, false), "zoom");
+    assert_eq!(n.click_to_move_playhead, "anywhere");
+    assert_eq!(n.drag_playhead_line, "emptySpace");
+    assert!(n.ruler_drag_in_out);
+    let back = Preferences::from_value(s.prefs.to_value());
+    assert_eq!(back.navigation, s.prefs.navigation, "survives a save and load");
+}
+
+/// Timeline Mouse Scrolling was a Settings ▸ Timeline field before Settings ▸ Navigation: a file
+/// saved then keeps its choice.
+#[test]
+fn timeline_mouse_scrolling_moves_to_navigation() {
+    let p = Preferences::from_value(json!({"version": 2, "timeline": {"mouseScrolling": "horizontal", "stillImageDuration": 3}}));
+    assert_eq!(p.navigation.mouse_scrolling, "horizontal");
+    assert_eq!(p.timeline.still_image_duration, 3.0);
+    let p = Preferences::from_value(json!({"version": 2, "timeline": {"mouseScrolling": "horizontal"}, "navigation": {"mouseScrolling": "zoom"}}));
+    assert_eq!(p.navigation.mouse_scrolling, "zoom", "a value already in Navigation wins");
+    assert!(settings::field("timeline.mouseScrolling").is_none());
+    let (cat, _) = settings::fields().into_iter().find(|(_, f)| f.key == "navigation.mouseScrolling").expect("registry field");
+    assert_eq!(cat, "navigation");
+}
+
+#[test]
+fn middle_button_pan_can_be_turned_off_and_resizing_tracks_is_not_a_setting() {
+    assert!(settings::NavigationPrefs::default().middle_button_pan, "the classic behaviour: a middle-button drag pans");
+
+    let mut s = Session::default();
+    set(&mut s, "navigation.middleButtonPan", json!(false));
+    assert!(!s.prefs.navigation.middle_button_pan);
+    // survives a save and load
+    let back = Preferences::from_value(s.prefs.to_value());
+    assert!(!back.navigation.middle_button_pan);
+    // Alt + wheel over a track header and Ctrl + Shift + wheel over the tracks resize them whatever the
+    // rows say: the rows have no such choice, and Ctrl + Shift (or + Alt) does nothing anywhere else
+    for value in ["trackHeightOne", "trackHeightAll", "auto", "resizeEverything"] {
+        for key in ["navigation.mouseScrolling", "navigation.altScrolling", "navigation.shiftScrolling", "navigation.ctrlScrolling"] {
+            assert!(s.execute("prefs.set", json!({"key": key, "value": value})).is_err(), "{key} = {value}");
+        }
+    }
+    for key in ["timeline.ctrlShiftScrolling", "timeline.ctrlShiftAltScrolling", "navigation.ctrlShiftScrolling", "navigation.programStepOverPreview"] {
+        assert!(settings::field(key).is_none(), "{key} is not a setting");
+    }
+    let defaults = Preferences::default();
+    for (ctrl, alt, shift) in [(true, false, true), (true, true, true)] {
+        assert_eq!(defaults.wheel_action(ctrl, alt, shift), "off");
+        for panel in ["program", "source", "effectControls"] {
+            for over_preview in [false, true] {
+                assert_eq!(defaults.navigation.panel_wheel(panel, over_preview, ctrl, alt, shift), "off");
+            }
+        }
+    }
+    // unknown saved values fall back to the defaults instead of doing nothing
+    let old = settings::NavigationPrefs {
+        mouse_scrolling: "trackHeightAll".into(),
+        alt_scrolling: "auto".into(),
+        shift_scrolling: "trackHeightOne".into(),
+        ctrl_scrolling: "trackHeightAll".into(),
+        program_alt_wheel: "trackHeightOne".into(),
+        source_wheel: "scroll".into(),
+        source_preview_wheel: "nonsense".into(),
+        ..Default::default()
+    };
+    assert_eq!(old.wheel_action(false, false, false), "vertical");
+    assert_eq!(old.wheel_action(false, true, false), "zoom");
+    assert_eq!(old.wheel_action(false, false, true), "horizontal");
+    assert_eq!(old.wheel_action(true, false, false), "horizontal");
+    assert_eq!(old.panel_wheel("program", false, false, true, false), "zoom");
+    assert_eq!(old.panel_wheel("source", false, false, false, false), "stepFrames");
+    assert_eq!(old.panel_wheel("source", true, false, false, false), "zoom");
+}
+
+/// Settings ▸ Navigation ▸ Navigation Style: Default is what a new install does, Alternative sets
+/// the other common way of working, and anything else is Custom.
+#[test]
+fn navigation_styles_set_every_navigation_setting() {
+    let p = Preferences::default();
+    assert_eq!(p.navigation.style(), "default");
+    assert_eq!(settings::NAVIGATION_STYLES.iter().map(|s| s.0).collect::<Vec<_>>(), ["default", "alternative"]);
+    let Some(alt) = settings::navigation_style_preset("alternative") else { panic!("alternative style") };
+    assert_eq!(alt.mouse_scrolling, "zoom");
+    assert_eq!(alt.style(), "alternative");
+    let mut custom = alt.clone();
+    custom.mouse_scrolling = "vertical".into();
+    assert_eq!(custom.style(), "custom", "the bare wheel is part of the style");
+    assert_eq!((alt.click_to_move_playhead.as_str(), alt.drag_playhead_line.as_str()), ("anywhere", "anywhere"));
+    assert_eq!((alt.shift_scrolling.as_str(), alt.ctrl_scrolling.as_str()), ("vertical", "horizontal"));
+    assert!(alt.ruler_drag_in_out && alt.middle_button_pan);
+    assert_eq!((alt.program_wheel.as_str(), alt.source_wheel.as_str(), alt.effect_controls_wheel.as_str()), ("stepFrames", "stepFrames", "zoom"));
+    assert_eq!(
+        (alt.program_preview_wheel.as_str(), alt.program_preview_shift_wheel.as_str(), alt.program_preview_ctrl_wheel.as_str()),
+        ("zoom", "stepFrames", "horizontal")
+    );
+    assert_eq!((alt.effect_controls_alt_wheel.as_str(), alt.effect_controls_ctrl_wheel.as_str()), ("horizontal", "stepKeyframes"));
+    assert_eq!(alt.zoom_anchor, settings::ZoomAnchor::Cursor);
+    let mut custom = alt.clone();
+    custom.ruler_drag_in_out = false;
+    assert_eq!(custom.style(), "custom");
+    assert!(settings::navigation_style_preset("custom").is_none());
+    assert!(settings::navigation_style_preset("").is_none());
+    // every value of a style is one the Settings accept
+    for id in ["default", "alternative"] {
+        let Some(n) = settings::navigation_style_preset(id) else { panic!("{id}") };
+        let mut s = Session::default();
+        for (k, v) in serde_json::to_value(&n).unwrap().as_object().unwrap() {
+            set(&mut s, &format!("navigation.{k}"), v.clone());
+        }
+        assert_eq!(s.prefs.navigation, n, "{id}");
+        assert_eq!(s.prefs.navigation.style(), id);
+    }
+}
+
+#[test]
+fn timeline_labels_name_no_other_product_and_use_title_case() {
+    let small = ["a", "an", "and", "as", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with", "over"];
+    let title_case = |label: &str| {
+        label.split(' ').enumerate().all(|(i, w)| {
+            let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+            w.is_empty() || !w.chars().next().is_some_and(char::is_lowercase) || (i > 0 && small.contains(&w))
+        })
+    };
+    for (_, f) in settings::fields().into_iter().filter(|(_, f)| f.key.starts_with("timeline.") || f.key.starts_with("navigation.")) {
+        assert!(!f.label.contains("Premiere") && !f.label.contains("Vegas") && !f.label.contains("Classic"), "{}", f.label);
+        if let Kind::Choice(opts) = f.kind {
+            for (_, label) in opts {
+                assert!(!label.contains("Premiere") && !label.contains("Vegas") && !label.contains("Classic"), "{label}");
+            }
+        }
+    }
+    for key in [
+        "navigation.mouseScrolling",
+        "navigation.altScrolling",
+        "navigation.shiftScrolling",
+        "navigation.ctrlScrolling",
+        "navigation.clickToMovePlayhead",
+        "navigation.dragPlayheadLine",
+        "navigation.programWheel",
+        "navigation.programPreviewWheel",
+        "navigation.sourceWheel",
+        "navigation.sourcePreviewWheel",
+        "navigation.effectControlsWheel",
+    ] {
+        let Some(Kind::Choice(opts)) = settings::field(key).map(|f| f.kind) else { panic!("{key} is not a choice") };
+        for (_, label) in opts {
+            assert!(title_case(label), "{key}: {label}");
+        }
+    }
+}
+
+/// The wheel rows offer no track resizing, and the panels step frames by default (the quick menus
+/// of the panels leave "Disabled" out; the Settings keep it).
+#[test]
+fn the_wheel_rows_offer_no_track_resizing_and_the_panels_step_frames_by_default() {
+    let options = |key: &str| -> Vec<&'static str> {
+        let Some(Kind::Choice(opts)) = settings::field(key).map(|f| f.kind) else { panic!("{key} is not a choice") };
+        opts.iter().map(|(v, _)| *v).collect()
+    };
+    for key in ["navigation.mouseScrolling", "navigation.altScrolling", "navigation.shiftScrolling", "navigation.ctrlScrolling"] {
+        assert_eq!(options(key), ["vertical", "horizontal", "zoom", "step", "off"], "{key}");
+    }
+    let defaults = settings::NavigationPrefs::default();
+    for panel in ["program", "source", "effectControls"] {
+        assert_eq!(defaults.panel_wheel(panel, false, false, false, false), "stepFrames", "{panel}");
+        assert_eq!(defaults.panel_wheel(panel, false, true, false, false), "horizontal", "{panel}");
+        assert_eq!(defaults.panel_wheel(panel, false, false, true, false), "zoom", "{panel}");
+        assert_eq!(defaults.panel_wheel(panel, false, false, false, true), "horizontal", "{panel}");
+        if panel != "effectControls" {
+            for (ctrl, alt, shift) in [(false, false, false), (true, false, false), (false, true, false), (false, false, true)] {
+                assert_eq!(defaults.panel_wheel(panel, true, ctrl, alt, shift), "zoom", "over the picture the wheel zooms it");
+            }
+        }
+    }
+    for panel in ["program", "source", "effectControls"] {
+        for row in ["Wheel", "AltWheel", "ShiftWheel", "CtrlWheel", "PreviewWheel", "PreviewAltWheel", "PreviewShiftWheel", "PreviewCtrlWheel"] {
+            if panel == "effectControls" && row.starts_with("Preview") {
+                continue;
+            }
+            let key = format!("navigation.{panel}{row}");
+            assert_eq!(options(&key), ["horizontal", "zoom", "stepFrames", "stepKeyframes", "off"], "{key}");
+        }
+    }
+    for (_, f) in settings::fields().into_iter().filter(|(_, f)| f.key.starts_with("timeline.") || f.key.starts_with("navigation.")) {
+        assert!(!f.label.contains("Resize"), "{}", f.label);
+        if let Kind::Choice(opts) = f.kind {
+            assert!(opts.iter().all(|(_, l)| !l.contains("Resize")), "{}", f.key);
+        }
+    }
 }

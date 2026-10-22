@@ -3584,3 +3584,35 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+	Zoom Anchor Point	Point d'Ancrage du Zoom
+	Cursor Position	Position du Curseur
+	Playhead Position	Position de la Tête de Lecture
+	Step Playhead (Frames)	Déplacer la Tête de Lecture (Images)
+	Disabled	Désactivé
+	Alt + Scroll	Alt + Molette
+	Shift + Scroll	Maj + Molette
+	Ctrl + Scroll	Ctrl + Molette
+	Move Playhead on Timeline Click	Déplacer la Tête de Lecture au Clic dans la Timeline
+	Ruler Only	Règle Seulement
+	Empty Space Only	Espaces Vides Seulement
+	Anywhere on Timeline	Partout dans la Timeline
+	Drag Playhead Line Across Tracks	Faire Glisser la Ligne de la Tête de Lecture sur les Pistes
+	Anywhere, Including Over Clips	Partout, Même sur les Clips
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Règle Temporelle Divisée : la Moitié Supérieure Définit l'Entrée/Sortie
+	Program Monitor Mouse Wheel	Molette dans le Moniteur de Programme
+	Source Monitor Mouse Wheel	Molette dans le Moniteur Source
+	Effect Controls Mouse Wheel	Molette dans les Options d'Effet
+	Scroll	Molette
+	Over the Preview	Sur l'Aperçu
+	Over the Time Ruler	Sur la Règle Temporelle
+	Timeline Mouse Wheel Behavior	Comportement de la Molette dans la Timeline
+	Step Frames	Avancer d'une Image
+	Step Keyframes	Avancer d'une Image Clé
+	Off (Ruler Head Only)	Désactivé (Tête de la Règle Seulement)
+	Pan Timeline by Dragging With Middle Mouse Button	Faire Défiler la Timeline en Glissant avec le Bouton du Milieu
+	Navigation…	Navigation…
+	Navigation Style	Style de Navigation
+	Alternative	Alternatif
+	Timeline Mouse Wheel	Molette dans la Timeline
+	Timeline Clicks and Drags	Clics et Glissements dans la Timeline
+	More Settings…	Plus de Réglages…

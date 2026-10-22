@@ -161,6 +161,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.settings.playback", "Playback…", ["Edit", "Preferences"], None),
     uic!("app.settings.plugins", "Plugins…", ["Edit", "Preferences"], None),
     uic!("app.settings.timeline", "Timeline…", ["Edit", "Preferences"], None),
+    uic!("app.settings.navigation", "Navigation…", ["Edit", "Preferences"], None),
     uic!("app.settings.trim", "Trim…", ["Edit", "Preferences"], None),
 ];
 
