@@ -3613,3 +3613,22 @@
 	Shows the version, community links and credits in a FilmCraft window.	Zeigt Version, Community-Links und Credits in einem FilmCraft-Fenster.
 	Couldn't open your web browser	Dein Webbrowser konnte nicht geöffnet werden
 	Open this address in your browser yourself:	Öffne diese Adresse selbst in deinem Browser:
+	Analysis cancelled (frame {frame} of {total})	Analyse abgebrochen (Bild {frame} von {total})
+	Analysis complete ({total} frames)	Analyse abgeschlossen ({total} Bilder)
+	Analysis failed — see application log	Analyse fehlgeschlagen — siehe Anwendungsprotokoll
+	Analyzing: {percent}% (frame {frame} of {total})	Analyse läuft: {percent}% (Bild {frame} von {total})
+	Disabled	Deaktiviert
+	Not analyzed	Nicht analysiert
+	Auto-scale Mode	Modus für automatische Skalierung
+	Constant	Konstant
+	Fast Analysis	Schnellanalyse
+	Factorizing: {percent}% (frame {frame} of {total})	Faktorisierung: {percent}% (Bild {frame} von {total})
+	Stabilizing: {percent}% (frame {frame} of {total})	Stabilisierung: {percent}% (Bild {frame} von {total})
+	Subspace Warp: {frames} of {total} frames	Unterraumverzerrung: {frames} von {total} Bildern
+	Using Position, Scale, Rotation: insufficient persistent tracks	Verwendung von Position, Skalierung, Drehung: zu wenige persistente Spuren
+	Using Position, Scale, Rotation: numerical failure	Verwendung von Position, Skalierung, Drehung: numerischer Fehler
+	Using Position, Scale, Rotation: invalid analysis data	Verwendung von Position, Skalierung, Drehung: ungültige Analysedaten
+	Using Position, Scale, Rotation: no usable mesh	Verwendung von Position, Skalierung, Drehung: kein nutzbares Mesh
+	Auto-scale	Automatische Skalierung
+	Analysis is not running	Es läuft keine Analyse
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	„Schnellanalyse“ priorisiert die Ausführungsgeschwindigkeit; „Detaillierte Analyse“ investiert mehr Aufwand in das Auffinden von Verfolgungspunkten. Diese Einstellungen sind unabhängig voneinander.

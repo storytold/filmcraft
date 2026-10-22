@@ -3584,3 +3584,23 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+
+	Analysis cancelled (frame {frame} of {total})	Analyse annulée (image {frame} sur {total})
+	Analysis complete ({total} frames)	Analyse terminée ({total} images)
+	Analysis failed — see application log	Échec de l’analyse — consultez le journal de l’application
+	Analyzing: {percent}% (frame {frame} of {total})	Analyse en cours : {percent}% (image {frame} sur {total})
+	Factorizing: {percent}% (frame {frame} of {total})	Factorisation : {percent} % (image {frame} sur {total})
+	Stabilizing: {percent}% (frame {frame} of {total})	Stabilisation : {percent} % (image {frame} sur {total})
+	Subspace Warp: {frames} of {total} frames	Déformation de sous-espace : {frames} images sur {total}
+	Using Position, Scale, Rotation: insufficient persistent tracks	Utilisation de Position, échelle, rotation : pistes persistantes insuffisantes
+	Using Position, Scale, Rotation: numerical failure	Utilisation de Position, échelle, rotation : échec numérique
+	Using Position, Scale, Rotation: invalid analysis data	Utilisation de Position, échelle, rotation : données d’analyse non valides
+	Using Position, Scale, Rotation: no usable mesh	Utilisation de Position, échelle, rotation : aucun maillage utilisable
+	Disabled	Désactivé
+	Not analyzed	Non analysé
+	Auto-scale Mode	Mode de mise à l’échelle automatique
+	Constant	Fixe
+	Fast Analysis	Analyse rapide
+	Auto-scale	Mise à l’échelle automatique
+	Analysis is not running	Aucune analyse en cours
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	L’analyse rapide privilégie la vitesse d’exécution ; l’analyse détaillée consacre plus d’efforts à trouver des points de suivi. Ces réglages sont indépendants.

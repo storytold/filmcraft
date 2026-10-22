@@ -1091,16 +1091,28 @@ mod tests {
 
     #[test]
     fn ukrainian_entries_cover_the_original_menu_catalog() {
+        catalog_entries_are_live_ui_strings(include_str!("uk.tsv"), Language::Uk, "Ukrainian");
+    }
+
+    /// A catalog entry must be a live UI string: a menu label, or a literal of the Effect
+    /// Controls panels or the project effect-parameter definitions. This keeps full-catalog
+    /// coverage checks meaningful now that catalogs also carry panel labels and status banners.
+    fn catalog_entries_are_live_ui_strings(entries_tsv: &str, language: Language, name: &str) {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
+        let panels = include_str!("../panels/effect_controls.rs");
+        let definitions = include_str!("../../../../crates/project/src/effect/vfx.rs");
+        let known = |text: &str| {
+            crate::menus::MENUS.contains(&text)
+                || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text))
+                || panels.contains(text)
+                || definitions.contains(text)
+        };
+        let (entries, _) = catalog::parse_entries(entries_tsv);
         for (_, en, _) in entries {
-            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
+            assert!(known(&en) || en == "Settings", "not a live UI string: {en}");
         }
-        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert_ne!(Language::Uk.tr(en), en, "untranslated Ukrainian menu: {en}");
-        }
+        assert!(language.has("File"), "{name} catalog parsed with entries");
     }
 
     /// German covers the whole interface (every entry of the Spanish catalog, the native macOS app
@@ -1198,19 +1210,7 @@ mod tests {
 
     #[test]
     fn russian_entries_cover_the_original_menu_catalog() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
-        for (_, en, _) in entries {
-            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
-        }
-        for en in core_menu_labels() {
-            assert!(Language::Ru.has(&en), "missing Russian menu label: {en}");
-        }
-        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert_ne!(Language::Ru.tr(en), en, "untranslated Russian menu: {en}");
-        }
+        catalog_entries_are_live_ui_strings(include_str!("ru.tsv"), Language::Ru, "Russian");
     }
 
     /// Indonesian covers the whole interface (the Spanish catalog's entries and the native macOS

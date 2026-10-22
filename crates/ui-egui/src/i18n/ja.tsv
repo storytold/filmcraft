@@ -3616,3 +3616,23 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+
+	Analysis cancelled (frame {frame} of {total})	解析をキャンセルしました（{total} フレーム中 {frame} フレーム）
+	Analysis complete ({total} frames)	解析が完了しました（{total} フレーム）
+	Analysis failed — see application log	解析に失敗しました — アプリケーションログを確認してください
+	Analyzing: {percent}% (frame {frame} of {total})	解析中: {percent}%（{total} フレーム中 {frame} フレーム）
+	Disabled	無効
+	Not analyzed	未解析
+	Auto-scale Mode	自動スケールモード
+	Constant	固定
+	Fast Analysis	高速解析
+	Factorizing: {percent}% (frame {frame} of {total})	因数分解中: {percent}%（{total} フレーム中 {frame} フレーム）
+	Stabilizing: {percent}% (frame {frame} of {total})	手ぶれ補正中: {percent}%（{total} フレーム中 {frame} フレーム）
+	Subspace Warp: {frames} of {total} frames	サブスペースワープ: {total} フレーム中 {frames} フレーム
+	Using Position, Scale, Rotation: insufficient persistent tracks	位置・スケール・回転を使用: 永続トラックが不足しています
+	Using Position, Scale, Rotation: numerical failure	位置・スケール・回転を使用: 数値計算に失敗しました
+	Using Position, Scale, Rotation: invalid analysis data	位置・スケール・回転を使用: 解析データが無効です
+	Using Position, Scale, Rotation: no usable mesh	位置・スケール・回転を使用: 使用可能なメッシュがありません
+	Auto-scale	自動スケール
+	Analysis is not running	解析は実行されていません
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	「高速解析」は実行速度を優先します。「詳細な分析」はトラッキングポイントの検出により多くの処理を行います。これらの設定は独立しています。

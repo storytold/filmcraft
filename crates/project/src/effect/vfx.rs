@@ -374,15 +374,17 @@ pub(super) fn defs() -> Vec<EffectDef> {
             vec![
                 grp(ch("result", "Result", &["Smooth Motion", "No Motion"], 0), "Stabilization"),
                 grp(fs("smoothness", "Smoothness", 50.0, (0.0, 1000.0), (0.0, 200.0), "%", 0), "Stabilization"),
-                grp(ch("method", "Method", &["Position", "Position, Scale, Rotation", "Perspective", "Subspace Warp"], 1), "Stabilization"),
+                grp(ch("method", "Method", &["Position", "Position, Scale, Rotation", "Perspective", "Subspace Warp"], 3), "Stabilization"),
                 grp(b("preserve_scale", "Preserve Scale", false), "Stabilization"),
                 grp(
                     ch("framing", "Framing", &["Stabilize Only", "Stabilize, Crop", "Stabilize, Crop, Auto-scale", "Stabilize, Synthesize Edges"], 2),
                     "Borders",
                 ),
                 grp(fs("max_scale", "Maximum Scale", 150.0, (100.0, 1000.0), (100.0, 300.0), "%", 0), "Borders"),
+                grp(ch("zoom_mode", "Auto-scale Mode", &["Constant", "Adaptive"], 0), "Borders"),
                 grp(pct("action_safe", "Action-Safe Margin", 0.0), "Borders"),
                 grp(fs("additional_scale", "Additional Scale", 100.0, (50.0, 400.0), (50.0, 200.0), "%", 0), "Borders"),
+                grp(b("fast_analysis", "Fast Analysis", true), "Advanced"),
                 grp(b("detailed", "Detailed Analysis", false), "Advanced"),
                 grp(pct("crop_less", "Crop Less <-> Smooth More", 50.0), "Advanced"),
             ],

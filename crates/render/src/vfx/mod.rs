@@ -33,7 +33,10 @@ use crate::effects::FxCtx;
 use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
-pub use temporal::{StabilizerPath, clear_stabilizer_cache, stabilizer_path};
+pub use temporal::{
+    StabilizerPath, StabilizerProgress, StabilizerStage, cancel_stabilizer_analysis, clear_stabilizer_cache, restart_stabilizer_analysis, stabilizer_path,
+    stabilizer_progress,
+};
 
 /// What an effect may know about the clip beyond its own pixels.
 pub trait FxEnv: Sync {
@@ -161,19 +164,28 @@ impl FxEnv for ItemEnv<'_> {
         crate::source_size(self.project, self.item.item).unwrap_or((self.seq.settings.width, self.seq.settings.height))
     }
     fn clip_key(&self) -> u64 {
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
-        for v in [
-            self.item.item.0,
-            self.item.start.0 as u64,
-            self.item.duration.0 as u64,
-            self.item.source_in.0 as u64,
-            self.item.speed.to_bits(),
-            self.item.reverse as u64,
-        ] {
-            h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
-        }
-        h
+        clip_analysis_key(self.item, self.seq.settings.frame_rate)
     }
+}
+
+/// Shared identity for renderer analyses and their non-blocking UI progress queries.
+fn clip_analysis_key(item: &TrackItem, rate: filmcraft_time::FrameRate) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for v in [
+        item.item.0,
+        item.start.0 as u64,
+        item.duration.0 as u64,
+        item.source_in.0 as u64,
+        item.speed.to_bits(),
+        item.reverse as u64,
+        item.frame_hold.map_or(u64::MAX, |t| t.0 as u64),
+        item.time_interpolation as u64,
+        rate.num as u64,
+        rate.den as u64,
+    ] {
+        h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
 }
 
 // ------------------------------------------------------------------ parameters

@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line, revision history and roadmap link added; content checked against the crate list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (Warp Stabilizer persistent subspace trajectories, spatial mesh and staged progress) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 FilmCraft is a Cargo workspace of small crates with strictly enforced layering. The engine is
 headless: every feature can be reached without a window, and the egui UI is one client among the
@@ -335,6 +335,59 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   leaves none behind (parts of a batch, such as render-preview segments, keep them for the next part). A clip
   with effects, opacity masks, frame blending, colour management, or a picture that is not placed
   one to one on the output takes the general path.
+- **Warp Stabilizer (CPU).** `render::vfx::temporal` separates motion analysis, planning and
+  rendering. Fast Analysis (on by default) prepares pyramids and detects corners across batches of
+  at most eight frames and 2,097,152 pixels in total, retaining one preceding pyramid at the boundary.
+  Decoder requests remain sequential; LK/RANSAC links are consumed in timeline order. Disabling
+  Fast Analysis uses one-frame batches; Detailed Analysis independently raises the analysis size
+  from 480 to 960 pixels on the longest edge. Corner detection reuses gradients and specializes
+  rectangular viewport containment; LK uses fixed-size stack scratch. Analysis caches include both
+  analysis controls and remain independent of smoothing settings. Each exact analysis slot owns its
+  cancellation token: **Cancel** covers tracking, factorization and settings planning, and a terminal
+  `Cancelled` slot remains sticky until an explicit **Analyze** creates a fresh retry. A frame-scrub
+  cancellation may abandon only that frame request; it cannot cancel or silently restart clip
+  analysis. Effect Controls polls actual completed/total counts without blocking through Analyzing,
+  Factorizing and Stabilizing stages, including completion/cancellation/failure state, spatial-frame
+  coverage and explicit fallback. `ui.inspect.stabilizerAnalysis` exposes the same state. Analysis
+  failures use the application logger.
+  Settings-dependent, single-flight plans for the global methods solve a banded
+  second-difference objective in centred position, unwrapped rotation and log scale; a
+  constant-velocity pan is preserved at the endpoints. No Motion targets a fixed mean camera.
+  Analysis and settings-plan build/publication each run on a scoped `std::thread` owner. Rayon
+  preparation/math workers and waiters cooperate with `rayon::yield_now`, using a 1 ms idle park
+  instead of blocking an owner on a Rayon worker. Both single-flight paths recheck late publication
+  and cancellation before expensive work. The selected plan generation guards progress publication,
+  so stale settings requests cannot rewind or overwrite the selected plan's progress.
+  Crop Less limits the common cropped-area fraction by reducing Smooth Motion correction strength,
+  rather than changing its smoothing window. Plans cache an off-centre rectangle inside the
+  transformed-frame intersection and either constant auto-scale or a smooth, coverage-constrained
+  adaptive envelope. Action-Safe Margin excludes a symmetric outer viewport region, reducing the
+  required auto-scale. Maximum Scale caps auto-scale only; an insufficient cap or reduced Additional
+  Scale can leave borders visible. Analysis-to-layer mapping scales both axes independently.
+  Synthesize Edges uses up to three neighbouring frames on each side, aligned through the raw camera
+  path, with tracking and overlapping-content rejection. Coverage is geometric, including partial
+  bilinear footprints: real source transparency is not filled. Unrecoverable borders remain
+  transparent.
+  **Subspace Warp (Method 3, the default for new instances)** retains forward/backward-checked feature trajectories,
+  replenishes spatial coverage, and rejects tracks shorter than 20 frames. Five-frame fundamental
+  matrix RANSAC and factorization residual rejection filter inconsistent tracks without requiring
+  one global motion plane. Moving rank-nine factorization preserves overlapping factors in
+  50-frame windows stepped by five; new observable rank or a support gap starts an independent run.
+  A CSR active-track index avoids repeated whole-history scans. Smooth Motion filters the temporal
+  basis; No Motion solves a constant basis with shared-track anchoring between supported runs.
+  Planned trajectories constrain a saliency-weighted, content-preserving 16×9 mesh. Feature lifetime
+  weights ramp over 50 frames. The matrix-free solve uses FilmCraft's density-normalized similarity
+  weight, rather than assuming the paper's tracker density. Positive-area damping prevents folds;
+  inverse piecewise-affine sampling composes the mesh with the global correction. Preserve Scale
+  removes global scale from both paths. Coverage and temporal synthesis account for the mesh's
+  bilinear sampling footprint, not just the affine corners. Unsupported frames use an explicit
+  similarity fallback. Perspective remains a similarity approximation; this is not full 3-D,
+  general rolling-shutter correction or a reproduction of every paper implementation detail.
+  Plans retain only solved vertices and inverse lookup bins, not repeated static grid topology.
+  The variant cache targets 64 MiB/eight entries; a selected oversized, frame-bounded plan remains
+  cached alone rather than being rebuilt on each render. Analysis is limited to 20,000 timeline
+  frames; longer clips are left unchanged, not partially analysed.
+  `clear_stabilizer_cache()` invalidates both caches after media changes.
 - **Frame scheduling.** `crates/ui-egui/src/frames.rs` runs a small pool of worker threads with
   prioritised jobs: the frame on screen first, then playback prefetch, then thumbnails. The UI never
   decodes. It shows the exact frame when it is ready and holds the nearest cached frame meanwhile.
@@ -771,3 +824,4 @@ native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone st
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | trivial | Status line and revision history added (craftrules progress-docs standard); milestone link points at docs/roadmap.md |
+| 2026-10-14 | minor | Cached plans, adaptive coverage and synthesis; bounded parallel analysis, persistent trajectory subspace/mesh stabilization and staged Effect Controls progress |

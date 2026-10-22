@@ -3582,3 +3582,23 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+
+	Analysis cancelled (frame {frame} of {total})	Analisis dibatalkan (bingkai {frame} dari {total})
+	Analysis complete ({total} frames)	Analisis selesai ({total} bingkai)
+	Analysis failed — see application log	Analisis gagal — lihat log aplikasi
+	Analyzing: {percent}% (frame {frame} of {total})	Menganalisis: {percent}% (bingkai {frame} dari {total})
+	Disabled	Nonaktif
+	Not analyzed	Belum dianalisis
+	Auto-scale Mode	Mode Skala Otomatis
+	Constant	Konstan
+	Fast Analysis	Analisis Cepat
+	Factorizing: {percent}% (frame {frame} of {total})	Faktorisasi: {percent}% (bingkai {frame} dari {total})
+	Stabilizing: {percent}% (frame {frame} of {total})	Stabilisasi: {percent}% (bingkai {frame} dari {total})
+	Subspace Warp: {frames} of {total} frames	Warp Subruang: {frames} dari {total} bingkai
+	Using Position, Scale, Rotation: insufficient persistent tracks	Menggunakan Posisi, Skala, Rotasi: trek persisten tidak mencukupi
+	Using Position, Scale, Rotation: numerical failure	Menggunakan Posisi, Skala, Rotasi: kegagalan numerik
+	Using Position, Scale, Rotation: invalid analysis data	Menggunakan Posisi, Skala, Rotasi: data analisis tidak valid
+	Using Position, Scale, Rotation: no usable mesh	Menggunakan Posisi, Skala, Rotasi: tidak ada mesh yang dapat digunakan
+	Auto-scale	Skala otomatis
+	Analysis is not running	Analisis tidak berjalan
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	Analisis cepat memprioritaskan kecepatan eksekusi; Analisis Terperinci menggunakan lebih banyak upaya untuk menemukan titik pelacakan. Pengaturan ini independen.

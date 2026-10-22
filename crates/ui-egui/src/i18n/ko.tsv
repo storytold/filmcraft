@@ -3603,3 +3603,23 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+
+	Analysis cancelled (frame {frame} of {total})	분석 취소됨 ({total}프레임 중 {frame}프레임)
+	Analysis complete ({total} frames)	분석 완료 ({total}프레임)
+	Analysis failed — see application log	분석 실패 — 애플리케이션 로그를 확인하세요
+	Analyzing: {percent}% (frame {frame} of {total})	분석 중: {percent}% ({total}프레임 중 {frame}프레임)
+	Disabled	비활성화됨
+	Not analyzed	분석되지 않음
+	Auto-scale Mode	자동 비율 모드
+	Constant	고정
+	Fast Analysis	빠른 분석
+	Factorizing: {percent}% (frame {frame} of {total})	인수분해 중: {percent}% ({total}프레임 중 {frame}프레임)
+	Stabilizing: {percent}% (frame {frame} of {total})	안정화 중: {percent}% ({total}프레임 중 {frame}프레임)
+	Subspace Warp: {frames} of {total} frames	하위 공간 왜곡: 전체 {total}프레임 중 {frames}프레임
+	Using Position, Scale, Rotation: insufficient persistent tracks	위치, 비율, 회전 사용: 지속 추적점 부족
+	Using Position, Scale, Rotation: numerical failure	위치, 비율, 회전 사용: 수치 계산 실패
+	Using Position, Scale, Rotation: invalid analysis data	위치, 비율, 회전 사용: 분석 데이터가 잘못됨
+	Using Position, Scale, Rotation: no usable mesh	위치, 비율, 회전 사용: 사용 가능한 메시 없음
+	Auto-scale	자동 비율
+	Analysis is not running	분석이 실행 중이 아닙니다
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	빠른 분석은 실행 속도를 우선합니다. 상세 분석은 추적점을 찾는 데 더 많은 작업을 수행합니다. 이 설정은 서로 독립적입니다.

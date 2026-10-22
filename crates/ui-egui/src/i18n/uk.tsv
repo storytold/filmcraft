@@ -360,3 +360,24 @@
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
 
+	Analysis cancelled (frame {frame} of {total})	Аналіз скасовано (кадр {frame} із {total})
+	Analysis complete ({total} frames)	Аналіз завершено ({total} кадрів)
+	Analysis failed — see application log	Аналіз завершився з помилкою — див. журнал програми
+	Analyzing: {percent}% (frame {frame} of {total})	Аналізується: {percent}% (кадр {frame} із {total})
+	Disabled	Вимкнено
+	Not analyzed	Не проаналізовано
+	Auto-scale Mode	Режим автоматичного масштабування
+	Constant	Постійний
+	Fast Analysis	Швидкий аналіз
+	Factorizing: {percent}% (frame {frame} of {total})	Факторизація: {percent}% (кадр {frame} із {total})
+	Stabilizing: {percent}% (frame {frame} of {total})	Стабілізація: {percent}% (кадр {frame} із {total})
+	Subspace Warp: {frames} of {total} frames	Деформація підпростору: {frames} із {total} кадрів
+	Using Position, Scale, Rotation: insufficient persistent tracks	Використовуються параметри «Позиція, Масштаб, Поворот»: недостатньо стійких треків
+	Using Position, Scale, Rotation: numerical failure	Використовуються параметри «Позиція, Масштаб, Поворот»: числова помилка
+	Using Position, Scale, Rotation: invalid analysis data	Використовуються параметри «Позиція, Масштаб, Поворот»: некоректні дані аналізу
+	Using Position, Scale, Rotation: no usable mesh	Використовуються параметри «Позиція, Масштаб, Поворот»: немає придатної сітки
+	Auto-scale	Автомасштабування
+	Analyze	Аналізувати
+	Cancel	Скасувати
+	Analysis is not running	Аналіз не виконується
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	«Швидкий аналіз» надає пріоритет швидкості виконання; «Детальний аналіз» витрачає більше зусиль на пошук точок відстеження. Ці параметри незалежні один від одного.

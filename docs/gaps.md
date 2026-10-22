@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (G18: bounded trajectory subspace/mesh stabilization and staged progress; real-footage validation remains open) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -287,7 +287,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G18. Effects depth: approximations and missing behaviour
 
-- **Missing:** Warp Stabilizer is 2-D (Premiere's is 3-D subspace), Morph Cut has no face tracking
+- **Missing:** Warp Stabilizer Perspective remains a similarity approximation; Subspace Warp now
+  has a bounded trajectory/mesh implementation, but real-footage quality and general rolling-shutter
+  correction remain unverified. Morph Cut has no face tracking
   (and occlusion edges are soft), Lumetri HDR-aware maths, multicam paging beyond 16 angles,
   redesigned 26.0 mask tools (a stored, re-editable
   corner radius: rounding bakes fillets into the path, so a rounded corner cannot be re-rounded later).
@@ -299,6 +301,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   #813), from an on-monitor corner-roundness handle with a live preview (one undo step per drag;
   #844); Shift snaps pen mask segments and dragged-out Bézier handles to 45° steps (#853), and
   Shift constrains vertex and whole-mask drags to 45° steps from the press point (#1408).
+  Warp Stabilizer now caches analysis and correction/crop plans separately, uses second-order camera
+  smoothing, supports constant/adaptive auto-scale, and synthesises borders from motion-aligned
+  neighbouring frames with geometric transparency handling. Fast Analysis processes bounded batches
+  of frame pyramids/corners in parallel, independently of Detailed Analysis, with live frame-count
+  progress in Effect Controls and `ui.inspect`. Subspace Warp additionally uses persistent tracks,
+  moving rank-nine factorization, eigen-trajectory smoothing and a saliency-weighted 16×9 mesh.
+  Unsupported spans explicitly fall back to similarity; rejected or unavailable temporal samples
+  leave transparent holes. This is a CPU implementation with synthetic evidence, not a claim of
+  Premiere-equivalent quality, UHD throughput or full reproduction of the paper.
 - **Estimate:** 60–110 h.
 
 ## G19. Speech to text off in release builds
@@ -320,3 +331,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-14 | minor | G18: cached stabilization plans, parallel analysis and live progress; bounded persistent-trajectory subspace/mesh path with explicit similarity fallback |

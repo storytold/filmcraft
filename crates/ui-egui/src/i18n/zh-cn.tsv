@@ -3592,3 +3592,23 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+
+	Analysis cancelled (frame {frame} of {total})	分析已取消（第 {frame} 帧，共 {total} 帧）
+	Analysis complete ({total} frames)	分析完成（{total} 帧）
+	Analysis failed — see application log	分析失败 — 请查看应用程序日志
+	Analyzing: {percent}% (frame {frame} of {total})	正在分析：{percent}%（第 {frame} 帧，共 {total} 帧）
+	Disabled	已禁用
+	Not analyzed	未分析
+	Auto-scale Mode	自动缩放模式
+	Constant	恒定
+	Fast Analysis	快速分析
+	Factorizing: {percent}% (frame {frame} of {total})	正在因式分解：{percent}%（第 {frame} 帧，共 {total} 帧）
+	Stabilizing: {percent}% (frame {frame} of {total})	正在稳定：{percent}%（第 {frame} 帧，共 {total} 帧）
+	Subspace Warp: {frames} of {total} frames	子空间扭曲：{frames} / {total} 帧
+	Using Position, Scale, Rotation: insufficient persistent tracks	使用位置、缩放、旋转：持久跟踪点不足
+	Using Position, Scale, Rotation: numerical failure	使用位置、缩放、旋转：数值计算失败
+	Using Position, Scale, Rotation: invalid analysis data	使用位置、缩放、旋转：分析数据无效
+	Using Position, Scale, Rotation: no usable mesh	使用位置、缩放、旋转：没有可用网格
+	Auto-scale	自动缩放
+	Analysis is not running	当前没有正在进行的分析
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	快速分析优先考虑执行速度；详细分析会花更多精力查找跟踪点。这两项设置相互独立。

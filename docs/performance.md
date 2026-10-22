@@ -4,6 +4,124 @@
 and `.md` (options and sections: [testing.md](testing.md) §5). Agents read live counters with
 `perf.stats` ([control-protocol.md](control-protocol.md)).
 
+## Warp Stabilizer analysis
+
+Measured on Linux x86-64, Intel Core i9-13900K, eight Rayon threads, Rust 1.95.0,
+release profile. Reproduce with:
+
+```sh
+RAYON_NUM_THREADS=8 cargo +1.95.0 run --release -p filmcraft-render --example stabilizer_bench
+```
+
+The focused correctness loop uses `CARGO_BUILD_JOBS=32 RAYON_NUM_THREADS=32` as documented in
+[`testing.md`](testing.md) §Stabilizer iteration. The timings below are historical eight-thread
+measurements, not a new performance result for the ownership and cancellation changes.
+
+The historical 2-D analysis measurements below use a 48-frame, 960×540 translated synthetic
+texture. Normal analysis uses 480×270; Detailed Analysis uses 960×540. Each full-analysis figure is
+one cold-cache run, including synthetic source generation but **not media decoding**. The baseline
+is the local cached 2-D stabilizer before the Fast Analysis, gradient and LK optimizations, not
+upstream `main`. These are not UHD or real-footage measurements; small serial/parallel differences
+are not evidence of a reliable speedup. These figures do not measure the additional subspace solve.
+
+| Analysis resolution | Before this optimization | Optimized, Fast Analysis off | Optimized, Fast Analysis on |
+|---|---:|---:|---:|
+| Normal, 480×270 | 509.8 ms | 421.4 ms | 396.5 ms |
+| Detailed, 960×540 | 1170.3 ms | 849.9 ms | 852.7 ms |
+
+Both modes read exactly 48 frames. Motion-path checksums are unchanged from the baseline
+and identical with Fast Analysis off/on: `dbeb8b4ae0196395` (normal) and
+`9e1f704b803cc73f` (detailed). Worst known-motion centre errors are respectively
+0.003599 px and 0.002491 px. The benchmark checks serial/parallel path equality.
+
+The isolated stage figures are medians of five samples, not sums that predict the full
+pipeline: the combined stage includes detection, optical flow and fitting. Optical flow
+is not timed separately.
+
+| Stage | Normal before | Normal after | Detailed before | Detailed after |
+|---|---:|---:|---:|---:|
+| Grayscale and pyramid | 0.733 ms | 0.660 ms | 4.667 ms | 2.277 ms |
+| Feature detection | 3.848 ms | 1.552 ms | 10.308 ms | 4.949 ms |
+| Tracking, detection and fitting | 7.909 ms | 6.899 ms | 13.911 ms | 8.084 ms |
+| Robust fitting alone | 0.003 ms | 0.003 ms | 0.003 ms | 0.003 ms |
+
+Fast Analysis is enabled by default and parallelizes grayscale/pyramid preparation and
+feature detection in bounded batches, limited to eight frames and a two-million-pixel
+batch budget, plus the preceding pyramid. Decoder requests remain ordered on the
+requesting thread. Frame-pair tracking, fitting and path accumulation remain in timeline
+order; per-feature LK retains its existing Rayon parallelism.
+Turning Fast Analysis off provides a serial comparison; Detailed Analysis independently
+selects the working resolution. Reusing image gradients and fixed-size LK work buffers
+also benefits the serial mode. Cache identity includes both analysis controls.
+
+Effect Controls displays actual stage counts, percentages, terminal states and a progress bar;
+`ui.inspect.stabilizerAnalysis` exposes the same nonblocking state. A prior native software-rendered run
+on generated H.264 clips used spatial meshes on 766/768 and 3070/3072 frames. The latter exposed
+Analyzing, Factorizing and replanning stages through automation; its captured collapsed effect
+showed “Analyzing: 27% (frame 853 of 3072)”. Changing Smoothness replanned successfully, switching
+back restored cached metadata, and a 12-frame clip displayed `insufficientPersistentTracks`.
+This verifies the actual progress/fallback surface, not real-footage stabilization quality. It is
+historical generated-media evidence, not a current native smoke or real-footage quality result.
+
+Each exact analysis slot owns cancellation independently of the frame request. **Cancel** makes
+Analyzing, Factorizing or Planning terminal `Cancelled`; **Analyze** is the explicit fresh retry.
+Scrubbing may cancel its frame request without cancelling or restarting clip analysis. Analysis and
+settings-plan build/publication use one scoped `std::thread` owner each. Rayon waiters cooperate
+with `rayon::yield_now` and a 1 ms idle park; single-flight late-publication rechecks avoid
+duplicate work, and the selected plan generation prevents stale progress snapshots from winning.
+
+The public Adobe discussions motivate profiling analysis and simultaneous feature
+detection, not a promise of matching their speedups:
+[2020 discussion](https://community.adobe.com/questions-734/discuss-faster-warp-stabilizer-312097),
+[2024 beta discussion](https://community.adobe.com/t5/premiere-pro-beta-discussions/now-in-beta-a-faster-warp-stabilizer/td-p/14410469).
+The Subspace Warp implementation follows Liu et al.,
+[“Subspace Video Stabilization,” ACM TOG 30(1), Article 4 (2011)](https://doi.org/10.1145/1899404.1899408),
+with spatial energy based on [“Content-Preserving Warps for 3D Video Stabilization,”
+SIGGRAPH 2009, §4.1](https://research.cs.wisc.edu/graphics/Papers/Gleicher/fliu/siggraph09_preprint_small.pdf).
+FilmCraft uses a coarser 16×9 mesh, similarity pre-alignment rather than recovered 3-D camera motion,
+and an empirically density-normalized similarity weight. Perspective remains a similarity
+approximation. Short or unsupported spans explicitly use the similarity fallback.
+
+The separate `--subspace-only --subspace-bench` benchmark measures cold analysis+factorization+mesh
+planning separately from a warm render for normal/detailed × serial/fast modes. Its 64-frame
+128×80 procedural scene contains two depth planes, row-dependent wobble, genuine alpha and
+uniquely identifiable markers. Relative near/far marker motion guards against apparent gains from
+blurring the texture; a marker-strength guard rejects excessive contrast loss. `--write-frames`
+exports generated input/output PPMs under `target/subspace-warp-smoke/`, not repository assets.
+Neither this small fixture nor an executable UI smoke establishes general rolling-shutter
+correction, real-footage quality or Adobe-equivalent speed.
+
+For a full-clip real-footage inspection, run the existing diagnostic:
+
+```sh
+CARGO_BUILD_JOBS=32 RAYON_NUM_THREADS=32 cargo +1.95.0 run --release -p filmcraft-render --example stabilizer_bench -- --real-diagnostic "/path/to/clip.mkv"
+```
+
+It retains full-clip tracking, factorization and crop context while rendering the first three
+seconds, writing samples under `target/subspace-warp-real/`. Inspect those images alongside the
+original; this diagnostic does not establish general real-footage quality or native UI behavior.
+
+A recorded historical local release run on the machine above produced the following paper-path timings;
+these values are not a new measurement of the ownership and cancellation changes. The input
+is already smaller than either analysis cap, so Normal/Detailed process the **same 128×80 pixels**;
+their timing differences are noise/work scheduling, not evidence about 480/960-pixel scaling.
+Cold includes generated source frames, tracking, factorization, planning and one render; warm is
+one cached-plan render. These are single samples, not medians or a real-media decode benchmark.
+
+| Mode | Global cold | Subspace cold | Global warm | Subspace warm |
+|---|---:|---:|---:|---:|
+| Normal, serial | 115.987 ms | 207.807 ms | 0.104 ms | 0.184 ms |
+| Normal, fast | 93.979 ms | 117.806 ms | 0.059 ms | 0.157 ms |
+| Detailed, serial | 95.915 ms | 189.228 ms | 0.053 ms | 0.230 ms |
+| Detailed, fast | 132.648 ms | 141.802 ms | 0.158 ms | 0.169 ms |
+
+All four modes measured the same relative-marker error: raw 1.1077 px, global similarity
+1.0057 px, Subspace Warp 0.8771 px (**12.8% below global**). Marker strength was respectively
+0.9715, 0.9697 and 0.9698. All four border choices returned finite pixels and retained non-constant
+alpha. The separate 12-frame fallback regression verifies stabilization and premultiplied alpha;
+it does not require pixel identity with Method 1, whose global fit uses a different feature cohort.
+
+
 ## Interactive builds and redraw work
 
 For interactive editing, build with `cargo build --release -p filmcraft --features whisper` and

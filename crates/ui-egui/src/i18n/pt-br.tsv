@@ -3585,3 +3585,23 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+
+	Analysis cancelled (frame {frame} of {total})	Análise cancelada (quadro {frame} de {total})
+	Analysis complete ({total} frames)	Análise concluída ({total} quadros)
+	Analysis failed — see application log	Falha na análise — consulte o log do aplicativo
+	Analyzing: {percent}% (frame {frame} of {total})	Analisando: {percent}% (quadro {frame} de {total})
+	Disabled	Desativado
+	Not analyzed	Não analisado
+	Auto-scale Mode	Modo de escala automática
+	Constant	Constante
+	Fast Analysis	Análise rápida
+	Factorizing: {percent}% (frame {frame} of {total})	Fatorando: {percent}% (quadro {frame} de {total})
+	Stabilizing: {percent}% (frame {frame} of {total})	Estabilizando: {percent}% (quadro {frame} de {total})
+	Subspace Warp: {frames} of {total} frames	Distorção de subespaço: {frames} de {total} quadros
+	Using Position, Scale, Rotation: insufficient persistent tracks	Usando Posição, escala, rotação: faixas persistentes insuficientes
+	Using Position, Scale, Rotation: numerical failure	Usando Posição, escala, rotação: falha numérica
+	Using Position, Scale, Rotation: invalid analysis data	Usando Posição, escala, rotação: dados de análise inválidos
+	Using Position, Scale, Rotation: no usable mesh	Usando Posição, escala, rotação: sem malha utilizável
+	Auto-scale	Escala automática
+	Analysis is not running	Nenhuma análise em andamento
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	A análise rápida prioriza a velocidade de execução; a análise detalhada dedica mais esforço para encontrar pontos de rastreamento. Essas configurações são independentes.

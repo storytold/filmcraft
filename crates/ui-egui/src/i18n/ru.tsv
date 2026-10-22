@@ -360,3 +360,24 @@
 	Next Appearance Mode	Следующий режим оформления
 	Project Notes	Заметки проекта
 
+	Analysis cancelled (frame {frame} of {total})	Анализ отменён (кадр {frame} из {total})
+	Analysis complete ({total} frames)	Анализ завершён ({total} кадров)
+	Analysis failed — see application log	Анализ завершился с ошибкой — см. журнал приложения
+	Analyzing: {percent}% (frame {frame} of {total})	Идёт анализ: {percent}% (кадр {frame} из {total})
+	Disabled	Отключено
+	Not analyzed	Не проанализировано
+	Auto-scale Mode	Режим автоматического масштабирования
+	Constant	Постоянный
+	Fast Analysis	Быстрый анализ
+	Factorizing: {percent}% (frame {frame} of {total})	Факторизация: {percent}% (кадр {frame} из {total})
+	Stabilizing: {percent}% (frame {frame} of {total})	Стабилизация: {percent}% (кадр {frame} из {total})
+	Subspace Warp: {frames} of {total} frames	Деформация подпространства: {frames} из {total} кадров
+	Using Position, Scale, Rotation: insufficient persistent tracks	Используются параметры «Позиция, Масштаб, Поворот»: недостаточно устойчивых треков
+	Using Position, Scale, Rotation: numerical failure	Используются параметры «Позиция, Масштаб, Поворот»: числовая ошибка
+	Using Position, Scale, Rotation: invalid analysis data	Используются параметры «Позиция, Масштаб, Поворот»: некорректные данные анализа
+	Using Position, Scale, Rotation: no usable mesh	Используются параметры «Позиция, Масштаб, Поворот»: нет пригодной сетки
+	Auto-scale	Автомасштабирование
+	Analyze	Анализировать
+	Cancel	Отмена
+	Analysis is not running	Анализ не выполняется
+	Fast Analysis prioritizes execution speed; Detailed Analysis spends more effort finding tracks. These settings are independent.	«Быстрый анализ» отдаёт приоритет скорости выполнения; «Подробный анализ» тратит больше усилий на поиск точек отслеживания. Эти параметры независимы друг от друга.

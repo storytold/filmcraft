@@ -27,7 +27,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 |---|---|---|
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
-| `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
+| `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…), plus `stabilizerAnalysis` snapshots for selected clips |
 | `ui.elements` | `{prefix?}` | every on-screen interactive element: id, label, rect |
 | `ui.set` | `{tool, workspace, mode, theme, focused, playbackRes, timeline:{pps,scroll,fit}, program:{…}, source:{…}, clipDialog:{param: value}, menuDialog:{param: value}, panels:{scopes, timecode, reference, events, progress}, export:{…}, keyframeSelection:[…]}` | `keyframeSelection` replaces the Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`, `time` in media ticks; read back as `ui.inspect` → `ui.keyframe_selection`; a click on a lane keyframe selects just that one); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `panels` merges into the panel settings (`ui.inspect` → `ui.panels`; see `panels::panel_state`): Lumetri Scopes `{shown: ["vectorscopeYuv"|"vectorscopeHls"|"histogram"|"parade"|"waveform"], waveformType, paradeType, colorSpace, brightness, scale, clamp, targets}`, Timecode `{rows: [{source, mode, display}], showName}`, Reference Monitor `{ganged, time, display: "composite"|"scopes", scopes}`, Events `{level, selected}`, Progress `{showFinished}` `export` deep-merges into Export mode state (`preset` — applied first —, `settings` (ExportSettings JSON), `fileName`, `location`, `range`, `customStart`, `customEnd`, `openSections`, `manager` (Preset Manager: `query`, `favoritesOnly`, `selected`, `saveName`), `quickOpen`, `quickPath`, `quickPreset`); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `projectPanel` merges into the Project panel's view state (`bin` shown in place, `tabs` (bins in a tab or window: `{bin, floating, view, iconSize, nav}`), `activeTab`, `selectedBin`, `rename: {item|bin, text}`, `dialog` (`{"metadataDisplay": {columns, filter}}`, `{"savePresetAs": {name}}`, `{"managePresets": {selected, name}}`, `{"freeformOptions": {options}}`, `{"saveArrangement": {name, bin}}`)); `mediaBrowser` into the Media Browser's (`expanded`, `pathEdit`, `editColumns`, `treeWidth`). View settings, columns and presets are engine commands (`project.view.set`, `project.columns.set`, `project.viewPreset.*`, `mediaBrowser.settings`) |
 | `ui.panel.show` / `ui.panel.close` | `{panel}` | |
@@ -41,6 +41,60 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.resize`, `app.quit` | `{width,height}` / `{}` | resize or close the native window; `app.quit` quits without the save prompt (unsaved changes stay in the recovery journal), while the command `app.quit` asks first |
 | `ui.focus` | `{}` / `{id}` | empty parameters activate the native window; a widget ID requests egui focus without OS activation |
 | `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle buffers of the frame pool, the planes of evicted frames and the compositor's float images, which a standalone export frees when it ends; and buffers taken from it instead of allocated), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `monitor`: the `frame` and `revision` of the picture the Program monitor shows against `playheadFrame` and `projectRevision` (how far a drag or a scrub is ahead of the picture); `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
+
+**Warp Stabilizer progress.** `ui.inspect.stabilizerAnalysis` contains
+`{clip, effect, enabled, progress}` entries for Warp Stabilizer instances on selected clips.
+`progress` is `null` before analysis or after its cache is invalidated; otherwise it contains
+`{stage, completedFrames, totalFrames, subspaceFrames, fallbackReason}`. `stage` is
+`analyzing`, `factorizing`, `planning`, `complete`, `cancelled` or `failed`.
+`completedFrames` is the completed count for the current stage (analysis frames while
+`analyzing`, factorization work while `factorizing`, and planned/stabilized frames while
+`planning`); `totalFrames` remains the clip's total frame count. For terminal stages, it is the
+last count reached before completion, cancellation or failure. Counts advance only after the
+corresponding work has completed, not when it is merely queued or decoded. `subspaceFrames` is
+the actual number of frames supported by Subspace Warp, or `null` when that result is not
+available. `fallbackReason` is `null` unless the effect uses the similarity fallback; when set,
+it is one of `insufficientPersistentTracks`, `numericalFailure`, `invalidInput` or
+`noUsableMesh`. With partial spatial support, `subspaceFrames` can be less than `totalFrames`;
+unsupported frames retain the similarity fallback.
+Queries never start analysis or wait for its completion. Effect Controls displays the same state
+under the effect header; an active analysis remains visible even while the effect is collapsed, and
+cancelled or failed analysis remains visible there with its retry action.
+The row's automation ID is `effectControls.warp_stabilizer.<clip>.<effect-index>.progress`;
+its buttons use `.analyze` and `.cancel` suffixes. Analyze is enabled only for a not-yet-started,
+cancelled or failed analysis on an enabled effect; Cancel is enabled only for an active analysis,
+including when the effect itself is disabled. Both buttons remain exposed for terminal cancelled or
+failed rows while the effect is collapsed; a complete row disables both buttons.
+
+The panel's scroll viewport is exposed as the non-widget `effectControls.viewport` rectangle; use it
+as the content clip when deciding whether an element can receive a visible click. The Warp
+Stabilizer value widgets use
+`effectControls.warp_stabilizer.<clip>.<effect-index>.param.<parameter>` (choice, boolean and
+numeric controls expose the same suffix; point values add `.x` and `.y`). `ui.elements` reports
+the widget's current `enabled` state and screen rectangle, so automation MUST verify both before
+injecting a click; `ui.inspect.elements` is only a count and is not the element array.
+The default `method` value is `Subspace Warp`. `result=No Motion` disables only `smoothness`.
+For `framing`, `max_scale`, `zoom_mode` and `action_safe` are enabled only for
+`Stabilize, Crop, Auto-scale` (choice 2); `additional_scale` remains enabled for all four
+framing choices. `fast_analysis` and `detailed` are independent checkboxes.
+
+**Warp Stabilizer commands.** `effects.stabilizer.analyze` and `effects.stabilizer.cancel` are
+frontend commands, available through `engine.execute` or `ui.menu.invoke`. Their `params` object
+requires `{clip, effect}`, where both values are unsigned integers: `clip` is the clip ID in the
+active sequence and `effect` is that clip's zero-based effect index. The target must exist in the
+active sequence and the indexed effect must be `warp_stabilizer`; malformed parameters, a missing
+active sequence, an unknown clip or effect, and a different effect type return an error without
+changing the project.
+
+Both commands return `{accepted, clip, effect}`. `analyze` returns `accepted: true` when it queues
+the first analysis or a retry after `cancelled`/`failed`; it returns `false` while analysis is
+active or already `complete`. `cancel` returns `true` only while the matching analysis is in
+`analyzing`, `factorizing` or `planning`; it returns `false` when there is no job or the job is
+terminal. Accepted requests invalidate the rendered view, but do not create an edit or undo entry;
+rejected requests do not invalidate it. Cancellation is sticky: a cancelled slot remains
+`cancelled` and frame requests do not restart it. Send `effects.stabilizer.analyze` explicitly to
+retry; the same retry rule applies after `failed`.
+
 
 **Timeline thumbnails.** `ui.set {timeline: {thumbnails}}` sets the Timeline wrench menu's Show Video
 Thumbnails: `off`, `head`, `headAndTail` or `continuous`.
@@ -108,6 +162,11 @@ management commands and dialog ids: offline media and relinking (`media.findMiss
 `media.relink`, `media.autoRelink`, `media.search`, `media.makeOffline`, `media.status`, `linkMedia.*`),
 proxies (`media.createProxies`, `media.attachProxies`, `media.toggleProxies`, `proxies.*`), ingest
 (`project.ingestSettings`) and the Project Manager (`file.projectManager`, `pm.*`).
+
+**Selecting clips**: `timeline.select {clips: [id], add?, toggle?, linked?}` follows the global
+Linked Selection toggle unless `linked: false` suppresses partner expansion for that call (Alt
+marquee selection). The toggle itself is unchanged. `edit.clear` without explicit targets deletes
+exactly the selected clips; explicit `clips` / `clip` targets retain linked-partner expansion.
 
 **Moving clips**: `timeline.move {moves: [{clip, track, time}], insert?, linked?}` → `{moved: [clip ids]}`.
 With Linked Selection on (the default; `linked` overrides the toggle for one call) the linked

@@ -973,6 +973,455 @@ fn shaky(x: f64, y: f64, t: f64) -> [f32; 3] {
     texture(x + dx, y + dy)
 }
 
+#[derive(Clone, Copy)]
+struct ParallaxEnv {
+    w: usize,
+    h: usize,
+    fps: f64,
+    secs: f64,
+    now: f64,
+    frames: usize,
+    key: u64,
+}
+
+impl ParallaxEnv {
+    fn new(frames: usize, key: u64) -> Self {
+        let frames = frames.max(1);
+        Self { w: 96, h: 64, fps: 24.0, secs: (frames as f64 - 0.5) / 24.0, now: 0.0, frames, key }
+    }
+
+    fn frame_at(&self, seconds: f64) -> usize {
+        if !seconds.is_finite() {
+            return 0;
+        }
+        (seconds * self.fps).round().clamp(0.0, self.frames.saturating_sub(1) as f64) as usize
+    }
+
+    fn displacement(&self, frame: usize, y: f64, depth: f64) -> (f64, f64) {
+        if frame == 0 {
+            return (0.0, 0.0);
+        }
+        let f = frame as f64;
+        let row = y / self.h.max(1) as f64;
+        let camera_x = 1.9 * (f * 0.21).sin() + 0.55 * (f * 0.07).cos() + 0.035 * f;
+        let camera_y = 1.4 * (f * 0.17).cos() + 0.25 * (f * 0.37).sin();
+        let rolling_x = 0.5 * (f * 0.43 + row * 6.0).sin() + 0.18 * (f * 0.13 - row * 8.0).cos();
+        let rolling_y = 0.25 * (f * 0.31 + row * 5.0).cos();
+        (depth * (camera_x + rolling_x), depth * (camera_y + rolling_y))
+    }
+
+    fn near_region(&self, x: f64, y: f64) -> bool {
+        let u = x / self.w.max(1) as f64;
+        let v = y / self.h.max(1) as f64;
+        (0.16..0.63).contains(&u) && (0.20..0.83).contains(&v) && ((u - 0.39) * 2.2).sin() > -0.85
+    }
+
+    fn texture(&self, x: f64, y: f64, near: bool) -> [f32; 3] {
+        let phase = if near { 0.73 } else { 0.21 };
+        let r = 0.42 + 0.25 * (x * 0.17 + y * 0.031 + phase).sin() + 0.16 * ((x + y) * 0.071).cos();
+        let g = 0.36 + 0.27 * (x * 0.047 - y * 0.19 + phase * 2.0).cos() + 0.14 * ((x - y) * 0.113).sin();
+        let b = 0.48 + 0.22 * ((x + y) * 0.083 + phase).sin() + 0.14 * (x * 0.11 - y * 0.057).cos();
+        [r.clamp(0.03, 0.98) as f32, g.clamp(0.03, 0.98) as f32, b.clamp(0.03, 0.98) as f32]
+    }
+    fn far_marker(&self) -> (f64, f64) {
+        (80.0, 12.0)
+    }
+
+    fn near_markers(&self) -> [(f64, f64); 3] {
+        [(22.0, 18.0), (50.0, 18.0), (37.0, 50.0)]
+    }
+
+    fn marker_at(&self, x: f64, y: f64, near: bool) -> bool {
+        if near {
+            self.near_markers().into_iter().any(|(mx, my)| (x - mx).hypot(y - my) <= 2.25)
+        } else {
+            let (mx, my) = self.far_marker();
+            (x - mx).hypot(y - my) <= 2.25
+        }
+    }
+
+    fn marker_colour(near: bool) -> [f32; 3] {
+        if near { [0.96, 0.04, 0.84] } else { [0.04, 0.86, 0.96] }
+    }
+
+    fn marker_alpha() -> f64 {
+        0.96
+    }
+
+    fn alpha_is_premultiplied(image: &Image) -> bool {
+        image.px.chunks_exact(4).all(|pixel| {
+            let alpha = pixel[3];
+            alpha.is_finite()
+                && (0.0..=1.0).contains(&alpha)
+                && pixel[..3].iter().all(|channel| channel.is_finite() && *channel >= -1e-5 && *channel <= alpha + 1e-3)
+                && (alpha > 1e-5 || pixel[..3].iter().all(|channel| channel.abs() <= 1e-3))
+        })
+    }
+
+    fn alpha_max(image: &Image) -> f32 {
+        image.px.chunks_exact(4).map(|pixel| pixel[3]).fold(0.0, f32::max)
+    }
+
+    fn visible_alpha_count(image: &Image) -> usize {
+        image.px.chunks_exact(4).filter(|pixel| pixel[3] > 0.05).count()
+    }
+
+    fn render(&self, seconds: f64, scale: f32) -> Image {
+        let scale = if scale.is_finite() { scale.clamp(0.25, 1.0) } else { 1.0 };
+        let w = ((self.w as f32 * scale).round() as usize).max(1);
+        let h = ((self.h as f32 * scale).round() as usize).max(1);
+        let frame = self.frame_at(seconds);
+        let inv_scale = 1.0 / scale as f64;
+        let mut image = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let sx = (x as f64 + 0.5) * inv_scale;
+                let sy = (y as f64 + 0.5) * inv_scale;
+                let (fx, fy) = self.displacement(frame, sy, 0.45);
+                let mut far = self.texture(sx + fx, sy + fy, false);
+                let mut far_a = (0.72 + 0.14 * (sx * 0.08 + sy * 0.11).sin()).clamp(0.35, 0.92);
+                if self.marker_at(sx + fx, sy + fy, false) {
+                    far = Self::marker_colour(false);
+                    far_a = Self::marker_alpha();
+                }
+                let (nx, ny) = self.displacement(frame, sy, 1.0);
+                let wx = sx + nx;
+                let wy = sy + ny;
+                let near = self.near_region(wx, wy);
+                let mut near_a = if near { (0.45 + 0.22 * (wx * 0.09 - wy * 0.07).cos()).clamp(0.24, 0.78) } else { 0.0 };
+                let mut near_rgb = self.texture(wx, wy, true);
+                if near && self.marker_at(wx, wy, true) {
+                    near_rgb = Self::marker_colour(true);
+                    near_a = Self::marker_alpha();
+                }
+                let one_minus_near = 1.0 - near_a;
+                let i = (y * w + x) * 4;
+                image.px[i..i + 4].copy_from_slice(&[
+                    (near_rgb[0] as f64 * near_a + far[0] as f64 * far_a * one_minus_near) as f32,
+                    (near_rgb[1] as f64 * near_a + far[1] as f64 * far_a * one_minus_near) as f32,
+                    (near_rgb[2] as f64 * near_a + far[2] as f64 * far_a * one_minus_near) as f32,
+                    (near_a + far_a * one_minus_near) as f32,
+                ]);
+            }
+        }
+        image
+    }
+}
+
+impl FxEnv for ParallaxEnv {
+    fn frame(&self, dt: f64, _: &EffectInstance) -> Option<Image> {
+        Some(self.render(self.now + dt, 1.0))
+    }
+
+    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+        Some(self.render(self.now + dt, scale))
+    }
+
+    fn track(&self, _: usize) -> Option<Image> {
+        None
+    }
+
+    fn layer_to_output(&self) -> Affine {
+        Affine::IDENTITY
+    }
+
+    fn clip_seconds(&self) -> f64 {
+        self.secs
+    }
+
+    fn clip_offset(&self) -> f64 {
+        self.now
+    }
+
+    fn frame_rate(&self) -> f64 {
+        self.fps
+    }
+
+    fn media_timecode(&self) -> String {
+        String::new()
+    }
+
+    fn file_name(&self) -> String {
+        "synthetic-parallax".to_string()
+    }
+
+    fn sequence_name(&self) -> String {
+        "synthetic-parallax".to_string()
+    }
+
+    fn sequence_size(&self) -> (u32, u32) {
+        (self.w as u32, self.h as u32)
+    }
+
+    fn source_size(&self) -> (u32, u32) {
+        (self.w as u32, self.h as u32)
+    }
+
+    fn clip_key(&self) -> u64 {
+        self.key
+    }
+}
+
+fn apply_parallax(env: &ParallaxEnv, effect: &EffectInstance) -> Image {
+    let mut image = env.render(env.now, 1.0);
+    crate::effects::apply(&mut image, effect, &FxCtx { t: Tick::from_seconds_f64(env.now), seconds: env.now, frame_rate: env.fps, env: Some(env), ..cx() });
+    image
+}
+
+fn patch_jitter(frames: &[Image], points: &[(usize, usize)]) -> f64 {
+    let Some(reference) = frames.first() else { return 0.0 };
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for frame in frames.iter().skip(1) {
+        for &(x, y) in points {
+            let x0 = x.saturating_sub(3);
+            let y0 = y.saturating_sub(3);
+            let x1 = (x + 4).min(frame.w).min(reference.w);
+            let y1 = (y + 4).min(frame.h).min(reference.h);
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let a = reference.get(xx, yy);
+                    let b = frame.get(xx, yy);
+                    sum += (0..4).map(|k| (a[k] - b[k]).abs() as f64).sum::<f64>() / 4.0;
+                    count += 1;
+                }
+            }
+        }
+    }
+    if count == 0 { 0.0 } else { sum / count as f64 }
+}
+
+fn marker_score(pixel: &[f32], near: bool) -> f64 {
+    let alpha = pixel[3] as f64;
+    if alpha <= 0.05 {
+        return 0.0;
+    }
+    let r = pixel[0] as f64 / alpha;
+    let g = pixel[1] as f64 / alpha;
+    let b = pixel[2] as f64 / alpha;
+    let target = ParallaxEnv::marker_colour(near);
+    let distance_sq = (r - target[0] as f64).powi(2) + (g - target[1] as f64).powi(2) + (b - target[2] as f64).powi(2);
+    // Texture channels are bounded below these marker extrema (r <= .83, b <= .84).
+    // A .10 RGB radius excludes texture while retaining composited marker interiors.
+    const MATCH_RADIUS: f64 = 0.10;
+    (1.0 - distance_sq / (MATCH_RADIUS * MATCH_RADIUS)).max(0.0)
+}
+
+fn marker_centroid(image: &Image, target: (f64, f64), near: bool) -> Option<(f64, f64)> {
+    let radius = 12isize;
+    let cx = target.0.round() as isize;
+    let cy = target.1.round() as isize;
+    let x0 = (cx - radius).max(0);
+    let y0 = (cy - radius).max(0);
+    let x1 = (cx + radius + 1).min(image.w as isize);
+    let y1 = (cy + radius + 1).min(image.h as isize);
+    let mut weight = 0.0;
+    let mut x_sum = 0.0;
+    let mut y_sum = 0.0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (y as usize * image.w + x as usize) * 4;
+            let score = marker_score(&image.px[i..i + 4], near);
+            weight += score;
+            x_sum += score * (x as f64 + 0.5);
+            y_sum += score * (y as f64 + 0.5);
+        }
+    }
+    (weight > 0.5).then_some((x_sum / weight, y_sum / weight))
+}
+
+fn marker_positions(image: &Image, scene: &ParallaxEnv) -> Option<[(f64, f64); 4]> {
+    let mut positions = [(0.0, 0.0); 4];
+    positions[0] = marker_centroid(image, scene.far_marker(), false)?;
+    for (index, target) in scene.near_markers().into_iter().enumerate() {
+        positions[index + 1] = marker_centroid(image, target, true)?;
+    }
+    Some(positions)
+}
+
+fn assert_reference_marker_truth(image: &Image, scene: &ParallaxEnv) {
+    let positions = marker_positions(image, scene).expect("frame-zero marker reference is measurable");
+    let mut targets = [scene.far_marker(); 4];
+    for (index, target) in scene.near_markers().into_iter().enumerate() {
+        targets[index + 1] = target;
+    }
+    for (index, (observed, target)) in positions.into_iter().zip(targets).enumerate() {
+        let error = (observed.0 - target.0).hypot(observed.1 - target.1);
+        assert!(error <= 0.75, "marker {index} frame-zero centroid {observed:?} is {error:.3}px from fixture truth {target:?}");
+    }
+}
+
+fn relative_marker_jitter(frames: &[Image], scene: &ParallaxEnv) -> f64 {
+    let Some(reference) = frames.first().and_then(|image| marker_positions(image, scene)) else {
+        return f64::INFINITY;
+    };
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for image in frames.iter().skip(1) {
+        let Some(observed) = marker_positions(image, scene) else { return f64::INFINITY };
+        for index in 1..reference.len() {
+            let expected = (reference[index].0 - reference[0].0, reference[index].1 - reference[0].1);
+            let relative = (observed[index].0 - observed[0].0, observed[index].1 - observed[0].1);
+            sum += (relative.0 - expected.0).hypot(relative.1 - expected.1);
+            count += 1;
+        }
+    }
+    if count == frames.len().saturating_sub(1) * (reference.len() - 1) { sum / count.max(1) as f64 } else { f64::INFINITY }
+}
+
+fn marker_strength(frames: &[Image], scene: &ParallaxEnv) -> f64 {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    let mut targets = Vec::with_capacity(scene.near_markers().len() + 1);
+    targets.push((scene.far_marker(), false));
+    targets.extend(scene.near_markers().into_iter().map(|target| (target, true)));
+    for image in frames {
+        for (target, near) in &targets {
+            let radius = 12isize;
+            let cx = target.0.round() as isize;
+            let cy = target.1.round() as isize;
+            let x0 = (cx - radius).max(0);
+            let y0 = (cy - radius).max(0);
+            let x1 = (cx + radius + 1).min(image.w as isize);
+            let y1 = (cy + radius + 1).min(image.h as isize);
+            let mut best: f64 = 0.0;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let i = (y as usize * image.w + x as usize) * 4;
+                    best = best.max(marker_score(&image.px[i..i + 4], *near));
+                }
+            }
+            if best <= 0.05 {
+                return f64::INFINITY;
+            }
+            sum += best;
+            count += 1;
+        }
+    }
+    if count == frames.len() * targets.len() { sum / count.max(1) as f64 } else { f64::INFINITY }
+}
+
+fn alpha_span(image: &Image) -> f32 {
+    let mut lo = 1.0f32;
+    let mut hi = 0.0f32;
+    for p in image.px.chunks_exact(4) {
+        lo = lo.min(p[3]);
+        hi = hi.max(p[3]);
+    }
+    hi - lo
+}
+
+#[test]
+fn warp_stabilizer_subspace_reduces_local_parallax_jitter_and_exercises_borders() {
+    let template = ParallaxEnv::new(32, 0x5355_4253_5445_5354);
+    let sample: Vec<_> = (0..template.frames).collect();
+    let near = template.near_markers().map(|(x, y)| (x as usize, y as usize));
+    let points = [(22, 18), (50, 18), (37, 50), (80, 12), (88, 55), (8, 55)];
+    let raw: Vec<_> =
+        sample.iter().map(|&frame| ParallaxEnv { now: frame as f64 / template.fps, ..template }.render(frame as f64 / template.fps, 1.0)).collect();
+
+    let mut global = inst("warp_stabilizer");
+    set(&mut global, "method", ParamValue::Choice(1));
+    set(&mut global, "result", ParamValue::Choice(1));
+    set(&mut global, "framing", ParamValue::Choice(0));
+    clear_stabilizer_cache();
+    let global_frames: Vec<_> = sample.iter().map(|&frame| apply_parallax(&ParallaxEnv { now: frame as f64 / template.fps, ..template }, &global)).collect();
+
+    let mut subspace = inst("warp_stabilizer");
+    set(&mut subspace, "method", ParamValue::Choice(3));
+    set(&mut subspace, "result", ParamValue::Choice(1));
+    set(&mut subspace, "framing", ParamValue::Choice(0));
+    clear_stabilizer_cache();
+    let subspace_frames: Vec<_> =
+        sample.iter().map(|&frame| apply_parallax(&ParallaxEnv { now: frame as f64 / template.fps, ..template }, &subspace)).collect();
+
+    let raw_jitter = patch_jitter(&raw, &points);
+    let global_jitter = patch_jitter(&global_frames, &points);
+    let subspace_jitter = patch_jitter(&subspace_frames, &points);
+    let raw_near = patch_jitter(&raw, &near);
+    let global_near = patch_jitter(&global_frames, &near);
+    let subspace_near = patch_jitter(&subspace_frames, &near);
+    assert_reference_marker_truth(&raw[0], &template);
+    let raw_markers = relative_marker_jitter(&raw, &template);
+    let global_markers = relative_marker_jitter(&global_frames, &template);
+    let subspace_markers = relative_marker_jitter(&subspace_frames, &template);
+    let raw_strength = marker_strength(&raw, &template);
+    let subspace_strength = marker_strength(&subspace_frames, &template);
+    assert!(alpha_span(&raw[0]) > 0.02, "synthetic source must carry genuine alpha");
+    assert!(raw_jitter > 1e-4, "the source motion must be visible");
+    assert!(raw_markers.is_finite() && global_markers.is_finite() && subspace_markers.is_finite(), "chromatic markers must remain measurable");
+    assert!(
+        subspace_jitter < raw_jitter * 0.99,
+        "subspace jitter {subspace_jitter} did not improve raw {raw_jitter}; near raw {raw_near} subspace {subspace_near}, global {global_jitter}"
+    );
+    assert!(subspace_near < raw_near * 0.99, "near local jitter {subspace_near} did not improve raw {raw_near}; global similarity {global_near}");
+    assert!(
+        subspace_markers < global_markers * 0.95,
+        "Method 3 marker jitter {subspace_markers} did not beat global similarity {global_markers} by at least 5%"
+    );
+    assert!(
+        subspace_strength.is_finite() && raw_strength.is_finite() && subspace_strength > raw_strength * 0.70,
+        "mesh output blurred or erased chromatic markers: raw strength {raw_strength}, subspace strength {subspace_strength}"
+    );
+    assert!(max_diff(&global_frames[4], &subspace_frames[4]) > 1e-5, "Method 3 must not silently reuse the global similarity output");
+    for image in &subspace_frames {
+        assert!(ParallaxEnv::alpha_is_premultiplied(image), "Subspace output contains invalid transparent RGB or alpha");
+    }
+    for image in &global_frames {
+        assert!(ParallaxEnv::alpha_is_premultiplied(image), "Global output contains invalid transparent RGB or alpha");
+    }
+    for image in &raw {
+        assert!(ParallaxEnv::alpha_is_premultiplied(image), "Source fixture contains invalid transparent RGB or alpha");
+    }
+
+    for framing in 0..=3 {
+        let mut border_effect = subspace.clone();
+        set(&mut border_effect, "framing", ParamValue::Choice(framing));
+        let env = ParallaxEnv { now: 16.0 / template.fps, ..template };
+        let input = env.render(env.now, 1.0);
+        let output = apply_parallax(&env, &border_effect);
+        assert!(ParallaxEnv::alpha_is_premultiplied(&input), "border {framing} source alpha is invalid");
+        assert!(ParallaxEnv::alpha_is_premultiplied(&output), "border {framing} produced invalid transparent RGB or alpha");
+        assert!(ParallaxEnv::alpha_max(&output) >= ParallaxEnv::alpha_max(&input) * 0.5, "border {framing} erased source alpha");
+        assert!(
+            ParallaxEnv::visible_alpha_count(&output) >= ParallaxEnv::visible_alpha_count(&input) / 8,
+            "border {framing} discarded nearly all source alpha"
+        );
+    }
+}
+
+#[test]
+fn warp_stabilizer_subspace_short_clip_explicitly_falls_back_to_similarity() {
+    let template = ParallaxEnv::new(12, 0x5355_4253_5348_4f52);
+    let sample: Vec<_> = (0..template.frames).collect();
+    let points = [(22, 18), (50, 18), (37, 50), (80, 12), (88, 55), (8, 55)];
+    let raw: Vec<_> =
+        sample.iter().map(|&frame| ParallaxEnv { now: frame as f64 / template.fps, ..template }.render(frame as f64 / template.fps, 1.0)).collect();
+    assert_reference_marker_truth(&raw[0], &template);
+
+    let mut subspace = inst("warp_stabilizer");
+    set(&mut subspace, "method", ParamValue::Choice(3));
+    set(&mut subspace, "result", ParamValue::Choice(1));
+    set(&mut subspace, "framing", ParamValue::Choice(0));
+    clear_stabilizer_cache();
+    let output: Vec<_> = sample.iter().map(|&frame| apply_parallax(&ParallaxEnv { now: frame as f64 / template.fps, ..template }, &subspace)).collect();
+
+    let raw_jitter = patch_jitter(&raw, &points);
+    let fallback_jitter = patch_jitter(&output, &points);
+    assert!(raw_jitter > 1e-4, "short synthetic clip must contain visible camera motion");
+    assert!(fallback_jitter < raw_jitter, "short-clip fallback did not visibly stabilize the image: raw {raw_jitter}, fallback {fallback_jitter}");
+    assert!(max_diff(&output[7], &raw[7]) > 1e-5, "short-clip fallback must apply a consumer-visible correction");
+    for (input, image) in raw.iter().zip(&output) {
+        assert!(image.px.iter().all(|v| v.is_finite()), "short-track fallback produced non-finite pixels");
+        assert!(ParallaxEnv::alpha_is_premultiplied(image), "short-track fallback produced invalid transparent RGB or alpha");
+        assert!(ParallaxEnv::alpha_max(image) >= ParallaxEnv::alpha_max(input) * 0.5, "short-track fallback erased source alpha");
+        assert!(
+            ParallaxEnv::visible_alpha_count(image) >= ParallaxEnv::visible_alpha_count(input) / 8,
+            "short-track fallback discarded nearly all source alpha"
+        );
+    }
+}
+
 #[test]
 fn posterize_time_and_echo_read_other_frames() {
     fn moving(x: f64, _y: f64, t: f64) -> [f32; 3] {
@@ -1044,8 +1493,44 @@ fn warp_stabilizer_removes_camera_jitter() {
     let mut st = env.render(9.0 / 24.0, 1.0);
     crate::effects::apply(&mut st, &e, &FxCtx { seconds: 9.0 / 24.0, env: Some(&env), ..cx() });
     assert!(st.px.as_chunks::<4>().0.iter().all(|p| p[3] > 0.99), "auto-scale leaves no border");
-    // the path cache is reused
-    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
+}
+
+#[test]
+fn warp_stabilizer_margin_reduces_zoom_and_uses_clip_local_offset() {
+    fn ramp_shake(x: f64, y: f64, t: f64) -> [f32; 3] {
+        let (dx, dy) = jitter(t);
+        [texture(x + dx, y + dy)[0], ((x + dx) / 192.0) as f32, ((y + dy) / 128.0) as f32]
+    }
+    let env = ClipEnv { w: 192, h: 128, fps: 24.0, secs: 1.0, now: 9.0 / 24.0, key: 0xC0FFEF, seq: (192, 128), pic: ramp_shake };
+    let mut effect = inst("warp_stabilizer");
+    set(&mut effect, "result", ParamValue::Choice(1));
+    set(&mut effect, "method", ParamValue::Choice(0));
+    let raw = env.render(env.now, 1.0);
+    let mut normal = raw.clone();
+    crate::effects::apply(&mut normal, &effect, &FxCtx { seconds: env.now, env: Some(&env), ..cx() });
+    let mut different_clock = raw.clone();
+    crate::effects::apply(&mut different_clock, &effect, &FxCtx { seconds: 99.0, env: Some(&env), ..cx() });
+    assert_eq!(normal.px, different_clock.px, "analysis/frame selection uses the environment's clip offset, not source or generator time");
+    setf(&mut effect, "action_safe", 20.0);
+    let mut safe = raw;
+    crate::effects::apply(&mut safe, &effect, &FxCtx { seconds: env.now, env: Some(&env), ..cx() });
+    let slope = |img: &Image| img.get(120, 64)[1] - img.get(72, 64)[1];
+    assert!(slope(&safe) > slope(&normal) + 0.005, "an ignored outer margin must retain more field of view, not zoom further");
+}
+
+#[test]
+fn warp_stabilizer_handles_empty_images_and_invalid_analysis_timing() {
+    let effect = inst("warp_stabilizer");
+    for (fps, secs) in [(0.0, 1.0), (f64::NAN, 1.0), (24.0, f64::INFINITY), (24.0, -1.0)] {
+        let env = ClipEnv { w: 64, h: 48, fps, secs, now: 0.0, key: 0xC0FFF0, seq: (64, 48), pic: shaky };
+        let original = Image::filled(64, 48, [0.2, 0.3, 0.4, 1.0]);
+        let mut img = original.clone();
+        crate::effects::apply(&mut img, &effect, &FxCtx { env: Some(&env), ..cx() });
+        assert_eq!(img, original);
+        let mut empty = Image::new(0, 0);
+        crate::effects::apply(&mut empty, &effect, &FxCtx { env: Some(&env), ..cx() });
+        assert_eq!((empty.w, empty.h, empty.px.len()), (0, 0, 0));
+    }
 }
 
 #[test]

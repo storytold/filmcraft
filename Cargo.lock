@@ -2231,6 +2231,7 @@ version = "0.10.0"
 dependencies = [
  "filmcraft-audio-dsp",
  "filmcraft-captions",
+ "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-geom",
@@ -2239,6 +2240,8 @@ dependencies = [
  "filmcraft-text",
  "filmcraft-time",
  "image",
+ "log",
+ "parking_lot",
  "rayon",
  "rustix 1.1.5",
  "serde",
