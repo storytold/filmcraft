@@ -246,6 +246,15 @@ fn wheel_zooms_about_the_pointer_and_the_middle_button_pans() {
     }
     d.frames(2);
     assert!((num(&d.program()["zoom"]) - 0.1).abs() < 1e-6, "stops at 10%");
+    // a picture smaller than the monitor can still be dragged around with the middle button
+    let before = num(&d.program()["pan"][0]);
+    send(&mut d, egui::Event::PointerMoved(from));
+    send(&mut d, button(from, true));
+    for k in 1..=3 {
+        send(&mut d, egui::Event::PointerMoved(from + egui::vec2(-10.0 * k as f32, 0.0)));
+    }
+    send(&mut d, button(from + egui::vec2(-30.0, 0.0), false));
+    assert!((num(&d.program()["pan"][0]) - (before - 30.0)).abs() < 1.0, "a small picture moves too: {}", d.program()["pan"]);
     d.menu("view.magnification.fit");
     let p = d.program();
     assert!(p["zoom"].is_null() && p["pan"] == json!([0.0, 0.0]), "{p}");

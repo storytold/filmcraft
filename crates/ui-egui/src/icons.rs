@@ -79,6 +79,8 @@ pub enum Icon {
     Info,
     Captions,
     Adjust,
+    /// A computer mouse with its wheel (the mouse wheel settings).
+    Mouse,
     Nest,
     Undo,
     Redo,
@@ -235,6 +237,11 @@ impl Pen16<'_> {
 
 /// Paint `icon` centred in `rect`.
 pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
+    // a rect clipped away to nothing (or turned inside out by an intersection) draws nothing,
+    // instead of a mirrored, oversized icon
+    if !(rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0) {
+        return;
+    }
     let pen = Pen16 { painter, rect, color, width: 1.25 };
     use Icon::*;
     match icon {
@@ -604,6 +611,14 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(9.0, 9.0), (12.0, 9.0)]);
             pen.line(&[(4.0, 11.0), (12.0, 11.0)]);
         }
+        Mouse => {
+            pen.arc(8.0, 6.0, 3.5, 180.0, 360.0);
+            pen.line(&[(4.5, 6.0), (4.5, 10.5)]);
+            pen.line(&[(11.5, 6.0), (11.5, 10.5)]);
+            pen.arc(8.0, 10.5, 3.5, 0.0, 180.0);
+            pen.line(&[(4.5, 7.5), (11.5, 7.5)]);
+            pen.line(&[(8.0, 3.5), (8.0, 6.0)]);
+        }
         Adjust => {
             for (y, x) in [(4.0, 10.0), (8.0, 5.0), (12.0, 9.0)] {
                 pen.line(&[(2.0, y), (14.0, y)]);
@@ -878,6 +893,7 @@ mod tests {
         Info,
         Captions,
         Adjust,
+        Mouse,
         Nest,
         Undo,
         Redo,
@@ -927,6 +943,26 @@ mod tests {
         let mut out = Vec::new();
         shapes.into_iter().for_each(|s| flat(s, &mut out));
         out
+    }
+
+    /// A rect clipped away (an intersection with a region it does not touch is inside out) draws
+    /// nothing: it used to draw a mirrored icon as large as the gap (the Timeline's track header
+    /// buttons scrolled out of view).
+    #[test]
+    fn an_empty_or_inside_out_rect_draws_nothing() {
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let inside_out = Rect::from_min_max(pos2(10.0, 200.0), pos2(28.0, 40.0));
+                for r in [inside_out, Rect::NOTHING, Rect::from_min_size(pos2(5.0, 5.0), vec2(0.0, 18.0))] {
+                    for icon in ALL {
+                        paint(ui.painter(), r, *icon, Color32::WHITE);
+                    }
+                }
+            });
+            out.textures_delta.clear();
+            assert!(out.shapes.is_empty(), "{} shapes", out.shapes.len());
+        }
     }
 
     fn on_grid(v: f32, ppp: f32, width_px: f32) -> bool {

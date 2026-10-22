@@ -342,13 +342,20 @@ pub fn channel_view(img: &Rgba, mode: DisplayMode) -> Rgba {
     Rgba { w: img.w, h: img.h, px }
 }
 
+/// How far a picture of `size` may be panned from the centre of an `area` on each axis: until its
+/// centre reaches the area's edge (a small picture) or its edge reaches the area's centre (a large
+/// one). Like Premiere, a picture smaller than the monitor can still be moved around.
+pub fn pan_limit(size: Vec2, area: Vec2) -> Vec2 {
+    vec2(size.x.max(area.x), size.y.max(area.y)) / 2.0
+}
+
 /// The on-screen picture rect: fitted, or magnified about the area centre plus the (clamped) pan.
 pub fn picture_rect(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) -> Rect {
     match v.zoom {
         None => crate::panels::monitor::fit(area, fw, fh),
         Some(z) => {
             let size = vec2(fw * z / ppp.max(0.1), fh * z / ppp.max(0.1));
-            let max = ((size - area.size()) / 2.0).max(Vec2::ZERO);
+            let max = pan_limit(size, area.size());
             let pan = vec2(v.pan[0].clamp(-max.x, max.x), v.pan[1].clamp(-max.y, max.y));
             Rect::from_center_size(area.center() + pan, size)
         }
@@ -357,8 +364,11 @@ pub fn picture_rect(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) -> 
 
 /// Zoom and pan the picture `pic` shown in `area`: the wheel (or a pinch) zooms about the pointer,
 /// from Fit too, between the zoom menu's 10% and 1600%; a middle-button drag, or a drag with the
-/// Hand tool, pans a magnified picture. `fw` is the picture's width in frame pixels.
-pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, pic: Rect, fw: f32, ppp: f32) {
+/// Hand tool, pans the picture (see [`pan_limit`]; a fitted one keeps its size). `fw` is the picture's width in frame pixels.
+/// `wheel_zooms` is whether the wheel zooms the picture now (Settings ▸ Navigation, for the keys held);
+/// a pinch always does.
+#[allow(clippy::too_many_arguments)]
+pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, pic: Rect, fw: f32, ppp: f32, wheel_zooms: bool) {
     let ctx = ui.ctx().clone();
     if ui.rect_contains_pointer(area)
         && let Some(p) = ctx.pointer_hover_pos()
@@ -366,22 +376,25 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
         // about 10% per wheel notch (40 points), exponential in the wheel travel so a notch out
         // undoes a notch in exactly
         let wheel = crate::panels::timeline::wheel_input(&ctx);
-        let f = if (wheel.pinch - 1.0).abs() > 1e-4 { wheel.pinch } else { (wheel.delta.y * 1.1_f32.ln() / 40.0).exp().clamp(0.5, 2.0) };
+        let f = if (wheel.pinch - 1.0).abs() > 1e-4 {
+            wheel.pinch
+        } else if wheel_zooms {
+            (wheel.delta.y * 1.1_f32.ln() / 40.0).exp().clamp(0.5, 2.0)
+        } else {
+            1.0
+        };
         if (f - 1.0).abs() > 1e-4 && pic.width() > 0.0 && fw > 0.0 {
             let cur = pic.width() * ppp / fw;
             let z = (cur * f).clamp(ZOOMS[0].1, ZOOMS[ZOOMS.len() - 1].1);
             let k = z / cur;
             // the point of the picture under the pointer stays under it
             let centre = p - (p - pic.center()) * k;
-            let max = ((pic.size() * k - area.size()) / 2.0).max(Vec2::ZERO);
+            let max = pan_limit(pic.size() * k, area.size());
             let v = view_mut(app, w);
             v.zoom = Some(z);
             v.pan = [(centre.x - area.center().x).clamp(-max.x, max.x), (centre.y - area.center().y).clamp(-max.y, max.y)];
             return;
         }
-    }
-    if view(app, w).zoom.is_none() {
-        return;
     }
     let mut d = Vec2::ZERO;
     // a middle-button drag that began over the picture pans it, whatever the tool
@@ -400,8 +413,17 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
         }
         d += resp.drag_delta();
     }
-    if d != Vec2::ZERO {
-        let max = ((pic.size() - area.size()) / 2.0).max(Vec2::ZERO);
+    if d != Vec2::ZERO && d.is_finite() {
+        // a fitted picture is panned at the size it is shown at
+        if view(app, w).zoom.is_none() && pic.width() > 0.0 && fw > 0.0 {
+            // keep the size it is shown at, even below the menu's smallest level (a UHD picture in a
+            // small monitor): raising it would make the picture jump as the drag starts
+            let fitted = (pic.width() * ppp / fw).min(ZOOMS[ZOOMS.len() - 1].1);
+            let v = view_mut(app, w);
+            v.zoom = Some(fitted);
+            v.pan = [0.0, 0.0];
+        }
+        let max = pan_limit(pic.size(), area.size());
         let v = view_mut(app, w);
         v.pan = [(v.pan[0] + d.x).clamp(-max.x, max.x), (v.pan[1] + d.y).clamp(-max.y, max.y)];
     }
@@ -951,10 +973,14 @@ mod tests {
         v.pan = [10_000.0, 0.0];
         let r = picture_rect(area, 1920.0, 1080.0, &v, 2.0);
         assert!((r.width() - 960.0).abs() < 1e-3, "100% = one frame pixel per physical pixel");
-        assert!((r.min.x - 0.0).abs() < 1e-3, "pan clamped so the picture's left edge stays at the area's");
+        assert!((r.min.x - 200.0).abs() < 1e-3, "pan clamped so the picture's left edge stops at the area's centre: {r:?}");
         v.zoom = Some(0.1);
         let r = picture_rect(area, 1920.0, 1080.0, &v, 1.0);
-        assert!((r.center().x - 200.0).abs() < 1e-3, "a small picture stays centred");
+        assert!((r.center().x - 400.0).abs() < 1e-3, "a small picture can be moved until its centre reaches the edge: {r:?}");
+        v.pan = [0.0, 0.0];
+        let r = picture_rect(area, 1920.0, 1080.0, &v, 1.0);
+        assert!((r.center().x - 200.0).abs() < 1e-3, "and starts centred");
+        assert_eq!(pan_limit(vec2(100.0, 500.0), vec2(400.0, 300.0)), vec2(200.0, 250.0));
     }
 
     #[test]

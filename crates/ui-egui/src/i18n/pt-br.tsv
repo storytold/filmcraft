@@ -340,7 +340,7 @@
 	Time Interpolation	Interpolação de tempo
 	Timecode	Timecode
 	Timecode…	Timecode…
-	Timeline	Linha do tempo
+	Timeline	Linha do Tempo
 	Timeline…	Linha do tempo…
 	Toggle Proxies	Alternar proxies
 	Tools	Ferramentas
@@ -1327,7 +1327,7 @@
 	Audio Out Point	Ponto de saída do áudio
 	Audio Samples	Amostras de áudio
 	Audio Time Units	Unidades de tempo de áudio
-	Audio Transition Default Duration	Duração padrão das transições de áudio
+	Audio Transition Default Duration	Duração Padrão das Transições de Áudio
 	Audio Transitions	Transições de áudio
 	Audio Usage	Uso de áudio
 	Auto	Automático
@@ -1578,7 +1578,7 @@
 	DeReverb	Redutor de reverberação
 	Decay	Decaimento
 	Decay Time (RT60)	Tempo de decaimento (RT60)
-	Default Audio Tracks	Faixas de áudio padrão
+	Default Audio Tracks	Faixas de Áudio Padrão
 	Default Emoji font	Fonte de emoji padrão
 	Default Media Scaling	Escala de mídia padrão
 	Default Output	Saída padrão
@@ -2077,7 +2077,7 @@
 	Modern High Gain	Ganho alto moderno
 	Modulation	Modulação
 	Modulation Rate	Velocidade de modulação
-	Mono Media	Mídia mono
+	Mono Media	Mídia Mono
 	Monochrome	Monocromático
 	Monochrome toned cyan-blue	Monocromático virado para azul-ciano
 	Monochrome toned warm brown	Monocromático virado para marrom quente
@@ -2095,7 +2095,7 @@
 	Movie	Filme
 	Movie (audio and video)	Filme (áudio e vídeo)
 	Multiband Compressor	Compressor multibanda
-	Multichannel Mono Media	Mídia mono multicanal
+	Multichannel Mono Media	Mídia Mono Multicanal
 	Multiply	Multiplicar
 	Multitap Delay	Delay multitap
 	Music	Música
@@ -2107,7 +2107,7 @@
 	Next to original media files	Ao lado dos arquivos de mídia originais
 	Night	Noite
 	No Motion	Sem movimento
-	No Scroll	Sem rolagem
+	No Scroll	Sem Rolagem
 	No plugins are installed. Changes will take effect the next time you start FilmCraft.	Nenhum plug-in instalado. As alterações terão efeito na próxima vez que o FilmCraft for iniciado.
 	Noise	Ruído
 	Noise & Grain	Ruído e granulação
@@ -2155,7 +2155,7 @@
 	Overlay	Sobrepor
 	Overshoot	Ultrapassagem
 	Page Peel	Descascar página
-	Page Scroll	Rolar página
+	Page Scroll	Rolar Página
 	Page Turn	Virar página
 	Paint Bucket	Balde de tinta
 	Paint On Black	Pintar sobre preto
@@ -2415,7 +2415,7 @@
 	Smart quotes	Aspas tipográficas
 	Smooth	Suave
 	Smooth Motion	Movimento suave
-	Smooth Scroll	Rolagem suave
+	Smooth Scroll	Rolagem Suave
 	Smoothness	Suavidade
 	Snap playhead in Timeline when Snap is enabled	Encaixar o cursor de reprodução na linha do tempo quando o encaixe estiver ativado
 	Soft	Suave
@@ -2473,12 +2473,12 @@
 	Stereo Expand	Expansão estéreo
 	Stereo Expander	Expansor estéreo
 	Stereo Imagery	Imagem estéreo
-	Stereo Media	Mídia estéreo
+	Stereo Media	Mídia Estéreo
 	Stereo Phasing	Fase estéreo
 	Stereoscopic - Over/Under	Estereoscópico - acima/abaixo
 	Stereoscopic - Side by Side	Estereoscópico - lado a lado
 	Still	Imagem estática
-	Still Image Default Duration	Duração padrão de imagens estáticas
+	Still Image Default Duration	Duração Padrão de Imagens Estáticas
 	Stone Church	Igreja de pedra
 	Stopband Attenuation	Atenuação da banda de rejeição
 	Straight Color	Cor direta
@@ -2547,8 +2547,34 @@
 	Time	Tempo
 	Time and Pitch	Tempo e tom
 	Timecode Conversion	Conversão de timecode
-	Timeline Mouse Scrolling	Rolagem com o mouse na linha do tempo
-	Timeline Playback Auto-Scrolling	Rolagem automática da linha do tempo durante a reprodução
+	Timeline Mouse Scrolling	Rolagem com o Mouse na Linha do Tempo
+	Zoom Anchor Point	Ponto de Ancoragem do Zoom
+	Cursor Position	Posição do Cursor
+	Playhead Position	Posição da Agulha (Playhead)
+	Step Playhead (Frames)	Avançar/Voltar Agulha (Quadros)
+	Disabled	Desativado
+	Alt + Scroll	Alt + Scroll
+	Shift + Scroll	Shift + Scroll
+	Ctrl + Scroll	Ctrl + Scroll
+	Move Playhead on Timeline Click	Mover a Agulha ao Clicar na Linha do Tempo
+	Ruler Only	Apenas na Régua de Tempo
+	Empty Space Only	Apenas em Espaços Vazios
+	Anywhere on Timeline	Em Qualquer Lugar da Linha do Tempo
+	Drag Playhead Line Across Tracks	Arrastar a Linha da Agulha pelas Faixas
+	Anywhere, Including Over Clips	Em Qualquer Lugar, Mesmo sobre Clipes
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Dividir Régua de Tempo: Arrastar na Faixa Superior Cria Entrada/Saída (In/Out)
+	Program Monitor Mouse Wheel	Roda do Mouse no Monitor de Programa
+	Source Monitor Mouse Wheel	Roda do Mouse no Monitor de Origem (Source)
+	Effect Controls Mouse Wheel	Roda do Mouse nos Controles de Efeitos
+	Scroll	Scroll
+	Over the Preview	Sobre o Preview
+	Over the Time Ruler	Sobre a Barra de Keyframes
+	Timeline Mouse Wheel Behavior	Comportamento do Scroll na Linha do Tempo
+	Step Frames	Avançar Quadros
+	Step Keyframes	Pular Keyframes
+	Off (Ruler Head Only)	Desativado (Apenas pelo Topo na Régua)
+	Pan Timeline by Dragging With Middle Mouse Button	Mover a Linha do Tempo Arrastando com o Botão do Meio do Mouse
+	Timeline Playback Auto-Scrolling	Rolagem Automática da Linha do Tempo Durante a Reprodução
 	Tint Color	Cor da tonalidade
 	To	Até
 	Tolerance	Tolerância
@@ -2598,7 +2624,7 @@
 	Upper Right	Superior direito
 	Use Color Noise	Usar ruído colorido
 	Use End Color	Usar cor final
-	Use File	Usar arquivo
+	Use File	Usar Arquivo
 	Use Glow Color	Usar cor do brilho difuso
 	Use Media Source	Usar a origem da mídia
 	Use Tint Color	Usar cor da tonalidade
@@ -2653,7 +2679,7 @@
 	Video Info	Informações de vídeo
 	Video Limiter	Limitador de vídeo
 	Video Out Point	Ponto de saída do vídeo
-	Video Transition Default Duration	Duração padrão das transições de vídeo
+	Video Transition Default Duration	Duração Padrão das Transições de Vídeo
 	Video Transitions	Transições de vídeo
 	Video Usage	Uso de vídeo
 	Vignette	Vinheta
@@ -3585,3 +3611,9 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+	Navigation…	Navegação…
+	Navigation Style	Estilo de Navegação
+	Alternative	Alternativo
+	Timeline Mouse Wheel	Roda do Mouse na Linha do Tempo
+	Timeline Clicks and Drags	Cliques e Arrastes na Linha do Tempo
+	More Settings…	Mais Configurações…

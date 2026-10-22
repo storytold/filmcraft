@@ -255,7 +255,7 @@ pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: 
 /// A flat icon toggle inside a rect.
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
-    if resp.hovered() {
+    if resp.hovered() && rect.is_positive() {
         ui.painter().rect_filled(rect, 2.0, t.hover);
     }
     let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
@@ -289,8 +289,30 @@ pub fn dropdown_text(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::
         Stroke::new(1.0, if resp.hovered() { Color32::from_rgb(0x4b, 0x4b, 0x4b) } else { t.field_border }),
         StrokeKind::Inside,
     );
-    ui.painter().text(pos2(rect.min.x + 9.0, rect.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.0), t.text);
+    // a long text is cut before the chevron instead of running out of the box
+    let text_clip = Rect::from_min_max(rect.min, pos2(rect.max.x - 20.0, rect.max.y));
+    ui.painter().with_clip_rect(text_clip).text(pos2(rect.min.x + 9.0, rect.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.0), t.text);
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 11.0, rect.center().y), vec2(9.0, 9.0)), Icon::ChevronDown, t.text_dim);
+    resp
+}
+
+/// The small "Timeline Mouse Wheel Behavior" button of the monitors, Effect Controls and Timeline:
+/// always the mouse icon, filled while the wheel is set to something other than the default.
+pub fn wheel_mode_button(ui: &mut Ui, rect: Rect, active: bool, t: &Tokens, id: egui::Id) -> Response {
+    let resp = ui.interact(rect, id, Sense::click());
+    if active {
+        ui.painter().rect_filled(rect, 4.0, t.pressed);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, t.hover);
+    }
+    let color = if active {
+        t.accent
+    } else if resp.hovered() {
+        t.tab_text_active
+    } else {
+        t.icon
+    };
+    icons::paint(ui.painter(), rect.shrink(4.0), Icon::Mouse, color);
     resp
 }
 

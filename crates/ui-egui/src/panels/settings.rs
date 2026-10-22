@@ -56,7 +56,19 @@ pub struct SettingsDraft {
 /// Open the dialog on a category page.
 pub fn open(app: &mut FilmcraftApp, page: &str) -> Result<Value, String> {
     let cat = settings::category(page).ok_or_else(|| format!("unknown settings category `{page}`"))?;
-    app.ui.settings = Some(SettingsDraft { page: cat.id.into(), values: app.session.prefs.to_value(), ..Default::default() });
+    let mut values = app.session.prefs.to_value();
+    // a wheel action an older version saved (`auto`, `trackHeightOne`, ...) is not one of the choices any more
+    for (key, fallback) in [
+        ("navigation.mouseScrolling", "vertical"),
+        ("navigation.altScrolling", "zoom"),
+        ("navigation.shiftScrolling", "horizontal"),
+        ("navigation.ctrlScrolling", "horizontal"),
+    ] {
+        if !settings::MOUSE_SCROLL.iter().any(|(v, _)| *v == choice_text(get(&values, key))) {
+            put(&mut values, key, json!(fallback));
+        }
+    }
+    app.ui.settings = Some(SettingsDraft { page: cat.id.into(), values, ..Default::default() });
     app.dialog = Some(Dialog::Preferences);
     Ok(json!({"dialog": "settings", "page": cat.id}))
 }
@@ -405,6 +417,11 @@ fn group(ui: &mut Ui, t: &Tokens, title: &str, add: impl FnOnce(&mut Ui)) {
 /// Spanish…) wraps inside it: unwrapped, it ran left out of the page, and the next rows followed.
 fn field_label(ui: &mut Ui, text: &str) {
     let w = LABEL_W.min(ui.available_width() * 0.45);
+    field_label_w(ui, text, w);
+}
+
+/// [`field_label`] at a given width (in a grid cell, where the available width is the cell's).
+fn field_label_w(ui: &mut Ui, text: &str, w: f32) {
     ui.allocate_ui_with_layout(vec2(w, 24.0), Layout::right_to_left(Align::Center), |ui| {
         if !text.is_empty() {
             ui.add(egui::Label::new(RichText::new(format!("{}:", crate::i18n::t(text))).size(12.5)).wrap());
@@ -432,21 +449,27 @@ fn combo(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, current: &str, opts: &[
     let shown = opts.iter().find(|o| o.0 == current).map(|o| o.1.clone()).unwrap_or_else(|| current.to_string());
     let mut chosen = None;
     let mut items: Vec<(String, Rect, String)> = Vec::new();
-    // the current choice is cut to the box's width (the open list shows it whole)
-    let r = egui::ComboBox::from_id_salt(("settings", key))
-        .selected_text(RichText::new(crate::i18n::t(&shown)).size(12.5))
-        .width(width.min(ui.available_width()))
-        .truncate()
-        .height(480.0)
-        .show_ui(ui, |ui| {
-            for (v, l) in opts {
-                let r = ui.selectable_label(v == current, crate::i18n::t(l));
-                items.push((format!("settings.{key}.{v}"), r.rect, l.clone()));
-                if r.clicked() {
-                    chosen = Some(v.clone());
-                }
-            }
-        });
+    // the row may be wider than the box: cap the width so a long current choice is cut to the box
+    // instead of making this box wider than its neighbours
+    let r = ui
+        .scope(|ui| {
+            ui.set_max_width(width.min(ui.available_width()));
+            egui::ComboBox::from_id_salt(("settings", key))
+                .selected_text(RichText::new(crate::i18n::t(&shown)).size(12.5))
+                .width(width.min(ui.available_width()))
+                .truncate()
+                .height(480.0)
+                .show_ui(ui, |ui| {
+                    for (v, l) in opts {
+                        let r = ui.selectable_label(v == current, crate::i18n::t(l));
+                        items.push((format!("settings.{key}.{v}"), r.rect, l.clone()));
+                        if r.clicked() {
+                            chosen = Some(v.clone());
+                        }
+                    }
+                })
+        })
+        .inner;
     app.auto.add(&format!("settings.{key}"), r.response.rect, &shown);
     for (id, rect, l) in items {
         app.auto.add(&id, rect, &l);
@@ -703,6 +726,27 @@ fn label_presets(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) {
     }
 }
 
+/// Settings ▸ Navigation ▸ Navigation Style: picking Default or Alternative sets every navigation
+/// setting in the draft; OK applies it. The box shows Custom when the settings match neither.
+fn navigation_style(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) {
+    let nav: settings::NavigationPrefs = serde_json::from_value(get(&d.values, "navigation").clone()).unwrap_or_default();
+    let current = nav.style();
+    let mut opts = static_opts(settings::NAVIGATION_STYLES);
+    if current == "custom" {
+        opts.push(("custom".into(), "Custom".into()));
+    }
+    ui.horizontal(|ui| {
+        field_label(ui, tl!("Navigation Style"));
+        if let Some(v) = combo(app, ui, "navigation.style", current, &opts, 300.0)
+            && let Some(preset) = settings::navigation_style_preset(&v)
+            && let Ok(x) = serde_json::to_value(preset)
+        {
+            put(&mut d.values, "navigation", x);
+        }
+    });
+    ui.add_space(4.0);
+}
+
 /// An icon button of the Label Color Presets row (`settings.labelPresets.<id>`).
 fn preset_button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, icon: Icon, tip: &str, enabled: bool) -> bool {
     let t = app.tokens;
@@ -779,6 +823,7 @@ fn custom(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, name: &str
         }
         "appearanceModes" => appearance_modes(app, ui, d),
         "labelPresets" => label_presets(app, ui, d),
+        "navigationStyle" => navigation_style(app, ui, d),
         "autoSaveStatus" => {
             let status = app.session.execute("file.autoSaveStatus", json!({})).unwrap_or_default();
             if let Some(dir) = status["autoSaveDir"].as_str() {
@@ -798,6 +843,38 @@ fn custom(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, name: &str
             }
         }
         _ => {}
+    }
+}
+
+/// A [`Row::Table`]: the column headings, then one line per `columns.len()` choice fields, labelled
+/// by the line's first field.
+fn table(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, columns: &[&str], list: &[Row]) {
+    let t = app.tokens;
+    let n = columns.len().max(1);
+    let fields: Vec<&Field> = list.iter().filter_map(|r| if let Row::Field(f) = r { Some(f) } else { None }).collect();
+    let label_w = LABEL_W.min(ui.available_width() * 0.45);
+    let width = ((ui.available_width() - label_w - 12.0) / n as f32 - 8.0).clamp(90.0, 220.0);
+    // plain rows instead of a grid: a grid cell is only as wide as last frame's column, which
+    // squeezed the line labels to nothing
+    ui.horizontal(|ui| {
+        field_label_w(ui, "", label_w);
+        for c in columns {
+            ui.add_sized(vec2(width, 18.0), egui::Label::new(RichText::new(crate::i18n::t(c)).size(12.0).color(t.text_dim)).truncate());
+        }
+    });
+    for line in fields.chunks(n) {
+        let Some(first) = line.first() else { continue };
+        ui.horizontal(|ui| {
+            field_label_w(ui, first.label, label_w);
+            for f in line {
+                let cur = choice_text(get(&d.values, f.key));
+                if let Kind::Choice(opts) = f.kind
+                    && let Some(v) = combo(app, ui, f.key, &cur, &static_opts(opts), width)
+                {
+                    put(&mut d.values, f.key, json!(v));
+                }
+            }
+        });
     }
 }
 
@@ -821,6 +898,7 @@ fn rows(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, list: &[Row]
             Row::Field(f) if APPEARANCE_KEYS.contains(&f.key) => continue,
             Row::Field(f) => draw_field(app, ui, d, f),
             Row::Group(title, inner) => group(ui, &t, title, |ui| rows(app, ui, d, inner)),
+            Row::Table { title, columns, rows: inner } => group(ui, &t, title, |ui| table(app, ui, d, columns, inner)),
             Row::Note(text) => note(ui, &t, text),
             Row::Button { id, label, command } => {
                 ui.horizontal(|ui| {

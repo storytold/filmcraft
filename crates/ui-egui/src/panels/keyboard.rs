@@ -321,6 +321,7 @@ fn play_range(app: &mut FilmcraftApp, preroll: bool) -> Result<Value, String> {
 
 fn all_heights(app: &mut FilmcraftApp, expand: bool) -> Value {
     let tv = &mut app.ui.timeline;
+    tv.track_h_override.clear();
     let target = if expand { 120.0 } else { MIN_TRACK_H };
     let at_target = tv.video_track_h == target && tv.audio_track_h == target;
     match (at_target, app.ui.keys.saved_heights) {

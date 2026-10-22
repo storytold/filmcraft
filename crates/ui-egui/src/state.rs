@@ -208,12 +208,26 @@ pub struct TimelineView {
     /// (`volume`, `pan`, `mute`, `send.<i>.level`, `fx.<slot>.<param>`).
     #[serde(default)]
     pub track_lanes: std::collections::BTreeMap<u64, String>,
+    /// Tracks resized one by one (wheel set to "only the track under the pointer"): track id →
+    /// height. A track without an entry has `video_track_h` / `audio_track_h`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub track_h_override: std::collections::BTreeMap<u64, f32>,
 }
+
+/// Smallest and largest track height the wheel and the header handles give a track.
+pub const TRACK_H_MIN: f32 = 22.0;
+pub const TRACK_H_MAX: f32 = 220.0;
 
 impl TimelineView {
     /// The zoom / scroll animation is still running (element rects are moving).
     pub fn animating(&self) -> bool {
         self.pps != self.target_pps || self.scroll != self.target_scroll
+    }
+
+    /// The height of track `id`: its own, if it was resized alone, else the shared one of its kind.
+    pub fn track_height(&self, video: bool, id: u64) -> f32 {
+        let shared = if video { self.video_track_h } else { self.audio_track_h };
+        self.track_h_override.get(&id).copied().filter(|h| h.is_finite()).map_or(shared, |h| h.clamp(TRACK_H_MIN, TRACK_H_MAX))
     }
 }
 
@@ -238,6 +252,7 @@ impl Default for TimelineView {
             seen_playhead: None,
             fit_empty: None,
             track_lanes: Default::default(),
+            track_h_override: Default::default(),
         }
     }
 }
@@ -460,6 +475,10 @@ pub struct UiState {
     /// share of the panel). Dragging the divider sets it (#643).
     #[serde(default)]
     pub effect_controls_split: f32,
+    /// Effect Controls keyframe lane time zoom range as fractions of the clip's duration (start, end);
+    /// None = the whole clip.
+    #[serde(default)]
+    pub effect_controls_zoom: Option<[f64; 2]>,
     pub show_menu_bar: bool,
     /// The header bar (Home, Import, Edit, Export, workspaces). An app that embeds FilmCraft can hide it.
     #[serde(default = "shown")]
@@ -977,6 +996,7 @@ impl Default for UiState {
             lumetri_grid_folder: None,
             collapsed_fx: vec![],
             effect_controls_split: 0.0,
+            effect_controls_zoom: None,
             show_menu_bar: true,
             show_header: true,
             show_status_bar: true,
