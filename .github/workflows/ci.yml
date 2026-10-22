@@ -1,0 +1,111 @@
+# General source coverage; platform packaging retains its own scoped workflows.
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: source-pr-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  # Keep optimized tests; avoid release-package LTO costs for every test executable.
+  CARGO_PROFILE_RELEASE_LTO: "off"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "2"
+  # Passing GPU tests must expose adapter/skip evidence instead of hiding it in captured output.
+  RUST_TEST_NOCAPTURE: "1"
+jobs:
+  source-pr-ci:
+    name: Source PR quality gate (Linux)
+    runs-on: ubuntu-24.04
+    # Provisional cold-build bound for this new full-workspace layout; recalibrate after hosted runs.
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record event and tested merge/head identity
+        run: python3 .github/scripts/ci_report.py record
+      - name: Check out the release-pinned fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+          path: craft-fonts
+          persist-credentials: false
+      - name: Prepare the disposable hosted runner
+        timeout-minutes: 5
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          mkdir -p "$RUNNER_TEMP/xdg"
+          chmod 700 "$RUNNER_TEMP/xdg"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg" >> "$GITHUB_ENV"
+          df -h /
+      - name: Install native test and software Vulkan dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev \
+            libfontconfig1-dev libfreetype6-dev libvulkan1 mesa-vulkan-drivers vulkan-tools ffmpeg
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: source-pr-ci-linux
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Test coverage reporting
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+      - name: Require and identify the Vulkan software adapter
+        id: adapter
+        # Run the CPU quality gates even if the adapter probe fails; the final report still fails.
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          icd=$(find /usr/share/vulkan/icd.d -maxdepth 1 -name 'lvp_icd*.json' -print -quit)
+          if [ -z "$icd" ]; then
+            echo "::error::Lavapipe ICD missing; GPU comparisons cannot be accepted"
+            exit 1
+          fi
+          export VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd"
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          vulkaninfo --summary 2>&1 | tee "$RUNNER_TEMP/vulkan-adapter.log"
+      - name: Full repository quality gate
+        id: quality
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: cargo xtask ci 2>&1 | tee "$RUNNER_TEMP/quality-gate.log"
+      - name: Report executed tests, adapter availability and skips
+        if: ${{ always() && !cancelled() }}
+        env:
+          ADAPTER_OUTCOME: ${{ steps.adapter.outcome }}
+          QUALITY_OUTCOME: ${{ steps.quality.outcome }}
+        run: python3 .github/scripts/ci_report.py
+      - name: Preserve source identity and full CI evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: source-pr-ci-evidence
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/source-identity.json
+            ${{ runner.temp }}/vulkan-adapter.log
+            ${{ runner.temp }}/quality-gate.log
