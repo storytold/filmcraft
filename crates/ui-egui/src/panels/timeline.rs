@@ -5,9 +5,9 @@
 //! headers on the left, a zoom scroll bar at the bottom.
 //!
 //! Interaction is tool-driven; every gesture ends in exactly one engine command, so it is undoable,
-//! journaled and reproducible over the control channel. Zoom and scroll are *animated* (critically
-//! damped exponential easing, anchored under the cursor) so navigation feels fluid; all geometry is
-//! drawn as GPU meshes by egui's wgpu backend and culled to the visible range.
+//! journaled and reproducible over the control channel. Zoom jumps to the new scale with the time
+//! under the cursor held still; scroll eases. Geometry is drawn as GPU meshes by egui's wgpu
+//! backend and culled to the visible range.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -284,14 +284,46 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Zoom about a time (keeps it under the same screen x).
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32) {
-    let old = v.target_pps;
-    let new = (old * factor).clamp(0.05, 24_000.0);
-    let x = ((anchor_secs - v.target_scroll) * old) as f32;
-    let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
+/// Scroll that keeps `anchor_secs` under a point `anchor_from_left` points in from the left edge.
+///
+/// `scroll + anchor_from_left / pps == anchor_secs`, so the same screen point stays on that time
+/// at any zoom. A negative result clamps to the start of the sequence.
+pub fn anchored_scroll(anchor_secs: f64, anchor_from_left: f64, pps: f64) -> f64 {
+    if !(pps > 0.0 && pps.is_finite() && anchor_secs.is_finite() && anchor_from_left.is_finite()) {
+        return 0.0;
+    }
+    (anchor_secs - anchor_from_left / pps).max(0.0)
+}
+
+/// Set pixels-per-second and scroll together so `anchor_secs` stays under `anchor_x`.
+fn apply_anchored_zoom(v: &mut TimelineView, factor: f64, anchor_secs: f64, anchor_x: f32, content_min_x: f32) {
+    let new = (v.target_pps * factor).clamp(0.05, 24_000.0);
+    // A NaN pinch or wheel factor must not replace the scale: clamp leaves NaN as NaN.
+    if !new.is_finite() {
+        return;
+    }
+    let scroll = anchored_scroll(anchor_secs, (anchor_x - content_min_x) as f64, new);
+    v.pps = new;
     v.target_pps = new;
-    v.target_scroll = (anchor_secs - x as f64 / new).max(0.0);
+    v.scroll = scroll;
+    v.target_scroll = scroll;
+}
+
+/// Zoom about a time (keeps it under the same screen x). Lands on the same frame: lerping
+/// pixels-per-second and scroll separately cannot hold a point still.
+pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32) {
+    let old = v.pps;
+    let new = (old * factor).clamp(0.05, 24_000.0);
+    if !new.is_finite() {
+        return;
+    }
+    let x = ((anchor_secs - v.scroll) * old) as f32;
+    let x = if width > 0.0 && (0.0..=width).contains(&x) { x } else { width / 2.0 };
+    let scroll = anchored_scroll(anchor_secs, x as f64, new);
+    v.pps = new;
+    v.target_pps = new;
+    v.scroll = scroll;
+    v.target_scroll = scroll;
 }
 
 /// How strongly a track's colour label tints its header and its lane.
@@ -344,31 +376,32 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             v.fit_pending = false;
             v.fit_empty = empty.then_some(v.target_pps);
         }
-        // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
-        let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
-        let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
-        // video thumbnails keep the layout of the zoom a gesture or animation started at (#1094)
+        let zooming = (v.pps - v.target_pps).abs() / v.target_pps.max(1e-9) > 1e-6 || app.tl.zoom_anchor.is_some();
+        // video thumbnails keep the layout of the zoom a gesture started at (#1094)
         if zooming || matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 1 | 2, .. })) {
             app.tl.thumb_pps = Some(app.tl.thumb_pps.unwrap_or(v.pps));
         } else {
             app.tl.thumb_pps = None;
         }
-        v.pps += (v.target_pps - v.pps) * k;
-        if let Some((anchor_t, anchor_x)) = app.tl.zoom_anchor.filter(|_| zooming) {
-            v.scroll = (anchor_t - (anchor_x - content.min.x) as f64 / v.pps).max(0.0);
-            v.target_scroll = (anchor_t - (anchor_x - content.min.x) as f64 / v.target_pps).max(0.0);
-        } else {
-            v.scroll += (v.target_scroll - v.scroll) * k;
-            app.tl.zoom_anchor = None;
-        }
-        if (v.pps - v.target_pps).abs() > 1e-6 || (v.scroll - v.target_scroll).abs() > 1e-6 {
-            ctx.request_repaint();
-        }
-        if (v.pps - v.target_pps).abs() / v.target_pps < 0.0005 {
-            v.pps = v.target_pps;
-        }
-        if (v.scroll - v.target_scroll).abs() * v.pps < 0.05 {
+        // Zoom snaps. Easing pps while scroll chases it slides the time under the cursor, and
+        // the old exponential (about 150 ms) felt sluggish. Scroll still eases on its own
+        // (or in one step with Settings ▸ Appearance ▸ animations off, #2325).
+        if let Some((anchor_t, anchor_x)) = app.tl.zoom_anchor.take() {
+            v.target_scroll = anchored_scroll(anchor_t, (anchor_x - content.min.x) as f64, v.target_pps);
             v.scroll = v.target_scroll;
+            v.pps = v.target_pps;
+        } else if (v.pps - v.target_pps).abs() > 1e-9 {
+            v.pps = v.target_pps;
+            v.scroll = v.target_scroll;
+        } else {
+            let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
+            v.scroll += (v.target_scroll - v.scroll) * k;
+            if (v.scroll - v.target_scroll).abs() * v.pps < 0.05 {
+                v.scroll = v.target_scroll;
+            }
+        }
+        if (v.scroll - v.target_scroll).abs() > 1e-6 {
+            ctx.request_repaint();
         }
     }
     // follow playhead while playing (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling)
@@ -2294,9 +2327,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
             let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
             let anchor_t = layout.tick_at(p.x).seconds();
-            let v = &mut app.ui.timeline;
-            v.target_pps = (v.target_pps * f).clamp(0.05, 24_000.0);
-            app.tl.zoom_anchor = Some((anchor_t, p.x));
+            apply_anchored_zoom(&mut app.ui.timeline, f, anchor_t, p.x, layout.content.min.x);
+            app.tl.zoom_anchor = None;
         } else if w.delta != egui::Vec2::ZERO {
             let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
             let sideways = if w.delta.x.abs() > w.delta.y.abs() {
@@ -2403,8 +2435,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             (Tool::Zoom, _) => {
                 if resp.clicked() {
                     let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
-                    app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(0.05, 24_000.0);
-                    app.tl.zoom_anchor = Some((t.seconds(), p.x));
+                    apply_anchored_zoom(&mut app.ui.timeline, f, t.seconds(), p.x, layout.content.min.x);
+                    app.tl.zoom_anchor = None;
                 }
                 None
             }
@@ -3252,6 +3284,49 @@ mod reveal_tests {
         assert_eq!(scroll_to_reveal(5.0, 0.0, 40.0, 800.0), None);
         assert_eq!(scroll_to_reveal(f64::NAN, 0.0, 40.0, 800.0), None);
         assert_eq!(scroll_to_reveal(5.0, 0.0, 0.0, 800.0), None);
+    }
+}
+
+#[cfg(test)]
+mod zoom_tests {
+    use super::{anchored_scroll, zoom_about};
+    use crate::state::TimelineView;
+
+    #[test]
+    fn anchored_scroll_keeps_the_time_under_the_cursor() {
+        let anchor = 12.5;
+        let from_left = 180.0;
+        let time_at = |scroll: f64, pps: f64| scroll + from_left / pps;
+        for pps in [50.0, 60.0, 800.0, 24_000.0] {
+            let scroll = anchored_scroll(anchor, from_left, pps);
+            assert!(scroll > 0.0, "pps {pps}");
+            assert!((time_at(scroll, pps) - anchor).abs() < 1e-9, "pps {pps} scroll {scroll}");
+        }
+        // Zooming out until the anchor would sit before time 0 clamps. The cursor time then
+        // moves: the timeline cannot scroll to a negative time.
+        assert_eq!(anchored_scroll(anchor, from_left, 0.05), 0.0);
+        assert_eq!(anchored_scroll(0.1, 500.0, 100.0), 0.0);
+        assert_eq!(anchored_scroll(f64::NAN, from_left, 50.0), 0.0);
+        assert_eq!(anchored_scroll(anchor, f64::INFINITY, 50.0), 0.0);
+        assert_eq!(anchored_scroll(anchor, from_left, 0.0), 0.0);
+        assert_eq!(anchored_scroll(anchor, from_left, -1.0), 0.0);
+    }
+
+    #[test]
+    fn zoom_about_lands_immediately_on_the_anchor() {
+        // a stale target must not be the base
+        let mut v = TimelineView { pps: 50.0, target_pps: 80.0, scroll: 10.0, target_scroll: 0.0, ..TimelineView::default() };
+        // playhead at 12s is (12 - 10) * 50 = 100px from the left
+        zoom_about(&mut v, 2.0, 12.0, 800.0);
+        assert_eq!(v.pps, v.target_pps, "zoom does not ease");
+        assert_eq!(v.scroll, v.target_scroll);
+        assert!((v.pps - 100.0).abs() < 1e-9);
+        let under_cursor = v.scroll + 100.0 / v.pps;
+        assert!((under_cursor - 12.0).abs() < 1e-9);
+        // a non-finite factor must not wipe the scale
+        zoom_about(&mut v, f64::NAN, 12.0, 800.0);
+        assert!((v.pps - 100.0).abs() < 1e-9);
+        assert!((v.scroll + 100.0 / v.pps - 12.0).abs() < 1e-9);
     }
 }
 

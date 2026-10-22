@@ -343,21 +343,28 @@ fn repeated_start_and_end_commands_reveal_a_playhead_already_at_the_endpoint() {
     repeated_endpoint_navigation_reveals_the_same_playhead(false);
 }
 
-/// #2325: Settings ▸ Appearance ▸ "Animate zoom, scrolling and menus" off makes a zoom and a
-/// scroll land in one frame, and egui's fades (menus, collapsing sections, tooltips) instant.
+/// #2325: Settings ▸ Appearance ▸ "Animate zoom, scrolling and menus" off makes a scroll land in
+/// one frame, and egui's fades (menus, collapsing sections, tooltips) instant. Zoom itself lands
+/// on the frame it is requested (#2078): easing pixels-per-second and scroll apart slid the anchor.
 #[test]
 fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     let mut d = Driver::tall();
     let animation_time = |d: &mut Driver| d.harness.ctx.global_style().animation_time;
     assert!(animation_time(&mut d) > 0.0, "animated by default");
-    // animated: one frame later the zoom is on its way, not there
+    // zoom lands at once, animations on or not
     let v = &mut d.app().ui.timeline;
     v.target_pps = 200.0;
     v.target_scroll = 8.0;
     d.frames(1);
     let v = &d.app().ui.timeline;
-    assert!(v.pps > 50.0 && v.pps < 200.0 && v.scroll < 8.0, "eased: {} {}", v.pps, v.scroll);
-    assert_eq!(d.view(), (8.0, 200.0, 0.0, 0.0));
+    assert_eq!((v.pps, v.scroll), (200.0, 8.0), "zoom does not ease");
+    // a scroll on its own still eases while animations are on
+    let v = &mut d.app().ui.timeline;
+    v.target_scroll = 12.0;
+    d.frames(1);
+    let v = &d.app().ui.timeline;
+    assert!(v.scroll > 8.0 && v.scroll < 12.0, "eased: {}", v.scroll);
+    assert_eq!(d.view(), (12.0, 200.0, 0.0, 0.0));
     d.exec("prefs.set", json!({"key": "appearance.animations", "value": false}));
     d.frames(2);
     assert_eq!(animation_time(&mut d), 0.0);
