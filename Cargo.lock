@@ -2072,6 +2072,7 @@ version = "0.11.0"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
+ "pulp",
  "rayon",
  "thiserror 2.0.21",
 ]

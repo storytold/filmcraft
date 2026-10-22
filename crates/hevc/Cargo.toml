@@ -18,5 +18,9 @@ filmcraft-bitstream = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true, optional = true }
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+# Safe runtime CPU dispatch; already used transitively by the workspace's GEMM crates.
+pulp = { version = "0.22.3", default-features = false, features = ["std", "x86-v3"] }
+
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

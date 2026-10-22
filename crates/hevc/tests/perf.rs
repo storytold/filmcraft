@@ -41,3 +41,41 @@ fn perf_1080p() {
 fn perf_4k() {
     run("bench_4k", "2160p Main10 CRF26 fast");
 }
+
+/// Stable JSON records for alternating two builds; validation and hashing are outside the timer.
+#[test]
+#[ignore]
+fn decode_cpu_benchmark() {
+    let iterations = std::env::var("FILMCRAFT_DECODE_BENCH_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(3usize);
+    for name in ["bench_1080p", "bench_4k"] {
+        let f = common::fixture(name);
+        let (hevc, _) = common::ensure(f).expect("benchmark requires the ffmpeg oracle");
+        assert!(common::check_fixture(name).unwrap());
+        let data = std::fs::read(hevc).unwrap();
+        let mut seconds = Vec::new();
+        let mut expected = None;
+        let mut count = 0;
+        for _ in 0..iterations {
+            let mut dec = Decoder::with_threads(1);
+            let start = Instant::now();
+            let mut pics = dec.decode(&data, 0).unwrap();
+            pics.extend(dec.flush());
+            let elapsed = start.elapsed().as_secs_f64();
+            let checksum = pics
+                .iter()
+                .flat_map(|p| [&p.y, &p.u, &p.v])
+                .flat_map(|p| p.to_le_bytes())
+                .fold(0xcbf2_9ce4_8422_2325u64, |h, v| (h ^ u64::from(v)).wrapping_mul(0x100_0000_01b3));
+            let value = (pics.len(), checksum);
+            assert_eq!(*expected.get_or_insert(value), value);
+            count = pics.len();
+            seconds.push(elapsed);
+        }
+        seconds.sort_by(f64::total_cmp);
+        println!(
+            "DECODE_BENCH {{\"name\":\"{name}\",\"frames\":{count},\"seconds\":{},\"checksum\":{},\"samples\":{seconds:?}}}",
+            seconds[seconds.len() / 2],
+            expected.unwrap().1
+        );
+    }
+}
