@@ -179,6 +179,18 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // Edit ▸ Select All in a focused text field selects its text, as in any app. On macOS the
+    // native menu takes Cmd+A as its key equivalent, so the field never sees the key otherwise and
+    // Select All picked the panel's items (the Project panel's clips) instead. Commands run before
+    // the panels are laid out, so the field sees the key in this pass.
+    if id == "edit.selectAll" && ctx.text_edit_focused() {
+        ctx.input_mut(|i| {
+            for pressed in [true, false] {
+                i.events.push(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::COMMAND });
+            }
+        });
+        return Ok(Value::Null);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }

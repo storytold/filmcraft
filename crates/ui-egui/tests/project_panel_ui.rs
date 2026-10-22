@@ -1128,3 +1128,28 @@ fn escape_takes_back_a_media_browser_drag() {
     assert_eq!(d.app().session.project.to_json(), before, "nothing was placed on the Timeline");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Select All in the Project panel's search field selects the field's text, not the panel's
+/// clips. On macOS the native menu takes Cmd+A as its key equivalent and sends `edit.selectAll`,
+/// so the field never saw the key: Select All then Copy copied the clip names instead.
+#[test]
+fn select_all_in_the_search_field_selects_its_text_not_the_clips() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.ok("ui.click", json!({"id": "project.search"}));
+    // matches a demo item, so the panel has an item Select All could pick
+    d.ok("ui.type", json!({"text": "ocean"}));
+    assert_eq!(d.harness.state().ui.project_search, "ocean");
+    let selection = d.harness.state().session.state.selection.clone();
+    let items = d.harness.state().session.state.project_selection.clone();
+    // Select All as the native macOS menu sends it
+    let (tx, rx) = channel();
+    d.harness.state_mut().command_inbox = Some(rx);
+    tx.send("edit.selectAll".to_string()).unwrap();
+    d.frames(2);
+    assert_eq!(d.harness.state().session.state.project_selection, items, "the Project panel's items are not selected");
+    assert_eq!(d.harness.state().session.state.selection, selection, "nor the timeline's clips");
+    // typing replaces the selected text
+    d.ok("ui.type", json!({"text": "aurora"}));
+    assert_eq!(d.harness.state().ui.project_search, "aurora", "Select All selected the field's text");
+}
