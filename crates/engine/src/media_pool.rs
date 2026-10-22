@@ -145,6 +145,13 @@ fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
+/// The source a registered path opener makes of `path` (`filmcraft_codecs::register_path_opener`),
+/// if one takes it; a format only a path opener decodes is refused here, unread
+/// ([`filmcraft_codecs::open_by_path`]).
+fn open_by_path(path: &str) -> Option<Result<SharedSource, MediaError>> {
+    filmcraft_codecs::open_by_path(path)
+}
+
 impl MediaPool {
     pub fn register_opener(&self, o: Opener) {
         self.openers.write().unwrap_or_else(|e| e.into_inner()).push(o);
@@ -279,6 +286,9 @@ impl MediaPool {
     /// Read and open a file through `services` (through its random-access reader when the host
     /// has one: containers then read only their index now and samples on demand).
     pub fn open_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
+        if let Some(r) = open_by_path(path) {
+            return r;
+        }
         let io = |e: std::io::Error| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) };
         if let Some(r) = services.reader(path) {
             let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
@@ -292,6 +302,9 @@ impl MediaPool {
     /// format without a streaming reader is read whole only up to [`PROBE_WHOLE_FILE_MAX`] bytes
     /// (#157). Hosts without random-access readers open the file as [`Self::open_file`] does.
     pub fn probe_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
+        if let Some(r) = open_by_path(path) {
+            return r;
+        }
         let Some(r) = services.reader(path) else { return self.open_file(path, services) };
         let r = r.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) })?;
         let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
@@ -695,6 +708,55 @@ mod tests {
         let wav = filmcraft_media::wav::write_wav16(&[0.0, 0.5, -0.5, 0.25], 2, 48_000);
         let s = MediaPool::default().open_file("a.wav", &ReaderOnly(wav.into())).unwrap();
         assert!(s.info().has_audio());
+    }
+
+    /// A path opener (a platform SDK that reads the file itself, such as Blackmagic RAW's) takes
+    /// its files before any reader or byte opener, on import and in Media Browser probes alike;
+    /// other files never reach it.
+    #[test]
+    fn path_openers_take_their_files_before_the_readers() {
+        fn opener(path: &str) -> Option<Result<SharedSource, MediaError>> {
+            let wav = filmcraft_media::wav::write_wav16(&[0.0, 0.5, -0.5, 0.25], 2, 48_000);
+            path.ends_with(".pathopenertest").then(|| filmcraft_media::wav::WavSource::parse(path, wav.into()).map(|s| Arc::new(s) as SharedSource))
+        }
+        filmcraft_codecs::register_path_opener(opener);
+        let host = ReaderOnly(Arc::from(&b"not media"[..]));
+        let pool = MediaPool::default();
+        assert!(pool.open_file("/clips/a.pathopenertest", &host).unwrap().info().has_audio());
+        assert!(pool.probe_file("/clips/a.pathopenertest", &host).unwrap().info().has_audio());
+        assert!(pool.open_file("/clips/a.mov", &host).is_err(), "other files still go through the host's reader");
+    }
+
+    /// A format only a platform path opener decodes (Blackmagic RAW), in a build where none is
+    /// registered (the web app, FreeBSD), fails at once with a message saying why, and its file is
+    /// never read: a camera file is hundreds of gigabytes, and the fallback after the reader
+    /// openers reads the whole file.
+    #[test]
+    fn path_only_formats_without_their_opener_are_refused_unread() {
+        #[derive(Default)]
+        struct Reads(std::sync::atomic::AtomicUsize);
+        impl Services for Reads {
+            fn read_file(&self, _path: &str) -> std::io::Result<Vec<u8>> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Vec::new())
+            }
+            fn write_file(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn reader(&self, _path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some(Ok(Arc::new(filmcraft_media::reader::MemReader(Arc::from(&b""[..])))))
+            }
+        }
+        let host = Reads::default();
+        let pool = MediaPool::default();
+        for path in ["/cards/A001_C001.braw", "C:\\cards\\A001_C002.BRAW"] {
+            for r in [pool.open_file(path, &host), pool.probe_file(path, &host)] {
+                let Err(MediaError::Unsupported(m)) = r else { panic!("{path}: refused as unsupported") };
+                assert!(m.contains("Blackmagic RAW"), "{m}");
+            }
+        }
+        assert_eq!(host.0.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing was read");
     }
 
     /// The desktop host reads media in place instead of loading every clip into memory.

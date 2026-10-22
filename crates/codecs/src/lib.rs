@@ -167,6 +167,41 @@ pub fn register_reader_opener(f: filmcraft_media::ReaderOpener) {
     }
 }
 
+fn path_registry() -> &'static RwLock<Vec<filmcraft_media::PathOpener>> {
+    static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::PathOpener>>> = std::sync::OnceLock::new();
+    R.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Openers that take a native file by its path, tried before any reader or byte opener. None are
+/// built in: platform media SDKs that read files themselves register them (Blackmagic RAW).
+pub fn path_openers() -> Vec<filmcraft_media::PathOpener> {
+    path_registry().read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Register a path opener (tried before previously registered ones).
+pub fn register_path_opener(f: filmcraft_media::PathOpener) {
+    let mut g = path_registry().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// The source a registered path opener makes of the native file `path`, if one takes it. A format
+/// only a path opener can decode ([`filmcraft_media::PATH_ONLY_FORMATS`]) that none takes in this
+/// build is refused here, before anything reads the file: a camera file is hundreds of gigabytes,
+/// and the other openers would read it whole (or take its container and fail on its codec).
+/// Everything else is `None`, for the reader and byte openers.
+pub fn open_by_path(path: &str) -> Option<filmcraft_media::Result<filmcraft_media::SharedSource>> {
+    if let Some(r) = path_openers().into_iter().find_map(|o| o(path)) {
+        return Some(r);
+    }
+    let format = filmcraft_media::path_only_format(path)?;
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    Some(Err(filmcraft_media::MediaError::Unsupported(format!(
+        "{name}: {format} is decoded through its maker's runtime, which this build of FilmCraft cannot load (the desktop app on Linux, Windows and macOS can)"
+    ))))
+}
+
 /// A media reader as the demuxers' byte source.
 #[derive(Clone)]
 pub(crate) struct Src(pub filmcraft_media::SharedReader);

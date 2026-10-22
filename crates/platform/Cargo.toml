@@ -29,6 +29,7 @@ filmcraft-frame = { workspace = true }
 filmcraft-h264 = { workspace = true }
 filmcraft-hevc = { workspace = true }
 filmcraft-isobmff = { workspace = true }
+filmcraft-media = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
 
@@ -52,6 +53,8 @@ windows = { version = "0.62", features = [
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# Blackmagic RAW's runtime (BlackmagicRawAPI.dll) is loaded at run time, as on Linux.
+libloading = "0.8"
 
 # Linux: libva (VA-API) is loaded at run time with libloading (ISC; already in the lockfile through
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.

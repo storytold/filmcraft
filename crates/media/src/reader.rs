@@ -215,6 +215,11 @@ pub fn read_range(r: &dyn ByteReader, offset: u64, len: usize) -> io::Result<Vec
 /// Returns `None` when the format is not this opener's.
 pub type ReaderOpener = fn(name: &str, head: &[u8], reader: &SharedReader) -> Option<Result<SharedSource>>;
 
+/// Opens a native file by its path, for media SDKs that read the file themselves (Blackmagic
+/// RAW). Returns `None` when the file is not this opener's; it must decide cheaply (by the
+/// extension), since it is asked before every file is read.
+pub type PathOpener = fn(path: &str) -> Option<Result<SharedSource>>;
+
 /// Bytes sniffed by [`open_reader`].
 pub const HEAD_LEN: usize = 64 * 1024;
 

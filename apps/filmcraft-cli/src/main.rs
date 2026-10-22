@@ -307,7 +307,11 @@ async fn cli() {
         "bench-decode" => {
             let path = a.pos(1).unwrap_or_else(|| usage("bench-decode <media>"));
             let n: i64 = a.opt("--frames").and_then(|v| v.parse().ok()).unwrap_or(120);
-            let src = filmcraft_codecs::open_bytes(path, std::fs::read(path).unwrap_or_else(|e| fail(e)).into()).unwrap_or_else(|e| fail(e));
+            let src = match filmcraft_codecs::open_by_path(path) {
+                Some(r) => r,
+                None => filmcraft_codecs::open_bytes(path, std::fs::read(path).unwrap_or_else(|e| fail(e)).into()),
+            }
+            .unwrap_or_else(|e| fail(e));
             let rate = src.info().frame_rate();
             let t0 = std::time::Instant::now();
             for f in 0..n {
