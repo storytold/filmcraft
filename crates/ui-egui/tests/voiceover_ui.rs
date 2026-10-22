@@ -6,9 +6,38 @@ use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
+use filmcraft_engine::voiceover::{AudioInput, InputFormat};
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
+
+struct FailedInput;
+
+impl AudioInput for FailedInput {
+    fn devices(&self) -> Vec<String> {
+        vec!["Failed Input".into()]
+    }
+
+    fn channels(&self, _device: &str) -> u16 {
+        1
+    }
+
+    fn start(&mut self, _device: &str, sample_rate: u32) -> std::result::Result<InputFormat, String> {
+        Ok(InputFormat { sample_rate, channels: 1 })
+    }
+
+    fn read(&mut self, frames: usize) -> Vec<Vec<f32>> {
+        vec![vec![0.5; frames]]
+    }
+
+    fn error(&self) -> Option<String> {
+        Some("ALSA poll returned POLLERR".into())
+    }
+
+    fn discard(&mut self) {}
+
+    fn stop(&mut self) {}
+}
 
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
@@ -89,6 +118,20 @@ fn a_failed_take_can_be_discarded_from_the_settings_dialog() {
     assert!(!d.harness.state().session.voiceover.recording(), "{}", d.harness.state().ui.status);
     d.exec("file.newProject", json!({}));
     std::fs::remove_file(blocker).unwrap();
+}
+
+#[test]
+fn an_audio_input_error_stops_playback_and_reports_the_device_failure() {
+    let mut d = Driver::demo();
+    d.harness.state_mut().session.voiceover.input = Some(Box::new(FailedInput));
+
+    d.click("timeline.track.A1.voiceover");
+
+    let app = d.harness.state();
+    assert!(!app.playback.playing, "failed voice-over input must stop playback");
+    assert!(!app.session.voiceover.recording(), "failed voice-over input must clear the recording");
+    assert!(app.ui.status.contains("ALSA poll returned POLLERR"), "{}", app.ui.status);
+    assert!(app.ui.status.contains("Settings > Audio Hardware"), "{}", app.ui.status);
 }
 
 #[test]
