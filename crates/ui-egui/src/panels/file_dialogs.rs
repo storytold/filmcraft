@@ -131,7 +131,8 @@ pub fn show_revert(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         });
     });
     // (the modal's own close also fires on Escape: not while a drag is being cancelled, #580)
-    open && !(r.should_close() && !ctx.input(|i| i.pointer.any_down()))
+    let closed_by_modal = r.should_close() && !ctx.input(|i| i.pointer.any_down());
+    open && !closed_by_modal
 }
 
 /// Draw the dialog if it is one of ours; returns Some(still open).
