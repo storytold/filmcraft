@@ -130,6 +130,7 @@ impl Driver {
     }
 }
 
+/// Every open sequence keeps its zoom, scroll and track heights across tab switches and closes.
 #[test]
 fn each_sequence_tab_keeps_its_own_zoom_scroll_and_track_heights() {
     let mut d = Driver::new();
@@ -160,6 +161,29 @@ fn each_sequence_tab_keeps_its_own_zoom_scroll_and_track_heights() {
     assert_eq!(d.view().0, 55.0);
 }
 
+/// The rects of the sequence tabs with these ids, as the control channel reports them.
+fn tab_rects(d: &mut Driver, ids: &[u64]) -> Vec<[f64; 4]> {
+    ids.iter().map(|id| d.rect(&format!("timeline.tab.{id}")).expect("sequence tab")).collect()
+}
+
+/// Selecting a tab must not move the strip: the × and the panel menu are reserved slots on every
+/// sequence tab, so the Timeline's tabs stay put when you show another sequence.
+#[test]
+fn sequence_tab_rects_do_not_move_when_the_active_sequence_changes() {
+    let mut d = Driver::new();
+    let main = d.active();
+    let (b, c) = (d.new_sequence("B"), d.new_sequence("C"));
+    let ids = [main, b, c];
+    d.show(main);
+    let before = tab_rects(&mut d, &ids);
+    for seq in [b, c, main, c] {
+        d.show(seq);
+        assert_eq!(tab_rects(&mut d, &ids), before, "showing sequence {seq} moved the tabs");
+    }
+}
+
+/// A right-click on a sequence tab shows it and opens the panel menu, which closes after an action,
+/// on Escape, or on a click elsewhere.
 #[test]
 fn a_right_click_on_a_tab_shows_it_and_opens_its_menu() {
     let mut d = Driver::new();
@@ -203,6 +227,7 @@ fn a_right_click_on_a_tab_shows_it_and_opens_its_menu() {
     assert_eq!((d.open(), d.active()), (vec![main], main));
 }
 
+/// Dragging a sequence tab past a neighbour's middle reorders it; a short drag or a click does not.
 #[test]
 fn a_tab_dragged_past_its_neighbours_changes_places_with_them() {
     let mut d = Driver::new();
@@ -225,6 +250,8 @@ fn a_tab_dragged_past_its_neighbours_changes_places_with_them() {
     assert_eq!((d.open(), d.active()), (vec![main, c, b], b));
 }
 
+/// Tabs that do not fit give way to the » list, which shows every open sequence and closes after a
+/// pick or a click elsewhere.
 #[test]
 fn tabs_that_do_not_fit_are_reached_through_a_list() {
     let mut d = Driver::new();
@@ -254,6 +281,8 @@ fn tabs_that_do_not_fit_are_reached_through_a_list() {
     assert!(!d.has(&format!("timeline.tabs.list.{last}")));
 }
 
+/// A saved project reopens with its sequence tabs, their order, the active sequence and each
+/// sequence's view.
 #[test]
 fn a_reopened_project_shows_its_tabs_as_they_were_left() {
     let dir = std::env::temp_dir().join(format!("filmcraft-tabs-ui-{}", std::process::id()));

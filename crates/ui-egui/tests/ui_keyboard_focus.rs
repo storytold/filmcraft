@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use egui::{Event, Id, Key, Modifiers, vec2};
+use egui::{Event, Id, Key, Modifiers, Rect, vec2};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::{
@@ -12,6 +12,7 @@ use filmcraft_ui_egui::{
 };
 use serde_json::json;
 
+/// Press and release `key` with `modifiers`, then let the app settle; a UI error fails the test.
 fn key(h: &mut Harness<'_, FilmcraftApp>, key: Key, modifiers: Modifiers) {
     for pressed in [true, false] {
         h.event(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
@@ -21,6 +22,8 @@ fn key(h: &mut Harness<'_, FilmcraftApp>, key: Key, modifiers: Modifiers) {
     assert!(h.state().ui_error.is_none());
 }
 
+/// Tab reaches each custom-painted tool, Shift+Tab goes back, and Space activates only the
+/// focused tool — never playback — with a visible focus outline.
 #[test]
 fn tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus() {
     let mut session = Session::default();
@@ -63,6 +66,8 @@ fn tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus() {
     );
 }
 
+/// Tab reaches the dock tabs, Space and Enter switch the visible panel, and the focused tab shows
+/// a focus outline without touching the project or playback state.
 #[test]
 fn dock_tab_traversal_and_enter_change_the_visible_panel_without_editing() {
     let mut session = Session::default();
@@ -104,4 +109,26 @@ fn dock_tab_traversal_and_enter_change_the_visible_panel_without_editing() {
     assert!(Arc::ptr_eq(&h.state().session.project, &project));
     assert_eq!(h.state().session.state.playheads, playheads);
     assert!(!h.state().playback.playing);
+}
+
+/// Selecting a tab must not move the strip: the active tab's panel menu is a reserved slot on every
+/// tab, so Properties / Essential Graphics / Text (or any group) stays put when you switch.
+#[test]
+fn dock_tab_rects_do_not_move_when_the_active_tab_changes() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(session);
+    let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_eframe(move |_| app);
+    h.run_steps(4);
+    let panels = vec![PanelKind::Properties, PanelKind::EssentialGraphics, PanelKind::Text];
+    let tabs = [Id::new(("tab", String::new(), 0usize)), Id::new(("tab", String::new(), 1usize)), Id::new(("tab", String::new(), 2usize))];
+    let rects = |h: &Harness<'_, FilmcraftApp>| -> Vec<Rect> { tabs.iter().map(|id| h.ctx.read_response(*id).expect("tab").rect).collect() };
+    h.state_mut().ui.dock = DockNode::Tabs { panels: panels.clone(), active: 0 };
+    h.run_steps(3);
+    let before = rects(&h);
+    for active in [1, 2, 0, 2] {
+        h.state_mut().ui.dock = DockNode::Tabs { panels: panels.clone(), active };
+        h.run_steps(2);
+        assert_eq!(rects(&h), before, "selecting tab {active} moved the tabs");
+    }
 }

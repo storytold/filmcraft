@@ -592,6 +592,7 @@ pub struct Chrome {
     pub tabs: Vec<(PanelKind, Rect)>,
 }
 
+/// Draw a group's frame and tab strip, returning the actions it produced and its tab rects.
 pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t: &Tokens, reg: &mut crate::automation::Registry) -> Chrome {
     let mut actions = Vec::new();
     let mut tab_rects: Vec<(PanelKind, Rect)> = Vec::new();
@@ -645,11 +646,18 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
         // Which tabs fit. The active tab is always shown: tabs before it are left out until it
         // fits, then as many after it as there is room for. Tabs that are left out are reached
         // through the » list at the right end of the strip.
+        // A tab's width never depends on whether it is active: only the active tab shows the panel
+        // menu and, for a sequence, its ×, so every tab reserves those slots. Otherwise selecting a
+        // tab widened it and pushed its neighbours sideways (the Properties / Essential Graphics /
+        // Text group jumped whenever you switched tabs). The ≡ is centred 12 pt past the label and
+        // painted 16 pt wide, so a 12 pt slot holds it exactly; a wider reserve left a visible gap.
+        const MENU_W: f32 = 12.0;
+        const SEQ_CLOSE_W: f32 = 16.0;
         let widths: Vec<f32> = tabs
             .iter()
             .map(|tab| {
                 let label = painter.layout_no_wrap(tab.title.clone(), Tokens::ui(12.0), t.tab_text).size().x;
-                label + 16.0 + if tab.active { 20.0 } else { 0.0 } + if tab.active && tab.seq.is_some() { 16.0 } else { 0.0 }
+                label + 16.0 + MENU_W + if tab.seq.is_some() { SEQ_CLOSE_W } else { 0.0 }
             })
             .collect();
         let span = |from: usize, to: usize| widths.get(from..=to).map_or(0.0, |w| w.iter().sum::<f32>() + 8.0 * w.len() as f32);
@@ -706,7 +714,8 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
             let p = &tab.panel;
             let is_active = tab.active;
             let galley = painter.layout_no_wrap(tab.title.clone(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
-            let close_w = if is_active && tab.seq.is_some() { 16.0 } else { 0.0 };
+            // reserved on every sequence tab, so the label does not move when the × appears
+            let close_w = if tab.seq.is_some() { SEQ_CLOSE_W } else { 0.0 };
             let w = widths.get(i).copied().unwrap_or(0.0);
             let tab_rect = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, t.tab_h));
             // a sequence tab keeps its identity when the tabs are reordered under the pointer
