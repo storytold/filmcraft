@@ -528,6 +528,89 @@ fn sub_frame_clips_keep_equal_source_and_record_spans() {
     }
 }
 
+fn retimed_doc(speed: &str, inn: i64, out: i64, end: i64, ppro: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="5"><sequence id="sequence-1"><name>Retimed</name>{RATE}
+  <media><video><track>
+    <clipitem id="clipitem-1"><name>take.mov</name>{RATE}
+      <start>0</start><end>{end}</end><in>{inn}</in><out>{out}</out>{ppro}
+      <file id="file-1"><name>take.mov</name><pathurl>file://localhost/m/take.mov</pathurl>{RATE}<duration>2400</duration>
+        <media><video><samplecharacteristics>{RATE}<width>1920</width><height>1080</height></samplecharacteristics></video></media>
+      </file>
+      <filter><effect><name>Time Remap</name><effectid>timeremap</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>
+        <parameter><parameterid>speed</parameterid><name>speed</name><value>{speed}</value></parameter>
+        <parameter><parameterid>reverse</parameterid><name>reverse</name><value>FALSE</value></parameter>
+      </effect></filter>
+    </clipitem>
+  </track></video></media>
+</sequence></xmeml>
+"#
+    )
+}
+
+fn only_clip(doc: &str) -> filmcraft_project::TrackItem {
+    let (imp, _) = import(doc.as_bytes(), Format::Fcp7Xml, Some("/proj")).unwrap();
+    let s = imp.project.sequence(imp.sequences[0]).unwrap();
+    s.video_tracks[0].items[0].clone()
+}
+
+/// Drops `pproTicksIn` / `pproTicksOut`, leaving only the frame-based <in>/<out> every xmeml writer has.
+fn strip_ppro_ticks(xml: &str) -> String {
+    let mut out = String::new();
+    let mut rest = xml;
+    while let Some(at) = rest.find("<pproTicks") {
+        out.push_str(&rest[..at]);
+        let close = at + rest[at..].find("</pproTicks").unwrap();
+        rest = &rest[close + rest[close..].find('>').unwrap() + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A retimed clip's <in>/<out> are in the scaled domain (source time ÷ speed, so out − in equals
+/// end − start). Premiere plays a 50% clip whose <in> is frame 408 from frame 204 of the source;
+/// reading <in> as source time played the right length from the wrong place, and slow clips near
+/// the end of a take ran past the end of the media. Measured against 52 retimed clips of a finished
+/// Premiere project: before this, 50 of them started at source_in ÷ speed.
+#[test]
+fn retimed_in_out_are_in_the_scaled_domain() {
+    let r = FrameRate::FPS_23_976;
+    let half = only_clip(&retimed_doc("50", 408, 600, 192, ""));
+    assert_eq!(half.speed, 0.5);
+    assert_eq!((half.start, half.duration), (r.tick_of(0), r.tick_of(192)));
+    assert_eq!(half.source_in, r.tick_of(204));
+    assert_eq!(half.source_out(), r.tick_of(300));
+
+    let slow = only_clip(&retimed_doc("40", 250, 340, 90, ""));
+    assert_eq!(slow.source_in, r.tick_of(100));
+    assert_eq!(slow.source_out(), r.tick_of(136));
+
+    // Explicit ticks are taken as they are: their domain on a retimed clip has not been measured.
+    let ppro = format!("<pproTicksIn>{}</pproTicksIn>", r.tick_of(204).0);
+    assert_eq!(only_clip(&retimed_doc("50", 408, 600, 192, &ppro)).source_in, r.tick_of(204));
+}
+
+/// The export side of the same reading: a retimed clip writes <in>/<out> scaled, so out − in == end − start,
+/// and it reads back from where it started, with or without the tick-exact fields.
+#[test]
+fn retimed_clips_export_in_the_scaled_domain_and_round_trip() {
+    let r = FrameRate::FPS_23_976;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, false, r);
+    let s = sequence(&mut p, "t", r, false);
+    let c = clip(&mut p, s, TrackKind::Video, 0, a, 0, 192, 204);
+    p.sequence_mut(s).unwrap().find_item_mut(c).unwrap().1.speed = 0.5;
+    let (bytes, _) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).expect("export");
+    let xml = String::from_utf8(bytes).unwrap();
+    assert_eq!(clip_spans(&xml), vec![(0, 192, 408, 600)], "{xml}");
+    for doc in [xml.clone(), strip_ppro_ticks(&xml)] {
+        let back = only_clip(&doc);
+        assert_eq!((back.speed, back.source_in, back.duration), (0.5, r.tick_of(204), r.tick_of(192)));
+    }
+}
+
 /// #463: a stereo file split onto two mono tracks (A1 = channel 1, A2 = channel 2) lost the right channel,
 /// because every audio clip item was written with `sourcetrack/trackindex` 1 and the importer ignored it.
 #[test]
