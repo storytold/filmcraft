@@ -177,7 +177,7 @@ fn vsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
     DockNode::Split { vertical: true, size, a: Box::new(a), b: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 10] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "Vertical", "All Panels"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -366,6 +366,23 @@ pub fn workspace(name: &str) -> DockNode {
                 hsplit(Ratio(0.6), tabs(&[Program], 0), tabs(&[LumetriColor, EssentialGraphics, EssentialSound, TextToSpeech, Properties, AudioTrackMixer], 0)),
             ),
             hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
+        ),
+        "Vertical" => hsplit(
+            Ratio(0.66),
+            vsplit(
+                Ratio(0.58),
+                hsplit(
+                    Ratio(0.55),
+                    vsplit(
+                        Ratio(0.48),
+                        tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 1),
+                        tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0),
+                    ),
+                    tabs(&[Properties, EssentialGraphics, Text], 0),
+                ),
+                bottom_editing(),
+            ),
+            tabs(&[Program], 0),
         ),
         // Editing (default), Learning, Review — Premiere 26 factory layout:
         // top: Source group | Program | Properties; bottom: Project group | Tools | Timeline | Meters.
