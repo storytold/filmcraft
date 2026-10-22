@@ -96,7 +96,8 @@ impl FilmcraftApp {
         self.source_playback.shown = time;
         self.source_playback.clock = Playback { playing: true, speed, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, ..Default::default() };
         self.source_playback.clock.meter.start(speed);
-        self.start_source_audio(0.0);
+        // The output opens on the first advance, which stamps `anchor_time` with the real
+        // egui time: opening here with a fake `now` would schedule the retry wrongly.
         Ok(())
     }
 
@@ -235,11 +236,12 @@ impl FilmcraftApp {
         {
             audio.recover();
         }
-        let clock = &mut self.source_playback.clock;
-        if clock.anchor_time < 0.0 {
-            clock.anchor_time = now;
-            clock.audio_seen = (0, now);
+        if self.source_playback.clock.anchor_time < 0.0 {
+            self.source_playback.clock.anchor_time = now;
+            self.source_playback.clock.audio_seen = (0, now);
+            self.start_source_audio(now);
         }
+        let clock = &mut self.source_playback.clock;
         let reading = if clock.audio_clock { self.audio.as_ref().and_then(|a| a.played_frames().map(|n| (n, a.sample_rate()))) } else { None };
         if let Some((frames, _)) = reading
             && frames != clock.audio_seen.0

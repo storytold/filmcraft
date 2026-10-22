@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use egui_kittest::Harness;
@@ -131,6 +131,55 @@ fn audio_source_outputs_sound_and_uses_the_device_clock() {
         }
     }
     assert!(heard, "the audio callback must produce non-silent source samples");
+    h.state_mut().stop_source();
+}
+
+/// A device that fails to open until `opens` flips, like headphones plugging in.
+struct Flaky {
+    starts: Arc<AtomicUsize>,
+    opens: Arc<AtomicBool>,
+    frames: Arc<AtomicU64>,
+}
+impl AudioOut for Flaky {
+    fn start(&mut self, _: Fill) -> Result<u32, String> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        if self.opens.load(Ordering::SeqCst) { Ok(48_000) } else { Err("no device".into()) }
+    }
+    fn stop(&mut self) {}
+    fn sample_rate(&self) -> u32 {
+        48_000
+    }
+    fn played_frames(&self) -> Option<u64> {
+        Some(self.frames.fetch_add(4_800, Ordering::SeqCst) + 4_800)
+    }
+}
+
+#[test]
+fn a_failed_source_open_retries_on_the_timer_and_recovers() {
+    let mut app = app(11);
+    let starts = Arc::new(AtomicUsize::new(0));
+    let opens = Arc::new(AtomicBool::new(false));
+    app.audio = Some(Box::new(Flaky { starts: starts.clone(), opens: opens.clone(), frames: Arc::new(AtomicU64::new(0)) }));
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+    // play well past AUDIO_RETRY_S of uptime: a retry scheduled from a fake epoch must
+    // not fire on the frame after Play
+    for _ in 0..12 {
+        h.step();
+    }
+    h.state_mut().play_source().unwrap();
+    for _ in 0..4 {
+        h.step();
+    }
+    assert_eq!(starts.load(Ordering::SeqCst), 1, "a failed open waits for the timer, not the next frame");
+    for _ in 0..8 {
+        h.step();
+    }
+    assert_eq!(starts.load(Ordering::SeqCst), 2, "the retry fires AUDIO_RETRY_S after the open failed");
+    opens.store(true, Ordering::SeqCst);
+    for _ in 0..8 {
+        h.step();
+    }
+    assert!(h.state().source_playback.clock.audio_clock, "the device opens when it reappears");
     h.state_mut().stop_source();
 }
 
