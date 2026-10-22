@@ -7,7 +7,9 @@
 //!   ▸ Go to Gap).
 //! - [`clip_item_to`] trims a copy of an item to a time range (Make Subsequence).
 
-use filmcraft_project::{ClipId, Sequence, Track, TrackId, TrackItem};
+use std::collections::HashSet;
+
+use filmcraft_project::{ClipId, Sequence, Track, TrackId, TrackItem, TrackKind};
 use filmcraft_time::{Tick, TimeRange};
 
 use crate::remove_orphan_transitions;
@@ -31,6 +33,50 @@ pub fn is_through_edit(a: &TrackItem, b: &TrackItem) -> bool {
     diff.0.abs() <= MEDIA_SLACK
 }
 
+/// Compare audio stream and source-channel choices for audio continuity; linked video joins are guarded separately.
+fn is_through_edit_on_track(is_audio: bool, a: &TrackItem, b: &TrackItem) -> bool {
+    is_through_edit(a, b) && (!is_audio || (a.audio_stream == b.audio_stream && a.source_channels == b.source_channels))
+}
+
+/// Audio links that would remain after the requested, unlocked audio cuts heal. This also sees
+/// pieces moved to another track or separated by a gap: they cannot be removed by an audio join.
+fn surviving_audio_links(seq: &Sequence, wanted: &impl Fn(ClipId, ClipId) -> bool) -> HashSet<u64> {
+    let mut links = HashSet::new();
+    for track in &seq.audio_tracks {
+        let mut items = track.items.iter();
+        let Some(first) = items.next() else { continue };
+        let mut left = first.clone();
+        for right in items {
+            if !track.locked && wanted(left.id, right.id) && is_through_edit_on_track(true, &left, right) {
+                left.duration += right.duration;
+                if left.reverse {
+                    left.source_in = right.source_in;
+                }
+            } else {
+                if let Some(link) = left.link {
+                    links.insert(link);
+                }
+                left = right.clone();
+            }
+        }
+        if let Some(link) = left.link {
+            links.insert(link);
+        }
+    }
+    links
+}
+
+/// Keep the right-hand clip ID of a video cut when its distinct link would still be owned by
+/// audio after the requested audio joins. Joining that video cut would orphan its sound.
+fn blocked_video_right_ids(seq: &Sequence, audio_links: &HashSet<u64>) -> HashSet<ClipId> {
+    seq.video_tracks
+        .iter()
+        .flat_map(|track| track.items.windows(2))
+        .filter(|pair| pair[0].link != pair[1].link && pair[1].link.is_some_and(|right| audio_links.contains(&right)))
+        .map(|pair| pair[1].id)
+        .collect()
+}
+
 /// One through edit on a track.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThroughEdit {
@@ -40,19 +86,65 @@ pub struct ThroughEdit {
     pub time: Tick,
 }
 
-/// Through edits on one track, left to right.
-pub fn track_through_edits(track: &Track) -> Vec<ThroughEdit> {
+fn track_through_edits_with_kind(track: &Track, is_audio: bool) -> Vec<ThroughEdit> {
     track
         .items
         .windows(2)
-        .filter(|w| is_through_edit(&w[0], &w[1]))
+        .filter(|w| is_through_edit_on_track(is_audio, &w[0], &w[1]))
         .map(|w| ThroughEdit { track: track.id, left: w[0].id, right: w[1].id, time: w[1].start })
         .collect()
 }
 
+/// Through edits on one track, left to right.
+pub fn track_through_edits(track: &Track) -> Vec<ThroughEdit> {
+    track_through_edits_with_kind(track, track.kind == TrackKind::Audio)
+}
+
 /// Through edits on every video and audio track.
 pub fn through_edits(seq: &Sequence) -> Vec<ThroughEdit> {
-    seq.all_tracks().flat_map(track_through_edits).collect()
+    seq.video_tracks
+        .iter()
+        .flat_map(|track| track_through_edits_with_kind(track, false))
+        .chain(seq.audio_tracks.iter().flat_map(|track| track_through_edits_with_kind(track, true)))
+        .collect()
+}
+
+/// Through edits on one sequence track, using its actual video/audio storage rather than a
+/// serialized track kind that a malformed project could misstate.
+pub fn through_edits_on_track(seq: &Sequence, track_id: TrackId) -> Vec<ThroughEdit> {
+    if let Some(track) = seq.video_tracks.iter().find(|track| track.id == track_id) {
+        track_through_edits_with_kind(track, false)
+    } else if let Some(track) = seq.audio_tracks.iter().find(|track| track.id == track_id) {
+        track_through_edits_with_kind(track, true)
+    } else {
+        Vec::new()
+    }
+}
+
+/// Cuts that can be joined without discarding a surviving linked audio piece.
+pub fn joinable_through_edits(seq: &Sequence) -> Vec<ThroughEdit> {
+    joinable_through_edits_where(seq, |_, _| true)
+}
+
+/// Joinability for the same selection that the command will apply. Simulate only audio joins to
+/// determine which links survive, then inspect the original cuts without changing the sequence.
+pub fn joinable_through_edits_where(seq: &Sequence, wanted: impl Fn(ClipId, ClipId) -> bool) -> Vec<ThroughEdit> {
+    let audio_links = surviving_audio_links(seq, &wanted);
+    let blocked = blocked_video_right_ids(seq, &audio_links);
+    let mut edits = Vec::new();
+    for track in seq.video_tracks.iter().filter(|track| !track.locked) {
+        edits.extend(
+            track
+                .items
+                .windows(2)
+                .filter(|pair| wanted(pair[0].id, pair[1].id) && is_through_edit_on_track(false, &pair[0], &pair[1]) && !blocked.contains(&pair[1].id))
+                .map(|pair| ThroughEdit { track: track.id, left: pair[0].id, right: pair[1].id, time: pair[1].start }),
+        );
+    }
+    for track in seq.audio_tracks.iter().filter(|track| !track.locked) {
+        edits.extend(track_through_edits_with_kind(track, true).into_iter().filter(|e| wanted(e.left, e.right)));
+    }
+    edits
 }
 
 /// Join through edits on unlocked tracks. With `only` non-empty, just the edits whose left or right
@@ -64,40 +156,50 @@ pub fn join_through_edits(seq: &mut Sequence, only: &[ClipId]) -> usize {
 
 /// Join the through edits on unlocked tracks whose (left, right) pieces `wanted` accepts.
 pub fn join_through_edits_where(seq: &mut Sequence, wanted: impl Fn(ClipId, ClipId) -> bool) -> usize {
+    let none = HashSet::new();
     let mut n = 0;
-    for tr in seq.all_tracks_mut() {
-        if tr.locked {
+    // Audio first: the remaining links are the ones a video join must preserve.
+    for tr in seq.audio_tracks.iter_mut().filter(|track| !track.locked) {
+        n += join_track_through_edits(tr, true, &wanted, &none);
+    }
+    let audio_links = seq.audio_tracks.iter().flat_map(|track| track.items.iter().filter_map(|item| item.link)).collect();
+    let blocked = blocked_video_right_ids(seq, &audio_links);
+    for tr in seq.video_tracks.iter_mut().filter(|track| !track.locked) {
+        n += join_track_through_edits(tr, false, &wanted, &blocked);
+    }
+    n
+}
+
+fn join_track_through_edits(tr: &mut Track, is_audio: bool, wanted: &impl Fn(ClipId, ClipId) -> bool, blocked: &HashSet<ClipId>) -> usize {
+    let mut n = 0;
+    let mut i = 0;
+    while i + 1 < tr.items.len() {
+        let (a, b) = (&tr.items[i], &tr.items[i + 1]);
+        if !(wanted(a.id, b.id) && is_through_edit_on_track(is_audio, a, b) && !blocked.contains(&b.id)) {
+            i += 1;
             continue;
         }
-        let mut i = 0;
-        while i + 1 < tr.items.len() {
-            let (a, b) = (&tr.items[i], &tr.items[i + 1]);
-            if !(wanted(a.id, b.id) && is_through_edit(a, b)) {
-                i += 1;
-                continue;
-            }
-            let (aid, bid) = (a.id, b.id);
-            let (dur, b_source_in) = (b.duration, b.source_in);
-            let left = &mut tr.items[i];
-            left.duration += dur;
-            if left.reverse {
-                // reversed: the right piece shows the earlier media
-                left.source_in = b_source_in;
-            }
-            tr.items.remove(i + 1);
-            tr.transitions.retain(|t| !(t.from == Some(aid) && t.to == Some(bid)));
-            for t in &mut tr.transitions {
-                if t.from == Some(bid) {
-                    t.from = Some(aid);
-                }
-                if t.to == Some(bid) {
-                    t.to = Some(aid);
-                }
-            }
-            n += 1;
+        let (aid, bid) = (a.id, b.id);
+        let (dur, b_source_in) = (b.duration, b.source_in);
+        let left = &mut tr.items[i];
+        left.duration += dur;
+        if left.reverse {
+            // reversed: the right piece shows the earlier media
+            left.source_in = b_source_in;
         }
-        remove_orphan_transitions(tr);
+        tr.items.remove(i + 1);
+        tr.transitions.retain(|t| !(t.from == Some(aid) && t.to == Some(bid)));
+        for t in &mut tr.transitions {
+            if t.from == Some(bid) {
+                t.from = Some(aid);
+            }
+            if t.to == Some(bid) {
+                t.to = Some(aid);
+            }
+        }
+        n += 1;
     }
+    remove_orphan_transitions(tr);
     n
 }
 
@@ -239,6 +341,170 @@ mod tests {
         other.item = ItemId(2);
         let q = seq_with(vec![item(10, 0, 40, 500), other]);
         assert!(through_edits(&q).is_empty());
+    }
+
+    #[test]
+    fn different_audio_sources_are_not_through_edits() {
+        let left = item(10, 0, 40, 500);
+        for (stream, channels) in [(1, vec![]), (0, vec![1])] {
+            let mut right = item(11, 40, 60, 540);
+            right.audio_stream = stream;
+            right.source_channels = channels;
+            let mut q = seq_with(Vec::new());
+            q.audio_tracks[0].items = vec![left.clone(), right];
+            let before = q.clone();
+            assert!(through_edits(&q).is_empty(), "different stream/channel mapping must preserve the cut");
+            assert_eq!(join_through_edits(&mut q, &[]), 0);
+            assert_eq!(q, before, "joining cannot replace a different audio source");
+            let mut malformed = before.clone();
+            malformed.audio_tracks[0].kind = TrackKind::Video;
+            assert!(through_edits(&malformed).is_empty(), "audio-track storage, not a serialized kind, determines source matching");
+            assert!(through_edits_on_track(&malformed, malformed.audio_tracks[0].id).is_empty());
+            assert_eq!(join_through_edits(&mut malformed, &[]), 0);
+        }
+    }
+
+    #[test]
+    fn join_all_keeps_a_later_linked_audio_choice_boundary() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 10, 30), item(12, 40, 20, 40)]);
+        q.audio_tracks[0].items = vec![item(20, 0, 30, 0), item(21, 30, 10, 30), item(22, 40, 20, 40)];
+        for (index, link) in [100, 200, 300].into_iter().enumerate() {
+            q.video_tracks[0].items[index].link = Some(link);
+            q.audio_tracks[0].items[index].link = Some(link);
+        }
+        q.audio_tracks[0].items[2].source_channels = vec![1];
+        assert_eq!(join_through_edits(&mut q, &[]), 2, "only the first video/audio cuts may heal");
+        assert_eq!(q.video_tracks[0].items.len(), 2);
+        assert_eq!(q.audio_tracks[0].items.len(), 2);
+        assert_eq!(q.video_tracks[0].items[1].link, q.audio_tracks[0].items[1].link);
+    }
+
+    #[test]
+    fn audio_only_heal_then_join_all_keeps_later_video_choice_boundary() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 10, 30), item(12, 40, 20, 40)]);
+        q.audio_tracks[0].items = vec![item(20, 0, 30, 0), item(21, 30, 10, 30), item(22, 40, 20, 40)];
+        for (index, link) in [100, 200, 300].into_iter().enumerate() {
+            q.video_tracks[0].items[index].link = Some(link);
+            q.audio_tracks[0].items[index].link = Some(link);
+        }
+        q.audio_tracks[0].items[2].source_channels = vec![1];
+        assert_eq!(join_through_edits(&mut q, &[ClipId(20)]), 1, "audio-only heal must leave the video pieces split");
+        assert_eq!(q.video_tracks[0].items.len(), 3);
+        assert_eq!(q.audio_tracks[0].items.len(), 2);
+        assert_eq!(join_through_edits(&mut q, &[]), 1, "later choice boundary must remain protected");
+        assert_eq!(q.video_tracks[0].items.len(), 2);
+        assert_eq!(q.video_tracks[0].items[1].id, ClipId(12));
+        assert_eq!(q.audio_tracks[0].items[1].id, ClipId(22));
+        assert_eq!(q.audio_tracks[0].items[1].source_channels, vec![1]);
+    }
+
+    #[test]
+    fn unrelated_audio_boundary_does_not_block_link_preserving_video_join() {
+        let mut q = seq_with(vec![item(10, 0, 10, 0), item(11, 10, 10, 10)]);
+        for video in &mut q.video_tracks[0].items {
+            video.link = Some(7);
+        }
+        let mut unrelated = item(20, 0, 4, 0);
+        unrelated.item = ItemId(2);
+        unrelated.source_channels = vec![0];
+        let mut sound = item(21, 5, 15, 5);
+        sound.source_channels = vec![1];
+        sound.link = Some(7);
+        q.audio_tracks[0].items = vec![unrelated, sound];
+        assert!(q.check().is_ok());
+        assert_eq!(join_through_edits(&mut q, &[]), 1);
+        assert_eq!(q.video_tracks[0].items.len(), 1);
+        assert_eq!(q.video_tracks[0].items[0].link, Some(7));
+        assert_eq!(q.audio_tracks[0].items.len(), 2);
+        assert_eq!(q.audio_tracks[0].items[1].source_channels, vec![1]);
+    }
+
+    #[test]
+    fn gapped_audio_choice_still_protects_its_linked_video_cut() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 30, 30)]);
+        q.audio_tracks[0].items = vec![item(20, 0, 25, 0), item(21, 30, 30, 30)];
+        for (index, link) in [100, 200].into_iter().enumerate() {
+            q.video_tracks[0].items[index].link = Some(link);
+            q.audio_tracks[0].items[index].link = Some(link);
+        }
+        q.audio_tracks[0].items[1].source_channels = vec![1];
+        let before = q.clone();
+        assert_eq!(join_through_edits(&mut q, &[]), 0);
+        assert_eq!(q, before);
+    }
+
+    #[test]
+    fn moved_audio_right_piece_keeps_its_linked_video_boundary() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 30, 30)]);
+        q.audio_tracks[0].items = vec![item(20, 0, 30, 0), item(21, 30, 30, 30)];
+        for (index, link) in [100, 200].into_iter().enumerate() {
+            q.video_tracks[0].items[index].link = Some(link);
+            q.audio_tracks[0].items[index].link = Some(link);
+        }
+        q.audio_tracks[0].items[1].source_channels = vec![1];
+        let mut moved = q.audio_tracks[0].clone();
+        moved.id = TrackId(999);
+        moved.name = "A2".into();
+        moved.items = vec![q.audio_tracks[0].items.remove(1)];
+        q.audio_tracks.push(moved);
+        assert!(q.check().is_ok());
+        let before = q.clone();
+        assert!(joinable_through_edits(&q).is_empty());
+        assert_eq!(join_through_edits(&mut q, &[]), 0);
+        assert_eq!(q, before);
+    }
+
+    #[test]
+    fn locked_audio_keeps_its_linked_video_boundary() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 30, 30)]);
+        q.audio_tracks[0].items = vec![item(20, 0, 30, 0), item(21, 30, 30, 30)];
+        for (index, link) in [100, 200].into_iter().enumerate() {
+            q.video_tracks[0].items[index].link = Some(link);
+            q.audio_tracks[0].items[index].link = Some(link);
+        }
+        q.audio_tracks[0].locked = true;
+        let before = q.clone();
+        assert!(joinable_through_edits(&q).is_empty());
+        assert_eq!(join_through_edits(&mut q, &[]), 0);
+        assert_eq!(q, before);
+    }
+
+    #[test]
+    fn video_only_join_keeps_an_unselected_linked_audio_piece() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 30, 30)]);
+        q.audio_tracks[0].items = vec![item(20, 0, 30, 0), item(21, 30, 30, 30)];
+        for (index, link) in [100, 200].into_iter().enumerate() {
+            q.video_tracks[0].items[index].link = Some(link);
+            q.audio_tracks[0].items[index].link = Some(link);
+        }
+        let before = q.clone();
+        assert_eq!(join_through_edits(&mut q, &[ClipId(10)]), 0);
+        assert_eq!(q, before);
+    }
+
+    #[test]
+    fn audio_only_join_does_not_link_distinct_surviving_video_pieces() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 30, 30)]);
+        q.video_tracks[0].items[0].link = Some(100);
+        q.video_tracks[0].items[1].link = Some(200);
+        q.audio_tracks[0].items = vec![item(20, 0, 30, 0), item(21, 30, 30, 30)];
+        q.audio_tracks[0].items[0].link = Some(100);
+        q.audio_tracks[0].items[1].link = Some(200);
+        assert_eq!(join_through_edits(&mut q, &[ClipId(20)]), 1);
+        assert_eq!(q.video_tracks[0].items[0].link, Some(100));
+        assert_eq!(q.video_tracks[0].items[1].link, Some(200));
+    }
+
+    #[test]
+    fn audio_metadata_on_video_does_not_block_a_continuous_video_join() {
+        let left = item(10, 0, 30, 0);
+        let mut right = item(11, 30, 30, 30);
+        right.source_channels = vec![1];
+        let mut q = seq_with(vec![left, right]);
+        // A malformed project can duplicate track IDs; storage still defines the track kind.
+        q.audio_tracks[0].id = q.video_tracks[0].id;
+        assert_eq!(track_through_edits(&q.video_tracks[0]).len(), 1);
+        assert_eq!(join_through_edits(&mut q, &[]), 1);
     }
 
     #[test]

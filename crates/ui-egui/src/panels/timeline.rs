@@ -565,7 +565,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         // Show Through Edits: a small bow-tie on cuts between continuous pieces of one clip
         if app.session.state.show_through_edits {
-            for te in filmcraft_edit::through::track_through_edits(tr) {
+            for te in filmcraft_edit::through::through_edits_on_track(seq, tr.id) {
                 let x = layout.x_of(te.time);
                 if x < content.min.x - 6.0 || x > content.max.x + 6.0 {
                     continue;
@@ -2127,11 +2127,21 @@ fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::U
         }
         ui.close();
     }
-    // only this cut (and its linked partners), and only when it is a through edit
-    let through = filmcraft_edit::through::through_edits(seq).iter().any(|e| Some(e.left) == target.left && Some(e.right) == target.right);
+    // Match the exact-cut command, including Linked Selection: a video-only join cannot
+    // discard a right-hand link while its audio partner remains.
+    let joinable = match (target.left, target.right) {
+        (Some(left), Some(right)) => {
+            let lefts = filmcraft_engine::commands::with_links(&app.session, &[left]);
+            let rights = filmcraft_engine::commands::with_links(&app.session, &[right]);
+            filmcraft_edit::through::joinable_through_edits_where(seq, |a, b| lefts.contains(&a) && rights.contains(&b))
+                .iter()
+                .any(|e| e.left == left && e.right == right)
+        }
+        _ => false,
+    };
     let label = tl!("Join Through Edits");
-    let r = ui.add_enabled(through, egui::Button::new(label));
-    app.auto.add("timeline.editPointMenu.joinThroughEdits", r.rect, label);
+    let r = ui.add_enabled(joinable, egui::Button::new(label));
+    app.auto.add_response("timeline.editPointMenu.joinThroughEdits", &r, label);
     if r.clicked()
         && let (Some(left), Some(right)) = (target.left, target.right)
     {

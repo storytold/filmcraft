@@ -117,6 +117,46 @@ fn right_clicking_a_cut_opens_the_edit_point_menu() {
 }
 
 #[test]
+fn linked_video_join_stays_disabled_after_an_audio_only_heal() {
+    let mut d = Driver::new();
+    for frame in [30, 40] {
+        d.exec("playhead.set", json!({"frame": frame}));
+        d.exec("sequence.addEditAllTracks", json!({}));
+    }
+    let before = d.seq();
+    let audio = &before.audio_tracks[0].items;
+    let third_video = before.video_tracks[0].items[2].id;
+    d.exec("timeline.select", json!({"clips": [audio[2].id.0]}));
+    d.exec("clip.audioChannels", json!({"channels": [1]}));
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    let joined = d.exec("sequence.joinThroughEdits", json!({"cut": [audio[0].id.0, audio[1].id.0]}));
+    assert_eq!(joined["joined"], json!(1));
+    d.frames(2);
+
+    d.right_click(third_video, 0.0);
+    let elements = d.ok("ui.elements", json!({"prefix": "timeline.editPointMenu.joinThroughEdits"}));
+    let join = elements.as_array().unwrap().iter().find(|e| e["id"] == "timeline.editPointMenu.joinThroughEdits").unwrap();
+    assert_eq!(join["enabled"], json!(false), "the distinct audio choice protects the linked video cut");
+    let video_before = d.seq().video_tracks[0].items.clone();
+    d.click("timeline.editPointMenu.joinThroughEdits");
+    assert_eq!(d.seq().video_tracks[0].items, video_before, "a disabled menu action cannot remove the video cut");
+}
+
+#[test]
+fn video_cut_menu_is_disabled_when_linked_selection_leaves_audio_behind() {
+    let mut d = Driver::new();
+    d.exec("playhead.set", json!({"frame": 30}));
+    d.exec("sequence.addEditAllTracks", json!({}));
+    let right_video = d.seq().video_tracks[0].items[1].id;
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    d.frames(2);
+    d.right_click(right_video, 0.0);
+    let elements = d.ok("ui.elements", json!({"prefix": "timeline.editPointMenu.joinThroughEdits"}));
+    let join = elements.as_array().unwrap().iter().find(|e| e["id"] == "timeline.editPointMenu.joinThroughEdits").unwrap();
+    assert_eq!(join["enabled"], json!(false), "the command would leave the right audio link behind");
+}
+
+#[test]
 fn the_body_of_a_clip_still_opens_the_clip_menu() {
     let mut d = Driver::new();
     let (_, b) = d.cut_on_v1();

@@ -116,6 +116,192 @@ fn reverse_match_frame_finds_the_source_frame() {
 }
 
 #[test]
+fn join_through_edits_preserves_changed_audio_channel_choice() {
+    let mut s = demo();
+    s.execute("playhead.set", json!({"frame": 30})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    let track = s.active_sequence().unwrap().audio_tracks[0].clone();
+    let (left, right) = (track.items[0].id, track.items[1].id);
+    s.execute("timeline.select", json!({"clips": [left.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [0]})).unwrap();
+    s.execute("timeline.select", json!({"clips": [right.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    let before = s.active_sequence().unwrap().clone();
+    let marked = s.execute("sequence.throughEdits", json!({})).unwrap();
+    assert!(!marked.as_array().unwrap().iter().any(|e| e["left"] == json!(left.0) && e["right"] == json!(right.0)));
+    assert_eq!(s.execute("sequence.joinThroughEdits", json!({"cut": [left.0, right.0]})).unwrap_err().to_string(), "that cut is not a through edit");
+    s.execute("sequence.joinThroughEdits", json!({"all": true})).unwrap();
+    let after = s.active_sequence().unwrap().clone();
+    let audio = &after.audio_tracks[0].items;
+    assert_eq!(audio.len(), before.audio_tracks[0].items.len());
+    assert_eq!(audio.iter().find(|clip| clip.id == left).map(|clip| &clip.source_channels), Some(&vec![0]));
+    assert_eq!(audio.iter().find(|clip| clip.id == right).map(|clip| &clip.source_channels), Some(&vec![1]));
+    assert_eq!(after.video_tracks[0].items.len(), before.video_tracks[0].items.len());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap(), &before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap(), &after);
+
+    let left_link = audio[0].link;
+    let right_link = audio[1].link;
+    assert!(left_link.is_some() && right_link.is_some() && left_link != right_link);
+    let video = &after.video_tracks[0].items;
+    let left_video = video.iter().find(|clip| clip.link == left_link).unwrap().id;
+    let right_video = video.iter().find(|clip| clip.link == right_link).unwrap();
+    let right_video_start = right_video.start;
+    let right_audio_start = audio[1].start;
+    let destination = f(&s, 1000);
+    s.execute("timeline.move", json!({"moves": [{"clip": left_video.0, "track": "V1", "time": destination.0}], "linked": true})).unwrap();
+    let moved = s.active_sequence().unwrap();
+    assert_eq!(moved.find_item(left_video).unwrap().1.start, destination);
+    assert_eq!(moved.find_item(left).unwrap().1.start, destination);
+    assert_eq!(moved.find_item(right_video.id).unwrap().1.start, right_video_start);
+    assert_eq!(moved.find_item(right).unwrap().1.start, right_audio_start);
+}
+
+#[test]
+fn moved_audio_right_piece_rejects_exact_video_join_without_changing_history() {
+    let mut s = demo();
+    s.execute("playhead.set", json!({"frame": 30})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let video = q.video_tracks[0].items.clone();
+    let right_audio = q.audio_tracks[0].items[1].clone();
+    s.execute("timeline.select", json!({"clips": [right_audio.id.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    s.execute("timeline.move", json!({"moves": [{"clip": right_audio.id.0, "track": "new", "time": right_audio.start.0}], "linked": false})).unwrap();
+    s.execute("playhead.set", json!({"frame": 40})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = s.project.clone();
+    let history = (s.history.undo.len(), s.history.redo.len());
+    assert!(history.1 > 0, "the rejected join must preserve an existing redo entry");
+    assert!(s.execute("sequence.joinThroughEdits", json!({"cut": [video[0].id.0, video[1].id.0]})).is_err());
+    assert_eq!(*s.project, *before);
+    assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
+}
+
+#[test]
+fn join_all_keeps_a_later_linked_audio_choice_boundary() {
+    let (mut s, item) = fresh();
+    place(&mut s, item, "V1", 0, 0, 60);
+    for frame in [30, 40] {
+        s.execute("playhead.set", json!({"frame": frame})).unwrap();
+        s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    }
+    let third_audio = s.active_sequence().unwrap().audio_tracks[0].items[2].id;
+    s.execute("timeline.select", json!({"clips": [third_audio.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    let before = s.active_sequence().unwrap().clone();
+    let result = s.execute("sequence.joinThroughEdits", json!({"all": true})).unwrap();
+    assert_eq!(result["joined"], json!(2), "only the first linked video/audio cuts may heal");
+    let after = s.active_sequence().unwrap();
+    assert_eq!(after.video_tracks[0].items.len(), 2);
+    assert_eq!(after.audio_tracks[0].items.len(), 2);
+    assert_eq!(after.video_tracks[0].items[1].id, before.video_tracks[0].items[2].id);
+    assert_eq!(after.video_tracks[0].items[1].link, after.audio_tracks[0].items[1].link);
+    assert_eq!(after.audio_tracks[0].items[1].source_channels, vec![1]);
+}
+
+#[test]
+fn audio_only_heal_then_join_all_keeps_later_video_choice_boundary() {
+    let (mut s, item) = fresh();
+    place(&mut s, item, "V1", 0, 0, 60);
+    for frame in [30, 40] {
+        s.execute("playhead.set", json!({"frame": frame})).unwrap();
+        s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    }
+    let before = s.active_sequence().unwrap().clone();
+    let audio = &before.audio_tracks[0].items;
+    let last_video = before.video_tracks[0].items[2].id;
+    let last_audio = audio[2].id;
+    s.execute("timeline.select", json!({"clips": [last_audio.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    assert_eq!(s.execute("sequence.joinThroughEdits", json!({"cut": [audio[0].id.0, audio[1].id.0]})).unwrap()["joined"], json!(1));
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 3);
+    assert_eq!(s.execute("sequence.joinThroughEdits", json!({"all": true})).unwrap()["joined"], json!(1));
+    let after = s.active_sequence().unwrap();
+    assert_eq!(after.video_tracks[0].items.len(), 2);
+    assert_eq!(after.video_tracks[0].items[1].id, last_video);
+    assert_eq!(after.audio_tracks[0].items.len(), 2);
+    assert_eq!(after.audio_tracks[0].items[1].id, last_audio);
+    assert_eq!(after.audio_tracks[0].items[1].source_channels, vec![1]);
+}
+
+#[test]
+fn slipped_distinct_audio_choice_still_protects_linked_video_cut() {
+    let (mut s, item) = fresh();
+    place(&mut s, item, "V1", 0, 0, 60);
+    for frame in [30, 40] {
+        s.execute("playhead.set", json!({"frame": frame})).unwrap();
+        s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    }
+    let before = s.active_sequence().unwrap().clone();
+    let audio = &before.audio_tracks[0].items;
+    let last_video = before.video_tracks[0].items[2].id;
+    let last_audio = audio[2].id;
+    s.execute("timeline.select", json!({"clips": [last_audio.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    assert_eq!(s.execute("sequence.joinThroughEdits", json!({"cut": [audio[0].id.0, audio[1].id.0]})).unwrap()["joined"], json!(1));
+    s.execute("timeline.slip", json!({"clip": last_audio.0, "deltaFrames": -1})).unwrap();
+    assert_eq!(s.execute("sequence.joinThroughEdits", json!({"all": true})).unwrap()["joined"], json!(1));
+    let after = s.active_sequence().unwrap();
+    assert_eq!(after.video_tracks[0].items.len(), 2);
+    assert_eq!(after.video_tracks[0].items[1].id, last_video);
+    assert_eq!(after.audio_tracks[0].items[1].id, last_audio);
+    assert_eq!(after.video_tracks[0].items[1].link, after.audio_tracks[0].items[1].link);
+}
+
+#[test]
+fn locked_exact_cut_rejection_keeps_project_and_redo() {
+    let mut s = demo();
+    s.execute("playhead.set", json!({"frame": 30})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    let video = s.active_sequence().unwrap().video_tracks[0].clone();
+    s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
+    s.execute("playhead.set", json!({"frame": 40})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = s.project.clone();
+    let history = (s.history.undo.len(), s.history.redo.len());
+    assert!(history.1 > 0);
+    assert_eq!(
+        s.execute("sequence.joinThroughEdits", json!({"cut": [video.items[0].id.0, video.items[1].id.0]})).unwrap_err().to_string(),
+        "that cut cannot be joined while its track is locked or its linked audio cannot join"
+    );
+    assert_eq!(*s.project, *before);
+    assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
+}
+
+#[test]
+fn protected_exact_cut_rejection_keeps_project_and_redo() {
+    let mut s = demo();
+    s.execute("playhead.set", json!({"frame": 30})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    let audio = s.active_sequence().unwrap().audio_tracks[0].clone();
+    let video = s.active_sequence().unwrap().video_tracks[0].clone();
+    s.execute("timeline.select", json!({"clips": [audio.items[0].id.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [0]})).unwrap();
+    s.execute("timeline.select", json!({"clips": [audio.items[1].id.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    s.execute("playhead.set", json!({"frame": 40})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let before = s.project.clone();
+    let history = (s.history.undo.len(), s.history.redo.len());
+    assert!(history.1 > 0);
+    assert!(!s.active_sequence().unwrap().video_tracks[0].locked);
+    assert_eq!(
+        s.execute("sequence.joinThroughEdits", json!({"cut": [video.items[0].id.0, video.items[1].id.0]})).unwrap_err().to_string(),
+        "that cut cannot be joined while its track is locked or its linked audio cannot join"
+    );
+    assert_eq!(*s.project, *before);
+    assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
+}
+
+#[test]
 fn through_edits_show_and_join() {
     let mut s = demo();
     let before = s.active_sequence().unwrap().clone();
