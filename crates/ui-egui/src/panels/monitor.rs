@@ -215,13 +215,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 .get_plan(&key)
                 .map(|p| (key, p))
                 .or_else(|| app.frames.nearest_plan(key, 6))
-                .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))));
+                .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))))
+                .or_else(|| playing_recent(app, key, playing).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
             match found {
                 Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
                 None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
             }
         } else {
-            cpu_texture(app, &ctx, &tex_name, key, &asked, display)
+            let recent = playing_recent(app, key, playing);
+            cpu_texture(app, &ctx, &tex_name, key, &asked, recent, display)
         };
         let exact = on_screen == Some(key);
         if which == Which::Program {
@@ -248,7 +250,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
             let rpic = fit(ra, display_w, frame_size.1 as f32);
             ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
-            if let (Some(tex), _) = cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite) {
+            if let (Some(tex), _) = cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], None, DisplayMode::Composite) {
                 ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             }
             app.auto.add("program.compare.reference", rpic, "reference frame");
@@ -476,15 +478,22 @@ fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bo
     before
 }
 
+/// While playing, a frame to show when the one due is not ready at the project's revision: the
+/// same frame (or one just before it) rendered for one of the last few revisions (#1673).
+fn playing_recent(app: &FilmcraftApp, key: FrameKey, playing: bool) -> Option<FrameKey> {
+    playing.then(|| app.frames.recent(key, 6, crate::frames::PLAYING_REVISION_LAG)).flatten()
+}
+
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
-/// it, else the newest ready one of `asked` (see [`asked_before`]), with the display mode's
-/// channel mapping. Returns the texture and the frame it shows.
+/// it, else the newest ready one of `asked` (see [`asked_before`]), else `recent` (while playing),
+/// with the display mode's channel mapping. Returns the texture and the frame it shows.
 fn cpu_texture(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
     name: &str,
     key: FrameKey,
     asked: &[FrameKey],
+    recent: Option<FrameKey>,
     mode: DisplayMode,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
     let found = app
@@ -492,7 +501,8 @@ fn cpu_texture(
         .get(&key)
         .map(|img| (key, img))
         .or_else(|| (1..=6).map(|d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
-        .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))));
+        .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))))
+        .or_else(|| recent.and_then(|k| app.frames.get(&k).map(|img| (k, img))));
     match found {
         Some((k, img)) => {
             let tex = if mode.is_channel() {

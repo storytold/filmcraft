@@ -376,6 +376,12 @@ pub const PREROLL_FRAMES: i64 = 6;
 pub const SCRUB_KEEP_S: f64 = 2.0;
 pub const PREROLL_TIMEOUT_S: f64 = 0.5;
 
+/// How many revisions behind the project a playing monitor's picture may be while the frame due
+/// is not ready at the current one (#1673). A value dragged during playback makes a revision per
+/// UI pass, so no frame was ever ready at the current revision and the picture froze until the
+/// mouse rested; frames of the last few changes are what the monitor shows meanwhile.
+pub const PLAYING_REVISION_LAG: u64 = 64;
+
 /// Which frames playback asks for, given the per-frame render cost (s), the displayed frame rate
 /// and the worker count: `(lead, stride)`. While the workers keep up, every frame from the
 /// playhead on (`(1, 1)`). When they cannot (CPU effects slower than real time), `lead` is the
@@ -511,6 +517,24 @@ impl FrameServer {
         })
     }
 
+    /// While playing: the cached frame closest at or before `key.frame` (within `max_back`) at the
+    /// newest revision from `key.revision` back to `lag` revisions before it, image or plan as
+    /// `key.target` renders (#1673). `None` when there is none.
+    pub fn recent(&self, key: FrameKey, max_back: i64, lag: u64) -> Option<FrameKey> {
+        let keys =
+            (0..=max_back.max(0)).flat_map(|d| (0..=lag.min(key.revision)).map(move |r| FrameKey { frame: key.frame - d, revision: key.revision - r, ..key }));
+        match key.target {
+            Target::SequencePlan(_) => {
+                let g = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+                keys.into_iter().find(|k| g.map.contains_key(k))
+            }
+            _ => {
+                let c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+                keys.into_iter().find(|k| c.map.contains_key(k))
+            }
+        }
+    }
+
     /// Queue a job unless it is cached, queued or in flight.
     ///
     /// The frame on screen (`prio` 0: scrubbing, a seek) treats frames more than
@@ -598,7 +622,14 @@ impl FrameServer {
         }
         let (target, rev, cur) = (key.target, key.revision, key.frame);
         let span = (lead + ahead * stride) * step + 26;
-        self.retain_queue(|k| k.target != target || (k.revision == rev && (k.frame - cur) * dir >= 0 && (k.frame - cur).abs() < span));
+        let ahead_of = |k: &FrameKey| (k.frame - cur) * dir >= 0 && (k.frame - cur).abs() < span;
+        // Queued jobs of an older revision are dropped, but one already rendering a frame still
+        // ahead is left to finish (#1673): a value dragged during playback asks for a new
+        // revision on every pass, and cancelling those jobs each time left nothing ever ready.
+        self.retain_jobs(
+            |k| k.target != target || (k.revision == rev && ahead_of(k)),
+            |k| k.target != target || (k.revision.saturating_add(PLAYING_REVISION_LAG) >= rev && k.revision <= rev && ahead_of(k)),
+        );
     }
 
     /// Whether playback can start at `key`: the next [`PREROLL_FRAMES`] frames (up to `last`)
@@ -617,9 +648,14 @@ impl FrameServer {
     /// Jobs already running for such frames are cancelled: a worker blocked behind a decoder
     /// would otherwise go on to decode a frame playback has passed, possibly from its keyframe.
     pub fn retain_queue(&self, keep: impl Fn(&FrameKey) -> bool) {
-        self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| keep(&j.key));
+        self.retain_jobs(&keep, &keep);
+    }
+
+    /// [`Self::retain_queue`] with one test for queued jobs and another for running ones.
+    fn retain_jobs(&self, keep_queued: impl Fn(&FrameKey) -> bool, keep_running: impl Fn(&FrameKey) -> bool) {
+        self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| keep_queued(&j.key));
         for (k, c, _) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-            if !keep(k) {
+            if !keep_running(k) {
                 c.store(true, Ordering::Relaxed);
             }
         }
