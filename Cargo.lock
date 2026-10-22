@@ -2137,10 +2137,12 @@ dependencies = [
 name = "filmcraft-format"
 version = "0.13.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",
+ "image",
  "log",
  "serde",
  "serde_json",
