@@ -8,9 +8,10 @@ Portuguese (Brazil), Russian, Simplified Chinese.
 
 ## How it works
 
-Edit ▸ Language (also Settings ▸ General, `general.interfaceLanguage`) switches the interface and
-persists across restarts; System Language (the default) follows the OS's or browser's preferred
-languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian>`
+Edit ▸ Language (also Settings ▸ General, `general.interfaceLanguage`) saves the choice and takes
+effect at the next start, as in Premiere: a notice offers to restart now (Restart) or keep working
+(Later). System Language (the default) follows the OS's or browser's preferred languages and falls
+back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian>`
 are reachable over the control channel. One catalog per language,
 `crates/ui-egui/src/i18n/<code>.tsv` (format in the header of `es.tsv`); UI code wraps strings in
 `tl!("…")` / `tlf!("…{name}", name)`, and registry names (effects and their parameters, settings,

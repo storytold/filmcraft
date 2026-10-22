@@ -3584,3 +3584,8 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	Redémarrer
+	Later	Plus tard
+	Restart FilmCraft to use {language}	Redémarrez FilmCraft pour utiliser {language}
+	The interface language changes after a restart.	La langue de l'interface change après un redémarrage.

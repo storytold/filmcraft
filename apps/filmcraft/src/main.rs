@@ -305,6 +305,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
         }
         app.hooks.open_path = Some(Box::new(open_path));
+        // The language-change notice's Restart button: relaunch with the same arguments.
+        app.hooks.restart = Some(Box::new(relaunch));
         // Help menu, About and Discord links (#642): eframe is built without its `links`
         // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
         // that waits for the browser never freezes the UI.
@@ -356,6 +358,15 @@ fn clipboard_media() -> Option<filmcraft_ui_egui::ClipboardMedia> {
     }
     let image = clipboard.get_image().ok()?;
     Some(filmcraft_ui_egui::ClipboardMedia::Image { width: image.width, height: image.height, rgba: image.bytes.into_owned() })
+}
+
+/// Relaunch the app with the arguments it was started with (Interface Language ▸ Restart).
+/// Called from `on_exit`, so the current process is already on its way out: the new one starts
+/// with the saved preferences, including the language the restart was asked for.
+fn relaunch() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("can't locate the running app: {e}"))?;
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    std::process::Command::new(exe).args(args).spawn().map(|_| ()).map_err(|e| format!("can't restart FilmCraft: {e}"))
 }
 
 /// Open a file in its default application, or reveal it in the file manager (Edit Original,

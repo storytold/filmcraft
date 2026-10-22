@@ -591,6 +591,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     match action {
         Some("cancel") => {
+            if d.command == "app.quit" {
+                // a restart asked for was cancelled with the quit prompt
+                app.restart_after_quit = false;
+            }
             app.ui.clip_dialog = None;
             return;
         }

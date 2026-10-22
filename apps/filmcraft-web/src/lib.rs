@@ -189,6 +189,10 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
+                // The language-change notice's Restart button: a restart is a page reload.
+                app.hooks.restart = Some(Box::new(|| {
+                    web_sys::window().ok_or_else(|| "no window".to_string())?.location().reload().map_err(|e| format!("can't reload the page: {e:?}"))
+                }));
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);
                 app = app.with_control(rx);
