@@ -239,9 +239,20 @@ fn theme_preview(ui: &mut Ui, t: &Tokens, width: f32) {
 }
 
 /// One theme card of the Appearance page: title, "Active" while the mode shows it, the preview and
-/// a radio button per theme (automation ids `settings.<key>.<value>`).
+/// a radio button per theme (automation ids `settings.<key>.<value>`). `rows` keeps the light and
+/// dark cards the same height when they offer different numbers of themes.
 #[allow(clippy::too_many_arguments)]
-fn theme_card(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, key: &str, title: &str, opts: &[(&str, &str)], active: bool, width: f32) {
+fn theme_card(
+    app: &mut FilmcraftApp,
+    ui: &mut Ui,
+    d: &mut SettingsDraft,
+    key: &str,
+    title: &str,
+    opts: &[(&str, &str)],
+    active: bool,
+    width: f32,
+    rows: usize,
+) {
     let t = app.tokens;
     let current = choice_text(get(&d.values, key));
     let shown = opts.iter().find(|(v, _)| *v == current).or(opts.first()).map_or("darkest", |(v, _)| v);
@@ -292,6 +303,12 @@ fn theme_card(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, key: &
                         });
                     });
                 }
+                let missing = rows.saturating_sub(opts.len());
+                if missing > 0 {
+                    let row = ui.spacing().interact_size.y;
+                    let gap = ui.spacing().item_spacing.y;
+                    ui.add_space(missing as f32 * (row + gap) - gap);
+                }
             });
         });
     app.auto.add(&format!("settings.{key}"), r.response.rect, title);
@@ -311,10 +328,11 @@ fn appearance_modes(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) 
     let light_active = mode == "light" || (mode == "auto" && app.system_theme(ui.ctx()) == Some(egui::Theme::Light));
     ui.add_space(6.0);
     let width = ((ui.available_width() - 12.0) / 2.0).max(200.0);
+    let rows = settings::LIGHT_THEMES.len().max(settings::DARK_THEMES.len());
     ui.horizontal_top(|ui| {
-        theme_card(app, ui, d, "appearance.lightTheme", "Light Theme", settings::LIGHT_THEMES, light_active, width);
+        theme_card(app, ui, d, "appearance.lightTheme", "Light Theme", settings::LIGHT_THEMES, light_active, width, rows);
         ui.add_space(4.0);
-        theme_card(app, ui, d, "appearance.darkTheme", "Dark Theme", settings::DARK_THEMES, !light_active, width);
+        theme_card(app, ui, d, "appearance.darkTheme", "Dark Theme", settings::DARK_THEMES, !light_active, width, rows);
     });
     ui.add_space(6.0);
 }

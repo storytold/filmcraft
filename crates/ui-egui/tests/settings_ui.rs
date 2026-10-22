@@ -371,6 +371,10 @@ fn appearance_labels_and_tooltips_take_effect() {
     // the Appearance Mode selector above the light and dark theme cards
     assert!(d.has("settings.appearance.lightTheme.light") && d.has("settings.appearance.darkTheme.dark") && d.has("settings.appearance.darkTheme.oled"));
     assert!(!d.has("settings.appearance.colorTheme"), "the single Color Theme is not shown");
+    // the light and dark cards take the same space even though Dark Theme lists more themes
+    let cards = d.ok("ui.elements", json!({"prefix": "settings.appearance."}));
+    let rect = |id: &str| cards.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["rect"].as_array().unwrap().clone();
+    assert_eq!(rect("settings.appearance.lightTheme")[3], rect("settings.appearance.darkTheme")[3], "theme cards are the same height");
     // Each radio belongs below its preview, even though the cards are laid out side by side.
     let elements = d.ok("ui.elements", json!({"prefix": "settings.appearance."}));
     let top = |id: &str| elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["rect"][1].as_f64().unwrap();
