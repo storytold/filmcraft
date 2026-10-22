@@ -109,6 +109,143 @@ fn changed_in_band_parameter_sets_switch_to_software() {
     assert_same("changed SPS", &out, &decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &changed));
 }
 
+/// The shared preflight can delegate a mismatch to the native owner. Software decoding here
+/// replaces only the hardware session; the Hybrid replay and timestamp handling are real.
+#[derive(Clone, Copy)]
+enum Adoption {
+    Accept,
+    Decline,
+    Error,
+}
+
+struct Adopting {
+    inner: Failing,
+    adoption: Adoption,
+    expected_sample: Vec<u8>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl VideoDecoder for Adopting {
+    fn try_adopt_parameter_change(&mut self, sample: &[u8]) -> Result<bool> {
+        assert_eq!(sample, self.expected_sample, "preflight must inspect the original sample bytes");
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.adoption {
+            Adoption::Accept => Ok(true),
+            Adoption::Decline => Ok(false),
+            Adoption::Error => Err(filmcraft_codecs::CodecError::Decode("native adoption declined with context (test)".into())),
+        }
+    }
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        if sample == self.expected_sample {
+            assert!(matches!(self.adoption, Adoption::Accept), "a rejected mismatch must not reach native decode");
+        }
+        self.inner.decode(sample, pts)
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        self.inner.flush()
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn name(&self) -> &str {
+        "stand-in adopting hardware"
+    }
+}
+
+/// A backend that keeps VideoDecoder's default adoption policy.
+struct DefaultAdoption(Adopting);
+impl VideoDecoder for DefaultAdoption {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        self.0.decode(sample, pts)
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        self.0.flush()
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+    fn name(&self) -> &str {
+        "stand-in default-denying hardware"
+    }
+}
+
+#[test]
+fn adoption_hook_accept_decline_and_error_preserve_output_and_pts() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some(path) = named(&ff, "h264_high.mp4") else { return };
+    let s = read_stream(&path);
+    let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    // Same SPS values with a different nal_ref_idc: the conservative comparator sees a change,
+    // while the real software decoder still decodes this fully specified parameter set.
+    let mut changed_sps = info.parameter_sets[0].clone();
+    changed_sps[0] ^= 0x40;
+    let at = (1..s.samples.len()).find(|&i| s.sync[i]).unwrap();
+    let mut samples = s.samples.clone();
+    let mut changed = (changed_sps.len() as u32).to_be_bytes().to_vec();
+    changed.extend_from_slice(&changed_sps);
+    changed.extend_from_slice(&samples[at].0);
+    samples[at].0 = changed.clone();
+    let reference = decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &samples);
+    for adoption in [Adoption::Accept, Adoption::Decline, Adoption::Error] {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hw = Adopting {
+            inner: Failing { inner: filmcraft_codecs::software_video_decoder(&s.entry).unwrap(), fail_after: usize::MAX, fed: 0 },
+            adoption,
+            expected_sample: changed.clone(),
+            calls: calls.clone(),
+        };
+        let mut h = HybridDecoder::new(Box::new(hw), s.entry.clone(), info.clone());
+        let out = decode_all(&mut h, &samples);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(h.is_hardware(), matches!(adoption, Adoption::Accept));
+        assert_same("adoption preflight preserves software output and timestamps", &out, &reference);
+    }
+    // Every decoder that omits the hook remains conservative through its default implementation.
+    let default = DefaultAdoption(Adopting {
+        inner: Failing { inner: filmcraft_codecs::software_video_decoder(&s.entry).unwrap(), fail_after: usize::MAX, fed: 0 },
+        adoption: Adoption::Decline,
+        expected_sample: changed,
+        calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let mut h = HybridDecoder::new(Box::new(default), s.entry.clone(), info);
+    assert_same("default hook declines with ordinary replay", &decode_all(&mut h, &samples), &reference);
+    assert!(!h.is_hardware());
+}
+
+#[test]
+fn adoption_then_native_failure_replays_original_entry_without_lost_or_duplicate_pts() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some(path) = named(&ff, "h264_high.mp4") else { return };
+    let s = read_stream(&path);
+    let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    let mut changed_sps = info.parameter_sets[0].clone();
+    changed_sps[0] ^= 0x40;
+    let at = (1..s.samples.len()).find(|&i| s.sync[i]).unwrap();
+    let mut samples = s.samples.clone();
+    let mut changed = (changed_sps.len() as u32).to_be_bytes().to_vec();
+    changed.extend_from_slice(&changed_sps);
+    changed.extend_from_slice(&samples[at].0);
+    samples[at].0 = changed.clone();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hw = Adopting {
+        inner: Failing { inner: filmcraft_codecs::software_video_decoder(&s.entry).unwrap(), fail_after: at + 3, fed: 0 },
+        adoption: Adoption::Accept,
+        expected_sample: changed,
+        calls: calls.clone(),
+    };
+    let mut h = HybridDecoder::new(Box::new(hw), s.entry.clone(), info);
+    let reference = decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &samples);
+    assert_same("later native failure preserves original software configuration", &decode_all(&mut h, &samples), &reference);
+    assert!(!h.is_hardware());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    h.reset();
+    assert_same(
+        "software restart retains original sample entry",
+        &decode_all(&mut h, &s.samples),
+        &decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &s.samples),
+    );
+}
+
 /// Like [`Failing`], but tolerant of one damaged sample the way a GPU can be: at `damaged_at` it
 /// decodes the intact sample instead of the one it is given (which the software decoder rejects).
 struct Tolerant {

@@ -50,12 +50,23 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
     *VP9 Video Extensions* and *AV1 Video Extension* from the Microsoft Store, which the Windows "N"
     editions and some installs lack). Several GPUs' DXVA lacks AV1 profiles 1 / 2 as well.
   - *VP9 and AV1* (`codecs::hw::FrameStreamInfo`, `media_foundation/stream.rs`): the container
-    sample goes in as it is (a VP9 frame or superframe, an AV1 temporal unit; the `av1C` sequence
-    header goes first after a seek). The MFT outputs only shown pictures, in presentation order, so
+    sample goes in as it is (a VP9 frame or superframe, an AV1 temporal unit; the effective accepted
+    sequence header goes first after a seek when needed). The MFT outputs only shown pictures, in presentation order, so
     hidden alt-ref frames and `show_existing_frame` need nothing special. Picture size and colour
     are read from the bitstream the way the software decoders do (`hw_frame::vp9_color` /
-    `av1_color` are shared with them). A VP9 key frame of another size or format, or an AV1 sequence
-    header unlike `av1C`'s, hands the stream to the software decoder (`HybridDecoder`).
+    `av1_color` are shared with them). A VP9 key frame of another size or format hands the stream
+    to the software decoder (`HybridDecoder`). Windows AV1 permits a checked initial shown key
+    frame to replace provisional primaries/transfer/matrix values at an empty initial or reset
+    boundary. Profile, dimensions, depth, range and chroma must remain compatible with the current
+    native Plan and Spec. Decoded pictures retain their accepted color individually while queued.
+    Matching explicit MP4 `nclx`/`nclc` overrides are permitted; conflicting overrides, ICC,
+    static HDR metadata, gamma and unresolved clean apertures decline this accommodation.
+    Malformed headers and incompatible later changes retain software fallback. Drain alone does
+    not reopen adoption. `MfDecoder::from_entry` preserves the original container context;
+    `MfDecoder::new(stream)` and other backends remain conservative about metadata changes.
+    The original entry remains available for software replay. See the opt-in
+    [generated hardware acceptance](tests/issue1678_fixtures.md); Intel fixture results do not
+    establish that the reporter's AMD capture is fixed.
   - `mfplat.dll` is loaded at run time (`mft.rs`), not linked: Windows "N" editions without the Media
     Feature Pack still start FilmCraft, which then decodes in software.
   - After a `flush` (which drains the MFT) the MFT only restarts at an IDR picture; the GOP cache

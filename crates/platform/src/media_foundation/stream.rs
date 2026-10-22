@@ -11,6 +11,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Media::MediaFoundation::{MF_MT_MPEG2_PROFILE, MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_VP90};
 use windows::core::GUID;
 
+use super::av1_container::Av1ContainerPolicy;
+use super::av1_run::Av1RunMetadata;
 use super::gpu::SurfaceFormat;
 use super::mft::{Attr, Spec};
 use crate::annexb::to_annex_b;
@@ -18,6 +20,8 @@ use crate::biplanar::Geometry;
 
 /// Largest picture the backend takes (as the VideoToolbox one).
 pub const MAX_SIDE: u32 = 8192;
+/// Bound a copied access unit to the same byte budget as Hybrid's replay run.
+const MAX_SAMPLE_BYTES: usize = 256 << 20;
 
 /// A stream the decoder takes.
 #[derive(Clone, Debug)]
@@ -26,9 +30,12 @@ pub enum Stream {
     Nal(NalStreamInfo),
     /// VP9 / AV1.
     Frame(FrameStreamInfo),
+    /// AV1 owns its active header so input and output interpretation cannot diverge.
+    Av1(Av1RunMetadata),
 }
 
 /// What the GPU must decode for a stream.
+#[derive(PartialEq, Eq)]
 pub struct Plan {
     pub format: SurfaceFormat,
     pub profile: GUID,
@@ -40,7 +47,7 @@ impl From<StreamInfo> for Stream {
     fn from(i: StreamInfo) -> Self {
         match i {
             StreamInfo::Nal(n) => Self::Nal(n),
-            StreamInfo::Frame(f) => Self::Frame(f),
+            StreamInfo::Frame(f) => f.into(),
         }
     }
 }
@@ -53,7 +60,7 @@ impl From<NalStreamInfo> for Stream {
 
 impl From<FrameStreamInfo> for Stream {
     fn from(i: FrameStreamInfo) -> Self {
-        Self::Frame(i)
+        if i.codec == FrameCodec::Av1 { Self::Av1(Av1RunMetadata::new(i)) } else { Self::Frame(i) }
     }
 }
 
@@ -107,18 +114,44 @@ pub fn plan_frame(info: &FrameStreamInfo) -> Result<Plan, String> {
 }
 
 impl Stream {
+    /// Keep callers constructing the legacy Frame variant on the same guarded AV1 path as
+    /// FrameStreamInfo/StreamInfo conversion. Moving the descriptor requires no header copy.
+    pub(super) fn into_guarded(self) -> Self {
+        match self {
+            Self::Frame(info) if info.codec == FrameCodec::Av1 => info.into(),
+            stream => stream,
+        }
+    }
+
+    pub(super) fn frame_info(&self) -> Option<&FrameStreamInfo> {
+        match self {
+            Self::Frame(i) => Some(i),
+            Self::Av1(run) => Some(run.active()),
+            Self::Nal(_) => None,
+        }
+    }
+
     pub fn plan(&self) -> Result<Plan, String> {
         match self {
             Self::Nal(i) => plan_nal(i),
             Self::Frame(i) => plan_frame(i),
+            Self::Av1(run) => plan_frame(run.active()),
         }
     }
 
-    /// The hybrid decoder's view of the stream.
-    pub fn info(&self) -> StreamInfo {
+    /// Queries always use the effective descriptor; Hybrid retains its original one for replay.
+    pub fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
         match self {
-            Self::Nal(i) => i.clone().into(),
-            Self::Frame(i) => i.clone().into(),
+            Self::Nal(i) => i.is_random_access(sample),
+            Self::Frame(i) => Some(i.is_random_access(sample)),
+            Self::Av1(run) => Some(run.active().is_random_access(sample)),
+        }
+    }
+
+    pub fn is_disposable(&self, sample: &[u8]) -> bool {
+        match self {
+            Self::Nal(i) => i.is_disposable(sample),
+            Self::Frame(_) | Self::Av1(_) => false,
         }
     }
 
@@ -128,6 +161,7 @@ impl Stream {
             Self::Nal(_) => "Media Foundation HEVC",
             Self::Frame(i) if i.codec == FrameCodec::Vp9 => "Media Foundation VP9",
             Self::Frame(_) => "Media Foundation AV1",
+            Self::Av1(_) => "Media Foundation AV1",
         }
     }
 
@@ -150,24 +184,8 @@ impl Stream {
                     },
                 }
             }
-            Self::Frame(info) => match info.codec {
-                FrameCodec::Vp9 => Spec {
-                    subtype: MFVideoFormat_VP90,
-                    label: "VP9",
-                    missing: " (the VP9 Video Extensions are not installed)",
-                    size: info.size,
-                    format,
-                    attrs: Vec::new(),
-                },
-                FrameCodec::Av1 => Spec {
-                    subtype: MFVideoFormat_AV1,
-                    label: "AV1",
-                    missing: " (the AV1 Video Extension is not installed)",
-                    size: info.size,
-                    format,
-                    attrs: Vec::new(),
-                },
-            },
+            Self::Frame(info) => frame_spec(info, format),
+            Self::Av1(run) => frame_spec(run.active(), format),
         }
     }
 
@@ -177,6 +195,10 @@ impl Stream {
         match self {
             Self::Nal(i) => Geometry { crop: i.crop, bits: format.bits(), color: i.color, par: i.par },
             Self::Frame(i) => {
+                Geometry { crop: (0, 0, i.size.0, i.size.1), bits: format.bits(), color: i.color.unwrap_or(filmcraft_color::ColorInfo::REC709), par: (1, 1) }
+            }
+            Self::Av1(run) => {
+                let i = run.active();
                 Geometry { crop: (0, 0, i.size.0, i.size.1), bits: format.bits(), color: i.color.unwrap_or(filmcraft_color::ColorInfo::REC709), par: (1, 1) }
             }
         }
@@ -196,6 +218,7 @@ impl Stream {
                 NalCodec::Hevc => matches!(t, 19 | 20),
             }),
             Self::Frame(i) => i.is_random_access(sample),
+            Self::Av1(run) => run.active().is_random_access(sample),
         }
     }
 
@@ -204,18 +227,42 @@ impl Stream {
     pub fn input(&self, sample: &[u8], headers: bool) -> Result<Vec<u8>, String> {
         match self {
             Self::Nal(info) => to_annex_b(info, sample, headers),
-            Self::Frame(i) => {
-                if sample.is_empty() {
-                    return Err("empty sample".into());
-                }
-                if headers && !i.config_obus.is_empty() && !i.carries_sequence_header(sample) {
-                    let mut v = Vec::with_capacity(i.config_obus.len() + sample.len());
-                    v.extend_from_slice(&i.config_obus);
-                    v.extend_from_slice(sample);
-                    return Ok(v);
-                }
-                Ok(sample.to_vec())
-            }
+            Self::Frame(i) => frame_input(i, sample, headers),
+            Self::Av1(run) => frame_input(run.active(), sample, headers),
+        }
+    }
+
+    /// The native guard runs for every AV1 sample, including original-header reversions which
+    /// Hybrid's immutable sample-entry comparator calls unchanged.
+    pub(super) fn prepare_av1(
+        &mut self,
+        sample: &[u8],
+        pending: usize,
+        format: SurfaceFormat,
+        container: &Av1ContainerPolicy,
+    ) -> filmcraft_codecs::Result<bool> {
+        let Self::Av1(run) = self else { return Ok(false) };
+        let plan = plan_frame(run.active()).map_err(filmcraft_codecs::CodecError::Decode)?;
+        let spec = frame_spec(run.active(), format);
+        run.prepare(sample, pending, |candidate| container.permits(candidate) && av1_native_compatible(&plan, &spec, candidate))
+    }
+
+    pub(super) fn close_av1_adoption(&mut self) {
+        if let Self::Av1(run) = self {
+            run.close_adoption();
+        }
+    }
+
+    pub(super) fn software_replay_initialization(&self) -> Option<&[u8]> {
+        match self {
+            Self::Av1(run) => run.software_replay_initialization(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn restart_av1_empty(&mut self) {
+        if let Self::Av1(run) = self {
+            run.restart_empty();
         }
     }
 
@@ -228,6 +275,57 @@ impl Stream {
         let p = i.picture_params(sample)?;
         Some(Geometry { crop: (0, 0, p.size.0, p.size.1), bits: p.bit_depth, color: p.color, par: (1, 1) })
     }
+}
+
+fn frame_spec(info: &FrameStreamInfo, format: SurfaceFormat) -> Spec {
+    match info.codec {
+        FrameCodec::Vp9 => Spec {
+            subtype: MFVideoFormat_VP90,
+            label: "VP9",
+            missing: " (the VP9 Video Extensions are not installed)",
+            size: info.size,
+            format,
+            attrs: Vec::new(),
+        },
+        FrameCodec::Av1 => Spec {
+            subtype: MFVideoFormat_AV1,
+            label: "AV1",
+            missing: " (the AV1 Video Extension is not installed)",
+            size: info.size,
+            format,
+            attrs: Vec::new(),
+        },
+    }
+}
+
+/// No input-type change is allowed: subtype, coded geometry, surface format, profile and all
+/// additional attributes must remain exactly what the existing native session was given.
+pub(super) fn av1_native_compatible(plan: &Plan, spec: &Spec, candidate: &FrameStreamInfo) -> bool {
+    candidate.codec == FrameCodec::Av1 && plan_frame(candidate).is_ok_and(|next| next == *plan && frame_spec(candidate, next.format) == *spec)
+}
+
+fn frame_input(i: &FrameStreamInfo, sample: &[u8], headers: bool) -> Result<Vec<u8>, String> {
+    if sample.is_empty() {
+        return Err("empty sample".into());
+    }
+    if sample.len() > MAX_SAMPLE_BYTES {
+        return Err("native sample exceeds 256 MiB limit".into());
+    }
+    if headers && !i.config_obus.is_empty() && !i.carries_sequence_header(sample) {
+        let len = i.config_obus.len().checked_add(sample.len()).ok_or("native sample size overflows")?;
+        if len > MAX_SAMPLE_BYTES {
+            return Err("native sample and configuration exceed 256 MiB limit".into());
+        }
+        let mut v = Vec::new();
+        v.try_reserve_exact(len).map_err(|e| format!("cannot reserve native sample: {e}"))?;
+        v.extend_from_slice(&i.config_obus);
+        v.extend_from_slice(sample);
+        return Ok(v);
+    }
+    let mut v = Vec::new();
+    v.try_reserve_exact(sample.len()).map_err(|e| format!("cannot reserve native sample: {e}"))?;
+    v.extend_from_slice(sample);
+    Ok(v)
 }
 
 #[cfg(test)]

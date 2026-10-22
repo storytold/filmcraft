@@ -217,7 +217,7 @@ pub fn media_foundation_factory(entry: &filmcraft_isobmff::SampleEntry) -> Optio
         return None;
     }
     let info = media_foundation::stream_info(entry)?;
-    match media_foundation::MfDecoder::new(info.clone()) {
+    match media_foundation::MfDecoder::from_entry(entry) {
         Ok(mf) => Some(Ok(Box::new(HybridDecoder::new(Box::new(mf), entry.clone(), info)))),
         Err(why) => {
             log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
