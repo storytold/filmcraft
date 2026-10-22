@@ -2568,6 +2568,8 @@ impl FilmcraftApp {
                         self.ui.mode = state::Mode::Edit;
                     }
                 }
+                // With no project open there is nothing to edit: show Home, as Premiere does
+                filmcraft_engine::Event::ProjectClosed => self.ui.mode = state::Mode::Home,
             }
         }
     }

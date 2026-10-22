@@ -423,3 +423,17 @@ fn opening_a_project_leaves_home() {
     assert_eq!(d.app().ui.mode, Mode::Edit);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Closing the project (File ▸ Close Project) shows Home instead of empty panels.
+#[test]
+fn closing_the_project_shows_home() {
+    use filmcraft_ui_egui::state::Mode;
+    let mut d = Driver::new();
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    d.exec("file.closeProject", json!({"force": true}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    // New Project from there goes back to Edit
+    d.click("home.new");
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+}
