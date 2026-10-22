@@ -2142,6 +2142,34 @@ fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::U
     }
 }
 
+/// The menu of a right-clicked ruler (not on a marker): the In and Out points and the marker, at
+/// the playhead. Groups of (label, command id); automation ids `timeline.rulerMenu.<command>`.
+const RULER_MENU: &[&[(&str, &str)]] = &[
+    &[("Mark In", "markers.markIn"), ("Mark Out", "markers.markOut"), ("Mark Clip", "markers.markClip"), ("Mark Selection", "markers.markSelection")],
+    &[("Go to In", "markers.goToIn"), ("Go to Out", "markers.goToOut")],
+    &[("Clear In", "markers.clearIn"), ("Clear Out", "markers.clearOut"), ("Clear In and Out", "markers.clearInOut")],
+    &[("Add Marker", "markers.add")],
+];
+
+fn ruler_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
+    for (i, group) in RULER_MENU.iter().enumerate() {
+        if i > 0 {
+            ui.separator();
+        }
+        for &(label, cmd) in *group {
+            let label = crate::i18n::t(label);
+            let r = ui.add_enabled(app.session.is_enabled(cmd), egui::Button::new(label));
+            app.auto.add(&format!("timeline.rulerMenu.{cmd}"), r.rect, label);
+            if r.clicked() {
+                if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({})) {
+                    app.ui.status = e;
+                }
+                ui.close();
+            }
+        }
+    }
+}
+
 /// The menu of a right-clicked gap: Ripple Delete closes it.
 fn gap_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
     let label = tl!("Ripple Delete");
@@ -2835,6 +2863,18 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
         ctx.data_mut(|d| d.insert_temp(marker_menu_id, marker.map(|m| m.id)));
     }
+    // on the ruler away from a marker, the ruler's own menu, not the clip menu of an earlier press
+    let ruler_menu_id = egui::Id::new("timeline.rulerMenu.open");
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let on_ruler = matches!(hit(seq, layout, p), Hit::Ruler) && marker_under_pointer(seq, layout, p).is_none();
+        ctx.data_mut(|d| d.insert_temp(ruler_menu_id, on_ruler));
+        if on_ruler {
+            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+            ctx.data_mut(|d| d.insert_temp(gap_menu_id, false));
+        }
+    }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
         && let Hit::Clip { clip, edge, track } = hit(seq, layout, p)
@@ -2864,6 +2904,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         ui.set_min_width(220.0);
         if let Some(marker) = ctx.data(|d| d.get_temp::<Option<MarkerId>>(marker_menu_id)).flatten() {
             marker_menu(app, &ctx, ui, marker);
+            return;
+        }
+        if ctx.data(|d| d.get_temp::<bool>(ruler_menu_id)).unwrap_or(false) {
+            ruler_menu(app, &ctx, ui);
             return;
         }
         if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
