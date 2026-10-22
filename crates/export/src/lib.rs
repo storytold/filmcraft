@@ -396,6 +396,13 @@ pub struct ExportSettings {
     pub caption_sidecar: Option<String>,
     pub effects: ExportEffects,
     pub metadata: ExportMetadata,
+    /// Write the sequence's chapter markers inside the export range into MP4 / MOV / M4A files as
+    /// chapters (Premiere's "Include chapter markers"; #2747): a QuickTime chapter track for Apple
+    /// players plus a Nero `chpl` list for VLC / ffprobe. On by default; a sequence without chapter
+    /// markers gets none either way. Other containers ignore it. JSON: `includeChapters` (alias
+    /// `chapters`).
+    #[serde(alias = "chapters")]
+    pub include_chapters: bool,
     /// Two-pass state (set by the exporter).
     #[serde(skip)]
     pub h264_pass: H264Pass,
@@ -585,6 +592,7 @@ impl Default for ExportSettings {
             caption_sidecar: None,
             effects: ExportEffects::default(),
             metadata: ExportMetadata::default(),
+            include_chapters: true,
             h264_pass: H264Pass::Single,
             signal: ColorSignal::default(),
             sink: None,
@@ -1740,6 +1748,44 @@ pub fn export_range(project: &Project, seq: ItemId, settings: &ExportSettings) -
     Ok(range)
 }
 
+/// Timescale of the movie (`mvhd`) of MP4 / MOV exports, so chapter starts are milliseconds.
+pub(crate) const CHAPTER_TIMESCALE: u32 = 1000;
+
+/// The sequence's chapter markers as container chapters (#2747), when
+/// [`ExportSettings::include_chapters`] is on: markers of kind Chapter that start inside `range`
+/// (markers before its start or at / after its end are dropped), timed from `origin` (the time of
+/// the file's first frame or sample) in units of `timescale`. An unnamed marker is called
+/// "Chapter n". The muxer sorts them, keeps one per start time and caps count and title length.
+pub fn export_chapters(
+    project: &Project,
+    seq: ItemId,
+    settings: &ExportSettings,
+    range: TimeRange,
+    origin: Tick,
+    timescale: u32,
+) -> Vec<filmcraft_isobmff::Chapter> {
+    if !settings.include_chapters {
+        return Vec::new();
+    }
+    let Some(q) = project.sequence(seq) else { return Vec::new() };
+    let end = range.start.0.saturating_add(range.duration.0);
+    let mut marks: Vec<&filmcraft_project::Marker> =
+        q.markers.iter().filter(|m| m.kind == filmcraft_project::MarkerKind::Chapter && m.start.0 >= range.start.0 && m.start.0 < end).collect();
+    marks.sort_by_key(|m| m.start);
+    marks
+        .into_iter()
+        .take(filmcraft_isobmff::MAX_CHAPTERS.saturating_mul(4))
+        .enumerate()
+        .map(|(i, m)| {
+            let offset = i128::from(m.start.0.saturating_sub(origin.0).max(0));
+            let start = offset.saturating_mul(i128::from(timescale)) / i128::from(filmcraft_time::TICKS_PER_SECOND.max(1));
+            let name = m.name.trim();
+            let title = if name.is_empty() { format!("Chapter {}", i + 1) } else { name.to_string() };
+            filmcraft_isobmff::Chapter { start: u64::try_from(start).unwrap_or(u64::MAX), title }
+        })
+        .collect()
+}
+
 /// Validate input time before frame/sample conversion or any `TimeRange::end` arithmetic.
 pub fn validate_range(range: TimeRange) -> Result<()> {
     if range.start.0 < 0 || range.duration.0 <= 0 || range.start.0.checked_add(range.duration.0).is_none_or(|end| end > Tick::MAX.0) {
@@ -2014,3 +2060,6 @@ mod determinism_tests;
 
 #[cfg(test)]
 mod hdr_tests;
+
+#[cfg(test)]
+mod chapters_tests;

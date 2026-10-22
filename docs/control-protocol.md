@@ -151,6 +151,12 @@ params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog
 `lumetri.match.*`; HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
 sequence as tone-mapped SDR.
 
+**Chapters** (#2747): `file.exportMedia` writes the sequence's chapter markers (`markers.addChapter`)
+inside the export range into MP4, MOV and M4A files, timed from the range start, as a QuickTime chapter
+track and a Nero `chpl` list (`ffprobe -show_chapters`, QuickTime, VLC). On by default;
+`{chapters: false}` (or `settings.includeChapters: false`) leaves them out. Export mode: Metadata ▸
+Include Chapter Markers (`export.metadata.chapters`).
+
 **Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?}`,
 `shortcuts.get`, `shortcuts.set {command, keys, panel?, add?, keepConflicts?}`, `shortcuts.clear`,
 `shortcuts.undo` / `shortcuts.redo`, `shortcuts.conflicts {platform?}`, `shortcuts.forKey {key}`,

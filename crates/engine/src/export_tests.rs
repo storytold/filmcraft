@@ -847,3 +847,39 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         assert!(doc.cues.is_empty(), "half-open export excludes cues touching either boundary: {doc:?}");
     }
 }
+
+/// #2747: chapter markers added with `markers.addChapter` end up in the exported MP4 (QuickTime
+/// chapter track and `chpl`), timed from the start of the export range; markers outside the range
+/// are left out, comment markers are never chapters, and `"chapters": false` turns it off.
+#[test]
+fn chapter_markers_are_exported_through_file_export_media() {
+    let mut s = demo();
+    let tps = filmcraft_time::TICKS_PER_SECOND;
+    // 1.001 s is frame 24 at 23.976 fps, so the export starts exactly there
+    let start = tps * 1001 / 1000;
+    for (at, name) in [(start - tps / 2, "Before"), (start + tps / 4, "Act One"), (start + tps / 2, "Act Two"), (start + 2 * tps, "After")] {
+        s.execute("markers.addChapter", json!({"time": at, "name": name})).unwrap();
+    }
+    let dir = Scratch::new("chapters");
+    let read = |path: &str| {
+        let bytes = std::fs::read(path).unwrap();
+        let f = filmcraft_isobmff::open(bytes.as_slice()).unwrap();
+        let track: Vec<(u64, String)> = f.read_chapters(bytes.as_slice()).unwrap().into_iter().map(|c| (c.start, c.title)).collect();
+        let chpl: Vec<(u64, String)> = f.chpl_chapters.iter().map(|c| (c.start, c.title.clone())).collect();
+        (track, chpl)
+    };
+    let base = json!({"format": "h264", "audioCodec": "aac", "range": "custom", "startSeconds": 1.001, "endSeconds": 2.5, "wait": true});
+    let mut on = base.clone();
+    on["path"] = json!(dir.path("on.mp4"));
+    s.execute("file.exportMedia", on).unwrap();
+    let (track, chpl) = read(&dir.path("on.mp4"));
+    let want = vec![(250, "Act One".to_string()), (500, "Act Two".to_string())];
+    assert_eq!(track, want, "QuickTime chapter track");
+    assert_eq!(chpl, want, "Nero chpl");
+    let mut off = base;
+    off["path"] = json!(dir.path("off.mp4"));
+    off["chapters"] = json!(false);
+    s.execute("file.exportMedia", off).unwrap();
+    let (track, chpl) = read(&dir.path("off.mp4"));
+    assert!(track.is_empty() && chpl.is_empty());
+}

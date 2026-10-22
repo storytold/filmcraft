@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod bytes;
+pub mod chapters;
 mod codec;
 mod demux;
 mod error;
@@ -18,6 +19,7 @@ mod mux;
 mod source;
 
 pub use bytes::FourCc;
+pub use chapters::{Chapter, MAX_CHAPTER_TITLE_BYTES, MAX_CHAPTERS};
 pub use codec::{
     AacConfig, ApvConfig, AudioParams, Av1Config, AvcConfig, BitRate, CleanAperture, CodecConfig, ColorInfo, FieldInfo, FlacConfig, HevcConfig, HevcNalArray,
     MasteringDisplay, OpusConfig, PcmConfig, SampleEntry, TimecodeConfig, VideoParams, VpcConfig, parse_asc,

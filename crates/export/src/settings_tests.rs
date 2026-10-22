@@ -14,16 +14,16 @@ use filmcraft_time::TICKS_PER_SECOND;
 use super::*;
 
 /// A scratch directory under the workspace `target/`, removed when dropped.
-struct Scratch(PathBuf);
+pub(super) struct Scratch(pub(super) PathBuf);
 
 impl Scratch {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         let d = filmcraft_testkit::fixtures::workspace_root().join("target").join("export-tests").join(format!("{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         Scratch(d)
     }
-    fn path(&self, name: &str) -> String {
+    pub(super) fn path(&self, name: &str) -> String {
         self.0.join(name).to_string_lossy().to_string()
     }
 }
@@ -35,7 +35,7 @@ impl Drop for Scratch {
 }
 
 /// A `w`×`h` 24 fps sequence: a colour matte (1 s) and optionally a 440 Hz tone at `tone_db`.
-fn matte(color: [f32; 4], w: u32, h: u32, tone_db: Option<f32>) -> (Arc<Project>, ItemId, SourceMap) {
+pub(super) fn matte(color: [f32; 4], w: u32, h: u32, tone_db: Option<f32>) -> (Arc<Project>, ItemId, SourceMap) {
     let mut p = Project::new("m");
     let r = FrameRate::FPS_24;
     let dur = Tick(2 * TICKS_PER_SECOND);
@@ -73,7 +73,7 @@ fn matte(color: [f32; 4], w: u32, h: u32, tone_db: Option<f32>) -> (Arc<Project>
     (Arc::new(p), seq, m)
 }
 
-fn ffprobe_json(args: &[&str], path: &str) -> Option<serde_json::Value> {
+pub(super) fn ffprobe_json(args: &[&str], path: &str) -> Option<serde_json::Value> {
     let ffprobe = filmcraft_testkit::ffprobe_or_skip("export settings")?;
     let mut a = vec!["-v", "error", "-of", "json"];
     a.extend_from_slice(args);

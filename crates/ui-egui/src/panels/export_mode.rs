@@ -456,6 +456,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         .map(|q| (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate))
         .unwrap_or((1920, 1080, FrameRate::FPS_24, 48_000));
     let has_captions = app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty());
+    let has_chapters = app.session.active_sequence().is_some_and(|q| q.markers.iter().any(|m| m.kind == filmcraft_project::MarkerKind::Chapter));
     // an HDR sequence exports HDR (H.265 Main 10 where the hardware encoder has it) unless SDR is asked for
     let seq_hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
     let all_presets = app.session.export_presets.all();
@@ -591,7 +592,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if section(ui, &mut reg, &mut ex.open_sections, "effects", tl!("Effects"), &t) {
             pick_overlay = effects_section(ui, &mut reg, s, &t);
         }
-        if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
+        if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::Aac)
             && section(ui, &mut reg, &mut ex.open_sections, "metadata", tl!("Metadata"), &t)
         {
             let m = &mut s.metadata;
@@ -603,6 +604,14 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("comment", tl!("Comment"), &mut m.comment),
             ] {
                 row(ui, &t, label, |ui| text(ui, &mut reg, &format!("export.metadata.{key}"), v, ""));
+            }
+            // Premiere's "Include chapter markers" (#2747): chapter markers in the export range
+            // become MP4 / MOV / M4A chapters
+            row(ui, &t, tl!("Chapters"), |ui| {
+                check(ui, &mut reg, "export.metadata.chapters", &mut s.include_chapters, tl!("Include Chapter Markers"));
+            });
+            if !has_chapters {
+                ui.label(egui::RichText::new(tl!("The sequence has no chapter markers.")).color(t.text_dim).size(11.5));
             }
         }
         let _ = seq_rate;
