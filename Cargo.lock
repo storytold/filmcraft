@@ -1681,6 +1681,7 @@ dependencies = [
 name = "filmcraft"
 version = "0.10.0"
 dependencies = [
+ "android-activity",
  "arboard",
  "chrono",
  "cpal",
