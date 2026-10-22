@@ -1681,6 +1681,7 @@ dependencies = [
 name = "filmcraft"
 version = "0.11.0"
 dependencies = [
+ "android-activity",
  "arboard",
  "chrono",
  "cpal",
@@ -1726,6 +1727,16 @@ version = "0.11.0"
 dependencies = [
  "filmcraft-testkit",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-android"
+version = "0.10.0"
+dependencies = [
+ "android-activity",
+ "filmcraft",
+ "jni 0.21.1",
+ "log",
 ]
 
 [[package]]

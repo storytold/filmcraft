@@ -5,7 +5,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (language table: German covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (progress log: the arm64 Android APK launches on a tablet, with shared storage behind "All files access"; G21 added) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -107,6 +107,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 ## Progress log
 
+- **2026-10-15 (Android):** the arm64 APK launches on a Samsung Tab S11 (Android 16): the shared app from a NativeActivity entry (`filmcraft-android`), every file dialog — Save, Save As, Open Project, imports, exports, folder picks — served by FilmCraft's own browser inside the app-private tree (`Projects/` for projects, `Exports/` for renders and stills, `config/` for settings, auto-save and logs) and, once the user grants "All files access", inside shared storage (`/storage/emulated/0`) as a second root — the grant is checked and opened from Android's settings page over JNI, the workspace's one named `unsafe` exception beside `platform` — the launcher icons in the APK's `res/`, and a full on-device H.264 export of the demo sequence into `Exports/`. Hardware decode and store packaging remain ([G21](docs/gaps.md#g21-the-android-build-has-no-hardware-codecs-or-store-packaging)).
 - **2026-10-12:** Transform's motion-blur shutter on adjustment layers uses the sequence frame rate instead of 24 fps, so a 360° shutter in a 60 fps sequence spans one frame, not 2.5 (#1088)
 - **2026-10-10 (changed media):** Settings ▸ Media ▸ Automatically refresh growing files works: media files that change on disk while the project is open (a recording still being written, a render written over the file a clip uses) are read again every *Refresh growing files every* seconds and as soon as the window comes back to the front: the new length, picture and identity, without an undo step (`media.refreshChanged`, `media_watch`).
 - **2026-10-10 (re-measure):** full parity re-measure against Premiere Pro 26.5.2: menu label diff 338 / 366 (92%), installed bundle listings (10 UI languages, exporter and codec frameworks), 188 open issues. Breadth ~86% (file formats now counted), ready ~55%, stage **alpha**; progress docs reorganized per the craftrules standard ([target-app-parity](docs/target-app-parity.md), [gaps](docs/gaps.md), [roadmap](docs/roadmap.md), [codec](docs/codec-parity.md), [file-format](docs/file-format-parity.md), [hardware](docs/hardware-parity.md), [UI](docs/ui-parity.md), [localization](docs/localization-parity.md)).
@@ -166,7 +167,8 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
+| 2026-10-15 | minor | Progress log: the arm64 Android APK launches on a tablet; G21 added to gaps |
+| 2026-10-15 | minor | Progress log: the same Android entry now includes shared storage behind "All files access"; G21 retitled (hardware codecs and store packaging remain) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
 | 2026-10-11 | minor | Language table: German ships the menus (#630, 10.6%) |
 | 2026-10-10 | minor | Readiness-by-audience table with hours to ~95% per audience |

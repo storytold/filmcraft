@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (G21: shared storage, with Android's "All files access" grant) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -9,7 +9,7 @@ When you close or shrink a gap, update its entry, its parity doc and the revisio
 
 Summary by kind: **feature gaps** G1, G2, G12, G13, G18, G19; **UI / UX** G8; **file formats**
 G2, G10, G13, G15; **codecs** G3, G10; **hardware** G5; **localization** G14; **stability and
-platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement** G1, G6, G7;
+platforms** G4, G9, G17, G21; **performance** G16; **ecosystem** G11; **measurement** G1, G6, G7;
 **web** G20.
 
 | # | Gap | Kind | Blocks beta | Estimate |
@@ -34,6 +34,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G18 | Effects depth: approximations and missing behaviour | feature | no | 60–110 h |
 | G19 | Speech to text off in release builds | feature, AI | no | 5–10 h |
 | G20 | The web app shell | platforms | no | 40–80 h |
+| G21 | The Android build has no hardware codecs or store packaging | platforms | no | 20–45 h |
 
 ## G1. Nothing compares our output with Premiere's
 
@@ -313,6 +314,18 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   image-sequence export downloads drop frames in Chrome (#378).
 - **Estimate:** 40–80 h. Doc: [web.md](web.md).
 
+## G21. The Android build has no hardware codecs or store packaging
+
+- **Missing:** the arm64 APK launches, renders, saves and browses, and once the user grants "All
+  files access" it reaches shared storage too — a clip can be picked from the gallery or Downloads
+  and a render can land in a shared folder (verified on a Samsung Tab S11, Android 16). What it
+  still lacks: no hardware decode or encode (`platform`'s FFI covers VideoToolbox, Media
+  Foundation / Direct3D 11, VA-API and NVDEC / NVENC only), so the phone decodes and encodes in
+  pure Rust; the grant has to be given by hand from Android's settings page (an app can never hold
+  it silently, and Android can withdraw it); and the APK is signed with a local keystore for
+  `adb install`: no release signing or store packaging yet.
+- **Estimate:** 20–45 h. Doc: [architecture.md](architecture.md#what-the-android-build-changes).
+
 ## Revision history
 
 | Date | Change | Summary |
@@ -320,3 +333,5 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-15 | minor | G21: the Android build is app-private only (the arm64 APK launches, saves and renders on a tablet; shared storage, hardware decode and store packaging remain) |
+| 2026-10-15 | minor | G21: shared storage on Android — the in-app browser's second root behind "All files access" (the grant is checked and opened over JNI, the entry crate's named `unsafe` exception); hardware codecs and store packaging remain, so the gap is retitled |
