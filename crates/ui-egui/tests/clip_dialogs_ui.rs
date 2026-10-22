@@ -289,6 +289,28 @@ fn speed_duration_from_the_clip_menu_opens_the_dialog() {
     assert_eq!(got.time_interpolation, filmcraft_project::TimeInterpolation::FrameBlending);
 }
 
+/// The Properties panel's speed footer opens Clip ▸ Speed/Duration… on click instead of doing
+/// nothing; Cancel leaves the clip alone.
+#[test]
+fn the_properties_speed_button_opens_the_speed_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.frames(3);
+    assert!(d.has("properties.speed"), "the speed button is laid out");
+    // the demo project's panel is short: the footer sits below the fold (#1322)
+    d.ok("ui.scroll", json!({"id": "panel.Properties", "dy": -2000.0}));
+    d.frames(3);
+    d.click("properties.speed");
+    let dlg = d.app().ui.clip_dialog.clone().expect("the dialog opened");
+    assert_eq!(dlg.command, "clip.speedDuration");
+    assert_eq!(dlg.params["speed"], json!(100.0), "starts at the clip's speed");
+    d.click("speedDuration.cancel");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(d.v1(0).speed, 1.0, "Cancel leaves the clip alone");
+}
+
 /// #786: the clip's right-click Label menu lists the labels by the user's names (with their
 /// colours, as Edit ▸ Label does) and each choice labels the clip.
 #[test]

@@ -891,6 +891,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         open
     };
+    let mut open_speed = false;
     // the sections scroll: a short panel would otherwise cut Audio and the speed button off (#1322)
     egui::ScrollArea::vertical().id_salt("props-scroll").auto_shrink([false, false]).show(&mut bui, |bui| {
         // keep the rows (and their keyframe arrows) clear of the scrollbar at the panel edge
@@ -1014,8 +1015,13 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
         bui.painter().text(br.center(), Align2::CENTER_CENTER, tlf!("Speed {n}%", n = format!("{:.0}", it.speed * 100.0)), Tokens::ui(12.0), t.text);
         app.auto.add("properties.speed", br, "Speed");
+        open_speed = bresp.clicked();
     });
     run(app, ui.ctx(), actions);
+    // the footer button reads out the clip's speed and opens Clip ▸ Speed/Duration…, as in Premiere
+    if open_speed && let Err(e) = crate::menus::invoke(app, ui.ctx(), "clip.speedDuration", json!({})) {
+        app.ui.status = e;
+    }
 }
 
 /// Where a row's highlight (hover, selection) is painted: the row less its first point, which is
