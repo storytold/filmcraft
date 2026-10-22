@@ -470,6 +470,7 @@
 	Render audio clip effects	渲染音频剪辑效果
 	Breakout to mono	拆分为单声道
 	Exported {path}	已导出 {path}
+	Exported with conversion notes; see Events: {path}	已导出 {path}；转换说明请查看事件。
 	Select a clip to view its metadata.	选择一个剪辑以查看其元数据。
 	Clip: {name}	剪辑：{name}
 	Open	打开
