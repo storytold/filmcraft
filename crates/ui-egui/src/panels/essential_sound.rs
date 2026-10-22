@@ -337,14 +337,14 @@ fn duration(ui: &mut egui::Ui, cx: &mut Ctx, items: &[TrackItem]) {
     };
     let remix = filmcraft_render::remix::Remix::of(item);
     let id = egui::Id::new(("es-duration-draft", item.id.0));
-    let model = (remix.as_ref().map(|r| r.target), item.duration);
+    let model = (remix.as_ref().map(|r| r.target), item.duration, remix.as_ref().map(|r| r.segments), remix.as_ref().map(|r| r.variations));
     let model_id = id.with("model");
     let controls_id = id.with("controls");
     let error_id = id.with("invalid");
     let timecode_id = id.with("timecode");
     // Keep an uncommitted edit while the clip is unchanged, but discard it after
     // Timeline edits, Undo/Redo or another client changes the remix or its extent.
-    let changed = ui.data(|d| d.get_temp::<(Option<Tick>, Tick)>(model_id)) != Some(model);
+    let changed = ui.data(|d| d.get_temp::<(Option<Tick>, Tick, Option<f64>, Option<f64>)>(model_id)) != Some(model);
     if changed {
         ui.data_mut(|d| {
             d.remove::<Tick>(id);

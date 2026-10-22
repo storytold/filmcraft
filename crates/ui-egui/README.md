@@ -93,6 +93,6 @@ once; clicking Apply commits the typed field before applying. Editing does not m
 Invalid or over-one-hour input never applies. Advanced contains the supported Segments and
 Variations controls. Strict phrase matching and alternative durations are intentionally deferred
 to the search change; this panel does not expose unsupported controls or promise suggestions.
-An uncommitted target stays editable while the clip is unchanged. Changes to the remix target
-or clip duration elsewhere (Timeline, Undo/Redo, commands) refresh the field and clear stale
-input/errors, including when the field was actively being edited.
+An uncommitted target stays editable while the clip is unchanged. Changes to the remix target,
+Segments, Variations or clip duration elsewhere (Timeline, Undo/Redo, commands) refresh the
+field and controls and clear stale input/errors, including when the field was actively being edited.

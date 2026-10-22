@@ -421,3 +421,28 @@ fn duration_keeps_uncommitted_input_until_the_clip_changes() {
     d.frames(3);
     assert_eq!(d.exec("clip.remix.properties", json!({"clip":clip}))["targetSeconds"], 25.);
 }
+
+#[test]
+fn duration_controls_refresh_when_only_remix_parameters_change() {
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.ok("ui.set", json!({"workspace":"Audio"}));
+    d.exec("essentialSound.setType", json!({"clips":[clip],"type":"music"}));
+    d.exec("clip.remix", json!({"clip":clip,"seconds":32.,"segments":50.,"variations":50.}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"essentialSound.section.Duration"}));
+    d.frames(3);
+    let id = egui::Id::new(("es-duration-draft", clip)).with("controls");
+    for (segments, variations) in [(20., 50.), (20., 80.)] {
+        let duration = d.duration(clip);
+        d.exec("clip.remix", json!({"clip":clip,"seconds":32.,"segments":segments,"variations":variations}));
+        d.frames(3);
+        assert_eq!(d.duration(clip), duration, "exercise unchanged target and clip duration");
+        assert_eq!(d.harness.ctx.data(|data| data.get_temp::<(f64, f64)>(id)), Some((segments, variations)));
+        d.ok("ui.click", json!({"id":"essentialSound.duration.apply"}));
+        d.frames(3);
+        let applied = d.exec("clip.remix.properties", json!({"clip":clip}));
+        assert_eq!(applied["segments"], segments);
+        assert_eq!(applied["variations"], variations);
+    }
+}
