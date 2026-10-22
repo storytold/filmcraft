@@ -17,11 +17,13 @@ of the crate you will change.
 |---|---|
 | macOS | Xcode Command Line Tools. ffmpeg: `brew install ffmpeg` (includes libx264/libx265). |
 | Linux | C toolchain and the system headers cpal and rfd need: ALSA (`libasound2-dev`) and GTK 3 (`libgtk-3-dev`), plus the usual X11/Wayland development packages for winit. ffmpeg from your distribution, built with libx264 and libx265. |
-| Windows | MSVC build tools. The oracle tests look for ffmpeg only in `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`, so most of them skip on Windows. |
+| Windows | MSVC build tools. Put ffmpeg/ffprobe on `PATH`, set `FILMCRAFT_FFMPEG` / `FILMCRAFT_FFPROBE`, or use a known install directory such as `C:\ffmpeg\bin`. |
 
-The oracle tests find ffmpeg at `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`. H.264 and
-HEVC fixtures need an ffmpeg built with libx264 and libx265. The VideoToolbox fixtures run only on
-macOS.
+The shared oracle helper checks explicit `FILMCRAFT_FFMPEG` / `FILMCRAFT_FFPROBE` paths, then
+`PATH`, then known Unix and Windows directories (`crates/testkit/src/oracle.rs`). Set
+`FILMCRAFT_REQUIRE_ORACLES=1` to fail instead of silently skipping when tools are missing.
+H.264 and HEVC fixtures need an ffmpeg built with libx264 and libx265. The VideoToolbox fixtures
+run only on macOS. Source discovery instructions checked 2026-10-21; no oracle run is implied.
 
 ## 2. Build and run
 

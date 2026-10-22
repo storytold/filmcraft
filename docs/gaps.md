@@ -1,6 +1,13 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-21 (source audit) · **Last updated:** 2026-10-21 · **Change:** minor (correct implemented UI/web features; distinguish historical reports and estimates from source evidence) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
+**Read the [2026-10-21 progress review](progress-review.md) first.** It checks all twenty gaps
+against 0.10.0 at `d643a886`, with source/test links. Tests were inspected, not executed. Issue
+references and hours below come from the 2026-10-10 assessment unless a later entry says otherwise;
+they are not a fresh issue-status check or remaining-effort estimate. Percentages have not been
+re-measured. The progress review records a selected GitHub workflow follow-up; full test coverage
+and shipped release features still need validation.
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -17,11 +24,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 40–70 h |
 | G2 | Premiere's `.prproj` cannot be opened | file format | **yes** | 60–120 h |
 | G3 | 10-bit and 4:2:2 camera media needs hardware | codec | yes | 30–50 h |
-| G4 | Crashes at start-up, and no test CI on pull requests | stability | yes | 40–80 h |
+| G4 | Historical launch crashes; PR test coverage needs verification | stability | yes | 40–80 h |
 | G5 | Hardware acceleration is partial | hardware | partly | 120–200 h |
-| G6 | No real-world media corpus or workflow acceptance tests | measurement | yes | 40–70 h |
+| G6 | No pinned real-media corpus; synthetic workflow tests exist | measurement | yes | 40–70 h |
 | G7 | No measured parity tool in CI | measurement | no | 10–20 h |
-| G8 | UI fidelity: monitor handles, Effect Controls, docking | UI / UX | partly | 120–200 h |
+| G8 | Remaining UI fidelity and validation; handles/docking implemented | UI / UX | partly | 120–200 h |
 | G9 | Windows and Linux at run time | platforms | partly | 50–90 h |
 | G10 | Container and codec gaps on import | file format, codec | partly | 120–200 h |
 | G11 | No plugin hosting | ecosystem | no | 200–400 h |
@@ -32,8 +39,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G16 | Performance reports on 0.5.0 | performance | partly | 30–60 h |
 | G17 | Audio device and playback reliability | stability | partly | 20–40 h |
 | G18 | Effects depth: approximations and missing behaviour | feature | no | 60–110 h |
-| G19 | Speech to text off in release builds | feature, AI | no | 5–10 h |
-| G20 | The web app shell | platforms | no | 40–80 h |
+| G19 | Transcription optional; shipped release features unverified | feature, AI | no | 5–10 h |
+| G20 | Browser limitations and acceptance validation | platforms | no | 40–80 h |
 
 ## G1. Nothing compares our output with Premiere's
 
@@ -79,6 +86,13 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G4. Crashes at start-up, and no test CI on pull requests
 
+**2026-10-21 source check:** the historical reports below were not reproduced or checked for
+closure. Local workflow declarations delegate to `storytold/craft-common-actions` reusable
+workflows. The FreeBSD caller sets `skip-tests: true`; the selected successful Windows ARM64 run
+checks packaging/install/CLI startup. No general PR Rust-test gate is declared locally. See the
+[pinned sources and recorded run](progress-review.md#github-workflow-follow-up); the sample does
+not establish all historical runs or branch-protection requirements.
+
 - **Have:** a graphics start-up fallback (#820): after two starts in a row that died within 15 s
   of launch without painting (a driver crash in wgpu instance / device creation; hangs, later
   crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
@@ -92,9 +106,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Evidence:** open issues: macOS 12 Monterey aborts on a missing VideoToolbox symbol (#468,
   #661, #655), Intel UHD graphics (`igvk64.dll`, #512), Windows 11 does not run or fails after setup
   (#380, #582, #413, #477), crash on new project + import (#439), "it just keeps crashing" (#687).
-  `.github/workflows/` holds release, packaging lint, FreeBSD and Windows ARM64 builds; **none runs
-  `cargo test` or `cargo xtask ci` on a pull request**, so 243 PRs merged since 10-05 were gated by
-  contributors' local runs (main needed "green again after the batch merges" on 10-10).
+  The 2026-10-10 assessment found no PR workflow running `cargo test` or `cargo xtask ci` and
+  attributed the preceding 243 merges to contributors' local gates. That is historical evidence;
+  see the source-check qualification above for the current shared workflow setup.
 - **Impact:** a user who cannot start the app gets zero value; regressions land unnoticed.
 - **Done when:** weak-linked or runtime-loaded OS symbols on old macOS, ~~a software / safe-mode
   start when the GPU adapter fails~~ (done, #820), a PR workflow running `cargo xtask ci`
@@ -156,15 +170,18 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G8. UI fidelity: monitor handles, Effect Controls, docking
 
-- **Missing:** on-screen transform handles for Motion / Transform in the Program monitor (#639);
-  Effect Controls keyframe zoom bar, draggable divider, row lines (#640–#645); panel docking
-  rearrangement (#493); clicking empty space to deselect (#683); filmstrip thumbnails (#614);
-  marquee selection in the Project panel (#578); Freeform bins and middle-mouse pan (#579);
-  Program monitor Button Editor (+) (#431); keyframe curves for Position (#448); transition
-  editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize;
-  the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
-  X11 (#457).
-- **Estimate:** 120–200 h. Doc: [ui-parity.md](ui-parity.md).
+- **Implemented, source checked 2026-10-21:** Motion / Transform monitor handles (#639), Effect
+  Controls divider and row lines (#640, #643), Position value/velocity graphs (#448), panel
+  rearrangement and floating groups (#493), empty-space deselect (#683), gap deletion with Delete
+  or Backspace (#648, #668), and continuous timeline thumbnails (#614). The Button Editor has
+  persisted monitor-button state; it should no longer be described as wholly absent without a
+  focused runtime check. [Evidence and test sources](progress-review.md#ui-evidence-that-changes-the-work-list).
+- **Remaining / needs validation:** keyframe zoom, Project-panel marquee/pan details, separate
+  native multi-monitor windows (in-app floating groups do not establish this), transition A/B
+  previews and Start / End sliders, platform interaction reports and independent visual comparison.
+  Historical issues are reproduction candidates, not proof of a current bug.
+- **Historical estimate:** 120–200 h, not recalculated after these implementations. Doc:
+  [ui-parity.md](ui-parity.md).
 
 ## G9. Windows and Linux at run time
 
@@ -216,7 +233,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Missing:** Object Mask (Premiere 26.0, #406, #694), Generative Extend (needs a large video
   model; not reachable locally), media-intelligence search, caption translation, model-based
   Enhance Speech, Auto Reframe beyond heuristics, auto colour, Auto-Tag Audio Types.
-- **Have:** local Whisper transcription (off in releases, G19), Kokoro-82M text-to-speech
+- **Have:** local Whisper transcription (optional by default; shipped binary availability unverified, G19), Kokoro-82M text-to-speech
   narration (#278), scene edit detection, colour match.
 - **Needs:** openly licensed models we can ship. **150–300 h.**
 
@@ -226,6 +243,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   AS-10 / AS-11, XDCAM HD MXF, P2, PIZ / PXR24 / B44 / DWA OpenEXR compression, MP3 audio,
   interlaced encoding, smart render, HEVC software encoder (HEVC exists only where a hardware
   encoder does).
+- **Source check 2026-10-21:** AV1 has export-format and mux plumbing, but no built-in encoder
+  or platform AV1 availability probe was found. It remains a backend gap, not an absent format id.
+  FLAC audio export is implemented (`crates/flac`, `crates/export/src/lib.rs`).
 - **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
   sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
   (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342).
@@ -233,22 +253,23 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G14. Localization: 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese)
 
-- **Have:** Spanish, Japanese, Simplified Chinese, French (#498) and Portuguese (Brazil) (#859)
-  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; Ukrainian ~10% (menus).
+- **Have (recounted 2026-10-21):** nine non-English catalogs cover 98.9–100.0% of the current
+  3,597-key catalog union, including Korean. Russian and Ukrainian each have 355 keys (9.9%).
+  Counts measure catalog presence, not translation quality or all UI text. Full counts and method:
+  [progress review](progress-review.md#recounted-localization-evidence).
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
-  Korean (#508; needs Hangul fonts in craft-fonts),
-  Vietnamese; Premiere also ships Russian. Engine errors,
+  Vietnamese; Russian is partial. Korean is implemented, with a Hangul-font requirement. Engine errors,
   CLI and MCP stay English. Apart from the German menus (#630), no language has a recorded
   native-speaker review.
-- **Done:** Indonesian (#867): `id.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸
+- **Implemented:** Indonesian (#867): `id.tsv` has 3,559 keys (98.9% of the current union), in Edit ▸
   Language, Settings ▸ General and the native macOS menu; System Language picks it for `id-*` (and
   legacy `in-*`) locales. Native-speaker review welcome.
-- **Done:** Italian: `it.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸ Language,
+- **Implemented:** Italian: `it.tsv` has 3,593 keys (99.9% of the current union), in Edit ▸ Language,
   Settings ▸ General and the native macOS menu; System Language picks it for `it-*` locales.
   Native-speaker review welcome.
-- **Done:** German: `de.tsv` has every entry of the Spanish catalog (~100%), beyond the menus of
+- **Implemented:** German: `de.tsv` has 3,590 keys (99.8% of the current union), beyond the menus of
   #630 (panels, dialogs, effects and their parameters, settings, status messages). The menus are
   native-reviewed; review of the rest welcome.
 - **Estimate:** 150–230 h. Doc: [localization-parity.md](localization-parity.md).
@@ -288,7 +309,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G18. Effects depth: approximations and missing behaviour
 
 - **Missing:** Warp Stabilizer is 2-D (Premiere's is 3-D subspace), Morph Cut has no face tracking
-  (and occlusion edges are soft), Lumetri HDR-aware maths, multicam paging beyond 16 angles,
+  (and occlusion edges are soft), Lumetri HDR-aware maths,
   redesigned 26.0 mask tools (a stored, re-editable
   corner radius: rounding bakes fillets into the path, so a rounded corner cannot be re-rounded later).
 - **Have:** Optical Flow time interpolation synthesises motion-compensated in-between frames (dense
@@ -299,24 +320,38 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   #813), from an on-monitor corner-roundness handle with a live preview (one undo step per drag;
   #844); Shift snaps pen mask segments and dragged-out Bézier handles to 45° steps (#853), and
   Shift constrains vertex and whole-mask drags to 45° steps from the press point (#1408).
+- **Source checked 2026-10-21:** multicam paging beyond sixteen angles and Edit Cameras are
+  implemented and covered by `multicam_view_pages_beyond_sixteen_angles_and_edit_cameras` in
+  `crates/ui-egui/tests/multicam_ui.rs` (test inspected, not run in this review).
 - **Estimate:** 60–110 h.
 
 ## G19. Speech to text off in release builds
 
-- **Missing:** the `whisper` feature is off by default and in releases, so Transcribe Sequence,
-  text-based editing and auto captions need a source build.
-- **Estimate:** 5–10 h (model download UX, licence check).
+- **Confirmed in source 2026-10-21:** desktop and CLI manifests have empty default features and
+  expose optional `whisper` support, including engine model downloads.
+- **Unverified:** `.github/workflows/release.yml` delegates compilation to a shared workflow,
+  which invokes platform packaging scripts. The [workflow follow-up](progress-review.md#github-workflow-follow-up)
+  does not verify the feature flags through every packaging path or the shipped binaries. The
+  earlier blanket statement that transcription is off in releases is not established by local
+  manifests alone.
+- **Next check:** inspect the shared release build and test a shipped binary with model setup,
+  Transcribe Sequence and auto captions. Historical estimate: 5–10 h; not recalculated.
 
 ## G20. The web app shell
 
-- **Missing:** file access, WebCodecs decode, audio in the browser build beyond what exists;
-  image-sequence export downloads drop frames in Chrome (#378).
-- **Estimate:** 40–80 h. Doc: [web.md](web.md).
+- **Implemented, source checked 2026-10-21:** browser file access, WebCodecs decode, WebAudio
+  output, OPFS recovery and cooperative export. `apps/filmcraft-web/tests/smoke.mjs` covers load,
+  playback, import and H.264 download. See [web.md](web.md).
+- **Remaining / unverified:** run that smoke script; validate recovery and image-sequence downloads
+  (historical Chrome report #378). The build is single-threaded; commands requiring worker threads
+  remain limited. No browser session was executed in this review.
+- **Historical estimate:** 40–80 h, not recalculated.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Source audit of all twenty gaps linked; correct UI/docking/multicam/web and Korean status; qualify shared CI/release claims, historical issue reports and estimates |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |

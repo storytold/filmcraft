@@ -1,6 +1,10 @@
 # Codec parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: every codec Premiere Pro 26.5.2 decodes or encodes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-21 (focused source audit) · **Last updated:** 2026-10-21 · **Change:** minor (ProRes 4444/XQ UI, AV1 plumbing and FLAC encoder status) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+
+See the [2026-10-21 source review](progress-review.md) for audit limits. Percentages, timings and
+hours remain historical; codec tests were not rerun. The H.264/HEVC software profile gaps remain
+documented by the current crate READMEs.
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
@@ -17,10 +21,10 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 |---|---|---|---|---|---|---|
 | H.264 / AVC | decode all common profiles incl. High 10, 4:2:2 (XAVC S-I, AVC-Intra); encode 8/10-bit | own decoder, **8-bit 4:2:0 only** (Baseline / Main / High, CABAC / CAVLC); no High 10 / 4:2:2 / 4:4:4, interlaced field / MBAFF, lossless | own encoder (High / Main / Baseline, B-frames, CBR / VBR / 2-pass); 8-bit 4:2:0 only; hardware VideoToolbox / NVENC | decode bit-exact on 37+ conformance streams, 500–600 fps 1080p; encode ffprobe-checked, byte-identical across machines | 65% | 20–35 h |
 | HEVC / H.265 | decode Main, Main 10, 4:2:2 10 (XAVC HS); encode 8/10-bit, HDR | own decoder Main / Main 10 / Main Still Picture, bit-exact on 41 fixtures, ~225 fps 1080p; **no 4:2:2 / RExt** | **hardware only** (VideoToolbox 8-bit; NVENC 8-bit and Main 10 HDR on Windows); no software encoder | NVENC round trip 48.9 dB (8-bit), 71.1 dB (10-bit); ffprobe | 60% | 30–60 h |
-| ProRes 422 family / 4444 / XQ | decode + encode all | own decode + encode, all six profiles, alpha | yes (export UI exposes 422 flavours; 4444 / XQ request #342) | ±1 LSB, 318 fps | 85% | 3–6 h |
+| ProRes 422 family / 4444 / XQ | decode + encode all | own decode + encode, all six profiles, alpha | yes, including 4444 / XQ in export UI (#342 implemented) | historical ±1 LSB, 318 fps; not rerun | 85% | 3–6 h |
 | ProRes RAW | decode | none (#345) | — | — | 0% | 30–50 h (spec availability uncertain) |
 | DNxHD / DNxHR | decode + encode, MXF / MOV | own decode (all SMPTE ST 2019-1 CIDs, 8/10/12-bit, 4:2:2 / 4:4:4, interlaced, alpha) and encode LB / SQ / HQ / HQX / 444 | yes, MOV + MXF | within IDCT precision of ffmpeg on 22 fixtures | 90% | 2–4 h |
-| AV1 | decode (hardware on Windows); export through Media Encoder plug-ins / recent versions | own decoder Main 8/10-bit, all tools, film grain, bit-exact vs libdav1d on 41 vectors; hardware on Windows | none | slow in software (~4 fps 1080p single-thread) | 55% | 30–50 h (encoder + speed) |
+| AV1 | decode (hardware on Windows); export through Media Encoder plug-ins / recent versions | own decoder Main 8/10-bit, all tools, film grain; hardware on Windows | format/mux plumbing exists; no built-in encoder or platform AV1 availability probe found in 2026-10-21 review | historical conformance/speed results; not rerun | 55% | 30–50 h (encoder + speed) |
 | VP9 | not a Premiere import format on all versions | own decoder profiles 0–3, 8/10/12-bit, bit-exact on 50+ fixtures, frame threading | none | conformance | ahead | — |
 | APV (RFC 9924) | — (Samsung's pro codec; not in Premiere) | own decode | own encode | spec tests | ahead | — |
 | MPEG-2 / MPEG-1 | decode incl. 4:2:2 (IMX, XDCAM); encode DVD / Blu-ray / MXF | own decoder (4:2:2, interlaced, field pictures, IEEE 1180 IDCT) | **none** | conformance fixtures | 60% | 20–35 h (encoder) |
@@ -45,7 +49,8 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | E-AC-3 (Dolby Digital Plus) | decode | own decoder (ATSC A/52 Annex E, #647): independent substream, 1–6 blocks, spectral extension; **no** adaptive hybrid transform, enhanced coupling or 7.1 dependent substreams (plays the 5.1 core) | none | SNR vs ffmpeg 65–91 dB (raw, MP4, MOV, Matroska, TS) | 75% | 10–20 h |
 | MP3 / MP2 | decode + MP3 encode | MP3: symphonia (MPL-2.0); MP1 / MP2: own decoder (ISO/IEC 11172-3 / 13818-3, #809), also the bit rate / mode combinations ffmpeg writes by default (mono 384 kbit/s); in raw, MP4, MOV (#800), Matroska, TS, PS | **none** | MP1 / MP2: SNR vs ffmpeg 73–84 dB; MP2 in MP4 / MOV within 1e-4 of ffmpeg, also after a seek (#800) | 65% | 10–20 h (MP3 encoder) |
 | Opus | — (not a Premiere import format) | own decoder, RFC 8251 range-exact | none | conformance vectors | ahead | — |
-| FLAC, ALAC, Vorbis | partial | decode (symphonia); FLAC in MP4 silent (#603) | none | — | 70% | 3–6 h |
+| FLAC | partial | decode (symphonia); MP4 silence report #603 needs reproduction | own encoder (`crates/flac`); `.flac` and FLAC audio in MP4/MOV exposed by export settings | oracle tests exist; not rerun in source audit | 70% (historical combined audio row) | 3–6 h (historical) |
+| ALAC, Vorbis | partial | decode (symphonia) | none | — | not separately re-estimated | not separately re-estimated |
 | WMA | decode on Windows | none | none | — | 0% | 10–20 h |
 
 ## Summary
@@ -53,7 +58,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 - **Ahead of Premiere:** VP9, Opus, APV decode / encode; bit-exact software decoders everywhere,
   including Linux and FreeBSD, where Premiere does not run.
 - **Behind, by user impact:** 10-bit / 4:2:2 H.264 and HEVC in software ([G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)),
-  E-AC-3, camera RAW, HEVC and AV1 software encoding, MPEG-2 / JPEG 2000 encoding for broadcast
+  remaining E-AC-3 tools/profiles (core implemented), camera RAW, HEVC and AV1 software encoding, MPEG-2 / JPEG 2000 encoding for broadcast
   and DCP, DV, WMV.
 - **Codec dimension: ~60%, 150–250 h** ([target-app-parity.md](target-app-parity.md#by-dimension)).
 
@@ -61,5 +66,6 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Correct implemented ProRes UI and FLAC export; distinguish AV1 format plumbing from a working encoder; historical percentages/timings unchanged |
 | 2026-10-11 | minor | CinemaDNG / DNG decode (#1065) |
 | 2026-10-10 | major | Created: codec-by-codec comparison with Premiere 26.5.2 from the codec crates' READMEs, the export format registry and the installed bundle's listings |

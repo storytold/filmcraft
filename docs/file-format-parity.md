@@ -1,6 +1,10 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** major (new file: every file type Premiere Pro 26.5.2 reads or writes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-21 (focused source audit) · **Last updated:** 2026-10-21 · **Change:** minor (FLAC export and historical-evidence qualification) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+
+The [2026-10-21 source review](progress-review.md) confirms no `.prproj` importer was found,
+and corrects implemented export paths. Percentages, issue references and prior oracle results
+below remain historical evidence; no file acceptance/oracle tests were run for this audit.
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -70,7 +74,8 @@ only). "Tested" names the evidence.
 | AIFF / AIFC | read + write | yes | yes | 95% |
 | MP3 | read + write | read | **no** | 60% |
 | AAC / M4A | read + write | yes | yes (in MP4 / MOV, and AAC Audio: `.m4a` or ADTS `.aac`, #814) | 95% |
-| FLAC, Ogg, Opus | partial | yes | no | ahead on read |
+| FLAC | partial | yes (symphonia) | yes: own encoder, `.flac` and FLAC audio in MP4/MOV; source checked, oracle tests not rerun | not re-estimated |
+| Ogg, Opus | partial | yes | no | ahead on read |
 | WMA | read (Windows) | no | no | 0% |
 
 ## Captions and subtitles
@@ -85,11 +90,12 @@ only). "Tested" names the evidence.
 ## Summary
 
 **File formats dimension: ~60%, 140–240 h** (codecs counted separately). The beta blocker is
-`.prproj`. After it, by user impact: AVI and WMV import, EXR / PSD stills, AAF / OMF
+`.prproj`. After it, by user impact: AVI and WMV import, remaining EXR variants / PSD stills, AAF / OMF
 validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Source audit linked; FLAC export corrected; no new runtime fidelity percentages |
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
