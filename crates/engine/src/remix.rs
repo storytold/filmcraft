@@ -129,8 +129,27 @@ fn make_plan(s: &Session, c: ClipId, target: Tick, segments: f64, variations: f6
     let a = analysis(s, it.item, it.source_in, original)?;
     let params = Params { segments: segments.clamp(0.0, 100.0), variations: variations.clamp(0.0, 100.0) };
     let plan = dsp::plan(&a, target.to_units_floor(sr), params).map_err(|e| EngineError::Other(format!("cannot remix: {e}")))?;
+    let source = s.source(it.item).ok_or_else(|| EngineError::Other("the clip's media is offline".into()))?;
+    let base = it.source_in.to_units_floor(sr);
+    let levels = dsp::match_levels(&plan, sr as u32, a.period, &mut |start, count| {
+        source.audio_stream(it.audio_stream, base.checked_add(start)?, count, sr as u32).ok().map(|b| b.channels)
+    })
+    .map(|mut levels| {
+        levels.span = Tick::from_units(levels.span, sr).0;
+        levels
+    });
     let pieces = plan.pieces.iter().map(|p| TickPiece { src: it.source_in + Tick::from_units(p.src, sr), len: Tick::from_units(p.len, sr) }).collect();
-    let rm = Remix { target, segments: params.segments, variations: params.variations, original, xfade: Tick::from_units(plan.xfade, sr), pieces };
+    let rm = Remix {
+        target,
+        segments: params.segments,
+        variations: params.variations,
+        original,
+        xfade: Tick::from_units(plan.xfade, sr),
+        pieces,
+        // Matching is an optional enhancement. A bounded matching pass (or a failed
+        // extra read) must not reject an otherwise valid arrangement.
+        levels,
+    };
     Ok((Tick::from_units(plan.len(), sr), rm, a))
 }
 

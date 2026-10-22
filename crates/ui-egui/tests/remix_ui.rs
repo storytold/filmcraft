@@ -21,7 +21,11 @@ impl Driver {
     fn new(session: Session) -> Self {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut builder = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
+            builder = builder.wgpu();
+        }
+        let harness = builder.build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
@@ -177,4 +181,89 @@ fn remix_tool_drag_sets_the_duration() {
     assert_eq!(p["remixed"], true);
     assert!((p["seconds"].as_f64().unwrap() - p["targetSeconds"].as_f64().unwrap()).abs() <= 0.5);
     assert!(!p["cuts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn extended_remix_waveform_renders_in_the_timeline() {
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.ok("ui.set", json!({"workspace":"Audio", "timeline":{"pps":9.0,"scroll":0.0}}));
+    let report = d.exec("clip.remix", json!({"clip":clip,"seconds":46.0}));
+    // Allow the bounded background waveform job to finish while advancing UI frames.
+    for _ in 0..40 {
+        d.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!((d.duration(clip) - 46.0).abs() <= 0.5);
+    let prefix = format!("timeline.remixJoint.{clip}.");
+    let markers = d.ok("ui.elements", json!({"prefix":prefix}));
+    assert_eq!(markers.as_array().unwrap().len(), report["cuts"].as_array().unwrap().len());
+    let clip_id = format!("timeline.clip.{clip}");
+    let clips = d.ok("ui.elements", json!({"prefix":clip_id}));
+    let rect = &clips.as_array().unwrap().iter().find(|e| e["id"] == clip_id).unwrap()["rect"];
+    let x = rect[0].as_f64().unwrap();
+    let width = rect[2].as_f64().unwrap();
+    let mut joint = 0.0;
+    for (index, piece) in report["pieces"].as_array().unwrap().iter().take(markers.as_array().unwrap().len()).enumerate() {
+        joint += piece["len"].as_f64().unwrap();
+        let marker = &markers[index]["rect"];
+        let actual = marker[0].as_f64().unwrap() + marker[2].as_f64().unwrap() * 0.5;
+        let expected = x + joint / report["duration"].as_f64().unwrap() * width;
+        assert!((actual - expected).abs() < 1.0, "splice marker must follow output time");
+    }
+    if let Some(dir) = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR") {
+        let image = d.harness.render().expect("offscreen timeline render");
+        let path = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&path).unwrap();
+        image.save(path.join("remix-splice-markers.png")).unwrap();
+    }
+    let updated = d.exec("clip.remix", json!({"clip":clip,"seconds":20.0}));
+    d.frames(3);
+    assert_eq!(d.ids(&prefix).len(), updated["cuts"].as_array().unwrap().len());
+    d.exec("clip.remix.revert", json!({"clip":clip}));
+    d.frames(3);
+    assert!(d.ids(&prefix).is_empty());
+    d.exec("edit.undo", json!({}));
+    d.frames(3);
+    assert_eq!(d.ids(&prefix).len(), updated["cuts"].as_array().unwrap().len());
+}
+
+#[test]
+fn selection_tool_trims_extended_remix_out_without_replanning() {
+    let (s, clip) = session();
+    let mut d = Driver::new(s);
+    d.exec("sequence.settings", json!({"fps":25}));
+    d.exec("clip.remix", json!({"clip":clip,"seconds":65.0}));
+    d.exec("sequence.snap", json!({"on":false}));
+    d.ok("ui.set", json!({"workspace":"Audio","timeline":{"pps":6.0,"scroll":0.0}}));
+    d.ok("ui.menu.invoke", json!({"id":"tool.selection"}));
+    d.frames(90);
+    let original = d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.clone();
+    let a = d.ok("ui.timeline.locate", json!({"clip":clip,"edge":"in"}));
+    let b = d.ok("ui.timeline.locate", json!({"clip":clip,"edge":"out"}));
+    let x0 = a["x"].as_f64().unwrap();
+    let x1 = b["x"].as_f64().unwrap();
+    let y = b["y"].as_f64().unwrap();
+    assert!(x1 > x0);
+    let target = x1 - (original.duration.seconds() - 60.0) * d.harness.state().ui.timeline.pps;
+    let hit = d.ok("ui.timeline.hit", json!({"x":x1-0.5,"y":y}));
+    assert_ne!(hit["hit"], json!("none"), "the Out edge must be visible: {hit}");
+    let undo = d.harness.state().session.history.undo.len();
+    d.drag(egui::pos2(x1 as f32 - 0.5, y as f32), egui::pos2(target as f32 - 0.5, y as f32), 40);
+    d.frames(4);
+    let trimmed = d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.clone();
+    assert!((trimmed.duration.seconds() - 60.0).abs() <= 0.041, "duration {}", trimmed.duration.seconds());
+    assert_eq!(trimmed.effects, original.effects);
+    assert_eq!(d.harness.state().session.history.undo.len(), undo + 1);
+    if let Some(dir) = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR") {
+        // The cropped waveform is produced by the bounded background reader.
+        for _ in 0..40 {
+            d.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        d.harness.render().unwrap().save(std::path::PathBuf::from(dir).join("remix-manual-trim.png")).unwrap();
+    }
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1, &original);
 }

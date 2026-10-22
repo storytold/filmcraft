@@ -84,3 +84,17 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Remix waveform and Out trim
+
+Remixed peaks are generated through the same reader as playback, including crossfades and
+optional persisted gain envelopes. Splice markers use output-piece boundaries. Work and peak
+memory are bounded. Normal Selection-tool Out trimming uses the stored remix output extent,
+so an extended clip can be shortened below its current end without snapping to source length.
+Trim leaves the saved plan and gain envelopes intact and is one undo step; a trimmed tail can
+be restored up to the plan end. Older plans without joinLevels retain their playback behavior.
+
+Local seam-level matching is optional: arrangements exceeding its 33-piece budget, or an
+unavailable additional seam read, keep the original crossfades instead of failing the remix.
+The engine regression covers a 30-second source extended to 15 minutes, persisted playback
+at the tail and undo/redo.
