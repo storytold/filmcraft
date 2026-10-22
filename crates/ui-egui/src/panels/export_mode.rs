@@ -318,7 +318,9 @@ fn combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[
 /// [`combo`] whose options carry why they are greyed out (label, `Some(reason)` when disabled).
 fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[(String, Option<&str>)], width: f32) -> Option<usize> {
     let mut chosen = None;
-    let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).show_ui(ui, |ui| {
+    // no row limit of our own: the list grows to egui's popup limit, so Frame Rate's last rates
+    // (119.88, 120) show without scrolling (the default 200 px cut them off)
+    let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).height(f32::INFINITY).show_ui(ui, |ui| {
         for (i, (label, why)) in options.iter().enumerate() {
             let enabled = why.is_none();
             let resp = ui.add_enabled(enabled, egui::Button::selectable(label == selected, crate::i18n::t(label)));
@@ -422,7 +424,8 @@ fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui::Response 
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(folder)
 }
 
-const RATES: [(&str, FrameRate); 11] = [
+/// Video ▸ Frame Rate when Match Source is off: up to the high rates a sequence can have (119.88, 120).
+const RATES: [(&str, FrameRate); 13] = [
     ("10", FrameRate { num: 10, den: 1 }),
     ("12", FrameRate { num: 12, den: 1 }),
     ("15", FrameRate { num: 15, den: 1 }),
@@ -434,6 +437,8 @@ const RATES: [(&str, FrameRate); 11] = [
     ("50", FrameRate::FPS_50),
     ("59.94", FrameRate::FPS_59_94),
     ("60", FrameRate::FPS_60),
+    ("119.88", FrameRate::FPS_119_88),
+    ("120", FrameRate::FPS_120),
 ];
 
 pub(crate) const PARS: [(&str, Option<(u32, u32)>); 6] = [

@@ -510,3 +510,27 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+#[test]
+fn frame_rate_offers_the_high_rates_a_sequence_can_have() {
+    use filmcraft_time::FrameRate;
+    let mut d = Driver::new("frame-rate");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    // Match Source off shows the list of rates
+    d.click("export.video.matchRate");
+    assert!(d.app().ui.export.settings.frame_rate.is_some());
+    d.click("export.video.fps");
+    for (i, label) in [(11, "119.88"), (12, "120")] {
+        let id = format!("export.video.fps.option.{i}");
+        let e = d.ok("ui.elements", json!({"prefix": id}));
+        assert_eq!(e.as_array().and_then(|a| a.iter().find(|e| e["id"] == json!(id))).map(|e| e["label"].clone()), Some(json!(label)), "{id}");
+    }
+    d.snapshot("export-frame-rate-list");
+    // the last rate is on screen without scrolling: a click on it chooses it
+    d.click("export.video.fps.option.12");
+    assert_eq!(d.app().ui.export.settings.frame_rate, Some(FrameRate::FPS_120));
+    d.click("export.video.fps");
+    d.click("export.video.fps.option.11");
+    assert_eq!(d.app().ui.export.settings.frame_rate, Some(FrameRate::FPS_119_88));
+}
