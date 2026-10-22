@@ -441,6 +441,43 @@ fn escape_mid_drag_reverts_the_field_and_keeps_the_dialog() {
 }
 
 #[test]
+fn enter_confirms_and_submits_clip_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+    d.click("speedDuration.speed");
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "A", "ctrl": true}));
+    d.ok("ui.type", json!({"text": "200"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Enter closes the dialog and commits OK");
+    assert_eq!(d.v1(0).speed, 2.0, "the speed change was applied");
+}
+
+#[test]
+fn enter_on_focused_cancel_cancels_clip_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+    d.click("speedDuration.speed");
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "A", "ctrl": true}));
+    d.ok("ui.type", json!({"text": "200"}));
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["speed"], json!(200.0));
+    d.ok("ui.focus", json!({"id": "speedDuration.cancel"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Enter on focused Cancel closes the dialog");
+    assert_eq!(d.v1(0).speed, 1.0, "Cancel leaves speed unchanged");
+}
+
+#[test]
 fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
     for audio in [false, true] {
         let mut d = Driver::new();
