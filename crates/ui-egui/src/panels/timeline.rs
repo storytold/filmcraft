@@ -696,8 +696,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     zoom_scrollbar(
         app,
         ui,
-        Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0)),
+        Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(rect.max.x, rect.max.y - 2.0)),
         seq.duration().seconds(),
+        rate.frame_duration().seconds(),
         &t,
     );
     vertical_scrollbar(
@@ -1661,13 +1662,212 @@ fn zoom_thumb(bar: Rect, seq_seconds: f64, scroll: f64, pps: f64) -> (f32, f32, 
     (bar.min.x + at, w, if travel > 0.5 { range / travel as f64 } else { 0.0 })
 }
 
-fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seconds: f64, t: &Tokens) {
+fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    ui.set_max_width(250.0);
+    let settings = &mut app.session.state.timeline_ui;
+    let c = ui.checkbox(&mut settings.smooth_animations, tl!("Smooth Animations"));
+    let mut changed = c.changed();
+    app.auto.add("timeline.zoomBar.settings.smoothAnimations", c.rect, "Smooth Animations");
+    ui.separator();
+    ui.add_sized(egui::vec2(230.0, 36.0), egui::Label::new("Playhead Centering Range (Triple Click)").wrap());
+    let mut range_choice = if settings.playhead_side_custom {
+        4
+    } else {
+        [3.0, 5.0, 10.0, 30.0].iter().position(|v| (*v - settings.playhead_side_seconds).abs() < f64::EPSILON).unwrap_or(2)
+    };
+    let range_labels = ["3s", "5s", "10s", "30s", "Custom"];
+    let slider_row_width = ui.available_width().min(250.0);
+    let (r, moved) = ui
+        .allocate_ui_with_layout(egui::vec2(slider_row_width, 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            tick_slider(ui, &mut range_choice, &range_labels, &app.tokens)
+        })
+        .inner;
+    changed |= moved;
+    app.auto.add("timeline.zoomBar.settings.playheadSideSeconds.slider", r.rect, "Playhead centering range");
+    if moved {
+        match range_choice {
+            0..=3 => {
+                settings.playhead_side_seconds = [3.0, 5.0, 10.0, 30.0][range_choice];
+                settings.playhead_side_custom = false;
+            }
+            _ => {
+                if !settings.playhead_side_custom {
+                    settings.playhead_side_seconds = 15.0;
+                }
+                settings.playhead_side_custom = true;
+            }
+        }
+    }
+    let side_row_h =
+        ui.ctx().animate_value_with_time(egui::Id::new("timeline-settings-side-row"), if settings.playhead_side_custom { 24.0 } else { 0.0 }, 0.12);
+    if side_row_h > 0.5 {
+        ui.allocate_ui_with_layout(egui::vec2(230.0, side_row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_opacity((side_row_h / 24.0).clamp(0.0, 1.0));
+            ui.label("Value:");
+            let (response, value) = ui
+                .add_enabled_ui(side_row_h >= 22.0, |ui| {
+                    crate::widgets::hot_number_numeric(
+                        ui,
+                        egui::Id::new("timeline-zoombar-side"),
+                        settings.playhead_side_seconds,
+                        0.1,
+                        (0.1, 3600.0),
+                        1,
+                        "s",
+                        &app.tokens,
+                    )
+                })
+                .inner;
+            app.auto.add("timeline.zoomBar.settings.playheadSideSeconds", response.rect, "Playhead centering range in seconds");
+            if let Some(value) = value {
+                settings.playhead_side_seconds = value;
+                settings.playhead_side_custom = true;
+                changed = true;
+            }
+        });
+    }
+    ui.separator();
+    ui.add_sized(egui::vec2(230.0, 36.0), egui::Label::new("Slow Drag Speed (Shift + Left Click)").wrap());
+    let mut speed_choice = if settings.shift_drag_custom {
+        4
+    } else {
+        [0.0, 10.0, 25.0, 50.0].iter().position(|v| (*v - settings.shift_drag_percent).abs() < f64::EPSILON).unwrap_or(2)
+    };
+    let speed_labels = ["Auto", "10%", "25%", "50%", "Custom"];
+    let slider_row_width = ui.available_width().min(250.0);
+    let (r, moved) = ui
+        .allocate_ui_with_layout(egui::vec2(slider_row_width, 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            tick_slider(ui, &mut speed_choice, &speed_labels, &app.tokens)
+        })
+        .inner;
+    changed |= moved;
+    app.auto.add("timeline.zoomBar.settings.shiftDragPercent.slider", r.rect, "Shift drag speed");
+    if moved {
+        match speed_choice {
+            0..=3 => {
+                settings.shift_drag_percent = [0.0, 10.0, 25.0, 50.0][speed_choice];
+                settings.shift_drag_custom = false;
+            }
+            _ => {
+                if !settings.shift_drag_custom {
+                    settings.shift_drag_percent = 15.0;
+                }
+                settings.shift_drag_custom = true;
+            }
+        }
+    }
+    let speed_row_h = ui.ctx().animate_value_with_time(egui::Id::new("timeline-settings-speed-row"), if settings.shift_drag_custom { 24.0 } else { 0.0 }, 0.12);
+    if speed_row_h > 0.5 {
+        ui.allocate_ui_with_layout(egui::vec2(230.0, speed_row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_opacity((speed_row_h / 24.0).clamp(0.0, 1.0));
+            ui.label("Value:");
+            let (response, value) = ui
+                .add_enabled_ui(speed_row_h >= 22.0, |ui| {
+                    crate::widgets::hot_number_numeric(
+                        ui,
+                        egui::Id::new("timeline-zoombar-shift-speed"),
+                        settings.shift_drag_percent,
+                        0.1,
+                        (0.1, 100.0),
+                        1,
+                        "%",
+                        &app.tokens,
+                    )
+                })
+                .inner;
+            app.auto.add("timeline.zoomBar.settings.shiftDragPercent", response.rect, "Shift drag speed percent");
+            if let Some(value) = value {
+                settings.shift_drag_percent = value;
+                settings.shift_drag_custom = true;
+                changed = true;
+            }
+        });
+    }
+    if changed {
+        app.session.project_view_changed();
+    }
+}
+
+fn tick_slider(ui: &mut egui::Ui, value: &mut usize, labels: &[&str; 5], t: &Tokens) -> (egui::Response, bool) {
+    let slider_width = ui.available_width().min(224.0).max(0.0);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(slider_width, 38.0), Sense::click_and_drag());
+    let margin = (rect.width() * 0.08).min(18.0);
+    let left = rect.left() + margin;
+    let right = rect.right() - margin;
+    let y = rect.top() + 10.0;
+    let x_at = |i: usize| left + (right - left) * i as f32 / 4.0;
+    let before = *value;
+    if (response.clicked() || response.dragged())
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let frac = ((pos.x - left) / (right - left).max(1.0)).clamp(0.0, 1.0);
+        *value = (frac * 4.0).round() as usize;
+    }
+    let p = ui.painter();
+    p.line_segment([pos2(left, y), pos2(right, y)], Stroke::new(3.0, t.separator));
+    p.line_segment([pos2(left, y), pos2(x_at(*value), y)], Stroke::new(3.0, t.accent));
+    for i in 0..5 {
+        p.line_segment([pos2(x_at(i), y - 5.0), pos2(x_at(i), y + 5.0)], Stroke::new(1.0, t.icon_active));
+        p.text(pos2(x_at(i), y + 8.0), Align2::CENTER_TOP, labels[i], Tokens::ui(9.0), t.text_dim);
+    }
+    p.circle_filled(pos2(x_at(*value), y), 6.0, t.accent);
+    (response, before != *value)
+}
+
+fn zoom_drag_scale(shift: bool, percent: f64) -> f64 {
+    if shift && percent.is_finite() && percent > 0.0 { percent.clamp(0.1, 100.0) / 100.0 } else { 1.0 }
+}
+
+/// Exponential Shift sensitivity by visible Timeline duration. The fixed points are 30s → 7.5%,
+/// 10s → 2%, and one frame → 0.1%; fitting the full Timeline uses 50%.
+fn auto_shift_drag_percent(visible_seconds: f64, full_view_seconds: f64, frame_seconds: f64) -> f64 {
+    if !(visible_seconds.is_finite() && visible_seconds > 0.0 && full_view_seconds.is_finite() && full_view_seconds > 30.0) {
+        return 50.0;
+    }
+    if visible_seconds >= full_view_seconds {
+        return 50.0;
+    }
+    let frame = if frame_seconds.is_finite() { frame_seconds.clamp(0.001, 9.999) } else { 1.0 / 24.0 };
+    let log_lerp = |x: f64, x0: f64, y0: f64, x1: f64, y1: f64| {
+        let f = ((x / x0).ln() / (x1 / x0).ln()).clamp(0.0, 1.0);
+        (y0.ln() + (y1.ln() - y0.ln()) * f).exp()
+    };
+    if visible_seconds >= 30.0 {
+        log_lerp(visible_seconds, 30.0, 7.5, full_view_seconds, 50.0)
+    } else if visible_seconds >= 10.0 {
+        log_lerp(visible_seconds, 10.0, 2.0, 30.0, 7.5)
+    } else if visible_seconds >= frame {
+        log_lerp(visible_seconds, frame, 0.1, 10.0, 2.0)
+    } else {
+        0.1
+    }
+}
+
+#[cfg(test)]
+mod zoom_drag_scale_tests {
+    use super::zoom_drag_scale;
+
+    #[test]
+    fn shift_uses_configured_percentage_and_auto_is_unmodified() {
+        assert_eq!(zoom_drag_scale(false, 25.0), 1.0);
+        assert_eq!(zoom_drag_scale(true, 0.0), 1.0);
+        assert_eq!(zoom_drag_scale(true, 10.0), 0.1);
+        assert_eq!(zoom_drag_scale(true, 25.0), 0.25);
+        assert_eq!(zoom_drag_scale(true, 50.0), 0.5);
+        assert_eq!(zoom_drag_scale(true, 200.0), 1.0);
+        assert!((auto_shift_drag_percent(30.0, 600.0, 1.0 / 24.0) - 7.5).abs() < 1e-9);
+        assert!((auto_shift_drag_percent(10.0, 600.0, 1.0 / 24.0) - 2.0).abs() < 1e-9);
+        assert_eq!(auto_shift_drag_percent(600.0, 600.0, 1.0 / 24.0), 50.0);
+        assert!((auto_shift_drag_percent(1.0 / 24.0, 600.0, 1.0 / 24.0) - 0.1).abs() < 1e-9);
+    }
+}
+
+fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seconds: f64, frame_seconds: f64, t: &Tokens) {
     let p = ui.painter();
     p.rect_filled(bar, bar.height() / 2.0, t.separator);
-    let v = &mut app.ui.timeline;
-    let vis = bar.width() as f64 / v.pps;
+    let vis = bar.width() as f64 / app.ui.timeline.pps;
     let total = timeline_extent(seq_seconds).max(vis);
-    let (left, w, per_point) = zoom_thumb(bar, seq_seconds, v.scroll, v.pps);
+    let (left, w, per_point) = zoom_thumb(bar, seq_seconds, app.ui.timeline.scroll, app.ui.timeline.pps);
     let thumb = Rect::from_min_max(pos2(left, bar.min.y), pos2(left + w, bar.max.y));
     let hover = ui.rect_contains_pointer(thumb);
     p.rect_filled(thumb, thumb.height() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
@@ -1678,7 +1878,78 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     app.auto.add("timeline.zoomBar", thumb, "zoom scroll bar");
     app.auto.add("timeline.zoomBar.track", bar, "zoom scroll bar track");
     let resp = ui.interact(bar, egui::Id::new("tl-zoombar"), Sense::click_and_drag());
+    let popup_id = egui::Popup::default_response_id(&resp);
+    let anchor_id = popup_id.with("timeline-settings-anchor");
+    let right_click = ui.input(|input| {
+        input.pointer.button_clicked(egui::PointerButton::Secondary).then(|| input.pointer.interact_pos()).flatten().filter(|pos| bar.contains(*pos))
+    });
+    let screen = ui.ctx().content_rect();
+    let popup_width = 250.0;
+    if let Some(pos) = right_click {
+        let space_above = pos.y - screen.top();
+        let space_below = screen.bottom() - pos.y;
+        let above = space_above > space_below;
+        ui.data_mut(|data| data.insert_temp(anchor_id, (pos, above)));
+    }
+    let (requested_pos, above) =
+        ui.data(|data| data.get_temp::<(Pos2, bool)>(anchor_id)).unwrap_or_else(|| (resp.interact_pointer_pos().unwrap_or(bar.min), false));
+    let popup_pos = pos2(
+        (if requested_pos.x + popup_width <= screen.right() { requested_pos.x } else { requested_pos.x - popup_width })
+            .clamp(screen.left(), (screen.right() - popup_width).max(screen.left())),
+        requested_pos.y.clamp(screen.top(), screen.bottom()),
+    );
+    let popup_open = if right_click.is_some() {
+        Some(egui::SetOpenCommand::Bool(true))
+    } else if resp.clicked() {
+        Some(egui::SetOpenCommand::Bool(false))
+    } else {
+        None
+    };
+    let ctx = ui.ctx().clone();
+    let popup_response = egui::Popup::menu(&resp)
+        .open_memory(popup_open)
+        .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
+        .at_position(popup_pos)
+        .align(if above { egui::RectAlign::TOP_START } else { egui::RectAlign::BOTTOM_START })
+        .align_alternatives(&[if above { egui::RectAlign::TOP_START } else { egui::RectAlign::BOTTOM_START }])
+        .show(|ui| zoombar_settings(app, ui));
+    if let Some(click_pos) = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary).then(|| input.pointer.interact_pos()).flatten())
+        && popup_response.as_ref().is_some_and(|popup| !popup.response.rect.contains(click_pos))
+    {
+        egui::Popup::close_id(&ctx, popup_id);
+    }
     let range = (total - vis).max(0.0);
+    let triple = resp.triple_clicked();
+    let double = resp.double_clicked();
+    if triple {
+        let side = if app.session.state.timeline_ui.playhead_side_seconds.is_finite() {
+            app.session.state.timeline_ui.playhead_side_seconds.clamp(0.1, 3600.0)
+        } else {
+            10.0
+        };
+        let span = side * 2.0;
+        let fit_pps = (bar.width() as f64 / span).clamp(0.05, 24_000.0);
+        let playhead = app.session.playhead().seconds();
+        let target_scroll = (playhead - side).clamp(0.0, (timeline_extent(seq_seconds) - span).max(0.0));
+        let v = &mut app.ui.timeline;
+        v.target_pps = fit_pps;
+        v.target_scroll = target_scroll;
+        if !app.session.state.timeline_ui.smooth_animations {
+            v.pps = fit_pps;
+            v.scroll = target_scroll;
+        }
+        app.tl.zoom_anchor = None;
+    } else if double {
+        let v = &mut app.ui.timeline;
+        let fit_pps = (bar.width() as f64 / timeline_extent(seq_seconds).max(1e-9)).clamp(0.05, 24_000.0);
+        v.target_pps = fit_pps;
+        v.target_scroll = 0.0;
+        if !app.session.state.timeline_ui.smooth_animations {
+            v.pps = fit_pps;
+            v.scroll = 0.0;
+        }
+        app.tl.zoom_anchor = None;
+    }
     // a press beside the thumb brings the thumb's middle under the pointer (and a drag goes on
     // from there)
     let jump = |v: &mut crate::state::TimelineView, x: f32| {
@@ -1687,7 +1958,10 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
             v.scroll = v.target_scroll;
         }
     };
-    if resp.clicked()
+    if !double
+        && !triple
+        && ui.rect_contains_pointer(bar)
+        && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary))
         && let Some(pos) = resp.interact_pointer_pos().filter(|pos| !thumb.contains(*pos))
     {
         jump(&mut app.ui.timeline, pos.x);
@@ -1722,18 +1996,28 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     if let Some(Drag::ZoomBar { grab, start, mode, .. }) = app.tl.drag.clone()
         && resp.dragged()
     {
+        let shift = ui.input(|i| i.modifiers.shift);
+        let mut percent = app.session.state.timeline_ui.shift_drag_percent;
+        if shift && percent == 0.0 {
+            let view_width = f64::from(app.last_timeline_width.max(1.0));
+            let full_view = timeline_extent(seq_seconds) * view_width / f64::from(bar.width().max(1.0));
+            let pps = app.ui.timeline.pps;
+            let visible = if pps.is_finite() && pps > 0.0 { view_width / pps } else { full_view };
+            percent = auto_shift_drag_percent(visible, full_view, frame_seconds);
+        }
+        let scale = zoom_drag_scale(shift, percent);
         let v = &mut app.ui.timeline;
         match mode {
             // the thumb's middle: scroll, the thumb staying under the pointer
             0 => {
                 if let Some(pos) = resp.interact_pointer_pos() {
-                    v.target_scroll = (start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
+                    v.target_scroll = (start + (pos.x - grab) as f64 * per_point * scale).clamp(0.0, range);
                     v.scroll = v.target_scroll;
                 }
             }
             // a handle: zoom, the other end of the view staying where it is
             _ => {
-                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64 * total;
+                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64 * total * scale;
                 if mode == 1 {
                     let end = v.scroll + vis;
                     let ns = (v.scroll + dx).clamp(0.0, (end - 0.05).max(0.0));

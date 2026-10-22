@@ -10,12 +10,54 @@ use crate::theme::Tokens;
 /// calculation ([`crate::calc`]).
 /// Returns (response, Some(new value) when changed).
 pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64, f64), decimals: usize, suffix: &str, t: &Tokens) -> (Response, Option<f64>) {
+    hot_number_impl(ui, id, value, speed, range, decimals, suffix, t, false)
+}
+
+/// As [`hot_number`], but accepts only digits and one decimal point while typing.
+pub fn hot_number_numeric(
+    ui: &mut Ui,
+    id: egui::Id,
+    value: f64,
+    speed: f64,
+    range: (f64, f64),
+    decimals: usize,
+    suffix: &str,
+    t: &Tokens,
+) -> (Response, Option<f64>) {
+    hot_number_impl(ui, id, value, speed, range, decimals, suffix, t, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hot_number_impl(
+    ui: &mut Ui,
+    id: egui::Id,
+    value: f64,
+    speed: f64,
+    range: (f64, f64),
+    decimals: usize,
+    suffix: &str,
+    t: &Tokens,
+    numeric_only: bool,
+) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
     if let Some(buf) = editing.as_mut() {
         let r = ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0)));
+        if numeric_only {
+            let mut decimal_seen = false;
+            buf.retain(|ch| {
+                if ch.is_ascii_digit() {
+                    true
+                } else if ch == '.' && !decimal_seen {
+                    decimal_seen = true;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
         let mut out = None;
         if r.lost_focus() {
             // the field's own unit can be typed anywhere; calc ignores the common ones

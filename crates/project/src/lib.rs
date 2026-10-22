@@ -1314,6 +1314,40 @@ pub struct ProjectView {
     /// written before it existed have none, and every playhead starts at zero as it did then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub playheads: BTreeMap<ItemId, Tick>,
+    /// Project-scoped Timeline interaction settings, stored beside the project view.
+    #[serde(default)]
+    pub timeline_ui: TimelineUiSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimelineUiSettings {
+    pub smooth_animations: bool,
+    pub playhead_side_seconds: f64,
+    pub playhead_side_custom: bool,
+    pub shift_drag_percent: f64,
+    pub shift_drag_custom: bool,
+}
+
+impl Default for TimelineUiSettings {
+    fn default() -> Self {
+        Self { smooth_animations: false, playhead_side_seconds: 10.0, playhead_side_custom: false, shift_drag_percent: 0.0, shift_drag_custom: false }
+    }
+}
+
+impl TimelineUiSettings {
+    /// Validate settings read from a project file before they reach UI geometry or controls.
+    pub fn checked(mut self) -> Self {
+        self.playhead_side_seconds = if self.playhead_side_seconds.is_finite() { self.playhead_side_seconds.clamp(0.1, 3600.0) } else { 10.0 };
+        self.shift_drag_percent = if self.shift_drag_percent == 0.0 {
+            0.0
+        } else if self.shift_drag_percent.is_finite() {
+            self.shift_drag_percent.clamp(0.1, 100.0)
+        } else {
+            25.0
+        };
+        self
+    }
 }
 
 impl ProjectView {

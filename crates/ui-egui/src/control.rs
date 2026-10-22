@@ -174,11 +174,26 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     .unwrap_or(app.ui.program.res);
             }
             if let Some(tl) = p.get("timeline") {
+                let mut view_settings_changed = false;
                 if let Some(v) = tl.get("pps").and_then(Value::as_f64) {
                     app.ui.timeline.target_pps = v;
                 }
                 if let Some(v) = tl.get("scroll").and_then(Value::as_f64) {
                     app.ui.timeline.target_scroll = v;
+                }
+                if let Some(v) = tl.get("smoothAnimations").and_then(Value::as_bool) {
+                    view_settings_changed |= app.session.state.timeline_ui.smooth_animations != v;
+                    app.session.state.timeline_ui.smooth_animations = v;
+                }
+                if let Some(v) = tl.get("playheadSideSeconds").and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0 && *v <= 3600.0) {
+                    view_settings_changed |= app.session.state.timeline_ui.playhead_side_seconds != v;
+                    app.session.state.timeline_ui.playhead_side_seconds = v;
+                    app.session.state.timeline_ui.playhead_side_custom = ![3.0, 5.0, 10.0, 30.0].contains(&v);
+                }
+                if let Some(v) = tl.get("shiftDragPercent").and_then(Value::as_f64).filter(|v| v.is_finite() && (*v == 0.0 || (0.1..=100.0).contains(v))) {
+                    view_settings_changed |= app.session.state.timeline_ui.shift_drag_percent != v;
+                    app.session.state.timeline_ui.shift_drag_percent = v;
+                    app.session.state.timeline_ui.shift_drag_custom = ![0.0, 10.0, 25.0, 50.0].contains(&v);
                 }
                 if tl.get("fit").and_then(Value::as_bool) == Some(true) {
                     app.ui.timeline.fit_pending = true;
@@ -188,6 +203,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 }
                 if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
                     app.ui.timeline.audio_track_h = v as f32;
+                }
+                if view_settings_changed {
+                    app.session.project_view_changed();
                 }
                 // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
                 if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
