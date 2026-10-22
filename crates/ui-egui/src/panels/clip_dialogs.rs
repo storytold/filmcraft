@@ -1,6 +1,6 @@
 //! Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Remove Attributes, Offline File,
 //! Make Subclip, Edit Subclip, Modify ▸ Audio Channels, Modify ▸ Timecode, Frame Hold Options,
-//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), and the Close Project and
+//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), Rename…, and the Close Project and
 //! Quit "save changes?" prompts.
 //!
 //! The open dialog lives in `UiState::clip_dialog` (serde): the engine command it runs and the
@@ -16,6 +16,7 @@
 //! - Offline File `offlineFile.*`: `fileName`, `name`, `tapeName`, `video`, `audio`, `width`,
 //!   `height`, `fps`, `timecode`, `seconds`, `description`;
 //! - Nested Sequence Name `nest.*`: `name`;
+//! - Rename `rename.*`: `name` (the selected clip, its linked partners, or Project item);
 //! - Make Subclip `makeSubclip.*`: `name`, `startFrame`, `endFrame`, `restrictTrims`;
 //! - Edit Subclip `editSubclip.*`: `startFrame`, `endFrame`, `restrictTrims`, `convertToMaster`;
 //! - Audio Channels `audioChannels.*`: `format.<mono|stereo|5.1|adaptive>`, `count`,
@@ -58,6 +59,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.frameHoldOptions" => (tl!("Frame Hold Options"), "frameHold"),
         "clip.fieldOptions" => (tl!("Field Options"), "fieldOptions"),
         "clip.speedDuration" => (tl!("Clip Speed / Duration"), "speedDuration"),
+        "clip.rename" => (tl!("Rename"), "rename"),
         "file.closeProject" => (tl!("Save Project"), "closeProject"),
         "app.quit" => (tl!("Save Project"), "quit"),
         _ => return None,
@@ -83,6 +85,27 @@ fn hold_on() -> [(&'static str, &'static str); 5] {
     ]
 }
 
+/// What Clip ▸ Rename… renames, with its current name: the selected Project item when the Project
+/// panel has focus, else the selected Timeline clip (with its linked partners when they are
+/// selected too), else the one selected Project item. None when that is ambiguous or empty.
+fn rename_target(app: &FilmcraftApp) -> Option<Value> {
+    let s = &app.session;
+    let item = || match s.state.project_selection[..] {
+        [i] => s.project.item(i).map(|it| json!({"item": i.0, "name": it.name})),
+        _ => None,
+    };
+    if app.ui.focused == crate::dock::PanelKind::Project {
+        return item();
+    }
+    let sel = &s.state.selection;
+    let Some(&first) = sel.first() else { return item() };
+    let q = s.active_sequence()?;
+    let (_, it) = q.find_item(first)?;
+    // one clip, or one linked picture and its sound
+    let one = sel.len() == 1 || (it.link.is_some() && sel.iter().all(|c| q.find_item(*c).is_some_and(|(_, o)| o.link == it.link)));
+    one.then(|| json!({"clips": sel.iter().map(|c| c.0).collect::<Vec<_>>(), "name": it.name}))
+}
+
 /// Menu / shortcut entry points without params open a dialog. Returns None for other ids.
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
     let empty = params.as_object().is_none_or(|m| m.is_empty());
@@ -97,6 +120,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         return None;
     }
     meta(id)?;
+    if id == "clip.rename" && rename_target(app).is_none() {
+        let e = tl!("Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename").to_string();
+        app.ui.status = e.clone();
+        return Some(Err(e));
+    }
     if let Err(e) = filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session)) {
         app.ui.status = e.clone();
         return Some(Err(e));
@@ -167,6 +195,7 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             )
         }
         "clip.nest" => (json!({"name": filmcraft_engine::commands::next_nested_name(s)}), Value::Null),
+        "clip.rename" => (rename_target(app).unwrap_or(Value::Null), Value::Null),
         "clip.makeSubclip" => {
             let d = filmcraft_engine::clip_ops::subclip_defaults(s, &json!({})).unwrap_or_else(|| json!({}));
             (json!({"name": d["name"], "startFrame": d["startFrame"], "endFrame": d["endFrame"], "restrictTrims": true}), json!({"fps": d["fps"]}))
@@ -391,6 +420,27 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 });
             }
+            "clip.rename" => {
+                // the current name is ready to type over, and Enter accepts it
+                let mut v = p["name"].as_str().unwrap_or_default().to_string();
+                ui.horizontal(|ui| {
+                    ui.label(tl!("Name:"));
+                    let id = egui::Id::new("rename-name");
+                    let r = ui.add(egui::TextEdit::singleline(&mut v).desired_width(240.0).id(id));
+                    push(&mut elems, format!("{pre}.name"), &r, "Name:");
+                    if r.changed() {
+                        p["name"] = json!(v);
+                    }
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        action = Some("ok");
+                    }
+                    let first = egui::Id::new("rename-name-focused");
+                    if !ui.data(|d| d.get_temp::<bool>(first).unwrap_or(false)) {
+                        ui.data_mut(|d| d.insert_temp(first, true));
+                        r.request_focus();
+                    }
+                });
+            }
             "clip.makeSubclip" | "clip.editSubclip" => {
                 let fps = d.info["fps"].as_f64().unwrap_or(24.0);
                 if d.command == "clip.makeSubclip" {
@@ -587,7 +637,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         action = Some("cancel");
     }
     if action.is_some() {
-        ctx.data_mut(|d| d.remove::<bool>(egui::Id::new("nest-name-focused")));
+        ctx.data_mut(|d| {
+            d.remove::<bool>(egui::Id::new("nest-name-focused"));
+            d.remove::<bool>(egui::Id::new("rename-name-focused"));
+        });
     }
     match action {
         Some("cancel") => {

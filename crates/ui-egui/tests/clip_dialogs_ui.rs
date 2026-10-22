@@ -466,3 +466,43 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+/// Clip ▸ Rename… asked for nothing and failed with "need `name`": it opens a Rename dialog with
+/// the selected clip's name (its linked partner is renamed with it), or the selected Project item's
+/// when the Project panel has focus, and says what to select when nothing is.
+#[test]
+fn clip_rename_menu_opens_a_rename_dialog() {
+    let mut d = Driver::new();
+    let (picture, sound) = {
+        let q = d.app().session.active_sequence().unwrap();
+        let v = q.video_tracks[0].items[0].clone();
+        let a = q.audio_tracks.iter().flat_map(|t| &t.items).find(|a| a.link.is_some() && a.link == v.link).unwrap().clone();
+        (v, a)
+    };
+    let name = |d: &mut Driver, c: filmcraft_engine::project::ClipId| d.app().session.active_sequence().unwrap().find_item(c).unwrap().1.name.clone();
+    // nothing selected: an explanation, no dialog
+    d.exec("edit.deselectAll", json!({}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    assert!(d.call("ui.menu.invoke", json!({"id": "clip.rename"}))["ok"] != json!(true));
+    assert!(d.app().ui.clip_dialog.is_none());
+    // a linked clip: both halves, with the current name filled in
+    d.exec("timeline.select", json!({"clips": [picture.id.0]}));
+    let undo = d.app().session.history.undo.len();
+    d.menu("clip.rename");
+    assert!(d.has("rename.name") && d.has("rename.ok"));
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["name"], json!(picture.name));
+    d.ok("ui.set", json!({"clipDialog": {"name": "Opening shot"}}));
+    d.click("rename.ok");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(name(&mut d, picture.id), "Opening shot");
+    assert_eq!(name(&mut d, sound.id), "Opening shot", "the linked sound is renamed with its picture");
+    assert_eq!(d.app().session.history.undo.len(), undo + 1, "one undo step");
+    // the Project panel: its selected item
+    let item = d.app().session.project.items.values().find(|i| i.as_media().is_some()).map(|i| i.id).unwrap();
+    d.exec("project.select", json!({"items": [item.0]}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.menu("clip.rename");
+    d.ok("ui.set", json!({"clipDialog": {"name": "Renamed media"}}));
+    d.click("rename.ok");
+    assert_eq!(d.app().session.project.item(item).unwrap().name, "Renamed media");
+}

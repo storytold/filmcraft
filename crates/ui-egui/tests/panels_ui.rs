@@ -422,7 +422,7 @@ fn events_and_progress_panels() {
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Events"}));
     d.frames(2);
     // a failed command shows up as an error row
-    let r = d.call("engine.execute", json!({"command": "clip.rename", "params": {}}));
+    let r = d.call("engine.execute", json!({"command": "presets.rename", "params": {}}));
     assert_eq!(r["ok"], json!(false));
     d.frames(2);
     let rows = d.ids("events.row.");
