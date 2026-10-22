@@ -354,6 +354,7 @@ fn view_menu_and_settings_name_each_color_theme_alike() {
     for (menu_id, id) in [
         ("view.theme.dark", "settings.appearance.darkTheme.darkest"),
         ("view.theme.medium", "settings.appearance.darkTheme.dark"),
+        ("view.theme.oled", "settings.appearance.darkTheme.oled"),
         ("view.theme.light", "settings.appearance.lightTheme.light"),
     ] {
         let found = d.ok("ui.elements", json!({"prefix": id}));
@@ -368,7 +369,7 @@ fn appearance_labels_and_tooltips_take_effect() {
     assert_eq!(d.inspect()["ui"]["dark"], true);
     d.menu("app.settings.appearance");
     // the Appearance Mode selector above the light and dark theme cards
-    assert!(d.has("settings.appearance.lightTheme.light") && d.has("settings.appearance.darkTheme.dark"));
+    assert!(d.has("settings.appearance.lightTheme.light") && d.has("settings.appearance.darkTheme.dark") && d.has("settings.appearance.darkTheme.oled"));
     assert!(!d.has("settings.appearance.colorTheme"), "the single Color Theme is not shown");
     // Each radio belongs below its preview, even though the cards are laid out side by side.
     let elements = d.ok("ui.elements", json!({"prefix": "settings.appearance."}));

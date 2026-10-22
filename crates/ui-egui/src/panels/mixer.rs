@@ -1075,7 +1075,7 @@ mod tests {
 
     #[test]
     fn meter_well_and_inactive_clip_light_follow_theme() {
-        for kind in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Medium, crate::theme::ThemeKind::Light] {
+        for kind in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Medium, crate::theme::ThemeKind::Oled, crate::theme::ThemeKind::Light] {
             let t = Tokens::for_kind(kind);
             let ctx = egui::Context::default();
             let area = Rect::from_min_size(pos2(20.0, 20.0), vec2(40.0, 100.0));

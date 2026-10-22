@@ -634,7 +634,9 @@ fn appearance_defaults_and_legacy_theme_migrate() {
     assert_eq!(a.shown_theme(Some(true)), "darkest", "Dark mode ignores a light system");
     let dir = tmp_dir("prefs-appearance-migrate");
     let path = dir.join("preferences.json");
-    for (theme, mode, dark, light) in [("darkest", "dark", "darkest", "light"), ("dark", "dark", "dark", "light"), ("light", "light", "darkest", "light")] {
+    for (theme, mode, dark, light) in
+        [("darkest", "dark", "darkest", "light"), ("dark", "dark", "dark", "light"), ("oled", "dark", "oled", "light"), ("light", "light", "darkest", "light")]
+    {
         std::fs::write(&path, json!({"version": 2, "appearance": {"colorTheme": theme}}).to_string()).unwrap();
         let a = Preferences::load(&path).appearance;
         assert_eq!((a.appearance_mode.as_str(), a.dark_theme.as_str(), a.light_theme.as_str()), (mode, dark, light), "{theme}");
@@ -660,15 +662,18 @@ fn appearance_choices_validate_and_legacy_theme_still_selects() {
     for (key, value) in [
         ("appearance.darkTheme", json!("light")),
         ("appearance.lightTheme", json!("darkest")),
+        ("appearance.lightTheme", json!("oled")),
         ("appearance.appearanceMode", json!("system")),
         ("appearance.appearanceMode", json!(1)),
     ] {
         assert!(s.execute("prefs.set", json!({"key": key, "value": value})).is_err(), "{key} {value}");
     }
+    set(&mut s, "appearance.darkTheme", json!("oled"));
+    assert_eq!(s.prefs.appearance.dark_theme, "oled");
     // the single Color Theme of older clients selects that theme and fixes the mode to its family
     set(&mut s, "appearance.colorTheme", json!("light"));
     assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.light_theme.as_str()), ("light", "light"));
-    assert_eq!(s.prefs.appearance.dark_theme, "dark", "the dark choice is kept");
+    assert_eq!(s.prefs.appearance.dark_theme, "oled", "the dark choice is kept");
     set(&mut s, "appearance.colorTheme", json!("darkest"));
     assert_eq!((s.prefs.appearance.appearance_mode.as_str(), s.prefs.appearance.dark_theme.as_str()), ("dark", "darkest"));
     // the legacy Color Theme follows the mode and theme choices, so clients reading it aren't stale

@@ -68,7 +68,7 @@ fn overlaps(first: Rect, second: Rect) -> bool {
 fn monitor_readouts_and_dropdowns_do_not_overlap() {
     let mut failures = Vec::new();
     for (which, prefix) in [(Which::Source, "source"), (Which::Program, "program")] {
-        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Oled, ThemeKind::Light] {
             for width in [720.0, 500.0, 300.0, 250.0] {
                 for scale in [1.0, 2.0] {
                     let mut h = harness_at_scale(width, kind, which, scale);
