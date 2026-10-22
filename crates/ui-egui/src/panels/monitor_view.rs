@@ -1,7 +1,8 @@
 //! Monitor view options (the View menu and the monitors' wrench menus): Playback / Paused
 //! Resolution, High Quality Playback, Display Mode (Composite Video, Alpha, Red, Green, Blue,
 //! Multi-Camera, Audio Waveform, Comparison View, Video and Audio Waveform Split), Magnification
-//! (Fit, 10%…1600%, the wheel zooming about the pointer, middle-button or Hand-tool panning),
+//! (Fit, 10%…1600%, a pinch or Cmd/Ctrl+wheel zooming about the pointer; scroll bars, the wheel,
+//! a middle-button or Hand-tool drag panning a magnified picture),
 //! rulers, guides (dragged out of the rulers, Add
 //! Guide…, Clear Guides, Lock Guides, templates saved in the user preferences) and Snap in Program
 //! Monitor (graphic drags snap to guides, the frame edges and centre).
@@ -10,7 +11,8 @@
 //! through the `view.*` UI commands, which [`route`] handles for `menus::invoke`. Commands act on
 //! `params.monitor` ("program" / "source"), else on the focused monitor (Program by default).
 //!
-//! Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<fit|10|…|1600>`,
+//! Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<fit|10|…|1600>`, `<monitor>.scroll.<h|v>`
+//! (scroll bar thumbs) and `<monitor>.scroll.<h|v>.track`,
 //! `<monitor>.settings.<command suffix>` (wrench menu, e.g. `program.settings.display.alpha`),
 //! `<monitor>.ruler.top`, `<monitor>.ruler.left`, `<monitor>.guide.<n>`,
 //! `program.compare.<prev|next|set>`, `source.waveform`, and in the dialogs `guides.add.*`,
@@ -342,45 +344,118 @@ pub fn channel_view(img: &Rgba, mode: DisplayMode) -> Rgba {
     Rgba { w: img.w, h: img.h, px }
 }
 
+/// Thickness of a magnified monitor's scroll bars (points).
+pub const SCROLLBAR: f32 = 10.0;
+/// Shortest scroll bar thumb (points).
+const MIN_THUMB: f32 = 24.0;
+
+/// A usable magnification: None for Fit, else a finite factor within the zoom menu's 10%–1600%
+/// (`ui.set` can put anything in the state).
+pub fn sane_zoom(zoom: Option<f32>) -> Option<f32> {
+    let (lo, hi) = (ZOOMS[0].1, ZOOMS[ZOOMS.len() - 1].1);
+    zoom.filter(|z| z.is_finite() && *z > 0.0).map(|z| z.clamp(lo, hi))
+}
+
+/// The largest pan along each axis that keeps a picture of `size` covering `area` (zero along
+/// an axis where the picture fits).
+fn pan_limit(size: Vec2, area: Rect) -> Vec2 {
+    ((size - area.size()) / 2.0).max(Vec2::ZERO)
+}
+
+/// `pan` clamped to `max`, a non-finite component reset to the centre.
+fn clamp_pan(pan: [f32; 2], max: Vec2) -> Vec2 {
+    let c = |p: f32, m: f32| if p.is_finite() { p.clamp(-m, m) } else { 0.0 };
+    vec2(c(pan[0], max.x), c(pan[1], max.y))
+}
+
+/// The picture area of a monitor once the scroll bars of a magnified picture are taken out of
+/// `area`, and which bars show: (area, horizontal, vertical). A bar shows along an axis where the
+/// magnified picture is larger than the area, and taking one bar's strip can make the other needed.
+pub fn scroll_layout(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) -> (Rect, bool, bool) {
+    let Some(z) = sane_zoom(v.zoom) else { return (area, false, false) };
+    let size = vec2(fw, fh) * z / ppp.max(0.1);
+    let mut a = area;
+    let (mut h, mut vb) = (false, false);
+    for _ in 0..2 {
+        if !h && size.x > a.width() + 0.5 && a.height() > SCROLLBAR * 2.0 {
+            h = true;
+            a.max.y -= SCROLLBAR;
+        }
+        if !vb && size.y > a.height() + 0.5 && a.width() > SCROLLBAR * 2.0 {
+            vb = true;
+            a.max.x -= SCROLLBAR;
+        }
+    }
+    (a, h, vb)
+}
+
 /// The on-screen picture rect: fitted, or magnified about the area centre plus the (clamped) pan.
 pub fn picture_rect(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) -> Rect {
-    match v.zoom {
+    match sane_zoom(v.zoom) {
         None => crate::panels::monitor::fit(area, fw, fh),
         Some(z) => {
             let size = vec2(fw * z / ppp.max(0.1), fh * z / ppp.max(0.1));
-            let max = ((size - area.size()) / 2.0).max(Vec2::ZERO);
-            let pan = vec2(v.pan[0].clamp(-max.x, max.x), v.pan[1].clamp(-max.y, max.y));
-            Rect::from_center_size(area.center() + pan, size)
+            Rect::from_center_size(area.center() + clamp_pan(v.pan, pan_limit(size, area)), size)
         }
     }
 }
 
-/// Zoom and pan the picture `pic` shown in `area`: the wheel (or a pinch) zooms about the pointer,
-/// from Fit too, between the zoom menu's 10% and 1600%; a middle-button drag, or a drag with the
-/// Hand tool, pans a magnified picture. `fw` is the picture's width in frame pixels.
+/// Keep a monitor's stored pan what the picture `pic` in `area` shows: zero at Fit, else clamped
+/// to the range the scroll bars cover, so `ui.inspect` reads back the pan in effect.
+pub fn settle_pan(app: &mut FilmcraftApp, w: Which, area: Rect, pic: Rect) {
+    let v = view_mut(app, w);
+    let pan = if sane_zoom(v.zoom).is_some() { clamp_pan(v.pan, pan_limit(pic.size(), area)) } else { Vec2::ZERO };
+    if (pan.x - v.pan[0]).abs() > 1e-3 || (pan.y - v.pan[1]).abs() > 1e-3 || !v.pan.iter().all(|p| p.is_finite()) {
+        v.pan = [pan.x, pan.y];
+    }
+}
+
+/// Move a magnified picture by `d` points (the picture follows the pointer), clamped.
+fn pan_by(app: &mut FilmcraftApp, w: Which, area: Rect, pic: Rect, d: Vec2) {
+    let max = pan_limit(pic.size(), area);
+    let v = view_mut(app, w);
+    let p = clamp_pan([v.pan[0] + d.x, v.pan[1] + d.y], max);
+    v.pan = [p.x, p.y];
+}
+
+/// Zoom and pan the picture `pic` shown in `area`. A pinch, or the wheel with Cmd / Ctrl, zooms
+/// about the pointer, from Fit too, between the zoom menu's 10% and 1600%. Over a magnified
+/// picture the wheel scrolls it as Premiere does (#2685): vertically, horizontally with Shift, and
+/// both ways with a two-finger trackpad swipe. A middle-button drag, or a drag with the Hand tool,
+/// pans a magnified picture. `fw` is the picture's width in frame pixels.
 pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, pic: Rect, fw: f32, ppp: f32) {
     let ctx = ui.ctx().clone();
     if ui.rect_contains_pointer(area)
         && let Some(p) = ctx.pointer_hover_pos()
     {
-        // about 10% per wheel notch (40 points), exponential in the wheel travel so a notch out
-        // undoes a notch in exactly
         let wheel = crate::panels::timeline::wheel_input(&ctx);
-        let f = if (wheel.pinch - 1.0).abs() > 1e-4 { wheel.pinch } else { (wheel.delta.y * 1.1_f32.ln() / 40.0).exp().clamp(0.5, 2.0) };
-        if (f - 1.0).abs() > 1e-4 && pic.width() > 0.0 && fw > 0.0 {
-            let cur = pic.width() * ppp / fw;
-            let z = (cur * f).clamp(ZOOMS[0].1, ZOOMS[ZOOMS.len() - 1].1);
-            let k = z / cur;
-            // the point of the picture under the pointer stays under it
-            let centre = p - (p - pic.center()) * k;
-            let max = ((pic.size() * k - area.size()) / 2.0).max(Vec2::ZERO);
-            let v = view_mut(app, w);
-            v.zoom = Some(z);
-            v.pan = [(centre.x - area.center().x).clamp(-max.x, max.x), (centre.y - area.center().y).clamp(-max.y, max.y)];
+        let pinch = (wheel.pinch - 1.0).abs() > 1e-4;
+        if pinch || wheel.command {
+            // about 10% per wheel notch (40 points), exponential in the wheel travel so a notch
+            // out undoes a notch in exactly
+            let travel = if wheel.delta.y != 0.0 { wheel.delta.y } else { wheel.delta.x };
+            let f = if pinch { wheel.pinch } else { (travel * 1.1_f32.ln() / 40.0).exp().clamp(0.5, 2.0) };
+            if (f - 1.0).abs() > 1e-4 && pic.width() > 0.0 && fw > 0.0 {
+                let cur = pic.width() * ppp / fw;
+                let z = (cur * f).clamp(ZOOMS[0].1, ZOOMS[ZOOMS.len() - 1].1);
+                let k = z / cur;
+                // the point of the picture under the pointer stays under it
+                let centre = p - (p - pic.center()) * k;
+                let pan = clamp_pan([centre.x - area.center().x, centre.y - area.center().y], pan_limit(pic.size() * k, area));
+                let v = view_mut(app, w);
+                v.zoom = Some(z);
+                v.pan = [pan.x, pan.y];
+                return;
+            }
+        } else if sane_zoom(view(app, w).zoom).is_some() && wheel.delta != Vec2::ZERO {
+            // a mouse wheel scrolls vertically, horizontally with Shift (unless the system has
+            // already turned it sideways); a trackpad scrolls both ways
+            let d = if wheel.shift && wheel.delta.x == 0.0 { vec2(wheel.delta.y, 0.0) } else { wheel.delta };
+            pan_by(app, w, area, pic, d);
             return;
         }
     }
-    if view(app, w).zoom.is_none() {
+    if sane_zoom(view(app, w).zoom).is_none() {
         return;
     }
     let mut d = Vec2::ZERO;
@@ -401,9 +476,94 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
         d += resp.drag_delta();
     }
     if d != Vec2::ZERO {
-        let max = ((pic.size() - area.size()) / 2.0).max(Vec2::ZERO);
+        pan_by(app, w, area, pic, d);
+    }
+}
+
+/// The scroll bars of a magnified picture `pic` shown in `area` (`horizontal` under it, `vertical`
+/// to its right, in the strips [`scroll_layout`] took out). A thumb's length is the part of the
+/// picture in view; drag it to scroll, or press beside it to bring it there.
+/// Automation ids: `<monitor>.scroll.h|v` (thumbs) and `<monitor>.scroll.h|v.track`.
+pub fn scrollbars(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, pic: Rect, horizontal: bool, vertical: bool) {
+    if horizontal {
+        let track = Rect::from_min_max(pos2(area.min.x, area.max.y), pos2(area.max.x, area.max.y + SCROLLBAR));
+        scrollbar(app, ui, w, track, 0, area, pic);
+    }
+    if vertical {
+        let track = Rect::from_min_max(pos2(area.max.x, area.min.y), pos2(area.max.x + SCROLLBAR, area.max.y));
+        scrollbar(app, ui, w, track, 1, area, pic);
+    }
+}
+
+/// Where a scroll bar's thumb sits: (thumb start along the track, thumb length, points of picture
+/// per point of thumb travel). `offset` is how far the picture is scrolled from its start edge,
+/// `range` the most it can be.
+fn thumb_geometry(track_start: f32, track_len: f32, viewport: f32, content: f32, offset: f32) -> (f32, f32, f32) {
+    if content <= 0.0 || track_len <= 0.0 {
+        return (track_start, track_len.max(0.0), 0.0);
+    }
+    let len = (viewport / content * track_len).clamp(MIN_THUMB.min(track_len), track_len);
+    let travel = track_len - len;
+    let range = (content - viewport).max(0.0);
+    let start = track_start + if range > 0.0 { (offset / range).clamp(0.0, 1.0) * travel } else { 0.0 };
+    (start, len, if travel > 0.5 { range / travel } else { 0.0 })
+}
+
+fn scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, track: Rect, axis: usize, area: Rect, pic: Rect) {
+    let t = app.tokens;
+    let along = |v: Vec2| if axis == 0 { v.x } else { v.y };
+    let at = |p: egui::Pos2| if axis == 0 { p.x } else { p.y };
+    let (track_start, track_len) = (at(track.min), along(track.size()));
+    let (viewport, content) = (along(area.size()), along(pic.size()));
+    let range = (content - viewport).max(0.0);
+    // scrolled distance from the picture's start edge: 0 shows its left / top
+    let offset = (at(area.min) - at(pic.min)).clamp(0.0, range);
+    let (start, len, per_point) = thumb_geometry(track_start, track_len, viewport, content, offset);
+    let thumb = if axis == 0 {
+        Rect::from_min_max(pos2(start, track.min.y), pos2(start + len, track.max.y))
+    } else {
+        Rect::from_min_max(pos2(track.min.x, start), pos2(track.max.x, start + len))
+    };
+    let (key, label) = if axis == 0 { ("h", "horizontal scroll bar") } else { ("v", "vertical scroll bar") };
+    let pfx = prefix(w);
+    app.auto.add(&format!("{pfx}.scroll.{key}"), thumb, label);
+    app.auto.add(&format!("{pfx}.scroll.{key}.track"), track, &format!("{label} track"));
+    let resp = ui.interact(track, egui::Id::new((pfx, "scroll", key)), Sense::click_and_drag());
+    let p = ui.painter();
+    p.rect_filled(track, SCROLLBAR / 2.0, t.separator);
+    let hot = resp.dragged() || ui.rect_contains_pointer(thumb);
+    p.rect_filled(thumb.shrink(1.5), SCROLLBAR / 2.0, if hot { t.scroll_thumb_hover } else { t.scroll_thumb });
+    // the offset that puts the thumb's middle at `x` along the track
+    let jump = |x: f32| ((x - track_start - len / 2.0) * per_point).clamp(0.0, range);
+    let mut set = None;
+    if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos().filter(|pos| !thumb.contains(*pos))
+    {
+        set = Some(jump(at(pos)));
+    }
+    let drag_id = egui::Id::new((pfx, "scroll-drag", key));
+    if resp.drag_started()
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        let from = if thumb.contains(pos) { offset } else { jump(at(pos)) };
+        set = Some(from);
+        ui.data_mut(|d| d.insert_temp(drag_id, (at(pos), from)));
+    }
+    if resp.dragged()
+        && let Some((grab, from)) = ui.data(|d| d.get_temp::<(f32, f32)>(drag_id))
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        set = Some((from + (at(pos) - grab) * per_point).clamp(0.0, range));
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove::<(f32, f32)>(drag_id));
+    }
+    if let Some(off) = set {
+        // offset 0 (start edge in view) is the largest pan towards the end
         let v = view_mut(app, w);
-        v.pan = [(v.pan[0] + d.x).clamp(-max.x, max.x), (v.pan[1] + d.y).clamp(-max.y, max.y)];
+        if let Some(pan) = v.pan.get_mut(axis) {
+            *pan = range / 2.0 - off;
+        }
     }
 }
 
@@ -955,6 +1115,44 @@ mod tests {
         v.zoom = Some(0.1);
         let r = picture_rect(area, 1920.0, 1080.0, &v, 1.0);
         assert!((r.center().x - 200.0).abs() < 1e-3, "a small picture stays centred");
+    }
+
+    #[test]
+    fn hostile_zoom_and_pan_stay_in_range() {
+        let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0));
+        let mut v = MonitorView::default();
+        for z in [f32::NAN, f32::INFINITY, -2.0, 0.0] {
+            v.zoom = Some(z);
+            assert_eq!(sane_zoom(v.zoom), None);
+            let r = picture_rect(area, 1920.0, 1080.0, &v, 1.0);
+            assert!((r.width() - 400.0).abs() < 1e-3, "{z} shows as Fit");
+        }
+        v.zoom = Some(1e30);
+        v.pan = [f32::NAN, f32::NEG_INFINITY];
+        let r = picture_rect(area, 1920.0, 1080.0, &v, 1.0);
+        assert!((r.width() - 1920.0 * 16.0).abs() < 1.0, "capped at 1600%");
+        assert!((r.center() - area.center()).length() < 1e-3, "non-finite pan centres");
+        // a degenerate frame or area does not panic
+        let _ = scroll_layout(Rect::NOTHING, 0.0, 0.0, &v, 0.0);
+        assert_eq!(thumb_geometry(0.0, 100.0, 50.0, 0.0, 0.0), (0.0, 100.0, 0.0));
+    }
+
+    #[test]
+    fn scroll_bars_show_along_axes_the_magnified_picture_overflows() {
+        let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0));
+        let mut v = MonitorView::default();
+        assert_eq!(scroll_layout(area, 1920.0, 1080.0, &v, 1.0), (area, false, false), "none at Fit");
+        v.zoom = Some(0.2); // 384 x 216: fits
+        assert!(matches!(scroll_layout(area, 1920.0, 1080.0, &v, 1.0), (_, false, false)));
+        v.zoom = Some(0.21); // 403 x 227: wider only
+        let (a, h, vb) = scroll_layout(area, 1920.0, 1080.0, &v, 1.0);
+        assert!(h && !vb && (a.height() - (300.0 - SCROLLBAR)).abs() < 1e-3, "{a:?}");
+        // 402 x 296: wider; taking the horizontal bar's strip makes it taller than the area too
+        let (a, h, vb) = scroll_layout(area, 2010.0, 1480.0, &MonitorView { zoom: Some(0.2), ..v.clone() }, 1.0);
+        assert!(h && vb && (a.width() - (400.0 - SCROLLBAR)).abs() < 1e-3, "{a:?}");
+        // thumb: a quarter of the picture in view, scrolled to the end
+        let (start, len, per) = thumb_geometry(0.0, 100.0, 100.0, 400.0, 300.0);
+        assert!((len - 25.0).abs() < 1e-3 && (start - 75.0).abs() < 1e-3 && (per - 4.0).abs() < 1e-3, "{start} {len} {per}");
     }
 
     #[test]
