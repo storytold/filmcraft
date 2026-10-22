@@ -7,6 +7,44 @@ The caption *model* (caption tracks in a sequence, captions, track style) lives 
 `filmcraft-project` (`caption.rs`) because it is part of the `.fcproj` document. This crate reads
 and writes caption files, converts them to and from caption tracks, and draws captions.
 
+## Caption shadows
+
+Caption track styles persist an optional text shadow in `.fcproj` files. It is disabled by
+default, including when loading older styles. The Text panel's Captions tab has a Shadow popup;
+the same values are available through `captions.setStyle` and reported by `captions.list`:
+
+```json
+{"track":"C1","shadow":true,"shadowColor":"#000000","shadowOpacity":75,"shadowAngle":135,"shadowDistance":10,"shadowSize":0,"shadowBlur":40}
+```
+
+Opacity is 0–100 percent and multiplies the colour's alpha. Angle is 0–360 degrees clockwise
+from up (135 casts down/right), matching graphic text. Distance, size (outward spread) and blur
+are 0–1000 pixels at 1080 lines and scale with frame height. Blur uses the text engine's three
+box passes with sigma = blur / 3, as graphic text does. The shadow follows glyphs and their
+outline, not the background rectangle; it is composited above the box and behind the text.
+Zero opacity or transparent colour draws exactly the same pixels as disabling the shadow.
+
+Program rendering, GPU caption overlays and burned-in exports use the same `burn` renderer.
+Caption sidecar formats do not preserve these FilmCraft appearance settings. Resetting a style
+also resets its shadow; partial updates preserve unspecified settings, and changes are undoable.
+Malformed shadow command values return an error without changing the project. Raster allocations
+allow one frame of coverage, with a minimum of 4,194,304 and maximum of 33,554,432 pixels.
+This retains ordinary multiline captions at 1080p, 4K and 8K. If shadow padding exceeds that
+budget, rendering retries once without the shadow so the base caption remains visible.
+Invalid or oversized base text/geometry is not rasterised. The original size, line-spacing
+and outline calculations are retained; the renderer does not impose the command UI's style ranges.
+Outline dilation only processes glyph bounds plus outline support, independent of empty shadow
+padding. Allocation limits alone are not a rendering-time guarantee.
+
+Upgrade Caption to Graphic carries every shadow setting, including colour alpha and disabled
+settings, and scales distance, spread and blur to sequence-pixel units.
+
+Synthetic tests cover colour/opacity, direction, resolution scaling, spread, blur padding,
+disabled identity, multiline 8K captions, excessive-padding fallback and hostile geometry.
+Engine tests cover persistence, legacy defaults, undo/redo, parameter errors and upgrade to
+graphics. An export test compares burned-in PNG pixels with the Program reference at 1080p,
+4K and 8K and checks that disabling burn-in removes the shadow and captions.
+
 ## Formats
 
 | Format | Read | Write | Notes |

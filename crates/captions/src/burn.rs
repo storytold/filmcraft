@@ -105,12 +105,27 @@ fn vtt_overrides(settings: &str) -> (Option<f32>, Option<CaptionAlign>) {
 }
 
 /// Lay out and rasterise one caption for a `w`×`h` frame.
+///
+/// The overlay contains the background, text shadow, outline and fill, composited in
+/// that order. Style dimensions scale from a 1080-line frame; the raster budget
+/// scales with frame area. Excessive shadow padding falls back to the unshadowed caption. Invalid
+/// base geometry or a base overlay exceeding the budget returns `None`.
 pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
-    if w == 0 || h == 0 {
+    // Bound work before converting file-derived geometry or allocating raster masks.
+    if w == 0
+        || h == 0
+        || w > 16384
+        || h > 16384
+        || c.text.len() > 65536
+        || ![style.size, style.line_spacing, style.margin, style.outline].iter().all(|v| v.is_finite())
+    {
         return None;
     }
     let scale = h as f32 / 1080.0;
     let px = (style.size * scale).max(4.0);
+    if px > 16384.0 {
+        return None;
+    }
     let max_w = w as f32 * 0.9;
     let ts = caption_style(&style.font, px);
     let mut lines: Vec<String> = Vec::new();
@@ -149,14 +164,42 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         })
         .collect();
     let outline = (style.outline * scale).max(0.0);
-    let grow = outline.ceil() + 1.0;
+    let shadow_on = style.shadow && style.shadow_opacity > 0.0 && style.shadow_color[3] > 0;
+    let (dx, dy, spread, sigma) = if shadow_on {
+        if ![style.shadow_opacity, style.shadow_angle, style.shadow_distance, style.shadow_size, style.shadow_blur].iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        let angle = (style.shadow_angle.rem_euclid(360.0) - 90.0).to_radians();
+        let distance = style.shadow_distance.clamp(0.0, 1000.0) * scale;
+        (angle.cos() * distance, angle.sin() * distance, style.shadow_size.clamp(0.0, 1000.0) * scale, style.shadow_blur.clamp(0.0, 1000.0) * scale / 3.0)
+    } else {
+        (0.0, 0.0, 0.0, 0.0)
+    };
+    // Three box passes have finite support of three radii, not just sigma. Include that
+    // padding and the offset so shadows are never cropped to the original text rectangle.
+    let blur_pad = if sigma >= 0.3 { 3.0 * (sigma * sigma + 1.0).sqrt().round().max(1.0) } else { 0.0 };
+    let grow = outline.ceil() + 1.0 + spread.ceil() + blur_pad + dx.abs().max(dy.abs()).ceil();
     let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
     let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
     let by0 = (top - grow).floor();
     let by1 = (top + block_h + grow).ceil();
+    if ![bx0, bx1, by0, by1].iter().all(|v| v.is_finite() && v.abs() <= 131072.0) {
+        return None;
+    }
     let (ox, oy) = (bx0 as i32, by0 as i32);
     let ow = (bx1 - bx0).max(1.0) as usize;
     let oh = (by1 - by0).max(1.0) as usize;
+    let pixels = ow.checked_mul(oh)?;
+    // A fixed 4 Mi-pixel ceiling dropped ordinary multiline captions at 8K.
+    // Allow up to one frame of coverage (at least 4 Mi-pixels), capped at 32 Mi-pixels.
+    let budget = w.checked_mul(h)?.clamp(4_194_304, 33_554_432);
+    if ow > 16384 || oh > 16384 || pixels > budget {
+        if shadow_on {
+            // Only one retry: the disabled shadow takes the base-caption path.
+            return render_caption(c, &CaptionStyle { shadow: false, ..style.clone() }, w, h);
+        }
+        return None;
+    }
     let mut cover = vec![0.0f32; ow * oh];
     let mut bg = vec![0.0f32; ow * oh];
     for (i, line) in lines.iter().enumerate() {
@@ -179,7 +222,18 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
         cover = m.a;
     }
-    let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
+    let stroke = if outline > 0.0 { dilate_text_bounds(&cover, ow, oh, outline) } else { Vec::new() };
+    let shadow = if shadow_on {
+        let mut mask = filmcraft_text::Mask { w: ow, h: oh, a: if stroke.is_empty() { cover.clone() } else { stroke.clone() } };
+        if spread > 0.0 {
+            mask = filmcraft_text::mask::stroke(&mask, spread, filmcraft_text::mask::StrokeKind::Outer);
+        }
+        mask = filmcraft_text::mask::blur(&mask, sigma);
+        Some(filmcraft_text::mask::offset(&mask, dx.round() as i32, dy.round() as i32))
+    } else {
+        None
+    };
+    let sc = lin(style.shadow_color).map(|v| v * (style.shadow_opacity / 100.0).clamp(0.0, 1.0));
     let (tc, bc, oc) = (lin(style.color), lin(style.background_color), lin(style.outline_color));
     let mut out = vec![0.0f32; ow * oh * 4];
     for j in 0..ow * oh {
@@ -192,6 +246,9 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
             }
         };
         over(&mut p, bc, bg[j]);
+        if let Some(mask) = &shadow {
+            over(&mut p, sc, mask.a.get(j).copied().unwrap_or(0.0).clamp(0.0, 1.0));
+        }
         if !stroke.is_empty() {
             over(&mut p, oc, stroke[j]);
         }
@@ -199,6 +256,38 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         out[j * 4..j * 4 + 4].copy_from_slice(&p);
     }
     Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
+}
+
+/// Dilate only the glyph bounds plus outline support, not the empty shadow padding.
+/// Cropping zero coverage preserves the max-filter result while keeping distant
+/// shadows from multiplying the outline's neighbourhood scans.
+fn dilate_text_bounds(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for (i, &a) in m.iter().enumerate() {
+        if a > 0.0 {
+            x0 = x0.min(i % w);
+            y0 = y0.min(i / w);
+            x1 = x1.max(i % w + 1);
+            y1 = y1.max(i / w + 1);
+        }
+    }
+    let mut out = vec![0.0; m.len()];
+    if x0 >= x1 || y0 >= y1 {
+        return out;
+    }
+    let pad = r.ceil() as usize;
+    let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
+    let (x1, y1) = (x1.saturating_add(pad).min(w), y1.saturating_add(pad).min(h));
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let mut cropped = Vec::with_capacity(cw * ch);
+    for y in y0..y1 {
+        cropped.extend_from_slice(&m[y * w + x0..y * w + x1]);
+    }
+    let stroke = dilate(&cropped, cw, ch, r);
+    for y in 0..ch {
+        out[(y0 + y) * w + x0..(y0 + y) * w + x1].copy_from_slice(&stroke[y * cw..(y + 1) * cw]);
+    }
+    out
 }
 
 /// Max-filter a coverage mask with a disc of radius `r`.
@@ -354,5 +443,146 @@ mod tests {
         assert!(track_overlay(&t, Tick(5), 100, 100).is_some());
         t.enabled = false;
         assert!(track_overlay(&t, Tick(5), 100, 100).is_none());
+    }
+
+    /// Composite a synthetic caption onto a transparent frame for pixel comparisons.
+    fn canvas(style: &CaptionStyle, w: usize, h: usize) -> Vec<f32> {
+        let o = render_caption(&cap("Shadow"), style, w, h).unwrap();
+        let mut pixels = vec![0.0; w * h * 4];
+        o.composite_onto(&mut pixels, w, h);
+        pixels
+    }
+
+    /// Verify shadow colour and opacity at cardinal offsets across two frame sizes.
+    #[test]
+    fn shadow_color_opacity_direction_and_resolution() {
+        let mut st = CaptionStyle {
+            background: false,
+            anchor: CaptionAnchor::Middle,
+            shadow: true,
+            shadow_color: [255, 0, 0, 255],
+            shadow_opacity: 50.0,
+            shadow_angle: 90.0,
+            shadow_distance: 120.0,
+            shadow_size: 0.0,
+            shadow_blur: 0.0,
+            ..Default::default()
+        };
+        // A sharp, separated red shadow must be the text's coverage translated by a
+        // resolution-scaled distance, with half its alpha. Test both directions and scales.
+        for (w, h) in [(960, 540), (1920, 1080)] {
+            let distance = (120 * h / 1080) as isize;
+            for (angle, dx, dy) in [(90.0, distance, 0), (180.0, 0, distance), (270.0, -distance, 0), (0.0, 0, -distance)] {
+                st.shadow_angle = angle;
+                let shadowed = canvas(&st, w, h);
+                let plain = canvas(&CaptionStyle { shadow: false, ..st.clone() }, w, h);
+                let mut checked = 0;
+                for y in 0..h {
+                    for x in 0..w {
+                        let a = plain[(y * w + x) * 4 + 3];
+                        let (sx, sy) = (x as isize + dx, y as isize + dy);
+                        if a > 0.0 && sx >= 0 && sy >= 0 && sx < w as isize && sy < h as isize {
+                            let i = (sy as usize * w + sx as usize) * 4;
+                            if plain[i + 3] == 0.0 {
+                                assert!((shadowed[i] - a * 0.5).abs() < 0.001);
+                                assert_eq!(shadowed[i + 1], 0.0);
+                                assert!((shadowed[i + 3] - a * 0.5).abs() < 0.001);
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+                assert!(checked > 100);
+            }
+        }
+    }
+
+    /// Check spread, blur support and exact pixel identity for invisible shadows.
+    #[test]
+    fn shadow_spread_blur_and_disabled_identity() {
+        let mut st = CaptionStyle {
+            background: false,
+            shadow: true,
+            shadow_distance: 100.0,
+            shadow_blur: 0.0,
+            shadow_opacity: 100.0,
+            shadow_color: [255, 0, 0, 255],
+            ..Default::default()
+        };
+        let c = cap("Test");
+        let sharp = render_caption(&c, &st, 960, 540).unwrap();
+        let red_mass = |o: &Overlay| o.px.chunks(4).map(|p| p[0] - p[1]).sum::<f32>();
+        st.shadow_size = 10.0;
+        let spread = render_caption(&c, &st, 960, 540).unwrap();
+        assert!(red_mass(&spread) > red_mass(&sharp));
+        st.shadow_blur = 30.0;
+        let soft = render_caption(&c, &st, 960, 540).unwrap();
+        assert!(soft.w > spread.w && soft.h > spread.h);
+        assert!(soft.px.chunks(4).any(|p| p[0] > 0.01 && p[0] < 0.5 && p[1] == 0.0));
+        // Full blur support is in the overlay, not clipped at its boundary.
+        for x in 0..soft.w {
+            assert!(soft.px[x * 4 + 3].abs() < 0.001);
+            assert!(soft.px[((soft.h - 1) * soft.w + x) * 4 + 3].abs() < 0.001);
+        }
+        st.shadow = false;
+        let disabled = render_caption(&c, &st, 960, 540);
+        st.shadow = true;
+        st.shadow_opacity = 0.0;
+        assert_eq!(render_caption(&c, &st, 960, 540), disabled);
+        st.shadow_opacity = 100.0;
+        st.shadow_color[3] = 0;
+        assert_eq!(render_caption(&c, &st, 960, 540), disabled);
+    }
+
+    /// Reject non-finite geometry and bound extreme dimensions without panicking.
+    #[test]
+    fn hostile_shadow_geometry_is_bounded() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let st = CaptionStyle { shadow: true, shadow_distance: bad, ..Default::default() };
+            assert!(std::panic::catch_unwind(|| render_caption(&cap("x"), &st, 640, 360)).unwrap().is_none());
+        }
+        let st = CaptionStyle { shadow: true, shadow_blur: f32::MAX, shadow_size: f32::MAX, ..Default::default() };
+        assert!(std::panic::catch_unwind(|| render_caption(&cap("x"), &st, 320, 180)).unwrap().is_some());
+        assert!(render_caption(&cap("x"), &st, usize::MAX, usize::MAX).is_none());
+    }
+
+    /// Ordinary multiline captions must survive the old fixed mask ceiling at 8K.
+    #[test]
+    fn multiline_captions_survive_hd_4k_and_8k() {
+        let line = "A multiline caption stays readable at every output resolution";
+        let c = cap(&format!("{line}\n{line}\n{line}"));
+        for (w, h) in [(1920, 1080), (3840, 2160), (7680, 4320)] {
+            let plain = render_caption(&c, &CaptionStyle { background: false, ..Default::default() }, w, h).unwrap();
+            let shadow = render_caption(&c, &CaptionStyle { background: false, shadow: true, ..Default::default() }, w, h).unwrap();
+            if h == 4320 {
+                assert!(plain.w * plain.h > 4_194_304, "regression must exceed the former limit");
+            }
+            assert!(shadow.w > plain.w && shadow.h > plain.h, "default shadow is retained at {w}x{h}");
+            let white = |o: &Overlay| o.px.chunks(4).filter(|p| p[0] == 1.0 && p[1] == 1.0 && p[2] == 1.0).count();
+            assert!(white(&plain) > 100);
+            assert_eq!(white(&plain), white(&shadow), "opaque text is retained at {w}x{h}");
+        }
+    }
+
+    /// Shadow allocation failure must preserve the base caption instead of hiding it.
+    #[test]
+    fn excessive_shadow_padding_keeps_the_caption() {
+        let st = CaptionStyle { shadow: true, shadow_distance: 1000.0, shadow_size: 1000.0, shadow_blur: 1000.0, ..Default::default() };
+        let c = cap("Keep this caption");
+        let plain = render_caption(&c, &CaptionStyle { shadow: false, ..st.clone() }, 1920, 1080);
+        assert!(plain.is_some());
+        assert_eq!(render_caption(&c, &st, 1920, 1080), plain);
+    }
+
+    /// Cropping the outline work preserves fractional mask coverage and edge pixels.
+    #[test]
+    fn cropped_outline_matches_full_disc_filter() {
+        let (w, h) = (80, 50);
+        for origin in [0, 20 * w + 30, w * h - 2] {
+            let mut m = vec![0.0; w * h];
+            m[origin] = 0.4;
+            m[origin + 1] = 1.0;
+            assert_eq!(dilate_text_bounds(&m, w, h, 2.4), dilate(&m, w, h, 2.4));
+        }
     }
 }

@@ -10,6 +10,64 @@ fn demo() -> Session {
     s
 }
 
+/// Cover shadow persistence, legacy defaults, undo/redo and atomic parameter rejection.
+#[test]
+fn caption_shadow_command_roundtrip_undo_and_validation() {
+    let mut s = demo();
+    assert!(s.execute("captions.setStyle", json!({"shadow": true})).is_err(), "needs a caption track");
+    s.execute("captions.add", json!({"text": "Shadow test", "seconds": 0})).unwrap();
+    let initial = s.active_sequence().unwrap().caption_tracks[0].style.clone();
+    let params = json!({"track":"C1", "shadow":true, "shadowColor":"#ff800080", "shadowOpacity":60,
+        "shadowAngle":270, "shadowDistance":18, "shadowSize":4, "shadowBlur":9});
+    s.execute("captions.setStyle", params.clone()).unwrap();
+    let changed = s.active_sequence().unwrap().caption_tracks[0].style.clone();
+    let listed = s.execute("captions.list", json!({})).unwrap();
+    for (key, value) in params.as_object().unwrap() {
+        if key != "track" {
+            // JSON numeric equality distinguishes integer/floating representations.
+            let actual = &listed["tracks"][0]["style"][key];
+            if value.is_number() {
+                assert_eq!(actual.as_f64(), value.as_f64(), "{key}");
+            } else {
+                assert_eq!(actual, value, "{key}");
+            }
+        }
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style, initial);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style, changed);
+    let encoded = filmcraft_format::encode(&s.project, false);
+    let loaded = filmcraft_format::decode(&encoded).unwrap();
+    assert_eq!(loaded.project.sequence(s.state.active_sequence.unwrap()).unwrap().caption_tracks[0].style, changed);
+    // Partial updates preserve the other shadow values; reset restores disabled defaults.
+    s.execute("captions.setStyle", json!({"shadowOpacity": 20})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style.shadow_distance, 18.0);
+    s.execute("captions.setStyle", json!({"reset": true})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style, initial);
+    for params in [
+        json!({"shadow": "yes"}),
+        json!({"shadowColor": "#💥abcd"}),
+        json!({"shadowColor": [255, -1, 2, 255]}),
+        json!({"shadowColor": [255, 1, 2, 999]}),
+        json!({"shadowColor": null}),
+        json!({"shadowOpacity": 101}),
+        json!({"shadowAngle": -1}),
+        json!({"shadowDistance": 1e300}),
+        json!({"shadowSize": "large"}),
+        json!({"shadowBlur": null}),
+    ] {
+        let before = s.project.clone();
+        assert!(s.execute("captions.setStyle", params.clone()).is_err(), "{params}");
+        assert_eq!(filmcraft_format::encode(&s.project, false), filmcraft_format::encode(&before, false), "failed edits are atomic");
+    }
+    // Older project styles lack all shadow fields and keep their original appearance.
+    let mut legacy = serde_json::to_value(&changed).unwrap();
+    legacy.as_object_mut().unwrap().retain(|key, _| !key.starts_with("shadow"));
+    let legacy: filmcraft_project::CaptionStyle = serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy, initial);
+}
+
 #[test]
 fn captions_import_edit_export_and_burn_in() {
     let dir = std::env::temp_dir().join(format!("fc-cap-{}", std::process::id()));

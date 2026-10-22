@@ -301,6 +301,45 @@ fn upgrade_caption_to_graphic() {
     assert_eq!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["captions"].as_array().unwrap().len(), before);
 }
 
+/// Upgrading keeps shadow alpha and scales geometry once into sequence-pixel units.
+#[test]
+fn upgrade_caption_preserves_shadow_at_each_resolution() {
+    for height in [1080, 2160, 4320] {
+        for enabled in [false, true] {
+            let mut s = demo("gt-caption-shadow");
+            let seq = s.state.active_sequence.unwrap();
+            let settings = &mut std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().settings;
+            settings.width = height * 16 / 9;
+            settings.height = height;
+            s.execute("captions.add", json!({"text": "Shadow", "seconds": 600, "durationSeconds": 2})).unwrap();
+            s.execute(
+                "captions.setStyle",
+                json!({"shadow": enabled, "shadowColor": [20, 40, 60, 128], "shadowOpacity": 65,
+                "shadowAngle": 225, "shadowDistance": 18, "shadowSize": 3, "shadowBlur": 12}),
+            )
+            .unwrap();
+            let style = s.active_sequence().unwrap().caption_tracks[0].style.clone();
+            let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+            let clip = ClipId(r["clips"][0].as_u64().unwrap());
+            let it = item(&s, clip);
+            let params = &it.effects.iter().find(|e| e.effect == "graphic_text").unwrap().params;
+            assert_eq!(params["shadow"].value, ParamValue::Bool(enabled));
+            assert_eq!(params["shadow_color"].value, ParamValue::Color([20, 40, 60, 128].map(|c| c as f32 / 255.0)));
+            assert_eq!(params["shadow_opacity"].value, ParamValue::Float(65.0));
+            assert_eq!(params["shadow_angle"].value, ParamValue::Float(225.0));
+            for (key, value) in [("shadow_distance", 18.0), ("shadow_size", 3.0), ("shadow_blur", 12.0)] {
+                assert_eq!(params[key].value, ParamValue::Float(value * height as f64 / 1080.0));
+            }
+            s.execute("edit.undo", json!({})).unwrap();
+            assert!(s.active_sequence().unwrap().find_item(clip).is_none());
+            assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style, style);
+            assert_eq!(s.active_sequence().unwrap().caption_tracks[0].captions.len(), 1);
+            s.execute("edit.redo", json!({})).unwrap();
+            assert!(s.active_sequence().unwrap().find_item(clip).is_some());
+        }
+    }
+}
+
 #[test]
 fn source_graphics_share_edits() {
     let mut s = demo("gt-source");

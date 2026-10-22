@@ -246,7 +246,7 @@ panel state and the Type-tool selection.
 
 | Command | Menu | Params |
 |---|---|---|
-| `graphics.upgradeCaption` | Graphics and Titles ▸ Upgrade Caption to Graphic | `captions` (default: the selection, else the one under the playhead): each caption becomes a graphic clip on a video track with the track style (font, size, colour, background, outline, alignment, position); `<i>`/`<b>`/`<u>` become character styles; one undo step |
+| `graphics.upgradeCaption` | Graphics and Titles ▸ Upgrade Caption to Graphic | `captions` (default: the selection, else the one under the playhead): each caption becomes a graphic clip on a video track with the track style (font, size, colour, background, outline, shadow, alignment, position); shadow colour including alpha, opacity and angle are preserved, and distance, spread and blur scale from 1080-line units to sequence pixels; `<i>`/`<b>`/`<u>` become character styles; one undo step |
 | `graphics.upgradeToSourceGraphic` | Graphics and Titles ▸ Upgrade to Source Graphic | `clip`: the graphic gets its own project item (shown in the Project panel); every clip of that item shares its layers — editing one updates the others in the same undo step (`project.source_graphics`) |
 | `file.replaceFonts` | Graphics and Titles ▸ Replace Fonts in Projects… | `from` (family or {family, style}), `to`, `toStyle`: graphic layers, character styles, source graphics and caption tracks |
 | `graphics.fonts.used` | (query) | fonts in use with counts and whether they are missing |

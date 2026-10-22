@@ -177,6 +177,7 @@ fn caption_json(s: &Session, c: &filmcraft_project::Caption) -> Value {
     })
 }
 
+/// Serialize a caption track, its complete style and its cues for command responses.
 fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
     json!({
         "id": t.id.0,
@@ -192,6 +193,9 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
             "background": t.style.background, "backgroundColor": hex(t.style.background_color),
             "align": format!("{:?}", t.style.align).to_lowercase(), "anchor": format!("{:?}", t.style.anchor).to_lowercase(),
             "margin": t.style.margin, "lineSpacing": t.style.line_spacing, "outline": t.style.outline, "outlineColor": hex(t.style.outline_color),
+            "shadow": t.style.shadow, "shadowColor": hex(t.style.shadow_color), "shadowOpacity": t.style.shadow_opacity,
+            "shadowAngle": t.style.shadow_angle, "shadowDistance": t.style.shadow_distance,
+            "shadowSize": t.style.shadow_size, "shadowBlur": t.style.shadow_blur,
         },
         "captions": t.captions.iter().map(|c| caption_json(s, c)).collect::<Vec<_>>(),
     })
@@ -219,6 +223,8 @@ fn delta_p(s: &Session, p: &Value) -> Option<Tick> {
     p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f))
 }
 
+/// Register caption editing, navigation and styling commands with parameter documentation.
+/// Style changes are undoable session edits; invalid shadow parameters abort the edit.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         spec(
@@ -296,7 +302,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"shadow":bool?,"shadowColor":"#rrggbb[aa]"?,"shadowOpacity":0..100 (percent)?,"shadowAngle":0..360 (clockwise from up)?,"shadowDistance":0..1000?,"shadowSize":0..1000?,"shadowBlur":0..1000 (pixels at 1080 lines)?,"reset":bool?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -315,6 +321,33 @@ pub fn commands() -> Vec<CommandSpec> {
                     let y = &mut t.style;
                     if bool_p(&p, "reset").unwrap_or(false) {
                         *y = CaptionStyle::default();
+                    }
+                    // Reject malformed shadow parameters before committing any part of the edit.
+                    if let Some(v) = p.get("shadow") {
+                        y.shadow = v.as_bool().ok_or_else(|| bad("captions.setStyle", "shadow must be a boolean"))?;
+                    }
+                    if let Some(v) = p.get("shadowColor") {
+                        if let Some(a) = v.as_array()
+                            && (!(3..=4).contains(&a.len()) || a.iter().any(|c| c.as_u64().is_none_or(|n| n > 255)))
+                        {
+                            return Err(bad("captions.setStyle", "shadowColor must contain three or four bytes"));
+                        }
+                        y.shadow_color = parse_color(v).ok_or_else(|| bad("captions.setStyle", "invalid shadowColor"))?;
+                    }
+                    for (key, dest, max) in [
+                        ("shadowOpacity", &mut y.shadow_opacity, 100.0),
+                        ("shadowAngle", &mut y.shadow_angle, 360.0),
+                        ("shadowDistance", &mut y.shadow_distance, 1000.0),
+                        ("shadowSize", &mut y.shadow_size, 1000.0),
+                        ("shadowBlur", &mut y.shadow_blur, 1000.0),
+                    ] {
+                        if let Some(v) = p.get(key) {
+                            let n = v
+                                .as_f64()
+                                .filter(|n| n.is_finite() && (0.0..=max).contains(n))
+                                .ok_or_else(|| bad("captions.setStyle", format!("{key} must be a number in 0..={max}")))?;
+                            *dest = n as f32;
+                        }
                     }
                     if let Some(v) = str_p(&p, "font") {
                         y.font = v.to_string();

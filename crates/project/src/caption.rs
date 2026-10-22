@@ -93,9 +93,21 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Cast a shadow from the text (not the background box). Off in older projects.
+    pub shadow: bool,
+    pub shadow_color: [u8; 4],
+    /// Percent, multiplied by the shadow colour's alpha.
+    pub shadow_opacity: f32,
+    /// Clockwise from up: 135 degrees casts down and right, as graphic text does.
+    pub shadow_angle: f32,
+    /// Distance, outward spread and blur in pixels at 1080 lines.
+    pub shadow_distance: f32,
+    pub shadow_size: f32,
+    pub shadow_blur: f32,
 }
 
 impl Default for CaptionStyle {
+    /// Preserve the standard caption appearance, with shadows disabled for new and legacy styles.
     fn default() -> Self {
         Self {
             font: "Inter".into(),
@@ -109,6 +121,13 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            shadow: false,
+            shadow_color: [0, 0, 0, 255],
+            shadow_opacity: 75.0,
+            shadow_angle: 135.0,
+            shadow_distance: 10.0,
+            shadow_size: 0.0,
+            shadow_blur: 40.0,
         }
     }
 }

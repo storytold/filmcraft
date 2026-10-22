@@ -89,3 +89,72 @@ fn properties_panel_edits_the_selected_caption() {
     assert_eq!(caps[1]["text"], "Second line", "{caps:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Exercise shadow control ordering, enabling, opacity edits, undo and nested colour selection.
+#[test]
+fn caption_shadow_popup_edits_track_style_and_undoes() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    session.execute("captions.add", json!({"text": "Caption shadow test", "seconds": 1, "durationSeconds": 5})).unwrap();
+    session.execute("captions.setStyle", json!({"background": false, "shadowDistance": 20, "shadowBlur": 12})).unwrap();
+    session.execute("playhead.set", json!({"seconds": 2})).unwrap();
+    let (tx, rx) = channel();
+    let app = FilmcraftApp::new(session).with_control(rx);
+    let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut d = Driver { harness, tx };
+    d.frames(4);
+    d.exec("window.workspace.captionsandgraphics", json!({}));
+    d.ok("ui.panel.show", json!({"panel": "Text"}));
+    d.exec("window.floatPanel", json!({"panel": "Text", "rect": [10, 40, 850, 440]}));
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    let elements = d.ok("ui.elements", json!({"prefix": "text.captions.style."}));
+    let rect = |id: &str| elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["rect"].clone();
+    let bottom = rect("text.captions.style.anchor.bottom");
+    let shadow = rect("text.captions.style.shadow");
+    let toggle = rect("text.captions.style.shadow.enabled");
+    assert!(shadow[0].as_f64().unwrap() >= bottom[0].as_f64().unwrap() + bottom[2].as_f64().unwrap());
+    assert!(toggle[0].as_f64().unwrap() > shadow[0].as_f64().unwrap());
+    assert!((shadow[1].as_f64().unwrap() - bottom[1].as_f64().unwrap()).abs() < 5.0, "same style row");
+    d.ok("ui.click", json!({"id": "text.captions.style.shadow.enabled"}));
+    let ids = d.ids("text.captions.style.shadow.");
+    for field in ["enabled", "color", "opacity", "angle", "distance", "size", "blur"] {
+        assert!(ids.contains(&format!("text.captions.style.shadow.{field}")), "missing {field}: {ids:?}");
+    }
+    assert!(d.harness.state().session.active_sequence().unwrap().caption_tracks[0].style.shadow);
+    d.ok("ui.click", json!({"id": "text.captions.style.shadow.opacity", "count": 2}));
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "40"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().caption_tracks[0].style.shadow_opacity, 40.0);
+    if let Ok(dir) = std::env::var("FILMCRAFT_UI_SHOTS") {
+        d.frames(8);
+        std::fs::create_dir_all(&dir).unwrap();
+        d.harness.render().expect("render shadow popup").save(std::path::Path::new(&dir).join("caption-shadow.png")).unwrap();
+    }
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.harness.state().session.active_sequence().unwrap().caption_tracks[0].style.shadow_opacity, 75.0);
+    d.exec("edit.undo", json!({}));
+    assert!(!d.harness.state().session.active_sequence().unwrap().caption_tracks[0].style.shadow);
+
+    // The nested RGB picker must stay open and apply colours to the track.
+    d.ok("ui.click", json!({"id": "text.captions.style.shadow.color"}));
+    d.frames(4);
+    let picker = d
+        .harness
+        .ctx
+        .memory(|m| {
+            m.areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|l| l.order == egui::Order::Foreground)
+                .filter_map(|l| m.area_rect(l.id))
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
+        })
+        .expect("colour picker opened");
+    let before = d.harness.state().session.active_sequence().unwrap().caption_tracks[0].style.shadow_color;
+    d.ok("ui.click", json!({"x": picker.min.x + 70.0, "y": picker.min.y + 90.0}));
+    d.frames(4);
+    assert_ne!(d.harness.state().session.active_sequence().unwrap().caption_tracks[0].style.shadow_color, before);
+    assert!(d.ids("text.captions.style.shadow.").contains(&"text.captions.style.shadow.blur".into()), "settings survive colour selection");
+}

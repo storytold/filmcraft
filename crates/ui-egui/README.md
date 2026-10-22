@@ -3,6 +3,20 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Caption shadow controls
+
+Text → Captions → Shadow edits the selected caption track's shadow: enable, colour, opacity,
+angle, distance, size (spread) and blur. `Shadow` and its checkbox follow Position B in the
+style row (scroll horizontally in narrow panels). Checking the box enables the effect and opens
+the settings; clicking `Shadow` opens or closes settings without toggling the effect. The colour
+swatch opens the same RGB picker as text colour. The settings stay open while editing; changes dispatch
+`captions.setStyle` and participate in undo/redo. Numeric drags commit on release and Escape
+cancels a drag. Controls use `text.captions.style.shadow` for the popup and
+`text.captions.style.shadow.enabled` for the checkbox, with
+`text.captions.style.shadow.{color,opacity,angle,distance,size,blur}` inside the popup.
+The `caption_properties_ui` shadow test checks row ordering, colour selection and undo through the control channel;
+`FILMCRAFT_UI_SHOTS` optionally saves its screenshot.
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the

@@ -89,6 +89,59 @@ fn wav_png_gif() {
     assert!(std::path::Path::new(&tmp("seq005.png")).exists());
 }
 
+/// Compare multiline caption shadows with Program pixels at HD, 4K and 8K, including burn-in off.
+#[test]
+fn caption_shadow_burn_in_matches_program_pixels() {
+    let (p, seq, sources) = project();
+    let mut p = (*p).clone();
+    let tid = filmcraft_project::TrackId(p.alloc_id());
+    let cid = filmcraft_project::ClipId(p.alloc_id());
+    let mut track = filmcraft_project::CaptionTrack::new(tid, "Shadow".into(), filmcraft_project::CaptionFormat::Subtitle);
+    track.style.background = false;
+    track.style.shadow = true;
+    track.style.shadow_color = [0, 0, 255, 255];
+    track.style.shadow_opacity = 80.0;
+    track.style.shadow_distance = 30.0;
+    track.style.shadow_size = 3.0;
+    track.style.shadow_blur = 12.0;
+    track.captions.push(filmcraft_project::Caption {
+        id: cid,
+        start: Tick::ZERO,
+        duration: FrameRate::FPS_24.tick_of(24),
+        text: std::iter::repeat_n("A multiline caption stays readable at every output resolution", 3).collect::<Vec<_>>().join("\n"),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    p.sequence_mut(seq).unwrap().caption_tracks.push(track);
+    for (width, height) in [(1920, 1080), (3840, 2160), (7680, 4320)] {
+        let settings = &mut p.sequence_mut(seq).unwrap().settings;
+        settings.width = width;
+        settings.height = height;
+        let p = Arc::new(p.clone());
+        for burn in [true, false] {
+            let name = format!("shadow-{}-{height}", if burn { "burn" } else { "no-burn" });
+            let settings = ExportSettings {
+                format: Format::PngSequence,
+                path: tmp(&format!("{name}.png")),
+                include_audio: false,
+                burn_captions: burn,
+                gpu_rendering: GpuRendering::Off,
+                range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(1))),
+                ..Default::default()
+            };
+            export(&p, seq, &settings, &sources, &Progress::default()).unwrap();
+            let actual = image::open(tmp(&format!("{name}000.png"))).unwrap().to_rgba8();
+            let preview =
+                filmcraft_render::render_sequence(&p, seq, Tick::ZERO, filmcraft_render::RenderOptions { captions: burn, ..Default::default() }, &sources);
+            assert_eq!(actual.dimensions(), (width, height));
+            // Export flattens the transparent area outside the small source clip over black.
+            assert!(actual.as_raw() == &preview.over_black_rgba8(), "{width}x{height}, burn={burn}: export and Program reference agree");
+            assert_eq!(actual.pixels().any(|p| p[2] > p[1].saturating_add(10)), burn, "blue shadow appears only with burn-in");
+        }
+    }
+}
+
 /// GIF delays are whole centiseconds (#854): at 24 fps they alternate 4/4/5 cs so a second of
 /// frames lasts 1000 ms, not 24 × 40 ms = 960 ms.
 #[test]
