@@ -3582,3 +3582,23 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	A file with this name already exists: {name}	File dengan nama ini sudah ada: {name}
+	Allow "All files access" for FilmCraft on the settings page, then tap Shared storage.	Izinkan "Akses semua file" untuk FilmCraft di halaman pengaturan, lalu ketuk Penyimpanan bersama.
+	Allow access to all files?	Izinkan akses ke semua file?
+	App storage	Penyimpanan aplikasi
+	Choose	Pilih
+	Choose Folder	Pilih folder
+	Could not create the folder: {error}	Tidak dapat membuat folder: {error}
+	Create	Buat
+	FilmCraft needs "All files access" to open and save files in shared storage.	FilmCraft memerlukan "Akses semua file" untuk membuka dan menyimpan file di penyimpanan bersama.
+	Grant access	Beri akses
+	Large	Besar
+	New Folder	Folder baru
+	No saved projects yet.	Belum ada proyek tersimpan.
+	Nothing here.	Tidak ada apa pun di sini.
+	Select at least one file.	Pilih setidaknya satu file.
+	Shared storage	Penyimpanan bersama
+	Shared storage (grant access)	Penyimpanan bersama (beri akses)
+	Small	Kecil
+	This build can't request shared-storage access.	Build ini tidak dapat meminta akses ke penyimpanan bersama.
+	This folder can't be read.	Folder ini tidak dapat dibaca.

@@ -19,12 +19,23 @@ panic path, and fix a crash before building on top of it. The cross-app standard
    fallback that is truly correct (never one that silently corrupts a project). An unfinished feature
    returns an "unsupported" error. The only exception is a call that is provably infallible from local
    code alone (a literal that always parses): a single-item `#[allow(clippy::expect_used)]` with the reason.
-3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace). The single exception is
-   `crates/platform`, which needs `unsafe` to call the operating system's media APIs (hardware
-   video decoding through VideoToolbox, Media Foundation / Direct3D 11, VA-API and NVDEC; hardware encoding) and does nothing else. It
-   uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]` only on its FFI modules, a
-   `// SAFETY:` comment on every `unsafe` block, a safe `Result`-returning public API, and the
-   pure-Rust decoder as the tested fallback ([ADR 0001](docs/adr/0001-platform-ffi.md)).
+3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace). Two named exceptions, each confined
+   to its own file:
+   - `crates/platform`, which needs `unsafe` to call the operating system's media APIs (hardware
+     video decoding through VideoToolbox, Media Foundation / Direct3D 11, VA-API and NVDEC; hardware
+     encoding) and does nothing else. It uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]`
+     only on its FFI modules, a `// SAFETY:` comment on every `unsafe` block, a safe
+     `Result`-returning public API, and the pure-Rust decoder as the tested fallback
+     ([ADR 0001](docs/adr/0001-platform-ffi.md)).
+   - `apps/filmcraft-android/src/android_access.rs`, the Android entry point's JNI to the
+     NativeActivity's raw JVM (`JavaVM::from_raw` / `JObject::from_raw` have no safe form): it only
+     *checks* whether Android's "All files access" grant (`MANAGE_EXTERNAL_STORAGE`) is held and
+     *opens* the system page — or, before API 30, the ordinary permission dialog — that grants it,
+     and never reads or writes storage itself. Raw pointers never leave the crate: the shared app
+     receives plain closures (`filmcraft::SharedStorageAccess`) instead. Every `unsafe` block
+     carries a `// SAFETY:` comment, every failure degrades to "not granted" / "nothing happened"
+     with at most a log line (never a panic), and the crate keeps the workspace's clippy denials
+     itself (its `Cargo.toml`).
 4. **Every input-derived number is hostile.** Media files, project and interchange files, presets, fonts,
    CLI / MCP / control-channel parameters and UI state are untrusted. Index and slice with `get()` (or
    validate bounds once, up front, for a hot loop); slice strings only at char boundaries; use

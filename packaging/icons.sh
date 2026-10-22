@@ -40,6 +40,16 @@ cp "$DIR/filmcraft-small.svg" "$DIR/hicolor/scalable/apps/$APP_ID.svg"
 # Web app favicon and loading image.
 render "$SVG" 128 "$ROOT/apps/filmcraft-web/web/favicon.png"
 
+# Android launcher icons: one mipmap per density, and the APK manifest points at @mipmap/ic_launcher.
+# These live in the crate's res/ tree (which aapt reads) rather than in assets/, so their
+# attribution sidecars are dot-prefixed: `aapt -S` rejects a second resource name per directory
+# and so chokes on `ic_launcher.png.attribution`, but it skips dot files. See `cargo xtask assets`.
+for ds in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+  d="${ds%%:*}"; s="${ds##*:}"
+  mkdir -p "$ROOT/apps/filmcraft-android/res/mipmap-$d"
+  render "$SVG" "$s" "$ROOT/apps/filmcraft-android/res/mipmap-$d/ic_launcher.png"
+done
+
 # Windows .ico.
 ICO_PNGS=()
 for s in 16 20 24 32 40 48 64 128 256; do

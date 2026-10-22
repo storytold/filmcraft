@@ -1,6 +1,8 @@
 //! Panel bodies. `show` dispatches on [`PanelKind`]; drag-and-drop between panels (project items,
 //! effects) is carried in egui temp data so the timeline/monitors can accept drops.
 
+pub mod android_access;
+pub mod android_file;
 pub mod audio_fx_editor;
 pub mod clip_dialogs;
 pub mod color_dialogs;
@@ -197,6 +199,18 @@ pub fn clear_drag(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp::<Option<DragPayloadBox>>(payload_id(), None));
 }
 
+/// Where the pointer (or finger) is now, for a decision taken on a release or drop frame.
+///
+/// A touch release arrives as the emulated mouse-up **and** a same-frame `PointerGone`, which
+/// clears `pointer.latest_pos` — so `hover_pos` / `pointer_hover_pos()` read `None` on exactly
+/// the frame a drop is decided on, and a drag-and-drop from a touch screen lands nowhere. egui's
+/// `interact_pos` is documented to survive that ("ignoring any PointerGone"; on touch it is the
+/// location of the touch), so every release-frame or OS-drop position goes through this. `None`
+/// only when there is genuinely no pointer, e.g. an OS drag reporting no cursor.
+pub fn drop_pointer_pos(ctx: &egui::Context) -> Option<egui::Pos2> {
+    ctx.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()))
+}
+
 fn cancelled_id() -> egui::Id {
     egui::Id::new("filmcraft-drag-cancelled")
 }
@@ -224,7 +238,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
         cancel_drag(ui);
         return;
     }
-    if let Some(p) = ctx.pointer_hover_pos() {
+    if let Some(p) = crate::panels::drop_pointer_pos(ctx) {
         let label = match &pl {
             DragPayload::Item(i) => match dragged_selection(app, *i).len() {
                 1 => app.session.project.item(*i).map(|x| x.name.clone()).unwrap_or_default(),

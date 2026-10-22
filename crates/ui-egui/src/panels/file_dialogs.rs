@@ -10,17 +10,21 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::{Dialog, FilmcraftApp};
 
+use super::android_file::AndroidFileDraft;
+
 /// Dialog-local state.
 #[derive(Default)]
 pub struct FileDialogState {
     pub recovery_choice: usize,
+    /// The in-app browser's draft (a host with storage but no system picker: `app_files_dir`).
+    pub android_file: AndroidFileDraft,
 }
 
-fn modal_frame(t: &Tokens) -> Frame {
+pub(crate) fn modal_frame(t: &Tokens) -> Frame {
     Frame::new().fill(t.panel_bg).stroke(Stroke::new(1.0, t.separator)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(0))
 }
 
-fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
+pub(crate) fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
     let t = app.tokens;
     let text = RichText::new(label).size(13.0).color(if primary { Color32::WHITE } else { t.text });
     let b = egui::Button::new(text)

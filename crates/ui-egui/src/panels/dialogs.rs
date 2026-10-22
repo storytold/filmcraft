@@ -23,6 +23,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::frame_export::show(app, ctx);
     crate::panels::project_dialogs::show(app, ctx);
     crate::panels::media_browser::dialogs(app, ctx);
+    // The in-app browser (a host with storage but no system picker): drawn over whatever else is
+    // open, and regardless of `app.dialog` — it is what its command is waiting for.
+    crate::panels::android_file::show(app, ctx);
+    // Android's launch-time "All files access" prompt: offered once, after the first frames,
+    // when the host can both check and ask for the grant. Inert on every other host.
+    crate::panels::android_access::launch_tick(app, ctx);
+    crate::panels::android_access::show(app, ctx);
     let Some(d) = app.dialog else { return };
     if let Some(still_open) = crate::panels::file_dialogs::show(app, ctx, d) {
         if !still_open && app.dialog == Some(d) {

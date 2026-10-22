@@ -3616,3 +3616,24 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Large	大
+	Small	小
+	A file with this name already exists: {name}	この名前のファイルはすでに存在します: {name}
+	Choose	選択
+	Choose Folder	フォルダーを選択
+	Could not create the folder: {error}	フォルダーを作成できませんでした: {error}
+	Create	作成
+	New Folder	新規フォルダー
+	No saved projects yet.	保存されたプロジェクトはまだありません。
+	Nothing here.	ここには何もありません。
+	Select at least one file.	少なくとも1つのファイルを選択してください。
+	This folder can't be read.	このフォルダーを読み取れません。
+	App storage	アプリのストレージ
+	Shared storage	共有ストレージ
+	Shared storage (grant access)	共有ストレージ（アクセスを許可）
+	Grant access	アクセスを許可
+	Allow "All files access" for FilmCraft on the settings page, then tap Shared storage.	設定ページで FilmCraft に「すべてのファイルへのアクセス」を許可してから、共有ストレージをタップしてください。
+	This build can't request shared-storage access.	このビルドでは共有ストレージへのアクセスをリクエストできません。
+	Shared storage needs "All files access" to browse.	共有ストレージの閲覧には「すべてのファイルへのアクセス」が必要です。
+	Allow access to all files?	すべてのファイルへのアクセスを許可しますか？
+	FilmCraft needs "All files access" to open and save files in shared storage.	FilmCraft が共有ストレージ内のファイルを開いたり保存したりするには「すべてのファイルへのアクセス」が必要です。

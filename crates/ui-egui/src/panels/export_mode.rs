@@ -1474,8 +1474,16 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         // a file name goes in the shown folder; a typed or pasted path replaces both
         app.ui.export.quick_path = if v.contains(['/', '\\']) { v } else { std::path::Path::new(&folder).join(v.trim()).to_string_lossy().to_string() };
     }
-    if browse && let Some(p) = app.hooks.pick_save_as.as_mut().and_then(|f| f(format, &[ext], &app.ui.export.quick_path)) {
-        app.ui.export.quick_path = p;
+    if browse {
+        // The picker is the panel's own button: with the host's synchronous picker the answer
+        // arrives through the same channel and lands at the start of a later frame (see `pick_ui`),
+        // with the in-app browser it is drawn like any other dialog here.
+        let suggested = app.ui.export.quick_path.clone();
+        app.pick_ui(FileDialog::save_as(format, &[ext], &suggested), |app, paths| {
+            if let Some(p) = paths.into_iter().next() {
+                app.ui.export.quick_path = p;
+            }
+        });
     }
     if go {
         let p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});

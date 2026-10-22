@@ -32,7 +32,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.set` | `{tool, workspace, mode, theme, focused, playbackRes, timeline:{pps,scroll,fit}, program:{…}, source:{…}, clipDialog:{param: value}, menuDialog:{param: value}, panels:{scopes, timecode, reference, events, progress}, export:{…}, keyframeSelection:[…]}` | `keyframeSelection` replaces the Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`, `time` in media ticks; read back as `ui.inspect` → `ui.keyframe_selection`; a click on a lane keyframe selects just that one); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `panels` merges into the panel settings (`ui.inspect` → `ui.panels`; see `panels::panel_state`): Lumetri Scopes `{shown: ["vectorscopeYuv"|"vectorscopeHls"|"histogram"|"parade"|"waveform"], waveformType, paradeType, colorSpace, brightness, scale, clamp, targets}`, Timecode `{rows: [{source, mode, display}], showName}`, Reference Monitor `{ganged, time, display: "composite"|"scopes", scopes}`, Events `{level, selected}`, Progress `{showFinished}` `export` deep-merges into Export mode state (`preset` — applied first —, `settings` (ExportSettings JSON), `fileName`, `location`, `range`, `customStart`, `customEnd`, `openSections`, `manager` (Preset Manager: `query`, `favoritesOnly`, `selected`, `saveName`), `quickOpen`, `quickPath`, `quickPreset`); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `projectPanel` merges into the Project panel's view state (`bin` shown in place, `tabs` (bins in a tab or window: `{bin, floating, view, iconSize, nav}`), `activeTab`, `selectedBin`, `rename: {item|bin, text}`, `dialog` (`{"metadataDisplay": {columns, filter}}`, `{"savePresetAs": {name}}`, `{"managePresets": {selected, name}}`, `{"freeformOptions": {options}}`, `{"saveArrangement": {name, bin}}`)); `mediaBrowser` into the Media Browser's (`expanded`, `pathEdit`, `editColumns`, `treeWidth`). View settings, columns and presets are engine commands (`project.view.set`, `project.columns.set`, `project.viewPreset.*`, `mediaBrowser.settings`) |
 | `ui.panel.show` / `ui.panel.close` | `{panel}` | |
 | `ui.click` / `ui.move` | `{id}` or `{x,y}`, `button`, `count`, `modifiers` | synthetic pointer input |
-| `ui.drag` | `{from, to, steps, modifiers}` | press–move–release |
+| `ui.drag` | `{from, to, steps, modifiers, touch}` | press–move–release; `touch: true` also emits the finger's `Touch` `Start`/`Move`/`End` phases (as egui-winit does beside the emulated pointer on Android), so a test can drive a touch-only path |
 | `ui.scroll` | `{id|x,y, dx, dy, modifiers}` | wheel / trackpad |
 | `ui.key` / `ui.type` | `{key}` (`Cmd+K`, `Space`…; off macOS `Ctrl+K` is the same key) / `{text}` | keyboard |
 | `ui.timeline.hit` / `ui.timeline.locate` | `{x,y,modifiers?}` / `{clip, edge?}` | timeline hit-testing. `hit` reports a clip's `edge` (`In`/`Out`) within 7 px of it (a third of a narrow clip); just left of a cut that is the left clip's Out, from the cut rightwards the right clip's In. `kind` is the trim a press of the current tool with `modifiers` starts there (`trim`, `ripple`, `roll`, `rateStretch`, `remix`), `volume` on an audio clip's Volume line (Selection and Pen tools), or null |
@@ -158,6 +158,26 @@ sequence as tone-mapped SDR.
 `deletePreset {name}`, `shortcuts.export` / `import {path}`, `shortcuts.audit`. Keys use `Cmd` (⌘ /
 Ctrl), `Ctrl` (macOS ⌃), `Alt`, `Shift`. The dialog (Edit ▸ Keyboard Shortcuts…, ⌥⌘K) uses ids
 `shortcuts.*` (`shortcuts.key.K`, `shortcuts.cell.<command>`, `shortcuts.ok`, …).
+
+**In-app file dialogs** (`crates/ui-egui/src/panels/android_file.rs`): a host that offers a storage
+directory instead of a system picker — the Android build — has no rfd dialog to open, so every file
+dialog is FilmCraft's own browser and `ui.click` drives it with `androidFile.*`: `up`,
+`rootApp` / `rootShared` (the switcher between the two roots: the app-private directory, and shared
+storage — which reads `Shared storage (grant access)` and calls the host's grant hook instead of
+navigating while "All files access" is not held), `grant` (inside the shared root while it cannot
+be read — it asks the host for the grant too), `newFolder` / `folderName` / `create`,
+`view.list` / `view.small` / `view.medium` / `view.large` (how the listing is drawn: one column of
+rows, or a grid of icons at that size — the choice is remembered at `general.pickerView`, so the next
+dialog opens the same way), `entry.<name>` (a folder, file or saved project, by its file name — the
+Open Project list and the browser share the id, and it is the same id in every view, so a tap lands on
+the same entry whether the listing is rows or icons), `choose` (a folder pick — including the save prompt's
+`browse`, which returns to the prompt with that folder instead of answering — or a multi-file pick
+after `entry.<name>` ticked its tiles), `save`, `browse`, `cancel`, `name` (the save prompt's file-name
+field) and `overwrite` — which appears only where saving would replace an existing file. A pick is answered
+exactly as a system dialog's would be: the command continues on the frame the id is clicked. The
+root a browser is clamped to is its own state now, so `up` stops at the top of the root it is in
+(shared storage included) and a switcher tap starts at the new root's top. A host with the system
+picker draws none of this, and a host with no shared-storage hook no switcher either.
 
 ## MCP
 `filmcraft-cli mcp` serves MCP on stdio: headless (in-process session; `--demo` / `--project p.fcproj`)

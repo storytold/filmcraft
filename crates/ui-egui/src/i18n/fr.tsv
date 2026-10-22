@@ -3584,3 +3584,23 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+	A file with this name already exists: {name}	Un fichier de ce nom existe déjà : {name}
+	Allow "All files access" for FilmCraft on the settings page, then tap Shared storage.	Autorisez « Accès à tous les fichiers » pour FilmCraft dans les réglages, puis touchez Stockage partagé.
+	Allow access to all files?	Autoriser l'accès à tous les fichiers ?
+	App storage	Stockage de l'app
+	Choose	Choisir
+	Choose Folder	Choisir un dossier
+	Could not create the folder: {error}	Impossible de créer le dossier : {error}
+	Create	Créer
+	FilmCraft needs "All files access" to open and save files in shared storage.	FilmCraft a besoin de « Accès à tous les fichiers » pour ouvrir et enregistrer des fichiers dans le stockage partagé.
+	Grant access	Autoriser l'accès
+	Large	Grand
+	New Folder	Nouveau dossier
+	No saved projects yet.	Aucun projet enregistré pour l'instant.
+	Nothing here.	Rien ici.
+	Select at least one file.	Sélectionnez au moins un fichier.
+	Shared storage	Stockage partagé
+	Shared storage (grant access)	Stockage partagé (autoriser l'accès)
+	Small	Petit
+	This build can't request shared-storage access.	Cette version ne peut pas demander l'accès au stockage partagé.
+	This folder can't be read.	Impossible de lire ce dossier.
