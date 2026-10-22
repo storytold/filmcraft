@@ -184,3 +184,30 @@ fn escape_cancels_the_box_and_restores_the_selection() {
     d.frames(2);
     assert!(d.selected(a) && !d.selected(b), "Escape put back the selection the drag began with");
 }
+
+#[test]
+fn the_box_keeps_its_start_while_the_timeline_scrolls() {
+    let mut d = Driver::demo();
+    let pps = d.harness.state().ui.timeline.pps;
+    let v = &mut d.harness.state_mut().ui.timeline;
+    v.target_scroll = 300.0 / pps;
+    v.scroll = v.target_scroll;
+    d.frames(2);
+    let (a, b, _, rb, start) = d.setup();
+    d.exec("timeline.select", json!({"clips": []}));
+    let content = d.harness.state().tl.layout.as_ref().unwrap().content;
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    // to the left edge and hold there: the Timeline scrolls back past the clips' starting place
+    let edge = egui::pos2(content.min.x + 4.0, start.y + 2.0);
+    d.move_to(start, edge);
+    for k in 0..80 {
+        d.send(egui::Event::PointerMoved(edge + egui::vec2(0.0, (k % 2) as f32)));
+    }
+    assert_eq!(d.harness.state().ui.timeline.scroll, 0.0, "the drag scrolled the Timeline to its start");
+    assert!(d.rect(&format!("timeline.clip.{b}")).min.x > rb.max.x + 12.0, "the clip moved past where the box began on screen");
+    assert!(d.selected(a) && d.selected(b), "the box still reaches back to where it began");
+    d.button(edge, false);
+    d.frames(2);
+    assert!(d.selected(a) && d.selected(b));
+}
