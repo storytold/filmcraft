@@ -211,7 +211,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             kind: still.then_some(MediaKind::Still),
         };
         let (path, alt) = self.media_path(media);
-        let id = self.b.file_media(&format!("file:{path}"), name, &path, &spec, bin);
+        let key = if path.is_empty() { format!("media:{}", media.id().get()) } else { format!("file:{path}") };
+        let id = self.b.file_media(&key, name, &path, &spec, bin);
         if let Some(alt) = alt {
             self.b.alternates.push((id, alt));
         }

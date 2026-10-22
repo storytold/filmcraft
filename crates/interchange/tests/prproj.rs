@@ -514,3 +514,20 @@ fn gzip_claiming_more_than_the_limit_is_refused() {
     let crc = filmcraft_bitstream::crc32(text.as_bytes());
     assert!(matches!(open(&gzip_with(text.as_bytes(), crc, (128 << 20) + 1)), Err(Error::Parse { .. })));
 }
+
+#[test]
+fn media_without_a_path_stay_separate() {
+    let mut d = Doc::default();
+    let mut items = Vec::new();
+    for name in ["a.mp4", "b.mp4"] {
+        let (media, source) = (d.uid(), d.id());
+        d.add(format!(r#"<Media ObjectUID="{media}"><Title>{name}</Title></Media>"#));
+        d.add(format!(r#"<VideoMediaSource ObjectID="{source}"><MediaSource><Media ObjectURef="{media}"/></MediaSource></VideoMediaSource>"#));
+        items.push(d.item(name, &source, true).0);
+    }
+    let (imp, report) = open(&d.bytes(&items.iter().collect::<Vec<_>>())).unwrap();
+    let (a, b) = (id(&imp, "a.mp4"), id(&imp, "b.mp4"));
+    assert_ne!(a, b);
+    assert!([a, b].iter().all(|i| imp.project.item(*i).and_then(|i| i.as_media()).is_some_and(|m| m.offline)));
+    assert!(report.mentions("no file path"), "{report:?}");
+}
