@@ -128,6 +128,59 @@ fn output_device(h: &cpal::Host, name: &str, cache: &Mutex<Option<(String, Strin
     Some(DeviceChoice { device: d, fallback: Some(Note::Fallback(found)) })
 }
 
+/// Razer's virtual endpoint is usually named "Speakers (7.1 Surround Sound)", without
+/// "Razer" in the name. It accepts float streams but can distort them; signed 32-bit PCM
+/// works around that driver behaviour (#2411, https://github.com/RustAudio/cpal/issues/892).
+/// Names are only a heuristic, not a vendor identity: Settings lets users disable it or
+/// explicitly enable it for a renamed endpoint. No mode changes non-WASAPI hosts.
+fn preferred_output_format(host: &str, device: &str, compatibility: &str) -> cpal::SampleFormat {
+    let name = device.trim().to_ascii_lowercase();
+    let known_name = matches!(name.as_str(), "7.1 surround sound" | "razer 7.1 surround sound")
+        || name.ends_with(" (7.1 surround sound)")
+        || name.ends_with(" (razer 7.1 surround sound)");
+    let enabled = match compatibility {
+        "on" => true,
+        "auto" => known_name,
+        _ => false,
+    };
+    if host == "WASAPI" && enabled { cpal::SampleFormat::I32 } else { cpal::SampleFormat::F32 }
+}
+
+/// Prefer an advertised format without sacrificing the default channel count or requested
+/// rate; when the rate is unavailable, try PCM at the default rate before the device default.
+fn select_output_config(
+    default: cpal::SupportedStreamConfig,
+    supported: &[cpal::SupportedStreamConfigRange],
+    want: u32,
+    preferred: cpal::SampleFormat,
+) -> cpal::SupportedStreamConfig {
+    let exact = supported
+        .iter()
+        .filter(|c| c.channels() > 0 && (c.min_sample_rate().0..=c.max_sample_rate().0).contains(&want))
+        .max_by_key(|c| {
+            (
+                c.channels() == default.channels(),
+                c.sample_format() == preferred,
+                c.sample_format() == cpal::SampleFormat::F32,
+                c.sample_format() == default.sample_format(),
+            )
+        })
+        .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(want)));
+    if let Some(exact) = exact {
+        return exact;
+    }
+    // An unavailable requested rate must not bypass the Razer workaround on fallback.
+    if preferred == cpal::SampleFormat::I32
+        && let Some(pcm) = supported
+            .iter()
+            .filter(|c| c.channels() == default.channels() && c.sample_format() == preferred)
+            .find_map(|c| c.try_with_sample_rate(default.sample_rate()))
+    {
+        return pcm;
+    }
+    default
+}
+
 impl CpalOut {
     pub fn new() -> Self {
         let host = cpal::default_host();
@@ -161,14 +214,9 @@ impl CpalOut {
     fn config(&self, dev: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
         let default = dev.default_output_config().map_err(|e| e.to_string())?;
         let want = if self.hw.force_document_rate { self.document_rate.unwrap_or(self.hw.sample_rate) } else { self.hw.sample_rate };
-        let exact = dev.supported_output_configs().ok().and_then(|it| {
-            it.filter(|c| c.channels() > 0 && (c.min_sample_rate().0..=c.max_sample_rate().0).contains(&want))
-                .max_by_key(|c| {
-                    (c.channels() == default.channels(), c.sample_format() == cpal::SampleFormat::F32, c.sample_format() == default.sample_format())
-                })
-                .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(want)))
-        });
-        Ok(exact.unwrap_or(default))
+        let preferred = preferred_output_format(host(&self.hw.device_class).id().name(), &dev.name().unwrap_or_default(), &self.hw.surround_compatibility);
+        let supported: Vec<_> = dev.supported_output_configs().map(|it| it.collect()).unwrap_or_default();
+        Ok(select_output_config(default, &supported, want, preferred))
     }
 
     fn converted_stream<T>(&self, dev: &cpal::Device, config: &cpal::StreamConfig, fill: Arc<Mutex<Fill>>) -> Result<cpal::Stream, cpal::BuildStreamError>
@@ -457,6 +505,121 @@ impl AudioOut for CpalOut {
 mod tests {
     use super::*;
     use cpal::Sample;
+
+    /// An advertised device format with one supported rate, independent of real hardware.
+    fn output_range(channels: u16, rate: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(channels, cpal::SampleRate(rate), cpal::SampleRate(rate), cpal::SupportedBufferSize::Unknown, format)
+    }
+
+    /// Automatic detection accepts known names and rejects unrelated substring matches.
+    #[test]
+    fn automatic_pcm_preference_uses_known_wasapi_names() {
+        use cpal::SampleFormat::{F32, I32};
+        for name in ["Speakers (7.1 Surround Sound)", "7.1 SURROUND SOUND", "Speakers (Razer 7.1 Surround Sound)"] {
+            assert_eq!(preferred_output_format("WASAPI", name, "auto"), I32);
+            assert_eq!(preferred_output_format("CoreAudio", name, "auto"), F32);
+            assert_eq!(preferred_output_format("ALSA", name, "auto"), F32);
+        }
+        for name in
+            ["", "Speakers (Realtek Audio)", "Razer BlackShark V2", "USB 7.1 Audio", "Other 7.1 Surround Sound Driver", "Speakers (7.1 Surround Sound Pro)"]
+        {
+            assert_eq!(preferred_output_format("WASAPI", name, "auto"), F32);
+        }
+    }
+
+    /// A matching name must never prevent opting out; renamed endpoints can opt in.
+    #[test]
+    fn surround_compatibility_can_be_overridden_without_affecting_other_hosts() {
+        use cpal::SampleFormat::{F32, I32};
+        for name in ["Speakers (7.1 Surround Sound)", "My renamed headphones", ""] {
+            assert_eq!(preferred_output_format("WASAPI", name, "off"), F32);
+            assert_eq!(preferred_output_format("WASAPI", name, "on"), I32);
+            assert_eq!(preferred_output_format("WASAPI", name, "invalid"), F32);
+            for host in ["CoreAudio", "ALSA"] {
+                assert_eq!(preferred_output_format(host, name, "on"), F32);
+            }
+        }
+        let default = output_range(8, 48_000, F32).with_max_sample_rate();
+        let supported = [output_range(8, 48_000, F32), output_range(8, 48_000, I32)];
+        let preferred = preferred_output_format("WASAPI", "Speakers (7.1 Surround Sound)", "off");
+        for rate in [48_000, 96_000] {
+            let selected = select_output_config(default.clone(), &supported, rate, preferred);
+            assert_eq!((selected.channels(), selected.sample_rate().0, selected.sample_format()), (8, 48_000, F32));
+        }
+    }
+
+    /// The workaround uses advertised PCM at the requested rate, retaining all device channels.
+    #[test]
+    fn razer_uses_supported_i32_at_the_requested_rate_without_losing_channels() {
+        use cpal::SampleFormat::{F32, I16, I32};
+        let default = output_range(8, 48_000, F32).with_max_sample_rate();
+        let supported = [output_range(8, 48_000, F32), output_range(8, 44_100, I16), output_range(8, 44_100, I32), output_range(8, 44_100, F32)];
+        let selected = select_output_config(default, &supported, 44_100, preferred_output_format("WASAPI", "Speakers (7.1 Surround Sound)", "auto"));
+        assert_eq!((selected.channels(), selected.sample_rate().0, selected.sample_format()), (8, 44_100, I32));
+    }
+
+    /// Default channel count takes precedence over format, including on unaffected devices.
+    #[test]
+    fn other_devices_still_prefer_float_and_keep_the_default_channel_count() {
+        use cpal::SampleFormat::{F32, I32};
+        let default = output_range(8, 48_000, F32).with_max_sample_rate();
+        let supported = [output_range(8, 48_000, F32), output_range(8, 48_000, I32)];
+        let selected = select_output_config(default.clone(), &supported, 48_000, preferred_output_format("WASAPI", "Speakers (Realtek Audio)", "auto"));
+        assert_eq!(selected.sample_format(), F32);
+        // A stereo PCM configuration must not silently discard six surround channels.
+        let supported = [output_range(8, 48_000, F32), output_range(2, 48_000, I32)];
+        let selected = select_output_config(default, &supported, 48_000, I32);
+        assert_eq!((selected.channels(), selected.sample_format()), (8, F32));
+    }
+
+    /// Rate fallback still uses PCM when available, and never invents unsupported configurations.
+    #[test]
+    fn razer_rate_fallback_still_prefers_pcm_but_never_invents_support() {
+        use cpal::SampleFormat::{F32, I32};
+        let default = output_range(8, 48_000, F32).with_max_sample_rate();
+        let supported = [output_range(8, 48_000, F32), output_range(8, 48_000, I32)];
+        let selected = select_output_config(default.clone(), &supported, 96_000, I32);
+        assert_eq!((selected.channels(), selected.sample_rate().0, selected.sample_format()), (8, 48_000, I32));
+        // No PCM at the requested rate: preserve that rate and use the supported float stream.
+        let supported = [output_range(8, 44_100, F32), output_range(8, 48_000, I32)];
+        let selected = select_output_config(default.clone(), &supported, 44_100, I32);
+        assert_eq!((selected.sample_rate().0, selected.sample_format()), (44_100, F32));
+        for supported in [vec![], vec![output_range(8, 48_000, F32)], vec![output_range(0, 96_000, I32)]] {
+            let selected = select_output_config(default.clone(), &supported, 96_000, I32);
+            assert_eq!((selected.channels(), selected.sample_rate().0, selected.sample_format()), (8, 48_000, F32));
+        }
+        let selected = select_output_config(default, &[output_range(8, 48_000, I32)], 96_000, F32);
+        assert_eq!(selected.sample_format(), F32, "other devices retain their default on rate fallback");
+    }
+
+    /// PCM conversion retains interleaving and does not introduce sound into silent channels.
+    #[test]
+    fn pcm_conversion_preserves_all_eight_channels_and_silent_surrounds() {
+        let input = [0.25, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.5, 0.125, -0.125, 0.25, -0.25, 0.75, -0.75];
+        let mut output = [0_i32; 16];
+        convert_samples(&input, &mut output);
+        assert_eq!(
+            output,
+            [
+                536_870_912,
+                -1_073_741_824,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                i32::MIN,
+                1_073_741_824,
+                268_435_456,
+                -268_435_456,
+                536_870_912,
+                -536_870_912,
+                1_610_612_736,
+                -1_610_612_736
+            ]
+        );
+    }
 
     #[test]
     fn fallback_prefers_sound_servers_over_raw_hardware() {

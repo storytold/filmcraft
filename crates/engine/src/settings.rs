@@ -195,6 +195,9 @@ pub struct AudioHardwarePrefs {
     pub sample_rate: u32,
     /// "Attempt to force hardware to document sample rate": open the device at the sequence rate.
     pub force_document_rate: bool,
+    /// WASAPI 7.1 surround compatibility: `auto` uses known endpoint names, `on` prefers
+    /// supported 32-bit PCM even for renamed endpoints, `off` restores the float preference.
+    pub surround_compatibility: String,
     /// Output Mapping: the device channels (0-based) the programme's left and right go to.
     pub map_left: u32,
     pub map_right: u32,
@@ -209,6 +212,7 @@ impl Default for AudioHardwarePrefs {
             buffer_size: 512,
             sample_rate: 48_000,
             force_document_rate: false,
+            surround_compatibility: "auto".into(),
             map_left: 0,
             map_right: 1,
         }
@@ -1097,6 +1101,12 @@ static CATEGORIES: &[Category] = &[
             f("audioHardware.bufferSize", "I/O Buffer Size", Kind::Choice(BUFFERS), true),
             f("audioHardware.sampleRate", "Sample Rate", Kind::Choice(RATES), true),
             b("audioHardware.forceDocumentRate", "Attempt to force hardware to document sample rate", true),
+            f(
+                "audioHardware.surroundCompatibility",
+                "7.1 surround compatibility (Windows)",
+                Kind::Choice(&[("auto", "Auto"), ("on", "On"), ("off", "Off")]),
+                true,
+            ),
             Row::Group(
                 "Output Mapping",
                 &[
