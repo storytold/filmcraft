@@ -3616,3 +3616,10 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Clip Mismatch Warning	クリップの不一致警告
+	This clip does not match the sequence settings.	このクリップはシーケンス設定と一致しません。
+	Clip: {settings}	クリップ: {settings}
+	Sequence: {settings}	シーケンス: {settings}
+	Change the sequence to match the clip's settings?	シーケンスをクリップの設定に合わせますか？
+	Change Sequence Settings	シーケンス設定を変更
+	Keep Existing Settings	現在の設定を維持

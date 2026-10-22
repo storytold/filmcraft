@@ -3617,3 +3617,10 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	Clip Mismatch Warning	Aviso de discrepancia de clip
+	This clip does not match the sequence settings.	Este clip no coincide con los ajustes de la secuencia.
+	Clip: {settings}	Clip: {settings}
+	Sequence: {settings}	Secuencia: {settings}
+	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
+	Change Sequence Settings	Cambiar ajustes de secuencia
+	Keep Existing Settings	Mantener los ajustes actuales

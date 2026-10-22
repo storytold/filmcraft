@@ -646,6 +646,44 @@ pub(crate) fn default_seq_settings_for(media: &MediaClip) -> SequenceSettings {
     st
 }
 
+/// Settings ▸ Timeline ▸ Show Clip Mismatch Warning dialog: the settings the active sequence takes
+/// to match `item` when that is the first clip put in it, its frame size, frame rate and pixel
+/// aspect ratio (Interpret Footage's, else the file's), the sequence's other settings kept. `None`
+/// when the sequence already holds clips, the item has no moving picture (sound alone, a still, a
+/// sequence) or nothing differs. `matchSequence` on `timeline.place`, `source.insert` and
+/// `source.overwrite` applies it.
+pub fn clip_mismatch(s: &Session, item: ItemId) -> Option<SequenceSettings> {
+    let q = s.active_sequence()?;
+    if q.all_tracks().any(|t| !t.items.is_empty()) {
+        return None;
+    }
+    let (_, m, _) = s.project.resolve_media(item)?;
+    let v = m.info.video.as_ref().filter(|_| m.info.kind != filmcraft_media::MediaKind::Still)?;
+    let mut st = q.settings.clone();
+    (st.width, st.height, st.frame_rate, st.par) = (v.width, v.height, m.frame_rate(), m.pixel_aspect());
+    if (st.width, st.height, st.frame_rate, st.par) == (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.par) {
+        return None;
+    }
+    st.drop_frame &= st.frame_rate.supports_drop_frame();
+    st.preset = format!("{}x{} {}", st.width, st.height, st.frame_rate.label());
+    // a damaged file's size or rate must not reach the sequence
+    st.validate().ok().map(|()| st)
+}
+
+/// `matchSequence`: before the edit, the active (still empty) sequence takes the clip's settings
+/// ([`clip_mismatch`]), in the same undo step as the edit.
+fn edit_matching_sequence(s: &mut Session, p: &Value, item: Option<ItemId>, label: &str, f: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Value> {
+    let Some(st) = item.filter(|_| bool_p(p, "matchSequence") == Some(true)).and_then(|i| clip_mismatch(s, i)) else { return f(s) };
+    let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    s.edit_group(label, |s| {
+        s.edit("Sequence Settings", |pr, _| {
+            pr.sequence_mut(id).ok_or(EngineError::NoSequence)?.settings = st;
+            Ok(())
+        })?;
+        f(s)
+    })
+}
+
 /// Import bytes as a media item (engine-level; the UI reads files through services).
 pub fn import_bytes(s: &mut Session, path: &str, bytes: std::sync::Arc<[u8]>, bin: Option<filmcraft_project::BinId>) -> Result<ItemId> {
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
@@ -2573,19 +2611,29 @@ fn build() -> Vec<CommandSpec> {
             let v = crate::clip_ops::source_view(s, item).ok_or_else(|| bad("source.inspect", "the source item is gone"))?;
             Ok(v.to_json(s.state.source_playhead))
         }),
-        cmd!("source.insert", "Insert", ["Clip"], Some(","), "{}", has_source, |s, _| edit_at_source(s, true)),
-        cmd!("source.overwrite", "Overwrite", ["Clip"], Some("."), "{}", has_source, |s, _| edit_at_source(s, false)),
+        cmd!("source.insert", "Insert", ["Clip"], Some(","), r#"{"matchSequence":bool=false}"#, has_source, |s, p| {
+            let item = s.state.source_item;
+            edit_matching_sequence(s, p, item, "Insert", |s| edit_at_source(s, true))
+        }),
+        cmd!("source.overwrite", "Overwrite", ["Clip"], Some("."), r#"{"matchSequence":bool=false}"#, has_source, |s, p| {
+            let item = s.state.source_item;
+            edit_matching_sequence(s, p, item, "Overwrite", |s| edit_at_source(s, false))
+        }),
         // ================= Timeline gestures =================
         cmd!(
             "timeline.place",
             "Place Clip",
             [],
             None,
-            r#"{"item":id|"items":[id] (back to back, one undo step),"track":"V1"|id|"A1" (sound only)|"new" (a video track after the last)?,"audioTrack":"A1"|id|"new"?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks?,"duration":ticks?,"video":bool=true,"audio":bool=true}"#,
+            r#"{"item":id|"items":[id] (back to back, one undo step),"track":"V1"|id|"A1" (sound only)|"new" (a video track after the last)?,"audioTrack":"A1"|id|"new"?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks?,"duration":ticks?,"video":bool=true,"audio":bool=true,"matchSequence":bool=false (an empty sequence first takes the clip's frame size and rate)}"#,
             has_seq,
-            |s, p| match p.get("items") {
-                Some(items) => place_items(s, p, items),
-                None => place_one(s, p),
+            |s, p| {
+                let first = item_p(p, "item").or_else(|| p.get("items").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_u64).map(ItemId));
+                let label = if p.get("items").is_some() { "Place Clips" } else { "Place Clip" };
+                edit_matching_sequence(s, p, first, label, |s| match p.get("items") {
+                    Some(items) => place_items(s, p, items),
+                    None => place_one(s, p),
+                })
             }
         ),
         cmd!("timeline.select", "Select Clips", [], None, r#"{"clips":[id],"transitions":[id]?,"add":bool,"toggle":bool,"linked":bool?}"#, has_seq, |s, p| {

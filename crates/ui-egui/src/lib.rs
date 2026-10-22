@@ -217,6 +217,9 @@ pub enum Dialog {
     SequenceSettings,
     /// Set Transition Duration (double-click a transition in the Timeline).
     TransitionDuration,
+    /// Clip Mismatch Warning: the first clip put in an empty sequence doesn't match its settings
+    /// (Settings ▸ Timeline ▸ Show Clip Mismatch Warning dialog; `panels::clip_mismatch`).
+    ClipMismatch,
 }
 
 #[derive(Default)]
@@ -366,6 +369,9 @@ pub struct FilmcraftApp {
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
     /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
     pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// The edit the Clip Mismatch Warning asks about (command, parameters); it runs with
+    /// `matchSequence` once answered.
+    clip_mismatch: Option<(String, serde_json::Value)>,
     /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
@@ -598,6 +604,7 @@ impl FilmcraftApp {
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             pending_timeline_drop: None,
+            clip_mismatch: None,
             file_drag_hover: None,
             timeline_view_last: None,
             fps: 60.0,

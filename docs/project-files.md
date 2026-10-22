@@ -238,7 +238,7 @@ opens the dialog on a page.
 | Memory | frame cache budget of the monitors and thumbnails |
 | Playback | preroll / postroll (Play Around, trim loop), Step forward/back many |
 | Plugins | stub (no plugins) |
-| Timeline | video / audio transition and still image default durations (frames or seconds), playback auto-scrolling (none / page / smooth), snap playhead, return to beginning at playback end, play after rendering previews |
+| Timeline | video / audio transition and still image default durations (frames or seconds), playback auto-scrolling (none / page / smooth), snap playhead, return to beginning at playback end, play after rendering previews, Show Clip Mismatch Warning dialog (the first clip put into an empty sequence it doesn't match asks whether the sequence takes the clip's settings) |
 | Trim | Large Trim Offset, Selection tool picks roll (on the cut) / ripple (on the edge) without a modifier, playhead determines trim loop |
 
 The remaining fields are kept for parity and shown, but have no effect yet (`wired: false`).

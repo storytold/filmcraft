@@ -1343,7 +1343,7 @@ static CATEGORIES: &[Category] = &[
             b("timeline.returnToBeginning", "At playback end, return to beginning when restarting playback", true),
             b("timeline.outOfSyncUnlinked", "Display out of sync indicators for unlinked clips", false),
             b("timeline.playAfterRendering", "Play after rendering previews", true),
-            b("timeline.clipMismatchWarning", "Show Clip Mismatch Warning dialog", false),
+            b("timeline.clipMismatchWarning", "Show Clip Mismatch Warning dialog", true),
             b("timeline.matchFrameSetsIn", "Match frame sets in point", false),
             b("timeline.restoreOpenSequences", "Restore open sequences when opening projects", true),
             b("timeline.addTracksAutomatically", "Add tracks automatically when editing source clips onto the Timeline", false),

@@ -14,6 +14,9 @@ fn step(h: &mut Harness<'static, FilmcraftApp>) {
 }
 fn harness(item: u64) -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
+    // the demo's 1080p 23.976 clip doesn't match the empty 720p 24 fps sequence: these tests are
+    // about the drag, so the Clip Mismatch Warning (clip_mismatch_ui.rs) stays out of the way
+    s.prefs.timeline.clip_mismatch_warning = false;
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Drop test","width":1280,"height":720,"fps":24})).unwrap();
     s.execute("source.open", json!({"item":item})).unwrap();

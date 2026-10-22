@@ -3592,3 +3592,10 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Clip Mismatch Warning	剪辑不匹配警告
+	This clip does not match the sequence settings.	此剪辑与序列设置不匹配。
+	Clip: {settings}	剪辑：{settings}
+	Sequence: {settings}	序列：{settings}
+	Change the sequence to match the clip's settings?	是否更改序列以匹配剪辑的设置？
+	Change Sequence Settings	更改序列设置
+	Keep Existing Settings	保留现有设置
