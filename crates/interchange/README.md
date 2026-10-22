@@ -104,3 +104,9 @@ OMF carries no video at all.
   nested compositions tagged top-level) reads back as the same edit.
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.
+
+FCP7 XML resolves sentinel `-1` clip edges from immediately adjacent transitions,
+including centred and start/end-aligned cuts. Incoming transition handles adjust
+source in without shifting explicit Premiere ticks. Synthetic six-piece audio
+and video cuts check placement, source in and transition links; malformed
+transition edges are reported instead of guessed.

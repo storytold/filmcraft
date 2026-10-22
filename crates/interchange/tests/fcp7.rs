@@ -214,7 +214,7 @@ fn golden_premiere_style_nested_and_transitions() {
     assert_eq!(v1.items.len(), 2);
     let (c1, c2) = (&v1.items[0], &v1.items[1]);
     assert_eq!((c1.start, c1.duration), (r.tick_of(0), r.tick_of(48)));
-    assert_eq!((c2.start, c2.duration, c2.source_in), (r.tick_of(48), r.tick_of(72), r.tick_of(100)));
+    assert_eq!((c2.start, c2.duration, c2.source_in), (r.tick_of(48), r.tick_of(72), r.tick_of(112)));
     assert_eq!(c1.label, Label::Cerulean);
     assert_eq!(media_key(p, c2.item), "/proj/media/waves.mov");
     let t = &v1.transitions[0];
@@ -662,4 +662,134 @@ fn centred_mono_breakout_round_trips_centred() {
     }
     let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
     assert_eq!(balances(&imp), vec![0.0, 0.0], "{xml}");
+}
+
+fn transition_cut_document(kind: &str, track: &str) -> String {
+    format!(
+        r#"<xmeml version="5"><sequence><name>Transition cuts</name><duration>1171</duration>
+      <rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate><media><{kind}><track>{track}</track></{kind}></media>
+      </sequence></xmeml>"#
+    )
+}
+
+fn transition_clip(id: usize, start: i64, end: i64, source_in: i64, source_out: i64, extra: &str) -> String {
+    format!(
+        r#"<clipitem id="cut-{id}"><name>cut {id}</name><start>{start}</start><end>{end}</end>
+      <in>{source_in}</in><out>{source_out}</out>{extra}<file id="cut-source"><name>original.mov</name>
+      <pathurl>file://localhost/original.mov</pathurl><duration>3000</duration>
+      <rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate><media>
+      <video><samplecharacteristics><width>64</width><height>64</height></samplecharacteristics></video>
+      <audio><samplecharacteristics><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio>
+      </media></file></clipitem>"#
+    )
+}
+
+fn cut_transition(start: i64, end: i64, align: &str) -> String {
+    format!("<transitionitem><start>{start}</start><end>{end}</end>{align}<effect><name>Cross Dissolve</name></effect></transitionitem>")
+}
+
+#[test]
+fn transition_defined_six_piece_cut_keeps_every_clip_and_source_in() {
+    let starts = [54, 252, 291, 607, 833, 909];
+    let ends = [252, 291, 607, 833, 909, 1171];
+    let ins = [589, 789, 835, 1170, 1781, 1870];
+    let source_ins = [589, 795, 841, 1176, 1787, 1876];
+    for kind in ["video", "audio"] {
+        let mut track = String::new();
+        for i in 0..6 {
+            track += &transition_clip(i, if i == 0 { starts[i] } else { -1 }, if i == 5 { ends[i] } else { -1 }, ins[i], ins[i] + ends[i] - starts[i], "");
+            if i < 5 {
+                track += &cut_transition(ends[i] - 6, ends[i] + 6, if i == 1 { "" } else { "<alignment>center</alignment>" });
+            }
+        }
+        let (imp, report) = import(transition_cut_document(kind, &track).as_bytes(), Format::Fcp7Xml, None).unwrap();
+        let seq = imp.project.sequence(imp.sequences[0]).unwrap();
+        let tr = if kind == "video" { &seq.video_tracks[0] } else { &seq.audio_tracks[0] };
+        assert_eq!(tr.items.len(), 6, "{kind}: {report}");
+        let rate = FrameRate::FPS_30;
+        for i in 0..6 {
+            assert_eq!(
+                (tr.items[i].start, tr.items[i].duration, tr.items[i].source_in),
+                (rate.tick_of(starts[i]), rate.tick_of(ends[i] - starts[i]), rate.tick_of(source_ins[i])),
+                "{kind}: clip {i}"
+            );
+            assert_eq!(tr.items[i].speed, 1.0);
+        }
+        assert_eq!(tr.transitions.len(), 5, "{report}");
+        for (i, t) in tr.transitions.iter().enumerate() {
+            assert_eq!((t.from, t.to), (Some(tr.items[i].id), Some(tr.items[i + 1].id)));
+        }
+        assert!(!report.mentions("neither start nor end") && !report.mentions("no adjacent clip"), "{report}");
+    }
+}
+
+#[test]
+fn transition_edges_honor_alignment_and_exact_source_ticks() {
+    for (alignment, cut, source_in) in [("start", 100, 200), ("center", 106, 206), ("end", 112, 212)] {
+        for exact in [false, true] {
+            let mut track = transition_clip(0, 0, -1, 0, cut, "");
+            track += &cut_transition(100, 112, &format!("<alignment>{alignment}</alignment>"));
+            track += &transition_clip(
+                1,
+                -1,
+                150,
+                200,
+                200 + 150 - cut,
+                if exact { "<pproTicksIn>123456789</pproTicksIn><pproTicksOut>987654321</pproTicksOut>" } else { "" },
+            );
+            let (imp, report) = import(transition_cut_document("video", &track).as_bytes(), Format::Fcp7Xml, None).unwrap();
+            let tr = &imp.project.sequence(imp.sequences[0]).unwrap().video_tracks[0];
+            assert_eq!(tr.items.len(), 2, "{report}");
+            let r = FrameRate::FPS_30;
+            assert_eq!(tr.items[0].end(), r.tick_of(cut));
+            assert_eq!(tr.items[1].start, r.tick_of(cut));
+            assert_eq!(tr.items[1].source_in, if exact { Tick(123456789) } else { r.tick_of(source_in) });
+        }
+    }
+}
+
+#[test]
+fn malformed_transition_defined_edges_are_reported_without_panicking() {
+    for transition in [cut_transition(-10, 10, ""), cut_transition(100, 90, ""), cut_transition(100, 112, "<alignment>bogus</alignment>")] {
+        let track = transition + &transition_clip(0, -1, -1, 100, 150, "");
+        let doc = transition_cut_document("video", &track);
+        let (imp, report) = std::panic::catch_unwind(|| import(doc.as_bytes(), Format::Fcp7Xml, None)).unwrap().unwrap();
+        assert!(imp.project.sequence(imp.sequences[0]).unwrap().video_tracks[0].items.is_empty());
+        assert!(report.has_warnings());
+    }
+}
+
+#[test]
+fn transition_source_handles_follow_constant_speed_reverse_and_hold() {
+    for (percent, expected, hold) in [(200, 212, false), (-200, 188, false), (0, 200, true)] {
+        let remap = format!(
+            "<filter><effect><effectid>timeremap</effectid><parameter><parameterid>speed</parameterid><value>{percent}</value></parameter></effect></filter>"
+        );
+        let mut track = transition_clip(0, 0, -1, 0, 106, "");
+        track += &cut_transition(100, 112, "<alignment>center</alignment>");
+        track += &transition_clip(1, -1, 150, 200, 288, &remap);
+        let (imp, report) = import(transition_cut_document("video", &track).as_bytes(), Format::Fcp7Xml, None).unwrap();
+        let tr = &imp.project.sequence(imp.sequences[0]).unwrap().video_tracks[0];
+        assert_eq!(tr.items.len(), 2, "{report}");
+        assert_eq!(tr.items[1].source_in, FrameRate::FPS_30.tick_of(expected));
+        assert_eq!(tr.items[1].reverse, percent < 0);
+        assert_eq!(tr.items[1].frame_hold.is_some(), hold);
+    }
+}
+
+#[test]
+fn hostile_transition_time_remap_is_reported_instead_of_saturated() {
+    for speed in ["NaN", "inf", "1e308"] {
+        let remap = format!(
+            "<filter><effect><effectid>timeremap</effectid><parameter><parameterid>speed</parameterid><value>{speed}</value></parameter></effect></filter>"
+        );
+        let mut track = transition_clip(0, 0, -1, 0, 106, "");
+        track += &cut_transition(100, 112, "<alignment>center</alignment>");
+        track += &transition_clip(1, -1, 150, 0, 44, &remap);
+        let doc = transition_cut_document("video", &track);
+        let (imp, report) = std::panic::catch_unwind(|| import(doc.as_bytes(), Format::Fcp7Xml, None)).unwrap().unwrap();
+        let tr = &imp.project.sequence(imp.sequences[0]).unwrap().video_tracks[0];
+        assert_eq!(tr.items.len(), 1, "{speed}: {report}");
+        assert!(report.mentions("unrepresentable"), "{speed}: {report}");
+    }
 }
