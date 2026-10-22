@@ -2430,7 +2430,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let fwd = tool == Tool::TrackSelectForward;
                 let ids: Vec<u64> = seq
                     .all_tracks()
-                    .filter(|tr| !mods.shift || tr.id == track)
+                    // a locked track is skipped, as in Premiere Pro: its clips cannot move, and they would block the drag
+                    .filter(|tr| !tr.locked && (!mods.shift || tr.id == track))
                     .flat_map(|tr| tr.items.iter())
                     .filter(|i| if fwd { i.end() > t } else { i.start < t })
                     .map(|i| i.id.0)
