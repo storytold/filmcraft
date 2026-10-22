@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use crate::opfs;
 use crate::recovery_policy::{Action, Policy};
 
-const SNAPSHOT: &str = "recovery/snapshot.fcproj";
-const META: &str = "recovery/meta.json";
+pub(crate) const SNAPSHOT: &str = "recovery/snapshot.fcproj";
+pub(crate) const META: &str = "recovery/meta.json";
 /// Media larger than this are not copied to OPFS.
 const KEEP_MAX: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
 

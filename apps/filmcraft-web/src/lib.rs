@@ -189,9 +189,25 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
-                // The language-change notice's Restart button: a restart is a page reload.
-                app.hooks.restart = Some(Box::new(|| {
-                    web_sys::window().ok_or_else(|| "no window".to_string())?.location().reload().map_err(|e| format!("can't reload the page: {e:?}"))
+                // The language-change notice's Restart button: a restart is a page reload, made
+                // only after the current state reached OPFS (the autosave policy snapshots at most
+                // every five seconds, so edits younger than that would otherwise be lost).
+                app.hooks.restart = Some(Box::new(|session: &Session| {
+                    let meta = json!({"dirty": session.is_dirty(), "name": session.project.name, "revision": session.revision, "time": js_sys::Date::now()});
+                    let left = std::rc::Rc::new(std::cell::Cell::new(2u8));
+                    let reload = |left: std::rc::Rc<std::cell::Cell<u8>>| -> opfs::Done {
+                        Box::new(move |_| {
+                            left.set(left.get().saturating_sub(1));
+                            if left.get() == 0
+                                && let Some(w) = web_sys::window()
+                            {
+                                let _ = w.location().reload();
+                            }
+                        })
+                    };
+                    opfs::write_then(recovery::SNAPSHOT.into(), filmcraft_format::encode(&session.project, false), Some(reload(left.clone())));
+                    opfs::write_then(recovery::META.into(), meta.to_string().into_bytes(), Some(reload(left)));
+                    Ok(())
                 }));
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);

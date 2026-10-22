@@ -363,7 +363,7 @@ fn clipboard_media() -> Option<filmcraft_ui_egui::ClipboardMedia> {
 /// Relaunch the app with the arguments it was started with (Interface Language ▸ Restart).
 /// Called from `on_exit`, so the current process is already on its way out: the new one starts
 /// with the saved preferences, including the language the restart was asked for.
-fn relaunch() -> Result<(), String> {
+fn relaunch(_: &Session) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("can't locate the running app: {e}"))?;
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     std::process::Command::new(exe).args(args).spawn().map(|_| ()).map_err(|e| format!("can't restart FilmCraft: {e}"))

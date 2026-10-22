@@ -123,7 +123,7 @@ fn restart_closes_the_window_and_the_host_relaunches_on_exit() {
     let mut d = Driver::new();
     let relaunches = Rc::new(Cell::new(0));
     let count = Rc::clone(&relaunches);
-    d.app().hooks.restart = Some(Box::new(move || {
+    d.app().hooks.restart = Some(Box::new(move |_| {
         count.set(count.get() + 1);
         Ok(())
     }));
@@ -141,7 +141,7 @@ fn restart_closes_the_window_and_the_host_relaunches_on_exit() {
 #[test]
 fn a_relaunch_that_fails_says_why() {
     let mut d = Driver::new();
-    d.app().hooks.restart = Some(Box::new(|| Err("can't restart FilmCraft: no binary".into())));
+    d.app().hooks.restart = Some(Box::new(|_| Err("can't restart FilmCraft: no binary".into())));
     d.ok("ui.menu.invoke", json!({"id": "app.language.spanish"}));
     d.frames(3);
     d.ok("ui.click", json!({"id": "language.restart.restart"}));
@@ -171,4 +171,6 @@ fn restarting_with_unsaved_changes_asks_to_save_and_cancel_forgets_the_restart()
     d.ok("ui.key", json!({"key": "Escape"}));
     d.frames(2);
     assert!(!d.app().restart_after_quit, "cancelling the prompt cancels the restart too");
+    // and the notice offers Restart again
+    assert!(d.ids().iter().any(|i| i == "language.restart.restart"));
 }
