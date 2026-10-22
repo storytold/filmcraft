@@ -453,6 +453,8 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     doc.cues.retain_mut(|cue| {
         cue.end = cue.end.min(range.duration);
         cue.start < cue.end
+            && (!matches!(format, filmcraft_captions::Format::Srt | filmcraft_captions::Format::WebVtt)
+                || cue.start.to_rational_round(1, 1000) < cue.end.to_rational_round(1, 1000))
     });
     let bytes =
         filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
