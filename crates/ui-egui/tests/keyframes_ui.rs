@@ -727,3 +727,20 @@ fn a_line_separates_added_effects_from_the_fixed_ones() {
     );
     assert!(tint[1] > blur[1], "one line, above all the added effects");
 }
+
+/// Velocity graphs display keyframes and influence handles that are agent-drivable.
+#[test]
+fn velocity_graph_displays_handles_and_keyframes() {
+    let (mut d, clip) = Driver::demo();
+    d.seek(1.0);
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    d.seek(3.0);
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    let param = d.parameter(&clip, "motion", "scale");
+    let t0 = param.keyframes[0].time.0;
+    d.exec("effects.setInterpolation", json!({"clip": clip.id, "effect": "motion", "param": "scale", "mediaTime": t0, "interpolation": "bezier"}));
+    d.click("effectControls.motion.scale.graphs");
+    assert!(d.find(&format!("effectControls.scale.velgraph.keyframe.{t0}")).is_some(), "velocity graph keyframe is drawn");
+    assert!(d.find(&format!("effectControls.scale.velgraph.handle.{t0}.out")).is_some(), "velocity graph outgoing handle is drawn");
+}
+

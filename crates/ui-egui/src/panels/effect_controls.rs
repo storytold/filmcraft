@@ -1078,7 +1078,8 @@ fn graph_components(v: &ParamValue) -> Vec<f64> {
 
 /// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
 /// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
-/// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
+/// Keyframes drag vertically (value); Bezier influence handles drag horizontally on both the
+/// value and velocity graphs to adjust temporal easing.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn graph_rows(
     app: &mut FilmcraftApp,
@@ -1227,11 +1228,19 @@ pub(crate) fn graph_rows(
                 let hx = c.x + side * (infl * seg + hdx * side).clamp(seg * 0.01, seg);
                 let hp = pos2(hx, c.y);
                 p.line_segment([c, hp], Stroke::new(1.0, t.plot_handle_dim));
-                p.circle_filled(hp, 3.5, t.keyframe_handle);
                 let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
+                let auto_hid = match (comps.len(), ci) {
+                    (1, _) => format!("effectControls.{}.graph.handle.{}.{}", pd.id, k.time.0, if side > 0.0 { "out" } else { "in" }),
+                    (_, 0) => format!("effectControls.{}.graph.handle.{}.x.{}", pd.id, k.time.0, if side > 0.0 { "out" } else { "in" }),
+                    _ => format!("effectControls.{}.graph.handle.{}.y.{}", pd.id, k.time.0, if side > 0.0 { "out" } else { "in" }),
+                };
+                app.auto.add(&auto_hid, hr.rect, "keyframe influence handle");
+                p.circle_filled(hp, 3.5, if hr.dragged_by(egui::PointerButton::Primary) { t.hot_text } else { t.keyframe_handle });
                 if hr.dragged_by(egui::PointerButton::Primary) {
                     let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
                     ui.data_mut(|d| d.insert_temp(hid, nx));
+                    let cur_infl = ((infl * seg + hdx * side) / seg.max(1.0)).clamp(0.01, 1.0);
+                    p.text(hp + vec2(0.0, -10.0), Align2::CENTER_BOTTOM, format!("{:.0}%", cur_infl * 100.0), Tokens::ui(10.5), t.hot_text);
                 }
                 if hr.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     ui.data_mut(|d| d.remove::<f32>(hid));
@@ -1270,6 +1279,67 @@ pub(crate) fn graph_rows(
                 actions.push((
                     "effects.setKeyframe".into(),
                     with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, "value": value})),
+                ));
+            }
+        }
+    }
+    // velocity graph: keyframes + handles
+    for (i, k) in ks.iter().enumerate() {
+        let f = to_f(k.time);
+        if !(-0.01..=1.01).contains(&f) {
+            continue;
+        }
+        let eases_out =
+            !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseIn);
+        let eases_in =
+            !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseOut);
+        let c_vel = pos2(x_of(f), varea.center().y);
+        let id_vel = egui::Id::new(("kfg-vel", clip.0, idx, mask, pd.id, k.time.0));
+        let r_vel = Rect::from_center_size(c_vel, vec2(10.0, 10.0));
+        let resp_vel = ui.interact(r_vel.expand(2.0), id_vel, Sense::click());
+        let tl = it.start + Tick(((k.time - it.source_in).0 as f64 / speed) as i64);
+        if resp_vel.clicked_by(egui::PointerButton::Primary) {
+            actions.push(("playhead.set".into(), json!({"time": tl.0})));
+        }
+        resp_vel.context_menu(|ui| {
+            keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, actions);
+        });
+        app.auto.add(&format!("effectControls.{}.velgraph.keyframe.{}", pd.id, k.time.0), r_vel, "velocity keyframe");
+        p.circle_filled(c_vel, 4.0, if resp_vel.hovered() { t.hot_text } else { t.plot_handle });
+
+        // handles to adjust the velocity graph (temporal ease influence)
+        for (side, on, nb) in [(1.0f32, eases_out, ks.get(i + 1)), (-1.0f32, eases_in && i > 0, if i > 0 { ks.get(i - 1) } else { None })] {
+            let (true, Some(nb)) = (on, nb) else { continue };
+            let seg = (x_of(to_f(nb.time)) - c_vel.x).abs();
+            let infl = if side > 0.0 { k.out_influence } else { k.in_influence } as f32;
+            let hid = id_vel.with(if side > 0.0 { "out" } else { "in" });
+            let hdx: f32 = ui.data(|d| d.get_temp(hid)).unwrap_or(0.0);
+            let hx = c_vel.x + side * (infl * seg + hdx * side).clamp(seg * 0.01, seg);
+            let hp = pos2(hx, c_vel.y);
+            p.line_segment([c_vel, hp], Stroke::new(1.0, t.plot_handle_dim));
+            let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
+            app.auto.add(
+                &format!("effectControls.{}.velgraph.handle.{}.{}", pd.id, k.time.0, if side > 0.0 { "out" } else { "in" }),
+                hr.rect,
+                "velocity handle",
+            );
+            p.circle_filled(hp, 3.5, if hr.dragged_by(egui::PointerButton::Primary) { t.hot_text } else { t.keyframe_handle });
+            if hr.dragged_by(egui::PointerButton::Primary) {
+                let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
+                ui.data_mut(|d| d.insert_temp(hid, nx));
+                let cur_infl = ((infl * seg + hdx * side) / seg.max(1.0)).clamp(0.01, 1.0);
+                p.text(hp + vec2(0.0, -10.0), Align2::CENTER_BOTTOM, format!("{:.0}%", cur_infl * 100.0), Tokens::ui(10.5), t.hot_text);
+            }
+            if hr.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                ui.data_mut(|d| d.remove::<f32>(hid));
+            } else if hr.drag_stopped_by(egui::PointerButton::Primary) {
+                ui.data_mut(|d| d.remove::<f32>(hid));
+                let hdx = hdx + hr.drag_delta().x;
+                let ni = ((infl * seg + hdx * side) / seg.max(1.0)).clamp(0.01, 1.0);
+                let key = if side > 0.0 { "outInfluence" } else { "inInfluence" };
+                actions.push((
+                    "effects.setKeyframe".into(),
+                    with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni})),
                 ));
             }
         }
@@ -1659,5 +1729,88 @@ mod graph_drag_tests {
         assert!(new.x > old.x, "dragging the X keyframe up raises X: {old:?} -> {new:?}");
         assert_eq!(new.y, old.y);
         assert_eq!(changed.keyframes[1], before.keyframes[1]);
+    }
+
+    #[test]
+    fn velocity_graph_handle_drags_influence_in_one_undo_step() {
+        let mut d = Driver::new();
+        let before = d.param();
+        let undo = d.undo_len();
+        d.frame(vec![]);
+        let hid = format!("effectControls.scale.velgraph.handle.{}.out", before.keyframes[0].time.0);
+        let [x, y, w, h] = d.app.auto.find(&hid).expect("the velocity graph handle is drawn").rect;
+        let start = pos2(x + w / 2.0, y + h / 2.0);
+        d.frame(vec![egui::Event::PointerMoved(start), button(start, true)]);
+        d.frame(vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0))]);
+        d.frame(vec![button(start + vec2(20.0, 0.0), false)]);
+        d.frame(vec![]);
+        let changed = d.param();
+        assert_eq!(d.undo_len(), undo + 1);
+        assert_eq!(changed.keyframes[0].value, before.keyframes[0].value);
+        assert!(changed.keyframes[0].out_influence > before.keyframes[0].out_influence, "dragging velocity handle right increases out_influence");
+        assert_eq!(changed.keyframes[1], before.keyframes[1]);
+        d.app.session.undo().expect("one graph gesture to undo");
+        assert_eq!(d.param(), before);
+        assert_eq!(d.undo_len(), undo);
+    }
+
+    #[test]
+    fn velocity_graph_handle_release_includes_pointer_delta() {
+        let mut d = Driver::new();
+        let before = d.param();
+        let undo = d.undo_len();
+        d.frame(vec![]);
+        let hid = format!("effectControls.scale.velgraph.handle.{}.out", before.keyframes[0].time.0);
+        let [x, y, w, h] = d.app.auto.find(&hid).expect("the velocity graph handle is drawn").rect;
+        let start = pos2(x + w / 2.0, y + h / 2.0);
+        d.frame(vec![egui::Event::PointerMoved(start), button(start, true)]);
+        d.frame(vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0)), button(start + vec2(20.0, 0.0), false)]);
+        d.frame(vec![]);
+        let changed = d.param();
+        assert_eq!(d.undo_len(), undo + 1);
+        assert_eq!(changed.keyframes[0].value, before.keyframes[0].value);
+        assert!(changed.keyframes[0].out_influence > before.keyframes[0].out_influence, "pointer delta on release frame increases out_influence");
+        assert_eq!(changed.keyframes[1], before.keyframes[1]);
+    }
+
+    #[test]
+    fn velocity_graph_keyframe_click_sets_playhead() {
+        let mut d = Driver::new();
+        let before = d.param();
+        d.frame(vec![]);
+        let kid = format!("effectControls.scale.velgraph.keyframe.{}", before.keyframes[0].time.0);
+        let [x, y, w, h] = d.app.auto.find(&kid).expect("the velocity graph keyframe is drawn").rect;
+        let pos = pos2(x + w / 2.0, y + h / 2.0);
+        d.frame(vec![egui::Event::PointerMoved(pos), button(pos, true)]);
+        d.frame(vec![button(pos, false)]);
+        d.frame(vec![]);
+        let q = d.app.session.active_sequence().unwrap();
+        let it = q.find_item(d.clip).unwrap().1;
+        let expected_time = it.start + Tick(((before.keyframes[0].time - it.source_in).0 as f64 / it.speed.abs().max(1e-6)) as i64);
+        assert_eq!(d.app.session.playhead(), expected_time);
+    }
+
+    #[test]
+    fn velocity_graph_escape_cancels_drag() {
+        let mut d = Driver::new();
+        let before = d.param();
+        let undo = d.undo_len();
+        d.frame(vec![]);
+        let hid = format!("effectControls.scale.velgraph.handle.{}.out", before.keyframes[0].time.0);
+        let [x, y, w, h] = d.app.auto.find(&hid).expect("the velocity graph handle is drawn").rect;
+        let start = pos2(x + w / 2.0, y + h / 2.0);
+        d.frame(vec![egui::Event::PointerMoved(start), button(start, true)]);
+        d.frame(vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0))]);
+        d.frame(vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }]);
+        d.frame(vec![button(start + vec2(20.0, 0.0), false)]);
+        d.frame(vec![]);
+        assert_eq!(d.param(), before, "escape abandons velocity handle drag");
+        assert_eq!(d.undo_len(), undo);
     }
 }
