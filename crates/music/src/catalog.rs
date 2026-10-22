@@ -25,7 +25,7 @@ pub fn stable_audio_local_info(models_dir: Option<&Path>) -> ProviderInfo {
         capabilities: LOCAL_CAPS,
         license: "Stability AI Community License + Gemma Terms of Use",
         source: "https://huggingface.co/stabilityai/stable-audio-3-small-music",
-        description: "Open weights, runs offline on your GPU. Downloads about 2.4 GB on first use after you accept the licences.",
+        description: "Open weights, runs offline on your GPU by default and falls back to the CPU when acceleration is unavailable. Downloads about 2.4 GB on first use after you accept the licences.",
         installed: models_dir.is_some_and(|d| models::is_installed(d, LOCAL_MODEL_ID)),
     }
 }
@@ -74,7 +74,7 @@ pub fn audio_api(cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, Mus
     Ok(Box::new(hosted::Hosted::generic(cfg, transport()?)?))
 }
 
-pub fn stable_audio_local(models_dir: Option<&Path>, _cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
+pub fn stable_audio_local(models_dir: Option<&Path>, cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
     let dir = models_dir.ok_or_else(|| MusicError::Unavailable("no models folder".into()))?;
     let manifest = models::load_manifest(dir, LOCAL_MODEL_ID)?;
     if !models::missing_files(dir, &manifest).is_empty() {
@@ -85,7 +85,7 @@ pub fn stable_audio_local(models_dir: Option<&Path>, _cfg: &HashMap<String, Stri
     }
     #[cfg(feature = "native")]
     {
-        Ok(Box::new(crate::native::Local::load(dir, &manifest)?))
+        Ok(Box::new(crate::native::Local::load(dir, &manifest, cfg.get("device").map(String::as_str))?))
     }
     #[cfg(not(feature = "native"))]
     {

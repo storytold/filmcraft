@@ -134,6 +134,9 @@ fn provider_config(s: &Session, id: &str) -> HashMap<String, String> {
     let a = &s.prefs.music.api;
     let mut c = HashMap::new();
     match id {
+        music::catalog::STABLE_AUDIO_LOCAL => {
+            c.insert("device".into(), s.prefs.music.device.clone());
+        }
         music::catalog::STABLE_AUDIO_HOSTED => {
             c.insert("apiKey".into(), a.stability_api_key.clone());
             c.insert("endpoint".into(), a.stability_endpoint.clone());
@@ -146,6 +149,19 @@ fn provider_config(s: &Session, id: &str) -> HashMap<String, String> {
         _ => {}
     }
     c
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    #[test]
+    fn local_device_preference_reaches_the_provider() {
+        let mut session = Session::default();
+        session.prefs.music.device = "cpu".into();
+        let config = provider_config(&session, music::catalog::STABLE_AUDIO_LOCAL);
+        assert_eq!(config.get("device").map(String::as_str), Some("cpu"));
+    }
 }
 
 fn models_dir() -> Option<std::path::PathBuf> {

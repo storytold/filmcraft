@@ -51,6 +51,9 @@ decoder) with ONNX Runtime and implements the 8 step ping-pong sampler in Rust
 (`crates/music/src/sa3.rs`). ONNX Runtime is **loaded at run time** (`ort`'s `load-dynamic`), from
 `<models>/sa3-small-music/runtime/` or `ORT_DYLIB_PATH`; nothing is linked, so the default build is
 unchanged. The feature is off by default: `cargo build -p filmcraft --features music-native`.
+`music.device=auto` prefers the platform GPU provider (Core ML on macOS, CUDA/DirectML on Windows,
+and CUDA elsewhere). ONNX Runtime falls back per operation, and FilmCraft retries model loading on
+the CPU if the accelerator cannot initialize it. Set `music.device=cpu` to disable acceleration.
 
 Checked against the reference implementation (`Stability-AI/stable-audio-3`), same prompt and seed:
 
@@ -73,7 +76,7 @@ Speed, 30 s stereo at 44.1 kHz, small music model:
 | Apple M4, 16 GB | FilmCraft (Rust + ONNX Runtime), CPU | 13.6 s (model load 40 s from an external SSD) |
 | Apple M4 | PyTorch reference, CPU | 10.5 s |
 | Apple M4 | PyTorch reference, MPS | 11.9 s first call (sampler 4.3 s) |
-| Apple M4 | FilmCraft, Core ML provider | did not finish compiling the graph in 14 minutes (see below) |
+| Apple M4 | FilmCraft, Core ML provider | unresolved; the fixed-shape retry also failed (see below) |
 | RTX 3090 (Cyber) | FilmCraft, CUDA | see the PR |
 
 ### Exporting the graphs
@@ -115,5 +118,5 @@ scripts; the recipe is:
 1. **ONNX Runtime** is C++, not pure Rust. Accepted: it stays optional (`music-native`, loaded at run time, never linked).
 2. **Hosting the converted ONNX files.** For now they are served from the maintainer's host (a tailscale serve endpoint) and the manifest pins each URL and SHA-256. Public redistribution needs the licence notices above and Stability registration.
 3. **Stability AI generation endpoint.** The results endpoint is documented; the generation path and fields were not in the reference pages we could read, so it is a setting.
-4. **GPU on Apple Silicon.** ONNX Runtime's Core ML provider did not finish compiling the dynamic-shape fp32 DiT. A fixed-shape retry is in progress; other options are the official MLX release or fp16.
+4. **GPU on Apple Silicon.** ONNX Runtime's Core ML provider did not finish compiling the dynamic-shape fp32 DiT. A fixed-shape retry failed because AppleDouble `._weight.bin` metadata files on the external SSD collided with ONNX Runtime's cache copy even with `COPYFILE_DISABLE=1`. A cache on another disk or a patched cache path still needs testing; the working macOS default is CPU.
 5. **CUDA timing** is not measured yet (the GPU on the test host was busy).

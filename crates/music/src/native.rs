@@ -46,8 +46,9 @@ fn init_runtime(lib: &Path) -> Result<&'static Environment, MusicError> {
     r.as_ref().map_err(|e| MusicError::Unavailable(e.clone()))
 }
 
-/// Which accelerator to ask for. `auto` is Core ML on macOS, CUDA elsewhere; ONNX Runtime falls back
-/// to the CPU for anything the accelerator cannot take.
+/// Which accelerator to ask for. `auto` prefers the platform GPU provider. ONNX Runtime uses its
+/// CPU provider for unsupported graph nodes, and model loading retries wholly on the CPU if the
+/// accelerator cannot initialize the graph.
 fn execution_providers(device: &str) -> Vec<ort::ep::ExecutionProviderDispatch> {
     match device {
         "cpu" => vec![],
@@ -158,12 +159,22 @@ pub struct Local {
 }
 
 impl Local {
-    pub fn load(dir: &Path, manifest: &Manifest) -> Result<Local, MusicError> {
+    pub fn load(dir: &Path, manifest: &Manifest, configured_device: Option<&str>) -> Result<Local, MusicError> {
         let model_dir = crate::models::model_dir(dir, &manifest.id);
         let env = init_runtime(&runtime_library(&model_dir))?;
-        let device = std::env::var("FILMCRAFT_MUSIC_DEVICE").unwrap_or_else(|_| "auto".into());
-        let graphs = catch_unwind(AssertUnwindSafe(|| OrtGraphs::load(env, &model_dir, &device)))
-            .map_err(|_| MusicError::Inference("loading the model crashed".into()))??;
+        let device = std::env::var("FILMCRAFT_MUSIC_DEVICE")
+            .ok()
+            .filter(|d| !d.is_empty())
+            .or_else(|| configured_device.map(str::to_string))
+            .unwrap_or_else(|| "auto".into());
+        let accelerated = catch_unwind(AssertUnwindSafe(|| OrtGraphs::load(env, &model_dir, &device)))
+            .map_err(|_| MusicError::Inference("loading the model crashed".into()))?;
+        let graphs = match accelerated {
+            Ok(graphs) => graphs,
+            Err(_) if device == "auto" => catch_unwind(AssertUnwindSafe(|| OrtGraphs::load(env, &model_dir, "cpu")))
+                .map_err(|_| MusicError::Inference("loading the CPU fallback crashed".into()))??,
+            Err(error) => return Err(error),
+        };
         let mut info = catalog::stable_audio_local_info(Some(dir));
         info.installed = true;
         Ok(Local { graphs, max_samples: manifest.max_samples, info })
@@ -184,5 +195,17 @@ impl Provider for Local {
         let seed = params.seed.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0));
         let opts = Options { steps: sa3::DEFAULT_STEPS, max_samples: self.max_samples };
         sa3::generate(&self.graphs, &params.compose_prompt(), params.duration, seed, opts, progress)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod device_tests {
+    use super::*;
+
+    #[test]
+    fn auto_prefers_core_ml_and_cpu_remains_available() {
+        assert_eq!(execution_providers("auto").len(), 1);
+        assert!(execution_providers("cpu").is_empty());
+        assert_eq!(execution_providers("coreml").len(), 1);
     }
 }
