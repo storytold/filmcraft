@@ -354,6 +354,45 @@ pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> egui::DragValu
     egui::DragValue::new(value).custom_parser(move |s| crate::calc::eval(s, current))
 }
 
+/// What a pointer is over on a zoom scroll bar (the Timeline's and the monitors'): the circular
+/// handle at either end of the thumb zooms, the middle scrolls, and a press beside the thumb brings
+/// it there. The press and the hover cursor ask the same question here, so they cannot disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZoomThumbPart {
+    Beside,
+    Left,
+    Middle,
+    Right,
+}
+
+impl ZoomThumbPart {
+    pub(crate) fn at(thumb: Rect, pos: egui::Pos2) -> Self {
+        if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+            Self::Beside
+        } else if (pos.x - thumb.min.x).abs() < 9.0 {
+            Self::Left
+        } else if (pos.x - thumb.max.x).abs() < 9.0 {
+            Self::Right
+        } else {
+            Self::Middle
+        }
+    }
+}
+
+/// The horizontal resize cursor of a zoom scroll bar: over either handle of its `thumb`, and for as
+/// long as a drag of a handle goes on (`handle_grabbed`), which the pointer can take off the bar.
+/// `resp` is the bar's response.
+pub(crate) fn zoom_thumb_cursor(ui: &Ui, resp: &Response, thumb: Rect, handle_grabbed: bool) {
+    let on_handle = if resp.dragged() {
+        handle_grabbed
+    } else {
+        resp.hover_pos().is_some_and(|pos| matches!(ZoomThumbPart::at(thumb, pos), ZoomThumbPart::Left | ZoomThumbPart::Right))
+    };
+    if on_handle {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

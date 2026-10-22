@@ -17,6 +17,8 @@ struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
     shots: Option<std::path::PathBuf>,
+    /// Where the pointer was last put by `move_to` or `press`.
+    pointer: egui::Pos2,
 }
 
 impl Driver {
@@ -31,7 +33,7 @@ impl Driver {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
         let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
+        let mut d = Driver { harness, tx, shots, pointer: egui::Pos2::ZERO };
         d.frames(4);
         d
     }
@@ -83,6 +85,41 @@ impl Driver {
     fn click(&mut self, id: &str) {
         self.ok("ui.click", json!({"id": id}));
         self.frames(2);
+    }
+    /// Move the pointer to `(x, y)` a few points per frame, as a mouse does (a button held stays
+    /// held), and let the UI react.
+    fn move_to(&mut self, x: f64, y: f64) {
+        let (from, to) = (self.pointer, egui::pos2(x as f32, y as f32));
+        let steps = ((to - from).length() / 20.0).ceil().max(1.0) as usize;
+        for i in 1..=steps {
+            self.harness.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
+            self.frames(1);
+        }
+        self.pointer = to;
+        self.frames(2);
+    }
+    /// Press the primary button at `(x, y)`.
+    fn press(&mut self, x: f64, y: f64) {
+        let pos = egui::pos2(x as f32, y as f32);
+        let events = &mut self.harness.input_mut().events;
+        events.push(egui::Event::PointerMoved(pos));
+        events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        self.pointer = pos;
+        self.frames(1);
+    }
+    fn release(&mut self, x: f64, y: f64) {
+        let pos = egui::pos2(x as f32, y as f32);
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        self.frames(2);
+    }
+    /// The cursor the last frame asked for.
+    fn cursor(&self) -> egui::CursorIcon {
+        self.harness.output().platform_output.cursor_icon
     }
     fn shot(&mut self, name: &str) {
         let Some(dir) = self.shots.clone() else { return };
@@ -353,6 +390,65 @@ fn time_zoom_bar_zooms_and_scrolls_the_monitor_ruler() {
     d.ok("ui.set", json!({"program": {"time_zoom": [0.9, 0.1]}}));
     d.frames(2);
     assert!((d.rect("program.zoomBar")[2] - track[2]).abs() < 0.5);
+}
+
+/// The Program monitor's zoom bar with the middle half of the duration shown: the thumb sits
+/// inside the track. Returns the thumb (x, y, width, height), the track, and the y of the bar's middle.
+fn program_zoom_bar(d: &mut Driver) -> ([f64; 4], [f64; 4], f64) {
+    d.ok("ui.set", json!({"program": {"time_zoom": [0.25, 0.75]}}));
+    d.frames(3);
+    let (thumb, track) = (d.rect("program.zoomBar"), d.rect("program.zoomBar.track"));
+    (thumb, track, thumb[1] + thumb[3] / 2.0)
+}
+
+/// The monitor zoom bar's circular end handles zoom, so the pointer over one shows the horizontal
+/// resize arrow; the middle of the thumb scrolls and the bar beside it jumps, which keep the normal
+/// pointer.
+#[test]
+fn time_zoom_bar_handles_show_the_resize_cursor_on_hover() {
+    let mut d = Driver::demo();
+    let (thumb, track, y) = program_zoom_bar(&mut d);
+    d.move_to(thumb[0] + 3.0, y);
+    assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "left handle");
+    d.move_to(thumb[0] + thumb[2] - 3.0, y);
+    assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "right handle");
+    d.move_to(thumb[0] + thumb[2] / 2.0, y);
+    assert_eq!(d.cursor(), egui::CursorIcon::Default, "middle of the thumb");
+    d.move_to(track[0] + 10.0, y);
+    assert_eq!(d.cursor(), egui::CursorIcon::Default, "the bar beside the thumb");
+}
+
+/// A handle drag goes on whatever the pointer is over, so the arrow stays while the pointer is off
+/// the bar, and goes when the button is released.
+#[test]
+fn time_zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
+    let mut d = Driver::demo();
+    let (thumb, _, y) = program_zoom_bar(&mut d);
+    let handle = thumb[0] + thumb[2] - 3.0;
+    d.press(handle, y);
+    d.move_to(handle + 40.0, y);
+    let z = d.program()["time_zoom"].clone();
+    assert!(z[1].as_f64().is_some_and(|end| end > 0.75), "the right handle dragged right zooms out: {z}");
+    assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "dragging along the bar");
+    d.move_to(handle + 40.0, y - 300.0);
+    assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "dragging above the bar");
+    d.release(handle + 40.0, y - 300.0);
+    assert_ne!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "button released, pointer off the bar");
+}
+
+/// Dragging the thumb by its middle scrolls: with the thumb stopped at the end of the bar the
+/// pointer can sit where a handle is, and must not show the zoom arrow.
+#[test]
+fn time_zoom_bar_middle_drag_never_shows_the_resize_cursor() {
+    let mut d = Driver::demo();
+    let (thumb, track, y) = program_zoom_bar(&mut d);
+    d.press(thumb[0] + thumb[2] / 2.0, y);
+    d.move_to(thumb[0] + thumb[2] / 2.0 + 60.0, y);
+    d.move_to(track[0] + track[2] - 3.0, y);
+    let end = d.rect("program.zoomBar");
+    assert!((end[0] + end[2] - (track[0] + track[2])).abs() < 0.5, "the thumb is at the end of the bar: {end:?}");
+    assert_eq!(d.cursor(), egui::CursorIcon::Default, "pointer over the right handle's place");
+    d.release(track[0] + track[2] - 3.0, y);
 }
 
 /// While a monitor plays, its zoomed ruler pages to keep the playhead in view, keeping its width,

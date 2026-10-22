@@ -18,6 +18,7 @@ use crate::icons::{self, Icon};
 use crate::panels::monitor_view;
 use crate::state::{DisplayMode, PlaybackRes};
 use crate::theme::Tokens;
+use crate::widgets::ZoomThumbPart;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Which {
@@ -701,18 +702,15 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
         let mut start = s;
-        let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
-            if per_point > 0.0 {
-                start = jump(pos.x);
-                set = Some((start, start + span));
-            }
-            0u8
-        } else if (pos.x - thumb.min.x).abs() < 9.0 {
-            1
-        } else if (pos.x - thumb.max.x).abs() < 9.0 {
-            2
-        } else {
-            0
+        let part = ZoomThumbPart::at(thumb, pos);
+        if part == ZoomThumbPart::Beside && per_point > 0.0 {
+            start = jump(pos.x);
+            set = Some((start, start + span));
+        }
+        let mode = match part {
+            ZoomThumbPart::Left => 1u8,
+            ZoomThumbPart::Right => 2,
+            ZoomThumbPart::Beside | ZoomThumbPart::Middle => 0,
         };
         ui.data_mut(|d| d.insert_temp(drag_id, (pos.x, start, mode)));
     }
@@ -737,6 +735,8 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     if resp.drag_stopped() {
         ui.data_mut(|d| d.remove::<(f32, f64, u8)>(drag_id));
     }
+    let handle_grabbed = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id)).is_some_and(|(_, _, mode)| mode != 0);
+    crate::widgets::zoom_thumb_cursor(ui, &resp, thumb, handle_grabbed);
     if let Some((s, e)) = set {
         monitor_view::view_mut(app, which).time_zoom = (s > 0.0 || e < 1.0).then_some([s, e.min(1.0)]);
     }

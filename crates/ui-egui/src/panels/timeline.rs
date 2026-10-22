@@ -21,6 +21,7 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::state::{ThumbnailMode, TimelineView, Tool};
 use crate::theme::Tokens;
+use crate::widgets::ZoomThumbPart;
 
 use super::timeline_hit::{EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer};
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
@@ -1697,15 +1698,14 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     if resp.drag_started()
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
-        let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+        let part = ZoomThumbPart::at(thumb, pos);
+        if part == ZoomThumbPart::Beside {
             jump(&mut app.ui.timeline, pos.x);
-            0
-        } else if (pos.x - thumb.min.x).abs() < 9.0 {
-            1
-        } else if (pos.x - thumb.max.x).abs() < 9.0 {
-            2
-        } else {
-            0
+        }
+        let mode = match part {
+            ZoomThumbPart::Left => 1,
+            ZoomThumbPart::Right => 2,
+            ZoomThumbPart::Beside | ZoomThumbPart::Middle => 0,
         };
         app.tl.drag = Some(Drag::ZoomBar { grab: pos.x, start: app.ui.timeline.target_scroll, start_pps: app.ui.timeline.target_pps, mode });
     }
@@ -1751,6 +1751,7 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     if resp.drag_stopped() {
         app.tl.drag = None;
     }
+    crate::widgets::zoom_thumb_cursor(ui, &resp, thumb, matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 1 | 2, .. })));
 }
 
 fn vertical_scrollbar(ui: &mut egui::Ui, bar: Rect, value: &mut f32, max: f32, invert: bool, t: &Tokens, id: &str) {
