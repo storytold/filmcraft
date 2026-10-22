@@ -12,6 +12,8 @@ fn project_with_media_marker(rate: FrameRate) -> (filmcraft_project::Project, fi
     let a = media(&mut p, "/m/src.mov", true, true, rate);
     if let Some(m) = p.item_mut(a).and_then(|i| i.as_media_mut()) {
         m.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(1),
             start: rate.tick_of(24),
             duration: Tick::ZERO,

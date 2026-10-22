@@ -1,5 +1,7 @@
 //! Small custom widgets in Premiere's visual language.
 
+pub mod color_picker;
+
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use filmcraft_time::{FrameRate, Tick, parse_timecode};
 

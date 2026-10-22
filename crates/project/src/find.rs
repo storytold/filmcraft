@@ -116,7 +116,7 @@ pub fn column_text(p: &Project, it: &ProjectItem, column: &str) -> String {
     };
     match column.to_ascii_lowercase().as_str() {
         "name" => it.name.clone(),
-        "label" => it.label.name().to_string(),
+        "label" => it.label_value(),
         "media type" | "type" => it.type_label().to_string(),
         "frame rate" => {
             if it.has_video() {

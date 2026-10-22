@@ -197,6 +197,8 @@ fn project() -> (Project, filmcraft_project::ItemId) {
         u.enabled = false;
         u.effect_mut("opacity").unwrap().params.insert("opacity".into(), Param::new(ParamValue::Float(40.0)));
         u.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(77),
             start: r.tick_of(10),
             duration: filmcraft_time::Tick::ZERO,
@@ -206,6 +208,8 @@ fn project() -> (Project, filmcraft_project::ItemId) {
             color: Label::Blue,
         });
         q.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(78),
             start: r.tick_of(100),
             duration: r.tick_of(5),

@@ -79,8 +79,8 @@ fn matches_filter(app: &FilmcraftApp, id: ItemId, filter: &str) -> bool {
     app.session.project.item(id).is_some_and(|i| pp::listed(&app.session.project, i) && (filter.is_empty() || i.name.to_ascii_lowercase().contains(filter)))
 }
 
-fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
-    let c = app.session.prefs.labels.rgb(l);
+fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label, custom: Option<filmcraft_project::HexColor>) -> Color32 {
+    let c = custom.map_or_else(|| app.session.prefs.labels.rgb(l), |c| c.0);
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
@@ -289,6 +289,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
                 ui.close();
             }
         }
+        super::custom_colors::menu(app, ui, json!({"items":[id.0]}), "project.itemMenu.label");
     });
     app.auto.add("project.itemMenu.label", r.response.rect, tl!("Label"));
     let can_reveal = app.session.project.resolve_media(id).is_some_and(|(_, m, _)| matches!(m.media, filmcraft_project::MediaRef::File { .. }));
@@ -740,8 +741,8 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         *row += 1;
         // label chip
         let chip = Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(12.0, 12.0));
-        ui.painter().rect_filled(chip, 2.5, label_color(app, it.label));
-        app.auto.add(&format!("{}.item.{}.label", v.prefix, id.0), chip, it.label.name());
+        ui.painter().rect_filled(chip, 2.5, label_color(app, it.label, it.custom_label_color));
+        app.auto.add(&format!("{}.item.{}.label", v.prefix, id.0), chip, &it.label_value());
         let mut x = r.min.x + LEAD;
         let name_w = lc.cols.first().map(|c| c.width).unwrap_or(200.0);
         let nx = x + depth as f32 * 14.0 + 14.0;
@@ -771,8 +772,12 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
             let cr = Rect::from_min_size(pos2(x, r.min.y), vec2(c.width, r.height()));
             let p = ui.painter().with_clip_rect(cr.shrink2(vec2(2.0, 0.0)).intersect(ui.clip_rect()));
             if c.name == "Label" {
-                p.rect_filled(Rect::from_center_size(pos2(cr.min.x + 12.0, cr.center().y), vec2(10.0, 10.0)), 2.0, label_color(app, it.label));
-                p.text(pos2(cr.min.x + 22.0, cr.center().y), Align2::LEFT_CENTER, crate::i18n::t(it.label.name()), Tokens::ui(lc.font - 0.5), t.text_dim);
+                p.rect_filled(
+                    Rect::from_center_size(pos2(cr.min.x + 12.0, cr.center().y), vec2(10.0, 10.0)),
+                    2.0,
+                    label_color(app, it.label, it.custom_label_color),
+                );
+                p.text(pos2(cr.min.x + 22.0, cr.center().y), Align2::LEFT_CENTER, crate::i18n::t(&it.label_value()), Tokens::ui(lc.font - 0.5), t.text_dim);
             } else {
                 let (text, _) = pp::cell(&app.session.project, &it, &c.name);
                 let text = if c.name == "Media Type" { crate::i18n::t(&text).to_string() } else { text };
@@ -896,7 +901,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     }
     let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x - dw - 6.0, th.max.y + 20.0));
     if show_name && !rename_field(app, ui, nr, Some(id.0), None, pre) {
-        ui.painter().rect_filled(Rect::from_min_size(pos2(th.min.x, ty - 5.0), vec2(8.0, 10.0)), 1.5, label_color(app, it.label));
+        ui.painter().rect_filled(Rect::from_min_size(pos2(th.min.x, ty - 5.0), vec2(8.0, 10.0)), 1.5, label_color(app, it.label, it.custom_label_color));
         ui.painter().with_clip_rect(nr).text(
             pos2(th.min.x + 12.0, ty),
             Align2::LEFT_CENTER,

@@ -87,6 +87,7 @@ pub fn source_command(id: &str) -> bool {
                 | "markers.clearCurrent"
                 | "markers.clearAll"
                 | "markers.edit"
+                | "markers.delete"
         )
 }
 
@@ -196,7 +197,8 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
             let duration = duration(p, &view, id)?.min(Tick(view.end.0.saturating_sub(time.0)));
             let name = text(p, "name", id)?.unwrap_or_default().to_string();
             let comment = text(p, "comment", id)?.unwrap_or_default().to_string();
-            let color = color(p, id)?.unwrap_or(Label::Green);
+            let (color, custom_color) = color(p, id)?.unwrap_or((Label::Green, None));
+            let author = crate::commands::marker_author_p(p, id)?.unwrap_or_default();
             let root = view.media;
             let marker = s.edit("Add Source Marker", |pr, _| {
                 if pr.next_id == u64::MAX {
@@ -204,7 +206,7 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
                 }
                 let marker = MarkerId(pr.alloc_id());
                 let list = marker_list(pr, root)?;
-                list.push(Marker { id: marker, start: time, duration, name, comment, color, kind: MarkerKind::Comment });
+                list.push(Marker { author, custom_color, id: marker, start: time, duration, name, comment, color, kind: MarkerKind::Comment });
                 list.sort_by_key(|m| m.start);
                 Ok(marker)
             })?;
@@ -217,29 +219,6 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
                     list.clear();
                 } else {
                     list.retain(|m| m.start != cursor);
-                }
-                Ok(())
-            })?;
-        }
-        "markers.edit" => {
-            let marker = MarkerId(p.get("marker").and_then(Value::as_u64).ok_or_else(|| bad(id, "need marker id"))?);
-            let name = text(p, "name", id)?.map(str::to_string);
-            let comment = text(p, "comment", id)?.map(str::to_string);
-            let color = color(p, id)?;
-            let duration = if p.get("durationFrames").is_some() { Some(duration(p, &view, id)?) } else { None };
-            s.edit("Edit Source Marker", |pr, _| {
-                let m = marker_list(pr, view.media)?.iter_mut().find(|m| m.id == marker).ok_or_else(|| bad(id, "no such Source marker"))?;
-                if let Some(name) = name {
-                    m.name = name;
-                }
-                if let Some(comment) = comment {
-                    m.comment = comment;
-                }
-                if let Some(color) = color {
-                    m.color = color;
-                }
-                if let Some(d) = duration {
-                    m.duration = d.min(Tick(view.end.0.saturating_sub(m.start.0)));
                 }
                 Ok(())
             })?;
@@ -273,7 +252,7 @@ pub(crate) fn open_clip(s: &mut Session, clip: ClipId) -> Result<Value> {
 fn text<'a>(p: &'a Value, key: &str, id: &str) -> Result<Option<&'a str>> {
     p.get(key).map(|v| v.as_str().ok_or_else(|| bad(id, format!("{key} must be text")))).transpose()
 }
-fn color(p: &Value, id: &str) -> Result<Option<Label>> {
+fn color(p: &Value, id: &str) -> Result<Option<(Label, Option<filmcraft_project::HexColor>)>> {
     crate::commands::marker_color_p(p, id)
 }
 fn duration(p: &Value, view: &crate::clip_ops::SourceView, id: &str) -> Result<Tick> {
@@ -342,16 +321,24 @@ mod tests {
         s.execute("source.setPlayhead", json!({"time":cursor.0})).unwrap();
         let before = s.project.to_json();
         let qbefore = s.active_sequence().unwrap().clone();
-        let marker = s.execute("markers.add", json!({"target":"source","name":"Cue"})).unwrap()["marker"].as_u64().unwrap();
+        let marker =
+            s.execute("markers.add", json!({"target":"source","name":"Cue","color":"#FFFFFF","author":"Source editor"})).unwrap()["marker"].as_u64().unwrap();
         let v = source_view(&s, ItemId(5)).unwrap();
         assert_eq!(v.markers.len(), 1);
+        assert_eq!(v.markers[0].rgb(), [255; 3]);
+        assert_eq!(v.markers[0].author, "Source editor");
         assert_eq!(v.markers[0].start, cursor);
         assert_eq!(s.active_sequence().unwrap(), &qbefore);
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(s.project.to_json(), before);
         s.execute("edit.redo", json!({})).unwrap();
-        s.execute("markers.edit", json!({"target":"source","marker":marker,"name":"Changed"})).unwrap();
+        s.execute("markers.edit", json!({"target":"source","marker":marker,"name":"Changed","color":"#000000","author":"Other editor"})).unwrap();
         assert_eq!(source_view(&s, ItemId(5)).unwrap().markers[0].name, "Changed");
+        assert_eq!(source_view(&s, ItemId(5)).unwrap().markers[0].rgb(), [0; 3]);
+        assert_eq!(source_view(&s, ItemId(5)).unwrap().markers[0].author, "Other editor");
+        s.execute("markers.edit", json!({"target":"source","marker":marker,"color":"CYAN"})).unwrap();
+        assert_eq!(source_view(&s, ItemId(5)).unwrap().markers[0].color, Label::Teal);
+        assert_eq!(source_view(&s, ItemId(5)).unwrap().markers[0].custom_color, None);
         s.execute("markers.clearCurrent", json!({"target":"source"})).unwrap();
         assert!(source_view(&s, ItemId(5)).unwrap().markers.is_empty());
     }

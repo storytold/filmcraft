@@ -17,6 +17,8 @@ pub mod graphic;
 pub mod graphic_design;
 pub mod gtemplate;
 pub mod keyframe;
+mod marker_color;
+pub use marker_color::HexColor;
 pub mod mask;
 pub mod mixer;
 pub mod multicam;
@@ -138,17 +140,14 @@ impl Label {
             Label::Yellow => [0x6e, 0x66, 0x28],
         }
     }
-    /// Marker colours (Markers panel chips).
+    /// Marker and clip defaults share the same sixteen preset colors.
     pub fn marker_rgb(self) -> [u8; 3] {
-        match self {
-            Label::Rose | Label::Magenta => [0xc1, 0x3c, 0x3d],
-            Label::Purple | Label::Violet | Label::Lavender => [0xa9, 0x8c, 0xaf],
-            Label::Mango | Label::Brown | Label::Tan => [0xda, 0x76, 0x39],
-            Label::Yellow => [0xc9, 0xa3, 0x44],
-            Label::Blue | Label::Iris | Label::Cerulean => [0x56, 0x8b, 0xf4],
-            Label::Teal | Label::Caribbean => [0x72, 0xf0, 0xd7],
-            _ => [0x75, 0x85, 0x42],
-        }
+        self.rgb()
+    }
+    /// Alternate user-facing color names resolve to presets, not additional swatches.
+    pub const COLOR_ALIASES: [(&'static str, Label); 4] = [("Red", Label::Rose), ("Orange", Label::Mango), ("Cyan", Label::Teal), ("Pink", Label::Magenta)];
+    pub fn from_color_name(name: &str) -> Option<Label> {
+        Self::from_name(name).or_else(|| Self::COLOR_ALIASES.iter().find(|(alias, _)| alias.eq_ignore_ascii_case(name)).map(|(_, label)| *label))
     }
     pub fn from_name(s: &str) -> Option<Label> {
         Self::ALL.iter().copied().find(|l| l.name().eq_ignore_ascii_case(s))
@@ -297,6 +296,8 @@ pub struct ProjectItem {
     pub id: ItemId,
     pub name: String,
     pub label: Label,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_label_color: Option<HexColor>,
     pub kind: ItemKind,
     /// Free-form metadata (Description, Scene, Shot, Log Note…).
     #[serde(default)]
@@ -477,6 +478,12 @@ pub enum MarkerKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Marker {
+    /// Optional user attribution. Empty in older projects; never inferred from the OS account.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// Exact sRGB marker color. None retains the existing preset and its display mapping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_color: Option<HexColor>,
     pub id: MarkerId,
     pub start: Tick,
     pub duration: Tick,
@@ -513,6 +520,8 @@ pub struct TrackItem {
     pub item: ItemId,
     pub name: String,
     pub label: Label,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_label_color: Option<HexColor>,
     /// Timeline position (sequence ticks).
     pub start: Tick,
     /// Duration on the timeline.
@@ -1232,6 +1241,11 @@ impl Default for ProjectSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
+    /// Custom marker/clip swatches saved only with this project (schema v16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_colors: Vec<HexColor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_color_names: BTreeMap<HexColor, String>,
     pub settings: ProjectSettings,
     pub root: Bin,
     pub items: BTreeMap<ItemId, ProjectItem>,
@@ -1347,6 +1361,8 @@ impl Project {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.into(),
+            custom_colors: Vec::new(),
+            custom_color_names: BTreeMap::new(),
             settings: ProjectSettings::default(),
             root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
             items: BTreeMap::new(),
@@ -1370,7 +1386,10 @@ impl Project {
     pub fn add_item(&mut self, name: &str, label: Label, kind: ItemKind, bin: Option<BinId>) -> ItemId {
         let id = ItemId(self.alloc_id());
         let created = id.0;
-        self.items.insert(id, ProjectItem { id, name: name.into(), label, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() });
+        self.items.insert(
+            id,
+            ProjectItem { id, name: name.into(), label, custom_label_color: None, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() },
+        );
         if let Some(b) = bin.and_then(|b| self.root.find_bin_mut(b)) {
             b.children.push(BinEntry::Item(id));
         } else {
@@ -1607,6 +1626,7 @@ impl Project {
         let id = ClipId(self.alloc_id());
         let dur = seq_rate.snap_nearest(source.duration).max(seq_rate.frame_duration());
         Some(TrackItem {
+            custom_label_color: self.item(item).and_then(|i| i.custom_label_color),
             id,
             item,
             name,

@@ -429,6 +429,14 @@ pub struct KeyframeRef {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
+    pub markers_panel: crate::panels::markers_panel::State,
+    #[serde(skip)]
+    pub palette_manager: Option<crate::panels::palette_manager::Draft>,
+    #[serde(skip)]
+    pub marker_properties: Option<crate::panels::marker_properties::Draft>,
+    #[serde(skip)]
+    pub custom_label_color: Option<crate::panels::custom_colors::Draft>,
+    #[serde(default)]
     pub language: crate::i18n::Language,
     pub tool: Tool,
     pub mode: Mode,
@@ -959,6 +967,10 @@ fn yes() -> bool {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            marker_properties: None,
+            markers_panel: Default::default(),
+            palette_manager: None,
+            custom_label_color: None,
             language: crate::i18n::Language::default(),
             tool: Tool::Selection,
             mode: Mode::Edit,

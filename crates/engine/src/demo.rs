@@ -202,6 +202,8 @@ fn build_demo(pool: &MediaPool) -> Option<(Project, ItemId)> {
             .enumerate()
     {
         s.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(800_000 + i as u64),
             start: r.snap(Tick::from_seconds_f64(*sec)),
             duration: Tick::ZERO,

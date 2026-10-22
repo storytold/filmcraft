@@ -23,6 +23,8 @@ fn sample(rate: FrameRate, df: bool) -> (Project, ItemId) {
     if let Some(mm) = p.item_mut(a).and_then(|i| i.as_media_mut()) {
         mm.info.start_timecode = Some(rate.timecode_base() * 3600 + 12);
         mm.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(9000),
             start: rate.tick_of(40),
             duration: Tick::ZERO,
@@ -52,6 +54,8 @@ fn sample(rate: FrameRate, df: bool) -> (Project, ItemId) {
         let q = p.sequence_mut(s).unwrap();
         q.start_timecode = rate.timecode_base() * 3600;
         q.markers.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(9001),
             start: rate.tick_of(50),
             duration: rate.tick_of(10),

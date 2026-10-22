@@ -766,6 +766,8 @@ fn read_markers(n: Node, rate: FrameRate, b: &mut Builder) -> Vec<Marker> {
         let duration = if out_f > in_f { rate.tick_of(out_f) - start } else { Tick::ZERO };
         let color = child_text(m, "color").and_then(label_from).unwrap_or(Label::Green);
         out.push(Marker {
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(b.alloc()),
             start,
             duration,
@@ -797,6 +799,7 @@ struct Exp<'a, 'r> {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
+    crate::warn_marker_metadata_loss(p, seq_id, report);
     p.sequence(seq_id).ok_or(Error::NoSequence(seq_id))?;
     let mut x = Exp {
         p,

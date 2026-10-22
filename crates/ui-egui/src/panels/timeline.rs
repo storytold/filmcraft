@@ -265,7 +265,7 @@ pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
 /// Where the left edge goes so the playhead at `ph` seconds shows in a view `width` points wide
 /// (the page-scroll margin from the left), or `None` when it is in view already.
 pub fn scroll_to_reveal(ph: f64, scroll: f64, pps: f64, width: f64) -> Option<f64> {
-    if !ph.is_finite() || !scroll.is_finite() || !(pps > 0.0 && pps.is_finite()) {
+    if !(ph.is_finite() && scroll.is_finite() && pps > 0.0 && pps.is_finite()) {
         return None;
     }
     let px = (ph - scroll) * pps;
@@ -878,7 +878,13 @@ fn draw_clip(
     t: &Tokens,
     rate: FrameRate,
 ) {
-    let base = label_color(app, it.label);
+    let base = it.custom_label_color.map_or_else(
+        || label_color(app, it.label),
+        |c| {
+            let [r, g, b] = c.0;
+            Color32::from_rgb(r, g, b)
+        },
+    );
     let inr = in_range(app, it);
     let fill = if !it.enabled {
         // Keep the configured label hue when disabled, with an opaque darker fill (#1190).
@@ -950,7 +956,13 @@ fn draw_clip(
             Align2::LEFT_CENTER,
             label,
             Tokens::ui(11.5),
-            if it.enabled { Color32::from_rgb(0xd9, 0xd9, 0xd9) } else { t.text_faint },
+            if it.custom_label_color.is_some() && u32::from(fill.r()) * 299 + u32::from(fill.g()) * 587 + u32::from(fill.b()) * 114 > 140_000 {
+                Color32::BLACK
+            } else if it.enabled {
+                Color32::from_rgb(0xd9, 0xd9, 0xd9)
+            } else {
+                t.text_faint
+            },
         );
     }
     // fx badge right-aligned in the header (italic-ish "fx")
@@ -1623,7 +1635,7 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     // markers: 8 × 12 pt pentagons in the marker colour, on the top row
     for m in &seq.markers {
         let x = layout.x_of(m.start);
-        let c = m.color.marker_rgb();
+        let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
         let c = Color32::from_rgb(c[0], c[1], c[2]);
         let shape =
             vec![pos2(x - 4.0, marker_y), pos2(x + 4.0, marker_y), pos2(x + 4.0, marker_y + 8.0), pos2(x, marker_y + 12.0), pos2(x - 4.0, marker_y + 8.0)];
@@ -2562,10 +2574,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 Drag::Scrub { initial } => {
                     app.session.set_playhead(initial);
                 }
-                Drag::Volume(v) => {
-                    if v.changed() {
-                        let _ = app.session.execute("edit.undo", json!({}));
-                    }
+                Drag::Volume(v) if v.changed() => {
+                    let _ = app.session.execute("edit.undo", json!({}));
                 }
                 Drag::Pan { start_scroll, start_v, .. } => {
                     let v = &mut app.ui.timeline;
@@ -2767,6 +2777,13 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
 
+    if resp.double_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(marker) = marker_under_pointer(seq, layout, p)
+    {
+        crate::panels::marker_properties::open(app, marker);
+    }
+
     // ---- double-click a transition: Set Transition Duration (Premiere)
     if resp.double_clicked()
         && tool == Tool::Selection
@@ -2897,6 +2914,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                                     ui.close();
                                 }
                             }
+                            super::custom_colors::menu(app, ui,
+                                json!({"clips":sel.iter().map(|id| id.0).collect::<Vec<_>>(),"items":[],"sequence":app.session.state.active_sequence.map(|id|id.0)}),
+                                "timeline.clipMenu.label");
                         });
                         app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
                     });

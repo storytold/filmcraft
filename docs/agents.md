@@ -233,9 +233,9 @@ frames: the warning stays and the exit status is 0. The export result lists the 
 `markers.exportCsv {path}` exports all markers in the active sequence, including colours hidden
 in the UI and markers outside In/Out, sorted by start then id. The UTF-8 CSV has a header and CRLF
 records; quotes, commas and embedded newlines are escaped. Columns are Sequence, Marker ID, Name,
-Comment, Kind, Color, Start Timecode, End Timecode, Duration Frames, Start Ticks, Duration Ticks and
-Frame Rate (exact numerator/denominator). Color uses the user's display label from Settings ▸
-Labels. Timecodes include the sequence's start timecode and
+Comment, Kind, Color, Start Timecode, End Timecode, Duration Frames, Start Ticks, Duration Ticks,
+Frame Rate (exact numerator/denominator), and Author. Custom colors use canonical `#RRGGBB`;
+preset Color uses the user's display label from Settings ▸ Labels. Timecodes include the sequence's start timecode and
 drop-frame setting; End is exclusive, and a point marker's End equals Start. Duration Frames is
 rounded down; tick columns preserve sub-frame timing (254016000000 ticks per second).
 An empty sequence writes just the header. User text starting with a spreadsheet formula character
@@ -331,3 +331,17 @@ ROADMAP.md and [target-app-parity.md](target-app-parity.md) keep two numbers: **
   what works;
 - benchmarks state the machine, the load average and before/after on the same build;
 - don't raise a percentage without evidence a reviewer can rerun.
+
+### Marker authors and custom colors
+
+`markers.add`, the range/chapter/Flash Cue marker commands, and `markers.edit` accept
+`author` (text, at most 1024 UTF-8 bytes without control characters) and `color` (an
+existing label name or six hex digits, optionally prefixed with `#`). Commands and CSV
+report custom colors as uppercase `#RRGGBB`. Omitting either property while editing
+preserves it; `author: ""` clears attribution, and choosing a preset clears custom color.
+The source-target variants of Add/Edit accept the same properties. Inspect reports
+include `author` and the effective `color`.
+
+`colors.addCustom {color:"#RRGGBB"}` saves a reusable project-local marker/clip swatch (maximum 64). Duplicate colors are no-ops. Palette additions are independently undoable from marker edits.
+
+`edit.label` also accepts a hex `label` and `saveColor:true` to save and apply a custom clip color atomically. Markers and clips share the unchanged sixteen clip presets; Red, Orange, Cyan and Pink are aliases for Rose, Mango, Teal and Magenta.

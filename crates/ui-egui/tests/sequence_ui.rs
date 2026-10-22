@@ -19,6 +19,248 @@ struct Driver {
     snapshots: Option<std::path::PathBuf>,
 }
 
+#[test]
+fn custom_marker_properties_preserve_presets_and_commit_once() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let id = d.exec("markers.add", json!({"frame":30,"name":"Review","color":"Blue"}))["marker"].as_u64().unwrap();
+    let before = d.app().session.project.to_json();
+    let history = d.app().session.history.undo.len();
+    d.right_marker(id, false);
+    d.click("timeline.markerMenu.label");
+    assert_eq!(d.ids("timeline.markerMenu.color.").len(), filmcraft_project::Label::ALL.len());
+    d.click("timeline.markerMenu.customColor");
+    assert!(!d.ids("markerColor.wheel").is_empty());
+    d.click("markerColor.hex");
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"#FF80C0"}));
+    d.frames(2);
+    assert_eq!(d.app().session.project.to_json(), before, "color preview is only a draft");
+    d.snapshot("marker-color-picker", "markerColor.");
+    d.click("markerColor.add");
+    assert_eq!(d.app().session.project.custom_colors, vec![filmcraft_project::HexColor([255, 128, 192])]);
+    assert!(d.ids("markerColor.wheel").is_empty(), "the wheel is not embedded in the marker window");
+    assert_eq!(d.ids("markerProperties.preset.").len(), filmcraft_project::Label::ALL.len());
+    let with_palette = d.app().session.project.to_json();
+    d.click("markerProperties.author");
+    d.ok("ui.type", json!({"text":"BENJI"}));
+    d.frames(2);
+    assert_eq!(d.app().session.project.to_json(), with_palette, "typing changes only the marker draft");
+    d.snapshot("marker-custom-properties", "markerProperties.");
+    d.click("markerProperties.apply");
+    let marker = &d.app().session.active_sequence().unwrap().markers[0];
+    assert_eq!(marker.author, "BENJI");
+    assert_eq!(marker.rgb(), [255, 128, 192]);
+    assert_eq!(d.app().session.history.undo.len(), history + 2, "one palette addition, one marker edit");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project.to_json(), with_palette);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project.to_json(), before);
+    d.exec("edit.redo", json!({}));
+    d.exec("edit.redo", json!({}));
+    let second = d.exec("markers.add", json!({"frame":90,"name":"Another"}))["marker"].as_u64().unwrap();
+    d.right_marker(second, false);
+    d.click("timeline.markerMenu.label");
+    assert_eq!(d.ids("timeline.markerMenu.color.").len(), filmcraft_project::Label::ALL.len());
+    assert!(!d.ids("timeline.markerMenu.custom.#FF80C0").is_empty());
+    d.snapshot("marker-custom-menu", "timeline.markerMenu.");
+    d.click("timeline.markerMenu.custom.#FF80C0");
+    assert_eq!(d.app().session.active_sequence().unwrap().markers[1].rgb(), [255, 128, 192]);
+    d.right_marker(id, false);
+    d.click("timeline.markerMenu.label");
+    d.click("timeline.markerMenu.color.Blue");
+    assert_eq!(d.app().session.active_sequence().unwrap().markers[0].custom_color, None);
+    assert_eq!(d.app().session.active_sequence().unwrap().markers[0].author, "BENJI");
+}
+
+#[test]
+fn custom_marker_cancel_and_desaturation_do_not_edit_the_project() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let id = d.exec("markers.add", json!({"frame":30,"color":"#FF0000"}))["marker"].as_u64().unwrap();
+    let before = d.app().session.project.to_json();
+    d.right_marker(id, false);
+    d.click("timeline.markerMenu.properties");
+    d.click("markerProperties.addColor");
+    // A wheel drag changes hue/saturation, but the project remains unchanged until Apply.
+    let elements = d.ok("ui.elements", json!({"prefix":"markerColor.wheel"}));
+    let rect = elements[0]["rect"].as_array().unwrap();
+    let x = rect[0].as_f64().unwrap();
+    let y = rect[1].as_f64().unwrap();
+    d.ok("ui.click", json!({"x":x+100.0,"y":y+100.0}));
+    d.frames(2);
+    assert_eq!(d.app().ui.marker_properties.as_ref().unwrap().color_editor.as_ref().unwrap().hex, "FFFFFF");
+    assert_eq!(d.app().session.project.to_json(), before);
+    d.click("markerColor.cancel");
+    d.click("markerProperties.cancel");
+    assert_eq!(d.app().session.project.to_json(), before);
+}
+
+#[test]
+fn custom_clip_picker_reuses_the_project_palette_and_is_undoable() {
+    let mut d = Driver::demo();
+    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].id;
+    d.exec("timeline.select", json!({"clips":[clip.0]}));
+    let before = d.app().session.project.to_json();
+    d.ok("ui.click", json!({"id":format!("timeline.clip.{}",clip.0),"button":"right"}));
+    d.frames(3);
+    d.click("timeline.clipMenu.edit.label");
+    d.click("timeline.clipMenu.label.addColor");
+    d.click("labelColor.hex");
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.ok("ui.type", json!({"text":"#12ABCD"}));
+    d.frames(2);
+    assert_eq!(d.app().session.project.to_json(), before);
+    d.snapshot("clip-color-picker", "labelColor.");
+    d.click("labelColor.apply");
+    let expected = filmcraft_project::HexColor::parse("#12ABCD");
+    assert_eq!(d.app().session.active_sequence().unwrap().find_item(clip).unwrap().1.custom_label_color, expected);
+    assert_eq!(d.app().session.project.custom_colors, vec![expected.unwrap()]);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project.to_json(), before);
+    d.exec("edit.redo", json!({}));
+    let marker = d.exec("markers.add", json!({"frame":30}))["marker"].as_u64().unwrap();
+    d.right_marker(marker, false);
+    d.click("timeline.markerMenu.properties");
+    d.click("markerProperties.custom.#12ABCD");
+    d.click("markerProperties.apply");
+    assert_eq!(d.app().session.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == marker).unwrap().custom_color, expected);
+}
+
+#[test]
+fn custom_color_dialogs_do_not_follow_a_different_project_or_saved_ui_state() {
+    let mut d = Driver::demo();
+    let marker = d.exec("markers.add", json!({"frame":30}))["marker"].as_u64().unwrap();
+    d.right_marker(marker, false);
+    d.click("timeline.markerMenu.properties");
+    d.click("markerProperties.addColor");
+    d.exec("file.openDemoProject", json!({}));
+    d.frames(2);
+    assert!(d.app().ui.marker_properties.is_none());
+    assert!(d.app().session.project.custom_colors.is_empty());
+
+    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].id;
+    d.ok("ui.click", json!({"id":format!("timeline.clip.{}",clip.0),"button":"right"}));
+    d.frames(3);
+    d.click("timeline.clipMenu.edit.label");
+    d.click("timeline.clipMenu.label.addColor");
+    let saved_ui = serde_json::to_value(&d.app().ui).unwrap();
+    assert!(saved_ui.get("custom_label_color").is_none());
+    assert!(saved_ui.get("marker_properties").is_none());
+    d.exec("file.openDemoProject", json!({}));
+    d.frames(2);
+    assert!(d.app().ui.custom_label_color.is_none());
+    assert!(d.app().session.project.custom_colors.is_empty());
+}
+
+#[test]
+fn marker_editor_time_range_delete_and_source_owner() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let id = d.exec("markers.add", json!({"frame":30,"name":"Review"}))["marker"].as_u64().unwrap();
+    d.double_click(&format!("timeline.marker.{id}"));
+    d.frames(3);
+    assert!(d.app().ui.marker_properties.is_some());
+    d.set_text("markerProperties.time", "00:00:02:00");
+    d.click("markerProperties.range");
+    d.set_text("markerProperties.duration", "00:00:01:00");
+    d.snapshot("marker-complete-editor", "markerProperties.");
+    d.click("markerProperties.apply");
+    let rate = d.app().session.sequence_rate();
+    let m = &d.app().session.active_sequence().unwrap().markers[0];
+    assert_eq!(m.start, rate.tick_of(rate.timecode_base() * 2));
+    assert_eq!(m.duration, rate.tick_of(rate.timecode_base()));
+    d.right_marker(id, false);
+    d.click("timeline.markerMenu.properties");
+    d.click("markerProperties.range");
+    d.click("markerProperties.apply");
+    assert_eq!(d.app().session.active_sequence().unwrap().markers[0].duration, filmcraft_time::Tick::ZERO);
+    let second = d.exec("markers.add", json!({"frame":60}))["marker"].as_u64().unwrap();
+    d.right_marker(second, false);
+    d.click("timeline.markerMenu.properties");
+    d.click("markerProperties.delete");
+    assert_eq!(d.app().session.active_sequence().unwrap().markers.len(), 1);
+    d.exec("source.open", json!({"item":5}));
+    let source = d.exec("markers.add", json!({"target":"source","time":0,"name":"Source cue"}))["marker"].as_u64().unwrap();
+    d.frames(3);
+    d.ok("ui.click", json!({"id":format!("source.marker.{source}"),"button":"right"}));
+    d.frames(3);
+    d.click("monitor.markerMenu.properties");
+    assert_eq!(d.app().ui.marker_properties.as_ref().unwrap().owner, filmcraft_ui_egui::panels::marker_properties::Owner::Source(5));
+    d.exec("source.open", json!({"item":6}));
+    d.set_text("markerProperties.author", "BENJI");
+    d.click("markerProperties.apply");
+    let view = filmcraft_engine::clip_ops::source_view(&d.app().session, filmcraft_project::ItemId(5)).unwrap();
+    assert_eq!(view.markers[0].author, "BENJI");
+}
+
+#[test]
+fn marker_panel_search_selection_filters_and_palette_manager() {
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let a = d.exec("markers.add", json!({"frame":10,"name":"Review","author":"BENJI","color":"#123456"}))["marker"].as_u64().unwrap();
+    let b = d.exec("markers.add", json!({"frame":20,"name":"Other","comment":"Review"}))["marker"].as_u64().unwrap();
+    d.ok("ui.panel.show", json!({"panel":"Markers"}));
+    d.frames(3);
+    d.set_text("markers.search", "benji");
+    assert_eq!(d.ids("markers.row."), vec![format!("markers.row.{a}")]);
+    d.set_text("markers.search", "review");
+    assert_eq!(d.ids("markers.row.").len(), 2);
+    d.click(&format!("markers.row.{a}"));
+    d.ok("ui.click", json!({"id":format!("markers.row.{b}"),"modifiers":{"command":true}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.markers_panel.selected.len(), 2);
+    d.frames(30);
+    d.click(&format!("markers.row.{a}"));
+    d.ok("ui.click", json!({"id":format!("markers.row.{b}"),"modifiers":{"shift":true}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.markers_panel.selected.len(), 2);
+
+    d.click("markers.selectAll");
+    let history = d.app().session.history.undo.len();
+    d.click("markers.bulkColor");
+    d.click("markers.bulkColor.Blue");
+    assert_eq!(d.app().session.history.undo.len(), history + 1);
+    assert!(d.app().session.active_sequence().unwrap().markers.iter().all(|m| m.color == filmcraft_project::Label::Blue && m.custom_color.is_none()));
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    d.click("markers.filter.#123456");
+    assert_eq!(d.ids("markers.row."), vec![format!("markers.row.{b}")]);
+    d.ok("ui.menu.invoke", json!({"id":"markers.showAllMarkerColors"}));
+    d.frames(3);
+    assert_eq!(d.ids("markers.row.").len(), 2);
+    d.click("markers.selectAll");
+    d.snapshot("marker-panel", "markers.");
+    d.click("markers.deleteSelected");
+    assert!(d.app().session.active_sequence().unwrap().markers.is_empty());
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.active_sequence().unwrap().markers.len(), 2);
+    d.click("markers.manageColors");
+    d.click("palette.add");
+    d.set_text("palette.name", "Review");
+    d.set_text("paletteColor.hex", "12ABCD");
+    d.snapshot("palette-color-editor", "palette");
+    d.click("palette.save");
+    let color = filmcraft_project::HexColor::parse("12ABCD").unwrap();
+    assert_eq!(d.app().session.project.custom_color_names[&color], "Review");
+    d.snapshot("project-palette-manager", "palette.");
+    d.click("palette.edit.#12ABCD");
+    d.set_text("palette.name", "Approved");
+    d.set_text("paletteColor.hex", "123456");
+    d.click("palette.save");
+    assert_eq!(d.app().session.project.custom_color_names[&filmcraft_project::HexColor::parse("123456").unwrap()], "Approved");
+    d.click("palette.remove.#123456");
+    assert!(d.app().session.project.custom_colors.is_empty());
+    d.click("palette.close");
+    d.exec("source.open", json!({"item":5}));
+    let source = d.exec("markers.add", json!({"target":"source","time":0,"name":"Review source"}))["marker"].as_u64().unwrap();
+    d.click("markers.scope.Source");
+    assert_eq!(d.ids("markers.row."), vec![format!("markers.row.{source}")]);
+    d.double_click(&format!("markers.row.{source}"));
+    d.frames(3);
+    assert!(d.app().ui.marker_properties.is_some());
+}
+
 impl Driver {
     fn demo() -> Self {
         let mut session = Session::default();
@@ -26,7 +268,7 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
         }
@@ -73,6 +315,39 @@ impl Driver {
         self.frames(2);
     }
 
+    fn double_click(&mut self, id: &str) {
+        self.frames(3);
+        let v = self.ok("ui.elements", json!({"prefix":id}));
+        let rect = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["rect"].as_array().unwrap();
+        let pos = egui::pos2(
+            (rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap() / 2.0) as f32,
+            (rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() / 2.0) as f32,
+        );
+        // Control-channel event pacing is too slow for a physical double click.
+        self.frames(60);
+        self.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+        self.frames(1);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                self.harness.input_mut().events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                });
+                self.frames(1);
+            }
+        }
+        self.frames(3);
+    }
+
+    fn set_text(&mut self, id: &str, text: &str) {
+        self.click(id);
+        self.ok("ui.key", json!({"key":"Cmd+A"}));
+        self.ok("ui.type", json!({"text":text}));
+        self.frames(2);
+    }
+
     fn app(&mut self) -> &mut FilmcraftApp {
         self.harness.state_mut()
     }
@@ -109,7 +384,7 @@ impl Driver {
         };
         let ppp = img.width() as f32 / 1600.0;
         let x0 = ((bb[0] - 24.0) * ppp).max(0.0) as u32;
-        let y0 = ((bb[1] - 40.0) * ppp).max(0.0) as u32;
+        let y0 = ((bb[1] - if prefix == "markerProperties." { 75.0 } else { 40.0 }) * ppp).max(0.0) as u32;
         let x1 = (((bb[2] + 24.0) * ppp) as u32).min(img.width());
         let y1 = (((bb[3] + 24.0) * ppp) as u32).min(img.height());
         let img = image::imageops::crop_imm(&img, x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0)).to_image();

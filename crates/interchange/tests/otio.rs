@@ -143,7 +143,9 @@ fn golden_gaps_and_transitions() {
 fn project() -> (Project, filmcraft_project::ItemId) {
     let r = FrameRate::FPS_23_976;
     let mut p = Project::new("P");
+    p.custom_colors = vec![filmcraft_project::HexColor([18, 171, 205])];
     let a = media(&mut p, "/m/a.mov", true, true, r);
+    p.item_mut(a).unwrap().custom_label_color = filmcraft_project::HexColor::parse("#ABCDEF");
     if let Some(m) = p.item_mut(a).and_then(|i| i.as_media_mut()) {
         m.info.start_timecode = Some(86_400);
     }
@@ -170,12 +172,15 @@ fn project() -> (Project, filmcraft_project::ItemId) {
         q.audio_tracks[1].items.push(ai);
         let (_, it) = q.find_item_mut(v1).unwrap();
         it.label = Label::Teal;
+        it.custom_label_color = filmcraft_project::HexColor::parse("#12ABCD");
         let mut op = Param::new(ParamValue::Float(100.0));
         op.keyframes.push(Keyframe::new(r.tick_of(24), ParamValue::Float(0.0)));
         op.keyframes.push(Keyframe::new(r.tick_of(36), ParamValue::Float(100.0)));
         it.effect_mut("opacity").unwrap().params.insert("opacity".into(), op);
         it.effects.push(filmcraft_project::find_effect("gaussian_blur").unwrap().instance());
         it.markers.push(Marker {
+            author: "Editor 日本語".into(),
+            custom_color: filmcraft_project::HexColor::parse("#FF80C0"),
             id: MarkerId(5),
             start: r.tick_of(30),
             duration: r.tick_of(2),
@@ -190,6 +195,8 @@ fn project() -> (Project, filmcraft_project::ItemId) {
         q.video_tracks[1].locked = true;
         q.audio_tracks[1].volume_db = -3.0;
         q.markers.push(Marker {
+            author: "Editor 日本語".into(),
+            custom_color: filmcraft_project::HexColor::parse("#FF80C0"),
             id: MarkerId(6),
             start: r.tick_of(70),
             duration: Tick::ZERO,
@@ -211,6 +218,8 @@ fn lossless_roundtrip_with_filmcraft_metadata() {
     assert!(text.contains("\"target_url\": \"file:///m/a.mov\""));
     let si = only_seq(&imp);
     let q = &imp.project;
+    assert_eq!(q.custom_colors, p.custom_colors);
+    assert!(q.items.values().any(|i| i.custom_label_color == filmcraft_project::HexColor::parse("#ABCDEF")));
     let (qs, ps) = (q.sequence(si).unwrap(), p.sequence(s).unwrap());
     for kind in [TrackKind::Video, TrackKind::Audio] {
         assert_eq!(structure(q, si, kind), structure(&p, s, kind), "{text}");
@@ -218,8 +227,8 @@ fn lossless_roundtrip_with_filmcraft_metadata() {
     assert_eq!(links(q, si), links(&p, s));
     assert_eq!(qs.settings, ps.settings);
     assert_eq!(
-        qs.markers.iter().map(|m| (&m.name, m.start, m.kind, m.color)).collect::<Vec<_>>(),
-        ps.markers.iter().map(|m| (&m.name, m.start, m.kind, m.color)).collect::<Vec<_>>()
+        qs.markers.iter().map(|m| (&m.name, m.start, m.kind, m.color, m.custom_color, &m.author)).collect::<Vec<_>>(),
+        ps.markers.iter().map(|m| (&m.name, m.start, m.kind, m.color, m.custom_color, &m.author)).collect::<Vec<_>>()
     );
     assert!(qs.video_tracks[1].locked);
     assert_eq!(qs.audio_tracks[1].volume_db, -3.0);
@@ -227,9 +236,10 @@ fn lossless_roundtrip_with_filmcraft_metadata() {
     let (qa, pa) = (&qs.video_tracks[0].items[0], &ps.video_tracks[0].items[0]);
     assert_eq!(format!("{:?}", qa.effects), format!("{:?}", pa.effects)); // NaN auto points compare unequal
     assert_eq!(qa.label, Label::Teal);
+    assert_eq!(qa.custom_label_color, filmcraft_project::HexColor::parse("#12ABCD"));
     assert_eq!(
-        qa.markers.iter().map(|m| (&m.name, m.start, m.duration)).collect::<Vec<_>>(),
-        pa.markers.iter().map(|m| (&m.name, m.start, m.duration)).collect::<Vec<_>>()
+        qa.markers.iter().map(|m| (&m.name, m.start, m.duration, m.custom_color, &m.author)).collect::<Vec<_>>(),
+        pa.markers.iter().map(|m| (&m.name, m.start, m.duration, m.custom_color, &m.author)).collect::<Vec<_>>()
     );
     assert_eq!(qs.audio_tracks[1].items[0].gain_db, 4.5);
     assert_eq!(qs.audio_tracks[1].items[0].start, ps.audio_tracks[1].items[0].start);
@@ -358,5 +368,14 @@ proptest! {
         prop_assert_eq!(structure(&imp.project, si, TrackKind::Video), structure(&p, s, TrackKind::Video), "{}", text);
         prop_assert_eq!(structure(&imp.project, si, TrackKind::Audio), structure(&p, s, TrackKind::Audio));
         prop_assert_eq!(links(&imp.project, si), links(&p, s));
+    }
+}
+
+#[test]
+fn other_export_formats_report_marker_property_loss() {
+    let (p, s) = project();
+    for format in [Format::Fcp7Xml, Format::Fcpxml, Format::Edl] {
+        let (_, report) = filmcraft_interchange::export(&p, s, format, &ExportOptions::default()).unwrap();
+        assert!(report.to_string().contains("marker authors or exact custom colors"), "{format:?}: {report}");
     }
 }

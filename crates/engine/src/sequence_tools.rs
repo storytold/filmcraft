@@ -172,7 +172,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     "Add Range Marker",
                     &["Markers"],
                     Some("Ctrl+Shift+M"),
-                    r#"{"time":ticks?,"durationFrames":i64=1s,"duration":ticks?,"name":str?,"comment":str?,"color":label?}"#,
+                    r#"{"time":ticks?,"durationFrames":i64=1s,"duration":ticks?,"name":str?,"comment":str?,"color":label_or_hex?,"author":str?}"#,
                     has_seq,
                     add_range_marker,
                 ),
@@ -181,7 +181,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     "Add Range Marker to In and Out",
                     &["Markers"],
                     Some("Ctrl+M"),
-                    r#"{"name":str?,"comment":str?,"color":label?}"#,
+                    r#"{"name":str?,"comment":str?,"color":label_or_hex?,"author":str?}"#,
                     has_in_and_out,
                     add_range_marker_in_out,
                 ),
@@ -192,9 +192,18 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
             vec![
                 spec("markers.showAllMarkerColors", "Show All Marker Colors", &["Markers"], None, "{}", has_hidden_colors, |s, _| {
                     s.state.hidden_marker_colors.clear();
+                    s.state.hidden_custom_marker_colors.clear();
                     Ok(json!({"hidden": []}))
                 }),
-                spec("markers.filterColors", "Marker Colour Filter", &[], None, r#"{"hidden":[label]}|{"color":label,"visible":bool?}"#, always, filter_colors),
+                spec(
+                    "markers.filterColors",
+                    "Marker Colour Filter",
+                    &[],
+                    None,
+                    r#"{"hidden":[label_or_hex]}|{"color":label_or_hex,"visible":bool?}"#,
+                    always,
+                    filter_colors,
+                ),
             ],
         ),
         (
@@ -205,7 +214,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     "Add Chapter Marker…",
                     &["Markers"],
                     None,
-                    r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?}"#,
+                    r#"{"time":ticks?,"name":str?,"comment":str?,"color":label_or_hex?,"author":str?}"#,
                     has_seq,
                     |s, p| {
                         let t = sequence_time_p(s, p, "", "markers.addChapter")?.unwrap_or(s.playhead());
@@ -252,7 +261,7 @@ fn has_split(s: &Session) -> std::result::Result<(), String> {
     if program || source { Ok(()) } else { Err("there are no split points".into()) }
 }
 fn has_hidden_colors(s: &Session) -> std::result::Result<(), String> {
-    if s.state.hidden_marker_colors.is_empty() { Err("all marker colours are shown".into()) } else { Ok(()) }
+    if s.state.hidden_marker_colors.is_empty() && s.state.hidden_custom_marker_colors.is_empty() { Err("all marker colours are shown".into()) } else { Ok(()) }
 }
 
 // ---------- selection follows playhead ----------
@@ -967,10 +976,11 @@ pub fn ripple_markers(markers: &mut Vec<Marker>, from: Tick, shift: Tick) {
 
 fn add_marker(s: &mut Session, cmd: &str, label: &str, t: Tick, dur: Tick, kind: MarkerKind, name: String, p: &Value) -> Result<MarkerId> {
     let comment = str_p(p, "comment").unwrap_or("").to_string();
-    let color = marker_color_p(p, cmd)?.unwrap_or(Label::Green);
+    let (color, custom_color) = marker_color_p(p, cmd)?.unwrap_or((Label::Green, None));
+    let author = crate::commands::marker_author_p(p, cmd)?.unwrap_or_default();
     s.edit_sequence(label, |q, ctx, _| {
         let id = MarkerId(ctx.alloc());
-        q.markers.push(Marker { id, start: t, duration: dur, name, comment, kind, color });
+        q.markers.push(Marker { author, custom_color, id, start: t, duration: dur, name, comment, kind, color });
         q.markers.sort_by_key(|m| m.start);
         Ok(id)
     })
@@ -1006,23 +1016,52 @@ fn add_range_marker_in_out(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn filter_colors(s: &mut Session, p: &Value) -> Result<Value> {
-    if let Some(a) = p.get("hidden").and_then(Value::as_array) {
-        let mut v = Vec::new();
-        for x in a {
-            let n = x.as_str().unwrap_or_default();
-            v.push(Label::from_name(n).ok_or_else(|| bad("markers.filterColors", format!("unknown colour `{n}`")))?);
+    let id = "markers.filterColors";
+    let parse = |v: &Value| -> Result<(Label, Option<filmcraft_project::HexColor>)> {
+        crate::commands::marker_color_p(&json!({"color":v}), id)?.ok_or_else(|| bad(id, "need a color"))
+    };
+    if let Some(value) = p.get("hidden") {
+        let a = value.as_array().filter(|a| a.len() <= 80).ok_or_else(|| bad(id, "hidden must contain at most 80 colors"))?;
+        let mut presets = Vec::new();
+        let mut custom = Vec::new();
+        for v in a {
+            let (preset, hex) = parse(v)?;
+            if let Some(hex) = hex {
+                if !custom.contains(&hex) {
+                    custom.push(hex);
+                }
+            } else if !presets.contains(&preset) {
+                presets.push(preset);
+            }
         }
-        s.state.hidden_marker_colors = v;
-    } else if let Some(n) = str_p(p, "color") {
-        let c = Label::from_name(n).ok_or_else(|| bad("markers.filterColors", format!("unknown colour `{n}`")))?;
-        let hidden = s.state.hidden_marker_colors.contains(&c);
-        let visible = bool_p(p, "visible").unwrap_or(hidden);
-        s.state.hidden_marker_colors.retain(|x| *x != c);
-        if !visible {
-            s.state.hidden_marker_colors.push(c);
+        if custom.len() > 64 {
+            return Err(bad(id, "too many custom color filters"));
+        }
+        s.state.hidden_marker_colors = presets;
+        s.state.hidden_custom_marker_colors = custom;
+    } else if let Some(value) = p.get("color") {
+        let (preset, hex) = parse(value)?;
+        let visible = p.get("visible").map(|v| v.as_bool().ok_or_else(|| bad(id, "visible must be a boolean"))).transpose()?;
+        if let Some(hex) = hex {
+            let visible = visible.unwrap_or(s.state.hidden_custom_marker_colors.contains(&hex));
+            s.state.hidden_custom_marker_colors.retain(|c| *c != hex);
+            if !visible {
+                if s.state.hidden_custom_marker_colors.len() >= 64 {
+                    return Err(bad(id, "too many custom color filters"));
+                }
+                s.state.hidden_custom_marker_colors.push(hex);
+            }
+        } else {
+            let visible = visible.unwrap_or(s.state.hidden_marker_colors.contains(&preset));
+            s.state.hidden_marker_colors.retain(|c| *c != preset);
+            if !visible {
+                s.state.hidden_marker_colors.push(preset);
+            }
         }
     } else {
-        return Err(bad("markers.filterColors", "need `hidden` or `color`"));
+        return Err(bad(id, "need hidden or color"));
     }
-    Ok(json!({"hidden": s.state.hidden_marker_colors.iter().map(|c| c.name()).collect::<Vec<_>>()}))
+    Ok(
+        json!({"hidden":s.state.hidden_marker_colors.iter().map(|c|c.name().to_owned()).chain(s.state.hidden_custom_marker_colors.iter().map(|c|c.hex())).collect::<Vec<_>>()}),
+    )
 }

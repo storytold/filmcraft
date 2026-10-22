@@ -357,3 +357,9 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 }
 
 pub(crate) mod transcript_cache;
+
+pub mod custom_colors;
+pub mod marker_properties;
+
+pub mod markers_panel;
+pub mod palette_manager;

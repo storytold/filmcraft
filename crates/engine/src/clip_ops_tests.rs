@@ -804,6 +804,8 @@ fn subclip_source_monitor_trims_and_markers() {
     if let Some(ItemKind::Media(m)) = p.item_mut(ocean).map(|i| &mut i.kind) {
         for (k, n) in [10, 30, 60, 90].into_iter().enumerate() {
             m.markers.push(filmcraft_project::Marker {
+                author: String::new(),
+                custom_color: None,
                 id: filmcraft_project::MarkerId(9000 + k as u64),
                 start: f(n),
                 duration: Tick::ZERO,

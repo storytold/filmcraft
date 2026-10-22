@@ -498,11 +498,11 @@ fn range_and_chapter_markers() {
 
 #[test]
 fn unknown_marker_colours_are_rejected_not_stored_as_green() {
-    // #857: `markers.add {color:"Red"}` used to succeed and store Green
+    // Unknown names and non-string values must not silently become Green.
     let mut s = demo();
     let before = s.project.to_json();
     for cmd in ["markers.add", "markers.addRange", "markers.addChapter", "markers.addFlashCue"] {
-        for color in [json!("Red"), json!("NotAColor"), json!(3)] {
+        for color in [json!("White"), json!("NotAColor"), json!(3)] {
             let err = s.execute(cmd, json!({"frame": 10, "color": color})).unwrap_err().to_string();
             assert!(err.contains("Rose"), "{cmd}: the error lists the accepted names: {err}");
             assert_eq!(s.project.to_json(), before, "{cmd} {color} must not add a marker");
@@ -511,7 +511,7 @@ fn unknown_marker_colours_are_rejected_not_stored_as_green() {
     let id = s.execute("markers.add", json!({"frame": 10, "color": "rose"})).unwrap()["marker"].as_u64().unwrap();
     let colour = |s: &Session| s.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().color;
     assert_eq!(colour(&s), Label::Rose);
-    assert!(s.execute("markers.edit", json!({"marker": id, "color": "Red"})).is_err());
+    assert!(s.execute("markers.edit", json!({"marker": id, "color": "NotAColor"})).is_err());
     assert_eq!(colour(&s), Label::Rose, "a bad colour leaves the marker unchanged");
     s.execute("markers.edit", json!({"marker": id, "color": "Teal"})).unwrap();
     assert_eq!(colour(&s), Label::Teal);
