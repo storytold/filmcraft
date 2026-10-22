@@ -78,15 +78,17 @@ SUBCOMMANDS
   import <file>...              import media into the project
   export <out> [--preset name] [--format f] [--range r] [--start s --end s] [--settings json]
          [--gpu-rendering auto|off]
-         [--scale f] [--quality 0-100] [--no-audio] [--queue] [--allow-offline]
+         [--scale f] [--quality 0-100] [--threads n] [--no-audio] [--queue] [--allow-offline]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
                                 a format (h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|aac, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
                                 preset; --scale renders at a fraction of the frame size (0.5 =
-                                half); --quality 0-100 for the formats that take one; --no-audio
-                                leaves the sound out; --queue adds to the export queue and runs it
+                                half); --quality 0-100 for the formats that take one; --threads n
+                                caps the CPU threads the export uses (0 = all cores, the default);
+                                --no-audio leaves the sound out; --queue adds to the export queue
+                                and runs it
                                 instead. Offline media (missing, made offline, unreadable) renders
                                 as placeholder frames: the export then lists it in `offlineMedia`,
                                 warns on stderr and exits 1, unless --allow-offline accepts it
@@ -434,7 +436,7 @@ async fn cli() {
                     p["format"] = json!(format);
                 }
             }
-            for (k, key) in [("--scale", "scale"), ("--quality", "quality")] {
+            for (k, key) in [("--scale", "scale"), ("--quality", "quality"), ("--threads", "maxThreads")] {
                 if let Some(v) = a.opt(k) {
                     p[key] = parse_value(v);
                 }

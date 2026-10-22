@@ -2162,6 +2162,7 @@
 	Path	パス
 	Path Points	パスのポイント
 	Pause Media Encoder queue during playback	再生中は Media Encoder のキューを一時停止する
+	Export CPU Threads	書き出しの CPU スレッド数
 	Peak Frequency	ピーク周波数
 	Peak Gain	ピークゲイン
 	Pedestal	ペデスタル
@@ -2907,6 +2908,8 @@
 	Quality	画質
 	Render at Maximum Depth	最大深度でレンダリングする
 	Use Maximum Render Quality	最高レンダリング画質を使用する
+	CPU Threads	CPU スレッド
+	All cores	すべてのコア
 	Export Audio	オーディオを書き出す
 	Audio Format	オーディオ形式
 	Uncompressed (PCM)	非圧縮 (PCM)

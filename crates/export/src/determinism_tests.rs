@@ -308,3 +308,90 @@ fn a_panic_while_rendering_ahead_is_an_error() {
         assert!(matches!(r, Err(ExportError::Encode(_))), "{:?}", r.map(|_| ()));
     });
 }
+
+// ------------------------------------------------------------------ max_threads
+
+/// A provider that notes how many threads the pool it is asked on has, and which threads ask.
+struct Noting<'a> {
+    inner: &'a SourceMap,
+    most: AtomicUsize,
+    threads: std::sync::Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+}
+
+impl<'a> Noting<'a> {
+    fn new(inner: &'a SourceMap) -> Self {
+        Self { inner, most: AtomicUsize::new(0), threads: Default::default() }
+    }
+}
+
+impl SourceProvider for Noting<'_> {
+    fn source(&self, item: ItemId) -> Option<SharedSource> {
+        self.most.fetch_max(rayon::current_num_threads(), Ordering::SeqCst);
+        self.threads.lock().unwrap().insert(std::thread::current().id());
+        self.inner.source(item)
+    }
+}
+
+/// Export the test project from a pool of `outer` threads with `max_threads` set, and report the
+/// biggest pool a frame was asked on and how many different threads asked.
+fn threads_used(outer: usize, max_threads: u32, name: &str) -> (usize, usize) {
+    let (p, seq, m) = project();
+    let noting = Noting::new(&m);
+    let settings = ExportSettings { format: Format::Mjpeg, path: tmp(name), include_audio: false, max_threads, ..Default::default() };
+    pool(outer).install(|| export(&p, seq, &settings, &noting, &Progress::default())).unwrap();
+    (noting.most.load(Ordering::SeqCst), noting.threads.lock().unwrap().len())
+}
+
+#[test]
+fn max_threads_caps_the_threads_an_export_runs_on() {
+    // uncapped, it renders on the pool it is called in
+    let (most, threads) = threads_used(8, 0, "cap-0.mov");
+    assert_eq!(most, 8);
+    assert!(threads > 3, "{threads} threads asked for frames: the uncapped export should have used several");
+    // capped, on a pool of that size
+    for cap in [1u32, 3] {
+        let (most, threads) = threads_used(8, cap, &format!("cap-{cap}.mov"));
+        assert_eq!(most, cap as usize, "cap {cap}");
+        assert!(threads <= cap as usize, "cap {cap}: {threads} threads asked for frames");
+    }
+}
+
+#[test]
+fn max_threads_never_adds_threads() {
+    // a cap at or above the pool the export is called in changes nothing
+    assert_eq!(threads_used(4, 4, "cap-same.mov").0, 4);
+    assert_eq!(threads_used(4, 100, "cap-large.mov").0, 4);
+}
+
+#[test]
+fn max_threads_does_not_change_the_file() {
+    for (format, ext) in [(Format::ProRes, "mov"), (Format::H264, "mp4"), (Format::Mjpeg, "mov")] {
+        let settings = |name: &str, max_threads: u32| ExportSettings { format, path: tmp(&format!("{name}.{ext}")), max_threads, ..Default::default() };
+        let reference = export_with_cores(5, &settings(&format!("{}-uncapped", format.id()), 0));
+        for cap in [1u32, 3] {
+            let capped = export_with_cores(5, &settings(&format!("{}-cap{cap}", format.id()), cap));
+            assert!(reference == capped, "{}: a cap of {cap} thread(s) gives a different file", format.label());
+        }
+    }
+}
+
+#[test]
+fn max_threads_is_a_setting_of_the_json_interface() {
+    let s: ExportSettings = serde_json::from_str(r#"{"format":"mjpeg","maxThreads":2}"#).unwrap();
+    assert_eq!(s.max_threads, 2);
+    assert_eq!(ExportSettings::default().max_threads, 0, "all cores unless asked");
+    assert_eq!(serde_json::to_value(&s).unwrap()["maxThreads"], serde_json::json!(2));
+}
+
+/// #1216: a capped export sets the thread cap on its pool's workers, so a decoder made inside it
+/// sizes its own pool to the cap (the decoders' own pools are the rest of the change).
+#[test]
+fn a_capped_export_sets_the_thread_cap_on_its_workers() {
+    if rayon::current_num_threads() <= 2 {
+        return; // no room for a cap below the pool this test runs in
+    }
+    let pool = capped_pool(2).expect("a pool for a cap below the machine's cores");
+    assert_eq!(pool.install(filmcraft_media::cancel::max_threads), Some(2), "the workers carry the cap");
+    assert!(capped_pool(0).is_none(), "no cap: no pool");
+    assert!(capped_pool(u32::MAX).is_none(), "a cap above the pool: no pool");
+}

@@ -1303,6 +1303,7 @@ static CATEGORIES: &[Category] = &[
             f("playback.postrollSeconds", "Postroll", float(0.0, 60.0, 0, "seconds"), true),
             f("playback.stepManyFrames", "Step forward/back many", int(1.0, 1000.0, "frames"), true),
             b("playback.pauseEncoderQueue", "Pause Media Encoder queue during playback", false),
+            f("playback.exportThreads", "Export CPU Threads", int(0.0, 256.0, ""), true),
             b("playback.enableTransmit", "Enable Mercury Transmit", false),
             b("playback.disableVideoInBackground", "Disable video output when in the background", false),
             b("playback.draftDecode", "Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)", true),

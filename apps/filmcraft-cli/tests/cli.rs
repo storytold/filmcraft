@@ -19,6 +19,8 @@ fn help_and_usage_errors() {
     let h = cli(&["help"]);
     assert!(h.status.success());
     assert!(String::from_utf8_lossy(&h.stdout).contains("exec <id>"));
+    // #1216: the export subcommand advertises its CPU thread cap
+    assert!(String::from_utf8_lossy(&h.stdout).contains("--threads"), "the export help lists --threads");
     assert_eq!(cli(&[]).status.code(), Some(2));
     assert_eq!(cli(&["frobnicate"]).status.code(), Some(2));
     assert_eq!(cli(&["exec", "file.newBin", "notkv"]).status.code(), Some(2));

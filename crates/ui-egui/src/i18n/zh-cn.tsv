@@ -2156,6 +2156,7 @@
 	Path	路径
 	Path Points	路径点
 	Pause Media Encoder queue during playback	播放时暂停 Media Encoder 队列
+	Export CPU Threads	导出 CPU 线程
 	Peak Frequency	峰值频率
 	Peak Gain	峰值增益
 	Pedestal	基准电平
@@ -2901,6 +2902,8 @@
 	Quality	质量
 	Render at Maximum Depth	以最大深度渲染
 	Use Maximum Render Quality	使用最大渲染质量
+	CPU Threads	CPU 线程
+	All cores	所有核心
 	Export Audio	导出音频
 	Audio Format	音频格式
 	Uncompressed (PCM)	未压缩（PCM）
