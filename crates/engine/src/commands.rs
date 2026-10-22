@@ -4566,6 +4566,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
 
 fn open_prproj(s: &mut Session, path: &str, bytes: &[u8]) -> Result<Value> {
     let name = std::path::Path::new(path).file_stem().map_or_else(|| "Untitled".into(), |n| n.to_string_lossy().into_owned());
+    filmcraft_interchange::import(bytes, filmcraft_interchange::Format::Prproj, None).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     install_project(s, filmcraft_project::Project::new(&name), None, true);
     let r = crate::interchange::import(s, path, bytes, filmcraft_interchange::Format::Prproj)?;
     s.history = Default::default();

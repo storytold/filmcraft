@@ -32,7 +32,8 @@ use crate::common::{Builder, MediaSpec, empty_sequence, resolve_path, settings_f
 use crate::xml::{child, child_bool, child_f64, child_i64, child_text, children, path_node, path_text};
 use crate::{Error, Format, ImportOptions, Imported, Report, Result};
 
-const MAX_XML: usize = 512 << 20;
+const MAX_XML: usize = 128 << 20;
+const MAX_RATIO: usize = 200;
 const MAX_BIN_DEPTH: usize = 64;
 const MAX_TRACKS: usize = 256;
 const ALIAS: &[(&str, &str, &str)] = &[
@@ -53,12 +54,20 @@ const NAMES: &[(&str, &str)] = &[("7ea99d31-ca8f-454f-acd7-81a258efb336", "Studi
 
 type Edge = (ClipId, Tick);
 
+#[derive(Clone, Copy, PartialEq)]
+enum Scale {
+    Plain,
+    Gain,
+    Unit,
+}
+
 pub(crate) fn sniff(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0x1f, 0x8b])
 }
 
 pub(crate) fn import(bytes: &[u8], opts: &ImportOptions, report: &mut Report) -> Result<Imported> {
-    let xml = inflate::gzip(bytes, MAX_XML).map_err(|e| Error::parse(Format::Prproj, e))?;
+    let limit = MAX_XML.min(bytes.len().saturating_mul(MAX_RATIO));
+    let xml = inflate::gzip(bytes, limit).map_err(|e| Error::parse(Format::Prproj, e))?;
     let text = std::str::from_utf8(&xml).map_err(|_| Error::parse(Format::Prproj, "the project is not UTF-8 text"))?;
     let doc = crate::xml::parse(text).map_err(|e| Error::parse(Format::Prproj, e))?;
     let root = doc.root_element();
@@ -75,6 +84,7 @@ pub(crate) fn import(bytes: &[u8], opts: &ImportOptions, report: &mut Report) ->
         sources: HashMap::new(),
         sequences: Vec::new(),
         nests: HashMap::new(),
+        bins: HashSet::new(),
     };
     imp.read_bin(top_bin, None, 0);
     imp.read_sequences();
@@ -135,6 +145,7 @@ struct Imp<'a, 'i, 'r> {
     sources: HashMap<NodeId, ItemId>,
     sequences: Vec<(Node<'a, 'i>, ItemId)>,
     nests: HashMap<ItemId, HashSet<ItemId>>,
+    bins: HashSet<NodeId>,
 }
 
 impl<'a, 'i> Imp<'a, 'i, '_> {
@@ -147,6 +158,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let name = path_text(item, &["ProjectItem", "Name"]);
             match item.tag_name().name() {
                 "BinProjectItem" => {
+                    if !self.bins.insert(item.id()) {
+                        self.report.warn("a bin listed more than once was imported once");
+                        continue;
+                    }
                     let sub = self.b.bin(name.unwrap_or("Bin"), bin);
                     self.read_bin(item, Some(sub), depth + 1);
                 }
@@ -406,7 +421,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let c = child(comp, "AudioComponent").unwrap_or(comp);
             let id = child_text(comp, "FilterMatchName");
             let name = path_text(c, &["Component", "DisplayName"]).or_else(|| NAMES.iter().find(|n| id == Some(n.0)).map(|n| n.1)).or(id).unwrap_or("?");
-            let Some(def) = find_effect_by_name(name).filter(|d| d.kind == want && !graphic::is_layer_id(d.id)) else {
+            let adobe = match child_text(comp, "MatchName") {
+                Some(m) => m.starts_with("AE.ADBE ") || m.starts_with("PR.ADBE "),
+                None => id.is_some_and(|f| f.starts_with("Internal ") || NAMES.iter().any(|n| n.0 == f)),
+            };
+            let Some(def) = find_effect_by_name(name).filter(|d| adobe && d.kind == want && !graphic::is_layer_id(d.id)) else {
                 self.report.warn(format!("effect \"{name}\" is not supported"));
                 continue;
             };
@@ -415,16 +434,26 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             }
             let mut fx = def.instance();
             fx.enabled = path_text(c, &["Component", "Bypass"]) != Some("true");
+            let scale = match (c == comp, def.id) {
+                (true, _) => Scale::Plain,
+                (false, "volume" | "channel_volume") => Scale::Gain,
+                (false, _) => Scale::Unit,
+            };
             let mut seen: HashMap<&str, usize> = HashMap::new();
             for p in self.objects.list(c, &["Component", "Params"], "Param") {
                 let Some(label) = label(def.id, p).filter(|_| child_i64(p, "ParameterControlType").is_some_and(|t| (1..=8).contains(&t))) else { continue };
                 let n = seen.entry(label).or_default();
                 let pd = def.params.iter().filter(|d| d.label.eq_ignore_ascii_case(label)).nth(*n);
                 *n += 1;
-                if let Some(pd) = pd
-                    && let Some(v) = param(p, pd, frame, src)
-                {
-                    fx.params.insert(pd.id.to_string(), v);
+                let Some(pd) = pd else { continue };
+                match param(p, pd, scale, frame, src) {
+                    Some(v) => {
+                        fx.params.insert(pd.id.to_string(), v);
+                    }
+                    None if start(p).is_some() && matches!(pd.kind, ParamKind::Float { .. } | ParamKind::Angle | ParamKind::Point | ParamKind::Color) => {
+                        self.report.warn(format!("setting \"{label}\" of \"{name}\" was not imported; left at its default"))
+                    }
+                    None => {}
                 }
             }
             if def.intrinsic
@@ -482,10 +511,9 @@ fn start<'a>(p: Node<'a, '_>) -> Option<&'a str> {
     child_text(p, "StartKeyframe").and_then(|s| s.split(',').nth(1)).or_else(|| child_text(p, "CurrentValue"))
 }
 
-fn param(p: Node, pd: &ParamDef, frame: (u32, u32), src: (u32, u32)) -> Option<Param> {
+fn param(p: Node, pd: &ParamDef, scale: Scale, frame: (u32, u32), src: (u32, u32)) -> Option<Param> {
     let upper = child_f64(p, "UpperBound");
-    let norm = p.has_tag_name("AudioComponentParam");
-    let val = |s: &str| value(pd, s, upper, norm, frame, src);
+    let val = |s: &str| value(pd, s, upper, scale, frame, src);
     let mut pr = Param::new(val(start(p)?)?);
     let Some(keys) = child_text(p, "Keyframes") else { return Some(pr) };
     for k in keys.split(';') {
@@ -505,19 +533,17 @@ fn param(p: Node, pd: &ParamDef, frame: (u32, u32), src: (u32, u32)) -> Option<P
     Some(pr)
 }
 
-fn value(pd: &ParamDef, s: &str, upper: Option<f64>, norm: bool, frame: (u32, u32), src: (u32, u32)) -> Option<ParamValue> {
+fn value(pd: &ParamDef, s: &str, upper: Option<f64>, scale: Scale, frame: (u32, u32), src: (u32, u32)) -> Option<ParamValue> {
     let num = |s: &str| s.parse::<f64>().ok().filter(|v| v.is_finite());
     Some(match &pd.kind {
         ParamKind::Float { min, max, unit, .. } => {
             let v = num(s)?;
-            let v = if *unit == "dB" {
-                20.0 * v.log10() + 15.0
-            } else if norm && *unit == "%" {
-                v * 100.0
-            } else if upper == Some(255.0) && *max == 100.0 {
-                v / 2.55
-            } else {
-                v
+            let v = match (scale, *unit) {
+                (Scale::Gain, "dB") if v >= 0.0 => 20.0 * v.log10() + 15.0,
+                (Scale::Unit, "%") => v * 100.0,
+                (Scale::Gain | Scale::Unit, _) => return None,
+                (Scale::Plain, _) if upper == Some(255.0) && *max == 100.0 => v / 2.55,
+                (Scale::Plain, _) => v,
             };
             ParamValue::Float(v.clamp(*min, *max))
         }
@@ -525,12 +551,13 @@ fn value(pd: &ParamDef, s: &str, upper: Option<f64>, norm: bool, frame: (u32, u3
         ParamKind::Bool => ParamValue::Bool(s == "true"),
         ParamKind::Choice(o) => {
             let v = s.parse::<u32>().ok()?;
-            (upper.map(|u| u as usize + 1) == Some(o.len()) && (v as usize) < o.len()).then_some(ParamValue::Choice(v))?
+            (upper == Some(o.len() as f64 - 1.0) && (v as usize) < o.len()).then_some(ParamValue::Choice(v))?
         }
         ParamKind::Point => {
             let (x, y) = s.split_once(':')?;
             let (w, h) = if pd.id == "anchor" { src } else { frame };
-            ParamValue::Vec2(Vec2::new(num(x)? * f64::from(w), num(y)? * f64::from(h)))
+            let p = Vec2::new(num(x)? * f64::from(w), num(y)? * f64::from(h));
+            (p.x.is_finite() && p.y.is_finite()).then_some(ParamValue::Vec2(p))?
         }
         ParamKind::Color => {
             let v = s.parse::<u64>().ok()?;
@@ -543,6 +570,9 @@ fn value(pd: &ParamDef, s: &str, upper: Option<f64>, norm: bool, frame: (u32, u3
 
 fn frame_rate(ticks_per_frame: i64) -> Option<FrameRate> {
     let r = TICKS_PER_SECOND as f64 / (ticks_per_frame > 0).then_some(ticks_per_frame)? as f64;
+    if !(0.5..=1000.0).contains(&r) {
+        return None;
+    }
     let near = |f: FrameRate| (f.as_f64() - r).abs() < r * 1e-5;
     let exact = || (1..=1001).map(|d| FrameRate::new((r * f64::from(d)).round() as i64, d.into())).find(|f| (f.as_f64() - r).abs() < r * 1e-9);
     Some(FrameRate::COMMON.into_iter().find(|f| near(*f)).or_else(exact).unwrap_or_else(|| FrameRate::new((r * 1000.0).round() as i64, 1000)))

@@ -81,12 +81,12 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         }
     }
     for (id, alt) in std::mem::take(&mut fragment.alternates) {
-        if let Some(ItemKind::Media(m)) = fragment.project.items.get_mut(&id).map(|i| &mut i.kind)
-            && let MediaRef::File { path } = &mut m.media
-            && s.services.file_size(path).is_err()
-            && s.services.file_size(&alt).is_ok()
-        {
-            *path = alt;
+        let Some(ItemKind::Media(m)) = fragment.project.items.get_mut(&id).map(|i| &mut i.kind) else { continue };
+        let MediaRef::File { path: main } = &mut m.media else { continue };
+        s.media.add_stored_paths([main.clone(), alt.clone()], Some(path));
+        let exists = |p: &str| s.media.follow(p).is_ok_and(|f| s.services.file_size(&f).is_ok());
+        if !exists(main) && exists(&alt) {
+            *main = alt;
         }
     }
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
