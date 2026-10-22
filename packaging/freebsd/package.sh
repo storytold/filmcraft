@@ -37,11 +37,15 @@ release_arch() {
     *) echo "unsupported architecture $1" >&2; return 2 ;;
   esac
 }
-HOST_ARCH="$(release_arch "$(uname -m)")"
 # The release workflow cross-compiles aarch64 in an x86_64 VM with CARGO_BUILD_TARGET set to
 # aarch64-unknown-freebsd (craft-common-actions#39): name the archive after the target.
-ARCH="$HOST_ARCH"
-if [ -n "${CARGO_BUILD_TARGET:-}" ]; then ARCH="$(release_arch "${CARGO_BUILD_TARGET%%-*}")"; fi
+case "${CARGO_BUILD_TARGET:-}" in
+  "") ARCH="$(release_arch "$(uname -m)")" ;;
+  *-unknown-freebsd) ARCH="$(release_arch "${CARGO_BUILD_TARGET%%-*}")" ;;
+  *) echo "CARGO_BUILD_TARGET=$CARGO_BUILD_TARGET is not a FreeBSD target" >&2; exit 2 ;;
+esac
+# Only binaries for this machine run here (the --version check at the end).
+HOST_ARCH="$(release_arch "$(uname -m)" 2>/dev/null)" || HOST_ARCH="$(uname -m)"
 if [ "$DRY_RUN" = 0 ] && [ "$(uname -s)" != FreeBSD ]; then
   echo "error: build on FreeBSD (or pass --dry-run to check the tree layout)" >&2
   exit 2
@@ -105,6 +109,14 @@ echo "wrote $OUT_DIR/$BASENAME.tar.gz"
 if [ "$DRY_RUN" = 1 ] || [ "$ARCH" = "$HOST_ARCH" ]; then
   "$STAGE/bin/filmcraft-cli" --version
 else
+  # They cannot run here, so check what they are instead.
+  want="$ARCH"; [ "$ARCH" != x86_64 ] || want=x86-64
+  for b in "$STAGE"/bin/*; do
+    case "$(file -b "$b")" in
+      ELF*"$want"*FreeBSD*) ;;
+      *) echo "error: $b is not a FreeBSD $ARCH executable: $(file -b "$b")" >&2; exit 1 ;;
+    esac
+  done
   echo "skipping --version: an $ARCH binary does not run on this $HOST_ARCH machine"
 fi
 if [ "$DRY_RUN" = 1 ]; then
