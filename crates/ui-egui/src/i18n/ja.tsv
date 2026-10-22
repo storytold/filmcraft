@@ -979,6 +979,7 @@
 	Reset Effect	エフェクトをリセット
 	Reset Parameter	パラメーターをリセット
 	Save Preset…	プリセットを保存…
+	Effects: {names}	エフェクト：{names}
 	Custom Setup	カスタム設定
 	Edit…	編集…
 	Show graphs	グラフを表示

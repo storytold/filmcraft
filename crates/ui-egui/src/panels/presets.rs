@@ -2,7 +2,8 @@
 //! onto a clip or double-click to apply to the selection; right-click a user preset to delete or
 //! export it) and the Save Preset dialog (Effect Controls ▸ right-click an effect ▸ Save Preset…).
 //!
-//! Automation ids: `effects.preset.<name>`, `savePreset.name`, `savePreset.description`,
+//! Automation ids: `effects.preset.<name>`, `savePreset.name`, `savePreset.effects` (shown when
+//! the preset holds several effects), `savePreset.description`,
 //! `savePreset.keyframes.<scale|anchorIn|anchorOut|none>`, `savePreset.ok`, `savePreset.cancel`.
 
 use egui::{Align2, Rect, Sense, pos2, vec2};
@@ -100,6 +101,15 @@ pub fn open_save(app: &mut FilmcraftApp, clip: u64, effects: Vec<usize>, name: &
 
 pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.save_preset.clone() else { return };
+    // several effects (selected together in Effect Controls): say which ones the preset holds
+    let names: Vec<String> = app
+        .session
+        .active_sequence()
+        .and_then(|q| q.find_item(filmcraft_project::ClipId(d.clip)))
+        .map(|(_, it)| {
+            d.effects.iter().filter_map(|i| it.effects.get(*i)).map(|e| crate::i18n::t(e.def().map_or(e.effect.as_str(), |x| x.name)).to_string()).collect()
+        })
+        .unwrap_or_default();
     let mut open = true;
     let mut close = false;
     let mut apply = false;
@@ -111,6 +121,10 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let r = ui.text_edit_singleline(&mut d.name);
                 app.auto.add("savePreset.name", r.rect, "Name");
             });
+            if names.len() > 1 {
+                let r = ui.label(tlf!("Effects: {names}", names = names.join(", ")));
+                app.auto.add("savePreset.effects", r.rect, "Effects");
+            }
             ui.add_space(4.0);
             ui.label(egui::RichText::new(tl!("Type")).strong());
             for (key, label) in [

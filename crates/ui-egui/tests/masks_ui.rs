@@ -1,6 +1,7 @@
 //! Effect masks in the UI, driven headless through the control channel: create masks from the
 //! Effect Controls mask icons, edit them on the Program monitor (vertex, Bézier handle, feather,
-//! whole-mask drags), draw a pen mask, toggle Inverted, track a mask; apply and save effect presets.
+//! whole-mask drags), draw a pen mask, toggle Inverted, track a mask; apply and save effect presets,
+//! one effect or several selected together.
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes PNGs there.
 
@@ -404,4 +405,98 @@ fn presets_bin_drag_and_save_dialog() {
     assert_eq!(mine["keyframes"], "Anchor to In Point");
     assert_eq!(mine["masks"], 1);
     d.rect("effects.preset.My Vignette");
+}
+
+/// #1519: effects selected together in Effect Controls (Ctrl/Cmd-click, Shift-click) are saved as
+/// one preset, which brings all of them, with their values, to another clip. Right-click ▸ Save
+/// Preset… on an effect outside the selection saves that one alone.
+#[test]
+fn effects_selected_together_save_as_one_preset() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Effects"}));
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = |n: usize| seq["video"][0]["items"][n]["clip"].as_u64().unwrap();
+    let (a, b) = (clip(0), clip(1));
+    let item = &seq["video"][0]["items"][0];
+    d.exec("playhead.set", json!({"time": item["start"].as_i64().unwrap() + item["duration"].as_i64().unwrap() / 2}));
+    d.exec("timeline.select", json!({"clips": [a]}));
+    for fx in ["gaussian_blur", "mosaic"] {
+        d.exec("effects.apply", json!({"clips": [a], "effect": fx}));
+    }
+    d.exec("effects.setParam", json!({"clip": a, "effect": "gaussian_blur", "param": "blurriness", "value": 42}));
+    d.exec("effects.setParam", json!({"clip": a, "effect": "mosaic", "param": "horizontal", "value": 33}));
+    d.frames(3);
+    for fx in ["motion", "opacity", "time_remap", "gaussian_blur", "mosaic"] {
+        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}.twirl")}));
+        d.frames(2);
+    }
+    let save = |d: &mut Driver, fx: &str, name: &str| -> Value {
+        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}"), "button": "right"}));
+        d.frames(2);
+        d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}.savePreset")}));
+        d.frames(2);
+        let several = d.has("savePreset.effects");
+        d.ok("ui.click", json!({"id": "savePreset.name"}));
+        d.ok("ui.key", json!({"key": "Cmd+A"}));
+        d.ok("ui.type", json!({"text": name}));
+        d.ok("ui.click", json!({"id": "savePreset.ok"}));
+        d.frames(3);
+        let l = d.exec("presets.list", json!({}));
+        let p = l["presets"].as_array().unwrap().iter().find(|p| p["name"] == name).cloned().unwrap_or_else(|| panic!("{name} not saved: {l}"));
+        assert_eq!(several, p["effects"].as_array().unwrap().len() > 1, "{p}");
+        p["effects"].clone()
+    };
+    // click Gaussian Blur, Ctrl/Cmd-click Mosaic: both go into one preset
+    d.ok("ui.click", json!({"id": "effectControls.effect.gaussian_blur"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "effectControls.effect.mosaic", "modifiers": {"command": true}}));
+    d.frames(2);
+    assert_eq!(save(&mut d, "mosaic", "Blur and Mosaic"), json!(["Gaussian Blur", "Mosaic"]));
+    // applied to another clip, it brings both effects with their values
+    d.exec("presets.apply", json!({"preset": "Blur and Mosaic", "clips": [b]}));
+    let seq = d.exec("sequence.inspect", json!({}));
+    let fx = seq["video"][0]["items"].as_array().unwrap().iter().find(|c| c["clip"] == json!(b)).unwrap()["effects"].clone();
+    let value = |id: &str, param: &str| fx.as_array().unwrap().iter().find(|e| e["effect"] == id).map(|e| e["params"][param]["value"].clone());
+    assert_eq!(value("gaussian_blur", "blurriness"), Some(json!("Float(42.0)")), "{fx}");
+    assert_eq!(value("mosaic", "horizontal"), Some(json!("Float(33.0)")), "{fx}");
+    // Ctrl/Cmd-click again takes Mosaic out: Gaussian Blur alone
+    d.ok("ui.click", json!({"id": "effectControls.effect.mosaic", "modifiers": {"command": true}}));
+    d.frames(2);
+    assert_eq!(save(&mut d, "gaussian_blur", "Blur Only"), json!(["Gaussian Blur"]));
+    // Shift-click takes the effects in between, in the panel's order: Opacity, Time Remapping,
+    // Gaussian Blur (saved in the clip's order)
+    d.ok("ui.click", json!({"id": "effectControls.effect.opacity"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "effectControls.effect.gaussian_blur", "modifiers": {"shift": true}}));
+    d.frames(2);
+    let range = save(&mut d, "opacity", "Range");
+    assert_eq!(range.as_array().unwrap().len(), 3, "{range}");
+    for name in ["Opacity", "Time Remapping", "Gaussian Blur"] {
+        assert!(range.as_array().unwrap().contains(&json!(name)), "{name} in {range}");
+    }
+    // Save Preset… on an effect outside the selection saves that one
+    assert_eq!(save(&mut d, "mosaic", "Mosaic Only"), json!(["Mosaic"]));
+    // a plain click selects one effect again
+    d.ok("ui.click", json!({"id": "effectControls.effect.mosaic"}));
+    d.frames(2);
+    assert!(d.harness.state().ui.effect_multi_selection.is_none());
+    // a selection that moves away and back does not bring the old extra effects back: Blur with
+    // Mosaic, then Opacity selected another way (a property row, a script), then Blur again
+    let index = |d: &mut Driver, id: &str| -> u64 {
+        let seq = d.exec("sequence.inspect", json!({}));
+        let fx = seq["video"][0]["items"].as_array().unwrap().iter().find(|c| c["clip"] == json!(a)).unwrap()["effects"].clone();
+        fx.as_array().unwrap().iter().position(|e| e["effect"] == id).unwrap() as u64
+    };
+    d.ok("ui.click", json!({"id": "effectControls.effect.gaussian_blur"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "effectControls.effect.mosaic", "modifiers": {"command": true}}));
+    d.frames(2);
+    assert!(d.harness.state().ui.effect_multi_selection.is_some());
+    let (opacity, blur) = (index(&mut d, "opacity"), index(&mut d, "gaussian_blur"));
+    d.exec("effects.select", json!({"clip": a, "effect": opacity}));
+    d.frames(2);
+    d.exec("effects.select", json!({"clip": a, "effect": blur}));
+    d.frames(2);
+    assert!(d.harness.state().ui.effect_multi_selection.is_none(), "the old Mosaic is not selected again");
+    assert_eq!(save(&mut d, "gaussian_blur", "Blur Again"), json!(["Gaussian Blur"]));
 }
