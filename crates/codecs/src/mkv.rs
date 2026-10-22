@@ -81,6 +81,22 @@ fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec
     let at = stamp_to_samples(t, rate, codec_delay_samples(t, rate));
     let first = || file.read_sample(bytes, ti, 0).unwrap_or_default();
     let out_rate = u32::try_from(rate).unwrap_or(0);
+    if let Codec::Pcm { bits, .. } = &t.codec {
+        let ch = t.audio.as_ref().map(|a| a.channels).unwrap_or(2).max(1) as usize;
+        let bps = (*bits as usize).div_ceil(8) * ch;
+        if bps > 0 {
+            let packets = t.samples.iter().map(|s| {
+                let prefix_len = t.frame_prefix(s.size as u64).len();
+                let samples = (s.size as usize + prefix_len) / bps;
+                PacketTime { stamp: at(s.pts), stamped: own_stamp(s), samples: (samples > 0).then_some(samples as i64) }
+            });
+            let first_samples = t.samples.first().map_or(1024, |s| {
+                let prefix_len = t.frame_prefix(s.size as u64).len();
+                ((s.size as usize + prefix_len) / bps) as i64
+            });
+            return contiguous_starts(packets, (first_samples / 2).max(stamp_tolerance(t, rate)));
+        }
+    }
     let frame = match &t.codec {
         Codec::Aac { asc } => fixed_packet_samples(FixedFrames::Aac(asc), &[], out_rate),
         Codec::Mp3 | Codec::Mp2 | Codec::Mp1 => fixed_packet_samples(FixedFrames::MpegAudio, &first(), out_rate),
