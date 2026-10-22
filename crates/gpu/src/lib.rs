@@ -725,8 +725,15 @@ impl GpuCompositor {
                     },
                     None => VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px.clone()),
                 };
-                owned =
-                    [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }];
+                owned = [PlanLayer {
+                    frame: Arc::new(frame),
+                    matrix: filmcraft_geom::Affine::IDENTITY,
+                    opacity: 1.0,
+                    blend: Blend::Normal,
+                    fx: None,
+                    input: None,
+                    prefiltered: false,
+                }];
                 (img.w as u32, img.h as u32, &owned[..])
             }
             FramePlan::Composite { width, height, steps } => return self.composite_steps(*width, *height, steps, prep),
@@ -816,7 +823,7 @@ impl GpuCompositor {
                 None => None,
             };
             // what the layer draws: the effect result (linear premultiplied RGBA) or the frame
-            let (u, tex) = match &job {
+            let (mut u, tex) = match &job {
                 Some(j) => {
                     let s =
                         SrcInfo { kind: 1, code_scale: 1.0, code_levels: 1.0, alpha: 0.0, chroma: l.size(), size: l.size(), color: l.frame.color, input: None };
@@ -836,6 +843,10 @@ impl GpuCompositor {
                     (Self::uniforms(&src, &m, l.opacity, l.blend, (w, h)), views)
                 }
             };
+            if l.prefiltered {
+                // p0.z: the nested working image already uses the reference mip level.
+                u[14] = 1.0;
+            }
             jobs.push(job);
             let buf = self.uniform_buffer(&u);
             let mut entries = vec![

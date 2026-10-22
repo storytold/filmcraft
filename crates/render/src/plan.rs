@@ -43,6 +43,9 @@ pub struct PlanLayer {
     /// P3 media on a Rec. 709 sequence; [`crate::colorman::gpu_input`]): run on the GPU as on the
     /// CPU. None: the default decode.
     pub input: Option<Arc<filmcraft_color::InputTransform>>,
+    /// A working image prepared with the CPU reference mip rule: sample it bilinearly once,
+    /// without adding the GPU's extra supersampling. Ordinary source layers keep the default.
+    pub prefiltered: bool,
 }
 
 /// The GPU effect stage of a layer: the frame is decoded into a working image of `size` (the
@@ -58,7 +61,7 @@ pub struct LayerFx {
 impl PlanLayer {
     /// A layer drawing `frame` directly.
     pub fn new(frame: Arc<VideoFrame>, matrix: Affine, opacity: f32, blend: Blend) -> Self {
-        Self { frame, matrix, opacity, blend, fx: None, input: None }
+        Self { frame, matrix, opacity, blend, fx: None, input: None, prefiltered: false }
     }
 
     /// Size of the picture the matrix places: the working image with effects, else the frame.
@@ -160,6 +163,33 @@ impl FramePlan {
 
 fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
     Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px))
+}
+
+// The GPU samples with a clamped edge. A clear texel around a nested picture preserves the
+// reference compositor's transparent bilinear border at fractional-pixel placements.
+fn nest_border_size(w: usize, h: usize) -> Option<(usize, usize, usize)> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let (w, h) = (w.checked_add(2)?, h.checked_add(2)?);
+    let len = w.checked_mul(h)?.checked_mul(4)?;
+    (len <= 512 * 1024 * 1024 / size_of::<f32>()).then_some((w, h, len))
+}
+
+fn bordered_nest(img: &crate::Image) -> Option<crate::Image> {
+    if img.px.len() != img.w.checked_mul(img.h)?.checked_mul(4)? {
+        return None;
+    }
+    let (w, h, len) = nest_border_size(img.w, img.h)?;
+    let mut px = Vec::new();
+    px.try_reserve_exact(len).ok()?;
+    px.resize(len, 0.0);
+    let row = img.w.checked_mul(4)?;
+    for (y, source) in img.px.chunks_exact(row).take(img.h).enumerate() {
+        let start = ((y + 1) * w + 1) * 4;
+        px.get_mut(start..start + row)?.copy_from_slice(source);
+    }
+    Some(crate::Image { w, h, px })
 }
 
 fn simple_transition(id: &str) -> bool {
@@ -369,9 +399,9 @@ fn push_item(
         }
         return;
     }
-    // A nested sequence that is only shown (no effects, untransformed, fully opaque, blending
-    // Normal) contributes its own layers: the compositor draws them like the clips of this
-    // sequence, with no CPU pass over the nested sequence. Its captions are part of its picture.
+    // A plain nest at identity contributes its layers directly. A transformed nest keeps its
+    // own clipped picture as one source-sized image: the compositor places it, avoiding the
+    // CPU transform into a full output-sized canvas on every Position/Scale update.
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
         && nest < crate::MAX_NEST_DEPTH
         && item.multicam_angle(nested).is_none()
@@ -379,20 +409,66 @@ fn push_item(
         && !item.has_opacity_masks()
         && bl == Blend::Normal
         && extra_opacity * op >= 1.0 - 1e-6
-        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && nest_is_plain(project, seq, nested, ft)
     {
-        push_tracks(project, nested, ft, opts, sources, nest + 1, out);
-        let (w, h) = output_size(nested, opts.scale);
-        for o in crate::caption_overlays(nested, ft, w, h) {
-            out.push(PlanLayer::new(
-                Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
-                Affine::translate(o.x as f64, o.y as f64),
-                1.0,
-                Blend::Normal,
-            ));
+        let size = (nested.settings.width, nested.settings.height);
+        let motion = motion_matrix(seq, item, size, Some(nested.settings.par), mt);
+        if near_identity(&motion) {
+            push_tracks(project, nested, ft, opts, sources, nest + 1, out);
+            let (w, h) = output_size(nested, opts.scale);
+            for o in crate::caption_overlays(nested, ft, w, h) {
+                out.push(PlanLayer::new(
+                    Arc::new(VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
+                    Affine::translate(o.x as f64, o.y as f64),
+                    1.0,
+                    Blend::Normal,
+                ));
+            }
+            return;
         }
-        return;
+        // Rotated edge coverage differs between GPU and CPU at reduced preview resolution.
+        // Keep that case on the reference fallback until its sampling is qualified.
+        if motion.b.abs() < 1e-9 && motion.c.abs() < 1e-9 {
+            let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
+            let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
+            let (w, h) = output_size(nested, want);
+            // Reject oversized copies before rendering, so the fallback does not render twice.
+            let request = crate::NestedPictureRequest {
+                sequence: item.item,
+                time: ft,
+                scale_bits: want.to_bits(),
+                effects: opts.effects,
+                depth: opts.depth.saturating_add(1),
+            };
+            if nest_border_size(w, h).is_some()
+                && let Some(img) = sources.nested_picture(request).or_else(|| {
+                    let img = Arc::new(crate::base_layer(project, seq, item, t, opts, sources, want)?);
+                    sources.retain_nested_picture(request, img.clone());
+                    Some(img)
+                })
+            {
+                let px_scale = img.w as f64 / size.0.max(1) as f64;
+                let mut matrix =
+                    Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale));
+                let mut img = img;
+                // Exactly the reference Image::transformed mip choice, bounded by halving.
+                let minify = |m: &Affine| 1.0 / (m.a * m.a + m.b * m.b).sqrt().min((m.c * m.c + m.d * m.d).sqrt()).max(1e-6);
+                while minify(&matrix) >= 2.0 && img.w >= 4 && img.h >= 4 {
+                    img = Arc::new(img.downsample2());
+                    matrix = matrix.then_apply(&Affine::scale(2.0, 2.0));
+                }
+                // With tiny pictures the reference stops minifying: keep its existing path.
+                if minify(&matrix) < 2.0
+                    && let Some(padded) = bordered_nest(&img)
+                {
+                    out.push(PlanLayer {
+                        prefiltered: true,
+                        ..PlanLayer::new(cpu_frame(padded), matrix.then_apply(&Affine::translate(-1.0, -1.0)), op * extra_opacity, bl)
+                    });
+                    return;
+                }
+            }
+        }
     }
     // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
     // image the GPU places as a layer.
@@ -447,7 +523,7 @@ fn push_item(
                     .then_apply(&motion)
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
                 let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, ops };
-                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input });
+                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input, prefiltered: false });
                 return;
             }
         } else if plain {
@@ -551,6 +627,14 @@ fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nest_border_rejects_invalid_and_oversized_working_images() {
+        assert!(super::nest_border_size(0, 1).is_none());
+        assert!(super::nest_border_size(usize::MAX, 2).is_none());
+        assert!(super::nest_border_size(8192, 8192).is_none());
+        assert!(super::bordered_nest(&crate::Image { w: 2, h: 2, px: vec![0.0] }).is_none());
+    }
+
     use super::*;
 
     #[test]

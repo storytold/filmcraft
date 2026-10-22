@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
@@ -52,6 +52,8 @@ pub struct MediaPool {
     proxies: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
     use_proxies: AtomicBool,
+    /// Explicit source/path changes; ordinary lazy cache fills do not change the picture.
+    content_generation: AtomicU64,
     /// Per item: video frames that failed in a row in the monitors (see [`Self::monitor_source`]).
     failures: Arc<Mutex<HashMap<ItemId, u32>>>,
     /// Openers tried before the built-in ones (MP4/MOV + codecs register here).
@@ -69,6 +71,7 @@ impl Default for MediaPool {
             proxies: RwLock::new(HashMap::new()),
             offline: Arc::new(RwLock::new(HashMap::new())),
             use_proxies: AtomicBool::new(false),
+            content_generation: AtomicU64::new(0),
             failures: Arc::default(),
             openers: RwLock::new(filmcraft_codecs::openers()),
             stored: RwLock::default(),
@@ -146,18 +149,32 @@ fn file_name(path: &str) -> String {
 }
 
 impl MediaPool {
+    /// Picture identity context for caches that survive unrelated project edits. This changes
+    /// when a host explicitly replaces/forgets sources or changes path/proxy policy, not when
+    /// a worker merely opens a source lazily.
+    pub fn content_generation(&self) -> u64 {
+        self.content_generation.load(Ordering::Acquire)
+    }
+
+    fn content_changed(&self) {
+        self.content_generation.fetch_add(1, Ordering::Release);
+    }
+
     pub fn register_opener(&self, o: Opener) {
         self.openers.write().unwrap_or_else(|e| e.into_inner()).push(o);
+        self.content_changed();
     }
 
     /// Cache a source for an item, valid whatever the item's reference (generators).
     pub fn insert(&self, item: ItemId, src: SharedSource) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (String::new(), src));
+        self.content_changed();
     }
 
     /// Cache a source for an item under its [`media_key`].
     pub fn insert_keyed(&self, item: ItemId, key: String, src: SharedSource) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src));
+        self.content_changed();
     }
 
     /// Cache a source opened from `path` for an item.
@@ -165,6 +182,7 @@ impl MediaPool {
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         let src = self.unsupported_as_slate(item, path, src);
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
+        self.content_changed();
     }
 
     /// `src` (opened from `path` for `item`) showing the unreadable slate for the frames it
@@ -178,6 +196,7 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         self.proxies.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+        self.content_changed();
     }
 
     /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
@@ -195,19 +214,32 @@ impl MediaPool {
     pub fn add_stored_paths(&self, paths: impl IntoIterator<Item = String>, document: Option<&str>) {
         let document = document.filter(|d| !d.is_empty()).map(PathBuf::from);
         let mut stored = self.stored.write().unwrap_or_else(|e| e.into_inner());
+        let mut changed = false;
         for p in paths {
-            stored.entry(p).or_insert_with(|| document.clone());
+            if let std::collections::hash_map::Entry::Vacant(entry) = stored.entry(p) {
+                entry.insert(document.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            self.content_changed();
         }
     }
 
     /// Forget the stored paths (a new project).
     pub fn clear_stored(&self) {
-        self.stored.write().unwrap_or_else(|e| e.into_inner()).clear();
+        let mut stored = self.stored.write().unwrap_or_else(|e| e.into_inner());
+        if !stored.is_empty() {
+            stored.clear();
+            self.content_changed();
+        }
     }
 
     /// The user picked `path` in this session (import, Link Media): open it as given.
     pub fn allow(&self, path: &str) {
-        self.stored.write().unwrap_or_else(|e| e.into_inner()).remove(path);
+        if self.stored.write().unwrap_or_else(|e| e.into_inner()).remove(path).is_some() {
+            self.content_changed();
+        }
     }
 
     /// The file to open for `path`, a media or proxy path of the project: a stored path as
@@ -233,6 +265,7 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).clear();
         self.proxies.write().unwrap_or_else(|e| e.into_inner()).clear();
         self.offline.write().unwrap_or_else(|e| e.into_inner()).clear();
+        self.content_changed();
     }
 
     pub fn cached(&self, item: ItemId) -> Option<SharedSource> {
@@ -249,7 +282,9 @@ impl MediaPool {
     }
 
     pub fn set_use_proxies(&self, on: bool) {
-        self.use_proxies.store(on, Ordering::Relaxed);
+        if self.use_proxies.swap(on, Ordering::Relaxed) != on {
+            self.content_changed();
+        }
     }
 
     /// `src` (item `item`) as the monitors show it: once [`DAMAGED_AFTER`] of its video frames in a

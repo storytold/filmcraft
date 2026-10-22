@@ -10,7 +10,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use web_time::Instant;
@@ -100,6 +100,7 @@ struct Shared {
     cv: Condvar,
     done: Mutex<Cache>,
     plans: Mutex<PlanCache>,
+    nested_pictures: Weak<Mutex<crate::nested_pictures::Pictures>>,
     /// Running jobs: key, cancel flag, prefetch.
     in_flight: Mutex<Vec<(FrameKey, Arc<std::sync::atomic::AtomicBool>, bool)>>,
     /// Per-job timings, collected while profiling is on (benchmarks, `ui.inspect`).
@@ -238,14 +239,20 @@ fn timed_source<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// A media source that times its `video_frame` calls (see [`JobRecord::source_wall`]).
-struct TimedSource(filmcraft_media::SharedSource);
+struct TimedSource(filmcraft_media::SharedSource, Option<Arc<AtomicBool>>);
 
 impl filmcraft_media::MediaSource for TimedSource {
     fn info(&self) -> &filmcraft_media::MediaInfo {
         self.0.info()
     }
     fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
-        timed_source(|| self.0.video_frame(req))
+        let result = timed_source(|| self.0.video_frame(req));
+        if result.is_err()
+            && let Some(failed) = &self.1
+        {
+            failed.store(true, Ordering::Relaxed);
+        }
+        result
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
         self.0.audio(start, frames, sample_rate)
@@ -259,12 +266,27 @@ impl filmcraft_media::MediaSource for TimedSource {
 /// [`FrameServer::render_cost`] and, while profiling, [`JobRecord`]).
 struct JobProvider {
     inner: filmcraft_engine::media_pool::PoolProvider,
+    nested: Option<crate::nested_pictures::PictureContext>,
 }
 
 impl filmcraft_render::SourceProvider for JobProvider {
     fn source(&self, item: ItemId) -> Option<filmcraft_media::SharedSource> {
-        let s = self.inner.pool.monitor_source(item, self.inner.source(item)?);
-        Some(Arc::new(TimedSource(s)))
+        let Some(source) = self.inner.source(item) else {
+            if let Some(context) = &self.nested {
+                context.source_failed.store(true, Ordering::Relaxed);
+            }
+            return None;
+        };
+        let source = self.inner.pool.monitor_source(item, source);
+        Some(Arc::new(TimedSource(source, self.nested.as_ref().map(|c| c.source_failed.clone()))))
+    }
+    fn nested_picture(&self, request: filmcraft_render::NestedPictureRequest) -> Option<Arc<filmcraft_render::Image>> {
+        self.nested.as_ref().and_then(|context| context.get(request))
+    }
+    fn retain_nested_picture(&self, request: filmcraft_render::NestedPictureRequest, image: Arc<filmcraft_render::Image>) {
+        if let Some(context) = &self.nested {
+            context.retain(request, image);
+        }
     }
 }
 
@@ -354,6 +376,8 @@ impl Cache {
 
 pub struct FrameServer {
     shared: Arc<Shared>,
+    // Idle workers hold only Weak: replacing this server releases its completed pictures.
+    _nested_pictures: Arc<Mutex<crate::nested_pictures::Pictures>>,
     pub pool: Arc<MediaPool>,
     pub services: Arc<dyn Services>,
     pub previews: Arc<PreviewStore>,
@@ -411,11 +435,13 @@ impl FrameServer {
     }
 
     pub fn new(pool: Arc<MediaPool>, services: Arc<dyn Services>, previews: Arc<PreviewStore>, workers: usize) -> Self {
+        let nested_pictures = Arc::new(Mutex::new(crate::nested_pictures::Pictures::default()));
         let shared = Arc::new(Shared {
             queue: Mutex::new(VecDeque::new()),
             cv: Condvar::new(),
             done: Mutex::new(Cache { map: HashMap::new(), bytes: 0, budget: 768 << 20, clock: 0 }),
             plans: Mutex::new(PlanCache::default()),
+            nested_pictures: Arc::downgrade(&nested_pictures),
             in_flight: Mutex::new(Vec::new()),
             profiling: AtomicBool::new(false),
             records: Mutex::new(Vec::new()),
@@ -435,7 +461,7 @@ impl FrameServer {
         }
         #[cfg(target_arch = "wasm32")]
         let _ = workers;
-        Self { shared, pool, services, previews, repaint }
+        Self { shared, pool, services, previews, repaint, _nested_pictures: nested_pictures }
     }
 
     /// The default number of frame workers for this machine.
@@ -829,11 +855,14 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
             filmcraft_media::cancel::with_draft(job.key.draft, || {
                 filmcraft_media::cancel::with_background(is_background(job), || {
                     if let Target::SequencePlan(seq) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, pool, services, previews);
+                        let (plan, pv, provider) = plan_job(job, seq, pool, services, previews, sh.nested_pictures.upgrade());
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
                             let prepared = filmcraft_gpu::prepare(&plan);
+                            if let Some(context) = &provider.nested {
+                                context.publish();
+                            }
                             sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
                         }
                         pv
@@ -904,10 +933,27 @@ fn preview_frame(job: &Job, seq: ItemId, pool: &MediaPool, previews: &PreviewSto
 }
 
 fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> JobProvider {
-    JobProvider { inner: pool.provider(job.project.clone(), services.clone()) }
+    JobProvider { inner: pool.provider(job.project.clone(), services.clone()), nested: None }
 }
 
-fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> (filmcraft_render::plan::FramePlan, bool) {
+fn plan_job(
+    job: &Job,
+    seq: ItemId,
+    pool: &Arc<MediaPool>,
+    services: &Arc<dyn Services>,
+    previews: &PreviewStore,
+    cache: Option<Arc<Mutex<crate::nested_pictures::Pictures>>>,
+) -> (filmcraft_render::plan::FramePlan, bool, JobProvider) {
+    let mut provider = provider(job, pool, services);
+    // Draft and speculative work must not seed full-quality pictures. Ordinary paused
+    // requests also have a catch-up margin: the cache verifies its exact value separately.
+    if !job.key.draft
+        && !job.prefetch
+        && let Some(cache) = cache
+    {
+        provider.nested =
+            Some(crate::nested_pictures::PictureContext::new(cache, job.project.clone(), job.key.revision, pool.clone(), job.cancel.clone(), job.catch_up));
+    }
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     if let Some(frame) = preview_frame(job, seq, pool, previews)
         && let Some(q) = job.project.sequence(seq)
@@ -916,7 +962,15 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
         // captions (they are not part of the preview hash), so captions are layered on live.
         let (w, h) = filmcraft_render::output_size(q, job.scale);
         let matrix = filmcraft_geom::Affine::scale(w as f64 / frame.width.max(1) as f64, h as f64 / frame.height.max(1) as f64);
-        let mut layers = vec![filmcraft_render::plan::PlanLayer { frame, matrix, opacity: 1.0, blend: filmcraft_render::Blend::Normal, fx: None, input: None }];
+        let mut layers = vec![filmcraft_render::plan::PlanLayer {
+            frame,
+            matrix,
+            opacity: 1.0,
+            blend: filmcraft_render::Blend::Normal,
+            fx: None,
+            input: None,
+            prefiltered: false,
+        }];
         for o in filmcraft_render::caption_overlays(q, job.time, w, h) {
             layers.push(filmcraft_render::plan::PlanLayer {
                 frame: Arc::new(filmcraft_frame::VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
@@ -925,12 +979,13 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
                 blend: filmcraft_render::Blend::Normal,
                 fx: None,
                 input: None,
+                prefiltered: false,
             });
         }
-        return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);
+        return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true, provider);
     }
-    let provider = provider(job, pool, services);
-    (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider), false)
+    let plan = filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider);
+    (plan, false, provider)
 }
 
 /// Render a job to RGBA8; the flag says whether it came from a render preview.

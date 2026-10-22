@@ -50,6 +50,7 @@ pub mod icons;
 pub mod links;
 pub mod menus;
 pub mod native_dialogs;
+mod nested_pictures;
 pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,6 +62,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+mod thumbnail_revision;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -304,6 +306,7 @@ pub struct FilmcraftApp {
     /// The UI pass each thumbnail texture was last used in: thumbnails beyond
     /// [`MAX_THUMB_TEXTURES`] are freed, least recently used first (#1682).
     thumb_used: HashMap<String, u64>,
+    thumbnail_revisions: std::cell::RefCell<thumbnail_revision::ThumbnailRevisions>,
     control_rx: Option<Receiver<ControlRequest>>,
     /// One explicit panel reveal; consumed by the custom renderer, never repeated per frame.
     pub(crate) pending_panel_raise: Option<PanelKind>,
@@ -569,6 +572,7 @@ impl FilmcraftApp {
             auto: Default::default(),
             textures: HashMap::new(),
             thumb_used: HashMap::new(),
+            thumbnail_revisions: Default::default(),
             control_rx: None,
             pending_panel_raise: None,
             control_input_only: false,
@@ -650,6 +654,7 @@ impl FilmcraftApp {
             ));
             self.textures.clear();
             self.thumb_used.clear();
+            self.thumbnail_revisions.get_mut().clear();
             self.tl.reset_media_caches();
             // the new frame server needs the Memory settings
             self.applied_prefs = None;
@@ -1281,7 +1286,7 @@ impl FilmcraftApp {
     /// Get a thumbnail texture for an item at a media time (requested at low priority).
     /// Cache revision of a project item's own frames: media changes only when its file does
     /// (relink, Make Offline, proxies on/off), so its frames survive unrelated edits; other items
-    /// (sequences) follow the project revision.
+    /// (sequences) follow their bounded picture dependencies, including media-pool refreshes.
     pub fn item_revision(&self, item: filmcraft_project::ItemId) -> u64 {
         let p = &self.session.project;
         let target = match p.item(item).map(|i| &i.kind) {
@@ -1295,6 +1300,9 @@ impl FilmcraftApp {
                 filmcraft_engine::media_pool::media_key(m).hash(&mut h);
                 (m.proxy.is_some() && self.session.media.use_proxies()).hash(&mut h);
                 h.finish()
+            }
+            Some(filmcraft_project::ItemKind::Sequence(_)) => {
+                self.thumbnail_revisions.borrow_mut().revision(p, self.session.revision, &self.session.media, item)
             }
             _ => self.session.revision,
         }
@@ -2486,6 +2494,7 @@ mod gpu_fallback_tests {
             blend: filmcraft_render::Blend::Normal,
             fx: None,
             input: None,
+            prefiltered: false,
         };
         // a 4K source in an HD sequence still needs a 3840-wide texture on the GPU
         let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![layer(64, 64), layer(3840, 2160)] };

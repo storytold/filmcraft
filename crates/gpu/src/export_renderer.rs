@@ -286,6 +286,49 @@ mod tests {
     }
 
     #[test]
+    fn transformed_nested_picture_matches_cpu() {
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (nested GPU parity): no adapter");
+            return;
+        };
+        for textured in [false, true] {
+            let (mut p, inner, mut sources) = project(false);
+            let project = Arc::make_mut(&mut p);
+            let media = *sources.0.iter().find(|(_, s)| s.info().has_video()).unwrap().0;
+            let rate = filmcraft_time::FrameRate::FPS_24;
+            if textured {
+                let source = GeneratorSource::new(Generator::Demo(filmcraft_media::DemoScene::OceanSunset), 320, 180, rate, Tick(2 * TICKS_PER_SECOND));
+                let ItemKind::Media(clip) = &mut project.item_mut(media).unwrap().kind else { panic!("expected generated media") };
+                clip.info = source.info().clone();
+                clip.media = MediaRef::Generator(source.generator.clone());
+                sources.0.insert(media, Arc::new(source));
+            }
+            let range = TimeRange::new(Tick::ZERO, rate.tick_of(24));
+            let camera = project.make_track_item(media, TrackKind::Video, Tick::ZERO, range, rate).unwrap();
+            project.sequence_mut(inner).unwrap().video_tracks[0].items.push(camera);
+            let outer = project.new_sequence("outer", project.sequence(inner).unwrap().settings.clone(), 1, 0, None);
+            let mut nest = project.make_track_item(inner, TrackKind::Video, Tick::ZERO, range, rate).unwrap();
+            let motion = nest.effect_mut("motion").unwrap();
+            motion.param_mut("position").unwrap().value = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(185.0, 75.0));
+            motion.param_mut("scale").unwrap().value = filmcraft_project::ParamValue::Float(60.0);
+            motion.param_mut("uniform_scale").unwrap().value = filmcraft_project::ParamValue::Bool(false);
+            project.sequence_mut(outer).unwrap().video_tracks[0].items.push(nest);
+            for (rotation, width) in [(0.0, 60.0), (19.0, 60.0), (0.0, 30.0), (0.0, 120.0)] {
+                let motion = Arc::make_mut(&mut p).sequence_mut(outer).unwrap().video_tracks[0].items[0].effect_mut("motion").unwrap();
+                motion.param_mut("rotation").unwrap().value = filmcraft_project::ParamValue::Float(rotation);
+                motion.param_mut("scale_width").unwrap().value = filmcraft_project::ParamValue::Float(width);
+                for scale in [1.0, 0.5] {
+                    let opts = RenderOptions { scale, ..Default::default() };
+                    let cpu = filmcraft_render::render_sequence(&p, outer, Tick::ZERO, opts, &sources);
+                    assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "fixture must contain a visible picture");
+                    let gpu = renderer.render(&p, outer, Tick::ZERO, opts, &sources).expect("GPU rendered the nest");
+                    assert_parity(&cpu, &gpu, "transformed nest");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gpu_render_impls_frame_renderer() {
         // dev-dependency: the same wrapper the app and CLI register.
         struct R(ExportRenderer);

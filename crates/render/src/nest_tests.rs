@@ -360,3 +360,78 @@ fn a_nest_that_is_not_plain_is_still_drawn_right() {
         assert!(w < 0.01, "{what}: plan and reference differ by {w}");
     }
 }
+
+#[test]
+fn a_transformed_plain_nest_keeps_a_source_sized_layer() {
+    let mut r = Rig::new();
+    let red = r.matte(RED, 96, 64);
+    let inner = r.seq("inner", 96, 64, FrameRate::FPS_24);
+    r.put(inner, red, 24);
+    let outer = r.seq("outer", 96, 64, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 24);
+    r.clip(outer, nest).effect_mut("motion").unwrap().param_mut("scale").unwrap().value = ParamValue::Float(50.0);
+    for scale in [1.0, 0.5] {
+        let opts = RenderOptions { scale, ..Default::default() };
+        let plan = plan::plan_frame(&r.p, outer, Tick::ZERO, opts, &r.map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("expected layers") };
+        assert_eq!(layers.len(), 1);
+        // The old path first transformed the nest onto a full output-sized canvas.
+        // The source picture now has a single clear texel around it for transparent filtering.
+        assert_eq!(layers[0].size(), ((48.0 * scale) as u32 + 2, (32.0 * scale) as u32 + 2));
+        assert_ne!(layers[0].matrix, Affine::IDENTITY);
+        let reference = render_sequence(&r.p, outer, Tick::ZERO, opts, &r.map);
+        assert!(worst(&plan::execute_cpu(&plan), &reference) < 0.001);
+    }
+}
+
+#[test]
+fn transformed_plain_nests_preserve_the_group_picture() {
+    let t = FrameRate::FPS_24.tick_of(20);
+    for (scale, rotation) in [(100.0, 0.0), (60.0, 0.0), (130.0, 19.0)] {
+        let mut r = Rig::new();
+        let (_, outer, nest) = two_layer_nest(&mut r);
+        let motion = r.clip(outer, nest).effect_mut("motion").unwrap();
+        motion.param_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(175.0, 75.0));
+        motion.param_mut("scale").unwrap().value = ParamValue::Float(scale);
+        motion.param_mut("rotation").unwrap().value = ParamValue::Float(rotation);
+        for preview in [1.0, 0.5] {
+            let opts = RenderOptions { scale: preview, ..Default::default() };
+            let reference = render_sequence(&r.p, outer, t, opts, &r.map);
+            let frame_plan = plan::plan_frame(&r.p, outer, t, opts, &r.map);
+            if rotation != 0.0 {
+                let plan::FramePlan::Layers { layers, .. } = &frame_plan else { panic!("expected fallback layer") };
+                assert_eq!(layers[0].matrix, Affine::IDENTITY, "rotation keeps the reference fallback");
+            }
+            let planned = plan::execute_cpu(&frame_plan);
+            let difference = worst(&planned, &reference);
+            assert!(difference < 0.001, "scale {scale}, rotation {rotation}, preview {preview}: {difference}");
+        }
+    }
+}
+
+#[test]
+fn a_transformed_nest_keeps_captions_at_its_held_source_time() {
+    let mut r = Rig::new();
+    let (inner, outer, nest) = two_layer_nest(&mut r);
+    let mut captions = CaptionTrack::new(TrackId(9901), "Nested".into(), CaptionFormat::Subtitle);
+    captions.captions.push(Caption {
+        id: ClipId(9902),
+        start: Tick::ZERO,
+        duration: Tick(TICKS_PER_SECOND),
+        text: "HELD".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    r.p.sequence_mut(inner).unwrap().caption_tracks.push(captions);
+    let clip = r.clip(outer, nest);
+    clip.frame_hold = Some(FrameRate::FPS_24.tick_of(12));
+    clip.effect_mut("motion").unwrap().param_mut("scale").unwrap().value = ParamValue::Float(75.0);
+    let t = FrameRate::FPS_24.tick_of(30);
+    let with = r.frame(outer, t);
+    assert!(worst(&r.planned(outer, t), &with) < 0.001);
+    r.p.sequence_mut(inner).unwrap().caption_tracks[0].enabled = false;
+    let without = r.frame(outer, t);
+    assert!(worst(&with, &without) > 0.1, "held caption must be visible after its outer-time end");
+    assert!(worst(&r.planned(outer, t), &without) < 0.001);
+}

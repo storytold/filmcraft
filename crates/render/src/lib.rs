@@ -45,9 +45,27 @@ use filmcraft_time::{Tick, TimeDisplay, format_time};
 pub use blend::Blend;
 pub use image::Image;
 
+/// A clipped nested picture before the outer clip's transform. Captions and working-space
+/// output are intrinsic to this path; the provider supplies project/source-context validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NestedPictureRequest {
+    pub sequence: ItemId,
+    pub time: Tick,
+    pub scale_bits: u32,
+    pub effects: bool,
+    pub depth: u32,
+}
+
 /// Resolves project items to media sources (the engine owns the media pool).
 pub trait SourceProvider: Sync {
     fn source(&self, item: ItemId) -> Option<SharedSource>;
+    /// Optional host-owned reuse of immutable clipped inner pictures. Reference and export
+    /// providers keep the uncached default; a host must validate dependencies and bound memory.
+    fn nested_picture(&self, _request: NestedPictureRequest) -> Option<Arc<Image>> {
+        None
+    }
+    /// Stage a completed inner picture. The host publishes only after the complete job succeeds.
+    fn retain_nested_picture(&self, _request: NestedPictureRequest, _image: Arc<Image>) {}
 }
 
 impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {
