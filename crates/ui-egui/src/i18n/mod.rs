@@ -1384,7 +1384,16 @@ mod tests {
             // every theme family falls back to the craft-fonts (when built with them; no system
             // font is added then) or to the system Japanese font
             for family in crate::theme::font_families() {
-                let stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
+                let stack: Vec<String> = fonts
+                    .definitions()
+                    .families
+                    .get(&family)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    // Other scripts' optional system fallbacks do not change Japanese precedence.
+                    .filter(|n| !crate::rtl::is_system_face(n) && !crate::cjk::is_system_face(n))
+                    .collect();
                 if craft {
                     assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                     assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");

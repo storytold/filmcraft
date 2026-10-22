@@ -78,6 +78,12 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
     }
 }
 
+/// Optional installed CJK fallbacks, separate from the Japanese fallback under test.
+#[cfg(test)]
+pub(crate) fn is_system_face(name: &str) -> bool {
+    matches!(name, "system-chinese" | "system-korean")
+}
+
 fn install_chinese(fonts: &mut FontDefinitions) {
     let chinese: Vec<_> = craft_fonts().collect();
     if chinese.is_empty() {
