@@ -772,30 +772,24 @@ fn markers_panel_label_refreshes_the_colour_filter_in_both_themes() {
 }
 
 #[test]
-fn timeline_clip_label_is_disabled_without_a_selected_clip() {
+fn timeline_ruler_context_menu_marks_the_selected_clip_range() {
     let mut d = Driver::demo();
-    d.exec("markers.clearAll", json!({}));
-    d.exec("timeline.select", json!({"clips":[]}));
-    d.ok("ui.click", json!({"id":"timeline.ruler","fx":0.8,"fy":0.5,"button":"right"}));
+    d.exec("markers.clearInOut", json!({"target":"program"}));
+    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let expected_in = clip.start;
+    let expected_out = clip.end() - d.app().session.sequence_rate().frame_duration();
+    d.exec("timeline.select", json!({"clips":[clip.id.0]}));
+    d.ok("ui.click", json!({"id":"timeline.ruler","fx":0.8,"fy":0.8,"button":"right"}));
     d.frames(3);
-    let enabled = |d: &mut Driver| {
-        let elements = d.ok("ui.elements", json!({"prefix":"timeline.clipMenu.edit.label"}));
-        elements[0]["enabled"].clone()
-    };
-    assert_eq!(enabled(&mut d), json!(false));
-    let undo = d.app().session.history.undo.len();
-    d.click("timeline.clipMenu.edit.label");
-    assert!(d.ids("timeline.clipMenu.label.").is_empty());
-    assert_eq!(d.app().session.history.undo.len(), undo);
-    d.ok("ui.key", json!({"key":"Escape"}));
-    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].id;
-    d.ok("ui.click", json!({"id":format!("timeline.clip.{}",clip.0),"fx":0.5,"button":"right"}));
-    d.frames(3);
-    assert_eq!(enabled(&mut d), json!(true));
-    d.click("timeline.clipMenu.edit.label");
-    d.click("timeline.clipMenu.label.Blue");
-    assert_eq!(d.app().session.active_sequence().unwrap().find_item(clip).unwrap().1.label, filmcraft_project::Label::Blue);
-    assert!(d.app().session.active_sequence().unwrap().markers.is_empty());
+    let ruler_items = d.ids("timeline.rulerMenu.");
+    for action in ["markIn", "markOut", "markSelection", "markClip", "clearIn", "clearOut", "clearInOut"] {
+        assert!(ruler_items.contains(&format!("timeline.rulerMenu.{action}")), "the ruler menu has {action}");
+    }
+    assert!(!d.ids("timeline.clipMenu.").iter().any(|id| id == "timeline.clipMenu.edit.label"), "a ruler click must not open the clip menu");
+    d.click("timeline.rulerMenu.markSelection");
+    let seq = d.app().session.active_sequence().unwrap();
+    assert_eq!(seq.mark_in, Some(expected_in));
+    assert_eq!(seq.mark_out, Some(expected_out));
 }
 
 /// New Sequence stays open when the engine rejects the frame size so the rest of the draft is not lost.
