@@ -754,7 +754,7 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         // a multi-selection makes the sequence from its first item and follows it, back to back, in one undo step
         let items: Vec<u64> = crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect();
         if let Err(e) = app.session.execute("file.newSequence", json!({"fromItems": items})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     // OS files dropped on an empty Timeline: import already happened; create a sequence from the first item
@@ -764,13 +764,13 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     {
         app.pending_timeline_drop = None;
         if let Err(e) = app.session.execute("file.newSequence", json!({"fromItem": first.0})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         } else {
             let mut t = app.session.project.item(*first).map(|i| i.duration()).unwrap_or(Tick::ZERO);
             for item in rest {
                 let params = json!({"item": item.0, "time": t.0, "insert": false});
                 if let Err(e) = app.session.execute("timeline.place", params) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 } else {
                     t = Tick(t.0.saturating_add(app.session.project.item(*item).map(|i| i.duration().0.max(0)).unwrap_or(0)));
                 }
@@ -1439,7 +1439,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
     ui.painter().line_segment([pos2(rect.min.x + hw - 0.5, vclip.min.y), pos2(rect.min.x + hw - 0.5, aclip.max.y + MASTER_H)], Stroke::new(1.0, t.separator));
     for (cmd, params) in actions {
         if let Err(e) = app.session.execute(&cmd, params) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     if let Some(a) = vo_action {
@@ -1477,10 +1477,10 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     match crate::widgets::timecode_field(ui, tc_id, tc_rect, &tc, app.session.playhead(), Tick::ZERO, rate, seq.settings.drop_frame, t.timecode) {
         Some(Ok(time)) => {
             if let Err(e) = app.session.execute("playhead.set", json!({"time": time.0})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
-        Some(Err(e)) => app.ui.status = e,
+        Some(Err(e)) => app.ui.fail(e),
         None => {}
     }
     app.auto.add("timeline.timecode", tc_rect, &tc);
@@ -2017,7 +2017,7 @@ fn marker_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui, m
         app.auto.add(&format!("timeline.markerMenu.{cmd}"), r.rect, label);
         if r.clicked() {
             if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({"target":"program"})) {
-                app.ui.status = e;
+                app.ui.fail(e);
             }
             ui.close();
         }
@@ -2112,7 +2112,7 @@ fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::U
         {
             let e = if out { "out" } else { "in" };
             if let Err(e) = app.session.execute("trim.selectEditPoint", json!({"clip": c.0, "edge": e, "kind": kind})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
             ui.close();
         }
@@ -2123,7 +2123,7 @@ fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::U
     app.auto.add("timeline.editPointMenu.applyDefaultTransitions", r.rect, label);
     if r.clicked() {
         if let Err(e) = crate::menus::invoke(app, ctx, "trim.applyDefaultTransition", json!({})) {
-            app.ui.status = e;
+            app.ui.fail(e);
         }
         ui.close();
     }
@@ -2136,7 +2136,7 @@ fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::U
         && let (Some(left), Some(right)) = (target.left, target.right)
     {
         if let Err(e) = app.session.execute("sequence.joinThroughEdits", json!({"cut": [left.0, right.0]})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         ui.close();
     }
@@ -2149,7 +2149,7 @@ fn gap_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
     app.auto.add("timeline.gapMenu.edit.rippleDelete", r.rect, label);
     if r.clicked() {
         if let Err(e) = crate::menus::invoke(app, ctx, "edit.rippleDelete", json!({})) {
-            app.ui.status = e;
+            app.ui.fail(e);
         }
         ui.close();
     }
@@ -2193,7 +2193,7 @@ fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &[&TrackItem
     });
     if let Some((cmd, params)) = run {
         if let Err(e) = app.session.execute(cmd, params) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         ui.close();
     }
@@ -2417,7 +2417,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                         app.session.execute("timeline.razor", json!({"time": tt.0, "clip": clip.0}))
                     };
                     if let Err(e) = r {
-                        app.ui.status = e.to_string();
+                        app.ui.fail(e.to_string());
                     }
                 }
                 None
@@ -2465,7 +2465,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let e = if edge == filmcraft_edit::Edge::In { "in" } else { "out" };
                 let r = app.session.execute("trim.selectEditPoint", json!({"clip": clip.0, "edge": e, "kind": kind, "add": mods.shift && !mods.command}));
                 if let Err(e) = r {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 }
                 None
             }
@@ -2506,7 +2506,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 if !(app.session.state.transition_selection.contains(&id) && resp.drag_started()) {
                     let r = app.session.execute("timeline.select", json!({"transitions": [id.0], "toggle": mods.shift}));
                     if let Err(e) = r {
-                        app.ui.status = e.to_string();
+                        app.ui.fail(e.to_string());
                     }
                 }
                 let span = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).map(|x| (x.start, x.duration));
@@ -2760,7 +2760,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 _ => None,
             };
             if let Some(Err(e)) = r {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         } else {
             app.tl.drag = None;
@@ -2785,7 +2785,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     {
         let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
         if let Err(e) = app.session.execute("sequence.revealNested", json!({})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
 
@@ -2801,7 +2801,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             .is_some_and(|i| !matches!(i.kind, filmcraft_project::ItemKind::Sequence(_) | filmcraft_project::ItemKind::Graphic { .. }))
         && let Err(e) = app.session.execute("source.open", json!({"clip": clip.0}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 
     // ---- context menu on clips (right-clicking an unselected clip selects it first); on a clip's
@@ -2892,7 +2892,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                             for l in filmcraft_project::Label::ALL {
                                 if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "timeline.clipMenu.label").clicked() {
                                     if let Err(error) = app.session.execute("edit.label", json!({"label":l.name()})) {
-                                        app.ui.status = error.to_string();
+                                        app.ui.fail(error.to_string());
                                     }
                                     ui.close();
                                 }
@@ -2925,7 +2925,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                             }
                         }
                         Ok(_) => {}
-                        Err(e) => app.ui.status = e,
+                        Err(e) => app.ui.fail(e),
                     }
                     ui.close();
                 }
@@ -2997,7 +2997,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 params["audio"] = json!(source.audio);
             }
             if let Err(e) = app.session.execute("timeline.place", params) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
             crate::panels::clear_drag(ui);
         }
@@ -3020,7 +3020,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 q["track"] = json!(row.index);
             }
             if let Err(e) = app.session.execute("graphics.template.apply", q) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
             crate::panels::clear_drag(ui);
         }
@@ -3074,7 +3074,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     app.session.execute("effects.apply", json!({"effect": effect, "clips": [clip.0]}))
                 };
                 if let Err(e) = r {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 } else {
                     let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
                 }
@@ -3099,7 +3099,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             let ids: Vec<u64> = items.iter().map(|i| i.0).collect();
             let params = json!({"items": ids, "track": vt, "audioTrack": at, "time": start.0, "insert": false});
             if let Err(e) = app.session.execute("timeline.place", params) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
     }

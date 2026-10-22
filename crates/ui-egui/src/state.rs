@@ -472,6 +472,9 @@ pub struct UiState {
     pub show_scopes: bool,
     /// Transient status line shown in the footer.
     pub status: String,
+    /// The status text that is an error, while `status` still holds it: shown more prominently
+    /// and kept longer (see [`UiState::fail`]).
+    pub status_error: Option<String>,
     /// A link the web browser couldn't open, shown with its address until closed
     /// ([`crate::links::show_failed`]).
     #[serde(default)]
@@ -956,6 +959,21 @@ fn yes() -> bool {
     true
 }
 
+impl UiState {
+    /// Show `message` in the status bar as an error: larger, in the danger colour and kept longer
+    /// than a plain status. A later plain `status = ...` replaces it and clears the emphasis.
+    pub fn fail(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.status_error = Some(message.clone());
+        self.status = message;
+    }
+
+    /// Whether the status bar's text is an error.
+    pub fn status_is_error(&self) -> bool {
+        !self.status.is_empty() && self.status_error.as_deref() == Some(self.status.as_str())
+    }
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
@@ -983,6 +1001,7 @@ impl Default for UiState {
             dark: true,
             show_scopes: false,
             status: String::new(),
+            status_error: None,
             failed_link: None,
             eyedropper: None,
             keyframe_selection: Vec::new(),

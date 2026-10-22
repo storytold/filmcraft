@@ -240,7 +240,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     }
     for (id, p) in acts {
         if let Err(e) = app.session.execute(id, p) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
 }

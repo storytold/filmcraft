@@ -258,7 +258,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ctx.data_mut(|m| m.insert_temp(egui::Id::new("frame-export-folder"), d.folder.clone()));
                     close = true;
                 }
-                Err(e) => app.ui.status = e.to_string(),
+                Err(e) => app.ui.fail(e.to_string()),
             }
         }
     }

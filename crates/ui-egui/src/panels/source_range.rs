@@ -122,7 +122,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
             let bounds = TimeRange::from_bounds(view.start, view.end);
             let original = view.selected_range();
             if let Err(e) = adjust_range(bounds, original, view.rate, edge, Tick::ZERO) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
                 continue;
             }
             if which == Which::Source {
@@ -151,7 +151,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
                             ctx.data_mut(|v| v.insert_temp(key(which), d));
                         }
                         Err(e) => {
-                            app.ui.status = e.to_string();
+                            app.ui.fail(e.to_string());
                             clear(&ctx, which);
                         }
                     }
@@ -174,7 +174,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
                         params["out"] = json!(d.preview.end().0.saturating_sub(d.rate.frame_duration().0).max(view.start.0));
                     }
                     if let Err(e) = app.session.execute("project.setMarks", params) {
-                        app.ui.status = e.to_string();
+                        app.ui.fail(e.to_string());
                     }
                 }
             } else if !ctx.input(|i| i.pointer.any_down()) {
@@ -187,7 +187,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         {
             let time = shown.0.0.saturating_add(((f64::from(pos.x - bar.min.x) / f64::from(bar.width().max(1.0))).clamp(0.0, 1.0) * span) as i64);
             if let Err(e) = app.session.execute(if which == Which::Source { "source.setPlayhead" } else { "playhead.set" }, json!({"time":time})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
     }

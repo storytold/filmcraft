@@ -210,7 +210,7 @@ impl FilmcraftApp {
         let error = self.source_playback.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(error) = error {
             self.stop_source();
-            self.ui.status = error;
+            self.ui.fail(error);
             return;
         }
         let now = ctx.input(|i| i.time);
@@ -271,7 +271,7 @@ impl FilmcraftApp {
                 Ok(_) => self.source_playback.shown = self.session.state.source_playhead,
                 Err(e) => {
                     self.stop_source();
-                    self.ui.status = e.to_string();
+                    self.ui.fail(e.to_string());
                     return;
                 }
             }
@@ -288,7 +288,7 @@ impl FilmcraftApp {
             let start = self.source_playback.range_start.unwrap_or(range.start).max(view.start);
             if let Err(e) = self.session.execute("source.setPlayhead", json!({"time":start.0})) {
                 self.stop_source();
-                self.ui.status = e.to_string();
+                self.ui.fail(e.to_string());
                 return;
             }
             let time = self.session.state.source_playhead;
@@ -305,7 +305,7 @@ impl FilmcraftApp {
             Ok(_) => self.source_playback.shown = self.session.state.source_playhead,
             Err(e) => {
                 self.stop_source();
-                self.ui.status = e.to_string();
+                self.ui.fail(e.to_string());
                 return;
             }
         }

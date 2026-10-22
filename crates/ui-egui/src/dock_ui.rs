@@ -266,17 +266,17 @@ impl FilmcraftApp {
                     if self.session.state.active_sequence.map(|item| item.0) != Some(id)
                         && let Err(error) = self.session.execute("sequence.open", json!({"item": id}))
                     {
-                        self.ui.status = error.to_string();
+                        self.ui.fail(error.to_string());
                     }
                 }
                 DockAction::CloseSequence(id) => {
                     if let Err(error) = self.session.execute("sequence.close", json!({"item": id})) {
-                        self.ui.status = error.to_string();
+                        self.ui.fail(error.to_string());
                     }
                 }
                 DockAction::MoveSequence(id, index) => {
                     if let Err(error) = self.session.execute("sequence.moveTab", json!({"item": id, "index": index})) {
-                        self.ui.status = error.to_string();
+                        self.ui.fail(error.to_string());
                     }
                 }
                 DockAction::PanelMenu(panel, pos) => {

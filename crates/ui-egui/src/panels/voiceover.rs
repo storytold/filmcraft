@@ -77,7 +77,7 @@ pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, a: Action) {
         }
     };
     if let Err(e) = r {
-        app.ui.status = e;
+        app.ui.fail(e);
     }
 }
 
@@ -120,7 +120,7 @@ pub fn on_play(app: &mut FilmcraftApp) {
     if app.session.voiceover.recording() {
         let t = app.session.playhead();
         if let Err(e) = app.session.execute("audio.voiceover.sync", json!({"time": t.0})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
 }
@@ -130,7 +130,7 @@ pub fn on_stop(app: &mut FilmcraftApp) {
     if app.session.voiceover.recording()
         && let Err(e) = stop(app)
     {
-        app.ui.status = e;
+        app.ui.fail(e);
     }
 }
 
@@ -336,7 +336,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 app.ui.status = tl!("Voice-over take discarded").into();
                 close = true;
             }
-            Err(error) => app.ui.status = error.to_string(),
+            Err(error) => app.ui.fail(error.to_string()),
         }
     }
     if crate::widgets::escape_closes(ctx) {
@@ -354,7 +354,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         });
         match app.session.execute("audio.voiceover.settings", p) {
             Ok(_) => close = true,
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
     ctx.data_mut(|m| m.insert_temp(draft_id(), if close { None } else { Some(d) }));

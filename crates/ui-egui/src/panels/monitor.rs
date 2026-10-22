@@ -330,10 +330,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         Some(Ok(to)) => {
             let cmd = if which == Which::Program { "playhead.set" } else { "source.setPlayhead" };
             if let Err(e) = app.session.execute(cmd, json!({"time": to.0})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
-        Some(Err(e)) => app.ui.status = e,
+        Some(Err(e)) => app.ui.fail(e),
         None => {}
     }
     app.auto.add(&format!("{prefix}.timecode"), tc_rect, &tc);
@@ -397,7 +397,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             if response.changed()
                 && let Err(e) = crate::menus::invoke(app, &ctx, "playback.loop", json!({"monitor":"source"}))
             {
-                app.ui.status = e;
+                app.ui.fail(e);
             }
         }
         if which == Which::Program {
@@ -573,7 +573,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         params["mask"] = json!(k);
     }
     if let Err(e) = app.session.execute("effects.setParam", params) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 
@@ -1073,7 +1073,7 @@ fn invoke_transport(app: &mut FilmcraftApp, ctx: &egui::Context, which: Which, c
         command => crate::menus::invoke(app, ctx, command, json!({"monitor": if source { "source" } else { "program" }})),
     };
     if let Err(error) = result {
-        app.ui.status = error;
+        app.ui.fail(error);
     }
 }
 
@@ -1090,7 +1090,7 @@ pub fn source_panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         app.auto.add(&format!("panel.menu.Source.recent.{id}"), r.rect, name);
         if r.clicked() {
             if !shown && let Err(e) = app.session.execute("source.open", json!({"item": id})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
             done = true;
         }
@@ -1103,7 +1103,7 @@ pub fn source_panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         app.auto.add(&format!("panel.menu.Source.{id}"), r.rect, label);
         if r.clicked() {
             if let Err(e) = app.session.execute(cmd, json!({})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
             done = true;
         }

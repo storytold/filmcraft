@@ -249,7 +249,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
     }
     let cmd = dialog_command(id)?;
     if let Err(e) = enabled(app, id) {
-        app.ui.status = e.clone();
+        app.ui.fail(e.clone());
         return Some(Err(e));
     }
     let (params, info) = match defaults(app, cmd, id) {

@@ -375,7 +375,7 @@ fn run_actions(app: &mut FilmcraftApp, ctx: &egui::Context, acts: Vec<(String, V
             crate::menus::invoke(app, ctx, &id, p).map(|_| ())
         };
         if let Err(e) = r {
-            app.ui.status = e;
+            app.ui.fail(e);
         }
     }
 }

@@ -89,7 +89,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if let Some((cmd, p)) = run {
         match app.session.execute(&cmd, p) {
             Ok(_) => close = !matches!(d, ProjectDialog::ManagePresets { .. }),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
         // Manage keeps the dialog open: refresh its name field
         if let ProjectDialog::ManagePresets { selected, name } = &mut d {

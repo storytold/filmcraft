@@ -306,7 +306,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 invalidate(&ctx);
             }
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
 }
@@ -598,7 +598,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 // The Browse panel's Install… button calls this directly and drops the result
                 // (#611); report a refused file here, so every caller shows why nothing happened.
                 if let Err(e) = &r {
-                    app.ui.status = e.clone();
+                    app.ui.fail(e.clone());
                 }
                 invalidate(&ctx);
                 r

@@ -402,7 +402,7 @@ fn make_offline(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     if ok {
         if let Err(e) = app.session.execute("media.makeOffline", json!({"deleteFiles": delete})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         keep = false;
     }
@@ -466,7 +466,7 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let p = json!({"items": d.items, "preset": d.preset, "destination": if d.destination.is_empty() { Value::Null } else { json!(d.destination) }});
         match app.session.execute("media.createProxies", p) {
             Ok(v) => app.ui.status = tlf!("Creating {n} proxy file(s)…", n = v["outputs"].as_array().map_or(0, Vec::len)),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
         keep = false;
     }

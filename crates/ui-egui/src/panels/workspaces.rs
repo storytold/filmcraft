@@ -257,7 +257,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     app.ui.workspace_dialog = Some(d);
     if let Some((id, p)) = act {
         match route(app, id, &p) {
-            Some(Err(e)) => app.ui.status = e,
+            Some(Err(e)) => app.ui.fail(e),
             _ => close |= !keep_open,
         }
     }
