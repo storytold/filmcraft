@@ -1573,6 +1573,22 @@ impl FilmcraftApp {
         // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
+        // AppKit takes native menu key equivalents before egui sees the press (#1773). A V
+        // release for one of those chords is not a missing clipboard press. Match only the
+        // primary chords actually installed in the menu: secondary/panel bindings still need
+        // the empty-text clipboard fallback, and the menu event can arrive after the release.
+        let native_v: Vec<egui::Modifiers> = if self.hooks.menu_changed.is_some()
+            && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::V, pressed: false, .. })))
+        {
+            menus::menu_items(self)
+                .iter()
+                .filter(|item| item.enabled)
+                .filter_map(|item| item.shortcut.as_deref().and_then(menus::parse_shortcut))
+                .filter_map(|(m, k)| (k == egui::Key::V && (m.command || m.ctrl || m.alt)).then_some(m))
+                .collect()
+        } else {
+            Vec::new()
+        };
         ctx.input_mut(|i| {
             let modifiers = i.modifiers;
             // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
@@ -1581,8 +1597,18 @@ impl FilmcraftApp {
             for e in &i.events {
                 match e {
                     egui::Event::Key { key: egui::Key::V, pressed, modifiers: m, .. } => {
-                        if !pressed && !self.v_down {
-                            swallowed = Some(*m);
+                        // Command may have been released before V. Check the exact chord the
+                        // fallback would dispatch too, rather than checking raw modifiers and
+                        // then adding Command after the ownership decision.
+                        let reconstructed = *m | egui::Modifiers::COMMAND;
+                        let native_owned = native_v.iter().any(|native| {
+                            m.ctrl == native.ctrl
+                                && m.alt == native.alt
+                                && m.shift == native.shift
+                                && (m.command == native.command || reconstructed.command == native.command)
+                        });
+                        if !pressed && !self.v_down && !native_owned {
+                            swallowed = Some(reconstructed);
                         }
                         self.v_down = *pressed;
                     }
@@ -1591,13 +1617,7 @@ impl FilmcraftApp {
                 }
             }
             if let Some(m) = swallowed {
-                i.events.push(egui::Event::Key {
-                    key: egui::Key::V,
-                    physical_key: Some(egui::Key::V),
-                    pressed: true,
-                    repeat: false,
-                    modifiers: m | egui::Modifiers::COMMAND,
-                });
+                i.events.push(egui::Event::Key { key: egui::Key::V, physical_key: Some(egui::Key::V), pressed: true, repeat: false, modifiers: m });
             }
             clipboard_events_as_keys(&mut i.events, modifiers);
             let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));

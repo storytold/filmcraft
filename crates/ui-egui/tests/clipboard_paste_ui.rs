@@ -249,3 +249,81 @@ fn ctrl_c_then_ctrl_v_pastes_clips_not_lingering_files() {
     d.ctrl_v_with_text();
     assert_eq!(d.clips().iter().filter(|c| c.0 == 'V' && c.3 == first.3).count(), n + 1);
 }
+
+/// AppKit consumes Cmd+V for the native Edit menu, so the app receives the menu command and
+/// only the V release. That release must not trigger the empty-text clipboard fallback (#1773).
+#[test]
+fn native_menu_paste_and_key_release_paste_only_once() {
+    for release in [egui::Modifiers::COMMAND, egui::Modifiers::NONE] {
+        for delay in [-1, 0, 1] {
+            let mut d = Driver::demo(&format!("native-paste-{delay}"));
+            d.ok("ui.set", json!({"focused": "Timeline"}));
+            // Copy a clip first so the native Paste menu item is enabled, then replace the OS
+            // clipboard with an image. Disabled native items cannot consume a key equivalent.
+            let first = d.clips().into_iter().find(|c| c.0 == 'V' && c.1 == 0).unwrap();
+            d.ok("engine.execute", json!({"command":"timeline.select", "params":{"clips":[first.2]}}));
+            d.ok("ui.menu.invoke", json!({"id":"edit.copy"}));
+            assert!(filmcraft_ui_egui::menus::menu_items(d.app()).iter().any(|item| item.id == "edit.paste" && item.enabled));
+            let asked = d.clipboard(Some(red_image));
+            let (tx, rx) = channel();
+            d.app().command_inbox = Some(rx);
+            d.app().hooks.menu_changed = Some(Box::new(|_| {}));
+            let before = d.clips().len();
+            for paste in 1..=2 {
+                // The user can release Command before V. The native equivalent already consumed
+                // the press, but the remaining release then carries no Command modifier.
+                d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+                d.frames(1);
+                if delay < 0 {
+                    d.ctrl_v_without_text(release);
+                    tx.send("edit.paste".into()).unwrap();
+                    d.frames(1);
+                } else {
+                    tx.send("edit.paste".into()).unwrap();
+                    d.frames(delay as usize);
+                    d.ctrl_v_without_text(release);
+                }
+                assert_eq!(asked.get(), paste, "one clipboard read per native paste, delay {delay}");
+                assert_eq!(d.clips().len(), before + paste, "one new clip per native paste, delay {delay}");
+            }
+            d.ok("engine.execute", json!({"command":"edit.undo"}));
+            assert_eq!(d.clips().len(), before + 1, "one undo removes the second paste");
+        }
+    }
+}
+
+/// The native menu installs only the primary shortcut. A secondary Cmd+V must still paste
+/// media when the clipboard has no text and egui-winit only delivers its release.
+#[test]
+fn secondary_paste_shortcut_keeps_empty_text_fallback_with_native_menu() {
+    let mut d = Driver::demo("native-secondary");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.ok("engine.execute", json!({"command":"shortcuts.set", "params":{"command":"edit.paste", "keys":"Cmd+B"}}));
+    d.ok("engine.execute", json!({"command":"shortcuts.set", "params":{"command":"edit.paste", "keys":"Cmd+V", "add":true}}));
+    d.app().hooks.menu_changed = Some(Box::new(|_| {}));
+    let asked = d.clipboard(Some(red_image));
+    let before = d.clips().len();
+    d.ctrl_v_without_text(egui::Modifiers::COMMAND);
+    assert_eq!(asked.get(), 1);
+    assert_eq!(d.clips().len(), before + 1);
+}
+
+/// Unlike egui's logical matching, AppKit does not treat an extra Control key as Cmd+V.
+#[test]
+fn extra_control_paste_chord_is_not_owned_by_native_cmd_v() {
+    let mut d = Driver::demo("native-extra-control");
+    d.ok("ui.set", json!({"focused":"Timeline"}));
+    let first = d.clips().into_iter().find(|c| c.0 == 'V' && c.1 == 0).unwrap();
+    d.ok("engine.execute", json!({"command":"timeline.select", "params":{"clips":[first.2]}}));
+    d.ok("ui.menu.invoke", json!({"id":"edit.copy"}));
+    d.ok("engine.execute", json!({"command":"shortcuts.set", "params":{"command":"edit.paste", "keys":"Ctrl+Cmd+V", "add":true}}));
+    assert!(
+        filmcraft_ui_egui::menus::menu_items(d.app()).iter().any(|item| item.id == "edit.paste" && item.enabled && item.shortcut.as_deref() == Some("Cmd+V"))
+    );
+    d.app().hooks.menu_changed = Some(Box::new(|_| {}));
+    let asked = d.clipboard(Some(red_image));
+    let before = d.clips().len();
+    d.ctrl_v_without_text(egui::Modifiers::COMMAND | egui::Modifiers::CTRL);
+    assert_eq!(asked.get(), 1);
+    assert_eq!(d.clips().len(), before + 1);
+}
