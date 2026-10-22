@@ -46,7 +46,8 @@ impl FilmcraftApp {
             a.stop();
         }
         self.playback.audio_clock = false;
-        self.playback.audio_retry_at = 0.0;
+        // Looping restarts come back through play() without stop(): keep `audio_retry_at`
+        // armed so a missing output does not warn again on every loop.
     }
 
     /// Start the clock (and audio) once the first frames are ready or the preroll timed out.
@@ -55,7 +56,11 @@ impl FilmcraftApp {
         self.playback.anchor_time = now;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.audio_seen = (0, now);
-        self.start_audio(now);
+        // An armed retry keeps its deadline: a loop restart (or any play while the output is
+        // still missing) does not reopen the output more often than AUDIO_RETRY_S.
+        if self.playback.audio_retry_at == 0.0 || now >= self.playback.audio_retry_at {
+            self.start_audio(now);
+        }
         // Audio Track Mixer: an automation pass runs while playing forward in real time
         if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
             let t = self.session.playhead();
