@@ -2024,6 +2024,9 @@ fn marker_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui, m
     }
 }
 
+/// The clip context menu: groups (separated by rules) of (label, command id). Entries marked `…`
+/// open their dialog through `menus::invoke`, like the same item in the Clip menu. The `clip.audioOptions`
+/// entry opens [`CLIP_AUDIO_MENU`] instead of running a command.
 pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
     &[
         ("Cut", "edit.cut"),
@@ -2058,8 +2061,15 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Fit to frame", "clip.fitToFrame"),
         ("Fill frame", "clip.fillFrame"),
     ],
+    &[("Audio Options", "clip.audioOptions")],
     &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
 ];
+
+/// The clip context menu's Audio Options submenu, mirroring the registry's `["Clip", "Audio Options"]`
+/// group in its order (#1746): Audio Gain…, Breakout to Mono, Extract Audio. Kept as one list so a
+/// command added to either side cannot drift out of the other (see `clip_menu_tests`).
+pub(crate) const CLIP_AUDIO_MENU: &[(&str, &str)] =
+    &[("Audio Gain…", "clip.audioGain"), ("Breakout to Mono", "clip.breakoutToMono"), ("Extract Audio", "clip.extractAudio")];
 
 /// The cut right-clicked on a track (#219): the clip ending there and the clip starting there,
 /// either missing at the ends of a gap. Its menu offers the edit point's trim types, Apply Default
@@ -2153,6 +2163,26 @@ fn gap_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
         }
         ui.close();
     }
+}
+
+/// The clip menu's Audio Options submenu (#1746): Audio Gain…, Breakout to Mono and Extract Audio,
+/// in the registry's order. Each item is enabled by its own command, exactly as in
+/// Clip ▸ Audio Options, and an item marked `…` opens its dialog through `menus::invoke`.
+fn audio_options_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
+    let menu = ui.menu_button(tl!("Audio Options"), |ui| {
+        for &(label, cmd) in CLIP_AUDIO_MENU {
+            let label = crate::i18n::t(label);
+            let r = ui.add_enabled(app.session.is_enabled(cmd), egui::Button::new(label));
+            app.auto.add_response(&format!("timeline.clipMenu.{cmd}"), &r, label);
+            if r.clicked() {
+                if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({})) {
+                    app.ui.status = e;
+                }
+                ui.close();
+            }
+        }
+    });
+    app.auto.add_response("timeline.clipMenu.clip.audioOptions", &menu.response, tl!("Audio Options"));
 }
 
 /// The clip menu's Multi-Camera submenu: Enable, Flatten, and the cameras of the selected nested
@@ -2906,6 +2936,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     multicam_menu(app, ui, &picked);
                     continue;
                 }
+                if cmd == "clip.audioOptions" {
+                    audio_options_menu(app, &ctx, ui);
+                    continue;
+                }
                 let label = match cmd {
                     "clip.enable" if all_enabled => tl!("✓ Enable"),
                     "clip.link" if linked => tl!("Unlink"),
@@ -3455,5 +3489,31 @@ mod ruler_tests {
         }
         let (minor, label) = ruler_steps(1.0, i64::MAX);
         assert!(minor >= 1 && label >= 1 && label % minor == 0, "an unrepresentable rate: tick {minor}, label {label}");
+    }
+}
+
+/// #1746: the clip right-click menu's Audio Options submenu mirrors Clip ▸ Audio Options, so a
+/// command added to the registry group (or a stale entry here) cannot leave the two out of step.
+#[cfg(test)]
+mod clip_menu_tests {
+    use super::*;
+
+    fn registry_audio_options() -> Vec<&'static str> {
+        filmcraft_engine::command_specs().iter().filter(|c| c.menu == ["Clip", "Audio Options"]).map(|c| c.id).collect()
+    }
+
+    #[test]
+    fn audio_options_submenu_mirrors_the_clip_menu() {
+        let menu: Vec<&'static str> = CLIP_AUDIO_MENU.iter().map(|(_, id)| *id).collect();
+        assert_eq!(menu, registry_audio_options(), "the clip context menu's Audio Options submenu vs Clip ▸ Audio Options");
+        assert!(menu.contains(&"clip.audioGain"), "Audio Gain… is reachable from the clip right-click menu (#1746)");
+    }
+
+    #[test]
+    fn the_clip_menu_offers_the_audio_options_submenu() {
+        assert!(
+            CLIP_MENU.iter().flat_map(|g| g.iter()).any(|(_, cmd)| *cmd == "clip.audioOptions"),
+            "the clip context menu has an Audio Options entry that opens the submenu"
+        );
     }
 }
