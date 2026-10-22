@@ -83,12 +83,22 @@ impl Image {
     /// Resample `self` into a `w`×`h` image through `m` (maps source pixels → destination pixels).
     /// Uses bilinear filtering, with a box pre-filter (mip level) when minifying by more than 2×.
     pub fn transformed(&self, w: usize, h: usize, m: &Affine) -> Image {
+        self.transformed_with(w, h, m, false)
+    }
+
+    /// [`transformed`](Self::transformed) taking the nearest source pixel, unfiltered: hard pixel
+    /// edges at any scale (Motion ▸ Interpolation ▸ Nearest Neighbor, #2667).
+    pub fn transformed_nearest(&self, w: usize, h: usize, m: &Affine) -> Image {
+        self.transformed_with(w, h, m, true)
+    }
+
+    fn transformed_with(&self, w: usize, h: usize, m: &Affine, nearest: bool) -> Image {
         let Some(inv) = m.inverse() else { return Image::new(w, h) };
         // minification factor
         let sx = (m.a * m.a + m.b * m.b).sqrt();
         let sy = (m.c * m.c + m.d * m.d).sqrt();
         let minify = 1.0 / sx.min(sy).max(1e-6);
-        if minify >= 2.0 && self.w >= 4 && self.h >= 4 {
+        if !nearest && minify >= 2.0 && self.w >= 4 && self.h >= 4 {
             let half = self.downsample2();
             let m2 = m.then_apply(&Affine::scale(2.0, 2.0));
             return half.transformed(w, h, &m2);
@@ -110,7 +120,7 @@ impl Image {
                 if u < -1.0 || v < -1.0 || u > self.w as f64 + 1.0 || v > self.h as f64 + 1.0 {
                     continue;
                 }
-                let s = self.sample_bilinear(u as f32, v as f32);
+                let s = if nearest { self.get_or_clear(u.floor() as isize, v.floor() as isize) } else { self.sample_bilinear(u as f32, v as f32) };
                 row[x * 4..x * 4 + 4].copy_from_slice(&s);
             }
         });

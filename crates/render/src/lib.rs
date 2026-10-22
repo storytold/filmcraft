@@ -374,6 +374,11 @@ pub fn source_par(project: &Project, item: ItemId) -> Option<(u32, u32)> {
     project.source_par(item)
 }
 
+/// Whether the clip's Motion ▸ Interpolation is Nearest Neighbor (#2667).
+pub(crate) fn motion_nearest(item: &TrackItem) -> bool {
+    item.effect("motion").is_some_and(|e| e.enabled && effects::choice(e, "interpolation") == 1)
+}
+
 /// The Motion transform of an item at media time `mt`, mapping full-res source pixels to
 /// full-res sequence pixels.
 ///
@@ -529,7 +534,13 @@ pub(crate) fn item_layer_ex(
         }
     }
     mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
-    let placed = if layer.w == w && layer.h == h && identity_placement(&m) { layer } else { layer.transformed(w, h, &m) };
+    let placed = if layer.w == w && layer.h == h && identity_placement(&m) {
+        layer
+    } else if motion_nearest(item) {
+        layer.transformed_nearest(w, h, &m)
+    } else {
+        layer.transformed(w, h, &m)
+    };
     let (op, bl) = opacity_blend(item, mt);
     Some(Layer::Full { image: placed, opacity: op, blend: bl, opaque: false })
 }

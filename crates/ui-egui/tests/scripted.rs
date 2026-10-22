@@ -594,6 +594,20 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
     d.frames(4);
     let color = |d: &mut Driver| d.sequence()["video"][0]["items"][0]["effects"][0]["params"]["color"]["value"].clone();
     let before = color(&mut d);
+    // Scroll Effect Controls until the eyedropper is inside its visible part (the lane spans it).
+    let rect = |d: &mut Driver, id: &str| {
+        let v = d.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).cloned().unwrap();
+        e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect::<Vec<_>>()
+    };
+    for _ in 0..20 {
+        let (r, lane) = (rect(&mut d, "effectControls.color_key.color.eyedropper"), rect(&mut d, "effectControls.lane"));
+        if r[1] >= lane[1] && r[1] + r[3] <= lane[1] + lane[3] {
+            break;
+        }
+        d.ok("ui.scroll", json!({"id": "effectControls.lane", "dy": if r[1] < lane[1] { 60.0 } else { -60.0 }}));
+        d.frames(2);
+    }
     d.ok("ui.click", json!({"id": "effectControls.color_key.color.eyedropper"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "program.picture"}));
