@@ -44,6 +44,36 @@ fn linked_false_is_local_to_selection_and_respects_add_toggle() {
 }
 
 #[test]
+fn repeated_individual_selection_changes_one_identity_once() {
+    let (mut s, [(video, sound), _]) = paired_sequence();
+    let selected = s.execute("timeline.select", json!({"clips": [video.0, video.0], "linked": false})).unwrap();
+    assert_eq!(selected["selection"], json!([video.0]));
+    assert_eq!(s.state.selection, vec![video]);
+    let toggled = s.execute("timeline.select", json!({"clips": [video.0, video.0], "linked": false, "toggle": true})).unwrap();
+    assert_eq!(toggled["selection"], json!([]));
+    assert!(s.state.selection.is_empty());
+    s.state.selection = vec![video, video]; // another command can still leave repeated stored IDs
+    let toggled = s.execute("timeline.select", json!({"clips": [video.0], "linked": false, "toggle": true})).unwrap();
+    assert_eq!(toggled["selection"], json!([]), "toggle clears every stored occurrence");
+    assert!(s.active_sequence().unwrap().find_item(sound).is_some());
+}
+
+#[test]
+fn large_selection_deduplicates_in_first_occurrence_order() {
+    let (mut s, [(video, sound), _]) = paired_sequence();
+    let mut requested = vec![sound.0, video.0, sound.0];
+    requested.extend((0..20_000_u64).map(|n| 1_000_000 + n));
+    requested.push(video.0);
+
+    let result = s.execute("timeline.select", json!({"clips": requested, "linked": false})).unwrap();
+    assert_eq!(s.state.selection.len(), 20_002);
+    assert_eq!(s.state.selection.get(..2), Some(&[sound, video][..]));
+    assert_eq!(s.state.selection.get(2).map(|id| id.0), Some(1_000_000));
+    assert_eq!(s.state.selection.last().map(|id| id.0), Some(1_019_999));
+    assert_eq!(result["selection"].as_array().map(Vec::len), Some(20_002));
+}
+
+#[test]
 fn implicit_clear_keeps_an_individually_selected_partner_and_undo() {
     for audio in [false, true] {
         let (mut s, [(video, sound), _]) = paired_sequence();

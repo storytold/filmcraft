@@ -2723,8 +2723,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 Drag::Move { clips, offset, track_delta, new_track, copy, .. } if offset != Tick::ZERO || track_delta != 0 || new_track.is_some() => {
                     // #1104: dropped past the last track, the clips go onto a new one
                     let to = |tid| new_track.map_or_else(|| json!(shift_track(seq, tid, track_delta).unwrap_or(tid).0), |_| json!("new"));
+                    let mut seen = std::collections::HashSet::new();
                     let moves: Vec<Value> = clips
                         .iter()
+                        .filter(|c| seen.insert(**c))
                         .filter_map(|c| seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": to(tid), "time": (it.start + offset).max(Tick::ZERO).0})))
                         .collect();
                     // Option held while dropping copies (Premiere: Option-drag duplicates)

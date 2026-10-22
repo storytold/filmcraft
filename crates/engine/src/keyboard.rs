@@ -226,7 +226,11 @@ fn nudge_track(s: &mut Session, up: bool) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let mut moves = Vec::new();
     let mut blocked = 0usize;
+    let mut seen = std::collections::HashSet::new();
     for c in &s.state.selection {
+        if !seen.insert(*c) {
+            continue;
+        }
         let Some((tid, it)) = seq.find_item(*c) else { continue };
         let Some(tr) = seq.track(tid) else { continue };
         let list = seq.tracks(tr.kind);

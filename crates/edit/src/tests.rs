@@ -20,8 +20,11 @@ fn media(_: ItemId) -> Option<Tick> {
 
 impl Fx {
     fn new() -> Self {
+        Self::with_track_counts(3, 2)
+    }
+    fn with_track_counts(video: usize, audio: usize) -> Self {
         let mut p = Project::new("t");
-        let s = p.new_sequence("s", SequenceSettings { frame_rate: R, ..Default::default() }, 3, 2, None);
+        let s = p.new_sequence("s", SequenceSettings { frame_rate: R, ..Default::default() }, video, audio, None);
         let seq = p.sequence(s).unwrap().clone();
         Self { seq, next: 10_000 }
     }
@@ -75,6 +78,381 @@ impl Fx {
     fn spans(&self, track: TrackId) -> Vec<(i64, i64)> {
         self.seq.track(track).unwrap().items.iter().map(|i| (R.frame_at(i.start), R.frame_at(i.duration))).collect()
     }
+}
+
+#[test]
+fn move_rejects_repeated_clip_ids_without_mutation() {
+    for insert_mode in [false, true] {
+        let mut fx = Fx::new();
+        let (v1, v2) = (fx.v(0), fx.v(1));
+        let c = fx.put(v1, 0, 10, 0);
+        let before = fx.seq.clone();
+        let mut n = fx.next;
+        let result = move_items(&mut fx.seq, &[(c, v1, f(20)), (c, v2, f(20))], insert_mode, &mut Fx::ctx(&mut n));
+        assert!(result.is_err(), "moving one identity to two tracks must be rejected: {result:?}");
+        assert_eq!(fx.seq, before);
+        assert_eq!(n, fx.next, "a rejected move consumes no ids");
+    }
+}
+
+#[test]
+fn repeated_copies_are_independent_and_each_keeps_its_fade() {
+    let mut fx = Fx::new();
+    let (v1, v2, v3) = (fx.v(0), fx.v(1), fx.v(2));
+    let source = fx.put(v1, 0, 10, 0);
+    fx.seq.find_item_mut(source).unwrap().1.link = Some(7);
+    fx.seq.track_mut(v1).unwrap().transitions.push(Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(0),
+        duration: f(4),
+        from: None,
+        to: Some(source),
+        align: Default::default(),
+        reverse: false,
+    });
+    let mut n = fx.next + 1;
+    let ids = copy_items(&mut fx.seq, &[(source, v2, f(20)), (source, v3, f(40))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(ids.len(), 2);
+    for (id, track, start) in [(ids[0], v2, f(20)), (ids[1], v3, f(40))] {
+        let copied = fx.seq.find_item(id).unwrap().1;
+        assert_eq!(copied.start, start);
+        assert_eq!(copied.link, None, "separate requests are not linked partners");
+        let transitions = &fx.seq.track(track).unwrap().transitions;
+        assert_eq!(transitions.len(), 1);
+        assert_eq!((transitions[0].from, transitions[0].to, transitions[0].start), (None, Some(id), start));
+    }
+    assert_eq!(fx.seq.find_item(source).unwrap().1.link, Some(7));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn overwritten_copy_is_not_returned_as_a_live_identity() {
+    let mut fx = Fx::new();
+    let (v1, v2) = (fx.v(0), fx.v(1));
+    let source = fx.put(v1, 0, 10, 0);
+    let mut n = fx.next + 1;
+    let ids = copy_items(&mut fx.seq, &[(source, v2, f(20)), (source, v2, f(20))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(ids.len(), 1);
+    assert!(fx.seq.find_item(ids[0]).is_some());
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn repeated_linked_copies_pair_by_landing_offset() {
+    let mut fx = Fx::new();
+    let (v1, v2, a1, a2) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next + 1;
+    let ids = copy_items(&mut fx.seq, &[(video, v2, f(20)), (video, v2, f(40)), (audio, a2, f(40)), (audio, a2, f(20))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(ids.len(), 4);
+    let link_at = |track: TrackId, start| fx.seq.track(track).unwrap().items.iter().find(|it| it.start == start).unwrap().link;
+    assert_eq!(link_at(v2, f(20)), link_at(a2, f(20)));
+    assert_eq!(link_at(v2, f(40)), link_at(a2, f(40)));
+    assert!(link_at(v2, f(20)).is_some());
+    assert_ne!(link_at(v2, f(20)), link_at(v2, f(40)));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn overwritten_partner_relinks_to_the_surviving_copy() {
+    let mut fx = Fx::new();
+    let (v1, v2, a1, a2) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next + 1;
+    let ids = copy_items(&mut fx.seq, &[(video, v2, f(20)), (audio, a2, f(20)), (audio, a2, f(20))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(ids.len(), 2);
+    let picture = fx.seq.find_item(ids[0]).unwrap().1;
+    let sound = fx.seq.find_item(ids[1]).unwrap().1;
+    assert!(picture.link.is_some());
+    assert_eq!(picture.link, sound.link, "the surviving picture and sound are a real pair");
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn surviving_linked_pair_keeps_its_partner_when_an_earlier_sound_copy_is_overwritten() {
+    let mut fx = Fx::new();
+    let (v1, v2, v3, a1, a2) = (fx.v(0), fx.v(1), fx.v(2), fx.a(0), fx.a(1));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next + 1;
+    copy_items(&mut fx.seq, &[(video, v2, f(20)), (audio, a2, f(20)), (video, v3, f(20)), (audio, a2, f(20))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let first = &fx.seq.track(v2).unwrap().items[0];
+    let second = &fx.seq.track(v3).unwrap().items[0];
+    let sound = &fx.seq.track(a2).unwrap().items[0];
+    assert_eq!(first.link, None, "the earlier picture lost its sound partner");
+    assert!(second.link.is_some());
+    assert_eq!(second.link, sound.link, "the intact later pair keeps its original link");
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn overlapping_copies_clamp_each_fade_to_its_surviving_clip() {
+    let mut fx = Fx::new();
+    let (v1, v2) = (fx.v(0), fx.v(1));
+    let source = fx.put(v1, 0, 10, 0);
+    fx.seq.track_mut(v1).unwrap().transitions.push(Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(0),
+        duration: f(4),
+        from: None,
+        to: Some(source),
+        align: Default::default(),
+        reverse: false,
+    });
+    let mut n = fx.next + 1;
+    let ids = copy_items(&mut fx.seq, &[(source, v2, f(20)), (source, v2, f(22))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(ids.len(), 2);
+    let track = fx.seq.track(v2).unwrap();
+    assert_eq!(track.item(ids[0]).unwrap().duration, f(2));
+    let first = track.transitions.iter().find(|tr| tr.to == Some(ids[0])).unwrap();
+    let second = track.transitions.iter().find(|tr| tr.to == Some(ids[1])).unwrap();
+    assert_eq!((first.start, first.duration), (f(20), f(2)));
+    assert_eq!((second.start, second.duration), (f(22), f(4)));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn copied_crossfade_does_not_hide_an_intervening_copy() {
+    let mut fx = Fx::new();
+    let (v1, v2) = (fx.v(0), fx.v(1));
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    let c = fx.put(v1, 20, 2, 0);
+    fx.seq.track_mut(v1).unwrap().transitions.push(Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(8),
+        duration: f(4),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    });
+    let mut n = fx.next + 1;
+    let ids = copy_items(&mut fx.seq, &[(a, v2, f(20)), (b, v2, f(30)), (c, v2, f(28))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let track = fx.seq.track(v2).unwrap();
+    assert_eq!(track.item(ids[0]).unwrap().end(), f(28));
+    assert_eq!(track.item(ids[2]).unwrap().range(), TimeRange::new(f(28), f(2)));
+    assert_eq!(track.item(ids[1]).unwrap().start, f(30));
+    assert!(track.transitions.is_empty(), "a copied crossfade is removed when another clip occupies its cut");
+    assert_eq!(fx.seq.track(v1).unwrap().transitions.len(), 1, "the source transition remains");
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn copied_crossfade_does_not_outlive_a_shortened_incoming_clip() {
+    let mut fx = Fx::new();
+    let (v1, v2) = (fx.v(0), fx.v(1));
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    let c = fx.put(v1, 20, 2, 0);
+    fx.seq.track_mut(v1).unwrap().transitions.push(Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(8),
+        duration: f(4),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    });
+    let mut n = fx.next + 1;
+    copy_items(&mut fx.seq, &[(a, v2, f(20)), (b, v2, f(30)), (c, v2, f(31))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let track = fx.seq.track(v2).unwrap();
+    assert_eq!(track.items.iter().map(|it| (it.start, it.end())).collect::<Vec<_>>(), vec![(f(20), f(30)), (f(30), f(31)), (f(31), f(33)), (f(33), f(40))]);
+    assert!(track.transitions.is_empty(), "the incoming copy no longer covers the end of the crossfade");
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn overwritten_occurrence_can_still_carry_the_valid_cut_transition() {
+    let mut fx = Fx::new();
+    let (v1, v2) = (fx.v(0), fx.v(1));
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    fx.seq.track_mut(v1).unwrap().transitions.push(Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(8),
+        duration: f(4),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    });
+    let mut n = fx.next + 1;
+    let ids = copy_items(&mut fx.seq, &[(a, v2, f(20)), (b, v2, f(30)), (a, v2, f(20))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(ids.len(), 2, "the overwritten first A is not returned");
+    let track = fx.seq.track(v2).unwrap();
+    assert!(track.transitions.iter().any(|tr| tr.from == Some(ids[1]) && tr.to == Some(ids[0])));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn interior_split_carries_a_copied_out_fade_on_the_surviving_right_piece() {
+    let mut fx = Fx::new();
+    let (v1, v2, a1, a2) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    let cover = fx.put(v1, 20, 2, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    fx.seq.track_mut(v1).unwrap().transitions.push(Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(6),
+        duration: f(4),
+        from: Some(video),
+        to: None,
+        align: Default::default(),
+        reverse: false,
+    });
+    let mut n = fx.next + 1;
+    let ids = copy_items(&mut fx.seq, &[(video, v2, f(20)), (audio, a2, f(20)), (cover, v2, f(22))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let track = fx.seq.track(v2).unwrap();
+    assert_eq!(track.item(ids[0]).unwrap().end(), f(22));
+    let right = track.items.iter().find(|it| it.start == f(24) && it.end() == f(30)).unwrap();
+    assert_ne!(right.id, ids[0]);
+    let fade = track.transitions.iter().find(|tr| tr.from == Some(right.id)).unwrap();
+    assert_eq!((fade.start, fade.duration), (f(26), f(4)));
+    assert!(track.transitions.iter().all(|tr| tr.from != Some(ids[0])), "the shortened left fragment cannot own an out fade after its end");
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn orphaned_copies_from_different_track_pairs_do_not_relink() {
+    let mut fx = Fx::with_track_counts(3, 3);
+    let (v1, v2, v3, a1, a2, a3) = (fx.v(0), fx.v(1), fx.v(2), fx.a(0), fx.a(1), fx.a(2));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    let video_cover = fx.put(v1, 40, 10, 0);
+    let audio_cover = fx.put(a1, 40, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next + 1;
+    copy_items(
+        &mut fx.seq,
+        &[(video, v2, f(20)), (audio, a2, f(20)), (video, v3, f(20)), (audio, a3, f(20)), (video_cover, v3, f(20)), (audio_cover, a2, f(20))],
+        false,
+        &mut Fx::ctx(&mut n),
+    )
+    .unwrap();
+    let surviving_picture = &fx.seq.track(v2).unwrap().items[0];
+    let surviving_sound = &fx.seq.track(a3).unwrap().items[0];
+    assert_eq!(surviving_picture.link, None, "V2 lost its A2 partner");
+    assert_eq!(surviving_sound.link, None, "A3 lost its V3 partner");
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn complete_pairs_do_not_relink_after_both_original_partners_are_overwritten() {
+    let mut fx = Fx::with_track_counts(3, 3);
+    let (v1, v2, a1, a2, a3) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1), fx.a(2));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    let audio_cover = fx.put(a1, 40, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next + 1;
+    copy_items(
+        &mut fx.seq,
+        &[(video, v2, f(20)), (audio, a2, f(20)), (video, v2, f(20)), (audio, a3, f(20)), (audio_cover, a3, f(20))],
+        false,
+        &mut Fx::ctx(&mut n),
+    )
+    .unwrap();
+    let surviving_picture = &fx.seq.track(v2).unwrap().items[0];
+    let surviving_sound = &fx.seq.track(a2).unwrap().items[0];
+    assert_eq!(surviving_picture.link, None, "the second picture lost its A3 partner");
+    assert_eq!(surviving_sound.link, None, "A2 lost the overwritten first picture");
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn head_overwrite_reports_surviving_tail_and_preserves_its_out_fade() {
+    let mut fx = Fx::new();
+    let (v1, v2, v3) = (fx.v(0), fx.v(1), fx.v(2));
+    let source = fx.put(v1, 0, 10, 0);
+    let cover = fx.put(v3, 0, 2, 0);
+    fx.seq.track_mut(v1).unwrap().transitions.push(Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(6),
+        duration: f(4),
+        from: Some(source),
+        to: None,
+        align: Default::default(),
+        reverse: false,
+    });
+    let mut n = fx.next + 1;
+    let copied = copy_items(&mut fx.seq, &[(source, v2, f(20)), (cover, v2, f(20))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let track = fx.seq.track(v2).unwrap();
+    let tail = track.items.iter().find(|it| it.start == f(22) && it.end() == f(30)).unwrap();
+    assert!(copied.contains(&tail.id), "the surviving new-ID tail must be in the copied result");
+    assert!(track.transitions.iter().any(|tr| tr.from == Some(tail.id) && tr.to.is_none() && tr.start == f(26) && tr.duration == f(4)));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn head_overwrite_clears_the_surviving_tail_orphan_link() {
+    let mut fx = Fx::new();
+    let (v1, v2, v3, a1, a2) = (fx.v(0), fx.v(1), fx.v(2), fx.a(0), fx.a(1));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    let cover = fx.put(v3, 0, 2, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut n = fx.next + 1;
+    let copied = copy_items(&mut fx.seq, &[(video, v2, f(20)), (audio, a2, f(20)), (cover, v2, f(20))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let tail = fx.seq.track(v2).unwrap().items.iter().find(|it| it.start == f(22) && it.end() == f(30)).unwrap();
+    let sound = &fx.seq.track(a2).unwrap().items[0];
+    assert!(copied.contains(&tail.id));
+    assert_eq!(tail.link, None, "the split tail has no surviving matching sound fragment");
+    assert_eq!(sound.link, None, "the original copied picture identity was overwritten");
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn copied_crossfade_follows_the_right_fragment_after_interior_overwrite() {
+    let mut fx = Fx::new();
+    let (v1, v2, v3) = (fx.v(0), fx.v(1), fx.v(2));
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    let cover = fx.put(v3, 0, 2, 0);
+    fx.seq.track_mut(v1).unwrap().transitions.push(Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(8),
+        duration: f(4),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    });
+    let mut n = fx.next + 1;
+    let copied = copy_items(&mut fx.seq, &[(a, v2, f(20)), (b, v2, f(30)), (cover, v2, f(22))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let track = fx.seq.track(v2).unwrap();
+    let right_a = track.items.iter().find(|it| it.start == f(24) && it.end() == f(30)).unwrap();
+    let copied_b = copied.iter().find_map(|id| track.item(*id).filter(|it| it.start == f(30))).unwrap();
+    assert!(track.transitions.iter().any(|tr| tr.from == Some(right_a.id) && tr.to == Some(copied_b.id) && tr.start == f(28) && tr.duration == f(4)));
+    fx.seq.check().unwrap();
 }
 
 #[test]
