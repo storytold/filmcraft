@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 use filmcraft_geom::Vec2;
 use filmcraft_media::MediaKind;
+use filmcraft_project::graphic::{self, LayerContent};
 use filmcraft_project::{
     BinId, ItemId, ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, Param, ParamValue, Project, Sequence, TrackItem, TrackKind, Transition,
     TransitionAlign, TransitionId, effect::find_effect_by_name,
@@ -778,6 +779,60 @@ impl Exp<'_, '_> {
         id
     }
 
+    fn basic_title(&mut self) -> String {
+        const NAME: &str = "Basic Title";
+        if let Some(r) = self.effects.get(NAME) {
+            return r.id.clone();
+        }
+        let id = self.rid();
+        // FCP's built-in Motion template; Resolve also recognizes this title resource.
+        self.res_out.push(format!(
+            "    <effect id=\"{id}\" name=\"{NAME}\" uid=\".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti\"/>\n"
+        ));
+        self.effects.insert(NAME.into(), Res { id: id.clone() });
+        id
+    }
+
+    fn title_text(&mut self, it: &TrackItem, frame: (u32, u32)) -> Option<Vec<String>> {
+        let mut layers = it.effects.iter().filter(|e| graphic::is_layer(e) && e.enabled);
+        let text = layers.find_map(|e| {
+            let layer = graphic::eval_layer(e, it.source_in, frame)?;
+            match layer.content {
+                LayerContent::Text(t) if !t.text.is_empty() => {
+                    Some((t, layer.appearance.fill, layer.transform.position, e.params.values().any(Param::is_animated)))
+                }
+                _ => None,
+            }
+        });
+        let (text, fill, position, animated) = text?;
+        if it.effects.iter().filter(|e| graphic::is_layer(e) && e.enabled).count() > 1 {
+            self.report.warn(format!("graphic clip \"{}\" exports its first text layer as a Basic Title; other graphic layers are omitted", it.name));
+        }
+        if animated || !text.runs.is_empty() {
+            self.report.warn(format!("graphic clip \"{}\" exports static base text styling; text animation and character styles are omitted", it.name));
+        }
+        let style = self.rid();
+        let color = fill.unwrap_or([1.0; 4]).map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { 1.0 });
+        let size = if text.size.is_finite() { text.size.clamp(0.1, 10_000.0) } else { 100.0 };
+        let x = if position.x.is_finite() { position.x - frame.0 as f64 / 2.0 } else { 0.0 };
+        let y = if position.y.is_finite() { frame.1 as f64 / 2.0 - position.y } else { 0.0 };
+        let align = match text.align {
+            1 => "center",
+            2 => "right",
+            3 => "justify",
+            _ => "left",
+        };
+        let mut out = Vec::new();
+        out.push(format!("<param name=\"Position\" key=\"9999/999166631/999166633/1/100/101\" value=\"{} {}\"/>", num(x), num(y)));
+        out.push(format!("<text><text-style ref=\"{style}\">{}</text-style></text>", crate::xml::escape(&text.text)));
+        out.push(format!(
+            "<text-style-def id=\"{style}\"><text-style font=\"{}\" fontSize=\"{}\" fontFace=\"{}\" fontColor=\"{} {} {} {}\" alignment=\"{align}\"/></text-style-def>",
+            crate::xml::escape(&text.font), num(size as f64), crate::xml::escape(&text.style),
+            num(color[0] as f64), num(color[1] as f64), num(color[2] as f64), num(color[3] as f64)
+        ));
+        Some(out)
+    }
+
     fn sequence_xml(&mut self, seq_id: ItemId, fmt: &str, indent: usize) -> String {
         let Some(seq) = self.p.sequence(seq_id) else { return String::new() };
         let rate = seq.settings.frame_rate;
@@ -945,6 +1000,11 @@ impl Exp<'_, '_> {
         let base = base_item(self.p, it.item);
         let is_seq = matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_)));
         let generator = generator_of(self.p, base).cloned();
+        let graphic_frame = match self.p.item(base).map(|i| &i.kind) {
+            Some(ItemKind::Graphic { width, height, .. }) if kind == TrackKind::Video => Some((*width, *height)),
+            _ => None,
+        };
+        let title_children = graphic_frame.and_then(|frame| self.title_text(it, frame));
         let lane_attr = lane.map(|l| format!(" lane=\"{l}\"")).unwrap_or_default();
         let name = crate::xml::escape(&it.name);
         if let Some(g) = generator {
@@ -964,7 +1024,9 @@ impl Exp<'_, '_> {
             };
         }
         // Local timeline of the element: origin + source time (retimed clips use a timeMap).
-        let (tag, r, origin) = if is_seq {
+        let (tag, r, origin) = if title_children.is_some() {
+            ("title", self.basic_title(), Tick::ZERO)
+        } else if is_seq {
             let r = if self.building.contains(&base) {
                 self.report.warn("recursive nested sequence");
                 String::new()
@@ -997,8 +1059,10 @@ impl Exp<'_, '_> {
             _ => "",
         };
         let enabled = if it.enabled { "" } else { " enabled=\"0\"" };
-        let mut children = Vec::new();
-        if retimed {
+        let mut children = title_children.unwrap_or_default();
+        if retimed && tag == "title" {
+            self.report.info(format!("graphic clip \"{}\" is exported as a static FCPXML title; clip retiming is omitted", it.name));
+        } else if retimed {
             let v0 = origin + it.frame_hold.unwrap_or(it.source_in);
             let (a, b) = if let Some(h) = it.frame_hold {
                 (origin + h, origin + h)
@@ -1040,6 +1104,9 @@ impl Exp<'_, '_> {
             }
         }
         for e in standard_effects(it) {
+            if tag == "title" && graphic::is_layer(e) {
+                continue;
+            }
             let n = e.def().map(|d| d.name).unwrap_or(&e.effect).to_string();
             let r = self.effect(&n, &e.effect);
             let tag = if kind == TrackKind::Video { "filter-video" } else { "filter-audio" };
