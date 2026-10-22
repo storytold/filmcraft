@@ -84,3 +84,76 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Timeline navigation and track menus
+
+On Windows, new preferences use horizontal Timeline mouse-wheel scrolling. Wheel down
+browses later time and wheel up browses earlier time; Ctrl swaps to vertical track
+scrolling and Alt zooms around the pointer. Existing preferences remain configurable
+through Settings > Timeline > Timeline Mouse Scrolling.
+
+Right-click a track header or empty time in either half of the Timeline to
+add a video or audio track. Real gaps retain their gap actions. Add Tracks… opens the
+full track dialog. Quick additions use `sequence.addTracks` and support Undo/Redo.
+Automation IDs: `timeline.videoHeaders`, `timeline.audioHeaders`,
+`timeline.trackMenu.addVideo`, `timeline.trackMenu.addAudio`, `timeline.trackMenu.addTracks`.
+
+Validation: `cargo test -p filmcraft-ui-egui --test timeline_scroll_ui --test timeline_gap_ui`
+passes 19 headless UI tests, including wheel direction, context actions, Undo and gap menus.
+
+## Preview playback and copying effects
+
+Enter keeps the existing Render Effects In to Out command. With Play After Rendering
+on, it seeks to In (or the sequence start) and plays after a successful render, including
+when the range already has previews or needs no rendering. Render jobs remember their
+originating sequence. Cancelled/failed renders and jobs from another sequence cannot
+start playback; an older running render cannot take over a newer render's play request.
+
+Select an effect header in Effect Controls and use Ctrl+C (Cmd+C on macOS), then select
+one or more compatible clips and Ctrl+V to paste that effect and its keyframes. Intrinsic
+Motion/Opacity/Volume replace the matching intrinsic effect; added effects append. Effect
+keyframes retain their offset from the destination clip's source In. The header context
+menu also offers Copy. Copying a whole clip in the Timeline replaces the effect clipboard.
+
+A selected transition can be copied with Ctrl+C or its context menu and pasted with
+Ctrl+V to selected compatible clips/edit points, or the targeted cut at the playhead.
+Its effect parameters, duration, reverse flag and cut alignment are retained; video and
+audio transitions stay on their own track type. A batch paste is one undo step.
+
+Copy a whole clip and use Ctrl+Alt+V for the existing Paste Attributes dialog to choose
+Motion (position/scale/rotation), Opacity, audio attributes and added effects such as
+Lumetri Color. Scale Attribute Times controls keyframe retiming. Both attribute and
+single-effect paste reject locked matching tracks before changing any destination.
+The clip context menu now includes Paste alongside Paste Attributes.
+
+Engine automation: `effects.copy {clip?, index?}` copies one effect; normal `edit.copy`
+and `edit.paste` handle transition payloads. Effect-header copy exposes
+`effectControls.effect.<effectId>.copy`; transition context entries use
+`timeline.transitionMenu.edit.copy` / `timeline.transitionMenu.edit.clear`.
+
+Validation: the three `render_completion_tests`, 18 `clip_dialogs_ui` tests,
+13 `timeline_scroll_ui` tests and six `timeline_gap_ui` tests pass (40 total).
+
+Native release validation also exercised Ctrl+C/Ctrl+V for Motion and video/audio
+transitions, Ctrl+Alt+V for Lumetri Color, and Enter against a real 24-frame preview
+cache (all frames rendered, green range, playback restarted at zero). Targeted library
+Clippy with warnings denied and workspace formatting checks pass.
+
+## Linked trim and matched source ranges
+
+Hold Ctrl while starting an edge drag with the Selection tool to trim only the
+grabbed video or audio clip. The link stays intact; preview, media-limit clamping
+and the committed edit use the same link policy. Ctrl+Shift retains rolling trim.
+Engine automation can use `timeline.trim {linked:false}` for this operation.
+
+Match Frame (F) opens and focuses Source with In/Out set to the source span used
+by the timeline clip. Repeating F keeps that span. Drag Audio Only then recovers
+the marked source section; Drag Video Only uses the same range.
+
+Validation: 14 source-drag UI tests and 17 timeline-trim UI tests pass; the two
+optional GPU screenshot tests remain ignored. Targeted library Clippy with warnings
+denied and workspace formatting checks pass.
+
+Native release validation confirmed Ctrl trims independently on both streams and both
+edges with Undo, then F twice focuses Source and an audio-only drag restores the
+matched source In and duration. Screenshot and report are under target/linked-trim-match-qa*.

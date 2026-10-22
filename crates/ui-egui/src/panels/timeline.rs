@@ -111,6 +111,7 @@ pub enum Drag {
         clip: ClipId,
         edge: filmcraft_edit::Edge,
         mode: filmcraft_edit::TrimMode,
+        individual: bool,
         delta: Tick,
         /// The time under the pointer when the button went down: the edge moves by how far the
         /// pointer has moved since (#259).
@@ -1251,12 +1252,43 @@ fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, s
     resp
 }
 
+/// Add a track through the undoable engine command.
+fn track_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, kind: TrackKind) {
+    let video = kind == TrackKind::Video;
+    let label = if video { tl!("Add Video Track") } else { tl!("Add Audio Track") };
+    let response = ui.button(label);
+    app.auto.add_response(if video { "timeline.trackMenu.addVideo" } else { "timeline.trackMenu.addAudio" }, &response, label);
+    if response.clicked() {
+        if let Err(error) = app.session.execute("sequence.addTracks", json!({"video": u8::from(video), "audio": u8::from(!video)})) {
+            app.ui.status = error.to_string();
+        }
+        ui.close();
+    }
+    let response = ui.button(tl!("Add Tracks…"));
+    app.auto.add_response("timeline.trackMenu.addTracks", &response, "Add Tracks…");
+    if response.clicked() {
+        if let Err(error) = crate::menus::invoke(app, &ui.ctx().clone(), "sequence.addTracks", json!({})) {
+            app.ui.status = error;
+        }
+        ui.close();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows: &[Row], rect: Rect, vclip: Rect, aclip: Rect, t: &Tokens) {
     let hw = app.ui.timeline.header_w;
     let tg = app.session.targeting();
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut vo_action = None;
+    for (kind, clip) in [(TrackKind::Video, vclip), (TrackKind::Audio, aclip)] {
+        let header = Rect::from_min_max(pos2(rect.min.x, clip.min.y), pos2(rect.min.x + hw, clip.max.y));
+        let response = ui.interact(header, egui::Id::new(("timeline.trackHeaderMenu", kind == TrackKind::Video)), Sense::click());
+        app.auto.add_response(if kind == TrackKind::Video { "timeline.videoHeaders" } else { "timeline.audioHeaders" }, &response, "Track headers");
+        // Header child buttons own their responses. Secondary clicks anywhere in this
+        // header still open the track menu, without taking their primary clicks.
+        let open = (ui.rect_contains_pointer(header) && ui.input(|i| i.pointer.secondary_clicked())).then_some(egui::containers::SetOpenCommand::Bool(true));
+        egui::Popup::context_menu(&response).open_memory(open).show(|ui| track_menu(app, ui, kind));
+    }
     for r in rows {
         let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -1883,8 +1915,9 @@ fn preview_drag(app: &FilmcraftApp, seq: &Sequence, out: &mut HashMap<ClipId, (T
                 out.insert(*clip, (it.start, it.duration + *delta, None));
             }
         }
-        Drag::Trim { clip, edge, delta, .. } => {
-            for c in filmcraft_engine::commands::with_links(&app.session, &[*clip]) {
+        Drag::Trim { clip, edge, delta, individual, .. } => {
+            let clips = if *individual { vec![*clip] } else { filmcraft_engine::commands::with_links(&app.session, &[*clip]) };
+            for c in clips {
                 if let Some((_, it)) = seq.find_item(c) {
                     moved(it, *edge, *delta);
                 }
@@ -2028,6 +2061,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
     &[
         ("Cut", "edit.cut"),
         ("Copy", "edit.copy"),
+        ("Paste", "edit.paste"),
         ("Paste Attributes…", "edit.pasteAttributes"),
         ("Remove Attributes…", "edit.removeAttributes"),
         ("Clear", "edit.clear"),
@@ -2285,7 +2319,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     //   wheel            the tracks under the pointer, up and down
     //   Cmd + wheel      the Timeline, sideways
     //   Option + wheel   zoom about the pointer
-    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two. A sideways
+    // Windows defaults to "Horizontal", swapping the first two (Ctrl replaces Cmd).
+    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling can switch either way. A sideways
     // gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls sideways; a pinch zooms.
     if ui.rect_contains_pointer(rect)
         && let Some(p) = ctx.pointer_hover_pos()
@@ -2459,7 +2494,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     Tool::Ripple => "ripple",
                     _ => {
                         let (dist, neighbour) = edge_geometry(seq, layout, track, clip, edge, p.x);
-                        selection_trim_kind(roll_ripple, mods.command, mods.shift, dist, neighbour)
+                        if mods.ctrl && !mods.shift { "trim" } else { selection_trim_kind(roll_ripple, mods.command, mods.shift, dist, neighbour) }
                     }
                 };
                 let e = if edge == filmcraft_edit::Edge::In { "in" } else { "out" };
@@ -2470,8 +2505,12 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 None
             }
             (_, Grab::Edge { clip, edge, kind, .. }) => Some(match kind {
-                EdgeKind::Trim => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t },
-                EdgeKind::Ripple => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t },
+                EdgeKind::Trim => {
+                    Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, individual: mods.ctrl && !mods.shift, delta: Tick::ZERO, from: t }
+                }
+                EdgeKind::Ripple => {
+                    Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, individual: mods.ctrl && !mods.shift, delta: Tick::ZERO, from: t }
+                }
                 EdgeKind::Roll { left, right } => Drag::Roll { left, right, delta: Tick::ZERO, from: t },
                 EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t },
                 EdgeKind::Remix => Drag::Remix { clip, delta: Tick::ZERO, from: t },
@@ -2637,12 +2676,13 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     Some(Drag::Move { clips, grab_tick, start_track, offset, track_delta, new_track, copy: mods.alt })
                 }
             }
-            Drag::Trim { clip, edge, mode, from, .. } => seq.find_item(clip).map(|(_, it)| {
+            Drag::Trim { clip, edge, mode, individual, from, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
                 let target = snap(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &[clip]);
                 // stop at the end of the media (or the neighbour), as the trim on release will (#653)
-                let delta = filmcraft_engine::commands::trim_delta(&app.session, clip, edge, mode, target - base).unwrap_or(target - base);
-                Drag::Trim { clip, edge, mode, delta, from }
+                let delta =
+                    filmcraft_engine::commands::trim_delta_with_links(&app.session, clip, edge, mode, target - base, !individual).unwrap_or(target - base);
+                Drag::Trim { clip, edge, mode, individual, delta, from }
             }),
             Drag::Remix { clip, from, .. } => seq.find_item(clip).map(|(_, it)| {
                 let target = rate.snap_nearest(it.end() + (t_here - from)).max(it.start + rate.frame_duration());
@@ -2730,9 +2770,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     // Option held while dropping copies (Premiere: Option-drag duplicates)
                     Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copy || mods.alt})))
                 }
-                Drag::Trim { clip, edge, mode, delta, .. } if delta != Tick::ZERO => Some(app.session.execute(
+                Drag::Trim { clip, edge, mode, individual, delta, .. } if delta != Tick::ZERO => Some(app.session.execute(
                     "timeline.trim",
-                    json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": if mode == filmcraft_edit::TrimMode::Ripple {"ripple"} else {"regular"}, "delta": delta.0}),
+                    json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": if mode == filmcraft_edit::TrimMode::Ripple {"ripple"} else {"regular"}, "delta": delta.0, "linked": !individual}),
                 )),
                 Drag::Stretch { clip, edge, delta, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.rateStretch", json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0}))),
                 Drag::Remix { clip, delta, .. } if delta != Tick::ZERO => {
@@ -2806,6 +2846,14 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
 
     // ---- context menu on clips (right-clicking an unselected clip selects it first); on a clip's
     // edge, the edit point menu instead (right-clicking an unselected edit point selects it first)
+    let track_menu_id = egui::Id::new("timeline.trackMenu.kind");
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let kind =
+            matches!(hit(seq, layout, p), Hit::Empty { .. } | Hit::None).then_some(if p.y < layout.split_y { TrackKind::Video } else { TrackKind::Audio });
+        ctx.data_mut(|d| d.insert_temp(track_menu_id, kind));
+    }
     let edit_point_menu_id = egui::Id::new("timeline.editPointMenu.target");
     // the clip right-clicked, remembered while its menu is open: Unlink leaves only it selected
     let menu_clip_id = egui::Id::new("timeline.clipMenu.clip");
@@ -2819,7 +2867,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             _ => false,
         };
         ctx.data_mut(|d| d.insert_temp(gap_menu_id, on_gap));
-        if on_gap {
+        if on_gap || ctx.data(|d| d.get_temp::<Option<TrackKind>>(track_menu_id)).flatten().is_some() {
             // not the edit point menu of a cut right-clicked before
             ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
         }
@@ -2860,8 +2908,31 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
         }
     }
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Transition { id, .. } = hit(seq, layout, p)
+    {
+        ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+        if let Err(error) = app.session.execute("timeline.select", json!({"transitions": [id.0]})) {
+            app.ui.status = error.to_string();
+        }
+    }
     resp.context_menu(|ui| {
         ui.set_min_width(220.0);
+        if !app.session.state.transition_selection.is_empty() && ctx.data(|d| d.get_temp::<Option<TrackKind>>(track_menu_id)).flatten().is_none() {
+            for (label, command) in [("Copy", "edit.copy"), ("Clear", "edit.clear")] {
+                let response = ui.button(crate::i18n::t(label));
+                app.auto.add_response(&format!("timeline.transitionMenu.{command}"), &response, label);
+                if response.clicked() {
+                    if let Err(error) = crate::menus::invoke(app, &ctx, command, json!({})) {
+                        app.ui.status = error;
+                    }
+                    ui.close();
+                }
+            }
+            return;
+        }
+
         if let Some(marker) = ctx.data(|d| d.get_temp::<Option<MarkerId>>(marker_menu_id)).flatten() {
             marker_menu(app, &ctx, ui, marker);
             return;
@@ -2871,7 +2942,15 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             return;
         }
         if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
+            if let Some(kind) = ctx.data(|d| d.get_temp::<Option<TrackKind>>(track_menu_id)).flatten() {
+                track_menu(app, ui, kind);
+                ui.separator();
+            }
             gap_menu(app, &ctx, ui);
+            return;
+        }
+        if let Some(kind) = ctx.data(|d| d.get_temp::<Option<TrackKind>>(track_menu_id)).flatten() {
+            track_menu(app, ui, kind);
             return;
         }
         let sel = app.session.state.selection.clone();
@@ -3194,7 +3273,7 @@ mod trim_preview_tests {
         let music = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.name.contains("Ambient")).unwrap().clone();
         for (edge, delta) in [(filmcraft_edit::Edge::In, 5), (filmcraft_edit::Edge::Out, -5), (filmcraft_edit::Edge::In, -1)] {
             let delta = Tick(delta * filmcraft_time::TICKS_PER_SECOND);
-            app.tl.drag = Some(Drag::Trim { clip: music.id, edge, mode: filmcraft_edit::TrimMode::Regular, delta, from: Tick::ZERO });
+            app.tl.drag = Some(Drag::Trim { clip: music.id, edge, mode: filmcraft_edit::TrimMode::Regular, individual: false, delta, from: Tick::ZERO });
             let (mut out, mut edited) = (HashMap::new(), HashMap::new());
             preview_drag(&app, &seq, &mut out, &mut edited);
             let shown = edited.get(&music.id).expect("the trimmed clip is drawn from its edited item");

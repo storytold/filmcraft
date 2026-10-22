@@ -179,6 +179,40 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if id == "edit.copy"
+        && app.ui.focused == PanelKind::EffectControls
+        && app.session.state.selected_effect.as_ref().is_some_and(|e| app.session.state.selection.contains(&e.clip))
+    {
+        return invoke(app, ctx, "effects.copy", params);
+    }
+    if matches!(id, "sequence.renderEffectsInToOut" | "sequence.renderInToOut" | "sequence.renderSelection") {
+        let sequence = app.session.state.active_sequence;
+        let from = app
+            .session
+            .active_sequence()
+            .and_then(|q| {
+                if id == "sequence.renderSelection" {
+                    app.session.state.selection.iter().filter_map(|c| q.find_item(*c).map(|(_, it)| it.start)).min()
+                } else {
+                    q.mark_in
+                }
+            })
+            .unwrap_or(filmcraft_time::Tick::ZERO)
+            .max(filmcraft_time::Tick::ZERO);
+        let result = app.session.execute(id, params).map_err(|e| e.to_string())?;
+        app.stop();
+        app.watched_render = None;
+        if let Some(job) = result.get("job").and_then(Value::as_u64) {
+            if let Some(sequence) = sequence {
+                app.watched_render = Some((job, sequence, from));
+            }
+        } else if app.ui.play_after_render {
+            app.session.set_playhead(from);
+            crate::panels::timeline::reveal_playhead(app, ctx);
+            app.play(1.0);
+        }
+        return Ok(result);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
@@ -598,7 +632,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
     }
-    if r.is_ok() && matches!(id, "edit.copy" | "edit.cut") {
+    if r.is_ok() && matches!(id, "edit.copy" | "edit.cut" | "effects.copy") {
         remember_stale_clipboard_media(app);
         put_clip_names_on_system_clipboard(app, ctx);
     }
@@ -632,6 +666,13 @@ fn clipboard_media_key(media: &crate::ClipboardMedia) -> String {
 fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
     let names: Vec<&str> = app.session.state.clipboard.iter().map(|(_, _, c)| c.name.as_str()).collect();
     if names.is_empty() {
+        if let Some(payload) = &app.session.state.effect_clipboard {
+            let name = match payload {
+                filmcraft_engine::clipboard::Payload::Effect(_, source) => source.effects.first().map(|e| e.effect.as_str()).unwrap_or("Effect"),
+                filmcraft_engine::clipboard::Payload::Transition(_, tr, _) => &tr.effect.effect,
+            };
+            ctx.copy_text(name.to_string());
+        }
         return;
     }
     let text = names.join("\n");

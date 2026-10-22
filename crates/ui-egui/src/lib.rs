@@ -391,7 +391,7 @@ pub struct FilmcraftApp {
     /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
     pub gpu: Option<GpuState>,
     /// Preview render job being watched (job id, where to start playing when it completes).
-    watched_render: Option<(u64, Tick)>,
+    watched_render: Option<(u64, filmcraft_project::ItemId, Tick)>,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
     /// Settings ▸ Appearance ▸ UI Scale last applied, with the system scale it was applied for.
@@ -1834,6 +1834,7 @@ impl FilmcraftApp {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
+                    self.ui.focused = PanelKind::Source;
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
@@ -1917,22 +1918,19 @@ impl FilmcraftApp {
         use std::sync::atomic::Ordering;
         let running = self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned();
         // Play after rendering previews.
-        if let Some((id, from)) = self.watched_render
+        if let Some((id, sequence, from)) = self.watched_render
             && let Some(j) = self.session.jobs.iter().find(|j| j.id == id)
             && j.progress.finished.load(Ordering::Relaxed)
         {
             self.watched_render = None;
             let ok = j.progress.error.lock().map(|e| e.is_none()).unwrap_or(false);
-            if ok && self.ui.play_after_render && !self.playback.playing {
+            if ok && self.ui.play_after_render && !self.playback.playing && self.session.state.active_sequence == Some(sequence) {
                 self.session.set_playhead(from);
+                crate::panels::timeline::reveal_playhead(self, ctx);
                 self.play(1.0);
             }
         }
         let job = running?;
-        if job.label.starts_with("Rendering ") && !job.label.contains("audio") && self.watched_render.is_none_or(|w| w.0 != job.id) {
-            let from = self.session.active_sequence().and_then(|q| q.mark_in).unwrap_or(Tick::ZERO);
-            self.watched_render = Some((job.id, from));
-        }
         ctx.request_repaint_after(std::time::Duration::from_millis(150));
         Some(job)
     }
@@ -2970,5 +2968,62 @@ mod native_menu_tests {
         app.sync_native_menu();
         assert_eq!(last(&sent, "edit.undo"), Some(false));
         assert_eq!(last(&sent, "edit.redo"), Some(true), "the undone edit can be redone");
+    }
+}
+
+#[cfg(test)]
+mod render_completion_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn app() -> FilmcraftApp {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        FilmcraftApp::new(session)
+    }
+
+    fn job(id: u64, done: bool) -> filmcraft_engine::Job {
+        let job = filmcraft_engine::Job { id, label: "Rendering 1 preview segment".into(), progress: Default::default(), result: Default::default() };
+        job.progress.finished.store(done, Ordering::Relaxed);
+        job
+    }
+
+    #[test]
+    fn completed_render_does_not_adopt_an_older_running_job() {
+        let mut app = app();
+        let seq = app.session.state.active_sequence.unwrap();
+        app.session.jobs = vec![job(1, false), job(2, true)];
+        app.watched_render = Some((2, seq, Tick::ZERO));
+        app.watch_jobs(&egui::Context::default());
+        assert!(app.playback.playing);
+        assert!(app.watched_render.is_none());
+        app.stop();
+        app.session.jobs[0].progress.finished.store(true, Ordering::Relaxed);
+        app.watch_jobs(&egui::Context::default());
+        assert!(!app.playback.playing, "an older render cannot restart playback");
+    }
+
+    #[test]
+    fn completed_render_does_not_play_a_different_sequence() {
+        let mut app = app();
+        let seq = app.session.state.active_sequence.unwrap();
+        app.session.jobs.push(job(1, true));
+        app.watched_render = Some((1, seq, Tick::ZERO));
+        app.session.execute("file.newSequence", serde_json::json!({"name": "Other"})).unwrap();
+        app.watch_jobs(&egui::Context::default());
+        assert!(!app.playback.playing);
+        assert!(app.watched_render.is_none());
+    }
+
+    #[test]
+    fn failed_or_cancelled_render_never_starts_playback() {
+        let mut app = app();
+        let seq = app.session.state.active_sequence.unwrap();
+        let job = job(1, true);
+        *job.progress.error.lock().unwrap() = Some("cancelled".into());
+        app.session.jobs.push(job);
+        app.watched_render = Some((1, seq, Tick::ZERO));
+        app.watch_jobs(&egui::Context::default());
+        assert!(!app.playback.playing);
     }
 }

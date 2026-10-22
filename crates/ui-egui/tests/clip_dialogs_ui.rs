@@ -466,3 +466,182 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+#[test]
+fn effect_copy_shortcuts_transfer_motion_and_color_without_copying_clips() {
+    let mut d = Driver::new();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    let a = d.v1(0);
+    let b = d.v1(2);
+    d.exec("effects.setParam", json!({"clip": a.id.0, "effect": "motion", "param": "scale", "value": 73.0}));
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    d.exec("effects.select", json!({"clip": a.id.0, "effect": "motion"}));
+    d.ok("ui.set", json!({"focused": "Effect Controls"}));
+    d.ok("ui.key", json!({"key": "Ctrl+C"}));
+    d.frames(3);
+    assert!(d.app().session.state.effect_clipboard.is_some());
+    d.exec("timeline.select", json!({"clips": [b.id.0]}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let before = d.app().session.active_sequence().unwrap().video_tracks[0].items.len();
+    d.ok("ui.key", json!({"key": "Ctrl+V"}));
+    d.frames(3);
+    assert_eq!(d.v1(2).effect("motion").unwrap().param("scale").unwrap().value.as_f64(), Some(73.0));
+    assert_eq!(d.app().session.active_sequence().unwrap().video_tracks[0].items.len(), before);
+    d.exec("edit.undo", json!({}));
+    assert_ne!(d.v1(2).effect("motion").unwrap().param("scale").unwrap().value.as_f64(), Some(73.0));
+    d.exec("edit.redo", json!({}));
+    assert_eq!(d.v1(2).effect("motion").unwrap().param("scale").unwrap().value.as_f64(), Some(73.0));
+    // A normal Timeline copy replaces the effect payload; Ctrl+Alt+V opens attributes.
+    d.ok("ui.key", json!({"key": "Ctrl+C"}));
+    d.frames(3);
+    assert!(d.app().session.state.effect_clipboard.is_none());
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    d.ok("ui.key", json!({"key": "Ctrl+Alt+V"}));
+    d.frames(3);
+    assert!(d.has("pasteAttributes.motion"));
+    d.click("pasteAttributes.cancel");
+}
+
+#[test]
+fn copied_effect_rejects_locked_and_incompatible_targets_without_partial_changes() {
+    let mut d = Driver::new();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    let a = d.v1(0);
+    let b = d.v1(2);
+    d.exec("effects.apply", json!({"clips": [a.id.0], "effect": "lumetri"}));
+    d.exec("effects.setParam", json!({"clip": a.id.0, "effect": "lumetri", "param": "exposure", "value": 1.5}));
+    let index = d.v1(0).effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    d.exec("effects.copy", json!({"clip": a.id.0, "index": index}));
+    d.exec("timeline.select", json!({"clips": [b.id.0]}));
+    let tid = d.app().session.active_sequence().unwrap().video_tracks[0].id;
+    d.exec("timeline.setTrack", json!({"track": tid.0, "locked": true}));
+    let before = d.app().session.project.clone();
+    assert_eq!(d.call("engine.execute", json!({"command": "edit.paste"}))["ok"], false);
+    assert!(std::sync::Arc::ptr_eq(&before, &d.app().session.project));
+    d.exec("timeline.setTrack", json!({"track": tid.0, "locked": false}));
+    d.exec("edit.paste", json!({}));
+    assert_eq!(d.v1(2).effect("lumetri").unwrap().param("exposure").unwrap().value.as_f64(), Some(1.5));
+    let audio = d.app().session.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    d.exec("timeline.select", json!({"clips": [audio.0]}));
+    let before = d.app().session.project.clone();
+    assert_eq!(d.call("engine.execute", json!({"command": "edit.paste"}))["ok"], false);
+    assert!(std::sync::Arc::ptr_eq(&before, &d.app().session.project));
+    assert_eq!(d.call("engine.execute", json!({"command": "effects.copy", "params": {"clip": a.id.0, "index": -1}}))["ok"], false);
+}
+
+#[test]
+fn video_and_audio_fades_copy_parameters_and_duration_with_one_undo() {
+    let mut d = Driver::new();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    for video in [true, false] {
+        let (a, b) = if video {
+            (d.v1(0).id, d.v1(2).id)
+        } else {
+            let q = d.app().session.active_sequence().unwrap();
+            (q.audio_tracks[0].items[0].id, q.audio_tracks[0].items[2].id)
+        };
+        let command = if video { "sequence.applyVideoTransition" } else { "sequence.applyAudioTransition" };
+        let result = d.exec(command, json!({"clip": a.0, "edge": "in", "frames": 9, "reverse": true}));
+        let id = result["transition"].as_u64().unwrap();
+        d.exec("timeline.select", json!({"transitions": [id]}));
+        d.ok("ui.set", json!({"focused": "Timeline"}));
+        d.ok("ui.key", json!({"key": "Ctrl+C"}));
+        d.frames(3);
+        assert!(matches!(d.app().session.state.effect_clipboard, Some(filmcraft_engine::clipboard::Payload::Transition(..))));
+        d.exec("timeline.select", json!({"clips": [b.0]}));
+        let n = d.app().session.active_sequence().unwrap().all_tracks().map(|t| t.transitions.len()).sum::<usize>();
+        d.ok("ui.key", json!({"key": "Ctrl+V"}));
+        d.frames(3);
+        let q = d.app().session.active_sequence().unwrap();
+        let copied = q.all_tracks().flat_map(|t| &t.transitions).find(|t| t.to == Some(b)).unwrap();
+        assert!(copied.reverse);
+        assert_eq!(copied.duration, q.settings.frame_rate.tick_of(9));
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.app().session.active_sequence().unwrap().all_tracks().map(|t| t.transitions.len()).sum::<usize>(), n);
+    }
+}
+
+#[test]
+fn enter_on_a_ready_range_seeks_to_start_and_plays_again() {
+    let mut d = Driver::new();
+    d.exec("file.newSequence", json!({"name": "Ready", "video": 1, "audio": 1, "width": 64, "height": 36}));
+    let item = d.item_named("Ocean_Sunset.mp4");
+    d.exec("timeline.place", json!({"item": item, "frame": 0, "duration": filmcraft_time::FrameRate::FPS_23_976.tick_of(24).0}));
+    d.app().session.previews.set_dir(Some(std::env::temp_dir().join(format!("filmcraft-enter-ready-{}", std::process::id()))));
+    // Removing non-intrinsic effects leaves a real-time range, so Enter has no render job.
+    let c = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].id;
+    d.exec("timeline.select", json!({"clips": [c.0]}));
+    d.exec("edit.removeAttributes", json!({}));
+    d.exec("sequence.renderInToOut", json!({"wait": true}));
+    d.exec("playback.stop", json!({}));
+    d.exec("playhead.set", json!({"frame": 12}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert!(d.app().playback.playing);
+    assert!(d.app().session.playhead() < d.app().session.sequence_rate().tick_of(12));
+}
+
+#[test]
+fn audio_effect_copy_pastes_to_multiple_audio_clips_and_preserves_video() {
+    let mut d = Driver::new();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    let clips = d.app().session.active_sequence().unwrap().audio_tracks[0].items.clone();
+    let (a, b, c) = (clips[0].id, clips[1].id, clips[2].id);
+    let video = d.v1(2);
+    d.exec("effects.setParam", json!({"clip": a.0, "effect": "volume", "param": "level", "value": -17.0}));
+    d.exec("timeline.select", json!({"clips": [a.0]}));
+    d.exec("effects.select", json!({"clip": a.0, "effect": "volume"}));
+    d.exec("effects.copy", json!({}));
+    d.exec("timeline.select", json!({"clips": [b.0, c.0, video.id.0]}));
+    assert_eq!(d.exec("edit.paste", json!({}))["clips"], 2);
+    let q = d.app().session.active_sequence().unwrap();
+    for id in [b, c] {
+        let clip = q.find_item(id).unwrap().1;
+        assert_eq!(clip.effect("volume").unwrap().param("level").unwrap().value.as_f64(), Some(-17.0));
+    }
+    assert_eq!(d.v1(2), video);
+    d.exec("edit.undo", json!({}));
+    let q = d.app().session.active_sequence().unwrap();
+    for original in [&clips[1], &clips[2]] {
+        assert_eq!(q.find_item(original.id).unwrap().1, original);
+    }
+}
+
+#[test]
+fn paste_attributes_refuses_locked_tracks_without_an_undo_step() {
+    let mut d = Driver::new();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    let (a, b) = (d.v1(0), d.v1(2));
+    d.exec("effects.setParam", json!({"clip": a.id.0, "effect": "motion", "param": "scale", "value": 55.0}));
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    d.exec("edit.copy", json!({}));
+    d.exec("timeline.select", json!({"clips": [b.id.0]}));
+    let tid = d.app().session.active_sequence().unwrap().video_tracks[0].id;
+    d.exec("timeline.setTrack", json!({"track": tid.0, "locked": true}));
+    let before = d.app().session.project.clone();
+    let history = d.app().session.history.undo.len();
+    assert_eq!(d.call("engine.execute", json!({"command": "edit.pasteAttributes", "params": {"motion": true}}))["ok"], false);
+    assert!(std::sync::Arc::ptr_eq(&before, &d.app().session.project));
+    assert_eq!(d.app().session.history.undo.len(), history);
+}
+
+#[test]
+fn motion_only_attributes_do_not_touch_or_block_a_locked_linked_audio_track() {
+    let mut d = Driver::new();
+    let (a, b) = (d.v1(0), d.v1(2));
+    d.exec("effects.setParam", json!({"clip": a.id.0, "effect": "motion", "param": "scale", "value": 61.0}));
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    d.exec("edit.copy", json!({}));
+    assert!(d.app().session.state.clipboard.iter().any(|(kind, _, _)| *kind == filmcraft_engine::project::TrackKind::Audio));
+    let tid = d.app().session.active_sequence().unwrap().audio_tracks[0].id;
+    d.exec("timeline.setTrack", json!({"track": tid.0, "locked": true}));
+    let audio = d.app().session.active_sequence().unwrap().audio_tracks.clone();
+    d.exec("timeline.select", json!({"clips": [b.id.0]}));
+    d.exec(
+        "edit.pasteAttributes",
+        json!({"motion": true, "opacity": false, "timeRemapping": false, "volume": false, "channelVolume": false, "panner": false, "effects": false}),
+    );
+    assert_eq!(d.v1(2).effect("motion").unwrap().param("scale").unwrap().value.as_f64(), Some(61.0));
+    assert_eq!(d.app().session.active_sequence().unwrap().audio_tracks, audio);
+}

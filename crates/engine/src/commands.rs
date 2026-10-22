@@ -120,7 +120,7 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
+    if s.state.clipboard.is_empty() && s.state.effect_clipboard.is_none() { Err("clipboard is empty".into()) } else { Ok(()) }
 }
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
@@ -619,12 +619,18 @@ fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Ed
 /// trim drag shows this, so the edge stops at the end of the media or the neighbouring clip
 /// instead of following the pointer past it (#653).
 pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick) -> Result<Tick> {
+    trim_delta_with_links(s, clip, edge, mode, delta, true)
+}
+
+/// Preview a trim with the same link policy as its eventual command.
+pub fn trim_delta_with_links(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, linked: bool) -> Result<Tick> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
     let starts = |id: ItemId| crate::media_start(&s.project, id);
     let mut next = s.project.next_id;
     let ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
-    clamp_trim_linked(q, &with_links(s, &[clip]), edge, mode, delta, &ctx)
+    let clips = if linked { with_links(s, &[clip]) } else { vec![clip] };
+    clamp_trim_linked(q, &clips, edge, mode, delta, &ctx)
 }
 
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
@@ -1625,7 +1631,10 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{}", has_selection, |s, _| {
+        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{}", crate::clipboard::can_copy, |s, _| {
+            if !s.state.transition_selection.is_empty() {
+                return crate::clipboard::copy_transition(s);
+            }
             copy_selection(s);
             Ok(json!({"copied": s.state.clipboard.len()}))
         }),
@@ -2269,8 +2278,20 @@ fn build() -> Vec<CommandSpec> {
         cmd!("sequence.matchFrame", "Match Frame", ["Sequence"], Some("F"), "{}", has_seq, |s, _| {
             let t = s.playhead();
             let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-            let hit = seq.video_tracks.iter().rev().chain(seq.audio_tracks.iter()).find_map(|tr| tr.item_at(t).map(|i| (i.item, i.source_time_at(t))));
-            let (item, st) = hit.ok_or_else(|| EngineError::Other("no clip at the playhead".into()))?;
+            let hit = seq.video_tracks.iter().rev().chain(seq.audio_tracks.iter()).find_map(|tr| tr.item_at(t));
+            let clip = hit.ok_or_else(|| EngineError::Other("no clip at the playhead".into()))?;
+            let (item, st, start, end) = (clip.item, clip.source_time_at(t), clip.source_in, clip.source_out());
+            let item = crate::clip_ops::source_view(s, item).map(|view| view.media).unwrap_or(item);
+            // Match Frame also exposes the used source span, so video-only/audio-only drags
+            // recover precisely that section instead of the entire master clip.
+            if let Some(view) = crate::clip_ops::source_view(s, item) {
+                let a = start.clamp(view.start, view.end);
+                let b = end.clamp(a, view.end);
+                let out = (b - view.rate.frame_duration()).max(a);
+                if view.mark_in != Some(a) || view.mark_out != Some(out) {
+                    s.execute("project.setMarks", json!({"item": item.0, "in": a.0, "out": out.0}))?;
+                }
+            }
             s.state.source_item = Some(item);
             s.state.source_playhead = st;
             s.events.push(crate::Event::OpenSource(item));
@@ -2636,7 +2657,7 @@ fn build() -> Vec<CommandSpec> {
             "Trim Edit",
             [],
             None,
-            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64}"#,
+            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool=true}"#,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.trim", "need `clip`"))?;
@@ -2648,7 +2669,7 @@ fn build() -> Vec<CommandSpec> {
                     .map(Tick)
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
-                let clips = with_links(s, &[c]);
+                let clips = if bool_p(p, "linked").unwrap_or(true) { with_links(s, &[c]) } else { vec![c] };
                 let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
                     if q.find_item(c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked)) {
                         return Err(edit::EditError::Locked.into());
@@ -2931,6 +2952,7 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         // ================= Effects =================
+        cmd!("effects.copy", "Copy Effect", [], None, r#"{"clip":id?,"index":usize?}"#, has_seq, crate::clipboard::copy_effect),
         cmd!("effects.apply", "Apply Effect", [], None, r#"{"clips":[id]?,"effect":"gaussian_blur|Gaussian Blur|…"}"#, has_seq, |s, p| {
             let name = str_p(p, "effect").ok_or_else(|| bad("effects.apply", "need `effect`"))?;
             let def = resolve_effect_name(s, p, name).ok_or_else(|| bad("effects.apply", format!("unknown effect `{name}`")))?;
@@ -3652,11 +3674,15 @@ fn copy_selection(s: &mut Session) {
             }
         }
     }
+    s.state.effect_clipboard = None;
     s.state.clipboard = clip;
     s.state.clipboard_markers = markers;
 }
 
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {
+    if s.state.effect_clipboard.is_some() {
+        return crate::clipboard::paste(s);
+    }
     let at = s.playhead();
     let clip = s.state.clipboard.clone();
     let markers = if s.state.copy_paste_sequence_markers { s.state.clipboard_markers.clone() } else { Vec::new() };

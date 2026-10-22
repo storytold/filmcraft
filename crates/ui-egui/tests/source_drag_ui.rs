@@ -391,3 +391,33 @@ fn program_handles_exist_only_for_explicit_marks_and_clear_hides_them() {
     assert!(!has(&h, "program.range.in") && !has(&h, "program.range.out") && !has(&h, "program.range.body"));
     assert!(has(&h, "source.range.in") && has(&h, "source.range.out"));
 }
+
+#[test]
+fn match_frame_marks_the_used_span_and_audio_drag_recovers_only_that_span() {
+    use filmcraft_engine::{clip_ops::source_view, project::ItemId};
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut h = harness(5);
+    let start = Tick::from_seconds_f64(2.0);
+    let duration = Tick::from_seconds_f64(3.0);
+    h.state_mut().session.execute("timeline.place", json!({"item":5,"sourceIn":start.0,"duration":duration.0})).unwrap();
+    h.state_mut().session.execute("playhead.set", json!({"seconds":1.0})).unwrap();
+    h.state_mut().ui.focused = PanelKind::Timeline;
+    for _ in 0..2 {
+        h.input_mut().events.push(egui::Event::Key { key: egui::Key::F, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        step(&mut h);
+        h.input_mut().events.push(egui::Event::Key { key: egui::Key::F, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::NONE });
+        step(&mut h);
+        assert_eq!(h.state().ui.focused, PanelKind::Source);
+    }
+    let range = source_view(&h.state().session, ItemId(5)).unwrap().selected_range();
+    assert_eq!(range.start, start);
+    assert_eq!(range.duration, duration);
+    h.state_mut().session.execute("file.newSequence", json!({"name":"Recovered audio","fps":24})).unwrap();
+    step(&mut h);
+    drag(&mut h, "source.drag.audio", true, false);
+    let q = h.state().session.active_sequence().unwrap();
+    assert!(q.video_tracks.iter().all(|t| t.items.is_empty()));
+    let audio = &q.audio_tracks[0].items[0];
+    assert_eq!(audio.source_in, start);
+    assert_eq!(audio.duration, duration);
+}

@@ -97,6 +97,7 @@ impl Driver {
     /// The demo sequence with enough tracks to scroll both halves, at a known zoom.
     fn tall() -> Driver {
         let mut d = Driver::demo();
+        d.app().session.prefs.timeline.mouse_scrolling = "vertical".into();
         d.exec("sequence.addTracks", json!({"video": 12, "audio": 12}));
         d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
         d.frames(4);
@@ -371,4 +372,55 @@ fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     d.exec("prefs.set", json!({"key": "appearance.animations", "value": true}));
     d.frames(2);
     assert!(animation_time(&mut d) > 0.0);
+}
+
+#[test]
+fn windows_default_wheel_browses_time_in_both_directions() {
+    let mut d = Driver::demo();
+    if !cfg!(target_os = "windows") {
+        return;
+    }
+    assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, "horizontal");
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
+    d.frames(4);
+    d.wheel(0.2, 0.0, -100.0, none());
+    assert_eq!(d.view().0, 6.0);
+    d.wheel(0.8, 0.0, 50.0, none());
+    assert_eq!(d.view().0, 5.0);
+}
+
+#[test]
+fn header_context_menus_add_only_the_requested_kind_and_undo() {
+    let mut d = Driver::demo();
+    for (area, action, video) in
+        [("timeline.videoHeaders", "timeline.trackMenu.addVideo", true), ("timeline.audioHeaders", "timeline.trackMenu.addAudio", false)]
+    {
+        let q = d.app().session.active_sequence().unwrap();
+        let before = (q.video_tracks.len(), q.audio_tracks.len());
+        d.ok("ui.click", json!({"id": area, "fx": 0.95, "fy": 0.1, "button": "right"}));
+        d.frames(4);
+        d.rect(action);
+        d.ok("ui.click", json!({"id": action}));
+        d.frames(4);
+        let q = d.app().session.active_sequence().unwrap();
+        assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (before.0 + usize::from(video), before.1 + usize::from(!video)));
+        d.exec("edit.undo", json!({}));
+        let q = d.app().session.active_sequence().unwrap();
+        assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), before);
+    }
+}
+
+#[test]
+fn empty_timeline_time_offers_track_creation_for_each_half() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 40.0}}));
+    d.frames(4);
+    for (fy, action) in [(0.2, "timeline.trackMenu.addVideo"), (0.8, "timeline.trackMenu.addAudio")] {
+        d.ok("ui.click", json!({"id": "timeline.tracks", "fx": 0.9, "fy": fy, "button": "right"}));
+        d.frames(4);
+        d.rect(action);
+        d.rect("timeline.trackMenu.addTracks");
+        d.ok("ui.key", json!({"key": "Escape"}));
+        d.frames(3);
+    }
 }

@@ -604,7 +604,7 @@ fn remove_items(p: &mut Project, ids: &[ItemId]) {
 }
 
 /// Keyframe times of an effect instance shifted / scaled from clip `from` to clip `to` (media time).
-fn retime_effect(e: &mut filmcraft_project::EffectInstance, from: &TrackItem, to: &TrackItem, scale: bool) {
+pub(crate) fn retime_effect(e: &mut filmcraft_project::EffectInstance, from: &TrackItem, to: &TrackItem, scale: bool) {
     let (f0, f1) = (from.source_in, from.source_out());
     let (t0, t1) = (to.source_in, to.source_out());
     let map = |k: Tick| -> Tick {
@@ -1041,6 +1041,16 @@ fn paste_attributes(s: &mut Session, p: &Value) -> Result<Value> {
     let src_v = s.state.clipboard.iter().find(|c| c.0 == TrackKind::Video).map(|c| c.2.clone());
     let src_a = s.state.clipboard.iter().find(|c| c.0 == TrackKind::Audio).map(|c| c.2.clone());
     let targets = with_links(s, &clips_p(s, p));
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    if targets.iter().filter_map(|c| q.find_item(*c).and_then(|(t, _)| q.track(t))).any(|t| {
+        let source = if t.kind == TrackKind::Video { src_v.as_ref() } else { src_a.as_ref() };
+        t.locked
+            && source.is_some_and(|src| {
+                sel.intrinsic.iter().any(|id| src.effect(id).is_some()) || src.effects.iter().any(|e| is_standard(e) && wants_effect(&sel, e))
+            })
+    }) {
+        return Err(filmcraft_edit::EditError::Locked.into());
+    }
     let n = s.edit_sequence("Paste Attributes", |q, _, _| {
         let mut n = 0;
         for c in &targets {
