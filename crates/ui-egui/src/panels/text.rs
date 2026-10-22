@@ -115,7 +115,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let track_idx = ui.ctx().data(|d| d.get_temp::<usize>(egui::Id::new("text-cap-track"))).filter(|i| *i < seq.caption_tracks.len()).unwrap_or(track_idx);
     let track = &seq.caption_tracks[track_idx];
 
-    // ---- toolbar: search, track picker, add / split / merge / delete
+    // ---- toolbar: search, track picker, add / split / merge / upgrade / delete
     let bar = Rect::from_min_size(rect.min + vec2(10.0, 2.0), vec2(rect.width() - 20.0, 26.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(bar.min, vec2(170.0f32.min(bar.width() * 0.4), 24.0))));
     let sresp = crate::widgets::search_field(&mut child, &mut app.ui.caption_search, tl!("Search"), 170.0f32.min(bar.width() * 0.4), &t);
@@ -142,7 +142,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ph = app.session.playhead();
     let any_sel = !sel.is_empty();
     let under = track.caption_at(ph).filter(|c| c.start < ph).map(|c| c.id);
-    let tools: [(Icon, &str, &str, bool, &str, Value); 5] = [
+    let tools: [(Icon, &str, &str, bool, &str, Value); 6] = [
         (Icon::Plus, "text.captions.add", tl!("Add caption at playhead"), track.caption_at(ph).is_none(), "captions.add", json!({"track": track.id.0})),
         (
             Icon::Razor,
@@ -153,6 +153,14 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             json!({"caption": under.map(|c| c.0), "time": ph.0}),
         ),
         (Icon::Link, "text.captions.merge", tl!("Merge selected captions"), sel.len() > 1, "captions.merge", json!({})),
+        (
+            Icon::Sparkle,
+            "text.captions.upgrade",
+            tl!("Upgrade selected captions to graphics"),
+            any_sel,
+            "graphics.upgradeCaption",
+            json!({"captions": sel.iter().map(|c| c.0).collect::<Vec<_>>()}),
+        ),
         (Icon::Trash, "text.captions.delete", tl!("Delete selected captions"), any_sel, "captions.delete", json!({})),
         (Icon::Export, "text.captions.export", "Export captions…", !track.captions.is_empty(), "captions.export", json!({"track": track.id.0})),
     ];
@@ -704,7 +712,14 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
 
 fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
     let ctx = ui.ctx().clone();
-    for (cmd, p) in actions {
+    // Clicking the upgrade button can make a caption editor lose focus in the same frame. Commit
+    // its pending text before the upgrade deletes the caption and reads its current value.
+    let (text_edits, actions): (Vec<_>, Vec<_>) = if actions.iter().any(|(cmd, _)| cmd == "graphics.upgradeCaption") {
+        actions.into_iter().partition(|(cmd, _)| cmd == "captions.setText")
+    } else {
+        (Vec::new(), actions)
+    };
+    for (cmd, p) in text_edits.into_iter().chain(actions) {
         if let Err(e) = crate::menus::invoke(app, &ctx, &cmd, p) {
             app.ui.status = e;
         }

@@ -302,6 +302,43 @@ fn upgrade_caption_to_graphic() {
 }
 
 #[test]
+fn upgrade_selected_captions_to_graphics_is_one_undoable_batch() {
+    let mut s = demo("gt-caption-batch");
+    let first = s.execute("captions.add", json!({"text": "First <b>caption</b>", "seconds": 600, "durationSeconds": 2})).unwrap()["caption"].as_u64().unwrap();
+    let second = s.execute("captions.add", json!({"text": "Second", "seconds": 604, "durationSeconds": 3})).unwrap()["caption"].as_u64().unwrap();
+    s.execute("captions.setStyle", json!({"track": "C1", "font": "Noto Sans", "size": 48, "color": "#f0e0d0", "background": true})).unwrap();
+    let before = s.execute("captions.list", json!({})).unwrap();
+    s.execute("captions.select", json!({"captions": [first, second]})).unwrap();
+    let undo_count = s.history.undo.len();
+
+    let result = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+    assert_eq!(result["upgraded"], 2);
+    assert_eq!(s.history.undo.len(), undo_count + 1, "a batch conversion is a single edit");
+    assert!(s.state.caption_selection.is_empty());
+    let q = s.active_sequence().unwrap();
+    let expected = [(first, "First caption"), (second, "Second")];
+    for (graphic, (source_id, expected_text)) in result["clips"].as_array().unwrap().iter().zip(expected) {
+        let id = ClipId(graphic.as_u64().unwrap());
+        let item = q.find_item(id).unwrap().1;
+        let source_caption =
+            before["tracks"].as_array().unwrap().iter().flat_map(|t| t["captions"].as_array().unwrap()).find(|c| c["id"] == source_id).unwrap();
+        assert_eq!(item.start.0, source_caption["start"].as_i64().unwrap());
+        assert_eq!(item.end().0, source_caption["end"].as_i64().unwrap());
+        assert_eq!(texts(&s, id), vec![expected_text]);
+        let text_effect = item.effects.iter().find(|effect| effect.effect == "graphic_text").unwrap();
+        assert_eq!(text_effect.params["font"].value, ParamValue::Text("Noto Sans".into()));
+        assert_eq!(text_effect.params["size"].value, ParamValue::Float(48.0));
+        assert_eq!(text_effect.params["fill_color"].value, ParamValue::Color([240.0 / 255.0, 224.0 / 255.0, 208.0 / 255.0, 1.0]));
+        assert_eq!(text_effect.params["background"].value, ParamValue::Bool(true));
+    }
+    assert!(s.active_sequence().unwrap().caption_tracks.iter().all(|track| track.captions.is_empty()));
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(result["clips"].as_array().unwrap().iter().all(|id| s.active_sequence().unwrap().find_item(ClipId(id.as_u64().unwrap())).is_none()));
+    assert_eq!(s.active_sequence().unwrap().caption_tracks.iter().map(|track| track.captions.len()).sum::<usize>(), 2);
+}
+
+#[test]
 fn source_graphics_share_edits() {
     let mut s = demo("gt-source");
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());

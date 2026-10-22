@@ -93,3 +93,53 @@ fn caption_font_picker_sets_the_track_font() {
     d.frames(3);
     assert_eq!(d.font(track), "Noto Serif");
 }
+
+#[test]
+fn selected_captions_can_be_upgraded_to_graphics_together() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    let first = d.ok("engine.execute", json!({"command": "captions.add", "params": {"text": "First", "seconds": 600}}))["caption"].as_u64().unwrap();
+    let second = d.ok("engine.execute", json!({"command": "captions.add", "params": {"text": "Second", "seconds": 604}}))["caption"].as_u64().unwrap();
+    d.ok("engine.execute", json!({"command": "captions.select", "params": {"captions": [first, second]}}));
+    d.frames(3);
+
+    let first_start = d
+        .harness
+        .state()
+        .session
+        .active_sequence()
+        .unwrap()
+        .caption_tracks
+        .iter()
+        .flat_map(|track| &track.captions)
+        .find(|caption| caption.id.0 == first)
+        .unwrap()
+        .start;
+    let text_field = d.ids(&format!("text.captions.{first}.text"));
+    assert_eq!(text_field.len(), 1, "the selected caption text editor is available");
+    d.ok("ui.click", json!({"id": text_field[0]}));
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "Edited first"}));
+
+    let button = d.ids("text.captions.upgrade");
+    assert_eq!(button.len(), 1, "the caption toolbar exposes the batch upgrade action");
+    let undo_count = d.harness.state().session.history.undo.len();
+    let initial_video_items = d.harness.state().session.active_sequence().unwrap().video_tracks.iter().map(|track| track.items.len()).sum::<usize>();
+    d.ok("ui.click", json!({"id": button[0]}));
+    let sequence = d.harness.state().session.active_sequence().unwrap();
+    assert_eq!(sequence.caption_tracks.iter().map(|track| track.captions.len()).sum::<usize>(), 0);
+    assert_eq!(sequence.video_tracks.iter().map(|track| track.items.len()).sum::<usize>(), initial_video_items + 2);
+    assert_eq!(d.harness.state().session.history.undo.len(), undo_count + 2, "the pending text edit and toolbar upgrade each have one undo step");
+    let graphic_clip =
+        sequence.video_tracks.iter().flat_map(|track| &track.items).find(|item| item.start == first_start).expect("the first caption became a graphic").id.0;
+    let graphic_layers = d.ok("engine.execute", json!({"command": "graphics.list", "params": {"clip": graphic_clip}}));
+    assert_eq!(graphic_layers["layers"][0]["text"], "Edited first", "the upgrade commits pending text before deleting the caption");
+
+    d.ok("engine.execute", json!({"command": "edit.undo", "params": {}}));
+    let sequence = d.harness.state().session.active_sequence().unwrap();
+    assert_eq!(sequence.caption_tracks.iter().map(|track| track.captions.len()).sum::<usize>(), 2);
+    assert_eq!(sequence.video_tracks.iter().map(|track| track.items.len()).sum::<usize>(), initial_video_items);
+    let restored = sequence.caption_tracks.iter().flat_map(|track| &track.captions).find(|caption| caption.id.0 == first).expect("undo restores the caption");
+    assert_eq!(restored.text, "Edited first", "undoing the upgrade preserves the committed caption edit");
+}
