@@ -453,11 +453,56 @@ fn fixtures(only: &[String]) -> Result<(), String> {
     if failed.is_empty() { Ok(()) } else { Err(format!("fixture generation failed in {}", failed.join(", "))) }
 }
 
+const NATIVE_FONT_TEST: &str = "fonts::tests::macos_system_fonts_resolve_and_layout";
+
+fn require_native_font_test(stdout: &[u8]) -> Result<(), String> {
+    let listing = std::str::from_utf8(stdout).map_err(|e| format!("native font test discovery was not UTF-8: {e}"))?;
+    let expected = format!("{NATIVE_FONT_TEST}: test");
+    let count = listing.lines().filter(|line| *line == expected).count();
+    if count != 1 {
+        return Err(format!("expected exactly one ignored native font test named {NATIVE_FONT_TEST}, found {count}"));
+    }
+    Ok(())
+}
+
+/// The host integration check needs the fonts supplied by macOS, outside a build sandbox.
+fn native_fonts() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("native-fonts requires a macOS host with its system font folders visible".into());
+    }
+    let args = ["test", "--release", "-p", "filmcraft-text", "--lib", "--", "--ignored", "--exact", NATIVE_FONT_TEST, "--nocapture"];
+    // libtest succeeds when a filter selects zero tests. Check discovery first so a rename or
+    // changed cfg cannot silently remove this native gate.
+    let listed = Command::new(env!("CARGO")).args(args).arg("--list").output().map_err(|e| format!("could not discover native font test: {e}"))?;
+    if !listed.status.success() {
+        return Err(format!("native font test discovery failed: {}", String::from_utf8_lossy(&listed.stderr)));
+    }
+    require_native_font_test(&listed.stdout)?;
+    run(Command::new(env!("CARGO")).args(args))
+}
+
+#[cfg(test)]
+mod native_font_tests {
+    use super::*;
+
+    #[test]
+    fn native_font_discovery_rejects_a_successful_zero_test_listing() {
+        assert!(require_native_font_test(b"0 tests, 0 benchmarks\n").is_err());
+        assert!(require_native_font_test(b"another::test: test\n\n1 test, 0 benchmarks\n").is_err());
+        let entry = format!("{NATIVE_FONT_TEST}: test\n");
+        assert!(require_native_font_test(entry.repeat(2).as_bytes()).is_err());
+        assert!(require_native_font_test(format!("{entry}\n1 test, 0 benchmarks\n").as_bytes()).is_ok());
+    }
+}
+
 fn ci() -> Result<(), String> {
     let cargo = env!("CARGO");
     run(Command::new(cargo).args(["fmt", "--check"]))?;
     run(Command::new(cargo).args(["clippy", "--workspace", "--all-targets", "--release", "--", "-D", "warnings"]))?;
     run(Command::new(cargo).args(["test", "--workspace", "--release"]))?;
+    if cfg!(target_os = "macos") {
+        native_fonts()?;
+    }
     layers()?;
     assets()?;
     wasm()
@@ -491,6 +536,7 @@ fn main() -> ExitCode {
         "assets" => assets(),
         "fixtures" => fixtures(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
+        "native-fonts" => native_fonts(),
         "bench" => bench(),
         "bench-playback" => bench_playback(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
@@ -507,7 +553,7 @@ fn main() -> ExitCode {
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
         _ => Err(
-            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
+            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|version [set X.Y.Z]|ci|native-fonts|bench [args]|bench-playback [args]>"
                 .into(),
         ),
     };
