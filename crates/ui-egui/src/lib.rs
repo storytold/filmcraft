@@ -72,7 +72,7 @@ use filmcraft_engine::{Services, Session};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
-pub use control::ControlRequest;
+pub use control::{ControlRequest, ControlTicket, TimeoutResult};
 use dock::PanelKind;
 use frames::{FrameKey, FrameServer, Target};
 use native_dialogs::FileDialog;
@@ -305,6 +305,8 @@ pub struct FilmcraftApp {
     /// [`MAX_THUMB_TEXTURES`] are freed, least recently used first (#1682).
     thumb_used: HashMap<String, u64>,
     control_rx: Option<Receiver<ControlRequest>>,
+    /// Explicit event-loop wake used only to continue a multi-frame control gesture.
+    control_continuation: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
     /// One explicit panel reveal; consumed by the custom renderer, never repeated per frame.
     pub(crate) pending_panel_raise: Option<PanelKind>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
@@ -331,7 +333,7 @@ pub struct FilmcraftApp {
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
     /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
-    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, f64)>,
+    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, ControlTicket, f64)>,
     queued_screenshots: Vec<(u64, f64, u32)>,
     /// A paused monitor drew a stand-in (nearest cached) picture last frame: its exact frame is
     /// still decoding.
@@ -344,7 +346,7 @@ pub struct FilmcraftApp {
     /// Consecutive frames the timeline zoom / scroll has been at rest. `ui.elements` answers from
     /// the frame before the last one, so its timeline rects are final from 2 on.
     pub(crate) timeline_still: u32,
-    input_waiters: Vec<Sender<Value>>,
+    input_waiters: Vec<(Sender<Value>, ControlTicket)>,
     next_token: u64,
     styled: bool,
     /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
@@ -570,6 +572,7 @@ impl FilmcraftApp {
             textures: HashMap::new(),
             thumb_used: HashMap::new(),
             control_rx: None,
+            control_continuation: None,
             pending_panel_raise: None,
             control_input_only: false,
             native_window_focused: None,
@@ -625,6 +628,12 @@ impl FilmcraftApp {
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
+        self
+    }
+
+    /// Set the explicit event-loop wake used while synthetic control input spans multiple frames.
+    pub fn with_control_continuation(mut self, wake: Arc<dyn Fn() -> Result<(), String> + Send + Sync>) -> Self {
+        self.control_continuation = Some(wake);
         self
     }
 
@@ -1683,25 +1692,31 @@ impl FilmcraftApp {
         }
         for (req, deadline) in reqs {
             let reply = req.reply.clone();
+            let ticket = req.ticket();
+            if !ticket.begin() {
+                continue;
+            }
             match control::handle(self, ctx, &req) {
                 control::Outcome::Done(v) => {
                     let _ = reply.send(v);
+                    ticket.complete();
                 }
                 control::Outcome::Retry(msg) => {
-                    if now < deadline {
+                    if now < deadline && ticket.requeue() {
                         self.deferred.push((req, deadline));
                         ctx.request_repaint();
                     } else {
                         let _ = reply.send(json!({"ok": false, "error": msg}));
+                        ticket.complete();
                     }
                 }
-                control::Outcome::AfterInput => self.input_waiters.push(reply),
+                control::Outcome::AfterInput => self.input_waiters.push((reply, ticket)),
                 control::Outcome::Screenshot { path, crop } => {
                     let token = self.next_token;
                     self.next_token += 1;
                     let settle = ctx.input(|i| i.time) + 0.25;
                     self.queued_screenshots.push((token, settle, 0));
-                    self.pending_screenshots.push((token, path, crop, reply, settle + SCREENSHOT_TIMEOUT_S));
+                    self.pending_screenshots.push((token, path, crop, reply, ticket, settle + SCREENSHOT_TIMEOUT_S));
                 }
             }
         }
@@ -1726,9 +1741,10 @@ impl FilmcraftApp {
         });
         // A hidden window (or a sleeping display) never presents, so its screenshot never
         // arrives: give up instead of waiting (and repainting) forever.
-        self.pending_screenshots.retain(|(.., reply, deadline)| {
+        self.pending_screenshots.retain(|(.., reply, ticket, deadline)| {
             if now > *deadline {
                 let _ = reply.send(json!({"ok": false, "error": "no frame was presented (window hidden or display asleep)"}));
+                ticket.complete();
                 false
             } else {
                 true
@@ -1760,9 +1776,10 @@ impl FilmcraftApp {
         });
         for (token, image) in events {
             if let Some(i) = self.pending_screenshots.iter().position(|(t, ..)| *t == token) {
-                let (_, path, crop, reply, _) = self.pending_screenshots.remove(i);
+                let (_, path, crop, reply, ticket, _) = self.pending_screenshots.remove(i);
                 let r = control::save_screenshot(ctx, &image, path.as_deref(), crop);
                 let _ = reply.send(r);
+                ticket.complete();
             }
         }
     }
@@ -2173,10 +2190,11 @@ impl eframe::App for FilmcraftApp {
             self.raise_for_control(ctx);
         }
         if !self.synthetic.is_empty() {
-            ctx.request_repaint();
+            request_control_continuation(ctx, true, self.control_continuation.as_deref());
         } else if !self.input_waiters.is_empty() {
-            for w in self.input_waiters.drain(..) {
+            for (w, ticket) in self.input_waiters.drain(..) {
                 let _ = w.send(json!({"ok": true, "result": null}));
+                ticket.complete();
             }
         }
         let settled = !std::mem::take(&mut self.monitor_inexact) && self.timeline_still > 0;
@@ -2212,16 +2230,56 @@ impl eframe::App for FilmcraftApp {
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);
         if !self.synthetic.is_empty() {
-            ctx.request_repaint();
+            if self.control_continuation.is_none() {
+                ctx.request_repaint();
+            }
         } else if !self.input_waiters.is_empty() {
             ctx.request_repaint();
-            for w in self.input_waiters.drain(..) {
+            for (w, ticket) in self.input_waiters.drain(..) {
                 let _ = w.send(json!({"ok": true, "result": null}));
+                ticket.complete();
             }
         }
         if self.frames.queue_len() > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+    }
+}
+
+fn request_control_continuation(ctx: &egui::Context, has_pending_input: bool, wake: Option<&(dyn Fn() -> Result<(), String> + Send + Sync)>) {
+    if !has_pending_input {
+        return;
+    }
+    if let Some(wake) = wake {
+        if let Err(error) = wake() {
+            log::debug!("could not send control input continuation wake: {error}");
+        }
+    } else {
+        ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod control_continuation_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::request_control_continuation;
+
+    #[test]
+    fn sends_continuations_while_input_remains_and_stops_when_empty() {
+        let ctx = egui::Context::default();
+        let wakes = AtomicUsize::new(0);
+        let wake = || {
+            wakes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+
+        request_control_continuation(&ctx, true, Some(&wake));
+        request_control_continuation(&ctx, true, Some(&wake));
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+
+        request_control_continuation(&ctx, false, Some(&wake));
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
     }
 }
 

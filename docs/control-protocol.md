@@ -16,6 +16,21 @@ its request line is rejected first. At most 16 connections are served at once; f
 line and are closed. Clients that get an error reply should reconnect. The port has no authentication,
 so only enable it while you use it. Transport: `apps/filmcraft/src/control_server.rs`.
 
+Control requests time out after 60 seconds. A request still queued at that point is cancelled and will
+not run later. If the UI thread has already started it, the reply says the outcome is unknown because
+the command may have changed the project or UI; inspect the state before retrying. Do not blindly retry
+that response. On Linux, the control launch wakes the UI pass directly when Wayland withholds a frame
+callback for a window on another workspace. Its startup graphics fallback still tries the configured
+mode ladder, but eframe's external event-loop API does not expose the typed internal startup error, so
+the final failure message is generic and the detailed cause is in the log.
+
+If a client disconnects after sending a request, the request is not cancelled: it may still execute.
+Check the current project/UI state before retrying after a broken connection.
+
+Synthetic `ui.click` accepts at most 32 clicks per request, `ui.drag` at most 128 steps (default 12),
+and `ui.type` at most 16 KiB of UTF-8 text. Larger inputs are rejected before any input events are
+queued. Multi-frame gestures explicitly wake the Linux UI until their queued input has been consumed.
+
 ```json
 {"id": 1, "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}
 {"id": 1, "ok": true, "result": {"cuts": 2}}

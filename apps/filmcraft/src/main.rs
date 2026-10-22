@@ -29,6 +29,8 @@ mod audio;
 mod audio_in;
 mod control_server;
 #[cfg(target_os = "linux")]
+mod control_wakeup;
+#[cfg(target_os = "linux")]
 mod dev_icon;
 mod file_filters;
 mod graphics;
@@ -130,26 +132,14 @@ fn main() -> eframe::Result {
     if graphics.mode() == graphics::Mode::Default {
         register_gpu_frame_renderer();
     }
-    let started = loop {
-        let mut options = native_options(launch.control_port.is_some());
-        // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
-        graphics::apply(&mut options, graphics.mode(), backend_override);
-        let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
-        let app_created = app_created.load(Ordering::Relaxed);
-        match &result {
-            // wgpu reported the failure (no adapter, device creation failed) before the app
-            // existed: try the next mode in this process.
-            Err(e) if !app_created && graphics::is_graphics_failure(e) && graphics.step_down() => {
-                log::warn!("graphics start failed: {e}");
-                continue;
-            }
-            // Closed before the second frame: the window still came up.
-            Ok(()) if app_created => graphics.confirm(),
-            _ => {}
-        }
-        break result;
+    #[cfg(target_os = "linux")]
+    let started = if launch.control_port.is_some() {
+        run_controlled_native(launch.clone(), graphics.clone(), backend_override)
+    } else {
+        run_native_loop(launch.clone(), graphics.clone(), backend_override)
     };
+    #[cfg(not(target_os = "linux"))]
+    let started = run_native_loop(launch.clone(), graphics.clone(), backend_override);
     // However it ended, this start no longer counts as one that died.
     graphics.finish();
     // The window could not be created (no usable GPU / graphics driver, no display): say so
@@ -186,7 +176,12 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+fn app_creator(
+    launch: Launch,
+    graphics: graphics::GraphicsStart,
+    created: Arc<AtomicBool>,
+    control_wake: Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         created.store(true, Ordering::Relaxed);
@@ -339,11 +334,79 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             app.ui.show_menu_bar = false;
         }
         if let Some(port) = control_port {
-            let rx = control_server::start(port, cc.egui_ctx.clone());
+            let continuation = control_wake.clone();
+            let wake = control_wake.unwrap_or_else(|| {
+                let ctx = cc.egui_ctx.clone();
+                Arc::new(move || {
+                    ctx.request_repaint();
+                    Ok(())
+                })
+            });
+            let rx = control_server::start(port, wake);
             app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
+            if let Some(continuation) = continuation {
+                app = app.with_control_continuation(continuation);
+            }
         }
         Ok(Box::new(app))
     })
+}
+
+fn run_native_loop(launch: Launch, graphics: graphics::GraphicsStart, backend_override: Option<eframe::wgpu::Backends>) -> eframe::Result {
+    loop {
+        let mut options = native_options(launch.control_port.is_some());
+        // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
+        graphics::apply(&mut options, graphics.mode(), backend_override);
+        let app_created = Arc::new(AtomicBool::new(false));
+        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), None));
+        let app_created = app_created.load(Ordering::Relaxed);
+        match &result {
+            Err(e) if !app_created && graphics::is_graphics_failure(e) && graphics.step_down() => {
+                log::warn!("graphics start failed: {e}");
+                continue;
+            }
+            Ok(()) if app_created => graphics.confirm(),
+            _ => {}
+        }
+        return result;
+    }
+}
+
+/// Linux's control launch owns the event loop so a control event can run eframe's UI pass even
+/// when Wayland has stopped sending frame callbacks for a window on another workspace.
+#[cfg(target_os = "linux")]
+fn run_controlled_native(launch: Launch, graphics: graphics::GraphicsStart, backend_override: Option<eframe::wgpu::Backends>) -> eframe::Result {
+    use winit::event_loop::EventLoop;
+    use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
+
+    let mut options = native_options(true);
+    let mut builder = EventLoop::<eframe::UserEvent>::with_user_event();
+    if let Some(hook) = options.event_loop_builder.take() {
+        hook(&mut builder);
+    }
+    let mut event_loop = builder.build()?;
+    loop {
+        let mut options = native_options(true);
+        options.event_loop_builder = None;
+        graphics::apply(&mut options, graphics.mode(), backend_override);
+        let app_created = Arc::new(AtomicBool::new(false));
+        let proxy = event_loop.create_proxy();
+        let wake = control_wakeup::ControlWake::new(proxy);
+        let wake = Arc::new(move || wake.wake()) as Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+        let inner =
+            eframe::create_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), Some(wake)), &event_loop);
+        let mut app = control_wakeup::WakeApplication::new(inner);
+        event_loop.run_app_on_demand(&mut app)?;
+        if app_created.load(Ordering::Relaxed) {
+            graphics.confirm();
+            return Ok(());
+        }
+        if graphics.step_down() {
+            log::warn!("graphics startup did not create the app; retrying with {} (details in the log)", graphics.mode().label());
+            continue;
+        }
+        return Err(eframe::Error::AppCreation("FilmCraft could not initialize its window; see the log for the eframe startup error".into()));
+    }
 }
 
 /// Files copied in the file manager, else an image, on the system clipboard (Paste, #611).
