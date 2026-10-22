@@ -177,6 +177,14 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     }
 }
 
+/// Next J / L shuttle speed for a monitor playing (or not) at `speed`, honouring
+/// Settings ▸ Playback ▸ `playback.jklSignedSpeed`. 0 means pause (signed mode only).
+fn jkl_speed(app: &FilmcraftApp, id: &str, playing: bool, speed: f64) -> f64 {
+    use filmcraft_engine::jkl::{ShuttleKey, next_speed};
+    let key = if id == "playback.reverse" { ShuttleKey::Reverse } else { ShuttleKey::Forward };
+    next_speed(if playing { speed } else { 0.0 }, key, app.session.prefs.playback.jkl_signed_speed)
+}
+
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
@@ -345,10 +353,16 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.toggle_play(1.0);
             return Ok(json!({"playing": app.playback.playing}));
         }
-        // L / J: pressing again in the same direction doubles the speed, up to 8×
+        // L / J: pressing again in the same direction doubles the speed, up to 8×; with
+        // `playback.jklSignedSpeed` they step a signed speed through zero (filmcraft_engine::jkl)
         "playback.forward" | "playback.reverse" if targets_source(app, &params) => {
-            let (clock, dir) = (&app.source_playback.clock, if id == "playback.forward" { 1.0 } else { -1.0 });
-            let speed = if clock.playing && clock.speed * dir > 0.0 { (clock.speed * 2.0).clamp(-8.0, 8.0) } else { dir };
+            let clock = &app.source_playback.clock;
+            let speed = jkl_speed(app, id, clock.playing, clock.speed);
+            if speed == 0.0 {
+                // signed mode stepped down to zero: pause where we are
+                app.stop_source();
+                return Ok(json!({"playing": false, "speed": 0.0}));
+            }
             app.shuttle_source(speed)?;
             return Ok(json!({"playing": app.source_playback.clock.playing, "speed": app.source_playback.clock.speed}));
         }
@@ -366,14 +380,14 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             };
             return app.session.execute("source.setPlayhead", json!({"time": time.0})).map_err(|e| e.to_string());
         }
-        "playback.forward" => {
-            let s = if app.playback.playing && app.playback.speed > 0.0 { (app.playback.speed * 2.0).min(8.0) } else { 1.0 };
-            app.play(s);
-            return Ok(json!({"speed": app.playback.speed}));
-        }
-        "playback.reverse" => {
-            let s = if app.playback.playing && app.playback.speed < 0.0 { (app.playback.speed * 2.0).max(-8.0) } else { -1.0 };
-            app.play(s);
+        "playback.forward" | "playback.reverse" => {
+            let speed = jkl_speed(app, id, app.playback.playing, app.playback.speed);
+            if speed == 0.0 {
+                // signed mode stepped down to zero: pause where we are
+                app.stop();
+                return Ok(json!({"speed": 0.0, "playing": false}));
+            }
+            app.play(speed);
             return Ok(json!({"speed": app.playback.speed}));
         }
         "playback.stop" => {

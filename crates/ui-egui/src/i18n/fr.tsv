@@ -1634,6 +1634,7 @@
 	Don't label speakers	Ne pas étiqueter les intervenants
 	Double-click	Double-clic
 	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Décodage brouillon à résolution de lecture réduite (H.264 : plus rapide, certaines images moins filtrées)
+	J and L step speed through zero (shuttle): J slows down before reversing	J et L changent la vitesse pas à pas en passant par zéro (shuttle) : J ralentit avant d'inverser
 	Drive	Saturation
 	Drop Shadow	Ombre portée
 	Dry	Signal sec

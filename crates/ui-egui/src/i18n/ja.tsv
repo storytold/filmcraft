@@ -1628,6 +1628,7 @@
 	Don't label speakers	話者にラベルを付けない
 	Double-click	ダブルクリック
 	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	再生解像度を下げたときのドラフトデコード (H.264: 高速化、一部のフレームはフィルター処理を軽減)
+	J and L step speed through zero (shuttle): J slows down before reversing	J と L で速度を 0 をはさんで段階的に変更（シャトル）: J は逆再生の前に減速
 	Drive	ドライブ
 	Drop Shadow	ドロップシャドウ
 	Dry	ドライ

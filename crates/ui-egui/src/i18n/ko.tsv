@@ -938,6 +938,7 @@
 	DPX	DPX
 	DPX Sequence	DPX 시퀀스
 	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	낮은 재생 해상도에서 드래프트 디코딩(H.264: 빠름, 일부 프레임 필터 감소)
+	J and L step speed through zero (shuttle): J slows down before reversing	J와 L로 속도를 0을 거쳐 단계별로 조절 (셔틀): J는 역방향 전에 먼저 감속
 	Drag a clip to slide it between its neighbours.	클립을 드래그해 이웃 클립 사이로 슬라이드.
 	Drag a clip to slip its source in/out without moving it.	클립을 드래그해 이동 없이 소스 시작/끝을 슬립.
 	Drag an edge to change the clip's speed so it fills the new duration.	가장자리를 드래그해 새 길이에 맞게 클립 속도 변경.

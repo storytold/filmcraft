@@ -45,7 +45,10 @@ marked range; Program keeps its separate loop setting.
 
 Normal forward playback has sound. With Source focused, L plays forward and J backward; pressing
 the same key again doubles the speed up to 8×, K stops, Shuttle Slow Right/Left play at ¼ speed,
-and the left/right frame-step keys step the Source playhead. As in Program, shuttle speeds other
+and the left/right frame-step keys step the Source playhead. With Settings ▸ Playback ▸ "J and L
+step speed through zero (shuttle)" (`playback.jklSignedSpeed`, off by default) J and L instead
+step one signed speed along −8, −4, −2, −1, 0, 1, 2, 4, 8 in both monitors and in dynamic
+trimming: J while fast-forwarding slows down, 0 pauses, and the next J plays backward. As in Program, shuttle speeds other
 than normal forward play without sound, and backward playback stops on the first frame. Source
 sequences are not yet supported and report an explanatory error. A failed audio device leaves
 the picture advancing with a status message; a decoding error stops Source.
