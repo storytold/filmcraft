@@ -300,3 +300,36 @@ fn a_nests_audio_previews_follow_the_sound_of_its_sequence() {
     assert_eq!(audio_hashes(&p, outer), audio, "a video effect inside the nest");
     assert_eq!(audio_hashes(&p, top), deep);
 }
+
+#[test]
+fn a_track_effect_tail_ties_an_audio_preview_to_what_came_before() {
+    // #2731: a reverb on the track carries the first clip's tail into the second clip's preview
+    let (mut p, _, ocean, seq) = setup();
+    let first = place_kind(&mut p, seq, TrackKind::Audio, ocean, 0, 24);
+    place_kind(&mut p, seq, TrackKind::Audio, ocean, 24, 24);
+    let gain = |p: &mut Project, db: f64| p.sequence_mut(seq).unwrap().find_item_mut(first).unwrap().1.gain_db = db;
+    let before = audio_hashes(&p, seq);
+    assert_eq!(before.len(), 2);
+    gain(&mut p, -12.0);
+    let after = audio_hashes(&p, seq);
+    assert_ne!(after[0], before[0]);
+    assert_eq!(after[1], before[1], "no insert rings on: the second preview stays valid");
+
+    let mut reverb = find_effect("studio_reverb").unwrap().instance();
+    reverb.post_fader = true;
+    p.sequence_mut(seq).unwrap().audio_tracks[0].effects.push(reverb);
+    let before = audio_hashes(&p, seq);
+    gain(&mut p, -6.0);
+    let after = audio_hashes(&p, seq);
+    assert_ne!(after[0], before[0]);
+    assert_ne!(after[1], before[1], "the second preview holds the first clip's reverb tail");
+
+    // a clip far past the tail does not depend on what came before it
+    let late = place_kind(&mut p, seq, TrackKind::Audio, ocean, 24 * 30, 24);
+    let before = audio_hashes(&p, seq);
+    gain(&mut p, -3.0);
+    let after = audio_hashes(&p, seq);
+    assert_eq!(after.len(), 3);
+    assert_ne!(after[1], before[1]);
+    assert_eq!(after[2], before[2], "{late:?} starts long after the tail has died away");
+}
