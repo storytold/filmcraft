@@ -510,3 +510,25 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+/// Drive the macOS export widgets and verify HEVC profile and ProRes hardware settings follow the selected options.
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_hevc_profile_and_prores_hardware_controls_are_operable() {
+    use filmcraft_engine::export::{ExportSettings, Format, HardwareEncoding};
+    let mut d = Driver::new("macos-profiles");
+    d.ok("ui.set", json!({"mode":"export"}));
+    d.app().ui.export.settings = ExportSettings { format: Format::Hevc, ..Default::default() };
+    d.frames(4);
+    d.click("export.video.hevcProfile");
+    d.click("export.video.hevcProfile.option.3");
+    assert_eq!(d.app().ui.export.settings.hevc_profile, "main42210");
+    let summary = d.ok("ui.elements", json!({"prefix":"export.summary"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(summary.contains("4:2:2"), "{summary}");
+    d.snapshot("export-hevc-main42210");
+    d.app().ui.export.settings = ExportSettings { format: Format::ProRes, prores_profile: "4444xq".into(), ..Default::default() };
+    d.frames(4);
+    d.click("export.video.hardwareEncoding");
+    assert_eq!(d.app().ui.export.settings.hardware_encoding, HardwareEncoding::Auto);
+    d.snapshot("export-prores-hardware");
+}

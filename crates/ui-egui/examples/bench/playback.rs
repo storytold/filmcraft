@@ -121,7 +121,7 @@ impl Display {
         let gpu = if gpu {
             let instance = eframe::wgpu::Instance::default();
             let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
-            adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
+            adapter.and_then(|a| pollster::block_on(a.request_device(&filmcraft_gpu::device_descriptor(&a))).ok()).map(|(d, q)| {
                 let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
                 (c, d)
             })

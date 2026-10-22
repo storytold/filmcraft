@@ -1,6 +1,6 @@
 # Roadmap detail
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: milestones moved from ROADMAP.md, Current focus rewritten from the 2026-10-10 re-measure, beta milestones added) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** minor (macOS VideoToolbox codecs and M5 validation) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Forward-looking plan: milestones with status, the current focus and what's next, with estimates in
 Opus 5.5 agent-hours (calibration in [target-app-parity.md](target-app-parity.md#calibration)).
@@ -16,7 +16,7 @@ In order. Each item links to its gap entry, which says what "done" means.
 3. **10-bit / 4:2:2 camera media in software** ([G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)). 30–50 h.
 4. **Fidelity harness against Premiere** ([G1](gaps.md#g1-nothing-compares-our-output-with-premieres)) and **`cargo xtask parity`** ([G7](gaps.md#g7-no-measured-parity-tool-in-ci)): turns estimates into measurements. 50–90 h.
 5. **Real-world media corpus and workflow tests** ([G6](gaps.md#g6-no-real-world-media-corpus-or-workflow-acceptance-tests)). 40–70 h.
-6. **Hardware acceleration, continued** (#30, [G5](gaps.md#g5-hardware-acceleration-is-partial)): zero-copy upload, Lumetri curves / wheels / HSL and keys on the GPU, VideoToolbox Main 10, Quick Sync / AMF encoders. 120–200 h.
+6. **Hardware acceleration, continued** (#30, [G5](gaps.md#g5-hardware-acceleration-is-partial)): zero-copy upload, Lumetri curves / wheels / HSL and keys on the GPU, Quick Sync / AMF encoders. 120–200 h.
 7. **UI fidelity issues** ([G8](gaps.md#g8-ui-fidelity-monitor-handles-effect-controls-docking)): Program monitor transform handles, Effect Controls, docking. 120–200 h.
 
 ## Alpha gate
@@ -50,7 +50,7 @@ Beta = ready for real work ≥ ~75% and `.prproj` opens reliably ([target-app-pa
 | B2 | `.prproj` import (sequences, clips, transitions, markers, bins, common effect parameters) | ⬜ | 60–120 |
 | B3 | Camera media: H.264 High 10 / 4:2:2, HEVC 4:2:2, E-AC-3, AVI, multi-track audio confirmed | 🟡 (multi-stream audio #361) | 50–90 |
 | B4 | Fidelity harness + `cargo xtask parity` + media corpus + workflow tests | ⬜ | 90–160 |
-| B5 | Hardware: zero-copy, more GPU effects, Windows vendor encoders, VideoToolbox Main 10 | 🟡 | 60–100 |
+| B5 | Hardware: zero-copy, more GPU effects, Windows vendor encoders | 🟡 | 60–100 |
 | B6 | UI fidelity top issues and Windows / Linux runtime | 🟡 | 90–160 |
 | B7 | AAF / OMF validated in Avid and Pro Tools; XML import speed | ⬜ | 20–40 |
 
@@ -73,7 +73,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 | M10 | Graphics & captions | 🟡 | Caption tracks (Subtitle/CEA-608/708/Teletext formats, track style), SRT/WebVTT/SCC import+export (frame-exact, property-tested), caption editing (add/split/merge/trim/move, sync-locked insert/extract), Text panel Captions tab, burn-in in Program monitor and export; text engine (`crates/text`: bundled + system fonts, harfrust shaping, bidi, line breaking, paragraph layout, glyph cache; 3-line 1080p title ≈ 0.15 ms warm); graphic clips with text + shape layers (fill, 2 strokes, background, shadow, keyframable transform), Type tool with on-monitor editing, shape/pen tools, Properties/Essential Graphics editor, align/distribute; graphics templates (own `.fcgt` format, 8 original built-ins, Browse tab with engine-rendered thumbnails, export / install / apply / editable properties; never reads .mogrt), rolls/crawls with ease and pre/postroll, responsive pins and intro/outro, per-character styles, Upgrade Caption to Graphic, source graphics, Replace Fonts; MCC (608+708), EBU STL, TTML/IMSC1, DFXP (frame-exact, property-tested) | 608/708 embedding in video streams, speech-to-text | 12–18 |
 | M11 | Interchange & project management | ✅ | `.fcproj` schema versions + migrations, atomic saves, Save a Copy/Revert, auto-save ring + crash-recovery journal (Preferences ▸ Auto Save, recovery prompt), FCP7 XML, FCPXML, EDL, OTIO; offline media (own slate) + Link Media (fingerprint-checked relink, folder remap, search, Align Timecode, Make Offline); proxies (ProRes Proxy/LT, H.264 ¼/½ background jobs, attach/detach/reconnect, monitor toggle, export full-res) + ingest (copy/transcode/proxies); Project Manager (collect, consolidate + transcode with handles, size estimate) | Rename media to clip names, image-sequence conversion, Media Browser-driven relink, smart (cross-drive) path tracking | 1–2 |
 | M12–M16 | Multicam, web (WASM), platform, long tail | 🟡 | Multicam: audio sync (GCC-PHAT, sub-sample), Merge Clips, multi-camera source sequences, Multi-Camera view with live switching (1–9); L0–L4 crates compile to wasm32 | Web app shell (file access, WebCodecs, audio), scene detection, auto reframe, ~800 remaining commands and dialogs, performance hardening | 35–55 |
-| HW | Hardware acceleration (#30) | 🟡 | Blend modes and 34 effect ids on the GPU incl. Lumetri basic / creative / vignette (#32, GPU2–GPU7); GPU export rendering (#421); decode: VideoToolbox (#33, #41), Media Foundation / D3D11 H.264 / HEVC / VP9 / AV1 (HW2, HW3), VA-API H.264 / HEVC (#358), NVDEC H.264 / HEVC (#549); encode: VideoToolbox H.264 / HEVC, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR (#328, #360) | Zero-copy, remaining GPU effects, VideoToolbox Main 10, Quick Sync / AMF, VA-API VP9 / AV1 and encode | 120–200 |
+| HW | Hardware acceleration (#30) | 🟡 | Blend modes and 34 effect ids on the GPU incl. Lumetri basic / creative / vignette (#32, GPU2–GPU7); GPU export rendering (#421); decode: VideoToolbox (#33, #41), Media Foundation / D3D11 H.264 / HEVC / VP9 / AV1 (HW2, HW3), VA-API H.264 / HEVC (#358), NVDEC H.264 / HEVC (#549); encode: VideoToolbox H.264 / HEVC Main 10 / Main 4:2:2 10 / ProRes / JPEG, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR (#328, #360) | Zero-copy, remaining GPU effects, Quick Sync / AMF, VA-API VP9 / AV1 and encode | 120–200 |
 | L10N | Localization | 🟡 | Spanish, Japanese, Simplified Chinese whole interface; Portuguese (Brazil), Ukrainian menus | Hindi, Arabic (RTL), French, Indonesian, German, Korean, Vietnamese, Italian, Russian; native review | 150–230 |
 
 ## After beta
@@ -87,5 +87,6 @@ the web app shell ([G20](gaps.md#g20-the-web-app-shell)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | macOS VideoToolbox: hardware ProRes / Motion JPEG export, ProRes / VP9 / AV1 / JPEG decode, HEVC Main 10 / Main 4:2:2 10 and alpha, M5 validation ([VideoToolbox formats](macos-videotoolbox.md)); remaining hardware estimates not recalibrated |
 | 2026-10-10 | minor | Alpha gate table added (craftrules core-workflow gate): six core workflows, all pass on macOS; stage stays alpha |
 | 2026-10-10 | major | Created: milestone table moved from ROADMAP.md (M5 and M9 remaining work updated), HW and L10N rows, beta milestones B1–B7, Current focus from the re-measure |

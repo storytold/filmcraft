@@ -113,7 +113,7 @@ impl ExportRenderer {
                 }
                 let instance = wgpu::Instance::default();
                 let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                let (device, queue) = pollster::block_on(adapter.request_device(&crate::device_descriptor(&adapter))).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
@@ -127,6 +127,11 @@ impl ExportRenderer {
         }
         let compositor = GpuCompositor::new(&device, &queue);
         Some(Self { _instance: instance, device, queue, compositor })
+    }
+
+    /// Mutable access to the underlying [`GpuCompositor`].
+    pub fn compositor_mut(&mut self) -> &mut GpuCompositor {
+        &mut self.compositor
     }
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the

@@ -36,11 +36,14 @@ pub struct Plan {
     pub size: (u32, u32),
 }
 
-impl From<StreamInfo> for Stream {
-    fn from(i: StreamInfo) -> Self {
+impl TryFrom<StreamInfo> for Stream {
+    type Error = String;
+    /// Validate the shared stream description against the formats accepted by the Media Foundation adapter.
+    fn try_from(i: StreamInfo) -> Result<Self, String> {
         match i {
-            StreamInfo::Nal(n) => Self::Nal(n),
-            StreamInfo::Frame(f) => Self::Frame(f),
+            StreamInfo::Nal(n) => Ok(Self::Nal(n)),
+            StreamInfo::Frame(f) => Ok(Self::Frame(f)),
+            StreamInfo::Intra => Err("this Media Foundation backend does not decode intra codecs".into()),
         }
     }
 }

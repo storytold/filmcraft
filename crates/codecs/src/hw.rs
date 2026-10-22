@@ -140,6 +140,8 @@ pub struct NalStreamInfo {
 pub enum StreamInfo {
     Nal(NalStreamInfo),
     Frame(FrameStreamInfo),
+    /// Independently decodable samples (ProRes, Motion JPEG).
+    Intra,
 }
 
 impl From<NalStreamInfo> for StreamInfo {
@@ -160,6 +162,7 @@ impl StreamInfo {
         match self {
             Self::Nal(i) => i.is_irap(sample),
             Self::Frame(i) => i.is_random_access(sample),
+            Self::Intra => true,
         }
     }
 
@@ -167,7 +170,7 @@ impl StreamInfo {
     pub fn keeps_previous_restart(&self, sample: &[u8]) -> bool {
         match self {
             Self::Nal(i) => i.codec == NalCodec::Hevc && i.nal_types(sample).contains(&21),
-            Self::Frame(_) => false,
+            Self::Frame(_) | Self::Intra => false,
         }
     }
 
@@ -180,6 +183,7 @@ impl StreamInfo {
                     && !i.parameter_sets.iter().any(|p| without_trailing_zeros(p) == without_trailing_zeros(n))
             }),
             Self::Frame(i) => i.parameters_changed(sample),
+            Self::Intra => false,
         }
     }
 
@@ -188,6 +192,7 @@ impl StreamInfo {
         match self {
             Self::Nal(i) => i.is_random_access(sample),
             Self::Frame(i) => Some(i.is_random_access(sample)),
+            Self::Intra => Some(true),
         }
     }
 
@@ -195,7 +200,7 @@ impl StreamInfo {
     pub fn is_disposable(&self, sample: &[u8]) -> bool {
         match self {
             Self::Nal(i) => i.is_disposable(sample),
-            Self::Frame(_) => false,
+            Self::Frame(_) | Self::Intra => false,
         }
     }
 }
@@ -388,9 +393,57 @@ impl NalStreamInfo {
     }
 }
 
+/// Alpha-channel-information SEI in hvcC (H.265 D.2.53, payload type 165). Keeping this
+/// separate from VPS/SPS/PPS prevents a software fallback from silently discarding alpha.
+pub fn hevc_has_alpha(config: &filmcraft_isobmff::HevcConfig) -> bool {
+    config.arrays.iter().filter(|a| matches!(a.nal_type, 39 | 40)).flat_map(|a| &a.nalus).any(|nal| {
+        let Some(nal) = nal.get(2..).filter(|n| n.len() <= 1 << 20) else { return false };
+        let rbsp = filmcraft_bitstream::unescape_rbsp(nal);
+        let mut pos = 0usize;
+        while pos < rbsp.len() {
+            let mut number = || {
+                let mut n = 0usize;
+                loop {
+                    let b = *rbsp.get(pos)?;
+                    pos += 1;
+                    n = n.checked_add(usize::from(b))?;
+                    if b != 255 {
+                        return Some(n);
+                    }
+                }
+            };
+            let Some(kind) = number() else { return false };
+            let Some(size) = number() else { return false };
+            let Some(end) = pos.checked_add(size).filter(|&end| end <= rbsp.len()) else { return false };
+            if kind == 165 {
+                return size > 0 && rbsp.get(pos).is_some_and(|b| b & 0x80 == 0);
+            }
+            pos = end;
+        }
+        false
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reject truncated/cancelled HEVC alpha metadata while recognizing a complete active alpha declaration.
+    #[test]
+    fn hevc_alpha_sei_rejects_truncations_and_cancelled_messages() {
+        let has = |payload: &[u8]| {
+            let mut c = filmcraft_isobmff::HevcConfig::default();
+            c.arrays.push(filmcraft_isobmff::HevcNalArray { completeness: false, nal_type: 39, nalus: vec![[&[78, 1][..], payload].concat()] });
+            hevc_has_alpha(&c)
+        };
+        assert!(has(&[165, 4, 0, 0, 127, 144, 128]));
+        assert!(!has(&[165, 4, 128, 0, 127, 144, 128]));
+        for len in 0..6 {
+            assert!(!has(&[165, 4, 0, 0, 127, 144][..len]));
+        }
+        assert!(!has(&[255, 255, 255]));
+        assert!(!has(&[165, 0, 128]));
+    }
 
     #[test]
     fn switch_defaults_to_auto() {

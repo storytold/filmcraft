@@ -544,7 +544,10 @@ fn plain_layer(frame: &VideoFrame, n: usize, opacity: f32, blend: Blend) -> Laye
         }
         None => {
             let (w, h, px) = frame.to_linear_f32_decimated(n);
-            let opaque = matches!(frame.data, PixelData::Yuv8 { alpha: None, .. } | PixelData::Yuv16 { alpha: None, .. });
+            let opaque = matches!(
+                frame.data,
+                PixelData::Yuv8 { alpha: None, .. } | PixelData::Yuv16 { alpha: None, .. } | PixelData::Biplanar8 { .. } | PixelData::Biplanar16 { .. }
+            );
             Layer::Full { image: Image { w, h, px }, opacity, blend, opaque }
         }
     }

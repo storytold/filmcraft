@@ -26,17 +26,23 @@ filmcraft-codecs = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
+filmcraft-gpu = { workspace = true }
 filmcraft-h264 = { workspace = true }
 filmcraft-hevc = { workspace = true }
 filmcraft-isobmff = { workspace = true }
+filmcraft-prores = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
+rayon = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
+objc2-metal = "0.3.2"
 objc2-video-toolbox = "0.3.2"
+wgpu = { version = "30", default-features = false, features = ["wgsl", "metal"] }
 
 # Windows: Media Foundation decoder MFTs + Direct3D 11 / DXVA through the official `windows` bindings
 # (MIT OR Apache-2.0; already in the lockfile through wgpu / winit).

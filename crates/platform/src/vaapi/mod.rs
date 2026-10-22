@@ -2,9 +2,9 @@
 //!
 //! VA-API decoding is stateless: the application parses the stream and keeps the decoded picture
 //! buffer, and the GPU decodes one picture's slice data at a time into a surface. [`h264`] does the
-//! host side with the software decoder's own parsers and DPB (so the two decide alike), [`va`]
+//! host side with the software decoder's own parsers and DPB (so the two decide alike), `va`
 //! drives libva (loaded at run time; no libva means no hardware decoder, never a failure to start),
-//! and [`VaDecoder`] puts them together as a [`VideoDecoder`]. H.264 8-bit 4:2:0 progressive
+//! and `VaDecoder` puts them together as a [`filmcraft_codecs::VideoDecoder`]. H.264 8-bit 4:2:0 progressive
 //! (Constrained Baseline / Main / High) and HEVC 4:2:0 (Main, Main 10, Main Still Picture), the
 //! latter through [`hevc`] the same way; everything else stays in software.
 //!

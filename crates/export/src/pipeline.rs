@@ -264,15 +264,18 @@ impl Pipeline {
             let mut out = vec![0f32; img.w * img.h * 3];
             out.par_chunks_mut(img.w * 3).zip(img.px.par_chunks(img.w * 4)).for_each(|(o, s)| {
                 for (o, p) in o.as_chunks_mut::<3>().0.iter_mut().zip(s.as_chunks::<4>().0) {
-                    o.copy_from_slice(&tf.encode([p[0], p[1], p[2]]));
+                    let a = if self.alpha { p[3] } else { 1.0 };
+                    let rgb = if a > 0.0 { [p[0] / a, p[1] / a, p[2] / a] } else { [0.0; 3] };
+                    o.copy_from_slice(&tf.encode(rgb));
                 }
             });
             if lim.enabled {
                 limit_f32(&mut out, lim.min_percent, lim.max_percent);
             }
             // the float image is not needed any more: its buffer serves the next frame's layers
+            let rgba = if self.alpha { img.to_rgba8() } else { Vec::new() };
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return (rgba, out);
         }
         let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers

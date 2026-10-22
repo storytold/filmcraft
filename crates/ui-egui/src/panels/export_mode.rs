@@ -698,13 +698,20 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     row(ui, t, tl!("Profile"), |ui| ui.label(tl!("Main (8-bit)")));
                     row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Hardware (AV1 has no software encoder)")));
                 } else {
-                    // the hardware encoder writes Main (8-bit 4:2:0), or Main 10 for HDR sequences where it can; level chosen by the encoder
-                    let label = match (filmcraft_engine::export::hdr_available(Format::Hevc), seq_hdr && !s.sdr) {
-                        (true, true) => tl!("Main 10 (10-bit, HDR)"),
-                        (true, false) => tl!("Main (8-bit; Main 10 for HDR sequences)"),
-                        (false, _) => tl!("Main (8-bit)"),
-                    };
-                    row(ui, t, tl!("Profile"), |ui| ui.label(label));
+                    if cfg!(target_os = "macos") {
+                        let keys = ["auto", "main", "main10", "main42210"];
+                        let labels = ["Auto (Main / Main 10 for HDR)", "Main (8-bit 4:2:0)", "Main 10 (10-bit 4:2:0)", "Main 4:2:2 10 (10-bit 4:2:2)"];
+                        let cur = keys.iter().position(|&p| p == s.hevc_profile).unwrap_or(0);
+                        row(ui, t, tl!("Profile"), |ui| {
+                            if let Some(i) = combo(ui, reg, "export.video.hevcProfile", labels[cur], &opts(&labels), 260.0) {
+                                s.hevc_profile = keys[i].into();
+                            }
+                        });
+                    } else {
+                        let label =
+                            if seq_hdr && !s.sdr && filmcraft_engine::export::hdr_available(Format::Hevc) { "Main 10 (10-bit, HDR)" } else { "Main (8-bit)" };
+                        row(ui, t, tl!("Profile"), |ui| ui.label(label));
+                    }
                     row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Hardware (H.265 has no software encoder)")));
                 }
             } else {
@@ -791,6 +798,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             }
         }
         Format::ProRes => {
+            if cfg!(target_os = "macos") && matches!(s.video_format(), Format::ProRes | Format::Mjpeg) {
+                row(ui, t, "Hardware Encoding", |ui| {
+                    let mut on = s.hardware_encoding == HardwareEncoding::Auto;
+                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
+                        s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
+                    }
+                });
+            }
             row(ui, t, tl!("Profile"), |ui| {
                 let keys = ["proxy", "lt", "standard", "hq", "4444", "4444xq"];
                 let labels =
@@ -837,6 +852,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             });
         }
         Format::Mjpeg | Format::JpegSequence => {
+            if cfg!(target_os = "macos") && matches!(s.video_format(), Format::ProRes | Format::Mjpeg) {
+                row(ui, t, "Hardware Encoding", |ui| {
+                    let mut on = s.hardware_encoding == HardwareEncoding::Auto;
+                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
+                        s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
+                    }
+                });
+            }
             row(ui, t, tl!("Quality"), |ui| {
                 let mut q = s.quality as f64;
                 drag(ui, reg, "export.video.quality", &mut q, 1.0..=100.0, 1.0, "", 0);

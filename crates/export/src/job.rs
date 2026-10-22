@@ -337,7 +337,19 @@ impl Exporter {
     /// Frames in the next batch, bounded before Rayon can steal nested frame tasks.
     fn batch_len(&self) -> i64 {
         let batch = self.pipe.render_batch_limit(self.batch);
-        if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch }
+        if self.overlapping() {
+            overlap_batch(
+                batch,
+                frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out).saturating_add(if self.pipe.hdr_out && self.settings.keeps_alpha() {
+                    u64::from(self.pipe.w).saturating_mul(u64::from(self.pipe.h)).saturating_mul(4)
+                } else {
+                    0
+                }),
+                self.budget,
+            )
+        } else {
+            batch
+        }
     }
 
     fn sample_at_frame(&self, f: i64, sr: u32) -> i64 {

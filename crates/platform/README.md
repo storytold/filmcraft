@@ -1,7 +1,7 @@
 # filmcraft-platform
 
 OS media integration for FilmCraft (layer L5): hardware video decoding through the operating
-system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 and H.265 (HEVC)
+system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264, H.265 (HEVC), ProRes and Motion JPEG
 encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
 It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
 [ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
@@ -16,12 +16,17 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
 - **macOS: VideoToolbox H.264 (`avcC`) and HEVC (`hvcC`)**, 8- and 10-bit, 4:2:0 and 4:2:2
   (`videotoolbox.rs`). The session is created from the sample entry's parameter sets with a
   hardware decoder *required*; samples go in as `CMSampleBuffer`s with asynchronous decompression
-  (two access units in flight); the output callback copies each NV12 / P010-style biplanar
-  `CVPixelBuffer` into planar `Yuv8` / `Yuv16` (chroma deinterleaved, 10-bit samples shifted down
-  from the high bits, cropped to the conformance window when the buffer is the coded size). A
+  (two access units in flight); the output callback retains bounded NV12 / P010-style biplanar
+  `CVPixelBuffer` surfaces for direct Metal import. CPU consumers materialise their planes on
+  demand, respecting the conformance crop and high-aligned 10-bit storage. A
   reorder buffer of the stream's own depth (`max_num_reorder_frames` /
   `sps_max_num_reorder_pics`) restores presentation order; a run starting at an HEVC CRA leaves
   out its RASL pictures, as our decoder does. Each seek (`reset`) starts a fresh session.
+  - Surface eviction releases the original buffer only after a successful CPU copy. A failed
+    eviction preserves the buffer and its retention entry and reports a decoder error for
+    software replay; direct CPU reads log failures and remain retryable. The infallible shared
+    frame conversions still need the fallible-access integration described in
+    [macOS surface limits](../../docs/macos-videotoolbox.md#export-settings).
 - **Windows: Media Foundation + Direct3D 11 / DXVA, H.264 (`avcC`), HEVC (`hvcC`), VP9 (`vpcC`) and
   AV1 (`av1C`)**, 8-bit 4:2:0 (H.264 Baseline / Main / High, HEVC Main, VP9 profile 0, AV1 main) and
   10-bit 4:2:0 (HEVC Main 10, VP9 profile 2, AV1 main 10)
@@ -240,7 +245,7 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   `nvenc::hevc_hdr_available` (a Main 10 session, cached, asked on the same background thread as the
   8-bit probe and short-circuiting when HEVC itself is missing) to `filmcraft_export::register_hdr_probe`,
   and the export job makes the export HDR for `Format::Hevc` only when
-  `filmcraft_export::hdr_available(Format::Hevc)` says so: on macOS (VideoToolbox is 8-bit) and on GPUs
+  `filmcraft_export::hdr_available(Format::Hevc)` says so: on GPUs
   without 10-bit an HDR sequence is tone-mapped to 8-bit SDR HEVC exactly as before, and `settings.sdr`
   still forces that. The pixels are real: `EncoderFrame::hdr` (encoded BT.2020 R'G'B', 3 floats per
   pixel) goes through `filmcraft_export::rgbf_to_yuv420_10` (BT.2020 non-constant-luminance matrix,
@@ -340,9 +345,8 @@ Details in [docs/performance.md](../../docs/performance.md).
 
 ## Not yet
 
-Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on macOS, Direct3D 11
-textures on Windows); B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
-VideoToolbox; VP9 and AV1 through VA-API (Linux), and VA-API encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
+Zero-copy upload of decoded pictures into wgpu textures on Windows (Direct3D 11 textures) and
+Linux, and on macOS for packed BGRA and y416 pictures; B-frames in the VideoToolbox encoders; VP9 and AV1 through VA-API (Linux), and VA-API encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
 H.264 with NVENC (HDR H.264 stays with the software encoder), HDR10 MaxCLL / MaxFALL measured from
 the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 with the other Windows vendors and on Linux, and encoders
 from other vendors on Windows (through Media Foundation); VP9 / AV1 4:4:4 and 12-bit on Windows.
@@ -357,3 +361,10 @@ Linux registers the export factory even without a driver; `register()`'s return 
 `registered()` still describe hardware **decoding**, which this backend does not provide.
 Absent / old drivers decline once per export, with an informational log and
 `perf.stats` → `export.hardware.declined`; hardware encoding Off never opens the driver.
+
+## Expanded macOS formats
+
+VideoToolbox additionally decodes ProRes (six profiles), Motion JPEG, VP9 and AV1 and encodes
+ProRes, Motion JPEG and HEVC Main 10 / Main 4:2:2 10 with PQ/HLG. HEVC Main can carry straight
+alpha. See [the capability matrix, settings and reproducible tests](../../docs/macos-videotoolbox.md)
+for device-dependent limits, the 10-bit+HEVC-alpha restriction, precision and fallback contracts.

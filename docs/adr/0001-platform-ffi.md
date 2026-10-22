@@ -157,3 +157,27 @@ VA-API's. The rules above hold: `libnvcuvid.so.1` and `libcuda.so.1` are loaded 
 the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parses the stream
 itself; its callbacks run inside our parse call and never unwind into C (they record the first
 error and return 0, and the decoder then fails over to software like any other backend).
+
+## Addendum (2026-10-21): macOS Unified Memory zero-copy (`IOSurface` / `CVMetalTextureCache`) and direct `CVPixelBuffer` plane conversion
+
+On Apple Silicon / macOS, VideoToolbox's hardware media engines and the GPU share unified memory
+through `IOSurface`-backed `CVPixelBuffer`s:
+
+- **Decode (`videotoolbox`):** Biplanar 8-bit (`NV12` / `NV16`) and 10-bit (`P010` / `P210`)
+  decoded `CVImageBuffer`s are retained inside a `VtSurface` (`impl filmcraft_frame::NativeSurface`)
+  attached to `PixelData::Biplanar8` / `PixelData::Biplanar16`, with bounded `IOSurface` retention
+  (`MAX_RETAINED_SURFACES = 8`) so VideoToolbox's internal buffer pool cannot be exhausted. When the
+  GPU compositor draws the frame, `import_metal_surface` (registered via
+  `filmcraft_gpu::register_surface_importer`) creates zero-copy `MTLTexture` plane views (`R8Unorm` /
+  `RG8Unorm` or `R16Unorm` / `RG16Unorm`) through `CVMetalTextureCache` and imports them into `wgpu`
+  via `wgpu::hal::api::Metal` (`Device::texture_from_raw` / `create_texture_from_hal`), eliminating
+  both CPU deinterleaving and `queue.write_texture` uploads. When CPU consumers, scopes, or parity
+  tests inspect a frame, `VtSurface` lazily materialises the planes into pooled CPU buffers on
+  demand.
+- **Encode (`videotoolbox_encode`):** `VtEncoder` allocates `IOSurface`-backed `CVPixelBuffer`s from
+  `VTCompressionSessionGetPixelBufferPool` and converts RGBA8 / HDR encoded R'G'B' f32 frames directly into
+  the locked target planes (`NV12`, `P010`, `P210`, `AYUV64` / `y416`, `BGRA`) in a single parallel
+  pass without intermediate heap plane allocations.
+- **Containment:** Every `unsafe` call (`CVMetalTextureCache`, `objc2-metal`, `wgpu::hal::api::Metal`)
+  remains confined inside `crates/platform/src/videotoolbox.rs` and
+  `crates/platform/src/videotoolbox_encode.rs` under the same `// SAFETY:` and never-crash rules.

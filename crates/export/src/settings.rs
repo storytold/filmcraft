@@ -505,10 +505,11 @@ impl ExportSettings {
     }
 
     /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): PNG, TIFF,
-    /// Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ QuickTime movies.
+    /// Targa/OpenEXR, ProRes 4444/XQ, and macOS HEVC Main.
     pub fn supports_alpha(&self) -> bool {
         match self.format {
             Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence => true,
+            Format::Hevc => cfg!(target_os = "macos"),
             Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
             _ => false,
         }
@@ -689,8 +690,14 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::Hevc => {
-                    // Main 10 only where a registered encoder writes HDR (NVENC); VideoToolbox is 8-bit
-                    let profile = if crate::hdr_available(Format::Hevc) { "HEVC Main / Main 10 for HDR" } else { "HEVC Main" };
+                    // Explicit VideoToolbox profiles override the default Main / Main 10 HDR choice.
+                    let profile = match self.hevc_profile.as_str() {
+                        "main" => "HEVC Main (8-bit 4:2:0)",
+                        "main10" => "HEVC Main 10 (10-bit 4:2:0)",
+                        "main42210" => "HEVC Main 4:2:2 10 (10-bit 4:2:2)",
+                        _ if crate::hdr_available(Format::Hevc) => "HEVC Main / Main 10 for HDR",
+                        _ => "HEVC Main",
+                    };
                     v += &format!(", {profile} (hardware encoder), {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),

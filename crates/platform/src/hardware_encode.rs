@@ -1,17 +1,10 @@
-//! The VideoToolbox H.264 and HEVC encoders behind `filmcraft_export::VideoEncoder` (macOS; safe code
-//! around [`crate::videotoolbox_encode`]).
+//! VideoToolbox H.264, HEVC, ProRes and Motion JPEG behind the export trait.
 //!
-//! H.264 hardware encoding is opt-in per export (`ExportSettings::hardware_encoding`, `Auto`): its output
-//! depends on the machine, while the built-in encoder's is byte-identical everywhere. The factory
-//! declines, so the built-in encoder is used, for everything the hardware path does not take: other
-//! formats, MXF (Annex B), two-pass VBR, HDR, odd picture sizes, non-square pixels, and any
-//! configuration VideoToolbox cannot create a hardware session for. A hardware encoder that fails in
-//! the middle of an export reports an error (the export stops); it cannot hand the stream over to
-//! another encoder.
-//!
-//! HEVC (`Format::Hevc`) has no built-in encoder, so choosing the format is the opt-in, the same
-//! configurations are declined, and a declined export fails with "encoder not available" instead of
-//! falling back; [`hevc_available`] tells the format list whether this machine can do it at all.
+//! H.264/ProRes/JPEG are opt-in and decline to the built-in encoders when a hardware session
+//! cannot preserve the configuration. Choosing HEVC is itself the opt-in; unsupported requests
+//! report the reason. Main 10 / Main 4:2:2 10 preserve SDR/PQ/HLG, ProRes 4444/XQ preserve alpha,
+//! and HEVC Main supports straight SDR alpha. A mid-export error stops rather than splicing
+//! incompatible streams. See docs/macos-videotoolbox.md for tested limits and precision.
 
 use std::sync::{Once, OnceLock};
 
@@ -19,24 +12,25 @@ use filmcraft_export::{BitrateMode, EncodedPacket, EncoderFrame, ExportError, Ex
 use filmcraft_isobmff::{AvcConfig, HevcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
 
-use crate::videotoolbox_encode::{ParamSets, VtCodec, VtConfig, VtEncoder, VtPacket, VtProfile, VtRate};
+use crate::videotoolbox_encode::{ParamSets, VtCodec, VtConfig, VtEncoder, VtOptions, VtPacket, VtProfile, VtRate};
 
 /// The hardware encoder's configuration for an export, or why it is not used for it.
 pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result<VtConfig, String> {
-    let hevc = s.format == Format::Hevc;
+    let format = s.video_format();
+    let hevc = format == Format::Hevc;
     if !hevc && s.hardware_encoding != HardwareEncoding::Auto {
         return Err("hardware encoding is off".into());
     }
-    if s.format.is_mxf() {
+    if s.format.is_mxf() && format != Format::ProRes {
         return Err("MXF carries an Annex B stream".into());
     }
-    if s.bitrate_mode == BitrateMode::Vbr2Pass || !matches!(s.h264_pass, H264Pass::Single) {
+    if matches!(format, Format::H264 | Format::Hevc) && (s.bitrate_mode == BitrateMode::Vbr2Pass || !matches!(s.h264_pass, H264Pass::Single)) {
         return Err("two-pass encoding".into());
     }
-    if s.bitrate_mode == BitrateMode::Crf {
+    if matches!(format, Format::H264 | Format::Hevc) && s.bitrate_mode == BitrateMode::Crf {
         return Err("CRF (constant quality)".into());
     }
-    if s.signal.is_hdr() {
+    if s.signal.is_hdr() && !matches!(format, Format::Hevc | Format::ProRes) {
         return Err("HDR".into());
     }
     if !w.is_multiple_of(2) || !h.is_multiple_of(2) {
@@ -47,6 +41,9 @@ pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result
     }
     let timescale = u32::try_from(rate.num).ok().filter(|n| *n > 0).ok_or("invalid frame rate")?;
     let frame_duration = u32::try_from(rate.den).ok().filter(|d| *d > 0).ok_or("invalid frame rate")?;
+    if hevc && s.keeps_alpha() && (s.signal.is_hdr() || !matches!(s.hevc_profile.as_str(), "" | "auto" | "main")) {
+        return Err("HEVC alpha requires Main 8-bit SDR; choose ProRes 4444 for HDR with alpha".into());
+    }
     let kbps = s.bitrate_kbps.max(100);
     let max_kbps = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or(kbps.saturating_mul(3) / 2);
     let fps = f64::from(timescale) / f64::from(frame_duration);
@@ -57,7 +54,15 @@ pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result
         frame_duration,
         keyframe_interval: s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (fps * 2.0).round().max(1.0) as u32),
         profile: match (hevc, s.h264_profile) {
-            (true, _) => VtProfile::HevcMain,
+            (true, _) => match s.hevc_profile.to_ascii_lowercase().as_str() {
+                "" | "auto" if s.signal.is_hdr() => VtProfile::HevcMain10,
+                "" | "auto" | "main" if !s.signal.is_hdr() => VtProfile::HevcMain,
+                "main10" => VtProfile::HevcMain10,
+                "main42210" => VtProfile::HevcMain42210,
+                _ => return Err("invalid HEVC profile or an 8-bit profile requested for HDR".into()),
+            },
+            (false, _) if format == Format::ProRes => VtProfile::ProRes(filmcraft_export::prores_profile(&s.prores_profile).fourcc()),
+            (false, _) if format == Format::Mjpeg => VtProfile::Jpeg,
             (false, H264Profile::Baseline) => VtProfile::Baseline,
             (false, H264Profile::Main) => VtProfile::Main,
             (false, H264Profile::High) => VtProfile::High,
@@ -106,7 +111,10 @@ pub fn warm_hevc_probe() {
     static STARTED: Once = Once::new();
     STARTED.call_once(|| {
         let spawned = std::thread::Builder::new().name("filmcraft-hevc-probe".into()).spawn(|| {
-            let _ = std::panic::catch_unwind(hevc_available);
+            let _ = std::panic::catch_unwind(|| {
+                hevc_available();
+                hevc_hdr_available();
+            });
         });
         if let Err(why) = spawned {
             log::info!("HEVC probe not started ahead of time: {why}");
@@ -124,9 +132,14 @@ pub fn videotoolbox_encoder_factory(
     rate: FrameRate,
     s: &ExportSettings,
 ) -> Option<filmcraft_export::Result<Box<dyn VideoEncoder>>> {
+    if format != s.video_format() {
+        return None;
+    }
     let name = match format {
         Format::H264 if s.hardware_encoding == HardwareEncoding::Auto => "H.264",
         Format::Hevc => "HEVC",
+        Format::ProRes if s.hardware_encoding == HardwareEncoding::Auto => "ProRes",
+        Format::Mjpeg if s.hardware_encoding == HardwareEncoding::Auto => "Motion JPEG",
         _ => return None,
     };
     let config = match config_for(w, h, rate, s) {
@@ -134,18 +147,19 @@ pub fn videotoolbox_encoder_factory(
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
             filmcraft_export::note_hw_encode_declined();
-            return None;
+            return if format == Format::Hevc { Some(Err(ExportError::Unsupported(format!("VideoToolbox {name}: {why}")))) } else { None };
         }
     };
-    match VtEncoder::new(config) {
+    let options = VtOptions { signal: s.signal, alpha: s.keeps_alpha(), quality: s.quality };
+    match VtEncoder::with_options(config, options) {
         Ok(vt) => {
             filmcraft_export::note_hw_encode_session();
-            Some(Ok(Box::new(HardwareEncoder { vt, y: Vec::new(), u: Vec::new(), v: Vec::new(), decoded: 0 })))
+            Some(Ok(Box::new(HardwareEncoder { vt, signal: s.signal, alpha: s.keeps_alpha(), decoded: 0 })))
         }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
             filmcraft_export::note_hw_encode_declined();
-            None
+            if format == Format::Hevc { Some(Err(ExportError::Unsupported(format!("VideoToolbox {name}: {why}")))) } else { None }
         }
     }
 }
@@ -163,11 +177,10 @@ fn hevc_config(p: &ParamSets) -> Result<HevcConfig, String> {
 /// [`VtEncoder`] as a `VideoEncoder`: RGBA pictures in, MP4 samples out.
 pub struct HardwareEncoder {
     vt: VtEncoder,
-    y: Vec<u8>,
-    u: Vec<u8>,
-    v: Vec<u8>,
     /// Compressed frames returned so far.
     decoded: i64,
+    signal: filmcraft_export::ColorSignal,
+    alpha: bool,
 }
 
 impl HardwareEncoder {
@@ -204,7 +217,21 @@ impl VideoEncoder for HardwareEncoder {
                 SampleEntry::avc(AvcConfig::new(sps, pps, 4), w, h)
             }
             // `encode` refuses to go on without a usable record, so a stream that got this far has one
-            (VtCodec::Hevc, p) => SampleEntry::hevc(p.as_ref().and_then(|p| hevc_config(p).ok()).unwrap_or_default(), w, h),
+            (VtCodec::Hevc, p) => {
+                let mut e = SampleEntry::hevc(p.as_ref().and_then(|p| hevc_config(p).ok()).unwrap_or_default(), w, h);
+                self.signal.apply_to(&mut e, false);
+                e
+            }
+            (VtCodec::ProRes, _) => {
+                let fourcc = match c.profile {
+                    VtProfile::ProRes(c) => c,
+                    _ => *b"apch",
+                };
+                let mut e = SampleEntry::prores(filmcraft_isobmff::FourCc(fourcc), w, h);
+                self.signal.apply_to(&mut e, true);
+                e
+            }
+            (VtCodec::Jpeg, _) => SampleEntry::jpeg(w, h),
         }
     }
 
@@ -213,26 +240,40 @@ impl VideoEncoder for HardwareEncoder {
     }
 
     fn encode(&mut self, f: &EncoderFrame) -> filmcraft_export::Result<Vec<EncodedPacket>> {
-        let c = self.vt.config();
+        let c = self.vt.config().clone();
         let codec = c.profile.codec();
-        if f.hdr.is_some() {
+        if f.hdr.is_some() && !c.profile.ten_bit() {
             return Err(ExportError::Unsupported("hardware encoding does not take HDR pictures".into()));
         }
         if (f.width, f.height) != (c.width, c.height) {
             return Err(ExportError::Encode(format!("picture is {}x{}, the encoder was created for {}x{}", f.width, f.height, c.width, c.height)));
         }
         let (w, h) = (f.width as usize, f.height as usize);
-        if f.rgba.len() < w.saturating_mul(h).saturating_mul(4) {
+        if (f.hdr.is_none() || self.alpha) && f.rgba.len() != w.saturating_mul(h).saturating_mul(4) {
             return Err(ExportError::Encode("the RGBA picture is smaller than its size".into()));
         }
-        filmcraft_export::timed(filmcraft_export::Stage::Convert, || filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v));
-        let packets = self.vt.encode(f.index, &self.y, &self.u, &self.v).map_err(ExportError::Encode)?;
+        let packets = if c.profile.ten_bit() {
+            let (kr, kb) = self.signal.kr_kb();
+            self.vt.encode_frame10(f.index, f.rgba, f.hdr, kr, kb).map_err(ExportError::Encode)?
+        } else if self.alpha {
+            self.vt.encode_rgba(f.index, f.rgba).map_err(ExportError::Encode)?
+        } else {
+            self.vt.encode_rgba_nv12(f.index, f.rgba).map_err(ExportError::Encode)?
+        };
         filmcraft_export::note_hw_encode_frame();
         // the muxer needs the parameter sets after the first group of pictures
-        if f.index == 0 {
+        if f.index == 0 && matches!(codec, VtCodec::H264 | VtCodec::Hevc) {
             let params = self.vt.parameter_sets().ok_or_else(|| ExportError::Encode("VideoToolbox returned no parameter sets for the first frame".into()))?;
             if codec == VtCodec::Hevc {
-                hevc_config(&params).map_err(ExportError::Encode)?;
+                let cfg = hevc_config(&params).map_err(ExportError::Encode)?;
+                let wanted_bits = if c.profile.ten_bit() { 10 } else { 8 };
+                let wanted_chroma = if c.profile == VtProfile::HevcMain42210 { 2 } else { 1 };
+                if u32::from(cfg.bit_depth_luma) != wanted_bits
+                    || cfg.chroma_format_idc != wanted_chroma
+                    || filmcraft_codecs::hw::hevc_has_alpha(&cfg) != self.alpha
+                {
+                    return Err(ExportError::Encode("VideoToolbox changed the requested HEVC bit depth, chroma or alpha".into()));
+                }
             }
         }
         self.samples(packets)
@@ -242,4 +283,15 @@ impl VideoEncoder for HardwareEncoder {
         let packets = self.vt.flush().map_err(ExportError::Encode)?;
         self.samples(packets)
     }
+}
+
+/// Whether the actual device accepts Main 10 HDR (never inferred from the chip name).
+pub fn hevc_hdr_available() -> bool {
+    static PROBE: OnceLock<bool> = OnceLock::new();
+    *PROBE.get_or_init(|| {
+        let settings = ExportSettings { format: Format::Hevc, signal: filmcraft_export::ColorSignal::PQ, ..Default::default() };
+        config_for(640, 360, FrameRate::FPS_30, &settings)
+            .ok()
+            .is_some_and(|c| VtEncoder::with_options(c, VtOptions { signal: settings.signal, ..Default::default() }).is_ok())
+    })
 }

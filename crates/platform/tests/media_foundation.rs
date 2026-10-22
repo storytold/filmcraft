@@ -81,6 +81,7 @@ fn drained_decoder_restarts_only_at_idr(name: &str, s: &Stream) {
     let is_idr = |i: usize| match &info {
         StreamInfo::Nal(n) => n.nal_types(&s.samples[i].0).iter().any(|&t| if n.codec == NalCodec::H264 { t == 5 } else { matches!(t, 19 | 20) }),
         StreamInfo::Frame(f) => f.is_random_access(&s.samples[i].0),
+        StreamInfo::Intra => true,
     };
     let Ok(mut mf) = MfDecoder::new(info.clone()) else { return };
     let mid = s.samples.len() / 2;

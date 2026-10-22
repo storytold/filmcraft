@@ -212,6 +212,16 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
     let (codes, abits): (Vec<u16>, u32) = match &a.data {
         PixelData::Yuv8 { planes, .. } => (planes[0].iter().map(|&v| v as u16).collect(), 8),
         PixelData::Yuv16 { planes, bits, .. } => (planes[0].to_vec(), (*bits).clamp(1, 16)),
+        PixelData::Biplanar8 { planes, surface, .. } => {
+            let Some([yp, _]) = filmcraft_frame::resolve_biplanar8(planes, surface) else { return };
+            (yp.iter().map(|&v| v as u16).collect(), 8)
+        }
+        PixelData::Biplanar16 { planes, surface, bits, .. } => {
+            let Some([yp, _]) = filmcraft_frame::resolve_biplanar16(planes, surface) else { return };
+            let b = (*bits).clamp(1, 16);
+            let shift = 16u32.saturating_sub(b);
+            (yp.iter().map(|&v| v >> shift).collect(), b)
+        }
         _ => return,
     };
     if codes.len() != n {
@@ -221,6 +231,9 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
         let (from_max, to_max) = ((1u32 << abits) - 1, (1u32 << to.clamp(1, 16)) - 1);
         (v as u32 * to_max + from_max / 2) / from_max
     };
+    if matches!(frame.data, PixelData::Biplanar8 { .. } | PixelData::Biplanar16 { .. }) {
+        *frame = frame.to_planar();
+    }
     match &mut frame.data {
         PixelData::Yuv8 { alpha, .. } => *alpha = Some(Arc::new(codes.iter().map(|&v| rescale(v, 8) as u8).collect())),
         PixelData::Yuv16 { alpha, bits, .. } => {
@@ -233,7 +246,7 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
                 p[3] = rescale(v, 8) as u8;
             }
         }
-        PixelData::RgbaF32(_) => {}
+        PixelData::RgbaF32(_) | PixelData::Biplanar8 { .. } | PixelData::Biplanar16 { .. } => {}
     }
 }
 

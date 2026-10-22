@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: hardware decode / encode per platform and codec, GPU effects, devices; re-measured after NVDEC #549 and GPU export #421) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** major (new file: hardware decode / encode per platform and codec, GPU effects, devices; re-measured after NVDEC #549 and GPU export #421) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
 [`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
@@ -20,15 +20,16 @@ release notes (Premiere does not run on Linux).
 | H.264 10-bit / 4:2:2 | Apple silicon | **yes** where the chip decodes it | Intel; NVIDIA Blackwell (MXF too) | no (declined; no software fallback, [G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)) | no |
 | HEVC Main / Main 10 4:2:0 | yes | **yes** | yes | **yes** | **yes** (NVDEC 8/10; VA-API Main / Main 10) |
 | HEVC 4:2:2 10-bit | Apple silicon | **yes** where supported | Intel; NVIDIA Blackwell | no | no |
-| VP9 profile 0 / 2 | — | software | — | **yes** | software (VA-API VP9 not yet) |
-| AV1 main 8 / 10 | — | software | yes | **yes** | software |
-| ProRes | Apple silicon (M1 Pro / Max and later) | software (fast: 318 fps) | software | software | software |
+| VP9 profile 0 / 2 | — | **yes** where supported | — | **yes** | software (VA-API VP9 not yet) |
+| AV1 main 8 / 10 | — | **yes** where supported | yes | **yes** | software |
+| ProRes | Apple silicon (M1 Pro / Max and later) | **yes** (six profiles, 422 10-bit / 4444 12-bit, alpha) | software | software | software |
 | Field-coded H.264 | yes | no | yes | no | no |
 
 Measured (`cargo xtask bench --hw off|auto`): M4 Pro, CPU per 2160p frame H.264 119 → 4.2 ms,
 HEVC 86 → 3.7 ms, 4K plays with no dropped frames at Full; Intel Iris Xe VA-API H.264 2160p
-417 → 11.4 ms, HEVC Main 10 2160p 212 → 18.4 ms. Every decoded picture is read back to the CPU
-and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
+417 → 11.4 ms, HEVC Main 10 2160p 212 → 18.4 ms. These historical measurements used CPU
+readback and re-upload. macOS now imports compatible biplanar CoreVideo surfaces directly into
+Metal; CPU consumers materialise planes on demand. Other backends still read back and upload.
 
 ## Hardware encode
 
@@ -37,13 +38,15 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 | H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC only** |
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
 | HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC only** | no |
-| HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`) | no |
-| ProRes | Apple silicon | software only | software | software | software |
+| HEVC Main 10 / HDR (PQ, HLG) | yes | **yes** (also Main 4:2:2 10, where supported) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`) | no |
+| ProRes | Apple silicon | **yes** (six profiles, opt-in; SDR / HDR / alpha) | software | software | software |
 | AV1 | — | no | via plug-ins / newer GPUs | no | no |
 
 Measured: VideoToolbox H.264 1080p25 encode 200 fps on M1; a 9:29 timeline exported in 311 s
 against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9 dB luma PSNR
 (8-bit), 71.1 dB (10-bit) on an RTX 5060.
+
+See [macOS format details and validation](macos-videotoolbox.md) for alpha, Motion JPEG, explicit HEVC profiles, runtime capability checks and limitations.
 
 ## GPU rendering
 
@@ -74,9 +77,9 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 ## Summary
 
 **Hardware dimension: ~45%, 120–200 h.** Ahead of Premiere: hardware decode on Linux (VA-API,
-NVDEC) and FreeBSD builds. Behind, by user impact: zero-copy upload; GPU effects beyond 34
+NVDEC) and FreeBSD builds. Behind, by user impact: zero-copy upload outside macOS; GPU effects beyond 34
 (Lumetri curves / wheels / HSL, keys, masks, transitions); Quick Sync and AMD encoders on Windows;
-VideoToolbox Main 10 HDR encode; 10-bit / 4:2:2 decode off macOS; HDR display; external video
+10-bit / 4:2:2 decode off macOS; HDR display; external video
 I/O and control surfaces (need hardware we don't own). Calibration: one decode backend ~3–5 h,
 one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
@@ -84,4 +87,5 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Expanded macOS VideoToolbox formats; profile/alpha limits and M5 validation in macos-videotoolbox.md |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |

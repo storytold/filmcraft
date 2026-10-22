@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** minor (macOS VideoToolbox codecs and M5 validation) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -308,7 +308,7 @@ Distance to beta: ~19 points of ready-for-real-work plus `.prproj` import, ~400�
 | H.264 High 10 / 4:2:2 and HEVC 4:2:2 software decoding (camera media) | 30–50 |
 | Real-world media corpus and scripted workflow acceptance tests | 40–70 |
 | UI fidelity top issues (Program monitor handles, Effect Controls, docking, deselect) | 60–100 |
-| Hardware: zero-copy, VideoToolbox Main 10, Quick Sync / AMF encode, more GPU effects | 60–100 |
+| Hardware: zero-copy, Quick Sync / AMF encode, more GPU effects | 60–100 |
 | Windows / Linux runtime fixes, audio device issues | 30–60 |
 | Container gaps users hit: E-AC-3, AVI, multi-track audio, still formats | 30–50 |
 | Interchange validation (AAF / OMF in Avid and Pro Tools, XML speed) | 20–40 |
@@ -354,6 +354,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | macOS VideoToolbox: hardware ProRes / Motion JPEG export, ProRes / VP9 / AV1 / JPEG decode, HEVC Main 10 / Main 4:2:2 10 and alpha, M5 validation ([VideoToolbox formats](macos-videotoolbox.md)); remaining hardware estimates not recalibrated |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |

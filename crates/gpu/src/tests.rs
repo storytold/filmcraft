@@ -6,7 +6,7 @@ use filmcraft_render::plan::execute_cpu;
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&device_descriptor(&adapter))).ok()
 }
 
 #[test]
@@ -53,35 +53,47 @@ fn yuv_code_range_gpu_matches_cpu() {
             // Constant chroma isolates range normalization from CPU/GPU chroma reconstruction.
             for (u, v) in [(128, 128), (64, 192), (192, 64)] {
                 let y = (0..=255).map(|code| (code * scale) as u16).collect::<Vec<_>>();
-                let planes = [Arc::new(y), Arc::new(vec![(u * scale) as u16; 256]), Arc::new(vec![(v * scale) as u16; 256])];
+                let planes = [Arc::new(y.clone()), Arc::new(vec![(u * scale) as u16; 256]), Arc::new(vec![(v * scale) as u16; 256])];
                 let data = if bits == 8 {
                     PixelData::Yuv8 { planes: planes.map(|p| Arc::new(p.iter().map(|v| *v as u8).collect())), chroma: Chroma::C444, alpha: None }
                 } else {
                     PixelData::Yuv16 { planes, chroma: Chroma::C444, bits, alpha: None }
                 };
-                let frame = Arc::new(VideoFrame {
-                    width: 256,
-                    height: 1,
-                    data,
-                    color: filmcraft_color::ColorInfo { range, ..filmcraft_color::ColorInfo::REC709 },
-                    par: (1, 1),
-                    pts: Default::default(),
-                });
-                let cpu = frame.to_rgba8();
-                let plan = FramePlan::Layers { width: 256, height: 1, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
-                c.composite(&plan);
-                let (w, h, gpu) = c.read_output().expect("readback");
-                assert_eq!((w, h, gpu.len()), (256, 1, cpu.len()));
-                let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().expect("pixels");
-                // One output-code tolerance: CPU f32 vs GPU f16 accumulator quantization.
-                assert!(error <= 1, "{bits}-bit {range:?} U={u} V={v}: max error {error}");
-                if u == 128 && v == 128 {
-                    assert!(gpu.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2]), "neutral tint: {bits}-bit {range:?}");
+                let shift = 16u32.saturating_sub(bits);
+                let biplanar_data = if bits == 8 {
+                    let y8: Vec<u8> = y.iter().map(|&v| v as u8).collect();
+                    let uv8: Vec<u8> = (0..256).flat_map(|_| [u as u8, v as u8]).collect();
+                    PixelData::Biplanar8 { planes: Some([Arc::new(y8), Arc::new(uv8)]), chroma: Chroma::C444, surface: None }
+                } else {
+                    let y16: Vec<u16> = y.iter().map(|&val| val << shift).collect();
+                    let uv16: Vec<u16> = (0..256).flat_map(|_| [((u * scale) as u16) << shift, ((v * scale) as u16) << shift]).collect();
+                    PixelData::Biplanar16 { planes: Some([Arc::new(y16), Arc::new(uv16)]), chroma: Chroma::C444, bits, surface: None }
+                };
+                for data in [data, biplanar_data] {
+                    let frame = Arc::new(VideoFrame {
+                        width: 256,
+                        height: 1,
+                        data,
+                        color: filmcraft_color::ColorInfo { range, ..filmcraft_color::ColorInfo::REC709 },
+                        par: (1, 1),
+                        pts: Default::default(),
+                    });
+                    let cpu = frame.to_rgba8();
+                    let plan = FramePlan::Layers { width: 256, height: 1, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+                    c.composite(&plan);
+                    let (w, h, gpu) = c.read_output().expect("readback");
+                    assert_eq!((w, h, gpu.len()), (256, 1, cpu.len()));
+                    let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().expect("pixels");
+                    // One output-code tolerance: CPU f32 vs GPU f16 accumulator quantization.
+                    assert!(error <= 1, "{bits}-bit {range:?} U={u} V={v}: max error {error}");
+                    if u == 128 && v == 128 {
+                        assert!(gpu.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2]), "neutral tint: {bits}-bit {range:?}");
+                    }
+                    let prepared = prepare(&plan);
+                    prepared_compositor.composite_prepared(&plan, Some(&prepared));
+                    assert_eq!(prepared_compositor.read_output().expect("prepared readback").2, gpu, "prepared: {bits}-bit {range:?}");
                 }
-                let prepared = prepare(&plan);
-                prepared_compositor.composite_prepared(&plan, Some(&prepared));
-                assert_eq!(prepared_compositor.read_output().expect("prepared readback").2, gpu, "prepared: {bits}-bit {range:?}");
-                eprintln!("range gate: {bits}-bit {range:?} U={u} V={v}, max error={error}, prepared=inline");
+                eprintln!("range gate: {bits}-bit {range:?} U={u} V={v}, prepared=inline");
             }
         }
     }

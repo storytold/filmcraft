@@ -53,6 +53,29 @@ pub use mask::GpuMask;
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// Platform zero-copy importer: turns a [`filmcraft_frame::NativeSurface`] into `[Y, CbCr]`
+/// texture views on `device` without copying texels through CPU memory.
+///
+/// Arguments: `(device, surface, width, height, chroma, bits)`.
+/// For 8-bit (`bits == 8`), the views are `R8Unorm` and `Rg8Unorm` (`code_scale = 255.0`).
+/// For 9–16-bit (`bits > 8`), the views are `R16Unorm` and `Rg16Unorm` (`code_scale = 65535.0 / 2^(16 - bits)`).
+pub type SurfaceImporter = fn(&wgpu::Device, &dyn filmcraft_frame::NativeSurface, u32, u32, Chroma, u32) -> Option<[wgpu::TextureView; 2]>;
+
+static SURFACE_IMPORTER: std::sync::OnceLock<SurfaceImporter> = std::sync::OnceLock::new();
+
+/// Register the platform's zero-copy [`filmcraft_frame::NativeSurface`] texture importer.
+pub fn register_surface_importer(importer: SurfaceImporter) {
+    let _ = SURFACE_IMPORTER.set(importer);
+}
+
+/// [`wgpu::DeviceDescriptor`] for the compositor: enables optional features the adapter supports
+/// (such as `TEXTURE_FORMAT_16BIT_NORM` for direct 10/16-bit YUV textures and zero-copy
+/// `P010` / `P210` hardware surfaces).
+pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
+    let required_features = adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+    wgpu::DeviceDescriptor { required_features, ..Default::default() }
+}
+
 struct Uploaded {
     /// Y, Cb, Cr (or the RGBA texture) and the alpha plane (the dummy texture when there is none).
     views: [wgpu::TextureView; 4],
@@ -242,6 +265,30 @@ fn codes_to_f16_bytes(v: &[u16], bits: u32) -> Vec<u8> {
     out
 }
 
+/// High-aligned `P010` / `P210` words (`code << (16 - bits)`) converted to half floats of `code / 2^bits`.
+fn p10_to_f16_bytes(v: &[u16], bits: u32) -> Vec<u8> {
+    let table = code_table(bits);
+    let shift = 16u32.saturating_sub(bits);
+    let mut out = vec![0u8; v.len() * 2];
+    out.par_chunks_mut(CHUNK * 2).zip(v.par_chunks(CHUNK)).for_each(|(o, s)| {
+        for (o, c) in o.as_chunks_mut::<2>().0.iter_mut().zip(s) {
+            o.copy_from_slice(&table[(*c >> shift) as usize]);
+        }
+    });
+    out
+}
+
+/// Little-endian bytes of a 16-bit plane for direct `R16Unorm` / `Rg16Unorm` upload.
+fn u16_to_le_bytes(v: &[u16]) -> Vec<u8> {
+    let mut out = vec![0u8; v.len() * 2];
+    out.par_chunks_mut(CHUNK * 2).zip(v.par_chunks(CHUNK)).for_each(|(o, s)| {
+        for (o, c) in o.as_chunks_mut::<2>().0.iter_mut().zip(s) {
+            o.copy_from_slice(&c.to_le_bytes());
+        }
+    });
+    out
+}
+
 /// Convert a frame's texels for upload (None when it uploads as it is).
 pub fn prepare_frame(f: &VideoFrame) -> Option<Prepared> {
     match &f.data {
@@ -249,7 +296,7 @@ pub fn prepare_frame(f: &VideoFrame) -> Option<Prepared> {
         PixelData::Yuv16 { planes, bits, alpha, .. } => {
             Some(Prepared { planes: planes.iter().chain(alpha.as_ref()).map(|p| codes_to_f16_bytes(p, *bits)).collect() })
         }
-        PixelData::Rgba8(_) | PixelData::Yuv8 { .. } => None,
+        PixelData::Rgba8(_) | PixelData::Yuv8 { .. } | PixelData::Biplanar8 { .. } | PixelData::Biplanar16 { .. } => None,
     }
 }
 
@@ -484,6 +531,12 @@ impl GpuCompositor {
             PixelData::RgbaF32(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::Yuv8 { planes, .. } => Arc::as_ptr(&planes[0]) as *const u8 as usize,
             PixelData::Yuv16 { planes, .. } => Arc::as_ptr(&planes[0]) as *const u8 as usize,
+            PixelData::Biplanar8 { planes, surface, .. } => surface
+                .as_ref()
+                .map_or_else(|| planes.as_ref().map_or(0, |p| Arc::as_ptr(&p[0]) as *const u8 as usize), |s| Arc::as_ptr(s) as *const () as usize),
+            PixelData::Biplanar16 { planes, surface, .. } => surface
+                .as_ref()
+                .map_or_else(|| planes.as_ref().map_or(0, |p| Arc::as_ptr(&p[0]) as *const u16 as usize), |s| Arc::as_ptr(s) as *const () as usize),
         };
         let key = (id, f.width, f.height);
         self.clock += 1;
@@ -574,8 +627,76 @@ impl GpuCompositor {
                     _pixels: f.data.clone(),
                 }
             }
+            PixelData::Biplanar8 { planes, chroma, surface } => {
+                let (sx, sy) = chroma.shifts();
+                let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+                let imported = surface.as_deref().and_then(|s| SURFACE_IMPORTER.get()?(&self.device, s, w, h, *chroma, 8));
+                let [y, uv] = match imported {
+                    Some(views) => views,
+                    None => match filmcraft_frame::resolve_biplanar8(planes, surface) {
+                        Some([yp, uvp]) => {
+                            [self.plane_texture(w, h, wgpu::TextureFormat::R8Unorm, &yp, 1), self.plane_texture(cw, ch, wgpu::TextureFormat::Rg8Unorm, &uvp, 2)]
+                        }
+                        None => [dummy(), dummy()],
+                    },
+                };
+                Uploaded {
+                    views: [y, uv, dummy(), dummy()],
+                    kind: 3,
+                    code_scale: 255.0,
+                    alpha_scale: 0.0,
+                    chroma: (cw, ch),
+                    last_used: self.clock,
+                    _pixels: f.data.clone(),
+                }
+            }
+            PixelData::Biplanar16 { planes, chroma, bits, surface } => {
+                let (sx, sy) = chroma.shifts();
+                let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+                let has_norm16 = self.device.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM);
+                let norm16_scale = 65535.0 / (1u32 << 16u32.saturating_sub(*bits)) as f32;
+                let imported = if has_norm16 { surface.as_deref().and_then(|s| SURFACE_IMPORTER.get()?(&self.device, s, w, h, *chroma, *bits)) } else { None };
+                let ([y, uv], code_scale) = match imported {
+                    Some(views) => (views, norm16_scale),
+                    None => match filmcraft_frame::resolve_biplanar16(planes, surface) {
+                        Some([yp, uvp]) if has_norm16 => (
+                            [
+                                self.plane_texture(w, h, wgpu::TextureFormat::R16Unorm, &u16_to_le_bytes(&yp), 2),
+                                self.plane_texture(cw, ch, wgpu::TextureFormat::Rg16Unorm, &u16_to_le_bytes(&uvp), 4),
+                            ],
+                            norm16_scale,
+                        ),
+                        Some([yp, uvp]) => (
+                            [
+                                self.plane_texture(w, h, wgpu::TextureFormat::R16Float, &p10_to_f16_bytes(&yp, *bits), 2),
+                                self.plane_texture(cw, ch, wgpu::TextureFormat::Rg16Float, &p10_to_f16_bytes(&uvp, *bits), 4),
+                            ],
+                            (1u32 << bits) as f32,
+                        ),
+                        None => ([dummy(), dummy()], (1u32 << bits) as f32),
+                    },
+                };
+                Uploaded {
+                    views: [y, uv, dummy(), dummy()],
+                    kind: 3,
+                    code_scale,
+                    alpha_scale: 0.0,
+                    chroma: (cw, ch),
+                    last_used: self.clock,
+                    _pixels: f.data.clone(),
+                }
+            }
         };
         self.uploads.insert(key, up);
+        let is_surface = |p: &PixelData| matches!(p, PixelData::Biplanar8 { surface: Some(_), .. } | PixelData::Biplanar16 { surface: Some(_), .. });
+        let surface_count = self.uploads.values().filter(|u| is_surface(&u._pixels)).count();
+        if surface_count > 4 {
+            let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().filter(|(_, u)| is_surface(&u._pixels)).map(|(k, u)| (u.last_used, *k)).collect();
+            v.sort_unstable();
+            for (_, k) in v.into_iter().take(surface_count - 4) {
+                self.uploads.remove(&k);
+            }
+        }
         // keep the most recent uploads (enough for several stacked layers + playback lookahead)
         if self.uploads.len() > 24 {
             let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
@@ -591,8 +712,8 @@ impl GpuCompositor {
     fn src_info(&self, f: &VideoFrame, key: (usize, u32, u32)) -> Option<SrcInfo> {
         let up = self.uploads.get(&key)?;
         let code_levels = match &f.data {
-            PixelData::Yuv8 { .. } => 256.0,
-            PixelData::Yuv16 { bits, .. } => (*bits as f32).exp2(),
+            PixelData::Yuv8 { .. } | PixelData::Biplanar8 { .. } => 256.0,
+            PixelData::Yuv16 { bits, .. } | PixelData::Biplanar16 { bits, .. } => (*bits as f32).exp2(),
             _ => 1.0,
         };
         Some(SrcInfo {
@@ -611,8 +732,8 @@ impl GpuCompositor {
         let (kr, kb) = src.color.matrix.kr_kb();
         let bits_scale = src.code_levels / 256.0; // 2^(bits - 8), independent of texture encoding
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
-            (Range::Limited, 2) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
-            (Range::Full, 2) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
+            (Range::Limited, 2 | 3) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
+            (Range::Full, 2 | 3) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
             _ => (0.0, 1.0, 0.0, 1.0),
         };
         let transfer = match src.color.transfer {
@@ -786,7 +907,7 @@ impl GpuCompositor {
                 input: None,
             });
             // HDR / wide-gamut Y'CbCr: the planner's input transform, in the shader (#965)
-            let src = SrcInfo { input: l.input.as_ref().filter(|_| src.kind == 2).and_then(|t| t.gpu_params()), ..src };
+            let src = SrcInfo { input: l.input.as_ref().filter(|_| matches!(src.kind, 2 | 3)).and_then(|t| t.gpu_params()), ..src };
             let views = self.uploads.get(k).map_or_else(|| std::array::from_fn(|_| self.dummy.clone()), |up| up.views.clone());
             let job = match &l.fx {
                 Some(lfx) => {

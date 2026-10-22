@@ -42,6 +42,39 @@ impl Chroma {
     }
 }
 
+/// A platform-backed hardware decoder surface (such as an `IOSurface`-backed `CVPixelBuffer` on
+/// macOS) that the GPU compositor can import directly without copying texels through CPU memory,
+/// while materialising its planes on demand when the CPU renderer, scopes or tests inspect them.
+pub trait NativeSurface: std::any::Any + std::fmt::Debug + Send + Sync {
+    /// Materialise the Y and interleaved CbCr planes for an 8-bit biplanar (`NV12`) surface.
+    fn planes_u8(&self) -> Option<[Arc<Vec<u8>>; 2]> {
+        None
+    }
+    /// Materialise the Y and interleaved CbCr planes for a 10–16-bit biplanar (`P010` / `P210`,
+    /// significant bits in the high bits of each `u16`) surface.
+    fn planes_u16(&self) -> Option<[Arc<Vec<u16>>; 2]> {
+        None
+    }
+    /// Extract any materialised 8-bit CPU planes when the frame is recycled into [`pool`].
+    fn take_planes_u8(&self) -> Option<[Arc<Vec<u8>>; 2]> {
+        None
+    }
+    /// Extract any materialised 16-bit CPU planes when the frame is recycled into [`pool`].
+    fn take_planes_u16(&self) -> Option<[Arc<Vec<u16>>; 2]> {
+        None
+    }
+}
+
+/// Resolve the 8-bit biplanar `[Y, CbCr]` buffers from explicit planes or a [`NativeSurface`].
+pub fn resolve_biplanar8(planes: &Option<[Arc<Vec<u8>>; 2]>, surface: &Option<Arc<dyn NativeSurface>>) -> Option<[Arc<Vec<u8>>; 2]> {
+    planes.clone().or_else(|| surface.as_ref()?.planes_u8())
+}
+
+/// Resolve the 16-bit biplanar `[Y, CbCr]` buffers from explicit planes or a [`NativeSurface`].
+pub fn resolve_biplanar16(planes: &Option<[Arc<Vec<u16>>; 2]>, surface: &Option<Arc<dyn NativeSurface>>) -> Option<[Arc<Vec<u16>>; 2]> {
+    planes.clone().or_else(|| surface.as_ref()?.planes_u16())
+}
+
 #[derive(Clone, Debug)]
 pub enum PixelData {
     /// Straight-alpha, sRGB/709-encoded RGBA, 8 bits per channel.
@@ -52,6 +85,12 @@ pub enum PixelData {
     Yuv8 { planes: [Arc<Vec<u8>>; 3], chroma: Chroma, alpha: Option<Arc<Vec<u8>>> },
     /// 9–16-bit planar Y'CbCr stored in u16 (`bits` significant bits).
     Yuv16 { planes: [Arc<Vec<u16>>; 3], chroma: Chroma, bits: u32, alpha: Option<Arc<Vec<u16>>> },
+    /// 8-bit biplanar Y'CbCr (`NV12`: luma plane + interleaved `[Cb, Cr]` plane), optionally
+    /// backed by a zero-copy [`NativeSurface`].
+    Biplanar8 { planes: Option<[Arc<Vec<u8>>; 2]>, chroma: Chroma, surface: Option<Arc<dyn NativeSurface>> },
+    /// 9–16-bit biplanar Y'CbCr (`P010` / `P210`: luma plane + interleaved `[Cb, Cr]` plane with
+    /// codes in the high `bits` of each `u16`), optionally backed by a zero-copy [`NativeSurface`].
+    Biplanar16 { planes: Option<[Arc<Vec<u16>>; 2]>, chroma: Chroma, bits: u32, surface: Option<Arc<dyn NativeSurface>> },
 }
 
 #[derive(Clone, Debug)]
@@ -119,25 +158,58 @@ impl VideoFrame {
         match &self.data {
             PixelData::Rgba8(_) => "RGBA 8-bit".into(),
             PixelData::RgbaF32(_) => "RGBA 32-bit float".into(),
-            PixelData::Yuv8 { chroma, .. } => format!("YUV {} 8-bit", chroma.label()),
-            PixelData::Yuv16 { chroma, bits, .. } => format!("YUV {} {bits}-bit", chroma.label()),
+            PixelData::Yuv8 { chroma, .. } | PixelData::Biplanar8 { chroma, .. } => format!("YUV {} 8-bit", chroma.label()),
+            PixelData::Yuv16 { chroma, bits, .. } | PixelData::Biplanar16 { chroma, bits, .. } => format!("YUV {} {bits}-bit", chroma.label()),
         }
     }
 
     /// Approximate memory footprint in bytes (for caches).
     pub fn byte_size(&self) -> usize {
+        let biplanar_samples = |chroma: Chroma| {
+            let (sx, sy) = chroma.shifts();
+            let (w, h) = (self.width as usize, self.height as usize);
+            w * h + 2 * w.div_ceil(1 << sx) * h.div_ceil(1 << sy)
+        };
         match &self.data {
             PixelData::Rgba8(d) => d.len(),
             PixelData::RgbaF32(d) => d.len() * 4,
             PixelData::Yuv8 { planes, alpha, .. } => planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len()),
             PixelData::Yuv16 { planes, alpha, .. } => (planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len())) * 2,
+            PixelData::Biplanar8 { planes, chroma, .. } => planes.as_ref().map_or_else(|| biplanar_samples(*chroma), |p| p[0].len() + p[1].len()),
+            PixelData::Biplanar16 { planes, chroma, .. } => planes.as_ref().map_or_else(|| biplanar_samples(*chroma) * 2, |p| (p[0].len() + p[1].len()) * 2),
         }
+    }
+
+    /// Convert a biplanar frame (`NV12` / `P010` / `P210`) into planar [`PixelData::Yuv8`] /
+    /// [`PixelData::Yuv16`]; frames that are already planar or RGBA are returned unchanged.
+    pub fn to_planar(&self) -> VideoFrame {
+        let data = match &self.data {
+            PixelData::Biplanar8 { planes, chroma, surface } => {
+                let Some([y, uv]) = resolve_biplanar8(planes, surface) else {
+                    return VideoFrame::transparent_f32(self.width, self.height);
+                };
+                let (u, v): (Vec<u8>, Vec<u8>) = uv.as_chunks::<2>().0.iter().map(|&[cb, cr]| (cb, cr)).unzip();
+                PixelData::Yuv8 { planes: [y, Arc::new(u), Arc::new(v)], chroma: *chroma, alpha: None }
+            }
+            PixelData::Biplanar16 { planes, chroma, bits, surface } => {
+                let Some([y, uv]) = resolve_biplanar16(planes, surface) else {
+                    return VideoFrame::transparent_f32(self.width, self.height);
+                };
+                let shift = 16u32.saturating_sub(*bits);
+                let yp: Vec<u16> = y.iter().map(|&s| s >> shift).collect();
+                let (u, v): (Vec<u16>, Vec<u16>) = uv.as_chunks::<2>().0.iter().map(|&[cb, cr]| (cb >> shift, cr >> shift)).unzip();
+                PixelData::Yuv16 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: *chroma, bits: *bits, alpha: None }
+            }
+            _ => return self.clone(),
+        };
+        VideoFrame { width: self.width, height: self.height, data, color: self.color, par: self.par, pts: self.pts }
     }
 
     /// A planar Y'CbCr frame reduced by `n` (2, 4, 8…) in each direction: every sample (luma,
     /// chroma at its own resolution, alpha) is the rounded mean of an `n`×`n` block, chroma format
     /// and bit depth unchanged. Reduced-resolution playback hands the GPU this instead of the full
-    /// picture (a quarter / sixteenth of the upload). None for RGBA frames or `n` < 2.
+    /// picture (a quarter / sixteenth of the upload). None for RGBA frames, zero-copy hardware
+    /// surfaces (which cost nothing to upload at full resolution), or `n` < 2.
     pub fn box_decimated(&self, n: usize) -> Option<VideoFrame> {
         if n < 2 {
             return None;
@@ -174,7 +246,12 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(box_plane(a, w, h, ow, oh, n))),
                 }
             }
-            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => return None,
+            PixelData::Biplanar8 { surface: None, .. } | PixelData::Biplanar16 { surface: None, .. } => {
+                return self.to_planar().box_decimated(n);
+            }
+            PixelData::Biplanar8 { surface: Some(_), .. } | PixelData::Biplanar16 { surface: Some(_), .. } | PixelData::Rgba8(_) | PixelData::RgbaF32(_) => {
+                return None;
+            }
         };
         Some(VideoFrame { width: ow as u32, height: oh as u32, data, color: self.color, par: self.par, pts: self.pts })
     }
@@ -186,7 +263,9 @@ impl VideoFrame {
     pub fn cropped(&self, region: Region) -> VideoFrame {
         let (w, h) = (self.width as usize, self.height as usize);
         let (sx, sy) = match &self.data {
-            PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } => chroma.shifts(),
+            PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } | PixelData::Biplanar8 { chroma, .. } | PixelData::Biplanar16 { chroma, .. } => {
+                chroma.shifts()
+            }
             PixelData::Rgba8(_) | PixelData::RgbaF32(_) => (0, 0),
         };
         let (mx, my) = ((1usize << sx) - 1, (1usize << sy) - 1);
@@ -230,6 +309,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(crop_plane(a, w, h, 1, r))),
                 }
             }
+            PixelData::Biplanar8 { .. } | PixelData::Biplanar16 { .. } => return self.to_planar().cropped(region),
         };
         VideoFrame { width: r.w as u32, height: r.h as u32, data, color: self.color, par: self.par, pts: self.pts }
     }
@@ -264,6 +344,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(rotate_plane(a, w, h, 1, q))),
                 }
             }
+            PixelData::Biplanar8 { .. } | PixelData::Biplanar16 { .. } => return self.to_planar().rotated(quarter_turns),
         };
         let (width, height, par) = if q % 2 == 1 { (self.height, self.width, (self.par.1, self.par.0)) } else { (self.width, self.height, self.par) };
         VideoFrame { width, height, data, color: self.color, par, pts: self.pts }
@@ -468,6 +549,83 @@ impl VideoFrame {
                     }
                 });
             }
+            PixelData::Biplanar8 { planes, chroma, surface } => {
+                let Some([y_plane, uv_plane]) = resolve_biplanar8(planes, surface) else {
+                    out.fill(0.0);
+                    return;
+                };
+                let (sx, sy) = chroma.shifts();
+                let cw = w.div_ceil(1 << sx);
+                let ytab: Vec<f32> = (0..256).map(|v| normalize_y(v, 8, info.range)).collect();
+                let ctab: Vec<f32> = (0..256).map(|v| normalize_c(v, 8, info.range)).collect();
+                let (kr, kb) = info.matrix.kr_kb();
+                let kg = 1.0 - kr - kb;
+                let (cr_r, cb_b) = (2.0 * (1.0 - kr), 2.0 * (1.0 - kb));
+                let (cr_g, cb_g) = (cr_r * kr / kg, cb_b * kb / kg);
+                out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
+                    let oy = r.y + ry;
+                    for rx in 0..r.w {
+                        let ox = r.x + rx;
+                        let mut acc = [0f32; 4];
+                        for dy in 0..n {
+                            let y = (oy * n + dy).min(h - 1);
+                            let cy = y >> sy;
+                            for dx in 0..n {
+                                let x = (ox * n + dx).min(w - 1);
+                                let cx = x >> sx;
+                                let c_idx = (cy * cw + cx) * 2;
+                                let yy = ytab[y_plane[y * w + x] as usize];
+                                let u = ctab[uv_plane[c_idx] as usize];
+                                let v = ctab[uv_plane[c_idx + 1] as usize];
+                                acc[0] += q(yy + cr_r * v);
+                                acc[1] += q(yy - cr_g * v - cb_g * u);
+                                acc[2] += q(yy + cb_b * u);
+                                acc[3] += 1.0;
+                            }
+                        }
+                        for k in 0..4 {
+                            row[rx * 4 + k] = acc[k] * inv;
+                        }
+                    }
+                });
+            }
+            PixelData::Biplanar16 { planes, chroma, bits, surface } => {
+                let Some([y_plane, uv_plane]) = resolve_biplanar16(planes, surface) else {
+                    out.fill(0.0);
+                    return;
+                };
+                let (sx, sy) = chroma.shifts();
+                let cw = w.div_ceil(1 << sx);
+                let bits = *bits;
+                let shift = 16u32.saturating_sub(bits);
+                out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
+                    let oy = r.y + ry;
+                    for rx in 0..r.w {
+                        let ox = r.x + rx;
+                        let mut acc = [0f32; 4];
+                        for dy in 0..n {
+                            let y = (oy * n + dy).min(h - 1);
+                            let cy = y >> sy;
+                            for dx in 0..n {
+                                let x = (ox * n + dx).min(w - 1);
+                                let cx = x >> sx;
+                                let c_idx = (cy * cw + cx) * 2;
+                                let yy = normalize_y((y_plane[y * w + x] >> shift) as u32, bits, info.range);
+                                let u = normalize_c((uv_plane[c_idx] >> shift) as u32, bits, info.range);
+                                let v = normalize_c((uv_plane[c_idx + 1] >> shift) as u32, bits, info.range);
+                                let rgb = ycbcr_to_rgb(yy, u, v, info.matrix);
+                                acc[0] += q(rgb[0]);
+                                acc[1] += q(rgb[1]);
+                                acc[2] += q(rgb[2]);
+                                acc[3] += 1.0;
+                            }
+                        }
+                        for k in 0..4 {
+                            row[rx * 4 + k] = acc[k] * inv;
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -540,6 +698,41 @@ impl VideoFrame {
                 });
                 out
             }
+            PixelData::Biplanar8 { planes, chroma, surface }
+                if matches!(self.color.transfer, filmcraft_color::Transfer::Bt709 | filmcraft_color::Transfer::Srgb) =>
+            {
+                let Some([y_plane, uv_plane]) = resolve_biplanar8(planes, surface) else {
+                    return vec![0u8; w * h * 4];
+                };
+                let (sx, sy) = chroma.shifts();
+                let cw = w.div_ceil(1 << sx);
+                let (kr, kb) = self.color.matrix.kr_kb();
+                let kg = 1.0 - kr - kb;
+                let (ys, yo, cs) = match self.color.range {
+                    Range::Limited => (255.0 / 219.0, 16.0, 255.0 / 224.0),
+                    Range::Full => (1.0, 0.0, 1.0),
+                };
+                let (crr, cbb) = (2.0 * (1.0 - kr) * cs, 2.0 * (1.0 - kb) * cs);
+                let (cgr, cgb) = (crr * kr / kg, cbb * kb / kg);
+                let mut out = vec![0u8; w * h * 4];
+                out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+                    let cy = y >> sy;
+                    let yrow = &y_plane[y * w..y * w + w];
+                    let uvrow = &uv_plane[cy * cw * 2..cy * cw * 2 + cw * 2];
+                    for x in 0..w {
+                        let yy = (yrow[x] as f32 - yo) * ys;
+                        let c_idx = (x >> sx) * 2;
+                        let u = uvrow[c_idx] as f32 - 128.0;
+                        let v = uvrow[c_idx + 1] as f32 - 128.0;
+                        let o = &mut row[x * 4..x * 4 + 4];
+                        o[0] = (yy + crr * v).round().clamp(0.0, 255.0) as u8;
+                        o[1] = (yy - cgr * v - cgb * u).round().clamp(0.0, 255.0) as u8;
+                        o[2] = (yy + cbb * u).round().clamp(0.0, 255.0) as u8;
+                        o[3] = 255;
+                    }
+                });
+                out
+            }
             _ => {
                 let lin = self.to_linear_f32();
                 let mut out = vec![0u8; w * h * 4];
@@ -553,6 +746,12 @@ impl VideoFrame {
     pub fn luma8(&self) -> Vec<u8> {
         match &self.data {
             PixelData::Yuv8 { planes, .. } => planes[0].as_ref().clone(),
+            PixelData::Biplanar8 { planes, surface, .. } => {
+                if let Some([y, _]) = resolve_biplanar8(planes, surface) {
+                    return y.as_ref().clone();
+                }
+                vec![0; (self.width * self.height) as usize]
+            }
             _ => self.to_rgba8().as_chunks::<4>().0.iter().map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) as u8).collect(),
         }
     }
@@ -899,6 +1098,9 @@ mod tests {
         let c16: Vec<u16> = (0..w * h).map(|i| (64 + i * 7 % 896) as u16).collect();
         let a16: Vec<u16> = (0..w * h).map(|i| (alpha(i % w, i / w) as u16) * 4).collect();
         let c422: Vec<u16> = (0..cw * h).map(|i| (64 + i * 7 % 896) as u16).collect();
+        let uv8: Vec<u8> = u8p.iter().zip(&v8p).flat_map(|(&u, &v)| [u, v]).collect();
+        let y16_p010: Vec<u16> = y16.iter().map(|&v| v << 6).collect();
+        let uv16_p010: Vec<u16> = (0..cw * ch).flat_map(|i| [((64 + i * 5 % 896) as u16) << 6, ((64 + i * 11 % 896) as u16) << 6]).collect();
         let mk = |data| VideoFrame { width: w as u32, height: h as u32, data, color: ColorInfo::REC709, par: (1, 1), pts: Tick::ZERO };
         vec![
             ("rgba8", mk(PixelData::Rgba8(Arc::new(rgba8)))),
@@ -911,7 +1113,8 @@ mod tests {
                     alpha: Some(Arc::new(a8)),
                 }),
             ),
-            ("yuv8 4:2:0", mk(PixelData::Yuv8 { planes: [Arc::new(y8), Arc::new(u8p), Arc::new(v8p)], chroma: Chroma::C420, alpha: None })),
+            ("yuv8 4:2:0", mk(PixelData::Yuv8 { planes: [Arc::new(y8.clone()), Arc::new(u8p), Arc::new(v8p)], chroma: Chroma::C420, alpha: None })),
+            ("biplanar8 4:2:0", mk(PixelData::Biplanar8 { planes: Some([Arc::new(y8), Arc::new(uv8)]), chroma: Chroma::C420, surface: None })),
             (
                 "yuv16 4:4:4 + alpha",
                 mk(PixelData::Yuv16 {
@@ -934,7 +1137,25 @@ mod tests {
                 "yuv16 4:4:4",
                 mk(PixelData::Yuv16 { planes: [Arc::new(y16), Arc::new(c16.clone()), Arc::new(c16)], chroma: Chroma::C444, bits: 12, alpha: None }),
             ),
+            (
+                "biplanar16 4:2:0",
+                mk(PixelData::Biplanar16 { planes: Some([Arc::new(y16_p010), Arc::new(uv16_p010)]), chroma: Chroma::C420, bits: 10, surface: None }),
+            ),
         ]
+    }
+
+    /// Check that biplanar 8/10-bit conversion matches equivalent planar luma and chroma values.
+    #[test]
+    fn biplanar_matches_planar_conversion() {
+        for (_, f) in sample_frames() {
+            if matches!(f.data, PixelData::Biplanar8 { .. } | PixelData::Biplanar16 { .. }) {
+                let planar = f.to_planar();
+                assert_eq!(f.format_label(), planar.format_label());
+                assert_eq!(f.to_linear_f32(), planar.to_linear_f32());
+                assert_eq!(f.to_rgba8(), planar.to_rgba8());
+                assert_eq!(f.luma8(), planar.luma8());
+            }
+        }
     }
 
     #[test]

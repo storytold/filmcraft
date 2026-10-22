@@ -277,6 +277,12 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = bool_p(p, "burnCaptions") {
         settings.burn_captions = v;
     }
+    if let Some(v) = str_p(p, "hevcProfile") {
+        if !matches!(v, "auto" | "main" | "main10" | "main42210") {
+            return Err(bad(cmd, "hevcProfile: auto | main | main10 | main42210"));
+        }
+        settings.hevc_profile = v.to_string();
+    }
     if let Some(v) = str_p(p, "proresProfile") {
         settings.prores_profile = v.to_string();
     }

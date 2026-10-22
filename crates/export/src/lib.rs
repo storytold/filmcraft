@@ -328,6 +328,9 @@ pub struct ExportSettings {
     /// ProRes flavour: `proxy`, `lt`, `standard`, `hq`, `4444` or `4444xq` (empty = HQ).
     #[serde(default)]
     pub prores_profile: String,
+    /// VideoToolbox HEVC profile: auto (Main for SDR, Main 10 for HDR), main, main10,
+    /// or main42210. An explicitly requested profile must never be silently downgraded.
+    pub hevc_profile: String,
     /// DNxHR profile: `lb`, `sq`, `hq` or `hqx` (empty = HQ).
     #[serde(default)]
     pub dnx_profile: String,
@@ -342,7 +345,7 @@ pub struct ExportSettings {
     /// sequence's HDR space and signal it (VUI / `colr` / `mdcv` / `clli` / SEI).
     #[serde(default)]
     pub sdr: bool,
-    /// Keep the alpha channel in PNG, TIFF, Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ
+    /// Keep the alpha channel in PNG, TIFF, Targa and OpenEXR sequences, macOS HEVC Main, and ProRes 4444 / 4444 XQ
     /// QuickTime movies (straight alpha, Premiere's "Include Alpha Channel"; OpenEXR stores it
     /// premultiplied, as the format defines). Off, every frame is flattened over black (#160).
     /// Other formats ignore it.
@@ -369,7 +372,7 @@ pub struct ExportSettings {
     /// 18 is visually near-lossless.
     #[serde(default = "default_crf")]
     pub crf: f32,
-    /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
+    /// May H.264, ProRes or Motion JPEG be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
     /// Windows)? Off unless asked for: hardware output depends on the machine, so it is not
     /// byte-reproducible like the built-in encoder's (`determinism_tests`).
     #[serde(default)]
@@ -558,6 +561,7 @@ impl Default for ExportSettings {
             burn_captions: false,
             part_of_batch: false,
             prores_profile: String::new(),
+            hevc_profile: String::new(),
             dnx_profile: String::new(),
             apv_profile: String::new(),
             mxf_video_codec: MxfVideoCodec::default(),
@@ -602,6 +606,12 @@ fn default_crf() -> f32 {
 impl ExportSettings {
     /// Reject settings the encoders cannot honour.
     pub fn validate(&self) -> Result<()> {
+        if !matches!(self.hevc_profile.as_str(), "" | "auto" | "main" | "main10" | "main42210") {
+            return Err(ExportError::Unsupported("HEVC profile: auto, main, main10 or main42210".into()));
+        }
+        if self.video_format() == Format::Hevc && !cfg!(target_os = "macos") && !matches!(self.hevc_profile.as_str(), "" | "auto") {
+            return Err(ExportError::Unsupported("explicit HEVC profiles currently require VideoToolbox on macOS".into()));
+        }
         if let Some(range) = self.range {
             validate_range(range)?;
         }
@@ -1217,7 +1227,7 @@ impl VideoEncoder for ProResEncoder {
 
 /// Limited-range 10-bit 4:4:4 with matrix (Kr, Kb) from straight RGBA8, or from encoded R'G'B'
 /// floats (3 per pixel) when `hdr` is given. `alpha` (full range, 0 = transparent) takes the
-/// RGBA8 alpha; it stays opaque for float input, which carries none.
+/// RGBA8 alpha; float RGB uses the separately supplied RGBA8 alpha when available.
 #[allow(clippy::too_many_arguments)]
 pub fn to_yuv444_10(
     rgba: &[u8],
@@ -1249,7 +1259,7 @@ pub fn to_yuv444_10(
             *crv = (512.0 + 896.0 * (r - yy) / sr).round().clamp(4.0, 1019.0) as u16;
         }
     });
-    if let (Some(a), None) = (alpha, hdr) {
+    if let Some(a) = alpha {
         for (i, dst) in a.iter_mut().enumerate().take(n) {
             *dst = rgba.get(i * 4 + 3).map_or(1023, |&v| ((v as u32 * 1023 + 127) / 255) as u16);
         }
