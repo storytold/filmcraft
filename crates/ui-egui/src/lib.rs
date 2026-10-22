@@ -1562,6 +1562,8 @@ impl FilmcraftApp {
         // out, so it still reports the previous pass, and it is true for any focused widget, which
         // would leave the editor without its single-key tool shortcuts while a slider has focus.
         let text_focused = ctx.text_edit_focused();
+        // read before `input_mut`: the plugin lock must not be taken inside the input lock
+        let label_selected = ctx.with_plugin(|s: &mut egui::text_selection::LabelSelectionState| s.has_selection()).unwrap_or(false);
         // Esc cancels a dynamic trim in progress
         if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
@@ -1599,7 +1601,7 @@ impl FilmcraftApp {
                     modifiers: m | egui::Modifiers::COMMAND,
                 });
             }
-            clipboard_events_as_keys(&mut i.events, modifiers);
+            clipboard_events_as_keys(&mut i.events, modifiers, label_selected);
             let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
             let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
             let mut candidates: Vec<&menus::KeyBinding> = panel.chain(app_wide).collect();
@@ -1903,12 +1905,18 @@ impl FilmcraftApp {
             }
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
-        ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
+        // the bar goes under the text and the job's controls, so they get their own clicks
         let resp = ui.interact(sb, egui::Id::new("status-bar"), egui::Sense::click());
         if resp.clicked() {
             self.ui.status.clear();
         }
-        self.job_status(ui, sb, &t);
+        let right = self.job_status(ui, sb, &t).unwrap_or(sb.max.x);
+        // A label, not painted text, so a path or an error can be selected and copied (#2295);
+        // too long a message ends in "…" before the job's progress and shows in full on hover.
+        let text = egui::Rect::from_min_max(egui::pos2(sb.min.x + 10.0, sb.min.y), egui::pos2((right - 10.0).max(sb.min.x + 10.0), sb.max.y));
+        let mut row = ui.new_child(egui::UiBuilder::new().max_rect(text).id_salt("status-text").layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let shown = row.add(egui::Label::new(egui::RichText::new(&hint).font(Tokens::ui(11.0)).color(t.text_dim)).selectable(true).truncate());
+        self.auto.add("status.text", shown.rect, &hint);
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
@@ -1938,10 +1946,10 @@ impl FilmcraftApp {
     }
 
     /// Right side of the status bar: the running job (export / render previews) with a progress
-    /// bar and a cancel button.
-    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) {
+    /// bar and a cancel button. Returns where it starts, if a job is running.
+    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) -> Option<f32> {
         use std::sync::atomic::Ordering;
-        let Some(job) = self.watch_jobs(ui.ctx()) else { return };
+        let job = self.watch_jobs(ui.ctx())?;
         let f = job.progress.fraction().clamp(0.0, 1.0);
         let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
         let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
@@ -1950,7 +1958,7 @@ impl FilmcraftApp {
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
         let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
-        p.text(
+        let progress = p.text(
             egui::pos2(bar.min.x - 8.0, sb.center().y),
             egui::Align2::RIGHT_CENTER,
             format!("{verb}… {:.0}%{left}", f * 100.0),
@@ -1968,6 +1976,7 @@ impl FilmcraftApp {
             job.progress.cancel.store(true, Ordering::Relaxed);
             self.watched_render = None;
         }
+        Some(progress.min.x)
     }
 
     /// Contextual hint for the status bar (Premiere shows tool/gesture hints here).
@@ -2304,12 +2313,15 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
 ///
 /// Add the key press each event stands for, with the modifiers held, so the bindings see it. The
 /// original event stays for anything else that reads it. Only called when no text field has
-/// keyboard focus; text fields keep handling the clipboard themselves.
-fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modifiers) {
+/// keyboard focus; text fields keep handling the clipboard themselves. Selected label text (a
+/// status bar message, #2295) keeps Copy and Cut the same way: Ctrl+C copies the text, not the
+/// selected clips.
+fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modifiers, label_selected: bool) {
     use egui::{Event, Key};
     let keys: Vec<Key> = events
         .iter()
         .filter_map(|e| match e {
+            Event::Copy | Event::Cut if label_selected => None,
             Event::Copy if modifiers.command => Some(Key::C),
             Event::Copy => Some(Key::Copy),
             Event::Cut if modifiers.command => Some(Key::X),
@@ -2330,7 +2342,7 @@ mod clipboard_key_tests {
 
     fn keys(events: Vec<Event>, m: Modifiers) -> Vec<(Key, Modifiers)> {
         let mut events = events;
-        super::clipboard_events_as_keys(&mut events, m);
+        super::clipboard_events_as_keys(&mut events, m, false);
         events.into_iter().filter_map(|e| if let Event::Key { key, modifiers, pressed: true, .. } = e { Some((key, modifiers)) } else { None }).collect()
     }
 
@@ -2361,10 +2373,20 @@ mod clipboard_key_tests {
     #[test]
     fn other_events_are_left_alone() {
         let mut events = vec![Event::Text("a".into()), Event::Copy];
-        super::clipboard_events_as_keys(&mut events, Modifiers::COMMAND);
+        super::clipboard_events_as_keys(&mut events, Modifiers::COMMAND, false);
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], Event::Text(_)));
         assert!(matches!(events[1], Event::Copy));
+    }
+
+    #[test]
+    fn selected_label_text_keeps_copy_and_cut() {
+        let c = Modifiers::COMMAND;
+        let mut events = vec![Event::Copy, Event::Cut, Event::Paste("x".into())];
+        super::clipboard_events_as_keys(&mut events, c, true);
+        let keys: Vec<Key> = events.iter().filter_map(|e| if let Event::Key { key, .. } = e { Some(*key) } else { None }).collect();
+        assert_eq!(keys, vec![Key::V], "only Paste becomes a key press");
+        assert!(matches!(events[0], Event::Copy), "the selection still gets the Copy event");
     }
 }
 
