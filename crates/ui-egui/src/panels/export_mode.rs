@@ -23,8 +23,8 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec,
-    Placement, SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes,
+    AudioCodec, AudioSettings, BitrateMode, ExportSettings, ExrCompression, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer,
+    MxfVideoCodec, Placement, SampleFormat, Scaling, SourceAudio, TextOverlay, builtin_presets, format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -455,6 +455,8 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         .active_sequence()
         .map(|q| (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate))
         .unwrap_or((1920, 1080, FrameRate::FPS_24, 48_000));
+    // what Audio ▸ Match Source follows: the sequence's sample rate and master track layout
+    let seq_audio = app.session.active_sequence().map(|q| SourceAudio::from(&q.settings)).unwrap_or(SourceAudio::from(seq_sr));
     let has_captions = app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty());
     // an HDR sequence exports HDR (H.265 Main 10 where the hardware encoder has it) unless SDR is asked for
     let seq_hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
@@ -531,6 +533,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         frame_rate: keep.frame_rate,
                         effects: keep.effects,
                         metadata: keep.metadata,
+                        audio: AudioSettings { match_source: keep.audio.match_source, ..Default::default() },
                         ..Default::default()
                     };
                 }
@@ -550,7 +553,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             && s.format != Format::Gif
             && section(ui, &mut reg, &mut ex.open_sections, "audio", tl!("Audio"), &t)
         {
-            audio_section(ui, &mut reg, s, &t, seq_sr);
+            audio_section(ui, &mut reg, s, &t, seq_audio);
         }
         if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
             row(ui, &t, tl!("Multiplexer"), |ui| {
@@ -857,7 +860,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
 }
 
-fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_sr: u32) {
+fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_audio: SourceAudio) {
+    let seq_sr = seq_audio.sample_rate;
     let audio_only = !s.has_video();
     if !audio_only {
         row(ui, t, "", |ui| check(ui, reg, "export.audio.include", &mut s.include_audio, tl!("Export Audio")));
@@ -884,22 +888,33 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
         }
     });
+    // Match Source (#2700): sample rate and channels follow the sequence; the greyed controls show
+    // what the export will use. Turning it off starts from those values, as the video's does.
+    row(ui, t, "", |ui| {
+        let (rate, channels) = s.audio.resolve(seq_audio);
+        if check(ui, reg, "export.audio.matchSource", &mut s.audio.match_source, tl!("Match Source")) && !s.audio.match_source {
+            (s.audio.sample_rate, s.audio.channels) = (Some(rate), channels);
+        }
+    });
+    let matched = s.audio.match_source;
+    let (out_sr, out_channels) = s.audio.resolve(seq_audio);
     row(ui, t, tl!("Sample Rate"), |ui| {
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
         let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| tlf!("Match Source ({seq_sr} Hz)", seq_sr));
         let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), true)).collect();
-        if let Some(i) = combo(ui, reg, "export.audio.sampleRate", &lab(&s.audio.sample_rate), &labels, 180.0) {
-            s.audio.sample_rate = rates[i];
+        let cur = if matched { lab(&Some(out_sr)) } else { lab(&s.audio.sample_rate) };
+        if let Some(i) = ui.add_enabled_ui(!matched, |ui| combo(ui, reg, "export.audio.sampleRate", &cur, &labels, 180.0)).inner {
+            s.audio.sample_rate = rates[i.min(rates.len() - 1)];
         }
     });
     row(ui, t, tl!("Channels"), |ui| {
         let names = [tl!("Mono"), tl!("Stereo"), "5.1"];
-        let cur = match s.audio.channels {
+        let cur = match if matched { out_channels } else { s.audio.channels } {
             1 => names[0],
             6 => names[2],
             _ => names[1],
         };
-        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&names), 120.0) {
+        if let Some(i) = ui.add_enabled_ui(!matched, |ui| combo(ui, reg, "export.audio.channels", cur, &opts(&names), 120.0)).inner {
             s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });
@@ -1030,7 +1045,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     let Some(q) = app.session.active_sequence().cloned() else { return };
     let rate = q.settings.frame_rate;
     // preview (aspect of the output frame)
-    let r = app.ui.export.settings.resolve(q.settings.width, q.settings.height, rate, q.settings.sample_rate);
+    let r = app.ui.export.settings.resolve(q.settings.width, q.settings.height, rate, &q.settings);
     let pv_area = Rect::from_min_size(rect.min + vec2(14.0, 14.0), vec2(rect.width() - 28.0, (rect.height() * 0.42).max(160.0)));
     let pic = crate::panels::monitor::fit(pv_area, r.width as f32, r.height as f32);
     ui.painter().rect_filled(pic, 0.0, Color32::BLACK);
@@ -1090,7 +1105,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     }
     // summary
     let range = range_ticks(ex, &q);
-    let sum = ex.settings.summary(q.settings.width, q.settings.height, rate, q.settings.sample_rate, range.1 - range.0);
+    let sum = ex.settings.summary(q.settings.width, q.settings.height, rate, &q.settings, range.1 - range.0);
     child.add_space(8.0);
     let resp = egui::Frame::NONE
         .fill(t.field_bg)

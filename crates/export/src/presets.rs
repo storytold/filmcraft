@@ -46,8 +46,12 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
     }
 }
 
+/// The Match Source presets: the sequence's frame size and rate, and its audio sample rate and
+/// channels (Audio ▸ Match Source, #2700); AAC at 320 kbps.
 fn adaptive(bpp: f32) -> ExportSettings {
-    ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) }
+    let mut s = ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) };
+    s.audio.match_source = true;
+    s
 }
 
 fn mov(format: Format, profile: &str) -> ExportSettings {

@@ -236,7 +236,7 @@ impl Exporter {
             _ => ColorSignal::default(),
         };
         // bake the derived bitrate / keyframe values in for the encoder factories
-        let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
+        let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, &q.settings);
         settings.bitrate_kbps = r.target_kbps;
         settings.max_bitrate_kbps = Some(r.max_kbps);
         settings.keyframe_distance = Some(r.keyint);

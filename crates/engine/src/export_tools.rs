@@ -210,6 +210,16 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(patch) = p.get("settings").filter(|v| v.is_object()) {
         let mut v = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
         merge(&mut v, patch);
+        // an explicit sample rate or channel count turns Audio ▸ Match Source off (unless the patch
+        // sets it too), so it is not silently overridden by the sequence's (a Match Source preset)
+        if let Some(a) = patch.get("audio").and_then(Value::as_object)
+            && ["sample_rate", "sampleRate", "channels"].iter().any(|k| a.get(*k).is_some_and(|v| !v.is_null()))
+            && !a.contains_key("match_source")
+            && !a.contains_key("matchSource")
+            && let Some(m) = v.get_mut("audio").and_then(|a| a.get_mut("match_source"))
+        {
+            *m = Value::Bool(false);
+        }
         settings = serde_json::from_value(v).map_err(|e| bad(cmd, format!("settings: {e}")))?;
         // serde ignores keys it doesn't know, so a misspelt or misplaced key (a flat parameter
         // such as `loudnessLufs` put inside `settings`) would silently do nothing.
@@ -930,9 +940,9 @@ fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let range = filmcraft_export::export_range(&project, seq, &settings).map_err(|e| EngineError::Other(e.to_string()))?;
     let (w, h, rate, sr) = (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
-    let r = settings.resolve(w, h, rate, sr);
+    let r = settings.resolve(w, h, rate, &q.settings);
     let (f0, f1) = filmcraft_export::frame_span(r.rate, range);
-    let summary = settings.summary(w, h, rate, sr, range.duration);
+    let summary = settings.summary(w, h, rate, &q.settings, range.duration);
     Ok(json!({
         "preset": preset.map(|x| x.name),
         "settings": settings,

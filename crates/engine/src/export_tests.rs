@@ -847,3 +847,34 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         assert!(doc.cues.is_empty(), "half-open export excludes cues touching either boundary: {doc:?}");
     }
 }
+
+/// Audio ▸ Match Source (#2700) over the control channel / MCP / CLI: the export job resolves it
+/// from the sequence the way the UI does, and an explicit sample rate or channel count given
+/// with a Match Source preset turns it off instead of being silently overridden.
+#[test]
+fn audio_match_source_resolves_from_the_sequence() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"sampleRate": 44_100, "mix": "Mono", "video": 1, "audio": 1})).unwrap();
+    // plain settings (no preset): the sample rate left unset follows the sequence, the chosen
+    // stereo stays
+    let r = s.execute("export.resolve", json!({})).unwrap();
+    assert_eq!(r["settings"]["audio"]["match_source"], false, "{r}");
+    assert_eq!((r["output"]["sampleRate"].clone(), r["output"]["channels"].clone()), (json!(44_100), json!(2)));
+    // the default preset (Quick Export, a fresh Export mode) matches the sequence's audio
+    let r = s.execute("export.resolve", json!({"preset": filmcraft_export::presets::DEFAULT_PRESET})).unwrap();
+    assert_eq!(r["settings"]["audio"]["match_source"], true, "{r}");
+    assert_eq!((r["output"]["sampleRate"].clone(), r["output"]["channels"].clone()), (json!(44_100), json!(1)));
+    // explicitly on, with 48 kHz stereo chosen
+    let on = json!({"format": "wav", "settings": {"audio": {"matchSource": true, "sampleRate": 48_000, "channels": 2}}});
+    let r = s.execute("export.resolve", on).unwrap();
+    assert_eq!((r["output"]["sampleRate"].clone(), r["output"]["channels"].clone()), (json!(44_100), json!(1)));
+    // a Match Source preset plus an explicit rate: the explicit rate wins
+    let r = s.execute("export.resolve", json!({"preset": filmcraft_export::presets::DEFAULT_PRESET, "settings": {"audio": {"sampleRate": 48_000}}})).unwrap();
+    assert_eq!(r["settings"]["audio"]["match_source"], false);
+    assert_eq!((r["output"]["sampleRate"].clone(), r["output"]["channels"].clone()), (json!(48_000), json!(2)));
+    // off: the chosen values
+    let r = s.execute("export.resolve", json!({"format": "wav", "settings": {"audio": {"match_source": false, "sample_rate": 48_000}}})).unwrap();
+    assert_eq!(r["output"]["sampleRate"], 48_000);
+    // a hostile value is rejected, not a crash
+    assert!(s.execute("export.resolve", json!({"settings": {"audio": {"matchSource": "yes"}}})).is_err());
+}
