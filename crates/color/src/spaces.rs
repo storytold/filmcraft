@@ -283,6 +283,7 @@ impl ColorSpace {
     /// The colour space signalled by stream metadata (VUI / `colr` / MKV Colour).
     pub fn from_info(c: &ColorInfo) -> ColorSpace {
         match (c.transfer, c.primaries) {
+            (Transfer::AppleLog, _) => ColorSpace::AppleLog,
             (Transfer::Pq, _) => ColorSpace::Rec2100Pq,
             (Transfer::Hlg, _) => ColorSpace::Rec2100Hlg,
             (Transfer::Linear, _) => ColorSpace::Linear709,

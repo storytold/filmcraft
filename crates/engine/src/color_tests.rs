@@ -254,3 +254,49 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
 }
+
+#[path = "../../codecs/tests/common/apple_log.rs"]
+mod apple_log_fixture;
+
+#[test]
+fn explicit_apple_log_import_uses_the_existing_transform_and_preserves_overrides() {
+    use filmcraft_color::{ColorSpace, Transfer};
+    use filmcraft_project::ItemId;
+    let path = filmcraft_testkit::fixtures_dir("engine/apple-log").join("original.mov");
+    std::fs::write(&path, apple_log_fixture::movie(Some(apple_log_fixture::APPLE_LOG), true, 9)).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("file.import", json!({"paths":[path.to_string_lossy()]})).unwrap();
+    let item = ItemId(result["items"][0].as_u64().unwrap());
+    s.execute("file.newSequenceFromClip", json!({"items":[item.0]})).unwrap();
+    s.execute("playhead.set", json!({"seconds":0.5})).unwrap();
+    let info = s.execute("media.colorInfo", json!({"item":item.0})).unwrap();
+    assert_eq!(info["detected"], "applelog");
+    assert_eq!(info["effective"], "applelog");
+    assert!(info["override"].is_null());
+    let automatic = s.render_program(1.0).unwrap();
+    assert!(mean(&automatic)[0] > 0.05);
+    s.execute("clip.interpretFootage", json!({"items":[item.0],"colorSpace":"applelog"})).unwrap();
+    assert_eq!(s.render_program(1.0).unwrap().px, automatic.px, "auto detection must use the established manual transform");
+    s.execute("clip.interpretFootage", json!({"items":[item.0],"colorSpace":"rec709"})).unwrap();
+    let manual = s.render_program(1.0).unwrap();
+    assert!(automatic.px.iter().zip(&manual.px).any(|(a, b)| (a - b).abs() > 0.005), "manual override must affect the decode");
+    let info = s.execute("media.colorInfo", json!({"item":item.0})).unwrap();
+    assert_eq!(info["detected"], "applelog");
+    assert_eq!(info["effective"], "rec709");
+    let encoded = filmcraft_format::encode(&s.project, false);
+    let loaded = filmcraft_format::decode(&encoded).unwrap();
+    assert_eq!(&loaded.project, &*s.project);
+    assert_eq!(loaded.project.item(item).unwrap().as_media().unwrap().interpret.color_space, Some(ColorSpace::Rec709));
+    // A genuine v15 shape: cached metadata was Rec.2020, with an explicit user override.
+    let mut legacy = (*s.project).clone();
+    legacy.item_mut(item).unwrap().as_media_mut().unwrap().info.video.as_mut().unwrap().color.transfer = Transfer::Bt709;
+    let mut doc: serde_json::Value = serde_json::from_slice(&filmcraft_format::encode(&legacy, false)).unwrap();
+    doc["schema_version"] = json!(15);
+    let upgraded = filmcraft_format::decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
+    assert_eq!(upgraded.project, legacy);
+    assert_eq!(upgraded.project.item(item).unwrap().as_media().unwrap().interpret.color_space, Some(ColorSpace::Rec709));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.render_program(1.0).unwrap().px, automatic.px);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.render_program(1.0).unwrap().px, manual.px);
+}

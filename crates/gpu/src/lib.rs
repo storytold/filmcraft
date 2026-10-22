@@ -619,6 +619,7 @@ impl GpuCompositor {
             Transfer::Linear => 1.0,
             Transfer::Pq => 2.0,
             Transfer::Hlg => 3.0,
+            Transfer::AppleLog => 4.0,
             _ => 0.0,
         };
         // source pixels per output pixel → supersampling taps

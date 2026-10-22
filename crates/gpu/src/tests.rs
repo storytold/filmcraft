@@ -552,3 +552,33 @@ fn hdr_input_gpu_matches_cpu() {
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
 }
+
+#[test]
+fn apple_log_transfer_gpu_matches_cpu() {
+    use filmcraft_color::{ColorInfo, Matrix, Primaries, Transfer};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let w = 128usize;
+    let frame = Arc::new(VideoFrame {
+        width: w as u32,
+        height: 1,
+        data: PixelData::Yuv16 {
+            planes: [Arc::new((0..w).map(|i| (64 + i * 876 / (w - 1)) as u16).collect()), Arc::new(vec![512; w]), Arc::new(vec![512; w])],
+            chroma: Chroma::C444,
+            bits: 10,
+            alpha: None,
+        },
+        color: ColorInfo { matrix: Matrix::Bt2020Ncl, transfer: Transfer::AppleLog, primaries: Primaries::Bt2020, range: Range::Limited },
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let plan = FramePlan::Layers { width: w, height: 1, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    compositor.composite(&plan);
+    let (_, _, gpu) = compositor.read_output().unwrap();
+    let error = cpu.iter().zip(gpu).map(|(a, b)| a.abs_diff(b)).max().unwrap();
+    assert!(error <= 2, "Apple Log transfer differs by {error} codes");
+}
