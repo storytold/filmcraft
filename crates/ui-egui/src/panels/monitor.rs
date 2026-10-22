@@ -523,7 +523,8 @@ const EYEDROPPER_SCALE: f32 = 0.5;
 /// Eyedropper: while a colour parameter's eyedropper is armed (Effect Controls), the Program picture
 /// takes a crosshair and a click fills that parameter with the colour under the pointer. The colour is
 /// read from a render of the sequence at the playhead with the armed effect switched off (an Ultra Key
-/// has already removed the green it is asked to key); Esc disarms.
+/// has already removed the green it is asked to key); Esc disarms. Lumetri's HSL Secondary key
+/// pickers arm it too: their click runs `lumetri.hslKey` at that point.
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
@@ -542,6 +543,15 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         && pic.height() > 0.0
     {
         let uv = (((pos.x - pic.min.x) / pic.width()).clamp(0.0, 1.0), ((pos.y - pic.min.y) / pic.height()).clamp(0.0, 1.0));
+        if let Some(mode) = armed.hsl_key_mode() {
+            // Lumetri's HSL Secondary key pickers: the engine reads the point where the key sees it
+            app.ui.eyedropper = None;
+            ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
+            if let Err(e) = app.session.execute("lumetri.hslKey", json!({"clip": armed.clip, "mode": mode, "x": uv.0, "y": uv.1})) {
+                app.ui.status = e.to_string();
+            }
+            return;
+        }
         let mut project = (*app.session.project).clone();
         if let Some(e) =
             project.sequence_mut(seq).and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip))).and_then(|(_, it)| it.effects.get_mut(armed.effect))

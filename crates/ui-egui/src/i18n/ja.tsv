@@ -3616,3 +3616,7 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Set color (click the colour to key in the Program monitor)	カラーを設定 (プログラムモニターでキーにする色をクリック)
+	Add color (widen the key to a colour in the Program monitor)	カラーを追加 (プログラムモニターの色までキーを広げる)
+	Remove color (narrow the key to leave out a colour in the Program monitor)	カラーを削除 (プログラムモニターの色を除くようにキーを狭める)
+	Invert Mask	マスクを反転

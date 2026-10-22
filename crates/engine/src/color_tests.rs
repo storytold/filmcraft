@@ -254,3 +254,220 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
 }
+
+/// The demo's first clip showing its Color Matte in `color`, the playhead in its middle (past the
+/// fade from black), Lumetri applied; returns the clip and the Lumetri's index.
+fn matte_clip_with_lumetri(s: &mut Session, color: &str) -> (ClipId, usize) {
+    let clip = pick_clip(s);
+    let matte = *s.project.items.iter().find(|(_, i)| i.name == "Color Matte").unwrap().0;
+    s.execute("project.matteColor", json!({"item": matte.0, "color": color})).unwrap();
+    s.edit_sequence("test", |q, _, _| {
+        q.find_item_mut(clip).unwrap().1.item = matte;
+        Ok(())
+    })
+    .unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    let idx = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    (clip, idx)
+}
+
+#[test]
+fn hsl_key_color_pickers_set_add_and_remove_the_picked_point() {
+    let mut s = demo();
+    let (clip, idx) = matte_clip_with_lumetri(&mut s, "#d06020");
+    let set = |s: &mut Session, k: &str, v: serde_json::Value| {
+        s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": k, "value": v})).unwrap();
+    };
+    // HSL Secondary's own correction does not move the pick: it is read before the key
+    set(&mut s, "hsl_hue_shift", json!(120.0));
+    let (x, y) = (0.4, 0.5);
+    let r = s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": x, "y": y})).unwrap();
+    let hue = r["hsl_hue"].as_f64().unwrap();
+    assert!((10.0..35.0).contains(&hue), "an orange hue: {r}");
+    let again = s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": x, "y": y})).unwrap();
+    assert_eq!(r, again, "picking the same spot again keeps the key");
+    // the picked point is in the key (White/Black view)
+    set(&mut s, "hsl_show_mask", json!(3));
+    let seq = s.state.active_sequence.unwrap();
+    let key_at = |s: &Session| {
+        let provider = s.media.provider(s.project.clone(), s.services.clone());
+        let opts = filmcraft_render::RenderOptions { scale: 0.5, working_output: true, ..Default::default() };
+        let img = filmcraft_render::render_clip(&s.project, seq, clip, s.playhead(), opts, &provider).unwrap();
+        super::color::sample_linear(&img, x, y).unwrap()[1]
+    };
+    assert!(key_at(&s) > 0.95, "keyed: {}", key_at(&s));
+    let param = |s: &Session, k: &str| s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[idx].param(k).and_then(|p| p.value.as_f64());
+    assert_eq!(s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[idx].param("hsl_on").and_then(|p| p.value.as_bool()), Some(true));
+    // Remove takes it out again, Add brings it back
+    s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "remove", "x": x, "y": y})).unwrap();
+    assert!(key_at(&s) < 0.05, "removed: {}", key_at(&s));
+    s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "add", "x": x, "y": y})).unwrap();
+    assert!(key_at(&s) > 0.95, "added: {}", key_at(&s));
+    // a given colour: a blue moves the hue there
+    let b = s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "color": [0.05, 0.1, 0.8]})).unwrap();
+    assert!((200.0..250.0).contains(&b["hsl_hue"].as_f64().unwrap()), "{b}");
+    // one undo step per pick
+    for _ in 0..3 {
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    assert_eq!(param(&s, "hsl_hue"), r["hsl_hue"].as_f64());
+    // the Show Mask change and the two Set picks
+    for _ in 0..3 {
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    assert_eq!(param(&s, "hsl_hue"), Some(0.0), "back to the default key");
+    // hostile parameters are refused, nothing changes
+    for p in [
+        json!({"clip": clip.0, "color": [0.2, 0.2, 0.2]}),
+        json!({"clip": clip.0, "mode": "invert", "color": [0.2, 0.2, 0.2]}),
+        json!({"clip": clip.0, "mode": 3}),
+        json!({"clip": clip.0, "mode": "set", "color": [0.2, 0.2]}),
+        json!({"clip": clip.0, "mode": "set", "color": ["a", 0.2, 0.2]}),
+        json!({"clip": clip.0, "mode": "set", "color": "red"}),
+        json!({"clip": clip.0, "mode": "set", "color": [0.2, 1e300, 0.2]}),
+        json!({"clip": clip.0, "mode": "set", "x": "left"}),
+    ] {
+        let r = s.execute("lumetri.hslKey", p.clone());
+        // a non-numeric x falls back to the centre, the rest is refused
+        if p.get("x").is_some() {
+            assert!(r.is_ok(), "{p}");
+            s.execute("edit.undo", json!({})).unwrap();
+        } else {
+            assert!(r.is_err(), "{p}");
+        }
+    }
+    assert_eq!(param(&s, "hsl_hue"), Some(0.0));
+}
+
+#[test]
+fn hsl_key_color_picker_keyframes_an_animated_slider() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    let idx = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "hsl_hue", "value": 300.0, "keyframe": true})).unwrap();
+    s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "color": [0.05, 0.6, 0.05]})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let it = q.find_item(clip).unwrap().1;
+    let hue = it.effects[idx].param("hsl_hue").unwrap();
+    assert_eq!(hue.keyframes.len(), 1, "the keyframe at the playhead takes the new value");
+    assert!((90.0..150.0).contains(&hue.f64_at(it.source_time_at(s.playhead()))), "a green hue");
+}
+
+#[test]
+fn hsl_key_color_picker_samples_where_motion_places_the_clip() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let matte = *s.project.items.iter().find(|(_, i)| i.name == "Color Matte").unwrap().0;
+    // a picture whose hue changes across the frame: a 4-Color Gradient of four saturated colours
+    let mut grad = filmcraft_project::find_effect("four_color_gradient").unwrap().instance();
+    for (k, c) in [("c1", [0.8, 0.1, 0.1, 1.0]), ("c2", [0.1, 0.8, 0.1, 1.0]), ("c3", [0.1, 0.1, 0.8, 1.0]), ("c4", [0.8, 0.8, 0.1, 1.0])] {
+        grad.params.get_mut(k).unwrap().value = ParamValue::Color(c);
+    }
+    let (w, h) = {
+        let q = s.active_sequence().unwrap();
+        (q.settings.width as f64, q.settings.height as f64)
+    };
+    s.edit_sequence("test", |q, _, _| {
+        let it = q.find_item_mut(clip).unwrap().1;
+        it.item = matte;
+        it.effects.insert(0, grad);
+        // Motion: half size, in the top left quarter of the frame
+        let m = it.effects.iter_mut().find(|e| e.effect == "motion").unwrap();
+        m.params.insert("scale".into(), filmcraft_project::Param::new(ParamValue::Float(50.0)));
+        m.params.insert("position".into(), filmcraft_project::Param::new(ParamValue::Vec2(filmcraft_geom::Vec2::new(w / 4.0, h / 4.0))));
+        Ok(())
+    })
+    .unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    // Lumetri goes after the gradient, before the intrinsic Motion
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    let effects = &s.active_sequence().unwrap().find_item(clip).unwrap().1.effects;
+    let idx = effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    assert!(effects.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri in the stack");
+    // the colour the Program monitor shows at a point on the placed clip (default Lumetri: neutral)
+    let (x, y) = (0.15, 0.2);
+    let seq = s.state.active_sequence.unwrap();
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let opts = filmcraft_render::RenderOptions { scale: 0.5, working_output: true, ..Default::default() };
+    let img = filmcraft_render::render_clip(&s.project, seq, clip, s.playhead(), opts, &provider).unwrap();
+    let shown = super::color::sample_linear(&img, x, y).unwrap();
+    // picking that point keys the same hue as picking the colour shown there
+    let by_point = s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": x, "y": y})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let by_color = s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "color": shown})).unwrap();
+    let picked: Vec<f64> = by_point["color"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    for (p, s) in picked.iter().zip(shown) {
+        assert!((p - f64::from(s)).abs() < 0.01, "sampled where it was clicked: {picked:?} vs {shown:?}");
+    }
+    let (a, b) = (by_point["hsl_hue"].as_f64().unwrap(), by_color["hsl_hue"].as_f64().unwrap());
+    let d = (a - b).rem_euclid(360.0);
+    assert!(d.min(360.0 - d) < 1.0, "the same key: {by_point} vs {by_color}");
+    // outside the placed clip there is nothing to pick
+    assert!(s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": 0.8, "y": 0.8})).is_err());
+}
+
+#[test]
+fn hsl_key_color_picker_needs_the_playhead_on_the_clip() {
+    let mut s = demo();
+    let (clip, idx) = matte_clip_with_lumetri(&mut s, "#d06020");
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    let param = |s: &Session| s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[idx].param("hsl_hue").and_then(|p| p.value.as_f64());
+    let before = param(&s);
+    // past the clip's last frame (and at its end, which is outside it) a point pick is refused,
+    // rather than sampling the clip's last frame, which is not the picture clicked
+    for t in [it.end(), it.end() + filmcraft_time::Tick(it.duration.0 / 2)] {
+        s.execute("playhead.set", json!({"time": t.0})).unwrap();
+        let r = s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": 0.4, "y": 0.5}));
+        assert!(r.is_err(), "playhead at {t:?}: {r:?}");
+        assert_eq!(param(&s), before, "nothing changes");
+    }
+    // a given colour needs no picture
+    s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "color": [0.05, 0.1, 0.8]})).unwrap();
+    // and back on the clip the point pick works
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": 0.4, "y": 0.5})).unwrap();
+}
+
+#[test]
+fn hsl_key_color_picker_refused_leaves_no_lumetri_behind() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let (w, h) = {
+        let q = s.active_sequence().unwrap();
+        (q.settings.width as f64, q.settings.height as f64)
+    };
+    // a clip without Lumetri, at half size in the top left quarter: the bottom right is empty
+    s.edit_sequence("test", |q, _, _| {
+        let it = q.find_item_mut(clip).unwrap().1;
+        it.effects.retain(|e| e.effect != "lumetri");
+        let m = it.effects.iter_mut().find(|e| e.effect == "motion").unwrap();
+        m.params.insert("scale".into(), filmcraft_project::Param::new(ParamValue::Float(50.0)));
+        m.params.insert("position".into(), filmcraft_project::Param::new(ParamValue::Vec2(filmcraft_geom::Vec2::new(w / 4.0, h / 4.0))));
+        Ok(())
+    })
+    .unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    let effects = |s: &Session| s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.clone();
+    let (before, undo) = (effects(&s), s.history.undo.len());
+    // a transparent point is refused before Lumetri is applied
+    for mode in ["set", "add", "remove"] {
+        assert!(s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": mode, "x": 0.8, "y": 0.8})).is_err(), "{mode}");
+        assert_eq!(effects(&s), before, "no Lumetri added: {mode}");
+        assert_eq!(s.history.undo.len(), undo, "no undo step: {mode}");
+    }
+    // a point on the placed picture applies Lumetri where effects.apply puts it, before Motion
+    s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": 0.15, "y": 0.2})).unwrap();
+    let after = effects(&s);
+    let idx = after.iter().position(|e| e.effect == "lumetri").expect("Lumetri applied");
+    assert!(after.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri");
+    assert_eq!(after[idx].param("hsl_on").map(|p| &p.value), Some(&ParamValue::Bool(true)));
+    // applying Lumetri and setting the key is one undo step: one Undo leaves no Lumetri behind
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step for the first pick");
+    assert_eq!(s.undo().as_deref(), Some("HSL Key Color"));
+    assert_eq!(effects(&s), before, "Undo removes the key and the Lumetri it applied");
+}

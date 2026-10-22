@@ -1225,16 +1225,168 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 /// The HSL Secondary key of one pixel's grading signal (0…1 per channel).
 #[inline]
 fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
-    let h = rgb_to_hsl(v[0], v[1], v[2]);
-    let dh = (h[0] - hc).abs().min(1.0 - (h[0] - hc).abs());
+    key_of_hsl(rgb_to_hsl(v[0], v[1], v[2]), hc, hr, smin, lmin, lmax, soft)
+}
+
+/// A pixel's HSL Secondary grading signal in 0…1 per channel: the working signal (normalised to the
+/// Curves section's HDR Range in HDR), HDR highlights scaled down instead of clipped.
+#[inline]
+fn hsl_unit(gs: &GradeSpace, c: [f32; 3]) -> [f32; 3] {
+    let v = gs.encode(c);
+    if gs.is_hdr() {
+        let m = v[0].max(v[1]).max(v[2]).max(1.0);
+        v.map(|q| (q / m).max(0.0))
+    } else {
+        v.map(|q| q.clamp(0.0, 1.0))
+    }
+}
+
+/// What a click with one of HSL Secondary's key eyedroppers does to the key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HslKeyPick {
+    /// Set color: a new key around the picked colour.
+    Set,
+    /// Add color: widen the key just enough that the picked colour is fully inside.
+    Add,
+    /// Remove color: narrow the key on one axis just enough that the picked colour is outside.
+    Remove,
+}
+
+impl HslKeyPick {
+    /// `"set"`, `"add"` or `"remove"`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "set" => Some(Self::Set),
+            "add" => Some(Self::Add),
+            "remove" => Some(Self::Remove),
+            _ => None,
+        }
+    }
+}
+
+/// Hue Range a Set color pick starts with (the parameter's default), in degrees.
+const HSL_SET_HUE_RANGE: f32 = 30.0;
+
+/// Lumetri ▸ HSL Secondary ▸ Set / Add / Remove color: the key sliders (`hsl_hue`, `hsl_hue_range`,
+/// `hsl_sat_min`, `hsl_luma_min`, `hsl_luma_max`, in slider units) after a pick of the linear
+/// working-space colour `c`, read the way the key at media time `t` reads it. `working` is the
+/// sequence's working space. Soften is left alone and sets the margins, so the picked colour ends
+/// up fully keyed (Set, Add) or fully outside the key (Remove), as far as the slider ranges allow.
+///
+/// - **Set**: Hue on the colour's hue, the default Hue Range, Saturation Min at half the colour's
+///   saturation, a Luma window of ±(Soften + 0.2) around its lightness.
+/// - **Add**: the hue arc grows from its far edge to the colour (at most 180°), Saturation Min and
+///   the Luma window move out to take it in. A colour already inside changes nothing.
+/// - **Remove**: of the four ways to drop the colour (pull the near hue edge in, raise Saturation
+///   Min, raise Luma Min, lower Luma Max) the one that moves its edge the least, so a neighbouring
+///   hue is cut off on the hue axis and a darker shade of the keyed hue at Luma Min. A colour
+///   already outside the key changes nothing.
+///
+/// `None` for a colour that is not finite.
+pub fn lumetri_hsl_key_pick(
+    e: &EffectInstance,
+    t: Tick,
+    working: filmcraft_color::WorkingSpace,
+    c: [f32; 3],
+    mode: HslKeyPick,
+) -> Option<[(&'static str, f32); 5]> {
+    if !c.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let at = |id: &str| e.f64_at(id, t) as f32;
+    let gs = GradeSpace::new(working, at("curves_hdr_range"));
+    let u = hsl_unit(&gs, c);
+    let [h, s, l] = rgb_to_hsl(u[0], u[1], u[2]);
+    // the key in 0…1 units, as `hsl_secondary` reads it
+    let mut hc = (at("hsl_hue") / 360.0).rem_euclid(1.0);
+    let mut hr = (at("hsl_hue_range") / 360.0).clamp(1.0 / 360.0, 0.5);
+    let mut smin = (at("hsl_sat_min") / 100.0).clamp(0.0, 1.0);
+    let mut lmin = (at("hsl_luma_min") / 100.0).clamp(0.0, 1.0);
+    let mut lmax = (at("hsl_luma_max") / 100.0).clamp(0.0, 1.0);
+    let soft = (at("hsl_soft") / 100.0 * 0.3).max(0.01);
+    // signed hue offset of the colour from the centre, -0.5…0.5 turns
+    let d = (h - hc + 0.5).rem_euclid(1.0) - 0.5;
+    let dir = if d < 0.0 { -1.0 } else { 1.0 };
+    match mode {
+        HslKeyPick::Set => {
+            hc = h;
+            hr = HSL_SET_HUE_RANGE / 360.0;
+            smin = (s * 0.5).min(s - soft).max(0.0);
+            let m = soft + 0.2;
+            lmin = (l - m).max(0.0);
+            lmax = (l + m).min(1.0);
+        }
+        HslKeyPick::Add => {
+            if d.abs() > hr / 2.0 {
+                // the arc from its far edge to the colour
+                let far = hc - dir * hr / 2.0;
+                let len = d.abs() + hr / 2.0;
+                if len <= 0.5 {
+                    hc = far + dir * len / 2.0;
+                    hr = len;
+                } else {
+                    hc = h - dir * 0.25;
+                    hr = 0.5;
+                }
+            }
+            smin = smin.min((s - soft).max(0.0));
+            lmin = lmin.min((l - soft).max(0.0));
+            lmax = lmax.max((l + soft).min(1.0));
+        }
+        HslKeyPick::Remove => {
+            if key_of_hsl([h, s, l], hc, hr, smin, lmin, lmax, soft) <= 0.0 {
+                return Some(key_sliders(hc, hr, smin, lmin, lmax));
+            }
+            // the hue arc from its far edge to `soft` short of the colour
+            let len = d.abs() + hr / 2.0 - soft;
+            // how far each edge has to move (the key softens every axis by the same `soft`, so
+            // hue turns and saturation / lightness units compare)
+            let mut options: Vec<(f32, u8)> = Vec::with_capacity(4);
+            if len >= 1.0 / 360.0 {
+                options.push((hr - len, 0));
+            }
+            options.push((s - smin, 1));
+            options.push((l - lmin, 2));
+            options.push((lmax - l, 3));
+            match options.iter().filter(|o| o.0.is_finite()).min_by(|a, b| a.0.total_cmp(&b.0)).map(|o| o.1) {
+                Some(0) => {
+                    hc = hc - dir * hr / 2.0 + dir * len / 2.0;
+                    hr = len;
+                }
+                Some(1) => smin = s,
+                Some(2) => lmin = l,
+                Some(3) => lmax = l,
+                _ => {}
+            }
+        }
+    }
+    Some(key_sliders(hc, hr, smin, lmin, lmax))
+}
+
+/// [`hsl_key`] of a colour already in HSL.
+#[inline]
+fn key_of_hsl(hsl: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
+    let dh = (hsl[0] - hc).abs().min(1.0 - (hsl[0] - hc).abs());
     let mh = 1.0 - ((dh - hr / 2.0) / soft).clamp(0.0, 1.0);
-    let ms = ((h[1] - smin) / soft).clamp(0.0, 1.0);
-    let ml = ((h[2] - lmin) / soft).clamp(0.0, 1.0).min(((lmax - h[2]) / soft).clamp(0.0, 1.0));
+    let ms = ((hsl[1] - smin) / soft).clamp(0.0, 1.0);
+    let ml = ((hsl[2] - lmin) / soft).clamp(0.0, 1.0).min(((lmax - hsl[2]) / soft).clamp(0.0, 1.0));
     mh * ms * ml
 }
 
+/// A key in 0…1 units as slider values, clamped to the sliders' ranges.
+fn key_sliders(hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32) -> [(&'static str, f32); 5] {
+    let lmin = lmin.clamp(0.0, 1.0);
+    [
+        ("hsl_hue", (hc.rem_euclid(1.0) * 360.0).clamp(0.0, 360.0)),
+        ("hsl_hue_range", (hr * 360.0).clamp(1.0, 180.0)),
+        ("hsl_sat_min", (smin * 100.0).clamp(0.0, 100.0)),
+        ("hsl_luma_min", lmin * 100.0),
+        ("hsl_luma_max", lmax.clamp(lmin, 1.0) * 100.0),
+    ]
+}
+
 /// Lumetri ▸ HSL Secondary: key on hue / saturation / lightness, Refine (Denoise, Blur) the key,
-/// then correct inside it (or show the mask).
+/// optionally invert it (Invert Mask), then correct inside it (or show the mask).
 ///
 /// - **Denoise** removes speckle from the key: a median filter (radius 1–3 px at full
 ///   resolution, scaled with the playback resolution) mixed in by the amount.
@@ -1253,16 +1405,9 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (htemp, htint, hsat, hshift) =
         (f(e, "hsl_temp", cx) / 100.0, f(e, "hsl_tint", cx) / 100.0, f(e, "hsl_sat", cx) / 100.0, f(e, "hsl_hue_shift", cx) / 360.0);
     let (denoise, blur) = (f(e, "hsl_denoise", cx).clamp(0.0, 100.0) / 100.0, f(e, "hsl_blur", cx).clamp(0.0, 100.0) / 100.0);
+    let invert = b(e, "hsl_invert");
     let (w, h) = (img.w, img.h);
-    let unit = |c: [f32; 3]| {
-        let v = gs.encode(c);
-        if hdr {
-            let m = v[0].max(v[1]).max(v[2]).max(1.0);
-            v.map(|q| (q / m).max(0.0))
-        } else {
-            v.map(|q| q.clamp(0.0, 1.0))
-        }
-    };
+    let unit = |c: [f32; 3]| hsl_unit(&gs, c);
     // the key
     let mut mask: Vec<f32> = img
         .px
@@ -1279,6 +1424,9 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         if sigma >= 0.3 {
             blur_plane(&mut mask, w, h, sigma);
         }
+    }
+    if invert {
+        mask.iter_mut().for_each(|m| *m = 1.0 - *m);
     }
     let mask = &mask;
     img.map_rgb(|c, x, y| {

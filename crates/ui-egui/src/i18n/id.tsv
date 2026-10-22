@@ -3582,3 +3582,7 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	Set color (click the colour to key in the Program monitor)	Atur warna (klik warna yang akan di-key di monitor Program)
+	Add color (widen the key to a colour in the Program monitor)	Tambah warna (perluas key ke sebuah warna di monitor Program)
+	Remove color (narrow the key to leave out a colour in the Program monitor)	Hapus warna (persempit key agar sebuah warna di monitor Program tidak ikut)
+	Invert Mask	Balik masker

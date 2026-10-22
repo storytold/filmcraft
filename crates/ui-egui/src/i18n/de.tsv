@@ -3613,3 +3613,7 @@
 	Shows the version, community links and credits in a FilmCraft window.	Zeigt Version, Community-Links und Credits in einem FilmCraft-Fenster.
 	Couldn't open your web browser	Dein Webbrowser konnte nicht geöffnet werden
 	Open this address in your browser yourself:	Öffne diese Adresse selbst in deinem Browser:
+	Set color (click the colour to key in the Program monitor)	Farbe festlegen (im Programmmonitor auf die zu keyende Farbe klicken)
+	Add color (widen the key to a colour in the Program monitor)	Farbe hinzufügen (Key auf eine Farbe im Programmmonitor erweitern)
+	Remove color (narrow the key to leave out a colour in the Program monitor)	Farbe entfernen (Key verkleinern, um eine Farbe im Programmmonitor auszuschließen)
+	Invert Mask	Maske umkehren

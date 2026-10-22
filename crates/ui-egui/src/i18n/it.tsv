@@ -3608,3 +3608,7 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+	Set color (click the colour to key in the Program monitor)	Imposta colore (fai clic sul colore da isolare nel monitor programma)
+	Add color (widen the key to a colour in the Program monitor)	Aggiungi colore (estende la chiave a un colore del monitor programma)
+	Remove color (narrow the key to leave out a colour in the Program monitor)	Rimuovi colore (restringe la chiave per escludere un colore del monitor programma)
+	Invert Mask	Inverti maschera

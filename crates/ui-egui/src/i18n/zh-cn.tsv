@@ -3592,3 +3592,7 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Set color (click the colour to key in the Program monitor)	设置颜色（在节目监视器中点击要键控的颜色）
+	Add color (widen the key to a colour in the Program monitor)	添加颜色（将键控范围扩展到节目监视器中的某种颜色）
+	Remove color (narrow the key to leave out a colour in the Program monitor)	移除颜色（缩小键控范围以排除节目监视器中的某种颜色）
+	Invert Mask	反转蒙版

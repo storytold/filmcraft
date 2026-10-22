@@ -3603,3 +3603,7 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+	Set color (click the colour to key in the Program monitor)	색상 설정(프로그램 모니터에서 키로 지정할 색상을 클릭)
+	Add color (widen the key to a colour in the Program monitor)	색상 추가(프로그램 모니터의 색상까지 키를 넓힘)
+	Remove color (narrow the key to leave out a colour in the Program monitor)	색상 제거(프로그램 모니터의 색상을 제외하도록 키를 좁힘)
+	Invert Mask	마스크 반전

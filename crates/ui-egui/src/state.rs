@@ -413,6 +413,24 @@ pub struct Eyedropper {
     pub mask: Option<usize>,
 }
 
+impl Eyedropper {
+    /// The `param` prefix of Lumetri's HSL Secondary key pickers (`hsl_key:set`, `hsl_key:add`,
+    /// `hsl_key:remove`): their click changes the key (`lumetri.hslKey`) instead of filling a
+    /// colour parameter.
+    const HSL_KEY: &'static str = "hsl_key:";
+
+    /// Lumetri ▸ HSL Secondary ▸ Set / Add / Remove color (`mode` `"set"`, `"add"`, `"remove"`) on
+    /// the Lumetri effect `effect` of `clip`.
+    pub fn hsl_key(clip: u64, effect: usize, mode: &str) -> Self {
+        Self { clip, effect, param: format!("{}{mode}", Self::HSL_KEY), mask: None }
+    }
+
+    /// The `lumetri.hslKey` mode of an HSL Secondary key picker, `None` for a colour parameter.
+    pub fn hsl_key_mode(&self) -> Option<&str> {
+        self.param.strip_prefix(Self::HSL_KEY)
+    }
+}
+
 /// A keyframe selected in the Effect Controls keyframe lane: clip, effect index, parameter (of an
 /// effect mask when `mask` is set) and the keyframe's media time. The panel drops references that
 /// no longer match a keyframe (deleted, moved, another clip selected).

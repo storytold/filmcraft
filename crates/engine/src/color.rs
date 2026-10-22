@@ -8,12 +8,15 @@
 //! Lumetri Presets (Effects panel): `lumetri.presets` lists them, `lumetri.applyPreset` adds a
 //! Lumetri Color configured as the preset to clips (one undo step), `lumetri.presetThumbnails`
 //! renders a folder's thumbnail grid (our Lumetri on the procedural preview picture) to a PNG.
+//!
+//! `lumetri.hslKey` is HSL Secondary ▸ Key ▸ Set / Add / Remove color: it sets the key's Hue, Hue
+//! Range, Saturation Min and Luma Min / Max from the picked point (or a given colour).
 
 use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, has_seq, item_p, str_p, time_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, f64_p, has_seq, item_p, str_p, time_p};
 use crate::{Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -71,6 +74,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             r#"{"clip":id?,"referenceTime":ticks?|"referenceFrame":n?|"referenceTimecode":str?,"faceDetection":bool=true}"#,
             has_seq,
             apply_match,
+        ),
+        spec(
+            "lumetri.hslKey",
+            "HSL Secondary Key Color",
+            &[],
+            r#"{"clip":id?,"mode":"set"|"add"|"remove","x":num=0.5,"y":num=0.5 (the picked point, 0..1 across and down the picture),"color":[r,g,b]? (a linear colour instead of a point)}"#,
+            has_seq,
+            hsl_key,
         ),
         spec(
             "lumetri.setSection",
@@ -162,8 +173,9 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "bytes": text.len()}))
 }
 
-/// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
-pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
+/// The target clip and the index of its Lumetri effect, `None` when it has none yet. Changes
+/// nothing, so a command can validate its input before [`lumetri_clip`] applies Lumetri.
+pub(crate) fn lumetri_target(s: &Session, p: &Value, cmd: &str) -> Result<(ClipId, Option<usize>)> {
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video));
     let has = |c: &ClipId| seq.find_item(*c).is_some_and(|(_, it)| it.effects.iter().any(|e| e.effect == "lumetri"));
@@ -175,9 +187,17 @@ pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(Cli
             sel.iter().copied().find(has).or(sel.first().copied()).ok_or_else(|| bad(cmd, "select a video clip"))?
         }
     };
-    if !has(&clip) {
-        s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
+    let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri"));
+    Ok((clip, idx))
+}
+
+/// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
+pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
+    let (clip, idx) = lumetri_target(s, p, cmd)?;
+    if let Some(idx) = idx {
+        return Ok((clip, idx));
     }
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri")).ok_or_else(|| bad(cmd, "no Lumetri"))?;
     Ok((clip, idx))
@@ -489,4 +509,127 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
         "lightness": m.lightness, "saturation": m.saturation,
         "distanceBefore": m.before, "distanceAfter": m.after,
     }))
+}
+
+/// The average linear colour of the 5×5 pixels around `(x, y)` (0..1 across and down) of a
+/// premultiplied image, divided by its alpha. `None` where the picture is empty or transparent.
+pub(crate) fn sample_linear(img: &filmcraft_render::Image, x: f64, y: f64) -> Option<[f32; 3]> {
+    if img.w == 0 || img.h == 0 || img.px.len() < img.w.saturating_mul(img.h).saturating_mul(4) {
+        return None;
+    }
+    let cx = ((x.clamp(0.0, 1.0) * img.w as f64) as usize).min(img.w - 1);
+    let cy = ((y.clamp(0.0, 1.0) * img.h as f64) as usize).min(img.h - 1);
+    let mut sum = [0f64; 4];
+    for py in cy.saturating_sub(2)..=(cy + 2).min(img.h - 1) {
+        for px in cx.saturating_sub(2)..=(cx + 2).min(img.w - 1) {
+            let i = (py * img.w + px) * 4;
+            for (k, s) in sum.iter_mut().enumerate() {
+                *s += f64::from(*img.px.get(i + k)?);
+            }
+        }
+    }
+    (sum[3] > 1e-6).then(|| [0, 1, 2].map(|k| (sum[k] / sum[3]) as f32))
+}
+
+/// Lumetri ▸ HSL Secondary ▸ Key ▸ Set / Add / Remove color (see
+/// `filmcraft_render::effects::lumetri_hsl_key_pick`): change the key sliders so the picked point of
+/// the clip at the playhead (or `color`) is keyed (set, add) or not (remove), in one undo step, and
+/// switch HSL Secondary on. The point is read where the key sees it: the clip with the effects
+/// before Lumetri and Lumetri's own grade up to HSL Secondary, nothing after it. Animated sliders
+/// get a keyframe at the playhead.
+fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "lumetri.hslKey";
+    let mode = str_p(p, "mode").ok_or_else(|| bad(cmd, "`mode` is required: \"set\", \"add\" or \"remove\""))?;
+    let mode = filmcraft_render::effects::HslKeyPick::parse(mode).ok_or_else(|| bad(cmd, "`mode` must be \"set\", \"add\" or \"remove\""))?;
+    let given = match p.get("color") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) if a.len() >= 3 => {
+            let c: Vec<f32> = a.iter().take(3).filter_map(Value::as_f64).map(|v| v as f32).collect();
+            let c = <[f32; 3]>::try_from(c).map_err(|_| bad(cmd, "`color` must be three numbers"))?;
+            if !c.iter().all(|v| v.is_finite()) {
+                return Err(bad(cmd, "`color` must be three finite numbers"));
+            }
+            Some(c)
+        }
+        Some(_) => return Err(bad(cmd, "`color` must be [r, g, b]")),
+    };
+    let (x, y) = (f64_p(p, "x").unwrap_or(0.5), f64_p(p, "y").unwrap_or(0.5));
+    if !x.is_finite() || !y.is_finite() {
+        return Err(bad(cmd, "`x` and `y` must be numbers"));
+    }
+    // everything is validated before the project changes: a refused pick must not leave a
+    // Lumetri applied to the clip (nor an undo step for it)
+    let (clip, found) = lumetri_target(s, p, cmd)?;
+    let seq_id = s.state.active_sequence.ok_or_else(|| bad(cmd, "no active sequence"))?;
+    let q = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
+    let working = q.settings.color.working;
+    let (_, it) = q.find_item(clip).ok_or_else(|| bad(cmd, "no such clip"))?;
+    // a point is read from the picture at the playhead: on another clip (or none) that is not the
+    // picture clicked, and the clip's first or last frame would be sampled silently
+    if given.is_none() && !(it.start <= s.playhead() && s.playhead() < it.end()) {
+        return Err(bad(cmd, "place the playhead over the clip to pick from its picture"));
+    }
+    let t = s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start));
+    let mt = it.source_time_at(t);
+    // this Lumetri, or the default one `effects.apply` will put before the intrinsic effects
+    let (at, e) = match found {
+        Some(i) => (i, it.effects.get(i).cloned().ok_or_else(|| bad(cmd, "no Lumetri"))?),
+        None => {
+            let at = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len());
+            (at, filmcraft_project::find_effect("lumetri").ok_or_else(|| bad(cmd, "no Lumetri"))?.instance())
+        }
+    };
+    let c = match given {
+        Some(c) => c,
+        None => {
+            // the clip as the key sees it: this Lumetri without HSL Secondary and the sharpening
+            // after it, the standard effects after Lumetri switched off. The intrinsic ones stay:
+            // Motion places the picture where the Program monitor shows it, and Opacity never
+            // reaches the colour (render_clip leaves its amount out, masks only scale
+            // premultiplied alpha, which sample_linear divides out).
+            let mut probe = (*s.project).clone();
+            if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
+                if found.is_none() {
+                    pi.effects.insert(at.min(pi.effects.len()), e.clone());
+                }
+                for (i, pe) in pi.effects.iter_mut().enumerate().skip(at) {
+                    if i == at {
+                        pe.enabled = true;
+                        for (k, v) in [("hsl_on", ParamValue::Bool(false)), ("sharpen", ParamValue::Float(0.0))] {
+                            if let Some(pp) = pe.params.get_mut(k) {
+                                *pp = filmcraft_project::Param::new(v);
+                            }
+                        }
+                    } else if !pe.def().is_some_and(|d| d.intrinsic) {
+                        pe.enabled = false;
+                    }
+                }
+            }
+            let provider = s.media.provider(s.project.clone(), s.services.clone());
+            let opts = filmcraft_render::RenderOptions { scale: 0.5, working_output: true, ..Default::default() };
+            let img = filmcraft_render::render_clip(&probe, seq_id, clip, t, opts, &provider).ok_or_else(|| bad(cmd, "the clip has no picture"))?;
+            sample_linear(&img, x, y).ok_or_else(|| bad(cmd, "nothing to sample there: pick a point on the clip's picture"))?
+        }
+    };
+    let values = filmcraft_render::effects::lumetri_hsl_key_pick(&e, mt, working, c, mode).ok_or_else(|| bad(cmd, "that colour cannot be keyed"))?;
+    // applying Lumetri (when the clip has none yet) and setting the key is one undo step
+    s.edit_group("HSL Key Color", |s| {
+        let (clip, idx) = lumetri_clip(s, &json!({"clip": clip.0}), cmd)?;
+        s.edit_sequence("HSL Key Color", |q, _, _| {
+            let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+            let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
+            for (k, v) in values {
+                let v = ParamValue::Float(f64::from(v));
+                e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone())).set_at(mt, v);
+            }
+            e.params.entry("hsl_on".to_string()).or_insert_with(|| filmcraft_project::Param::new(ParamValue::Bool(true))).value = ParamValue::Bool(true);
+            e.enabled = true;
+            Ok(())
+        })
+    })?;
+    let mut out = json!({"clip": clip.0, "color": c});
+    for (k, v) in values {
+        out[k] = json!(v);
+    }
+    Ok(out)
 }

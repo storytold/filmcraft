@@ -5,7 +5,8 @@
 //! HDR Specular and Curves shows HDR Range (cd/m²): the sliders and curves then span 0 … that
 //! many nits (see `filmcraft_color::grade`). Automation ids for those and HSL Secondary ▸ Refine:
 //! `lumetri.param.<id>` (`hdr_white`, `hdr_specular`, `curves_hdr_range`, `hsl_denoise`,
-//! `hsl_blur`); Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
+//! `hsl_blur`, `hsl_invert`); HSL Secondary ▸ Key pickers: `lumetri.hslKey.set`, `.add`, `.remove`;
+//! Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
 //! Comparison View, whose reference frame Apply Match then uses).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -185,6 +186,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         if open_section(ui, app, &e, "HSL Secondary", "hsl_on", "hsl", &mut sections) {
             sub(ui, &t, tl!("Key"));
+            hsl_key_pickers(ui, app, clip, idx, &t, &mut auto_rows);
             slider(ui, &e, mt, "hsl_hue", tl!("Hue"), Some(Gradient::Hue), &t, &mut actions, clip, idx);
             for (id, label) in [
                 ("hsl_hue_range", tl!("Hue Range")),
@@ -210,6 +212,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     }
                 });
+            });
+            let mut invert = e.param("hsl_invert").and_then(|p| p.value.as_bool()).unwrap_or(false);
+            ui.horizontal(|ui| {
+                ui.add_space(114.0);
+                let r = ui.checkbox(&mut invert, tl!("Invert Mask"));
+                auto_rows.push(("lumetri.param.hsl_invert".into(), r.rect, "Invert Mask"));
+                if r.changed() {
+                    set(&mut actions, "hsl_invert", json!(invert));
+                }
             });
             sub(ui, &t, tl!("Refine"));
             for (id, label) in [("hsl_denoise", tl!("Denoise")), ("hsl_blur", tl!("Blur"))] {
@@ -363,6 +374,29 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, on: bool) -> (
         }
     }
     (open, false)
+}
+
+/// HSL Secondary ▸ Key: the Set / Add / Remove color pickers. Each arms the Program monitor's
+/// eyedropper; a click on the picture then changes the key around that point (`lumetri.hslKey`).
+/// Esc or a second click on the armed picker disarms it.
+fn hsl_key_pickers(ui: &mut egui::Ui, app: &mut FilmcraftApp, clip: ClipId, idx: usize, t: &Tokens, auto_rows: &mut Vec<(String, Rect, &'static str)>) {
+    ui.horizontal(|ui| {
+        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Key Color")).color(t.text_dim)));
+        let pickers = [
+            ("set", Icon::Eyedropper, tl!("Set color (click the colour to key in the Program monitor)"), "Set Color"),
+            ("add", Icon::EyedropperAdd, tl!("Add color (widen the key to a colour in the Program monitor)"), "Add Color"),
+            ("remove", Icon::EyedropperRemove, tl!("Remove color (narrow the key to leave out a colour in the Program monitor)"), "Remove Color"),
+        ];
+        for (mode, icon, tip, name) in pickers {
+            let target = crate::state::Eyedropper::hsl_key(clip.0, idx, mode);
+            let armed = app.ui.eyedropper.as_ref() == Some(&target);
+            let b = icons::button(ui, icon, 18.0, armed, t, tip);
+            auto_rows.push((format!("lumetri.hslKey.{mode}"), b.rect, name));
+            if b.clicked() {
+                app.ui.eyedropper = if armed { None } else { Some(target) };
+            }
+        }
+    });
 }
 
 fn sub(ui: &mut egui::Ui, t: &Tokens, name: &str) {
