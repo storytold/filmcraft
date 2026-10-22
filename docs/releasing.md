@@ -50,7 +50,7 @@ signing jobs are refused, and the draft-release job, which needs them, is skippe
 | Windows on ARM64 | `filmcraft-<v>-windows-arm64.msi`, `filmcraft-<v>-windows-arm64-portable.zip` | `windows-latest` (cross-compiled) |
 | Linux x86_64 | `filmcraft-<v>-linux-x86_64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04` |
 | Linux aarch64 | `filmcraft-<v>-linux-aarch64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04-arm` |
-| Linux riscv64 | `filmcraft-<v>-linux-riscv64.tar.gz` | `ubuntu-24.04`, cross-compiled (glibc 2.39+; CLI smoke-tested under QEMU) |
+| Linux riscv64 | `filmcraft-<v>-linux-riscv64.{deb,rpm,tar.gz}` | `ubuntu-24.04`, cross-compiled (glibc 2.39+; CLI smoke-tested under QEMU) |
 | AppImage updates | `filmcraft-<v>-linux-{x86_64,aarch64}.AppImage.zsync` | with the AppImage |
 | Flatpak | `filmcraft-<v>-linux-x86_64.flatpak`, `filmcraft-<v>-linux-aarch64.flatpak` | `ubuntu-24.04`, `ubuntu-24.04-arm` (repackaged Linux tarball) |
 | FreeBSD 14 x86_64 | `filmcraft-<v>-freebsd-x86_64.tar.gz` | FreeBSD 14.3 VM on `ubuntu-latest` |
@@ -120,7 +120,9 @@ Prefixes containing `=`, `%` or control characters are rejected for desktop-laun
 The jobs run on `ubuntu-22.04`, the oldest GitHub-hosted image, so the binaries only need
 glibc 2.35 or newer: Ubuntu 22.04+, Debian 12+, Fedora 36+ and RHEL 10. The deb (`libc6 (>= 2.35)`)
 and the rpm (`glibc >= 2.35`) both declare that floor, so older systems refuse the install. Moving
-the job to a newer image raises the floor, so do it deliberately and update `nfpm.yaml` with it.
+the job to a newer image raises the floor, so do it deliberately and set `GLIBC_FLOOR` to match.
+The riscv64 job runs on `ubuntu-24.04`, so the shared release workflow sets `GLIBC_FLOOR=2.39` and
+its deb and rpm declare that.
 After packaging, the job prints the `.deb`'s metadata and contents, runs `ldd` on the binary and
 runs each AppImage with `--version`.
 

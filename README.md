@@ -378,7 +378,7 @@ duplicate. With one driver per GPU the adapter is the one wgpu picks, as before.
 | Fedora/RHEL/openSUSE | `filmcraft-<ver>-linux-x86_64.rpm` | `filmcraft-<ver>-linux-aarch64.rpm` | |
 | Tarball | `filmcraft-<ver>-linux-x86_64.tar.gz` | `filmcraft-<ver>-linux-aarch64.tar.gz` | Unpack and run `./install.sh` |
 
-RISC-V (riscv64): `filmcraft-<ver>-linux-riscv64.tar.gz` (tarball only; needs glibc 2.39+, e.g. Ubuntu 24.04
+RISC-V (riscv64): `filmcraft-<ver>-linux-riscv64.{deb,rpm,tar.gz}` (needs glibc 2.39+, e.g. Ubuntu 24.04
 or Debian 13).
 
 The tarball installer places FilmCraft, its command-line tool and desktop integration in
