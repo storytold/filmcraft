@@ -10,6 +10,9 @@ use crate::icons::{self, Icon};
 use crate::state::Mode;
 use crate::theme::Tokens;
 
+/// Draws the header bar in `rect` and handles its clicks: Home, the mode tabs, the workspace name
+/// and its menu (the workspaces, then Reset to Saved Layout, Save Changes to this Workspace, Save as
+/// New Workspace… and Edit Workspaces…), Discord and the quick actions.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().clone();
@@ -170,10 +173,23 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 ui.separator();
-                if ui.button(tl!("Reset to Saved Layout")).clicked() {
-                    let n = app.ui.workspace.clone();
-                    app.set_workspace(&n);
-                    ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
+                // the actions of Window ▸ Workspaces, as in Premiere's workspace menu
+                let actions = [
+                    ("reset", tl!("Reset to Saved Layout")),
+                    ("saveChanges", tl!("Save Changes to this Workspace")),
+                    ("saveAs", tl!("Save as New Workspace…")),
+                    ("edit", tl!("Edit Workspaces…")),
+                ];
+                for (action, label) in actions {
+                    let resp = ui.button(label);
+                    app.auto.add(&format!("header.workspaces.{action}"), resp.rect, label);
+                    if resp.clicked() {
+                        ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
+                        let ctx = ui.ctx().clone();
+                        if let Err(e) = crate::menus::invoke(app, &ctx, &format!("window.workspace.{action}"), serde_json::json!({})) {
+                            app.ui.status = e;
+                        }
+                    }
                 }
             });
         });
