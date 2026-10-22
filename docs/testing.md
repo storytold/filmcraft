@@ -178,7 +178,9 @@ Each codec README has the full fixture matrix and the measured results.
 A small `Driver` opens the demo project, sends requests through the same control channel agents use
 (`ControlRequest` → `control::handle`, exactly as the TCP server does) and steps egui frames until
 each reply arrives. Synthetic input queued by `ui.click` / `ui.drag` / `ui.key` is moved into the
-next frame by the app's own `raw_input_hook`, so clicks by automation id work headless. Covered:
+next frame by the app's own `raw_input_hook`, so clicks by automation id work headless (`ui.drag`
+with `touch: true` also emits the finger's touch phases, exercising a touch-only path such as
+finger scrolling). Covered:
 
 | Test | Asserts |
 |---|---|

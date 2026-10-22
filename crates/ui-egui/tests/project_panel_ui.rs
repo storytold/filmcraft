@@ -1093,6 +1093,61 @@ fn a_bin_in_the_selection_does_not_stop_the_items_being_placed() {
     assert_eq!(clips, 2, "status: {}", d.app().ui.status);
 }
 
+/// A finger drag across the Media Browser's rows scrolls the list instead of importing: nothing
+/// appears in the project, and the rows visibly move (`ui.drag` with `touch: true` sends the same
+/// phase events egui-winit does beside the emulated pointer on Android).
+#[test]
+fn a_finger_drag_across_the_media_browser_scrolls_it() {
+    let dir = media_dir("touch-scroll");
+    for i in 0..14 {
+        std::fs::write(dir.join(format!("take{i:02}.wav")), filmcraft_media::wav::write_wav16(&[0.0; 2400], 2, 48_000)).unwrap();
+    }
+    let mut d = Driver::with(Session::default());
+    d.ok("ui.set", json!({"workspace": "Editing"}));
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    // the drop target for the mouse-drag check, while the dock is still laid out normally
+    let tl = d.rect("panel.Timeline");
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.exec("mediaBrowser.navigate", json!({"path": dir.to_string_lossy()}));
+    d.frames(3);
+    d.wait_for("mediaBrowser.entry.take00.wav");
+    let visible = d.ids("mediaBrowser.entry.take").len();
+    assert!(visible >= 6, "a list that overflows: {visible}");
+    let n0 = d.app().session.project.items.len();
+    let e = d.rect("mediaBrowser.entry.take01.wav");
+    let (from, to) = (egui::pos2(e[0] + 60.0, e[1] + e[3] / 2.0), egui::pos2(e[0] + 60.0, e[1] - 90.0));
+    d.ok("ui.drag", json!({"from": {"x": from.x, "y": from.y}, "to": {"x": to.x, "y": to.y}, "steps": 9, "touch": true}));
+    d.frames(8);
+    assert_eq!(d.app().session.project.items.len(), n0, "nothing imported: a pan, not a pick-up; status: {}", d.app().ui.status);
+    // the list really scrolled: the bottom-most visible row's y sits where an unscrolled
+    // take00 would not (take00 itself is still at the top or gone)
+    let panel_top = d.rect("panel.MediaBrowser")[1];
+    let mut scrolled = false;
+    for k in 0..visible {
+        let id = format!("mediaBrowser.entry.take{k:02}.wav");
+        if d.has(&id)
+            && let Some(el) = d.app().auto.find(&id)
+            && el.rect[1] > panel_top + 40.0
+        {
+            scrolled = true;
+            break;
+        }
+    }
+    assert!(scrolled, "some row is still visible after the pan (take00 should have scrolled off)");
+    // un-maximize before the mouse drag, so the drop target is under the pointer too
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(3);
+    // a mouse drag from the same row to the Timeline still imports (the desktop path unchanged)
+    let e2 = d.rect("mediaBrowser.entry.take01.wav");
+    d.ok("ui.drag", json!({"from": {"x": e2[0] + 60.0, "y": e2[1] + e2[3] / 2.0}, "to": {"x": tl[0] + tl[2] * 0.6, "y": tl[1] + tl[3] * 0.75}, "steps": 16}));
+    d.frames(6);
+    // the desktop path is unchanged: the mouse drag imports the file (the drop then opens a
+    // sequence from it, so the item count grows by more than one)
+    assert!(d.app().session.project.items.iter().any(|i| i.1.name == "take01.wav"), "a mouse drag imports as before; status: {}", d.app().ui.status);
+    assert!(d.app().session.project.items.len() > n0, "something was imported");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Escape during a Media Browser drag (#580) takes the import back, even over the Timeline.
 #[test]
 fn escape_takes_back_a_media_browser_drag() {
@@ -1127,4 +1182,89 @@ fn escape_takes_back_a_media_browser_drag() {
     assert_eq!(d.app().session.project.items.len(), n0, "the import was taken back");
     assert_eq!(d.app().session.project.to_json(), before, "nothing was placed on the Timeline");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A touch release arrives as the emulated mouse-up *and* a same-frame `Event::PointerGone`, which
+/// clears `pointer.latest_pos` but keeps `interact_pos` — so a drop decided on the release frame
+/// must read its position from the one that survives. Media Browser file → Timeline: the item is
+/// imported AND placed (the release position is where the drop lands), with both events in the
+/// release frame exactly as egui-winit sends them on Android.
+#[test]
+fn media_browser_drag_drops_with_a_touch_release() {
+    let dir = media_dir("drag-touch");
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut d = Driver::with(session);
+    d.ok("ui.set", json!({"workspace": "Editing"}));
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    d.exec("mediaBrowser.navigate", json!({"path": dir.to_string_lossy()}));
+    d.frames(3);
+    d.wait_for("mediaBrowser.entry.b-roll.wav");
+    let n0 = d.app().session.project.items.len();
+    let e = d.rect("mediaBrowser.entry.b-roll.wav");
+    let tl = d.rect("panel.Timeline");
+    let (from, to) = (egui::pos2(e[0] + 40.0, e[1] + e[3] / 2.0), egui::pos2(tl[0] + tl[2] * 0.6, tl[1] + tl[3] * 0.75));
+    let mut send = |e: egui::Event| {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    };
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    send(egui::Event::PointerMoved(from));
+    send(button(from, true));
+    for k in 1..=20 {
+        send(egui::Event::PointerMoved(from.lerp(to, k as f32 / 20.0)));
+    }
+    // egui-winit's touch release (lib.rs): the released button, then PointerGone in the same
+    // frame — `latest_pos` is None from then on, the drop still has to land at `to`.
+    d.harness.input_mut().events.push(button(to, false));
+    d.harness.input_mut().events.push(egui::Event::PointerGone);
+    d.frames(6);
+    assert_eq!(d.app().session.project.items.len(), n0 + 1, "the import is kept after a touch release");
+    assert!(
+        d.app().session.active_sequence().is_some_and(|q| q.video_tracks.iter().chain(&q.audio_tracks).any(|t| !t.items.is_empty())),
+        "the drag was placed on the Timeline; status: {}",
+        d.app().ui.status
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A finger scroll over the bin cards must not pick a bin up: the scroll frame is also the frame
+/// egui reports `drag_started`, so before the scroll arm returned, a lift over another card nested
+/// one bin inside the other.
+#[test]
+fn a_finger_scroll_over_bin_cards_does_not_move_a_bin() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Editing"}));
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "icon"}));
+    let alpha = d.exec("file.newBin", json!({"name": "Alpha"}))["bin"].as_u64().expect("Alpha's id");
+    let beta = d.exec("file.newBin", json!({"name": "Beta"}))["bin"].as_u64().expect("Beta's id");
+    d.frames(3);
+    let a = d.rect(&format!("project.bin.{alpha}"));
+    let b = d.rect(&format!("project.bin.{beta}"));
+    let from = egui::pos2(a[0] + a[2] / 2.0, a[1] + a[3] / 2.0);
+    let to = egui::pos2(b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
+    let mut send = |e: egui::Event| {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    };
+    let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: Some(0.5) };
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    send(egui::Event::PointerMoved(from));
+    send(touch(egui::TouchPhase::Start, from));
+    send(button(from, true));
+    // a first move past the touch and drag thresholds, still on Alpha's card: the scroll latches
+    send(touch(egui::TouchPhase::Move, egui::pos2(from.x + 8.0, from.y)));
+    send(egui::Event::PointerMoved(egui::pos2(from.x + 8.0, from.y)));
+    // then across onto Beta's card, and lift
+    send(touch(egui::TouchPhase::Move, to));
+    send(egui::Event::PointerMoved(to));
+    send(touch(egui::TouchPhase::End, to));
+    send(button(to, false));
+    d.harness.input_mut().events.push(egui::Event::PointerGone);
+    d.frames(6);
+    let root = &d.app().session.project.root;
+    let beta_bin = root.find_bin(filmcraft_project::BinId(beta)).expect("Beta is still in the project");
+    assert!(beta_bin.children.iter().all(|e| !matches!(e, BinEntry::Bin(x) if x.id.0 == alpha)), "a scrolling finger never nests the pressed bin in another");
+    assert!(root.children.iter().any(|e| matches!(e, BinEntry::Bin(x) if x.id.0 == alpha)), "Alpha stayed in the root; status: {}", d.app().ui.status);
 }

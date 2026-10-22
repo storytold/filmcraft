@@ -376,7 +376,7 @@ fn toggle(app: &mut FilmcraftApp, path: &str, open: bool) {
 // ------------------------------------------------------------------------------------ entries
 
 /// Click / double-click / drag / context menu of an entry.
-fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, e: &Entry, entries: &[Entry]) {
+fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, e: &Entry, entries: &[Entry], area: egui::Id) {
     let ctx = ui.ctx().clone();
     if resp.clicked() {
         let mods = crate::panels::project_views::click_modifiers(ui);
@@ -405,6 +405,15 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
         } else {
             exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
         }
+    }
+    // A finger press on the row is arbitrated: panning skips the row entirely, a hold *then a move*
+    // grabs (Grab), a still hold is left to egui's own long-press (the row's context menu), and a
+    // mouse press grabs on drag_started as it always did. `area` is the enclosing view's scroll
+    // state (passed in by the two viewers).
+    match crate::widgets::touch_row(ui, resp, area) {
+        crate::widgets::TouchRow::Scroll => return,
+        crate::widgets::TouchRow::Grab if !e.is_dir => start_file_drag(app, ui, e),
+        _ => {}
     }
     if resp.drag_started() && !e.is_dir {
         start_file_drag(app, ui, e);
@@ -468,7 +477,9 @@ fn start_file_drag(app: &mut FilmcraftApp, ui: &egui::Ui, e: &Entry) {
     }
     crate::panels::start_drag_item(ui, first);
     if !items.is_empty() {
-        let pos = ui.ctx().pointer_latest_pos().unwrap_or_default();
+        // the press frame of a touch can already be a PointerGone-ish frame (start + move in one);
+        // this position only seeds the cache, a drop overwrites it from `drop_pointer_pos`.
+        let pos = crate::panels::drop_pointer_pos(ui.ctx()).or_else(|| ui.ctx().pointer_latest_pos()).unwrap_or_default();
         let after = app.session.history.undo.len();
         with_cache(ui.ctx(), |c| c.drag = Some((items, after.max(before), pos)));
     }
@@ -483,7 +494,7 @@ fn file_drag_items(known: &[ItemId], imported: &[u64]) -> Vec<ItemId> {
 fn finish_drag(app: &mut FilmcraftApp, ui: &egui::Ui) {
     let Some((items, hist, _)) = with_cache(ui.ctx(), |c| c.drag.clone()) else { return };
     if crate::panels::dragged_project_item(ui).is_some() {
-        if let Some(p) = ui.ctx().pointer_latest_pos() {
+        if let Some(p) = crate::panels::drop_pointer_pos(ui.ctx()) {
             with_cache(ui.ctx(), |c| {
                 if let Some(d) = c.drag.as_mut() {
                     d.2 = p;
@@ -562,7 +573,7 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
                 x += w;
             }
             app.auto.add(&format!("mediaBrowser.entry.{}", e.name), rr.intersect(ui.clip_rect()), &e.name);
-            entry_interactions(app, ui, &resp, e, entries);
+            entry_interactions(app, ui, &resp, e, entries, egui::Id::new("mb-list-scroll"));
         }
         let rest = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(Rect::from_min_size(rest.min, vec2(rest.width(), rest.height().max(30.0))), Sense::click());
@@ -708,7 +719,7 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
                     t.text,
                 );
                 app.auto.add(&format!("mediaBrowser.entry.{}", e.name), tr, &e.name);
-                entry_interactions(app, ui, &resp, e, entries);
+                entry_interactions(app, ui, &resp, e, entries, egui::Id::new("mb-thumb-scroll"));
             }
         }
     });

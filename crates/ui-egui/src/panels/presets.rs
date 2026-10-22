@@ -17,6 +17,8 @@ use crate::theme::Tokens;
 /// The rows of the Presets folder (inside the Effects panel's scroll area).
 pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> Option<(String, String)> {
     let t = app.tokens;
+    // the enclosing `fx-scroll`'s gesture identity (per-press grab flag key), not a state id
+    let fx_scroll = egui::Id::new("fx-scroll");
     let mut action = None;
     for p in app.session.presets.all() {
         if !crate::i18n::matches_query(&p.name, filter) {
@@ -38,6 +40,15 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         app.auto.add(&format!("effects.preset.{}", p.name), r, &p.name);
         let tip = crate::i18n::t(if p.description.is_empty() { &p.name } else { &p.description }).to_string();
         let resp = resp.on_hover_text(tip);
+        match crate::widgets::touch_row(ui, &resp, fx_scroll) {
+            crate::widgets::TouchRow::Scroll => continue,
+            crate::widgets::TouchRow::Grab => {
+                if crate::panels::dragged_effect(ui).is_none() {
+                    crate::panels::start_drag_effect(ui, &format!("preset:{}", p.name));
+                }
+            }
+            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing | crate::widgets::TouchRow::Hold => {}
+        }
         if resp.drag_started() {
             crate::panels::start_drag_effect(ui, &format!("preset:{}", p.name));
         }

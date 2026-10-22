@@ -748,7 +748,7 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // accept drops from the project panel
     if let Some(item) = crate::panels::dragged_project_item(ui)
         && ui.rect_contains_pointer(rect)
-        && ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| app.timeline_drop_target(ui.ctx(), pos))
+        && crate::panels::drop_pointer_pos(ui.ctx()).is_some_and(|pos| app.timeline_drop_target(ui.ctx(), pos))
         && ui.input(|i| i.pointer.any_released())
     {
         // a multi-selection makes the sequence from its first item and follows it, back to back, in one undo step
@@ -2935,7 +2935,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
 
     // ---- drops: project items and effects
     if let Some(item) = crate::panels::dragged_project_item(ui)
-        && let Some(p) = ctx.pointer_hover_pos()
+        && let Some(p) = crate::panels::drop_pointer_pos(&ctx)
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
     {
@@ -3004,7 +3004,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     }
     // graphics templates from Essential Graphics ▸ Browse: placed on the video track under the pointer
     if let Some(template) = crate::panels::dragged_template(ui)
-        && let Some(p) = ctx.pointer_hover_pos()
+        && let Some(p) = crate::panels::drop_pointer_pos(&ctx)
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
     {
@@ -3026,7 +3026,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
     if let Some(effect) = crate::panels::dragged_effect(ui)
-        && let Some(p) = ctx.pointer_hover_pos()
+        && let Some(p) = crate::panels::drop_pointer_pos(&ctx)
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
         && let Hit::Clip { clip, .. } = hit(seq, layout, p)

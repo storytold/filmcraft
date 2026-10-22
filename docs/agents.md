@@ -70,7 +70,7 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 | `ui_inspect` | bridge | UI state: tool, workspace, panels, zoom, playback, fps |
 | `ui_elements` | bridge | on-screen interactive elements with id, label and rect (`prefix` filter) |
 | `ui_click` | bridge | click by `id` or `x`,`y`; `button`, `count`, `modifiers` |
-| `ui_drag` | bridge | press–move–release between points or element ids |
+| `ui_drag` | bridge | press–move–release between points or element ids; `touch: true` sends the finger's touch phases too |
 | `ui_key` | bridge | key or shortcut: `Space`, `Cmd+K`, `Shift+Delete` |
 | `ui_type` | bridge | type text into the focused field |
 | `ui_screenshot` | bridge | PNG of the window or one `panel` |

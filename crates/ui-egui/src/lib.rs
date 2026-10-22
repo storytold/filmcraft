@@ -1512,7 +1512,7 @@ impl FilmcraftApp {
             .as_ref()
             .and_then(|f| f())
             .and_then(|px| ctx.input(|i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, i.pixels_per_point, r.min))));
-        os_pointer.or_else(|| ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())))
+        os_pointer.or_else(|| crate::panels::drop_pointer_pos(ctx))
     }
 
     // ---------------------------------------------------------------- input

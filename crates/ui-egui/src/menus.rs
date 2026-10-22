@@ -909,11 +909,13 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
             let r = ui.menu_button(app.ui.language.tr(top), |ui| {
-                ui.set_min_width(260.0);
-                if mine.is_empty() {
-                    ui.add_enabled(false, egui::Button::new(tl!("(empty)")));
-                }
-                menu_level(ui, &mine, 1, &mut clicked, &mut app.auto, &labels);
+                crate::widgets::menu_scroll(ui, |ui| {
+                    ui.set_min_width(260.0);
+                    if mine.is_empty() {
+                        ui.add_enabled(false, egui::Button::new(tl!("(empty)")));
+                    }
+                    menu_level(ui, &mine, 1, &mut clicked, &mut app.auto, &labels);
+                });
             });
             app.auto.add(&format!("menu.{top}"), r.response.rect, top);
             titles.push(r.response);
@@ -960,8 +962,10 @@ fn menu_level(
             let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
             let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
             ui.menu_button(language.tr(sub), |ui| {
-                ui.set_min_width(220.0);
-                menu_level(ui, &inner, depth + 1, clicked, auto, labels);
+                crate::widgets::menu_scroll(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    menu_level(ui, &inner, depth + 1, clicked, auto, labels);
+                });
             });
         } else if menu_entry(ui, it, auto, labels) {
             *clicked = Some(it.id.clone());

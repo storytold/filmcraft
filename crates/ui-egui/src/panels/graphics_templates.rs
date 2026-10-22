@@ -243,12 +243,21 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         ui.painter().text(pos2(r.min.x + 6.0, ir.max.y + 6.0), Align2::LEFT_TOP, crate::i18n::t(&e.template.name), Tokens::ui(11.5), t.text);
                         let category = crate::i18n::t(&e.template.category);
                         let sub = if e.path.is_some() { tlf!("{category} · My Template", category) } else { category.to_string() };
+                        elems.push((format!("gfxTemplates.item.{}", e.template.id), r, e.template.name.clone()));
                         ui.painter().text(pos2(r.min.x + 6.0, ir.max.y + 20.0), Align2::LEFT_TOP, sub, Tokens::ui(10.0), t.text_faint);
                         if on {
                             ui.painter().rect_stroke(r, 4.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
                         }
-                        elems.push((format!("gfxTemplates.item.{}", e.template.id), r, e.template.name.clone()));
                         let resp = resp.on_hover_text(crate::i18n::t(&e.template.description));
+                        match crate::widgets::touch_row(ui, &resp, egui::Id::new("gfx-browse-scroll")) {
+                            crate::widgets::TouchRow::Scroll => continue,
+                            crate::widgets::TouchRow::Grab => {
+                                if crate::panels::dragged_template(ui).is_none() {
+                                    crate::panels::start_drag_template(ui, &e.template.id, &e.template.name);
+                                }
+                            }
+                            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing | crate::widgets::TouchRow::Hold => {}
+                        }
                         if resp.drag_started() {
                             crate::panels::start_drag_template(ui, &e.template.id, &e.template.name);
                         }

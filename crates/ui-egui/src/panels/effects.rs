@@ -10,6 +10,12 @@
 //! `effects.presetGrid` (the grid area), `effects.presetGrid.<name>`.
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
+
+/// The Effects panel's arbiter identity: every draggable row/grid here lives in the one
+/// `fx-scroll` area, and the arbiter keys its per-press grab flag off this id.
+fn fx_scroll() -> egui::Id {
+    egui::Id::new("fx-scroll")
+}
 use serde_json::json;
 
 use crate::FilmcraftApp;
@@ -109,6 +115,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     }
                     app.auto.add(&format!("effects.item.{}", d.id), r, d.name);
+                    match crate::widgets::touch_row(ui, &resp, fx_scroll()) {
+                        crate::widgets::TouchRow::Scroll => continue,
+                        crate::widgets::TouchRow::Grab => {
+                            if crate::panels::dragged_effect(ui).is_none() {
+                                crate::panels::start_drag_effect(ui, d.id);
+                            }
+                        }
+                        crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing | crate::widgets::TouchRow::Hold => {}
+                    }
                     if resp.drag_started() {
                         crate::panels::start_drag_effect(ui, d.id);
                     }
@@ -254,6 +269,15 @@ fn lumetri_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> Opti
             ui.painter().text(pos2(tr.max.x + 8.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(p.name), Tokens::ui(12.0), t.text);
             app.auto.add(&format!("effects.lumetriPreset.{}", p.name), r, p.name);
             let resp = resp.on_hover_text(crate::i18n::t(p.description));
+            match crate::widgets::touch_row(ui, &resp, fx_scroll()) {
+                crate::widgets::TouchRow::Scroll => continue,
+                crate::widgets::TouchRow::Grab => {
+                    if crate::panels::dragged_effect(ui).is_none() {
+                        crate::panels::start_drag_lumetri_preset(ui, p.name);
+                    }
+                }
+                crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing | crate::widgets::TouchRow::Hold => {}
+            }
             if resp.drag_started() {
                 crate::panels::start_drag_lumetri_preset(ui, p.name);
             }
@@ -294,6 +318,15 @@ fn preset_grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) -> Option<
         let label = ui.painter().layout(crate::i18n::t(p.name).to_string(), Tokens::ui(11.0), t.text, cw - 6.0);
         ui.painter().galley(pos2(cell.min.x + 4.0, pic.max.y + 2.0), label, t.text);
         app.auto.add(&format!("effects.presetGrid.{}", p.name), cell, p.name);
+        match crate::widgets::touch_row(ui, &resp, fx_scroll()) {
+            crate::widgets::TouchRow::Scroll => continue,
+            crate::widgets::TouchRow::Grab => {
+                if crate::panels::dragged_effect(ui).is_none() {
+                    crate::panels::start_drag_lumetri_preset(ui, p.name);
+                }
+            }
+            crate::widgets::TouchRow::None | crate::widgets::TouchRow::Pressing | crate::widgets::TouchRow::Hold => {}
+        }
         if resp.drag_started() {
             crate::panels::start_drag_lumetri_preset(ui, p.name);
         }
