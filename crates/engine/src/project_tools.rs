@@ -854,8 +854,14 @@ pub fn info_json(name: &str, path: Option<&str>, info: &filmcraft_media::MediaIn
             "bitrate": vs.bitrate, "color": format!("{:?} / {:?} / {:?}", vs.color.primaries, vs.color.transfer, vs.color.matrix),
         });
     }
+    let stream = |a: &filmcraft_media::AudioStreamInfo| json!({"codec": a.codec, "sampleRate": a.sample_rate, "channels": a.channels, "bitsPerSample": a.bits_per_sample, "decodable": a.can_decode()});
     if let Some(a) = info.audio() {
-        v["audio"] = json!({"codec": a.codec, "sampleRate": a.sample_rate, "channels": a.channels, "bitsPerSample": a.bits_per_sample});
+        v["audio"] = stream(a);
+    }
+    // every stream, so a file whose second stream is the one that plays (an iPhone video with
+    // Apple Positional Audio first, #2758) says so
+    if info.audio_streams.len() > 1 || info.audio_streams.iter().any(|a| !a.can_decode()) {
+        v["audioStreams"] = info.audio_streams.iter().map(stream).collect();
     }
     v
 }

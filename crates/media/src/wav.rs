@@ -131,6 +131,7 @@ impl WavSource {
                 channels: ch as u32,
                 codec: if float { "PCM float".into() } else { "PCM".into() },
                 bits_per_sample: Some(bits as u32),
+                decodable: true,
             }],
             container: if time_reference.is_some() { "Broadcast WAV".into() } else { "WAV".into() },
             start_timecode: None,

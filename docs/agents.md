@@ -172,6 +172,10 @@ Notes:
   an audio track given as `track` places the sound alone, on that track.
   The clip lands on the frame grid: its start and its end (`time + duration`) each snap to the
   nearest frame.
+  Audio streams FilmCraft can't decode (probe and `file.mediaProperties` mark them
+  `"decodable": false`, such as an iPhone's Apple Positional Audio `apac` stream) get no clip:
+  the decodable ones go on from `audioTrack` in file order, and the reply lists the left-out ones
+  under `skippedAudioStreams`. Media none of whose audio decodes places its picture only.
 - `sequence.inspect` reports `durationFrames` as the number of frames export renders: a sequence
   that ends partway through a frame counts that frame.
 - `engine.execute` also runs UI-only commands (`tool.razor`, `playback.toggle`,

@@ -1086,6 +1086,13 @@ impl Session {
         self.events.push(Event::Toast { message, error: false });
     }
 
+    /// A warning for the user: a toast, and a warning in the Events panel from `source`.
+    pub fn warning_toast(&mut self, source: &str, msg: impl Into<String>) {
+        let message = msg.into();
+        self.log.push(panels::Level::Warning, source, message.clone());
+        self.events.push(Event::Toast { message, error: false });
+    }
+
     /// An error message for the user (a toast, and an Events panel entry from `source`).
     pub fn error_toast(&mut self, source: &str, msg: impl Into<String>) {
         let message = msg.into();

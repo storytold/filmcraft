@@ -589,7 +589,10 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
         }
         c => codec_label(c),
     };
-    Some(AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec, bits_per_sample: bits })
+    // PCM is unpacked in place; everything else needs a packet decoder (an unknown sample entry
+    // such as Apple Positional Audio `apac` has none: #2758)
+    let decodable = matches!(entry.codec, CodecConfig::Pcm(_)) || crate::audio::PacketDecoder::for_isobmff(&entry.codec, rate).is_ok();
+    Some(AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec, bits_per_sample: bits, decodable })
 }
 
 fn codec_label(c: &CodecConfig) -> String {
@@ -634,6 +637,9 @@ fn codec_label(c: &CodecConfig) -> String {
         CodecConfig::Opus(_) => "Opus".into(),
         CodecConfig::Dnx { fourcc } if fourcc.0 == *b"AVdh" => "Avid DNxHR".into(),
         CodecConfig::Dnx { .. } => "Avid DNxHD".into(),
+        // name the sample entry, so probe says what the stream is rather than just "unknown"
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"apac" => "Apple Positional Audio (apac)".into(),
+        CodecConfig::Unknown { fourcc, .. } => format!("unknown ({})", String::from_utf8_lossy(&fourcc.0).trim_end()),
         other => other.name().to_string(),
     }
 }
@@ -1282,6 +1288,44 @@ mod multi_audio_tests {
         assert!((primary.channels[0][50] - 0.25).abs() < 0.001);
         assert!((secondary.channels[0][50] + 0.5).abs() < 0.001);
         assert!(source.audio_stream(2, 0, 100, 48_000).is_err());
+        assert!(source.info().audio_streams.iter().all(|a| a.decodable));
+    }
+
+    /// #2758: an iPhone 17 Pro video carries Apple Positional Audio (`apac`, no decoder) next to
+    /// its AAC track, often first. The stream keeps its index, names its sample entry and says it
+    /// can't be decoded; the stream after it still plays.
+    #[test]
+    fn a_track_with_no_decoder_is_listed_as_undecodable() {
+        use filmcraft_isobmff::{CodecConfig, FourCc};
+        let rate = 48_000u32;
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+        for fourcc in [*b"apac", *b"zzzz"] {
+            // AudioSampleEntry body: reserved, data reference 1, version fields, 4 ch, 16-bit, 48 kHz
+            let mut raw = vec![0u8; 6];
+            raw.extend_from_slice(&1u16.to_be_bytes());
+            raw.extend_from_slice(&[0; 8]);
+            raw.extend_from_slice(&4u16.to_be_bytes());
+            raw.extend_from_slice(&16u16.to_be_bytes());
+            raw.extend_from_slice(&[0; 4]);
+            raw.extend_from_slice(&(rate << 16).to_be_bytes());
+            let fourcc = FourCc(fourcc);
+            let entry = SampleEntry::audio(fourcc, CodecConfig::Unknown { fourcc, raw }, 4, f64::from(rate), 16);
+            let t = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
+            mux.write_sample(t, WriteSample { data: &[0x5a; 64], duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        }
+        let entry = SampleEntry::pcm(PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 1, sample_rate: f64::from(rate) });
+        let t = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
+        let data: Vec<u8> = (0..rate / 10).flat_map(|_| 8192i16.to_le_bytes()).collect();
+        mux.write_sample(t, WriteSample { data: &data, duration: rate / 10, composition_offset: 0, is_sync: true }).unwrap();
+        let bytes = mux.finish().unwrap().into_inner();
+        let source = super::Mp4Source::open("iphone.mov", bytes.into()).unwrap();
+        let streams = &source.info().audio_streams;
+        let got: Vec<(&str, bool)> = streams.iter().map(|a| (a.codec.as_str(), a.can_decode())).collect();
+        assert_eq!(got, vec![("Apple Positional Audio (apac)", false), ("unknown (zzzz)", false), ("PCM 16-bit", true)]);
+        assert_eq!(streams[0].channels, 4);
+        // the undecodable stream reads as silence (no error), the PCM one as its tone
+        assert!(source.audio(0, 100, 48_000).map_or(true, |b| b.channels.iter().flatten().all(|v| *v == 0.0)));
+        assert!((source.audio_stream(2, 0, 100, 48_000).unwrap().channels[0][50] - 0.25).abs() < 0.001);
     }
 }
 
