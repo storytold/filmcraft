@@ -608,6 +608,43 @@ fn new_bin_then_clear_removes_the_bin() {
     assert_eq!(d.app().session.project.items.len(), items0, "clips already in the project stay");
 }
 
+/// #2106: with nothing selected, Clear and Automate to Sequence are disabled, as in the ≡ menu: a
+/// click does nothing (it used to only put "Select items to clear" / "select an item" in the
+/// status bar). With an item selected both act.
+#[test]
+fn clear_and_automate_buttons_need_a_selection() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.exec("project.select", json!({"items": []}));
+    d.app().ui.project_panel.selected_bin = None;
+    d.frames(2);
+    let project = d.app().session.project.clone();
+    d.app().ui.status.clear();
+    for id in ["project.button.project.delete", "project.button.clip.automateToSequence"] {
+        d.click(id);
+        assert!(d.app().ui.status.is_empty(), "{id}: no message: {}", d.app().ui.status);
+        assert!(std::sync::Arc::ptr_eq(&project, &d.app().session.project), "{id}: nothing changed");
+        assert!(!d.has("automate.ok"), "{id}: no dialog");
+    }
+    // an item selected: Automate to Sequence opens its dialog, Clear removes the item
+    let item = d.app().session.project.items.values().find(|i| i.as_media().is_some()).map(|i| i.id).unwrap();
+    d.exec("project.select", json!({"items": [item.0]}));
+    d.frames(2);
+    d.click("project.button.clip.automateToSequence");
+    assert!(d.has("automate.ok"), "the Automate To Sequence dialog");
+    d.click("automate.cancel");
+    // with no sequence open, Automate to Sequence has nowhere to go: disabled, as its command is
+    let seq = d.app().session.state.active_sequence.take();
+    d.frames(2);
+    d.click("project.button.clip.automateToSequence");
+    assert!(!d.has("automate.ok"), "no sequence: no dialog");
+    assert!(d.app().ui.status.is_empty(), "no sequence: no message: {}", d.app().ui.status);
+    d.app().session.state.active_sequence = seq;
+    d.frames(2);
+    d.click("project.button.project.delete");
+    assert!(d.app().session.project.item(item).is_none(), "Clear removes the selected item");
+}
+
 // ------------------------------------------------------------------------------------ Media Browser
 
 fn media_dir(tag: &str) -> std::path::PathBuf {
