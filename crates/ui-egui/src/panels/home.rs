@@ -11,7 +11,9 @@ use crate::theme::Tokens;
 
 /// Recent projects listed on Home, as in File ▸ Open Recent.
 const RECENT_ROWS: usize = 6;
-const RECENT_ROW_H: f32 = 28.0;
+const RECENT_ROW_H: f32 = 48.0;
+/// The thumbnail frame in a Recent Projects row (16:9).
+const THUMB: egui::Vec2 = vec2(64.0, 36.0);
 /// The widest the Home column gets; wider windows centre it.
 const COLUMN_W: f32 = 820.0;
 const CARD: egui::Vec2 = vec2(124.0, 128.0);
@@ -123,8 +125,9 @@ fn welcome(app: &mut FilmcraftApp, ui: &mut egui::Ui, origin: egui::Pos2) {
     }
 }
 
-/// The recent projects, newest first: each row its file name with the folder beside it, the whole
-/// row one target with a hover background; a click opens the project.
+/// The recent projects, newest first: each row the project's thumbnail (or a sequence icon when
+/// it has none), its file name and the folder under it, the whole row one target with a hover
+/// background; a click opens the project.
 fn recent_projects(app: &mut FilmcraftApp, ui: &mut egui::Ui, origin: egui::Pos2, width: f32, paths: &[String]) {
     let t = app.tokens;
     ui.painter().text(origin, Align2::LEFT_CENTER, tl!("Recent Projects"), Tokens::semibold(15.0), t.text);
@@ -139,10 +142,23 @@ fn recent_projects(app: &mut FilmcraftApp, ui: &mut egui::Ui, origin: egui::Pos2
             ui.painter().rect_filled(row, 4.0, t.hover);
         }
         let p = ui.painter().with_clip_rect(row.intersect(ui.clip_rect()));
-        crate::icons::paint(&p, Rect::from_center_size(pos2(row.min.x + 16.0, row.center().y), vec2(14.0, 14.0)), crate::icons::Icon::Sequence, t.text_dim);
-        let name_r = p.text(pos2(row.min.x + 32.0, row.center().y), Align2::LEFT_CENTER, &name, Tokens::ui(13.0), t.text);
+        let frame = Rect::from_min_size(pos2(row.min.x + 8.0, row.center().y - THUMB.y / 2.0), THUMB);
+        p.rect_filled(frame, 3.0, t.tl_header_bg);
+        if let Some(tex) = thumbnail(app, ui.ctx(), path) {
+            // fitted inside the 16:9 frame, so vertical and square projects keep their shape
+            let size = tex.size_vec2();
+            let scale = (THUMB.x / size.x.max(1.0)).min(THUMB.y / size.y.max(1.0));
+            let r = Rect::from_center_size(frame.center(), size * scale);
+            p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            register(app, ui, &format!("home.thumbnail.{i}"), r, &name);
+        } else {
+            crate::icons::paint(&p, Rect::from_center_size(frame.center(), vec2(16.0, 16.0)), crate::icons::Icon::Sequence, t.text_dim);
+        }
+        p.rect_stroke(frame, 3.0, Stroke::new(1.0, t.text_dim.gamma_multiply(0.4)), StrokeKind::Inside);
+        let x = frame.max.x + 12.0;
+        p.text(pos2(x, row.center().y - 8.0), Align2::LEFT_CENTER, &name, Tokens::ui(13.0), t.text);
         if let Some(folder) = std::path::Path::new(path).parent() {
-            p.text(pos2(name_r.max.x + 12.0, row.center().y), Align2::LEFT_CENTER, folder.to_string_lossy(), Tokens::ui(11.5), t.text_dim);
+            p.text(pos2(x, row.center().y + 9.0), Align2::LEFT_CENTER, folder.to_string_lossy(), Tokens::ui(11.5), t.text_dim);
         }
         if resp.clicked() {
             open = Some(path.clone());
@@ -151,6 +167,77 @@ fn recent_projects(app: &mut FilmcraftApp, ui: &mut egui::Ui, origin: egui::Pos2
     if let Some(path) = open {
         let ctx = ui.ctx().clone();
         replace_project(app, &ctx, "file.open", json!({"path": path}));
+    }
+}
+
+/// A recent project's thumbnail, as it is known so far.
+enum Thumb {
+    /// Being read from the file on a background thread.
+    Loading,
+    /// The file has no thumbnail that can be read (or cannot be read at all).
+    Missing,
+    /// Read, waiting to become a texture on the UI thread.
+    Image(filmcraft_format::ThumbnailImage),
+    Texture(egui::TextureHandle),
+}
+
+/// Thumbnails by project path, kept in the context's memory. `stamp` is the open project's
+/// thumbnail it was made from (`None`: read from the file), so a save shows the new one at once.
+#[derive(Clone, Default)]
+struct Thumbs(std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (Option<u64>, Thumb)>>>);
+
+/// The thumbnail of the recent project at `path`, or `None` while it loads or when it has none.
+/// The open project's comes from the session (what its last save stored); any other's is read from
+/// the start of its file off the UI thread, once (`filmcraft_format::read_thumbnail`).
+fn thumbnail(app: &FilmcraftApp, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+    let thumbs = ctx.data_mut(|d| d.get_temp_mut_or_default::<Thumbs>(egui::Id::unique("home-thumbnails")).clone());
+    let mut map = thumbs.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let open = app.session.thumbnail.as_ref().filter(|_| app.session.path.as_deref() == Some(path));
+    let stamp = open.map(|t| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        t.data.hash(&mut h);
+        h.finish()
+    });
+    let fresh = match map.get(path) {
+        None => true,
+        // the open project was saved with a new thumbnail since this one was made
+        Some((had, _)) => stamp.is_some() && *had != stamp,
+    };
+    if fresh {
+        if let Some(t) = open {
+            let thumb = t.decode_rgba().map_or(Thumb::Missing, Thumb::Image);
+            map.insert(path.to_string(), (stamp, thumb));
+        } else {
+            map.insert(path.to_string(), (None, Thumb::Loading));
+            let (thumbs, path, ctx) = (thumbs.clone(), path.to_string(), ctx.clone());
+            let run = move || {
+                // a panic in the decoder must not take the app down, nor leave the row loading for good
+                let read = std::panic::catch_unwind(|| filmcraft_format::read_thumbnail(std::path::Path::new(&path)).ok().flatten());
+                let thumb = read.ok().flatten().map_or(Thumb::Missing, Thumb::Image);
+                thumbs.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(path, (None, thumb));
+                ctx.request_repaint();
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::spawn(run);
+            #[cfg(target_arch = "wasm32")]
+            run();
+        }
+    }
+    let slot = map.get_mut(path)?;
+    if let Thumb::Image(img) = &slot.1 {
+        let size = [img.width as usize, img.height as usize];
+        // egui asserts the pixel count; a mismatch is a missing thumbnail, never a crash
+        slot.1 = if size[0].checked_mul(size[1]).and_then(|n| n.checked_mul(4)) == Some(img.rgba.len()) {
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, &img.rgba);
+            Thumb::Texture(ctx.load_texture(format!("home-thumbnail-{path}"), image, egui::TextureOptions::LINEAR))
+        } else {
+            Thumb::Missing
+        };
+    }
+    match &slot.1 {
+        Thumb::Texture(tex) => Some(tex.clone()),
+        _ => None,
     }
 }
 

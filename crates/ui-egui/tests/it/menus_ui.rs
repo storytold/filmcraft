@@ -363,6 +363,45 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Home's Recent Projects show each project's thumbnail: the open one's from the session at once,
+/// the others read from their files in the background. A project saved with no open sequence
+/// has none and keeps the icon.
+#[test]
+fn home_recent_projects_show_their_thumbnails() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-recent-thumbs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let demo = dir.join("demo.fcproj").to_string_lossy().to_string();
+    let empty = dir.join("empty.fcproj").to_string_lossy().to_string();
+    // saved with no sequence open, so without a thumbnail
+    Session::default().execute("file.saveAs", json!({"path": empty})).unwrap();
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": demo}));
+    d.exec("file.open", json!({"path": empty}));
+    d.click("header.home");
+    // with the empty one open, the demo's is read from its file off the UI thread
+    let mut shown = false;
+    for _ in 0..200 {
+        if d.has("home.thumbnail.1") {
+            shown = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
+    assert!(shown, "the demo's thumbnail appears");
+    assert!(!d.has("home.thumbnail.0"), "a project saved with nothing open has no thumbnail");
+    // reopened and saved at another frame, the demo's comes from the session at once
+    d.click("home.recent.1");
+    let seq = d.app().session.state.active_sequence.unwrap();
+    let before = d.app().session.thumbnail.clone().unwrap();
+    d.app().session.state.playheads.insert(seq, filmcraft_time::Tick(254_016_000_000 * 4));
+    d.exec("file.save", json!({}));
+    assert_ne!(d.app().session.thumbnail.as_ref(), Some(&before), "a later frame makes a new thumbnail");
+    d.click("header.home");
+    assert!(d.has("home.thumbnail.0"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Home (the header's Home button): New Project and Open, the size cards, and the Community
 /// links. A size card adds a sequence of that size to the open project and goes to Edit, so the
 /// project's work is kept; New Project starts an empty one in Edit.
