@@ -3608,3 +3608,35 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+	Zoom Anchor Point	Punto di Ancoraggio dello Zoom
+	Cursor Position	Posizione del Cursore
+	Playhead Position	Posizione dell'Indicatore
+	Step Playhead (Frames)	Sposta l'Indicatore (Fotogrammi)
+	Disabled	Disattivato
+	Alt + Scroll	Alt + Rotella
+	Shift + Scroll	Maiusc + Rotella
+	Ctrl + Scroll	Ctrl + Rotella
+	Move Playhead on Timeline Click	Sposta l'Indicatore al Clic sulla Timeline
+	Ruler Only	Solo Righello
+	Empty Space Only	Solo Spazi Vuoti
+	Anywhere on Timeline	Ovunque sulla Timeline
+	Drag Playhead Line Across Tracks	Trascina la Linea dell'Indicatore sulle Tracce
+	Anywhere, Including Over Clips	Ovunque, Anche sopra le Clip
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Righello Temporale Diviso: la Metà Superiore Imposta Attacco/Stacco
+	Program Monitor Mouse Wheel	Rotella nel Monitor Programma
+	Source Monitor Mouse Wheel	Rotella nel Monitor Sorgente
+	Effect Controls Mouse Wheel	Rotella nei Controlli Effetti
+	Scroll	Rotella
+	Over the Preview	Sull'Anteprima
+	Over the Time Ruler	Sul Righello Temporale
+	Timeline Mouse Wheel Behavior	Comportamento della Rotella nella Timeline
+	Step Frames	Avanza di un Fotogramma
+	Step Keyframes	Avanza di un Fotogramma Chiave
+	Off (Ruler Head Only)	Disattivato (Solo Testa del Righello)
+	Pan Timeline by Dragging With Middle Mouse Button	Scorri la Timeline Trascinando con il Tasto Centrale
+	Navigation…	Navigazione…
+	Navigation Style	Stile di Navigazione
+	Alternative	Alternativo
+	Timeline Mouse Wheel	Rotella nella Timeline
+	Timeline Clicks and Drags	Clic e Trascinamenti nella Timeline
+	More Settings…	Altre Impostazioni…

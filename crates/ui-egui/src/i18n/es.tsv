@@ -336,7 +336,7 @@
 	Time Interpolation	Interpolación de tiempo
 	Timecode	Código de tiempo
 	Timecode…	Código de tiempo…
-	Timeline	Línea de tiempo
+	Timeline	Línea de Tiempo
 	Timeline…	Línea de tiempo…
 	Toggle Proxies	Alternar proxies
 	Tools	Herramientas
@@ -1325,7 +1325,7 @@
 	Audio Out Point	Punto de salida de audio
 	Audio Samples	Muestras de audio
 	Audio Time Units	Unidades de tiempo de audio
-	Audio Transition Default Duration	Duración predeterminada de las transiciones de audio
+	Audio Transition Default Duration	Duración Predeterminada de las Transiciones de Audio
 	Audio Transitions	Transiciones de audio
 	Audio Usage	Uso de audio
 	Auto	Automático
@@ -1576,7 +1576,7 @@
 	DeReverb	Reductor de reverberación
 	Decay	Caída
 	Decay Time (RT60)	Tiempo de caída (RT60)
-	Default Audio Tracks	Pistas de audio predeterminadas
+	Default Audio Tracks	Pistas de Audio Predeterminadas
 	Default Emoji font	Fuente de emoji predeterminada
 	Default Media Scaling	Escalado de medios predeterminado
 	Default Output	Salida predeterminada
@@ -2077,7 +2077,7 @@
 	Modern High Gain	Ganancia alta moderna
 	Modulation	Modulación
 	Modulation Rate	Velocidad de modulación
-	Mono Media	Medios mono
+	Mono Media	Medios Mono
 	Monochrome	Monocromo
 	Monochrome toned cyan-blue	Monocromo virado a azul cian
 	Monochrome toned warm brown	Monocromo virado a marrón cálido
@@ -2095,7 +2095,7 @@
 	Movie	Película
 	Movie (audio and video)	Película (audio y video)
 	Multiband Compressor	Compresor multibanda
-	Multichannel Mono Media	Medios mono multicanal
+	Multichannel Mono Media	Medios Mono Multicanal
 	Multiply	Multiplicar
 	Multitap Delay	Retardo multitoma
 	Music	Música
@@ -2107,7 +2107,7 @@
 	Next to original media files	Junto a los archivos multimedia originales
 	Night	Noche
 	No Motion	Sin movimiento
-	No Scroll	Sin desplazamiento
+	No Scroll	Sin Desplazamiento
 	No plugins are installed. Changes will take effect the next time you start FilmCraft.	No hay complementos instalados. Los cambios se aplicarán la próxima vez que inicies FilmCraft.
 	Noise	Ruido
 	Noise & Grain	Ruido y grano
@@ -2155,7 +2155,7 @@
 	Overlay	Superponer
 	Overshoot	Rebasamiento
 	Page Peel	Despegar página
-	Page Scroll	Desplazar página
+	Page Scroll	Desplazar Página
 	Page Turn	Pasar página
 	Paint Bucket	Bote de pintura
 	Paint On Black	Pintar sobre negro
@@ -2416,7 +2416,7 @@
 	Smart quotes	Comillas tipográficas
 	Smooth	Suave
 	Smooth Motion	Movimiento suave
-	Smooth Scroll	Desplazamiento suave
+	Smooth Scroll	Desplazamiento Suave
 	Smoothness	Suavidad
 	Snap playhead in Timeline when Snap is enabled	Ajustar el cabezal en la línea de tiempo cuando el ajuste está activado
 	Soft	Suave
@@ -2474,12 +2474,12 @@
 	Stereo Expand	Expansión estéreo
 	Stereo Expander	Expansor estéreo
 	Stereo Imagery	Imagen estéreo
-	Stereo Media	Medios estéreo
+	Stereo Media	Medios Estéreo
 	Stereo Phasing	Fase estéreo
 	Stereoscopic - Over/Under	Estereoscópico - arriba/abajo
 	Stereoscopic - Side by Side	Estereoscópico - lado a lado
 	Still	Imagen fija
-	Still Image Default Duration	Duración predeterminada de imágenes fijas
+	Still Image Default Duration	Duración Predeterminada de Imágenes Fijas
 	Stone Church	Iglesia de piedra
 	Stopband Attenuation	Atenuación de la banda de rechazo
 	Straight Color	Color directo
@@ -2548,8 +2548,34 @@
 	Time	Tiempo
 	Time and Pitch	Tiempo y tono
 	Timecode Conversion	Conversión de código de tiempo
-	Timeline Mouse Scrolling	Desplazamiento con el ratón en la línea de tiempo
-	Timeline Playback Auto-Scrolling	Desplazamiento automático de la línea de tiempo al reproducir
+	Timeline Mouse Scrolling	Desplazamiento con el Ratón en la Línea de Tiempo
+	Zoom Anchor Point	Punto de Anclaje del Zoom
+	Cursor Position	Posición del Cursor
+	Playhead Position	Posición del Cabezal
+	Step Playhead (Frames)	Avanzar/Retroceder Cabezal (Fotogramas)
+	Disabled	Desactivado
+	Alt + Scroll	Alt + Rueda
+	Shift + Scroll	Mayús + Rueda
+	Ctrl + Scroll	Ctrl + Rueda
+	Move Playhead on Timeline Click	Mover el Cabezal al Hacer Clic en la Línea de Tiempo
+	Ruler Only	Solo en la Regla de Tiempo
+	Empty Space Only	Solo en Espacios Vacíos
+	Anywhere on Timeline	En Cualquier Lugar de la Línea de Tiempo
+	Drag Playhead Line Across Tracks	Arrastrar la Línea del Cabezal sobre las Pistas
+	Anywhere, Including Over Clips	En Cualquier Lugar, Incluso sobre Clips
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Dividir Regla de Tiempo: Arrastrar en la Mitad Superior Define Entrada/Salida
+	Program Monitor Mouse Wheel	Rueda del Ratón en el Monitor de Programa
+	Source Monitor Mouse Wheel	Rueda del Ratón en el Monitor de Origen
+	Effect Controls Mouse Wheel	Rueda del Ratón en Controles de Efectos
+	Scroll	Rueda
+	Over the Preview	Sobre la Vista Previa
+	Over the Time Ruler	Sobre la Regla de Tiempo
+	Timeline Mouse Wheel Behavior	Comportamiento de la Rueda del Ratón en la Línea de Tiempo
+	Step Frames	Avanzar Fotogramas
+	Step Keyframes	Saltar Fotogramas Clave
+	Off (Ruler Head Only)	Desactivado (Solo por la Cabeza en la Regla)
+	Pan Timeline by Dragging With Middle Mouse Button	Desplazar la Línea de Tiempo Arrastrando con el Botón Central del Ratón
+	Timeline Playback Auto-Scrolling	Desplazamiento Automático de la Línea de Tiempo al Reproducir
 	Tint Color	Color del matiz
 	To	Hasta
 	Tolerance	Tolerancia
@@ -2599,7 +2625,7 @@
 	Upper Right	Arriba a la derecha
 	Use Color Noise	Usar ruido de color
 	Use End Color	Usar color final
-	Use File	Usar archivo
+	Use File	Usar Archivo
 	Use Glow Color	Usar color de resplandor
 	Use Media Source	Usar el origen del medio
 	Use Tint Color	Usar color de matiz
@@ -2654,7 +2680,7 @@
 	Video Info	Información de video
 	Video Limiter	Limitador de video
 	Video Out Point	Punto de salida de video
-	Video Transition Default Duration	Duración predeterminada de las transiciones de video
+	Video Transition Default Duration	Duración Predeterminada de las Transiciones de Video
 	Video Transitions	Transiciones de video
 	Video Usage	Uso de video
 	Vignette	Viñeta
@@ -3617,3 +3643,9 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	Navigation…	Navegación…
+	Navigation Style	Estilo de Navegación
+	Alternative	Alternativo
+	Timeline Mouse Wheel	Rueda del Ratón en la Línea de Tiempo
+	Timeline Clicks and Drags	Clics y Arrastres en la Línea de Tiempo
+	More Settings…	Más Ajustes…

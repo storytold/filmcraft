@@ -2535,6 +2535,32 @@
 	Time and Pitch	時間とピッチ
 	Timecode Conversion	タイムコード変換
 	Timeline Mouse Scrolling	タイムラインのマウススクロール
+	Zoom Anchor Point	ズームのアンカーポイント
+	Cursor Position	カーソル位置
+	Playhead Position	再生ヘッドの位置
+	Step Playhead (Frames)	再生ヘッドをコマ送り（フレーム）
+	Disabled	無効
+	Alt + Scroll	Alt + スクロール
+	Shift + Scroll	Shift + スクロール
+	Ctrl + Scroll	Ctrl + スクロール
+	Move Playhead on Timeline Click	タイムラインのクリックで再生ヘッドを移動
+	Ruler Only	タイムルーラーのみ
+	Empty Space Only	空きスペースのみ
+	Anywhere on Timeline	タイムライン上のどこでも
+	Drag Playhead Line Across Tracks	トラック上で再生ヘッドの線をドラッグ
+	Anywhere, Including Over Clips	クリップ上を含むどこでも
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	タイムルーラーを分割：上半分をドラッグしてイン/アウト範囲を設定
+	Program Monitor Mouse Wheel	プログラムモニターのマウスホイール
+	Source Monitor Mouse Wheel	ソースモニターのマウスホイール
+	Effect Controls Mouse Wheel	エフェクトコントロールのマウスホイール
+	Scroll	スクロール
+	Over the Preview	プレビュー上
+	Over the Time Ruler	タイムルーラー上
+	Timeline Mouse Wheel Behavior	タイムラインのマウスホイール動作
+	Step Frames	フレーム送り
+	Step Keyframes	キーフレーム送り
+	Off (Ruler Head Only)	オフ（ルーラーのヘッドのみ）
+	Pan Timeline by Dragging With Middle Mouse Button	マウスの中ボタンのドラッグでタイムラインをパンする
 	Timeline Playback Auto-Scrolling	タイムライン再生時の自動スクロール
 	Tint Color	色合い
 	To	変更先
@@ -3616,3 +3642,9 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Navigation…	ナビゲーション…
+	Navigation Style	ナビゲーションスタイル
+	Alternative	代替
+	Timeline Mouse Wheel	タイムラインのマウスホイール
+	Timeline Clicks and Drags	タイムラインのクリックとドラッグ
+	More Settings…	その他の設定…

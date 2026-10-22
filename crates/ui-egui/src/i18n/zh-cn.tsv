@@ -3592,3 +3592,35 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Step Playhead (Frames)	步进播放头（帧）
+	Disabled	禁用
+	Alt + Scroll	Alt + 滚轮
+	Shift + Scroll	Shift + 滚轮
+	Ctrl + Scroll	Ctrl + 滚轮
+	Move Playhead on Timeline Click	点击时间轴时移动播放头
+	Ruler Only	仅时间标尺
+	Empty Space Only	仅空白区域
+	Anywhere on Timeline	时间轴任意位置
+	Drag Playhead Line Across Tracks	在轨道上拖动播放头线
+	Anywhere, Including Over Clips	任意位置，包括片段上方
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	分割时间标尺：拖动上半部分设置入点/出点范围
+	Program Monitor Mouse Wheel	节目监视器鼠标滚轮
+	Source Monitor Mouse Wheel	源监视器鼠标滚轮
+	Effect Controls Mouse Wheel	效果控件鼠标滚轮
+	Scroll	滚动
+	Over the Preview	在预览上
+	Over the Time Ruler	在时间标尺上
+	Timeline Mouse Wheel Behavior	时间轴鼠标滚轮行为
+	Zoom Anchor Point	缩放锚点
+	Cursor Position	光标位置
+	Playhead Position	播放头位置
+	Step Frames	逐帧移动
+	Step Keyframes	逐关键帧移动
+	Off (Ruler Head Only)	关闭（仅标尺磁头）
+	Pan Timeline by Dragging With Middle Mouse Button	按住鼠标中键拖动以平移时间轴
+	Navigation…	导航…
+	Navigation Style	导航风格
+	Alternative	备选
+	Timeline Mouse Wheel	时间轴鼠标滚轮
+	Timeline Clicks and Drags	时间轴点击与拖动
+	More Settings…	更多设置…

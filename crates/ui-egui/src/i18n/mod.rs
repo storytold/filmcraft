@@ -724,6 +724,11 @@ mod tests {
                     push(out, title);
                     settings_rows(inner, out);
                 }
+                Row::Table { title, columns, rows } => {
+                    push(out, title);
+                    columns.iter().for_each(|c| push(out, c));
+                    settings_rows(rows, out);
+                }
                 Row::Note(text) => push(out, text),
                 Row::Button { label, .. } => push(out, label),
                 Row::Custom(_) => {}

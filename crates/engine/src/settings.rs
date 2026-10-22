@@ -701,6 +701,17 @@ impl Default for MemoryPrefs {
     }
 }
 
+/// Where the Timeline's wheel zoom keeps its pivot (Settings ▸ Navigation ▸ Zoom Anchor Point).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ZoomAnchor {
+    /// The time under the pointer stays under it.
+    #[default]
+    Cursor,
+    /// The playhead stays where it is on screen (the pointer is used while the playhead is out of view).
+    Playhead,
+}
+
 /// Settings ▸ Timeline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -714,8 +725,6 @@ pub struct TimelinePrefs {
     pub still_image_unit: String,
     /// "Timeline Playback Auto-Scrolling": `noScroll` | `pageScroll` | `smoothScroll`.
     pub auto_scroll: String,
-    /// "Timeline Mouse Scrolling": `vertical` | `horizontal`.
-    pub mouse_scrolling: String,
     /// Default Audio Tracks per media type: `useFile` | `mono` | `stereo` | `5.1` | `adaptive`.
     pub mono_media_tracks: String,
     pub stereo_media_tracks: String,
@@ -744,7 +753,6 @@ impl Default for TimelinePrefs {
             still_image_duration: 5.0,
             still_image_unit: "seconds".into(),
             auto_scroll: "pageScroll".into(),
-            mouse_scrolling: "vertical".into(),
             mono_media_tracks: "useFile".into(),
             stereo_media_tracks: "useFile".into(),
             surround_media_tracks: "useFile".into(),
@@ -763,9 +771,242 @@ impl Default for TimelinePrefs {
     }
 }
 
+/// A saved wheel action, or `fallback` when it is not one the Settings offer (a value an older
+/// version saved, such as `auto` or `trackHeightOne`).
+fn wheel_choice<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if MOUSE_SCROLL.iter().any(|(v, _)| *v == value) { value } else { fallback }
+}
+
 fn duration_in(value: f64, unit: &str, rate: FrameRate) -> Tick {
     let d = if unit == "frames" { rate.tick_of(value.max(1.0).round() as i64) } else { rate.snap_nearest(Tick::from_seconds_f64(value.max(0.0))) };
     d.max(rate.frame_duration())
+}
+
+/// Settings ▸ Navigation: what the mouse does on the Timeline (the bare wheel, and with Alt, Shift or
+/// Ctrl), around the playhead and time ruler, and
+/// over the time rulers of the Program and Source Monitors and Effect Controls.
+///
+/// Two wheel gestures are fixed, as in Premiere: Alt + wheel over a track header resizes that track,
+/// and Ctrl + Shift + wheel over the video (or the audio) tracks resizes all of them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NavigationPrefs {
+    /// "Timeline Mouse Scrolling" (the bare wheel): `vertical` | `horizontal` | `zoom` | `step` |
+    /// `off`. (Settings ▸ Timeline had it before Settings ▸ Navigation existed; [`migrate`] moves it.)
+    pub mouse_scrolling: String,
+    /// "Alt + Scroll": the same actions (default `zoom`).
+    pub alt_scrolling: String,
+    /// "Shift + Scroll": the same actions (default `horizontal`).
+    pub shift_scrolling: String,
+    /// "Ctrl + Scroll": the same actions (default `horizontal`).
+    pub ctrl_scrolling: String,
+    /// "Zoom Anchor Point": the pivot of a wheel or pinch zoom.
+    pub zoom_anchor: ZoomAnchor,
+    /// "Move Playhead on Timeline Click": `rulerOnly` | `emptySpace` | `anywhere`.
+    pub click_to_move_playhead: String,
+    /// "Drag Playhead Line Across Tracks": `off` | `emptySpace` | `anywhere`.
+    pub drag_playhead_line: String,
+    /// "Split Time Ruler: Drag Upper Half to Set In/Out Range": upper half of the time ruler
+    /// drags/edits the sequence In/Out range while the lower half scrubs the playhead.
+    pub ruler_drag_in_out: bool,
+    /// Program Monitor ▸ "Scroll": `off` | `horizontal` | `zoom` | `stepFrames` | `stepKeyframes`
+    /// (default `stepFrames`): what the bare wheel does over the monitor's time ruler.
+    pub program_wheel: String,
+    /// Program Monitor ▸ "Alt + Scroll" (default `zoom`), "Shift + Scroll" and "Ctrl + Scroll"
+    /// (default `horizontal`): the same choices, over the time ruler.
+    pub program_alt_wheel: String,
+    pub program_shift_wheel: String,
+    pub program_ctrl_wheel: String,
+    /// Program Monitor ▸ the same four over the picture (default `zoom`: zoom the picture).
+    pub program_preview_wheel: String,
+    pub program_preview_alt_wheel: String,
+    pub program_preview_shift_wheel: String,
+    pub program_preview_ctrl_wheel: String,
+    /// Source Monitor ▸ the same eight.
+    pub source_wheel: String,
+    pub source_alt_wheel: String,
+    pub source_shift_wheel: String,
+    pub source_ctrl_wheel: String,
+    pub source_preview_wheel: String,
+    pub source_preview_alt_wheel: String,
+    pub source_preview_shift_wheel: String,
+    pub source_preview_ctrl_wheel: String,
+    /// Effect Controls ▸ the same four (over the keyframe lane; over the properties the wheel
+    /// scrolls them).
+    pub effect_controls_wheel: String,
+    pub effect_controls_alt_wheel: String,
+    pub effect_controls_shift_wheel: String,
+    pub effect_controls_ctrl_wheel: String,
+    /// "Pan Timeline by Dragging With Middle Mouse Button" (on = the classic behaviour).
+    pub middle_button_pan: bool,
+}
+
+impl Default for NavigationPrefs {
+    fn default() -> Self {
+        Self {
+            mouse_scrolling: "vertical".into(),
+            alt_scrolling: "zoom".into(),
+            shift_scrolling: "horizontal".into(),
+            ctrl_scrolling: "horizontal".into(),
+            zoom_anchor: ZoomAnchor::Cursor,
+            click_to_move_playhead: "rulerOnly".into(),
+            drag_playhead_line: "emptySpace".into(),
+            ruler_drag_in_out: false,
+            program_wheel: "stepFrames".into(),
+            program_alt_wheel: "zoom".into(),
+            program_shift_wheel: "horizontal".into(),
+            program_ctrl_wheel: "horizontal".into(),
+            program_preview_wheel: "zoom".into(),
+            program_preview_alt_wheel: "zoom".into(),
+            program_preview_shift_wheel: "zoom".into(),
+            program_preview_ctrl_wheel: "zoom".into(),
+            source_wheel: "stepFrames".into(),
+            source_alt_wheel: "zoom".into(),
+            source_shift_wheel: "horizontal".into(),
+            source_ctrl_wheel: "horizontal".into(),
+            source_preview_wheel: "zoom".into(),
+            source_preview_alt_wheel: "zoom".into(),
+            source_preview_shift_wheel: "zoom".into(),
+            source_preview_ctrl_wheel: "zoom".into(),
+            effect_controls_wheel: "stepFrames".into(),
+            effect_controls_alt_wheel: "zoom".into(),
+            effect_controls_shift_wheel: "horizontal".into(),
+            effect_controls_ctrl_wheel: "horizontal".into(),
+            middle_button_pan: true,
+        }
+    }
+}
+
+impl NavigationPrefs {
+    /// The action a mouse wheel gesture with the given modifiers performs on the sequence Timeline:
+    /// `"vertical"` | `"horizontal"` | `"zoom"` | `"step"` | `"off"`. Resizing tracks is not here: the
+    /// Timeline does it itself for Alt + wheel over a track header and Ctrl + Shift + wheel over the
+    /// video or audio tracks, and Ctrl + Shift (or + Alt) does nothing anywhere else.
+    pub fn wheel_action(&self, ctrl: bool, alt: bool, shift: bool) -> &str {
+        let mouse_scrolling = self.mouse_scrolling.as_str();
+        if ctrl && shift {
+            "off"
+        } else if ctrl {
+            let v = wheel_choice(&self.ctrl_scrolling, "horizontal");
+            if v == "horizontal" && mouse_scrolling == "horizontal" { "vertical" } else { v }
+        } else if alt {
+            wheel_choice(&self.alt_scrolling, "zoom")
+        } else if shift {
+            wheel_choice(&self.shift_scrolling, "horizontal")
+        } else {
+            wheel_choice(mouse_scrolling, "vertical")
+        }
+    }
+
+    /// What the wheel, bare or with Alt, Shift or Ctrl, does in a panel: `"program"`, `"source"` or
+    /// `"effectControls"`, over the time ruler or (`over_preview`, a monitor only) over the picture.
+    /// One of [`PANEL_WHEEL`]'s values (`zoom` over the picture zooms the picture); Ctrl + Shift (or
+    /// + Alt) does nothing, and a value an older version saved falls back to the default.
+    pub fn panel_wheel(&self, panel: &str, over_preview: bool, ctrl: bool, alt: bool, shift: bool) -> &str {
+        let (bare, a, s, c) = match (panel, over_preview) {
+            ("program", false) => (&self.program_wheel, &self.program_alt_wheel, &self.program_shift_wheel, &self.program_ctrl_wheel),
+            ("program", true) => {
+                (&self.program_preview_wheel, &self.program_preview_alt_wheel, &self.program_preview_shift_wheel, &self.program_preview_ctrl_wheel)
+            }
+            ("source", false) => (&self.source_wheel, &self.source_alt_wheel, &self.source_shift_wheel, &self.source_ctrl_wheel),
+            ("source", true) => (&self.source_preview_wheel, &self.source_preview_alt_wheel, &self.source_preview_shift_wheel, &self.source_preview_ctrl_wheel),
+            _ => (&self.effect_controls_wheel, &self.effect_controls_alt_wheel, &self.effect_controls_shift_wheel, &self.effect_controls_ctrl_wheel),
+        };
+        if ctrl && shift {
+            return "off";
+        }
+        if over_preview && panel != "effectControls" {
+            let value = if ctrl {
+                c.as_str()
+            } else if alt {
+                a.as_str()
+            } else if shift {
+                s.as_str()
+            } else {
+                bare.as_str()
+            };
+            return if PANEL_WHEEL.iter().any(|(x, _)| *x == value) { value } else { "zoom" };
+        }
+        let (value, fallback) = if ctrl {
+            (c.as_str(), "horizontal")
+        } else if alt {
+            (a.as_str(), "zoom")
+        } else if shift {
+            (s.as_str(), "horizontal")
+        } else {
+            (bare.as_str(), "stepFrames")
+        };
+        if PANEL_WHEEL.iter().any(|(x, _)| *x == value) { value } else { fallback }
+    }
+
+    /// The navigation style these settings match:
+    /// `"default"`, `"alternative"`, or `"custom"` when they match neither.
+    pub fn style(&self) -> &'static str {
+        for &(id, _) in NAVIGATION_STYLES {
+            if let Some(p) = navigation_style_preset(id)
+                && p == *self
+            {
+                return id;
+            }
+        }
+        "custom"
+    }
+}
+
+/// Settings ▸ Navigation ▸ Navigation Style: one click sets every navigation setting (and the bare
+/// wheel) to a known set. "Custom" is shown, not chosen, when the settings match neither.
+pub const NAVIGATION_STYLES: &[(&str, &str)] = &[("default", "Default"), ("alternative", "Alternative")];
+
+/// The settings of a navigation style, or `None` for an unknown style. `default` is FilmCraft's
+/// out-of-the-box behaviour; `alternative` is the other common way of working: on the Timeline the
+/// wheel zooms about the pointer, Ctrl + wheel scrolls sideways and Shift + wheel up and down, a
+/// click anywhere moves the playhead (and still selects the clip under it), the playhead line drags
+/// from anywhere and the upper half of the time ruler sets In/Out; the monitors zoom the picture and
+/// step frames over their time ruler, and Effect Controls zooms its keyframe lane.
+pub fn navigation_style_preset(id: &str) -> Option<NavigationPrefs> {
+    match id {
+        "default" => Some(NavigationPrefs::default()),
+        "alternative" => Some(NavigationPrefs {
+            mouse_scrolling: "zoom".into(),
+            alt_scrolling: "zoom".into(),
+            shift_scrolling: "vertical".into(),
+            ctrl_scrolling: "horizontal".into(),
+            zoom_anchor: ZoomAnchor::Cursor,
+            click_to_move_playhead: "anywhere".into(),
+            drag_playhead_line: "anywhere".into(),
+            ruler_drag_in_out: true,
+            program_wheel: "stepFrames".into(),
+            program_alt_wheel: "zoom".into(),
+            program_shift_wheel: "stepFrames".into(),
+            program_ctrl_wheel: "horizontal".into(),
+            program_preview_wheel: "zoom".into(),
+            program_preview_alt_wheel: "zoom".into(),
+            program_preview_shift_wheel: "stepFrames".into(),
+            program_preview_ctrl_wheel: "horizontal".into(),
+            source_wheel: "stepFrames".into(),
+            source_alt_wheel: "zoom".into(),
+            source_shift_wheel: "stepFrames".into(),
+            source_ctrl_wheel: "horizontal".into(),
+            source_preview_wheel: "zoom".into(),
+            source_preview_alt_wheel: "zoom".into(),
+            source_preview_shift_wheel: "stepFrames".into(),
+            source_preview_ctrl_wheel: "horizontal".into(),
+            effect_controls_wheel: "zoom".into(),
+            effect_controls_alt_wheel: "horizontal".into(),
+            effect_controls_shift_wheel: "stepFrames".into(),
+            effect_controls_ctrl_wheel: "stepKeyframes".into(),
+            middle_button_pan: true,
+        }),
+        _ => None,
+    }
+}
+
+impl crate::autosave::Preferences {
+    /// What a mouse wheel gesture with the given modifiers does on the sequence Timeline (see
+    /// [`NavigationPrefs::wheel_action`]).
+    pub fn wheel_action(&self, ctrl: bool, alt: bool, shift: bool) -> &str {
+        self.navigation.wheel_action(ctrl, alt, shift)
+    }
 }
 
 impl TimelinePrefs {
@@ -870,6 +1111,13 @@ pub enum Row {
     Field(Field),
     /// A titled group box.
     Group(&'static str, &'static [Row]),
+    /// A titled group box laid out as a table: `rows` are fields, `columns.len()` to a line (the
+    /// line takes its first field's label), under the column headings.
+    Table {
+        title: &'static str,
+        columns: &'static [&'static str],
+        rows: &'static [Row],
+    },
     /// Explanatory text.
     Note(&'static str),
     /// A button running a command (`settings.<id>` automation id).
@@ -976,7 +1224,18 @@ const CACHE_MGMT: &[(&str, &str)] = &[
     ("exceedsSize", "Automatically delete oldest cache files when cache exceeds"),
 ];
 const AUTO_SCROLL: &[(&str, &str)] = &[("noScroll", "No Scroll"), ("pageScroll", "Page Scroll"), ("smoothScroll", "Smooth Scroll")];
-const MOUSE_SCROLL: &[(&str, &str)] = &[("vertical", "Vertical"), ("horizontal", "Horizontal")];
+/// What a mouse wheel gesture does on the sequence Timeline, bare or with Alt, Shift or Ctrl. (Resizing
+/// tracks is not an option: see [`NavigationPrefs::wheel_action`].)
+pub const MOUSE_SCROLL: &[(&str, &str)] =
+    &[("vertical", "Vertical"), ("horizontal", "Horizontal"), ("zoom", "Zoom"), ("step", "Step Playhead (Frames)"), ("off", "Disabled")];
+const ZOOM_ANCHOR: &[(&str, &str)] = &[("cursor", "Cursor Position"), ("playhead", "Playhead Position")];
+const CLICK_PLAYHEAD: &[(&str, &str)] = &[("rulerOnly", "Ruler Only"), ("emptySpace", "Empty Space Only"), ("anywhere", "Anywhere on Timeline")];
+const DRAG_PLAYHEAD_LINE: &[(&str, &str)] =
+    &[("off", "Off (Ruler Head Only)"), ("emptySpace", "Empty Space Only"), ("anywhere", "Anywhere, Including Over Clips")];
+/// What the wheel does over the Program / Source Monitor and Effect Controls timelines. The panels'
+/// quick menus leave `off` out.
+pub const PANEL_WHEEL: &[(&str, &str)] =
+    &[("horizontal", "Horizontal"), ("zoom", "Zoom"), ("stepFrames", "Step Frames"), ("stepKeyframes", "Step Keyframes"), ("off", "Disabled")];
 const HW_DECODE: &[(&str, &str)] = &[("auto", "Auto"), ("off", "Off")];
 const TRACKS: &[(&str, &str)] = &[("useFile", "Use File"), ("mono", "Mono"), ("stereo", "Stereo"), ("5.1", "5.1"), ("adaptive", "Adaptive")];
 pub const DURATION_UNITS: &[(&str, &str)] = &[("frames", "Frames"), ("seconds", "Seconds")];
@@ -1328,7 +1587,6 @@ static CATEGORIES: &[Category] = &[
             f("timeline.audioTransitionDuration", "Audio Transition Default Duration", Kind::Duration { unit_key: "timeline.audioTransitionUnit" }, true),
             f("timeline.stillImageDuration", "Still Image Default Duration", Kind::Duration { unit_key: "timeline.stillImageUnit" }, true),
             f("timeline.autoScroll", "Timeline Playback Auto-Scrolling", Kind::Choice(AUTO_SCROLL), true),
-            f("timeline.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), true),
             Row::Group(
                 "Default Audio Tracks",
                 &[
@@ -1348,6 +1606,69 @@ static CATEGORIES: &[Category] = &[
             b("timeline.restoreOpenSequences", "Restore open sequences when opening projects", true),
             b("timeline.addTracksAutomatically", "Add tracks automatically when editing source clips onto the Timeline", false),
             b("timeline.dropImportToTimeline", "Place files dropped onto the Timeline directly on the Timeline", true),
+        ],
+    },
+    Category {
+        id: "navigation",
+        title: "Navigation",
+        rows: &[
+            Row::Custom("navigationStyle"),
+            Row::Group(
+                "Timeline Mouse Wheel",
+                &[
+                    f("navigation.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), true),
+                    f("navigation.altScrolling", "Alt + Scroll", Kind::Choice(MOUSE_SCROLL), false),
+                    f("navigation.shiftScrolling", "Shift + Scroll", Kind::Choice(MOUSE_SCROLL), false),
+                    f("navigation.ctrlScrolling", "Ctrl + Scroll", Kind::Choice(MOUSE_SCROLL), false),
+                    f("navigation.zoomAnchor", "Zoom Anchor Point", Kind::Choice(ZOOM_ANCHOR), false),
+                ],
+            ),
+            Row::Group(
+                "Timeline Clicks and Drags",
+                &[
+                    f("navigation.clickToMovePlayhead", "Move Playhead on Timeline Click", Kind::Choice(CLICK_PLAYHEAD), false),
+                    f("navigation.dragPlayheadLine", "Drag Playhead Line Across Tracks", Kind::Choice(DRAG_PLAYHEAD_LINE), false),
+                    b("navigation.rulerDragInOut", "Split Time Ruler: Drag Upper Half to Set In/Out Range", false),
+                    b("navigation.middleButtonPan", "Pan Timeline by Dragging With Middle Mouse Button", false),
+                ],
+            ),
+            Row::Table {
+                title: "Program Monitor Mouse Wheel",
+                columns: &["Over the Preview", "Over the Time Ruler"],
+                rows: &[
+                    f("navigation.programPreviewWheel", "Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.programWheel", "Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.programPreviewAltWheel", "Alt + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.programAltWheel", "Alt + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.programPreviewShiftWheel", "Shift + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.programShiftWheel", "Shift + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.programPreviewCtrlWheel", "Ctrl + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.programCtrlWheel", "Ctrl + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                ],
+            },
+            Row::Table {
+                title: "Source Monitor Mouse Wheel",
+                columns: &["Over the Preview", "Over the Time Ruler"],
+                rows: &[
+                    f("navigation.sourcePreviewWheel", "Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.sourceWheel", "Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.sourcePreviewAltWheel", "Alt + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.sourceAltWheel", "Alt + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.sourcePreviewShiftWheel", "Shift + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.sourceShiftWheel", "Shift + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.sourcePreviewCtrlWheel", "Ctrl + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.sourceCtrlWheel", "Ctrl + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                ],
+            },
+            Row::Group(
+                "Effect Controls Mouse Wheel",
+                &[
+                    f("navigation.effectControlsWheel", "Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.effectControlsAltWheel", "Alt + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.effectControlsShiftWheel", "Shift + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                    f("navigation.effectControlsCtrlWheel", "Ctrl + Scroll", Kind::Choice(PANEL_WHEEL), false),
+                ],
+            ),
         ],
     },
     Category {
@@ -1372,7 +1693,7 @@ pub fn fields() -> Vec<(&'static str, Field)> {
         for r in rows {
             match r {
                 Row::Field(f) => out.push((cat, *f)),
-                Row::Group(_, inner) => walk(cat, inner, out),
+                Row::Group(_, inner) | Row::Table { rows: inner, .. } => walk(cat, inner, out),
                 _ => {}
             }
         }
@@ -1492,6 +1813,15 @@ pub fn migrate(v: &mut Value) {
         // (filled in from defaults by serde). The v1 "Auto Save" dialog wrote integer seconds for
         // pre/postroll; v2 stores them as reals, which serde reads either way.
         m.insert("version".into(), json!(2));
+    }
+    // Timeline Mouse Scrolling moved from Settings ▸ Timeline to Settings ▸ Navigation
+    if let Some(wheel) = m.get_mut("timeline").and_then(Value::as_object_mut).and_then(|t| t.remove("mouseScrolling")) {
+        let nav = m.entry("navigation").or_insert_with(|| json!({}));
+        if let Some(n) = nav.as_object_mut()
+            && !n.contains_key("mouseScrolling")
+        {
+            n.insert("mouseScrolling".into(), wheel);
+        }
     }
     // Files from before appearance modes had one Color Theme: keep showing it, as a fixed Dark or
     // Light mode, instead of switching established users to another theme or to Auto.

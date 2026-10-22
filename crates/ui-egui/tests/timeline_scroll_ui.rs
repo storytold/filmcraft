@@ -169,8 +169,8 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
 #[test]
 fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
     let mut d = Driver::tall();
-    assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, "vertical", "Premiere's default on macOS");
-    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
+    assert_eq!(d.app().session.prefs.navigation.mouse_scrolling, "vertical", "Premiere's default on macOS");
+    d.app().session.prefs.navigation.mouse_scrolling = "horizontal".into();
     d.wheel(0.2, 0.0, -100.0, none());
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
     d.wheel(0.2, 0.0, 40.0, json!({"command": true}));
