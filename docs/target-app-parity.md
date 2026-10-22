@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** trivial (note that `cargo xtask fidelity` now compares renders once the corpus is rendered in Premiere; no number changed) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -71,8 +71,12 @@ issues now document. That is new evidence, not drift: see [Calibration](#calibra
   redesigned mask tools, R3D NE, OpenTimelineIO, GPU thumbnails, 4:2:2 10-bit hardware decode on
   NVIDIA Blackwell), and Adobe's published lists of supported file formats and GPU / hardware
   acceleration.
-- **Not done in this pass:** running Premiere side by side on shared projects. No rendering or
-  behaviour of ours is compared with Premiere's output automatically yet ([G1](gaps.md#g1-nothing-compares-our-output-with-premieres)).
+- **Measured once, on a small corpus:** `cargo xtask fidelity` compares our renders with Premiere's
+  on 20 authored cases rendered in Premiere by script into `plan/premiere/fidelity/`
+  ([testing.md §6](testing.md#6-fidelity-against-premiere-pro)). The first run (2026-10-16, Premiere
+  Pro 26.5.2) passes 11 of 11 unmarked cases; 9 cases are marked known failures with the cause filed
+  ([G1](gaps.md#g1-nothing-compares-our-output-with-premieres)). Nothing else in this document is
+  measured against Premiere's output; the rows below rest on documentation and our own tests.
 
 ## Weights
 
@@ -354,6 +358,8 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | trivial | Method note: first Premiere render scored by the G1 harness (11 of 11 unmarked cases pass, 9 known failures filed); the corpus is too small to move a weight, so no number changed |
+| 2026-10-15 | trivial | Method note: the G1 fidelity harness exists (`cargo xtask fidelity`); no Premiere render scored yet, so no number changed |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |

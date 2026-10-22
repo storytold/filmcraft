@@ -56,6 +56,7 @@ filmcraft-gpu = { path = "crates/gpu" }
 filmcraft-scopes = { path = "crates/scopes" }
 filmcraft-export = { path = "crates/export" }
 filmcraft-format = { path = "crates/format" }
+filmcraft-fidelity = { path = "crates/fidelity" }
 filmcraft-engine = { path = "crates/engine" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }

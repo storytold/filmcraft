@@ -1,0 +1,31 @@
+[package]
+name = "filmcraft-fidelity"
+description = "Fidelity harness: renders an authored corpus of test projects, exports them for Premiere Pro, and scores Premiere's renders against ours (PSNR / ΔE2000 for video, sample-level SNR for audio)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "fidelity"
+path = "src/main.rs"
+
+[dependencies]
+filmcraft-time = { workspace = true }
+filmcraft-color = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-codecs = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-interchange = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-export = { workspace = true }
+filmcraft-format = { workspace = true }
+filmcraft-geom = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
