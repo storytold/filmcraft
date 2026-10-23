@@ -1,6 +1,6 @@
 //! Synchronous NVDEC parser callbacks and CUDA readback. All driver handles stay here.
 use std::cell::Cell;
-use std::ffi::c_void;
+use std::ffi::{c_ulong, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
@@ -9,7 +9,7 @@ use filmcraft_frame::VideoFrame;
 
 use super::ffi::*;
 use crate::biplanar::{Biplanar, Geometry, to_frame};
-use crate::nvenc::device::Device;
+use crate::nvenc::device::CudaDevice as Device;
 
 const MAX_SURFACES: u32 = 64;
 const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
@@ -33,7 +33,8 @@ impl Api {
         // SAFETY: symbols have the signatures in NVIDIA's public headers. The caller
         // retains the returned library until all handles using these pointers are destroyed.
         unsafe {
-            let library = libloading::Library::new("libnvcuvid.so.1").map_err(|e| format!("no NVIDIA NVDEC library: {e}"))?;
+            let library = crate::nvenc::device::load_library(if cfg!(windows) { "nvcuvid.dll" } else { "libnvcuvid.so.1" })
+                .map_err(|e| format!("no NVIDIA NVDEC library: {e}"))?;
             let api = Self {
                 caps: *library.get(b"cuvidGetDecoderCaps\0").map_err(|e| e.to_string())?,
                 create_decoder: *library.get(b"cuvidCreateDecoder\0").map_err(|e| e.to_string())?,
@@ -54,16 +55,25 @@ fn status(code: i32, operation: &str) -> Result<(), String> {
 }
 
 // Only POD structs from ffi.rs are zeroed: no Rust references or invalid enum discriminants.
-fn caps(codec: i32, bits: u32) -> CUVIDDECODECAPS {
+fn caps(codec: i32, bits: u32, c422: bool) -> CUVIDDECODECAPS {
     // SAFETY: this C struct contains only integers; zero is a valid value for every field.
     let mut caps: CUVIDDECODECAPS = unsafe { std::mem::zeroed() };
     caps.eCodecType = codec;
-    caps.eChromaFormat = cudaVideoChromaFormat_420;
+    caps.eChromaFormat = chroma_format(c422);
     caps.nBitDepthMinus8 = bits.saturating_sub(8);
     caps
 }
-fn output_format(bits: u32) -> i32 {
-    if bits == 10 { cudaVideoSurfaceFormat_P016 } else { cudaVideoSurfaceFormat_NV12 }
+fn chroma_format(c422: bool) -> i32 {
+    if c422 { cudaVideoChromaFormat_422 } else { cudaVideoChromaFormat_420 }
+}
+/// The decoder's output surface: NV12 / P016 (4:2:0) or NV16 / P216 (4:2:2), 8 or 10 bits.
+fn output_format(bits: u32, c422: bool) -> i32 {
+    match (c422, bits == 10) {
+        (false, false) => cudaVideoSurfaceFormat_NV12,
+        (false, true) => cudaVideoSurfaceFormat_P016,
+        (true, false) => cudaVideoSurfaceFormat_NV16,
+        (true, true) => cudaVideoSurfaceFormat_P216,
+    }
 }
 fn validate(coded: (u32, u32), geometry: Geometry, reorder: usize) -> Result<u32, String> {
     let (w, h) = coded;
@@ -80,10 +90,10 @@ fn validate(coded: (u32, u32), geometry: Geometry, reorder: usize) -> Result<u32
     }
     Ok(delay)
 }
-fn check_caps(caps: &CUVIDDECODECAPS, coded: (u32, u32), bits: u32) -> Result<(), String> {
+fn check_caps(caps: &CUVIDDECODECAPS, coded: (u32, u32), bits: u32, c422: bool) -> Result<(), String> {
     let (w, h) = coded;
     let blocks = w.div_ceil(16).checked_mul(h.div_ceil(16)).ok_or("NVDEC macroblock count overflows")?;
-    let mask = 1u16.checked_shl(output_format(bits) as u32).ok_or("NVDEC output format overflows")?;
+    let mask = 1u16.checked_shl(output_format(bits, c422) as u32).ok_or("NVDEC output format overflows")?;
     if caps.bIsSupported == 0
         || caps.nOutputFormatMask & mask == 0
         || w < u32::from(caps.nMinWidth)
@@ -92,7 +102,7 @@ fn check_caps(caps: &CUVIDDECODECAPS, coded: (u32, u32), bits: u32) -> Result<()
         || h > caps.nMaxHeight
         || blocks > caps.nMaxMBCount
     {
-        return Err(format!("GPU does not support NVDEC codec {} at {w}x{h}, {bits}-bit 4:2:0", caps.eCodecType));
+        return Err(format!("GPU does not support NVDEC codec {} at {w}x{h}, {bits}-bit {}", caps.eCodecType, if c422 { "4:2:2" } else { "4:2:0" }));
     }
     Ok(())
 }
@@ -126,7 +136,7 @@ impl State {
         }
         self.coded = driver;
         if format.codec != self.codec
-            || format.chroma_format != cudaVideoChromaFormat_420
+            || format.chroma_format != chroma_format(self.geometry.chroma_422)
             || format.progressive_sequence != 1
             || u32::from(format.bit_depth_luma_minus8).checked_add(8) != Some(self.geometry.bits)
             || format.bit_depth_chroma_minus8 != format.bit_depth_luma_minus8
@@ -145,13 +155,13 @@ impl State {
         }
         // SAFETY: plain C data (integers and pointers) permits an all-zero initialization.
         let mut info: CUVIDDECODECREATEINFO = unsafe { std::mem::zeroed() };
-        info.ulWidth = u64::from(self.coded.0);
-        info.ulHeight = u64::from(self.coded.1);
-        info.ulNumDecodeSurfaces = u64::from(surfaces);
+        info.ulWidth = c_ulong::from(self.coded.0);
+        info.ulHeight = c_ulong::from(self.coded.1);
+        info.ulNumDecodeSurfaces = c_ulong::from(surfaces);
         info.CodecType = self.codec;
-        info.ChromaFormat = cudaVideoChromaFormat_420;
+        info.ChromaFormat = chroma_format(self.geometry.chroma_422);
         info.ulCreationFlags = cudaVideoCreate_PreferCUVID;
-        info.bitDepthMinus8 = u64::from(self.geometry.bits.saturating_sub(8));
+        info.bitDepthMinus8 = c_ulong::from(self.geometry.bits.saturating_sub(8));
         info.ulMaxWidth = info.ulWidth;
         info.ulMaxHeight = info.ulHeight;
         let right = i16::try_from(self.coded.0).map_err(|_| "NVDEC width overflows")?;
@@ -159,7 +169,7 @@ impl State {
         // Explicit full coded rectangles prevent the parser's display crop being applied twice.
         info.display_area = ShortRect { left: 0, top: 0, right, bottom };
         info.target_rect = info.display_area;
-        info.OutputFormat = output_format(self.geometry.bits);
+        info.OutputFormat = output_format(self.geometry.bits, self.geometry.chroma_422);
         info.DeinterlaceMode = cudaVideoDeinterlaceMode_Weave;
         info.ulTargetWidth = info.ulWidth;
         info.ulTargetHeight = info.ulHeight;
@@ -218,10 +228,19 @@ impl State {
         if address == 0 {
             return Err("NVDEC returned a null mapped address".into());
         }
-        let (luma_size, total) = mapped_layout(self.coded, self.geometry.bits, pitch)?;
+        let c422 = self.geometry.chroma_422;
+        let (luma_size, total) = mapped_layout(self.coded, self.geometry.bits, pitch, c422)?;
+        // bytes of a planar picture, rounded up (4:2:0 has 1.5 samples per pixel, 4:2:2 two)
         let picture_bytes = (self.coded.0 as usize)
             .checked_mul(self.coded.1 as usize)
-            .and_then(|n| n.checked_mul(if self.geometry.bits == 10 { 3 } else { 2 }))
+            .and_then(|n| {
+                n.checked_mul(match (c422, self.geometry.bits == 10) {
+                    (false, false) => 2,
+                    (false, true) => 3,
+                    (true, false) => 2,
+                    (true, true) => 4,
+                })
+            })
             .ok_or("NVDEC output size overflows")?;
         if self.ready.len() >= MAX_SURFACES as usize
             || self.ready.len().checked_add(1).and_then(|n| n.checked_mul(picture_bytes)).is_none_or(|n| n > MAX_READY_BYTES)
@@ -241,13 +260,14 @@ impl State {
         to_frame(&Biplanar { luma, chroma, stride: pitch as usize, rows: self.coded.1 as usize }, &self.geometry)
     }
 }
-fn mapped_layout(coded: (u32, u32), bits: u32, pitch: u32) -> Result<(usize, usize), String> {
+fn mapped_layout(coded: (u32, u32), bits: u32, pitch: u32, c422: bool) -> Result<(usize, usize), String> {
     let row_bytes = coded.0.checked_mul(if bits == 10 { 2 } else { 1 }).ok_or("NVDEC row size overflows")?;
     if pitch < row_bytes || pitch == 0 || coded.1 == 0 || !coded.1.is_multiple_of(2) || !matches!(bits, 8 | 10) {
         return Err("NVDEC reported an invalid mapped pitch or size".into());
     }
     let luma = (pitch as usize).checked_mul(coded.1 as usize).ok_or("NVDEC luma size overflows")?;
-    let total = luma.checked_add(luma / 2).ok_or("NVDEC mapped size overflows")?;
+    let chroma = if c422 { luma } else { luma / 2 };
+    let total = luma.checked_add(chroma).ok_or("NVDEC mapped size overflows")?;
     if total > MAX_FRAME_BYTES {
         return Err("NVDEC mapped frame exceeds its memory limit".into());
     }
@@ -358,9 +378,6 @@ unsafe impl Send for Session {}
 impl Session {
     pub fn new(codec: NalCodec, coded: (u32, u32), geometry: Geometry, reorder: usize) -> Result<Self, String> {
         let delay = validate(coded, geometry, reorder)?;
-        if matches!(codec, NalCodec::H264) && geometry.bits != 8 {
-            return Err("NVDEC only takes 8-bit H.264".into());
-        }
         let codec = match codec {
             NalCodec::H264 => cudaVideoCodec_H264,
             NalCodec::Hevc => cudaVideoCodec_HEVC,
@@ -369,10 +386,10 @@ impl Session {
         let device = Box::new(Device::new()?);
         {
             let _current = device.push_current()?;
-            let mut capabilities = caps(codec, geometry.bits);
+            let mut capabilities = caps(codec, geometry.bits, geometry.chroma_422);
             // SAFETY: capabilities is a live writable C struct, and the CUDA context is current.
             status(unsafe { (api.caps)(&mut capabilities) }, "cuvidGetDecoderCaps")?;
-            check_caps(&capabilities, coded, geometry.bits)?;
+            check_caps(&capabilities, coded, geometry.bits, geometry.chroma_422)?;
         }
         let state = ptr::NonNull::new(Box::into_raw(Box::new(State {
             api,
@@ -426,7 +443,7 @@ impl Session {
         }
         Ok(())
     }
-    fn parse(&mut self, payload: &[u8], pts: i64, flags: u64) -> Result<Vec<(i64, VideoFrame)>, String> {
+    fn parse(&mut self, payload: &[u8], pts: i64, flags: c_ulong) -> Result<Vec<(i64, VideoFrame)>, String> {
         if let Some(error) = &self.state().error {
             return Err(error.clone());
         }
@@ -437,7 +454,7 @@ impl Session {
         let _current = self.device.push_current()?;
         let mut packet = CUVIDSOURCEDATAPACKET {
             flags,
-            payload_size: u64::try_from(payload.len()).map_err(|_| "NVDEC packet length overflows")?,
+            payload_size: c_ulong::try_from(payload.len()).map_err(|_| "NVDEC packet length overflows")?,
             payload: if payload.is_empty() { ptr::null() } else { payload.as_ptr() },
             timestamp: pts,
         };
@@ -555,14 +572,14 @@ pub fn probe() -> Result<String, String> {
     let (_api, _library) = Api::load()?;
     let device = Device::new()?;
     let _current = device.push_current()?;
-    Ok("NVDEC (libnvcuvid, first CUDA device)".into())
+    Ok("NVDEC (nvcuvid, first CUDA device)".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     fn geometry() -> Geometry {
-        Geometry { crop: (0, 0, 640, 360), bits: 8, color: filmcraft_color::ColorInfo::REC709, par: (1, 1) }
+        Geometry { crop: (0, 0, 640, 360), bits: 8, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), chroma_422: false }
     }
     #[test]
     fn hostile_geometry_and_driver_sizes_are_errors() {
@@ -575,26 +592,33 @@ mod tests {
         assert!(validate((640, 368), geometry(), usize::MAX).is_err());
         assert_eq!(validate((640, 368), geometry(), 2).unwrap(), 2);
         for (size, bits, pitch) in [((640, 368), 8, 639), ((640, 368), 10, 1279), ((640, 368), 8, u32::MAX), ((640, u32::MAX), 10, 1280)] {
-            assert!(catch_unwind(|| mapped_layout(size, bits, pitch)).unwrap().is_err());
+            assert!(catch_unwind(|| mapped_layout(size, bits, pitch, false)).unwrap().is_err());
         }
-        assert_eq!(mapped_layout((640, 368), 8, 640).unwrap(), (235520, 353280));
-        assert_eq!(mapped_layout((640, 368), 10, 1280).unwrap(), (471040, 706560));
+        assert_eq!(mapped_layout((640, 368), 8, 640, false).unwrap(), (235520, 353280));
+        assert_eq!(mapped_layout((640, 368), 10, 1280, false).unwrap(), (471040, 706560));
+        // 4:2:2: a chroma plane as tall as the luma plane
+        assert_eq!(mapped_layout((640, 368), 10, 1280, true).unwrap(), (471040, 942080));
+        assert_eq!(mapped_layout((640, 368), 8, 640, true).unwrap(), (235520, 471040));
     }
     #[test]
     fn capabilities_decline_unsupported_streams() {
-        let mut c = caps(cudaVideoCodec_HEVC, 10);
-        assert!(check_caps(&c, (640, 368), 10).is_err());
+        let mut c = caps(cudaVideoCodec_HEVC, 10, false);
+        assert!(check_caps(&c, (640, 368), 10, false).is_err());
         c.bIsSupported = 1;
         c.nOutputFormatMask = 2;
         c.nMaxWidth = 8192;
         c.nMaxHeight = 8192;
         c.nMaxMBCount = 65536;
-        assert!(check_caps(&c, (640, 368), 10).is_ok());
-        assert!(check_caps(&c, (640, 368), 8).is_err());
+        assert!(check_caps(&c, (640, 368), 10, false).is_ok());
+        assert!(check_caps(&c, (640, 368), 8, false).is_err());
+        // 4:2:2 needs its own output formats (NV16 = bit 4, P216 = bit 5)
+        assert!(check_caps(&c, (640, 368), 10, true).is_err());
+        c.nOutputFormatMask |= 1 << cudaVideoSurfaceFormat_P216;
+        assert!(check_caps(&c, (640, 368), 10, true).is_ok());
         c.nMaxMBCount = 1;
-        assert!(check_caps(&c, (640, 368), 10).is_err());
+        assert!(check_caps(&c, (640, 368), 10, false).is_err());
         c.nMinWidth = 1000;
-        assert!(check_caps(&c, (640, 368), 10).is_err());
+        assert!(check_caps(&c, (640, 368), 10, false).is_err());
     }
     #[test]
     fn session_is_send() {

@@ -17,9 +17,9 @@ release notes (Premiere does not run on Linux).
 | Codec / profile | Premiere macOS | **Ours macOS** (VideoToolbox) | Premiere Windows | **Ours Windows** (Media Foundation / D3D11) | **Ours Linux** (NVDEC, VA-API) |
 |---|---|---|---|---|---|
 | H.264 8-bit 4:2:0 | yes | **yes** | Intel, NVIDIA, AMD | **yes** (Baseline / Main / High) | **yes** (NVDEC; VA-API Intel / AMD / Mesa) |
-| H.264 10-bit / 4:2:2 | Apple silicon | **yes** where the chip decodes it | Intel; NVIDIA Blackwell (MXF too) | no (declined; no software fallback, [G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)) | no |
+| H.264 10-bit / 4:2:2 | Apple silicon | **yes** where the chip decodes it | Intel; NVIDIA Blackwell (MXF too) | **yes** on NVIDIA Blackwell (NVDEC, behind Media Foundation, loaded when such a stream is first opened; tested on one GPU; the software decoder otherwise, [G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)) | **yes** on NVIDIA Blackwell (NVDEC, bit-exact on an RTX 5060 Ti); the software decoder otherwise |
 | HEVC Main / Main 10 4:2:0 | yes | **yes** | yes | **yes** | **yes** (NVDEC 8/10; VA-API Main / Main 10) |
-| HEVC 4:2:2 10-bit | Apple silicon | **yes** where supported | Intel; NVIDIA Blackwell | no | no |
+| HEVC 4:2:2 10-bit | Apple silicon | **yes** where supported | Intel; NVIDIA Blackwell | NVDEC on NVIDIA Blackwell (enabled, untested) | **yes** on NVIDIA Blackwell (NVDEC, bit-exact with ffmpeg on an RTX 5060 Ti); no software decoder |
 | VP9 profile 0 / 2 | — | software | — | **yes** | software (VA-API VP9 not yet) |
 | AV1 main 8 / 10 | — | software | yes | **yes** | software |
 | ProRes | Apple silicon (M1 Pro / Max and later) | software (fast: 318 fps) | software | software | software |
@@ -84,4 +84,5 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | Linux NVDEC takes 10-bit H.264 and 4:2:2 H.264 / HEVC (Sony XAVC S-I, S, HS) where the GPU decodes them (Blackwell); builds on #2301 / #2431 |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |

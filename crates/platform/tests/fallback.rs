@@ -212,3 +212,81 @@ fn a_sample_software_rejects_during_the_replay_loses_no_pictures() {
     }
     assert_eq!(checked, FIXTURES.len(), "every fixture has a damaged-sample case");
 }
+
+/// A stand-in "hardware" decoder for an all-intra stream: like a real session it returns each
+/// picture from the call that fed it (our software decoder is frame-threaded and returns them
+/// late, so it is flushed), and starts failing after `fail_after` samples.
+struct FailingIntra {
+    inner: Box<dyn VideoDecoder>,
+    fail_after: usize,
+    fed: usize,
+}
+
+impl VideoDecoder for FailingIntra {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        self.fed += 1;
+        if self.fed > self.fail_after {
+            return Err(filmcraft_codecs::CodecError::Decode("session invalidated (test)".into()));
+        }
+        let mut out = self.inner.decode(sample, pts)?;
+        out.extend(self.inner.flush());
+        Ok(out)
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        Vec::new()
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn name(&self) -> &str {
+        "stand-in hardware"
+    }
+}
+
+/// An all-intra stream (an H.264 Intra profile: Sony XAVC S-I, AVC-Intra) is reported as intra-only
+/// by the hybrid decoder, so the GOP cache decodes its frames on separate decoders in parallel; every
+/// sample must then return its own picture from the call that fed it, also after a fall back to the
+/// (frame-threaded) software decoder, and that output equals the software decoder's.
+#[test]
+fn all_intra_streams_return_one_picture_per_call_in_hardware_and_after_a_fallback() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let args = [
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=s=320x180:r=24:d=1,noise=alls=12:allf=t",
+        "-c:v",
+        "libx264",
+        "-profile:v",
+        "high422",
+        "-pix_fmt",
+        "yuv422p10le",
+        "-x264-params",
+        "keyint=1:cabac=0",
+    ];
+    let Some(path) = fixture(&ff, "h264_intra_422_10.mp4", &args) else { panic!("could not write the fixture") };
+    let s = read_stream(&path);
+    let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    assert!(info.is_all_intra());
+    let reference = decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &s.samples);
+    for fail_after in [usize::MAX, 0, 3] {
+        let inner = filmcraft_codecs::software_video_decoder(&s.entry).unwrap();
+        let mut d = HybridDecoder::new(Box::new(FailingIntra { inner, fail_after, fed: 0 }), s.entry.clone(), info.clone());
+        assert!(d.intra_only());
+        let mut out = Vec::new();
+        for (k, (data, pts)) in s.samples.iter().enumerate() {
+            let pics = d.decode(data, *pts).unwrap();
+            assert_eq!(pics.len(), 1, "sample {k} (hardware failing after {fail_after}): pictures");
+            assert_eq!(pics[0].pts, *pts);
+            out.extend(pics);
+        }
+        assert_eq!(d.is_hardware(), fail_after >= s.samples.len());
+        assert_same(&format!("failing after {fail_after}"), &out, &reference);
+    }
+    // a stream that is not all-intra is not reported as such
+    let Some(path) = named(&ff, "h264_high.mp4") else { return };
+    let s = read_stream(&path);
+    let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    let inner = filmcraft_codecs::software_video_decoder(&s.entry).unwrap();
+    assert!(!HybridDecoder::new(Box::new(FailingIntra { inner, fail_after: usize::MAX, fed: 0 }), s.entry.clone(), info).intra_only());
+}

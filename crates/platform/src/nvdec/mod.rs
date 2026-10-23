@@ -1,10 +1,13 @@
-//! Hardware decoding through NVDEC (Linux, NVIDIA's proprietary driver).
+//! Hardware decoding through NVDEC (NVIDIA's driver on Linux and Windows).
 //!
 //! Unlike VA-API, NVDEC brings its own stream parser (`libnvcuvid`): [`cuvid::Session`] is fed
 //! Annex B access units and returns pictures in presentation order, read back from the GPU through
 //! the CUDA driver. Both libraries are loaded at run time; without them there is no NVDEC decoder,
-//! never a failure to start. H.264 8-bit and HEVC 8- / 10-bit, 4:2:0 progressive; everything else
-//! stays with VA-API or in software.
+//! never a failure to start. H.264 and HEVC, 8- and 10-bit, 4:2:0 and 4:2:2, progressive, whichever
+//! of those the GPU decodes (`cuvidGetDecoderCaps`: any NVDEC GPU does H.264 8-bit and HEVC Main /
+//! Main 10 4:2:0; 10-bit H.264 and 4:2:2, the camera formats such as Sony XAVC S-I, S and HS, need
+//! a Blackwell GPU, RTX 50 series). On Windows it is only asked about what Media Foundation cannot
+//! decode (`nvdec_wanted`). Everything else stays with VA-API / Media Foundation or in software.
 //!
 //! The FFI is in [`ffi`] (declarations) and [`cuvid`] (calls); the rest of this module is safe code.
 
@@ -12,7 +15,8 @@
 pub mod cuvid;
 pub mod ffi;
 
-#[cfg(test)]
+// layouts checked against the Linux LP64 header
+#[cfg(all(test, target_os = "linux", target_pointer_width = "64"))]
 mod abi_tests;
 
 use filmcraft_codecs::hw::{NalCodec, NalStreamInfo};
@@ -39,11 +43,10 @@ impl NvDecoder {
     /// A decoder for the stream `info` describes, or why NVDEC does not take it on this system.
     pub fn new(info: NalStreamInfo) -> std::result::Result<Self, String> {
         let bits = info.bit_depth_luma;
-        let taken = match info.codec {
-            NalCodec::H264 => bits == 8,
-            NalCodec::Hevc => matches!(bits, 8 | 10),
-        };
-        if !taken || info.chroma_format_idc != 1 || info.bit_depth_chroma != bits || info.interlaced {
+        // 8- / 10-bit 4:2:0 and 4:2:2 of both codecs; which of them this GPU decodes is its
+        // capability query's answer (`cuvid::Session::new`), so older GPUs decline 4:2:2 and 10-bit
+        // H.264 there and the stream goes on to VA-API / Media Foundation and the software decoders.
+        if !matches!(bits, 8 | 10) || !matches!(info.chroma_format_idc, 1 | 2) || info.bit_depth_chroma != bits || info.interlaced {
             return Err(format!(
                 "{} chroma format {} at {bits}/{}-bit is not taken",
                 if info.interlaced { "interlaced" } else { "progressive" },
@@ -51,7 +54,7 @@ impl NvDecoder {
                 info.bit_depth_chroma
             ));
         }
-        let geometry = Geometry { crop: info.crop, bits, color: info.color, par: info.par };
+        let geometry = Geometry { crop: info.crop, bits, color: info.color, par: info.par, chroma_422: info.chroma_format_idc == 2 };
         let session = cuvid::Session::new(info.codec, info.coded, geometry, info.reorder)?;
         let name = match info.codec {
             NalCodec::H264 => "NVDEC H.264",

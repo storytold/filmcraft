@@ -1,5 +1,5 @@
-//! Biplanar 4:2:0 pictures (NV12, and P010 with its 10-bit samples in the high bits of 16-bit
-//! words) as read back from a decoder surface, into the planar [`PixelData::Yuv8`] /
+//! Biplanar 4:2:0 / 4:2:2 pictures (NV12 / NV16, and P010 / P210 with 10-bit samples in the high bits
+//! of 16-bit words) as read back from a decoder surface, into the planar [`PixelData::Yuv8`] /
 //! [`PixelData::Yuv16`] frames the rest of FilmCraft uses. Safe code, tested on every target.
 //!
 //! This is the one place the Windows backend copies pixels (surface to staging texture to these
@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use filmcraft_frame::{Chroma, PixelData, VideoFrame, pool};
 
-/// A mapped biplanar surface: a luma plane followed by interleaved chroma, `stride` bytes per row.
+/// A mapped biplanar surface: a luma plane followed by interleaved chroma, `stride` bytes per row
+/// (chroma has half the luma rows, or all of them for 4:2:2).
 pub struct Biplanar<'a> {
     pub luma: &'a [u8],
     pub chroma: &'a [u8],
@@ -27,6 +28,8 @@ pub struct Geometry {
     pub bits: u32,
     pub color: filmcraft_color::ColorInfo,
     pub par: (u32, u32),
+    /// 4:2:2 chroma (NV16 / P210: one chroma row per luma row) instead of 4:2:0.
+    pub chroma_422: bool,
 }
 
 fn row(plane: &[u8], stride: usize, y: usize, x: usize, len: usize) -> Result<&[u8], String> {
@@ -44,8 +47,9 @@ pub fn to_frame(src: &Biplanar, g: &Geometry) -> Result<VideoFrame, String> {
         return Err(format!("cannot read a {w}x{h} picture of {} bits", g.bits));
     }
     let bps = if g.bits > 8 { 2 } else { 1 };
-    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-    let (cox, coy) = (ox / 2, oy / 2);
+    let (cw, ch) = (w.div_ceil(2), if g.chroma_422 { h } else { h.div_ceil(2) });
+    let (cox, coy) = (ox / 2, if g.chroma_422 { oy } else { oy / 2 });
+    let chroma_format = if g.chroma_422 { Chroma::C422 } else { Chroma::C420 };
     let needs_rows = oy.checked_add(h).ok_or("picture size overflows")?;
     let needs_cols = ox.checked_add(w).and_then(|c| c.checked_mul(bps)).ok_or("picture size overflows")?;
     if src.rows < needs_rows || src.stride < needs_cols || src.stride < (cox + cw) * 2 * bps {
@@ -63,7 +67,7 @@ pub fn to_frame(src: &Biplanar, g: &Geometry) -> Result<VideoFrame, String> {
             u.extend(pairs.iter().map(|p| p[0]));
             v.extend(pairs.iter().map(|p| p[1]));
         }
-        PixelData::Yuv8 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: Chroma::C420, alpha: None }
+        PixelData::Yuv8 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: chroma_format, alpha: None }
     } else {
         let shift = 16 - g.bits;
         let mut yp = pool::take_u16(w * h);
@@ -76,7 +80,7 @@ pub fn to_frame(src: &Biplanar, g: &Geometry) -> Result<VideoFrame, String> {
             u.extend(quads.iter().map(|q| u16::from_le_bytes([q[0], q[1]]) >> shift));
             v.extend(quads.iter().map(|q| u16::from_le_bytes([q[2], q[3]]) >> shift));
         }
-        PixelData::Yuv16 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: Chroma::C420, bits: g.bits, alpha: None }
+        PixelData::Yuv16 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: chroma_format, bits: g.bits, alpha: None }
     };
     Ok(VideoFrame { width: w as u32, height: h as u32, data, color: g.color, par: g.par, pts: filmcraft_time::Tick::ZERO })
 }
@@ -86,7 +90,36 @@ mod tests {
     use super::*;
 
     fn geometry(crop: (u32, u32, u32, u32), bits: u32) -> Geometry {
-        Geometry { crop, bits, color: filmcraft_color::ColorInfo::REC709, par: (1, 1) }
+        Geometry { crop, bits, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), chroma_422: false }
+    }
+
+    #[test]
+    fn nv16_and_p210_keep_every_chroma_row() {
+        // 4x4 picture, stride 8: chroma has 4 rows of 2 interleaved pairs
+        let stride = 8usize;
+        let luma: Vec<u8> = (0..stride * 4).map(|i| i as u8).collect();
+        let chroma: Vec<u8> = (0..stride * 4).map(|i| 100 + i as u8).collect();
+        let g = Geometry { chroma_422: true, ..geometry((0, 0, 4, 4), 8) };
+        let f = to_frame(&Biplanar { luma: &luma, chroma: &chroma, stride, rows: 4 }, &g).unwrap();
+        let PixelData::Yuv8 { planes, chroma: c, .. } = &f.data else { panic!("8-bit") };
+        assert_eq!(*c, Chroma::C422);
+        assert_eq!((planes[1].len(), planes[2].len()), (8, 8));
+        assert_eq!(&planes[1][..], &[100, 102, 108, 110, 116, 118, 124, 126]);
+        assert_eq!(&planes[2][..], &[101, 103, 109, 111, 117, 119, 125, 127]);
+        // 10-bit: samples in the high bits of little-endian words
+        let mut luma16 = vec![0u8; 16 * 4];
+        for (i, s) in luma16.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            *s = (((i as u16) + 1) << 6).to_le_bytes();
+        }
+        let mut chroma16 = vec![0u8; 16 * 4];
+        for (i, s) in chroma16.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            *s = ((300 + i as u16) << 6).to_le_bytes();
+        }
+        let g = Geometry { chroma_422: true, ..geometry((0, 0, 4, 4), 10) };
+        let f = to_frame(&Biplanar { luma: &luma16, chroma: &chroma16, stride: 16, rows: 4 }, &g).unwrap();
+        let PixelData::Yuv16 { planes, chroma: c, bits, .. } = &f.data else { panic!("16-bit") };
+        assert_eq!((*c, *bits), (Chroma::C422, 10));
+        assert_eq!(&planes[1][..], &[300, 302, 308, 310, 316, 318, 324, 326]);
     }
 
     #[test]
