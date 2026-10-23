@@ -587,6 +587,9 @@ pub struct UiState {
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
     pub clip_dialog: Option<ClipDialogDraft>,
+    /// Create Captions from Transcript (open when Some). See `panels::caption_dialog`.
+    #[serde(default)]
+    pub caption_dialog: Option<CaptionDialogDraft>,
     /// M3.11 menu items: their dialog, Dynamic Audio Waveforms, the Media Browser selection. See
     /// `panels::menu_dialogs`.
     #[serde(default)]
@@ -622,6 +625,19 @@ pub struct ClipDialogDraft {
     #[serde(default)]
     pub info: serde_json::Value,
     #[serde(default)]
+    pub error: String,
+}
+
+/// The open Create Captions dialog: the settings being edited (sent to
+/// `transcript.createCaptions` and remembered in `Preferences::captions` on Create).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CaptionDialogDraft {
+    pub settings: filmcraft_engine::transcript::CaptionSettings,
+    /// The Captioning Preferences section is collapsed.
+    pub collapsed: bool,
+    /// The name being typed for Save Preset (open when Some).
+    pub saving: Option<String>,
     pub error: String,
 }
 
@@ -1020,6 +1036,7 @@ impl Default for UiState {
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,
+            caption_dialog: None,
             extras: Default::default(),
             gfx_templates: Default::default(),
             panels: Default::default(),

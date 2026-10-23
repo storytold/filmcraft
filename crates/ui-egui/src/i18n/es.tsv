@@ -3627,6 +3627,27 @@
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
 # Parakeet speech model and word-by-word captions.
-	Create word-by-word captions	Crear subtítulos palabra por palabra
-	Word by word	Palabra por palabra
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (máxima precisión, tiempos por palabra)
+	0 = no limit. 1 makes word-by-word captions that keep each word's own timing.	0 = sin límite. 1 crea subtítulos palabra por palabra que conservan la temporización de cada palabra.
+	A shorter caption is held into the silence after it, never over the next caption.	Un subtítulo más corto se mantiene en el silencio que le sigue, nunca sobre el siguiente subtítulo.
+	Caption preset	Ajuste preestablecido de subtítulos
+	Captioning Preferences (format, max/min length, lines)	Preferencias de subtítulos (formato, longitud máx./mín., líneas)
+	Couldn't save caption settings: {e}	No se pudieron guardar los ajustes de subtítulos: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Cree subtítulos a partir de la transcripción, empiece una pista de subtítulos vacía o importe un archivo de subtítulos.
+	Create captions from transcript	Crear subtítulos a partir de la transcripción
+	Created {n} captions	Se crearon {n} subtítulos
+	Delete preset	Eliminar ajuste preestablecido
+	Double Line	Dos líneas
+	Frames left empty between one caption and the next.	Fotogramas que quedan vacíos entre un subtítulo y el siguiente.
+	Gap between captions (frames)	Separación entre subtítulos (fotogramas)
+	Layout	Diseño
+	Maximum length in characters	Longitud máxima en caracteres
+	Maximum words per caption	Máximo de palabras por subtítulo
+	Minimum duration in seconds	Duración mínima en segundos
+	Save as preset…	Guardar como ajuste preestablecido…
+	Single Line	Una línea
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	El estilo de pista de subtítulos de la nueva pista: el estilo predeterminado o el estilo de una pista de subtítulos de esta secuencia.
+	Words wrap to a new line, or a new caption, at this many characters.	Las palabras pasan a una nueva línea, o a un nuevo subtítulo, al llegar a este número de caracteres.
+	characters	caracteres
+	words	palabras
+	words (no limit)	palabras (sin límite)
