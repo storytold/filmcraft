@@ -689,3 +689,79 @@ fn align_to_frame_moves_selected_video_clips_by_position_only() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!((pos(&s).0.y - 200.0).abs() < 1e-6, "one undo step per alignment");
 }
+
+#[test]
+fn applied_effects_stack_after_the_clip_s_own_and_keep_their_indices() {
+    // #1879
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "R", "width": 1920, "height": 1080, "fps": 30, "video": 2, "audio": 1})).unwrap();
+    let r = s.execute("graphics.newEllipse", json!({"position": [960, 540], "size": [400, 400], "track": 1, "time": 0, "seconds": 2})).unwrap();
+    let clip = r["clip"].as_u64().unwrap();
+    let ids = |s: &Session| s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect::<Vec<_>>();
+    let before = ids(&s);
+    let layer = s.execute("graphics.list", json!({"clip": clip})).unwrap()["layers"][0]["effectIndex"].clone();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "tint"})).unwrap();
+    let after = ids(&s);
+    assert_eq!(after[..before.len()], before[..], "{after:?}");
+    assert_eq!(after[before.len()..], ["gaussian_blur", "tint"], "{after:?}");
+    assert_eq!(s.execute("graphics.list", json!({"clip": clip})).unwrap()["layers"][0]["effectIndex"], layer);
+    s.execute("effects.setParam", json!({"clip": clip, "effect": layer, "param": "position", "value": [100, 100]})).unwrap();
+}
+
+/// #1879 moved applied effects from before the clip's intrinsic effects to the end of its stack.
+/// The frame must not change: the same clips render the same pixels with the effects laid out the
+/// old way (built by hand) and the new way.
+#[test]
+fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
+    fn frame(s: &Session) -> Vec<f32> {
+        s.render_program(0.25).unwrap().px
+    }
+    // the layout `effects.apply` gave before #1879: the applied effects (the last `n`) before the
+    // clip's first intrinsic effect, in the order they were applied
+    fn before_intrinsics(s: &mut Session, clip: ClipId, n: usize) {
+        let seq = s.state.active_sequence.unwrap();
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        let it = q.video_tracks.iter_mut().flat_map(|t| t.items.iter_mut()).find(|i| i.id == clip).unwrap();
+        let applied = it.effects.split_off(it.effects.len() - n);
+        let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap();
+        it.effects.splice(pos..pos, applied);
+    }
+    let apply = |s: &mut Session, clip: u64| {
+        s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+        s.execute("effects.setParam", json!({"clip": clip, "effect": "gaussian_blur", "param": "blurriness", "value": 12.0})).unwrap();
+        s.execute("effects.apply", json!({"clips": [clip], "effect": "posterize"})).unwrap();
+        s.execute("effects.setParam", json!({"clip": clip, "effect": "posterize", "param": "levels", "value": 3.0})).unwrap();
+    };
+    let check = |mut s: Session, clip: u64, case: &str| {
+        let plain = frame(&s);
+        apply(&mut s, clip);
+        let ids: Vec<_> = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect();
+        assert_eq!(ids[ids.len() - 2..], ["gaussian_blur", "posterize"], "{case}: {ids:?}");
+        let after = frame(&s);
+        assert!(after != plain, "{case}: the applied effects show in the frame");
+        before_intrinsics(&mut s, ClipId(clip), 2);
+        let ids: Vec<_> = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect();
+        assert!(ids.iter().position(|e| e == "posterize") < ids.iter().position(|e| e == "motion"), "{case}: {ids:?}");
+        assert!(after == frame(&s), "{case}: same pixels with the applied effects before the intrinsic ones");
+    };
+
+    // (a) a graphic clip with its layer
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "R", "width": 640, "height": 360, "fps": 30, "video": 2, "audio": 1})).unwrap();
+    let r = s.execute("graphics.newEllipse", json!({"position": [320, 180], "size": [200, 120], "track": 1, "time": 0, "seconds": 2})).unwrap();
+    let clip = r["clip"].as_u64().unwrap();
+    check(s, clip, "graphic clip");
+
+    // (b) a video clip with Motion and Opacity off their defaults
+    let mut s = demo();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    // past the dip to black that opens the demo
+    s.execute("playhead.set", json!({"seconds": 2.5})).unwrap();
+    for (effect, param, value) in
+        [("motion", "position", json!([700, 400])), ("motion", "scale", json!(70.0)), ("motion", "rotation", json!(15.0)), ("opacity", "opacity", json!(80.0))]
+    {
+        s.execute("effects.setParam", json!({"clip": clip, "effect": effect, "param": param, "value": value})).unwrap();
+    }
+    check(s, clip, "video clip");
+}

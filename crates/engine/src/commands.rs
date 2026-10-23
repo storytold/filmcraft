@@ -2964,10 +2964,10 @@ fn build() -> Vec<CommandSpec> {
                     for i in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
                         let mut inst = def.instance();
                         resolve_auto_points(&mut inst, (fw, fh), (fw, fh));
-                        // standard effects go before the intrinsic ones (render order)
-                        let pos = i.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(i.effects.len());
-                        let pos = if is_audio { i.effects.len() } else { pos };
-                        i.effects.insert(pos, inst);
+                        // at the end of the stack, as in Premiere, so the indices already
+                        // handed out (graphics.list effectIndex…) stay valid (#1879); the
+                        // renderer applies the intrinsic ones after the standard ones anyway
+                        i.effects.push(inst);
                         n += 1;
                     }
                 }
