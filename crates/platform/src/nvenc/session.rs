@@ -211,6 +211,8 @@ pub struct Session {
     /// Pictures submitted, and the distance between IDR pictures (to know which pictures get the SEI).
     submitted: u64,
     gop: u64,
+    /// Set by [`abandon`](Self::abandon): the driver may still use the buffers, so nothing is destroyed.
+    abandoned: bool,
 }
 
 // SAFETY: an encoder session and its buffers are driver objects used from one thread at a time (the
@@ -279,6 +281,7 @@ impl Session {
             sei_array: Box::new([]),
             submitted: 0,
             gop: 1,
+            abandoned: false,
         })
     }
 
@@ -600,6 +603,13 @@ impl Session {
         Ok(())
     }
 
+    /// Leave the encoder and its buffers to the driver when the session is dropped: pictures that may
+    /// still be encoding into them could not be waited for, and freeing them would crash the driver.
+    /// Leaks them, which is the lesser harm.
+    pub fn abandon(&mut self) {
+        self.abandoned = true;
+    }
+
     /// Read the finished bitstream of slot `slot` (blocks until the encoder has it).
     pub fn read(&mut self, slot: usize) -> Result<Output, String> {
         let output = self.slots.get(slot).ok_or("no such buffer slot")?.output;
@@ -631,6 +641,9 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        if self.abandoned {
+            return;
+        }
         // SAFETY: every handle was created by this session and is destroyed once, buffers first.
         unsafe {
             for s in self.slots.drain(..) {

@@ -460,14 +460,54 @@ impl Nvenc {
     fn read_oldest(&mut self) -> Result<Packet, String> {
         let slot = self.pending.pop_front().ok_or("no picture in flight")?;
         self.ready = self.ready.saturating_sub(1);
-        let r = self.session.read(slot);
+        // a slot the driver did not give back may still be encoding: it is not reused, and the
+        // session will not free it (nor `Drop` find it among the pending ones)
+        let o = match self.session.read(slot) {
+            Ok(o) => o,
+            Err(e) => {
+                self.session.abandon();
+                return Err(e);
+            }
+        };
         self.free.push(slot);
-        let o = r?;
         let data = annex_b_to_length_prefixed_for(self.codec, &o.data)?;
         let k = self.emitted;
         self.emitted = self.emitted.saturating_add(1);
         let pts = i64::try_from(o.pts).unwrap_or(i64::MAX);
         Ok(Packet { data, key: o.pic_type == ffi::NV_ENC_PIC_TYPE_IDR, pts, dts: k.saturating_sub(i64::from(self.delay)) })
+    }
+}
+
+impl Drop for Nvenc {
+    /// Pictures still in flight (an export cancelled, or stopped by an error, before `flush`) are
+    /// waited for before the session frees their buffers: the driver finishes them asynchronously,
+    /// and freeing their buffers first made it jump into freed memory (#1582). Every slot is read,
+    /// whatever happened to the others; the packets are not needed. When the driver did not confirm
+    /// them all, the session leaves its buffers and encoder to the driver rather than freeing ones
+    /// that may still be in use.
+    fn drop(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        // without end of stream, pictures held for reordering never finish: reading them would wait forever
+        let mut drained = match self.session.end_of_stream() {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("NVENC: ending the stream of a dropped encoder failed: {e}");
+                false
+            }
+        };
+        if drained {
+            for slot in std::mem::take(&mut self.pending) {
+                if let Err(e) = self.session.read(slot) {
+                    log::warn!("NVENC: a picture in flight did not finish: {e}");
+                    drained = false;
+                }
+            }
+        }
+        if !drained {
+            self.session.abandon();
+        }
     }
 }
 
