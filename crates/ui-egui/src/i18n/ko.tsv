@@ -231,6 +231,9 @@
 	APV 422-10	APV 422-10
 	APV 422-12	APV 422-12
 	Are you sure you want to discard your changes to '{file}'?	'{file}'의 변경 사항을 버릴까요?
+	Replace File	파일 바꾸기
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{folder}”에 “{file}” 파일이 이미 있습니다. 바꿀까요?
+	Replace	바꾸기
 	Arrange	배치
 	ArtCraft Website	ArtCraft 웹사이트
 	ASC CDL	ASC CDL

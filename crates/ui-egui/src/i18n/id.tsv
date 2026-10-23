@@ -454,6 +454,9 @@
 	Recover	Pulihkan
 	Not Now	Jangan Sekarang
 	Are you sure you want to discard your changes to '{file}'?	Yakin ingin membuang perubahan Anda pada '{file}'?
+	Replace File	Ganti Berkas
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” sudah ada di “{folder}”. Ingin menggantinya?
+	Replace	Ganti
 	Yes	Ya
 	No	Tidak
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	Tambahkan media ke proyek Anda. Letakkan berkas di mana saja di jendela, atau pilih sumber di bawah.
