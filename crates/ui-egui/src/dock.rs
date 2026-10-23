@@ -177,7 +177,8 @@ fn vsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
     DockNode::Split { vertical: true, size, a: Box::new(a), b: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 10] =
+    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Vertical", "Learning", "Review", "All Panels"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -357,6 +358,19 @@ pub fn workspace(name: &str) -> DockNode {
                 hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Libraries], 0), bottom_editing()),
             ),
             tabs(&[EssentialGraphics, Properties], 0),
+        ),
+        // Vertical (9:16 social video): the Program monitor gets a tall, narrow column of its own
+        // running the full window height, so a portrait frame fills it rather than sitting small
+        // inside a wide landscape monitor. Source and Project share the top left over the timeline;
+        // Properties, Essential Graphics and Text run full height on the right.
+        "Vertical" => hsplit(
+            FixedB(820.0),
+            vsplit(
+                Ratio(0.45),
+                hsplit(Ratio(0.5), tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0)),
+                bottom_editing(),
+            ),
+            hsplit(FixedB(320.0), tabs(&[Program], 0), tabs(&[Properties, EssentialGraphics, Text], 0)),
         ),
         "All Panels" => vsplit(
             Ratio(0.5),

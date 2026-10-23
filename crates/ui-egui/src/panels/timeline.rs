@@ -2352,6 +2352,13 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 (_, Grab::Volume { .. }) => CursorIcon::ResizeVertical,
                 (Tool::Razor, Grab::Other(Hit::Clip { .. })) => CursorIcon::Crosshair,
                 (Tool::Slip | Tool::Slide, Grab::Other(Hit::Clip { .. })) => CursorIcon::ResizeHorizontal,
+                // Track Select Forward/Backward look exactly like the Selection tool's arrow
+                // otherwise, so a click on the wrong tool silently does something very different
+                // (reselects everything past the pointer instead of picking one clip). A directional
+                // resize-style cursor mirrors the tool's own icon (an arrow with chevrons) and makes
+                // the active tool obvious without looking at the toolbar.
+                (Tool::TrackSelectForward, Grab::Other(Hit::Clip { .. } | Hit::Transition { .. } | Hit::Empty { .. })) => CursorIcon::ResizeEast,
+                (Tool::TrackSelectBackward, Grab::Other(Hit::Clip { .. } | Hit::Transition { .. } | Hit::Empty { .. })) => CursorIcon::ResizeWest,
                 (Tool::Hand, _) => CursorIcon::Grab,
                 (Tool::Zoom, _) => CursorIcon::ZoomIn,
                 _ => CursorIcon::Default,
@@ -2553,6 +2560,20 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 app.tl.drag = Some(d);
             }
         }
+    }
+
+    // Escape with a Track Select tool (A / Shift+A) and nothing in progress: that tool reselects
+    // everything past the pointer on every click, so clicking away cannot deselect. Esc clears the
+    // selection and hands back the Selection tool (V) in one key. A focused text field keeps Esc.
+    if app.tl.drag.is_none()
+        && app.tl.pressed.is_none()
+        && app.ui.focused == crate::dock::PanelKind::Timeline
+        && matches!(app.ui.tool, Tool::TrackSelectForward | Tool::TrackSelectBackward)
+        && !ctx.egui_wants_keyboard_input()
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        let _ = app.session.execute("edit.deselectAll", json!({}));
+        app.ui.tool = Tool::Selection;
     }
 
     // Escape cancels an ongoing drag or press (#580): the release commits nothing

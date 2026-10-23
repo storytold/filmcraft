@@ -14,9 +14,17 @@
 
 <h1 align="center">FilmCraft</h1>
 
+<p align="center"><b>Victor Karanja version</b></p>
+
 <p align="center">
   <b>Video editing, color and sound; an open-source, professional non-linear video editor, built in pure Rust.</b>
 </p>
+
+> [!NOTE]
+> **This is the Victor Karanja version of FilmCraft**, built on top of the upstream [storytold/filmcraft](https://github.com/storytold/filmcraft) project. It adds three changes on top of upstream:
+> 1. Select All / Deselect All (`⌘A` / `⇧⌘A`) in the Project panel now work from the native macOS menu bar, and Select All stays enabled with no sequence open.
+> 2. `Esc` with the Track Select Forward/Backward tool clears the selection and returns to the Selection tool; the tool's cursor is now visually distinct (a directional arrow) so it's obvious which mode is active.
+> 3. A new **Vertical** workspace with a tall, full-height Program monitor, for 9:16 / social-video editing.
 
 <p align="center">
   An open-source, modern non-linear video editing workflow: native on macOS, Windows and Linux, and in the browser via WebAssembly.<br>

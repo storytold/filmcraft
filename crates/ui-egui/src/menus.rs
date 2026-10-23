@@ -179,6 +179,19 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // Select All / Deselect All act on the Project panel's items when it has focus (#168); Select
+    // All takes only what the shown bin lists (#456). This lives here rather than in the shortcut
+    // loop so it also applies when the command arrives from the native macOS menu bar, which
+    // takes Cmd+A / Cmd+Shift+A before the app's own key handling sees them.
+    if app.ui.focused == PanelKind::Project {
+        if id == "edit.selectAll" {
+            let (cmd, p) = crate::panels::project::select_all_command(app);
+            return invoke(app, ctx, &cmd, p);
+        }
+        if id == "edit.deselectAll" {
+            return invoke(app, ctx, "project.deselectAll", params);
+        }
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
@@ -709,6 +722,12 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
             it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
+        }
+        // Select All acts on the Project panel's items when it has focus, which needs no open
+        // sequence: on macOS Cmd+A is this native menu item's key equivalent, so a greyed-out item
+        // would swallow the shortcut entirely.
+        if it.id == "edit.selectAll" && app.ui.focused == PanelKind::Project {
+            it.enabled = true;
         }
     }
     crate::panels::workspaces::menu(app, &mut v);

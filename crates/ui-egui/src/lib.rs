@@ -1621,19 +1621,9 @@ impl FilmcraftApp {
                 }
             }
         });
-        for mut id in fire {
-            // Select All / Deselect All act on the Project panel's items when it has focus (#168).
-            // Select All takes only what the shown bin lists, not the whole project (#456).
-            if self.ui.focused == PanelKind::Project && id == "edit.selectAll" {
-                let (cmd, params) = panels::project::select_all_command(self);
-                if let Err(e) = menus::invoke(self, ctx, &cmd, params) {
-                    self.ui.status = e;
-                }
-                continue;
-            }
-            if self.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
-                id = "project.deselectAll".into();
-            }
+        for id in fire {
+            // Select All / Deselect All in the Project panel are routed in `menus::invoke`, so the
+            // native macOS menu bar (which takes Cmd+A first) gets the same behaviour.
             // Clear in the Project panel removes the selected bin when no item is selected (#587).
             let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
                 self.ui.project_panel.rename = None;
