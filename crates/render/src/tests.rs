@@ -368,6 +368,88 @@ fn offline_slate_is_deterministic_and_marked() {
     }
 }
 
+/// #1563: an unreadable full-frame overlay must leave the composition visible outside its badge.
+#[test]
+fn unreadable_overlay_keeps_lower_tracks_visible() {
+    use crate::offline::{OfflineReason, slate_rgba8};
+    for (w, h) in [(320, 180), (1280, 720), (720, 1280)] {
+        let (mut project, red, _, seq, mut sources) = setup();
+        let settings = &mut project.sequence_mut(seq).unwrap().settings;
+        (settings.width, settings.height) = (w as u32, h as u32);
+        place(&mut project, seq, 0, red, 0, 48);
+        let bottom = render_sequence(&project, seq, Tick::ZERO, RenderOptions::default(), &sources);
+        // Like XML-imported overlays, the metadata does not declare alpha; the frame still carries it.
+        let source = filmcraft_media::still::StillSource::from_rgba(
+            "Countdown.aegraphic",
+            w as u32,
+            h as u32,
+            slate_rgba8(w, h, "Countdown.aegraphic", OfflineReason::Unreadable),
+            false,
+            0,
+        );
+        let info = source.info().clone();
+        let overlay = project.add_item(
+            "Countdown",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: "Countdown.aegraphic".into() },
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        sources.0.insert(overlay, Arc::new(source));
+        place(&mut project, seq, 1, overlay, 0, 48);
+        let image = render_sequence(&project, seq, Tick::ZERO, RenderOptions::default(), &sources);
+        for (x, y) in [(w / 2, h / 2), (w - 10, h / 2), (10, h - 10), (w - 10, h - 10)] {
+            assert_eq!(image.get(x, y), bottom.get(x, y), "unreadable overlay hides lower tracks at {x},{y}");
+        }
+        assert_ne!(image.px, bottom.px, "the unreadable warning must remain visible");
+        let planned = plan::execute_cpu(&plan::plan_frame(&project, seq, Tick::ZERO, RenderOptions::default(), &sources));
+        assert_eq!(planned.to_rgba8(), image.to_rgba8(), "the GPU frame plan must also preserve the lower layer");
+        if let Some(dir) = std::env::var_os("FILMCRAFT_UNREADABLE_PREVIEW_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            ::image::save_buffer(dir.join(format!("overlay-{w}x{h}.png")), &image.to_rgba8(), w as u32, h as u32, ::image::ExtendedColorType::Rgba8).unwrap();
+            std::fs::write(dir.join(format!("project-{w}x{h}.json")), serde_json::to_vec_pretty(&project).unwrap()).unwrap();
+        }
+    }
+}
+
+#[test]
+fn unreadable_badge_is_confined_and_premultiplied() {
+    use crate::offline::{OfflineReason, slate, slate_rgba8};
+    let long_name = "長いファイル名_".repeat(32) + "\nsecond line\nCountdown.aegraphic";
+    for (w, h) in [(0, 0), (1, 1), (8, 4), (192, 108), (108, 192)] {
+        let image = slate(w, h, &long_name, OfflineReason::Unreadable);
+        assert_eq!((image.w, image.h), (w.max(1), h.max(1)));
+        assert!(image.px.as_chunks::<4>().0.iter().any(|p| p[3] > 0.0), "warning is absent at {w}x{h}");
+        for p in image.px.as_chunks::<4>().0 {
+            assert!(p.iter().all(|c| c.is_finite() && *c >= 0.0 && *c <= 1.0));
+            assert!(p[..3].iter().all(|c| *c <= p[3]), "invalid premultiplied pixel: {p:?}");
+        }
+        if w >= 16 && h >= 16 {
+            for y in 0..h {
+                for x in 0..w {
+                    if x >= w * 3 / 5 || y >= h / 4 {
+                        assert_eq!(image.get(x, y), [0.0; 4], "warning escaped the corner at {x},{y}");
+                    }
+                }
+            }
+        }
+        assert_eq!(image.to_rgba8(), slate_rgba8(w, h, &long_name, OfflineReason::Unreadable), "the warning must be deterministic");
+    }
+    for reason in [OfflineReason::Missing, OfflineReason::MadeOffline] {
+        assert!(slate_rgba8(64, 36, "Countdown.aegraphic", reason).as_chunks::<4>().0.iter().all(|p| p[3] == 255), "{reason:?} must keep its opaque slate");
+    }
+}
+
 /// A 320×180 4:2:0 source with smooth gradients (what decoders hand the renderer).
 struct YuvSource(GeneratorSource);
 
