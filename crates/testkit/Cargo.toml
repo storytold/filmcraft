@@ -14,3 +14,6 @@ workspace = true
 # use it without creating dependency cycles.
 [dependencies]
 png = "0.18"
+
+[dev-dependencies]
+tempfile = "3.27"

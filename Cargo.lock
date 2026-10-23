@@ -2278,6 +2278,7 @@ name = "filmcraft-testkit"
 version = "0.12.0"
 dependencies = [
  "png",
+ "tempfile",
 ]
 
 [[package]]

@@ -372,9 +372,8 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
                     break;
                 }
             }
-            let path = line.split_whitespace().nth(1).unwrap_or("/").split(['?', '#']).next().unwrap_or("/").to_string();
-            let rel = if path == "/" { "index.html".to_string() } else { path.trim_start_matches('/').replace("..", "") };
-            let file = dir.join(&rel);
+            let path = line.split_whitespace().nth(1).unwrap_or("/").split(['?', '#']).next().unwrap_or("/");
+            let file = served_path(&dir, path);
             let (status, body) = match std::fs::read(&file) {
                 Ok(b) => ("200 OK", b),
                 Err(_) => ("404 Not Found", b"not found".to_vec()),
@@ -398,6 +397,39 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
         });
     }
     Ok(())
+}
+
+fn served_path(root: &std::path::Path, request_path: &str) -> std::path::PathBuf {
+    use std::path::Component;
+    if request_path == "/" {
+        return root.join("index.html");
+    }
+    let repeated_root = request_path.starts_with("//");
+    let raw = request_path.strip_prefix('/').unwrap_or(request_path);
+    let relative = std::path::Path::new(raw);
+    let windows_prefix = raw.contains('\\') || raw.split('/').next().is_some_and(|part| part.ends_with(':'));
+    if !repeated_root && !windows_prefix && relative.components().all(|part| matches!(part, Component::Normal(_))) {
+        root.join(relative)
+    } else {
+        // A path that cannot name a child of the document root deliberately misses.
+        root.join(".invalid-request-path")
+    }
+}
+
+#[cfg(test)]
+mod serve_tests {
+    use super::served_path;
+    use std::path::Path;
+
+    #[test]
+    fn preview_paths_cannot_escape_the_document_root() {
+        let root = Path::new("/dist");
+        assert_eq!(served_path(root, "/"), root.join("index.html"));
+        assert_eq!(served_path(root, "/assets/app.js"), root.join("assets/app.js"));
+        for hostile in ["/../etc/passwd", "//etc/passwd", "/a/../../etc/passwd", r"C:\\Windows\\win.ini"] {
+            assert_eq!(served_path(root, hostile), root.join(".invalid-request-path"));
+        }
+    }
 }
 
 /// (crate, test target) whose ignored `generate_fixtures` test builds that crate's fixture matrix.
