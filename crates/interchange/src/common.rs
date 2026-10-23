@@ -264,7 +264,7 @@ pub(crate) fn media_info(name: &str, spec: &MediaSpec) -> MediaInfo {
         }),
         audio_streams: spec
             .audio
-            .map(|(sr, ch)| AudioStreamInfo { sample_rate: sr, channels: ch, codec: String::new(), bits_per_sample: None })
+            .map(|(sr, ch)| AudioStreamInfo { sample_rate: sr, channels: ch, codec: String::new(), bits_per_sample: None, decodable: true })
             .into_iter()
             .collect(),
         container: String::new(),

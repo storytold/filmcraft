@@ -89,6 +89,29 @@ pub struct AudioStreamInfo {
     pub channels: u32,
     pub codec: String,
     pub bits_per_sample: Option<u32>,
+    /// Whether FilmCraft has a decoder for this stream. An undecodable stream (say Apple
+    /// Positional Audio next to the AAC track of an iPhone video, #2758) is still listed so the
+    /// stream indices stay the file's, but it plays silence and placement leaves it out. Project
+    /// files written before this field load as decodable; see [`AudioStreamInfo::can_decode`].
+    #[serde(default = "decodable_default", skip_serializing_if = "is_decodable")]
+    pub decodable: bool,
+}
+
+fn decodable_default() -> bool {
+    true
+}
+
+fn is_decodable(d: &bool) -> bool {
+    *d
+}
+
+impl AudioStreamInfo {
+    /// Whether a decoder exists for this stream. Besides the `decodable` flag, the codec names
+    /// probes gave such streams before the flag existed (`"unknown"`, `"… (unsupported)"`) count
+    /// as undecodable, so projects saved by older versions place the same way.
+    pub fn can_decode(&self) -> bool {
+        self.decodable && self.codec != "unknown" && !self.codec.ends_with("(unsupported)")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -133,6 +156,10 @@ impl MediaInfo {
     }
     pub fn has_audio(&self) -> bool {
         !self.audio_streams.is_empty()
+    }
+    /// Whether any audio stream can be decoded (see [`AudioStreamInfo::can_decode`]).
+    pub fn has_decodable_audio(&self) -> bool {
+        self.audio_streams.iter().any(AudioStreamInfo::can_decode)
     }
     /// The primary audio stream (stream 0), the one [`MediaSource::audio`] reads.
     pub fn audio(&self) -> Option<&AudioStreamInfo> {
@@ -256,5 +283,33 @@ mod importable_tests {
             assert!(is_importable(Path::new(name)), "{name}");
         }
         assert!(!is_importable(Path::new("notes.txt")));
+    }
+}
+
+#[cfg(test)]
+mod audio_stream_tests {
+    use super::*;
+
+    #[test]
+    fn streams_without_a_decoder_are_told_apart() {
+        let aac = AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "AAC".into(), bits_per_sample: None, decodable: true };
+        assert!(aac.can_decode());
+        assert!(!AudioStreamInfo { decodable: false, ..aac.clone() }.can_decode());
+        // what older versions named streams they had no decoder for
+        assert!(!AudioStreamInfo { codec: "unknown".into(), ..aac.clone() }.can_decode());
+        assert!(!AudioStreamInfo { codec: "DTS (unsupported)".into(), ..aac.clone() }.can_decode());
+        let mut info = MediaInfo {
+            name: String::new(),
+            kind: MediaKind::Movie,
+            duration: Tick::ZERO,
+            video: None,
+            audio_streams: vec![AudioStreamInfo { decodable: false, ..aac.clone() }],
+            container: String::new(),
+            start_timecode: None,
+            file_size: None,
+        };
+        assert!(info.has_audio() && !info.has_decodable_audio());
+        info.audio_streams.push(aac);
+        assert!(info.has_decodable_audio());
     }
 }

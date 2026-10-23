@@ -649,7 +649,8 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
     let channels = media_root(&s.project, first).and_then(|(_, m, _)| m.info.audio().map(|a| a.channels)).unwrap_or(2);
     let n_audio = media_root(&s.project, first)
         .map(|(_, m, _)| {
-            crate::commands::audio_placement_specs(m.interpret.audio_channels.as_ref().map_or(&[], |a| a.clips.as_slice()), m.info.audio_streams.len()).len()
+            let decodable: Vec<bool> = m.info.audio_streams.iter().map(|a| a.can_decode()).collect();
+            crate::commands::audio_placement_specs(m.interpret.audio_channels.as_ref().map_or(&[], |a| a.clips.as_slice()), &decodable).len()
         })
         .unwrap_or(1);
     let n0 = s.history.undo.len();
@@ -781,6 +782,7 @@ fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
                 channels: u64_p(p, "channels").unwrap_or(2).max(1) as u32,
                 codec: String::new(),
                 bits_per_sample: None,
+                decodable: true,
             })
             .into_iter()
             .collect(),

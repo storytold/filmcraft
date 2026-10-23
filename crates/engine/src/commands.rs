@@ -785,26 +785,61 @@ pub(crate) struct AudioPlacementSpec {
 }
 
 /// The audio clips to place for a source whose Modify ▸ Audio Channels map has `clips` (one entry
-/// per clip): always at least one (on the destination track), then one per further entry on the
-/// tracks below. The count is capped at [`crate::sequence_tools::MAX_TRACKS`] (the map comes from
-/// project files and scripts: never trusted).
-pub(crate) fn audio_placement_specs(clips: &[Vec<u16>], streams: usize) -> Vec<AudioPlacementSpec> {
-    let mut specs = vec![AudioPlacementSpec { track_offset: 0, audio_stream: 0, source_channels: None }];
-    let extra = clips.iter().skip(1).take(crate::sequence_tools::MAX_TRACKS.saturating_sub(1));
-    specs.extend(extra.enumerate().map(|(k, chans)| AudioPlacementSpec {
-        track_offset: k.saturating_add(1),
-        audio_stream: 0,
-        source_channels: Some(chans.clone()),
-    }));
-    // Interpret Footage's channel map describes stream 0; further container streams keep their
-    // own channel layouts and get one clip each, after any channel-map clips.
-    for stream in 1..streams.min(filmcraft_media::MAX_AUDIO_STREAMS) {
-        if specs.len() >= crate::sequence_tools::MAX_TRACKS {
+/// per clip) and whose audio streams decode as `decodable` (`decodable[k]` for stream `k`): one
+/// clip on the destination track, then one per further map entry and further stream on the
+/// tracks below. Undecodable streams get no clip and the others keep file order from the
+/// destination track down, so an iPhone video whose first stream is Apple Positional Audio puts
+/// its AAC stream on A1 (#2758). No streams at all counts as one decodable stream 0 (a source
+/// whose media is not known); streams none of which decode give no clips. The count is capped at
+/// [`crate::sequence_tools::MAX_TRACKS`] (the map comes from project files and scripts: never
+/// trusted).
+pub(crate) fn audio_placement_specs(clips: &[Vec<u16>], decodable: &[bool]) -> Vec<AudioPlacementSpec> {
+    let max = crate::sequence_tools::MAX_TRACKS;
+    let usable: Vec<usize> = if decodable.is_empty() {
+        vec![0]
+    } else {
+        decodable.iter().take(filmcraft_media::MAX_AUDIO_STREAMS).enumerate().filter(|(_, d)| **d).map(|(k, _)| k).collect()
+    };
+    let mut specs: Vec<AudioPlacementSpec> = Vec::new();
+    for stream in usable {
+        if specs.len() >= max {
             break;
         }
         specs.push(AudioPlacementSpec { track_offset: specs.len(), audio_stream: stream, source_channels: None });
+        // Interpret Footage's channel map describes stream 0: its further clips follow stream 0's
+        // own; further container streams keep their own channel layouts and get one clip each
+        if stream == 0 {
+            for chans in clips.iter().skip(1) {
+                if specs.len() >= max {
+                    break;
+                }
+                specs.push(AudioPlacementSpec { track_offset: specs.len(), audio_stream: 0, source_channels: Some(chans.clone()) });
+            }
+        }
     }
     specs
+}
+
+/// The audio streams of `item`'s media that FilmCraft can't decode, as (stream index, codec
+/// name), in file order. Empty for items without media.
+pub(crate) fn undecodable_audio_streams(p: &Project, item: ItemId) -> Vec<(usize, String)> {
+    p.resolve_media(item)
+        .map(|(_, m, _)| m.info.audio_streams.iter().enumerate().filter(|(_, a)| !a.can_decode()).map(|(k, a)| (k, a.codec.clone())).collect())
+        .unwrap_or_default()
+}
+
+/// What a placement says about audio streams it left out: `None` when there were none.
+pub(crate) fn skipped_audio_message(name: &str, skipped: &[(usize, String)], all: bool) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let list = |(k, codec): &(usize, String)| format!("stream {} ({codec})", k.saturating_add(1));
+    let names = skipped.iter().map(list).collect::<Vec<_>>().join(", ");
+    Some(if all {
+        format!("\"{name}\": placed the picture only; FilmCraft can't decode its audio ({names})")
+    } else {
+        format!("\"{name}\": left out audio {names}, which FilmCraft can't decode")
+    })
 }
 
 /// Make sure the sequence has audio tracks for `count` clips starting at track index `first`,
@@ -899,7 +934,13 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
     let at = rate.snap_nearest(at);
     let dur = end - at;
     let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip", None)?;
-    Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
+    let mut out = json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()});
+    // audio streams left out because nothing decodes them (#2758): say which, so a script knows
+    let skipped = if a.is_some() { undecodable_audio_streams(&s.project, item) } else { Vec::new() };
+    if !skipped.is_empty() {
+        out["skippedAudioStreams"] = skipped.iter().map(|(k, codec)| json!({"stream": k, "codec": codec})).collect();
+    }
+    Ok(out)
 }
 
 /// Most items one `timeline.place` with `items` takes: a larger list is refused, not cut.
@@ -977,9 +1018,17 @@ pub(crate) fn place_item(
         return crate::sequence_tools::place_sequence_clips(s, item, range, at, vdest, adest, insert, label);
     }
     let (video, audio) = s.project.source_streams(item);
+    // audio streams with no decoder get no clip (#2758); when that is all of them, the picture
+    // goes in alone
+    let skipped = if audio && adest.is_some() { undecodable_audio_streams(&s.project, item) } else { Vec::new() };
+    let no_sound = audio && s.project.resolve_media(item).is_some_and(|(_, m, _)| !m.info.has_decodable_audio());
     let has_v = video && vdest.is_some();
-    let has_a = audio && adest.is_some();
+    let has_a = audio && adest.is_some() && !no_sound;
     if !has_v && !has_a {
+        if no_sound && adest.is_some() {
+            let names = skipped.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>().join(", ");
+            return Err(bad(label, format!("FilmCraft can't decode this media's audio ({names}), and there is no picture to place")));
+        }
         return Err(EngineError::Other("no destination track for this media (check source patching)".into()));
     }
     let src_size = match &pi.kind {
@@ -995,7 +1044,7 @@ pub(crate) fn place_item(
     let media = s.media.clone();
     let scaling = s.prefs.media.default_media_scaling.clone();
     let is_media = matches!(pi.kind, ItemKind::Media(_) | ItemKind::Subclip { .. });
-    s.edit(label, |p, st| {
+    let ids = s.edit(label, |p, st| {
         let seq = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
         let rate = seq.settings.frame_rate;
         let frame = (seq.settings.width, seq.settings.height);
@@ -1021,8 +1070,8 @@ pub(crate) fn place_item(
             // Modify ▸ Audio Channels with several audio clips: one per clip, on the tracks below
             let clips: Vec<Vec<u16>> =
                 p.resolve_media(item).and_then(|(_, m, _)| m.interpret.audio_channels.as_ref()).map(|m| m.clips.clone()).unwrap_or_default();
-            let streams = p.resolve_media(item).map_or(1, |(_, m, _)| m.info.audio_streams.len());
-            let specs = audio_placement_specs(&clips, streams);
+            let decodable: Vec<bool> = p.resolve_media(item).map(|(_, m, _)| m.info.audio_streams.iter().map(|a| a.can_decode()).collect()).unwrap_or_default();
+            let specs = audio_placement_specs(&clips, &decodable);
             let first = p.sequence(seq_id).and_then(|q| q.audio_tracks.iter().position(|t| t.id == adest)).unwrap_or(0);
             // too few audio tracks below the destination: grow the sequence from the destination track
             let tracks = ensure_audio_tracks(p, seq_id, first, specs.len(), label)?;
@@ -1068,7 +1117,11 @@ pub(crate) fn place_item(
         p.next_id = next;
         st.selection = ids.clone();
         Ok(ids)
-    })
+    })?;
+    if let Some(msg) = skipped_audio_message(&pi.name, &skipped, no_sound) {
+        s.warning_toast("timeline", msg);
+    }
+    Ok(ids)
 }
 
 /// How long an item runs on the Timeline without In/Out marks: its duration, or for a still (and a

@@ -373,6 +373,7 @@ impl AviSource {
                 channels,
                 codec: label,
                 bits_per_sample: (w.bits_per_sample > 0).then_some(u32::from(w.bits_per_sample)),
+                decodable: !matches!(codec, ACodec::Unsupported(_)),
             });
             let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
             audios.push(AviAudio { stream: s, codec, pieces, first, starts, state });

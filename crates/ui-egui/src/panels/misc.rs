@@ -179,6 +179,18 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if let Some(a) = m.info.audio() {
                 line(ui, tl!("Audio:"), format!("{} Hz - {} ch - {}", a.sample_rate, a.channels, a.codec));
             }
+            // audio streams placement leaves out because nothing decodes them (#2758)
+            let skipped: Vec<String> = m
+                .info
+                .audio_streams
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| !a.can_decode())
+                .map(|(k, a)| format!("#{} ({})", k.saturating_add(1), a.codec))
+                .collect();
+            if !skipped.is_empty() {
+                line(ui, tl!("Audio not decodable:"), skipped.join(", "));
+            }
         }
         line(ui, tl!("Duration:"), format_time(item.duration(), item.frame_rate(), false, TimeDisplay::Timecode, 48000));
         ui.separator();
