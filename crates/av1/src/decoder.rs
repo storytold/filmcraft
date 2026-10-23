@@ -1201,6 +1201,7 @@ mod worker_recovery_tests {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    /// Construct a minimal frame job, optionally injecting an impossible internal reference index.
     fn job(panics: bool) -> FrameJob {
         // Inject an impossible internal reference index to panic inside decode_frame,
         // without accepting malformed media or adding a production panic hook.
@@ -1219,6 +1220,7 @@ mod worker_recovery_tests {
         }
     }
 
+    /// Abandonment publishes errors to both reference and output waiters.
     #[test]
     fn abandoned_frame_job_releases_both_result_slots() {
         let job = job(false);
@@ -1231,6 +1233,7 @@ mod worker_recovery_tests {
         assert!(picture.wait().is_err());
     }
 
+    /// Cleanup preserves successful results and errors that have already been published.
     #[test]
     fn abandoning_a_job_preserves_already_published_results() {
         let completed = Slot::new();
@@ -1247,6 +1250,7 @@ mod worker_recovery_tests {
         assert!(matches!(picture.wait(), Err(Error::Unsupported("already published"))));
     }
 
+    /// The calling-thread path converts an injected decoder panic into both result errors.
     #[test]
     fn sequential_panicking_job_returns_errors_to_all_waiters() {
         let job = job(true);
@@ -1260,6 +1264,7 @@ mod worker_recovery_tests {
         assert!(picture.wait().is_err());
     }
 
+    /// Real workers survive a job panic while dependent work, drain, replacement and drop finish.
     #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
     #[test]
     fn threaded_panicking_job_does_not_strand_waiters_or_shutdown() {

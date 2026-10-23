@@ -152,5 +152,5 @@ for sample in samples {                  // one temporal unit (MP4 / Matroska sa
         // pic.width, pic.height, pic.bit_depth, pic.planes[0..3], pic.pts
     }
 }
-let rest = dec.flush();                  // pictures still in flight at the end
+let rest = dec.flush_result()?;          // pictures still in flight; propagate drain errors
 ```
