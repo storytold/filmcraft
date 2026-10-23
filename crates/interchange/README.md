@@ -102,5 +102,7 @@ OMF carries no video at all.
   transition rules and sequence length arithmetic; every stored form round-trips through the
   container; a file rewritten into Premiere Pro's layout (video tracks as layers of one slot,
   nested compositions tagged top-level) reads back as the same edit.
+- `src/common.rs` (`scaled_saturates`) and `tests/edl.rs`: a duration read from a file times an integral speed saturates
+  instead of overflowing (an EDL with a record-out timecode of 2147483647 hours and an `M2` speed change panicked).
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.

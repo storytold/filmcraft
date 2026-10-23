@@ -436,3 +436,20 @@ fn a_nested_sequence_is_one_event_from_reel_ax() {
     let c = &q.video_tracks[0].items[0];
     assert_eq!((c.name.as_str(), c.start, c.duration, c.source_in), ("Nested Sequence 02", rate.tick_of(72), rate.tick_of(48), rate.tick_of(24)));
 }
+
+/// A record-out timecode of 2147483647 hours with an `M2` speed change multiplied a huge duration by the
+/// speed with a plain `*` (attempt to multiply with overflow, found by mutation fuzzing). The duration
+/// saturates, and the document imports and exports in every format.
+#[test]
+fn huge_duration_with_a_speed_change_does_not_overflow() {
+    let edl = "TITLE: Seq\nFCM: NON-DROP FRAME\n\n\
+001  A        V     C        00:00:00:10 00:00:04:04 00:00:00:00 2147483647:00:03:18\n\
+M2   A              072.0                00:00:00:10\n\
+* FROM CLIP NAME: A.mov\n* SOURCE FILE: /media/A.mov\n";
+    let (imported, _) = import(edl.as_bytes(), Format::Edl, None).expect("import succeeds");
+    for seq in &imported.sequences {
+        for format in [Format::Edl, Format::Fcpxml, Format::Fcp7Xml, Format::Otio] {
+            export(&imported.project, *seq, format, &ExportOptions::default()).unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        }
+    }
+}
