@@ -1724,9 +1724,15 @@ pub fn resolve_auto_points(e: &mut EffectInstance, frame: (u32, u32), source: (u
 /// [`resolve_auto_points`] for a source whose size may not be known yet (`None`): the points
 /// measured in the source (`anchor`) then stay "auto".
 fn resolve_auto_points_sized(e: &mut EffectInstance, frame: (u32, u32), source: Option<(u32, u32)>) {
+    // Motion places the clip in the frame: its position is in sequence pixels, its anchor in the
+    // clip's source. Every other effect works on the clip's own picture (the renderer's points are
+    // in clip pixels), so all of its points are in the source: the Transform effect's position
+    // resolved to the sequence frame's centre pulled a picture of another size off to the side
+    // (#2588).
+    let in_source = |k: &str| k == "anchor" || e.effect != "motion";
     for (k, p) in e.params.iter_mut() {
         if let ParamValue::Vec2(v) = &mut p.value {
-            let Some((w, h)) = (if k == "anchor" { source } else { Some(frame) }) else { continue };
+            let Some((w, h)) = (if in_source(k) { source } else { Some(frame) }) else { continue };
             if let Some((fx, fy)) = effect::auto_point(&e.effect, k) {
                 if v.x.is_nan() {
                     v.x = w as f64 * fx;
@@ -1997,6 +2003,25 @@ mod tests {
         assert_eq!(p.source_streams(ItemId(u64::MAX)), (false, false));
         p.item_mut(parent).unwrap().kind = ItemKind::Subclip { parent, range: last_range, restrict_trims: false };
         assert_eq!(p.source_streams(parent), (false, false));
+    }
+
+    /// #2588: Motion's position is in the frame; every other effect's points are in the clip's
+    /// own picture, so the Transform effect scales a 4K photo in a 1080 sequence about its centre.
+    #[test]
+    fn clip_effect_points_resolve_in_the_source_not_the_frame() {
+        let mut motion = find_effect("motion").unwrap().instance();
+        let mut transform = find_effect("transform").unwrap().instance();
+        for e in [&mut motion, &mut transform] {
+            resolve_auto_points(e, (1920, 1080), (4000, 3000));
+        }
+        assert_eq!(motion.vec2_at("position", Tick::ZERO), Vec2::new(960.0, 540.0));
+        assert_eq!(motion.vec2_at("anchor", Tick::ZERO), Vec2::new(2000.0, 1500.0));
+        assert_eq!(transform.vec2_at("position", Tick::ZERO), Vec2::new(2000.0, 1500.0));
+        assert_eq!(transform.vec2_at("anchor", Tick::ZERO), Vec2::new(2000.0, 1500.0));
+        // a source whose size is not known yet leaves every clip-space point auto
+        let mut later = find_effect("transform").unwrap().instance();
+        resolve_auto_points_sized(&mut later, (1920, 1080), None);
+        assert!(later.vec2_at("position", Tick::ZERO).x.is_nan() && later.vec2_at("anchor", Tick::ZERO).y.is_nan());
     }
 
     #[test]

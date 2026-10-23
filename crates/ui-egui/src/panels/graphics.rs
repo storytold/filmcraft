@@ -1285,8 +1285,28 @@ impl Ctx<'_> {
             self.actions.push(("effects.toggleAnimation".into(), json!({"clip": self.clip.0, "effect": self.eidx, "param": id})));
         }
     }
+    /// The number a field shows for `id`. With a Type-tool selection, a character property shows
+    /// the selected characters' own value when they have one: `set` writes it there, so showing
+    /// the layer's value instead left the field unchanged by typing and drags, which restarted
+    /// from the layer's value every frame, going nowhere (#2494).
+    fn value_f64(&self, id: &str) -> f64 {
+        if let (Some((a, _)), Some(runs)) = (self.range.filter(|_| char_style_key(id).is_some()), self.e.layer.as_ref().map(|l| &l.runs)) {
+            let style =
+                runs.iter().filter(|r| r.start <= a && a < r.end).fold(filmcraft_project::graphic_design::CharStyle::default(), |s, r| s.merged(&r.style));
+            let own = match id {
+                "size" => style.size,
+                "tracking" => style.tracking,
+                "baseline_shift" => style.baseline_shift,
+                _ => None,
+            };
+            if let Some(v) = own {
+                return f64::from(v);
+            }
+        }
+        pv(self.e, id, self.mt).as_f64().unwrap_or(0.0)
+    }
     fn number(&mut self, ui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
-        let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
+        let v = self.value_f64(id);
         let (r, mut vui) = self.row(ui, label);
         let (resp, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, label);
@@ -1296,7 +1316,7 @@ impl Ctx<'_> {
         }
     }
     fn number_in(&mut self, vui: &mut egui::Ui, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
-        let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
+        let v = self.value_f64(id);
         let (resp, nv) = crate::widgets::hot_number(vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, id);
         if let Some(nv) = nv {
@@ -1925,4 +1945,38 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.gfx_edit = None;
     }
     app.ui.text_props_dialog = if ok || close { None } else { Some(d) };
+}
+
+#[cfg(test)]
+mod char_style_tests {
+    use super::*;
+    use filmcraft_project::graphic_design::{CharStyle, LayerExtra, StyleRun};
+
+    /// #2494: with a Type-tool selection, Font Size (and the other character numbers) show the
+    /// selected characters' own value, which is what typing and dragging change.
+    #[test]
+    fn a_character_selection_shows_its_own_size() {
+        let mut e = graphic::new_text_layer("Hello world", Vec2::new(0.0, 0.0), 72.0);
+        e.layer = Some(Box::new(LayerExtra {
+            runs: vec![StyleRun { start: 0, end: 5, style: CharStyle { size: Some(140.0), ..Default::default() } }],
+            ..Default::default()
+        }));
+        let cx = |range| Ctx {
+            clip: ClipId(1),
+            layer: 0,
+            eidx: 0,
+            e: &e,
+            mt: Tick::ZERO,
+            t: Tokens::for_kind(crate::theme::ThemeKind::Dark),
+            actions: vec![],
+            autos: vec![],
+            range,
+        };
+        assert_eq!(cx(None).value_f64("size"), 72.0, "no selection: the layer's size");
+        assert_eq!(cx(Some((0, 5))).value_f64("size"), 140.0, "the styled characters' size");
+        assert_eq!(cx(Some((2, 4))).value_f64("size"), 140.0);
+        assert_eq!(cx(Some((6, 11))).value_f64("size"), 72.0, "unstyled characters inherit the layer's size");
+        assert_eq!(cx(Some((0, 5))).value_f64("tracking"), 0.0, "a property the run does not set");
+        assert_eq!(cx(Some((0, 5))).value_f64("position"), 0.0, "not a character property");
+    }
 }

@@ -35,6 +35,9 @@ pub struct ScrubAudio {
     open: bool,
     last_tick: Option<Tick>,
     last_move: f64,
+    /// The playhead was stepped from the keyboard this frame (`playhead.step*`): a scrub too,
+    /// without a button down (#2567).
+    pub(crate) stepped: bool,
 }
 
 impl ScrubAudio {
@@ -62,6 +65,9 @@ impl FilmcraftApp {
     pub fn scrub_tick(&mut self, now: f64, down: bool) -> bool {
         let ph = self.session.playhead();
         let prev = self.scrub.last_tick.replace(ph);
+        // a frame step counts as a move with the button down: the grain plays, and the stream
+        // then lingers and closes as after a release
+        let down = down || std::mem::take(&mut self.scrub.stepped);
         if self.playback.playing || self.source_playback.clock.playing {
             // playback (Program or Source) owns the device: it stopped the scrub stream when it
             // started, and the scrub must not stop it when the button is released
@@ -265,5 +271,25 @@ mod tests {
         assert!(!app.scrub_tick(0.05 + LINGER_S, false));
         assert!(fill.lock().unwrap().is_some(), "the Source playback stream is still playing");
         assert!(!app.scrub.is_open());
+    }
+
+    /// #2567: stepping the playhead with the arrow keys (`playhead.step*`) plays a grain too,
+    /// with no button down; the stream then closes as after a release.
+    #[test]
+    fn a_keyboard_step_plays_a_grain() {
+        let (mut app, fill) = app(true);
+        let rate = app.session.sequence_rate();
+        app.session.set_playhead(rate.tick_of(48));
+        assert!(!app.scrub_tick(0.0, false));
+        app.session.set_playhead(rate.tick_of(49));
+        assert!(!app.scrub_tick(0.02, false), "a move without a button or a step plays nothing");
+        app.scrub.stepped = true;
+        app.session.set_playhead(rate.tick_of(50));
+        assert!(app.scrub_tick(0.04, false), "a step opens the stream");
+        assert!(loudness(&fill) > 0.0, "the demo's music is heard");
+        assert!(!app.scrub.stepped, "the step is consumed");
+        assert!(app.scrub_tick(0.1, false), "lingers briefly");
+        assert!(!app.scrub_tick(0.1 + LINGER_S, false), "then closes");
+        assert!(fill.lock().unwrap().is_none());
     }
 }

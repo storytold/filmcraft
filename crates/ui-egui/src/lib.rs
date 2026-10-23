@@ -1990,7 +1990,11 @@ impl FilmcraftApp {
             state::Tool::Hand => tl!("Drag to scroll the timeline."),
             state::Tool::Zoom if mac => tl!("Click to zoom in; Opt-click to zoom out."),
             state::Tool::Zoom => tl!("Click to zoom in; Alt-click to zoom out."),
-            _ => "",
+            state::Tool::Pen => tl!("Click a clip's Volume line in the Timeline to add a keyframe; click points in the Program Monitor to draw a shape and press Enter to finish it."),
+            state::Tool::Rectangle => tl!("Drag in the Program Monitor to draw a rectangle shape layer."),
+            state::Tool::Ellipse => tl!("Drag in the Program Monitor to draw an ellipse shape layer."),
+            state::Tool::Type => tl!("Click in the Program Monitor to add a text layer and start typing; click existing text to edit it."),
+            state::Tool::VerticalType => tl!("Click in the Program Monitor to add vertical text; click existing text to edit it."),
         }
         .to_string()
     }

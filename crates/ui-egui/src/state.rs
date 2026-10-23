@@ -89,6 +89,14 @@ impl Tool {
             Tool::VerticalType => "",
         }
     }
+    /// The command that selects this tool (`tool.razor`): the Debug name with a lower-case first
+    /// letter, as the `uic!` table in `menus` and `from_name` spell it.
+    pub fn command_id(self) -> String {
+        let name = format!("{self:?}");
+        let mut chars = name.chars();
+        let first = chars.next().map(|c| c.to_ascii_lowercase()).unwrap_or_default();
+        format!("tool.{first}{}", chars.as_str())
+    }
     pub fn icon(self) -> Icon {
         match self {
             Tool::Selection => Icon::Selection,

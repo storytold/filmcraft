@@ -3617,3 +3617,8 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	Click a clip's Volume line in the Timeline to add a keyframe; click points in the Program Monitor to draw a shape and press Enter to finish it.	Haz clic en la línea de Volumen de un clip en la línea de tiempo para añadir un fotograma clave; haz clic en puntos del Monitor de programa para dibujar una forma y pulsa Intro para terminarla.
+	Drag in the Program Monitor to draw a rectangle shape layer.	Arrastra en el Monitor de programa para dibujar una capa de forma rectangular.
+	Drag in the Program Monitor to draw an ellipse shape layer.	Arrastra en el Monitor de programa para dibujar una capa de forma elíptica.
+	Click in the Program Monitor to add a text layer and start typing; click existing text to edit it.	Haz clic en el Monitor de programa para añadir una capa de texto y empieza a escribir; haz clic en un texto existente para editarlo.
+	Click in the Program Monitor to add vertical text; click existing text to edit it.	Haz clic en el Monitor de programa para añadir texto vertical; haz clic en un texto existente para editarlo.

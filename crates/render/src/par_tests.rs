@@ -268,3 +268,21 @@ fn hostile_pixel_aspect_ratios_render_square_without_panicking() {
         assert!(img.px.iter().all(|v| v.is_finite()), "{src:?} {par:?}");
     }
 }
+
+/// #2588: the Transform effect works in the clip's own pixels, so its auto Position is the
+/// picture's centre, not the frame's: a picture smaller than the frame scales in place instead of
+/// being pulled towards the frame centre's coordinates and cut off at its own edge.
+#[test]
+fn the_transform_effect_scales_a_small_picture_about_its_own_centre() {
+    // a 96 x 96 picture centred in a 192 x 108 frame: columns 48..96 red, 96..144 blue
+    let (mut p, seq, _, map) = project((96, 96), (1, 1), (192, 108), (1, 1), false);
+    assert_row(&row(&render(&p, seq, &map)), &format!("{}{}{}{}", ".".repeat(48), "r".repeat(48), "b".repeat(48), ".".repeat(48)));
+    let mut e = filmcraft_project::find_effect("transform").unwrap().instance();
+    resolve_auto_points(&mut e, (192, 108), (96, 96));
+    assert_eq!(e.vec2_at("position", Tick::ZERO), filmcraft_geom::Vec2::new(48.0, 48.0));
+    assert_eq!(e.vec2_at("anchor", Tick::ZERO), filmcraft_geom::Vec2::new(48.0, 48.0));
+    e.params.get_mut("scale_height").unwrap().value = ParamValue::Float(50.0);
+    p.sequence_mut(seq).unwrap().video_tracks[0].items[0].effects.push(e);
+    // half the size, still centred: columns 72..96 red, 96..120 blue
+    assert_row(&row(&render(&p, seq, &map)), &format!("{}{}{}{}", ".".repeat(72), "r".repeat(24), "b".repeat(24), ".".repeat(72)));
+}

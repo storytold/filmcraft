@@ -7,6 +7,13 @@ use crate::FilmcraftApp;
 use crate::icons;
 use crate::state::Tool;
 
+/// The shortcut a tool's tooltip and flyout row show: the key bound to its command now (a
+/// customized shortcut, #2511), displayed as the platform writes it; none when it has no binding.
+fn tool_shortcut(app: &FilmcraftApp, tool: Tool) -> Option<String> {
+    let keys = app.session.shortcuts.primary(&tool.command_id())?;
+    Some(crate::menus::shortcut_text(&keys))
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let mut y = rect.min.y + 4.0;
@@ -18,10 +25,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for group in Tool::groups() {
         let current = if group.contains(&app.ui.tool) { app.ui.tool } else { group[0] };
         let r = Rect::from_min_size(pos2(rect.center().x - size / 2.0, y), vec2(size, size));
-        let tip = if current.shortcut().is_empty() {
-            app.ui.language.tr(current.label()).to_owned()
-        } else {
-            format!("{} ({})", app.ui.language.tr(current.label()), current.shortcut())
+        let tip = match tool_shortcut(app, current) {
+            Some(keys) => format!("{} ({keys})", app.ui.language.tr(current.label())),
+            None => app.ui.language.tr(current.label()).to_owned(),
         };
         let resp = ui.interact(r, egui::Id::new(("tool", format!("{:?}", group[0]))), Sense::click_and_drag()).on_hover_text(tip);
         resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, resp.enabled(), app.ui.tool == current, current.label()));
@@ -74,7 +80,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let close_behavior = if held && resp.clicked() { egui::PopupCloseBehavior::IgnoreClicks } else { egui::PopupCloseBehavior::CloseOnClickOutside };
             egui::Popup::menu(&resp).open_memory(command).close_behavior(close_behavior).show(|ui| {
                 for tl in &group {
-                    let row = ui.selectable_label(app.ui.tool == *tl, format!("{}   {}", app.ui.language.tr(tl.label()), tl.shortcut()));
+                    let keys = tool_shortcut(app, *tl).unwrap_or_default();
+                    let row = ui.selectable_label(app.ui.tool == *tl, format!("{}   {keys}", app.ui.language.tr(tl.label())));
                     app.auto.add_response(&format!("tools.select.{tl:?}"), &row, tl.label());
                     // letting go over a row of a flyout this press opened picks that tool
                     let released_on = held && ui.input(|i| i.pointer.primary_released() && i.pointer.interact_pos().is_some_and(|p| row.rect.contains(p)));
@@ -218,5 +225,18 @@ mod tests {
         let layer = filmcraft_project::graphic::eval_layer(&item.effects[effect_index], filmcraft_time::Tick::ZERO, (1920, 1080)).unwrap();
         let filmcraft_project::graphic::LayerContent::Text(text) = layer.content else { panic!("text layer expected") };
         assert!(text.vertical, "the actual monitor click dispatches the existing vertical text command");
+    }
+
+    /// #2511: a tool's tooltip and flyout row show the shortcut bound to it now, not the preset's.
+    #[test]
+    fn tooltips_show_the_customized_shortcut() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        assert_eq!(Tool::TrackSelectForward.command_id(), "tool.trackSelectForward");
+        assert_eq!(tool_shortcut(&app, Tool::Razor).as_deref(), Some("C"));
+        assert_eq!(tool_shortcut(&app, Tool::Remix), None, "no binding, no parenthesis");
+        app.session.shortcuts.set("tool.razor", "S", None, false, false).unwrap();
+        assert_eq!(tool_shortcut(&app, Tool::Razor).as_deref(), Some("S"));
+        app.session.shortcuts.clear("tool.razor", None, None).unwrap();
+        assert_eq!(tool_shortcut(&app, Tool::Razor), None);
     }
 }

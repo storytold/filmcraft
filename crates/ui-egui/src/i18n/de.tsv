@@ -3613,3 +3613,8 @@
 	Shows the version, community links and credits in a FilmCraft window.	Zeigt Version, Community-Links und Credits in einem FilmCraft-Fenster.
 	Couldn't open your web browser	Dein Webbrowser konnte nicht geöffnet werden
 	Open this address in your browser yourself:	Öffne diese Adresse selbst in deinem Browser:
+	Click a clip's Volume line in the Timeline to add a keyframe; click points in the Program Monitor to draw a shape and press Enter to finish it.	Klick auf die Lautstärkelinie eines Clips in der Timeline fügt einen Keyframe hinzu; Klicks auf Punkte im Programmmonitor zeichnen eine Form, Eingabetaste schließt sie ab.
+	Drag in the Program Monitor to draw a rectangle shape layer.	Im Programmmonitor ziehen zeichnet eine rechteckige Formebene.
+	Drag in the Program Monitor to draw an ellipse shape layer.	Im Programmmonitor ziehen zeichnet eine elliptische Formebene.
+	Click in the Program Monitor to add a text layer and start typing; click existing text to edit it.	Klick in den Programmmonitor fügt eine Textebene hinzu, dann einfach tippen; Klick auf vorhandenen Text bearbeitet ihn.
+	Click in the Program Monitor to add vertical text; click existing text to edit it.	Klick in den Programmmonitor fügt vertikalen Text hinzu; Klick auf vorhandenen Text bearbeitet ihn.

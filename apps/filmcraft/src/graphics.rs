@@ -473,13 +473,22 @@ fn software_backends(windows: bool) -> Backends {
     if windows { Backends::DX12 } else { Backends::VULKAN | Backends::GL }
 }
 
-/// The first software adapter that can draw to the window's surface.
+/// The first software adapter that can draw to the window's surface. Without one (no
+/// `vulkan-swrast` / WARP installed), the first adapter that can: software mode was saved after
+/// earlier failed starts, and a hardware adapter is a better chance than no window at all (#2581);
+/// the mode's notice offers Use Default Graphics, and `--graphics default` does the same.
 fn pick_software(adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>) -> Result<wgpu::Adapter, String> {
-    adapters
-        .iter()
-        .find(|a| filmcraft_ui_egui::software_rasterizer(&a.get_info()).is_some() && surface.is_none_or(|s| a.is_surface_supported(s)))
-        .cloned()
-        .ok_or_else(|| format!("no software graphics adapter (WARP, lavapipe, llvmpipe) among {} adapters", adapters.len()))
+    let draws = |a: &&wgpu::Adapter| surface.is_none_or(|s| a.is_surface_supported(s));
+    if let Some(a) = adapters.iter().filter(draws).find(|a| filmcraft_ui_egui::software_rasterizer(&a.get_info()).is_some()) {
+        return Ok(a.clone());
+    }
+    let a = adapters.iter().find(draws).ok_or_else(|| format!("no graphics adapter can draw to the window among {} adapters", adapters.len()))?;
+    log::warn!(
+        "no software graphics adapter (WARP, lavapipe, llvmpipe) among {} adapters; drawing with {} instead (`--graphics default` leaves software mode)",
+        adapters.len(),
+        a.get_info().name
+    );
+    Ok(a.clone())
 }
 
 /// Whether `err` from `eframe::run_native` is a graphics start-up failure that another mode may
@@ -877,11 +886,14 @@ mod tests {
         let backends = software_backends(cfg!(target_os = "windows"));
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..wgpu::InstanceDescriptor::new_without_display_handle() });
         let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+        let any_software = adapters.iter().any(|a| filmcraft_ui_egui::software_rasterizer(&a.get_info()).is_some());
         match pick_software(&adapters, None) {
-            Ok(adapter) => assert!(filmcraft_ui_egui::software_rasterizer(&adapter.get_info()).is_some()),
-            Err(why) => {
-                assert!(adapters.iter().all(|a| filmcraft_ui_egui::software_rasterizer(&a.get_info()).is_none()), "{why}");
-            }
+            Ok(adapter) => assert_eq!(
+                filmcraft_ui_egui::software_rasterizer(&adapter.get_info()).is_some(),
+                any_software,
+                "a software adapter when there is one; else a hardware one rather than no window (#2581)"
+            ),
+            Err(why) => assert!(adapters.is_empty(), "{why}"),
         }
         assert!(pick_software(&[], None).is_err());
     }

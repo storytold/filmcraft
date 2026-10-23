@@ -3582,3 +3582,8 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	Click a clip's Volume line in the Timeline to add a keyframe; click points in the Program Monitor to draw a shape and press Enter to finish it.	Klik garis Volume klip di linimasa untuk menambahkan keyframe; klik titik-titik di Monitor Program untuk menggambar bentuk dan tekan Enter untuk menyelesaikannya.
+	Drag in the Program Monitor to draw a rectangle shape layer.	Seret di Monitor Program untuk menggambar lapisan bentuk persegi panjang.
+	Drag in the Program Monitor to draw an ellipse shape layer.	Seret di Monitor Program untuk menggambar lapisan bentuk elips.
+	Click in the Program Monitor to add a text layer and start typing; click existing text to edit it.	Klik di Monitor Program untuk menambahkan lapisan teks dan mulai mengetik; klik teks yang ada untuk mengeditnya.
+	Click in the Program Monitor to add vertical text; click existing text to edit it.	Klik di Monitor Program untuk menambahkan teks vertikal; klik teks yang ada untuk mengeditnya.

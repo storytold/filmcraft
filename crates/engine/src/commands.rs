@@ -2954,6 +2954,15 @@ fn build() -> Vec<CommandSpec> {
                 return Err(bad("effects.apply", "audio effects need an audio clip (or a video clip with linked audio)"));
             }
             let (fw, fh) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
+            // each clip's own picture size: a clip effect's auto points are its centre, not the
+            // frame's (#2588: Transform scaled a photo about the frame centre's coordinates)
+            let sizes: std::collections::HashMap<ClipId, (u32, u32)> = clips
+                .iter()
+                .filter_map(|c| {
+                    let (_, it) = s.active_sequence()?.find_item(*c)?;
+                    Some((*c, s.project.source_size(it.item)?))
+                })
+                .collect();
             let label = format!("Apply {}", def.name);
             s.edit_sequence(&label, |q, _, _| {
                 let mut n = 0;
@@ -2963,7 +2972,7 @@ fn build() -> Vec<CommandSpec> {
                     }
                     for i in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
                         let mut inst = def.instance();
-                        resolve_auto_points(&mut inst, (fw, fh), (fw, fh));
+                        resolve_auto_points(&mut inst, (fw, fh), sizes.get(&i.id).copied().unwrap_or((fw, fh)));
                         // standard effects go before the intrinsic ones (render order)
                         let pos = i.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(i.effects.len());
                         let pos = if is_audio { i.effects.len() } else { pos };

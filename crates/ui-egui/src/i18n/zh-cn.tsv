@@ -3592,3 +3592,8 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Click a clip's Volume line in the Timeline to add a keyframe; click points in the Program Monitor to draw a shape and press Enter to finish it.	在时间轴中单击剪辑的音量线以添加关键帧；在节目监视器中单击各点以绘制形状，按 Enter 完成。
+	Drag in the Program Monitor to draw a rectangle shape layer.	在节目监视器中拖动以绘制矩形形状图层。
+	Drag in the Program Monitor to draw an ellipse shape layer.	在节目监视器中拖动以绘制椭圆形状图层。
+	Click in the Program Monitor to add a text layer and start typing; click existing text to edit it.	在节目监视器中单击以添加文本图层并开始输入；单击现有文本可进行编辑。
+	Click in the Program Monitor to add vertical text; click existing text to edit it.	在节目监视器中单击以添加竖排文本；单击现有文本可进行编辑。

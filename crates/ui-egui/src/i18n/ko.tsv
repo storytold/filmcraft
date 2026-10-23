@@ -3603,3 +3603,8 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+	Click a clip's Volume line in the Timeline to add a keyframe; click points in the Program Monitor to draw a shape and press Enter to finish it.	타임라인에서 클립의 볼륨 선을 클릭하면 키프레임이 추가됩니다. 프로그램 모니터에서 점을 클릭해 모양을 그리고 Enter 키로 완료합니다.
+	Drag in the Program Monitor to draw a rectangle shape layer.	프로그램 모니터에서 드래그하여 사각형 모양 레이어를 그립니다.
+	Drag in the Program Monitor to draw an ellipse shape layer.	프로그램 모니터에서 드래그하여 타원 모양 레이어를 그립니다.
+	Click in the Program Monitor to add a text layer and start typing; click existing text to edit it.	프로그램 모니터를 클릭해 텍스트 레이어를 추가하고 입력을 시작합니다. 기존 텍스트를 클릭하면 편집할 수 있습니다.
+	Click in the Program Monitor to add vertical text; click existing text to edit it.	프로그램 모니터를 클릭해 세로 텍스트를 추가합니다. 기존 텍스트를 클릭하면 편집할 수 있습니다.

@@ -1082,3 +1082,22 @@ fn toggle_animation_creates_a_parameter_missing_from_an_older_instance() {
     let rot = it.effect("motion").unwrap().param("rotation").unwrap();
     assert!(rot.is_animated(), "the stopwatch is on");
 }
+
+/// #2588: an applied clip effect's auto points are the centre of the clip's own picture, not of
+/// the sequence frame: the Transform effect scales a 1080p clip in a 720p sequence about its
+/// centre instead of a point off to the side.
+#[test]
+fn apply_effect_centres_its_points_in_the_clips_picture() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Small", "width": 1280, "height": 720})).unwrap();
+    let ocean = item_named(&s, "Ocean_Sunset.mp4");
+    let r = s.execute("timeline.place", json!({"item": ocean.0, "track": "V1", "audioTrack": "A1", "seconds": 0.0})).unwrap();
+    let id = r["clips"][0].as_u64().unwrap();
+    s.execute("effects.apply", json!({"clips": [id], "effect": "transform"})).unwrap();
+    let it = clip(&s, id);
+    let point = |effect: &str, k: &str| it.effect(effect).unwrap().vec2_at(k, Tick::ZERO);
+    assert_eq!(point("transform", "anchor"), filmcraft_geom::Vec2::new(960.0, 540.0));
+    assert_eq!(point("transform", "position"), filmcraft_geom::Vec2::new(960.0, 540.0));
+    assert_eq!(point("motion", "anchor"), filmcraft_geom::Vec2::new(960.0, 540.0));
+    assert_eq!(point("motion", "position"), filmcraft_geom::Vec2::new(640.0, 360.0), "Motion places the clip in the frame");
+}

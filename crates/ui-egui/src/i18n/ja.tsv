@@ -3616,3 +3616,8 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Click a clip's Volume line in the Timeline to add a keyframe; click points in the Program Monitor to draw a shape and press Enter to finish it.	タイムラインでクリップのボリュームラインをクリックするとキーフレームを追加します。プログラムモニターで点をクリックしてシェイプを描き、Enter で確定します。
+	Drag in the Program Monitor to draw a rectangle shape layer.	プログラムモニターでドラッグして長方形のシェイプレイヤーを描きます。
+	Drag in the Program Monitor to draw an ellipse shape layer.	プログラムモニターでドラッグして楕円のシェイプレイヤーを描きます。
+	Click in the Program Monitor to add a text layer and start typing; click existing text to edit it.	プログラムモニターでクリックしてテキストレイヤーを追加し、入力を始めます。既存のテキストをクリックすると編集できます。
+	Click in the Program Monitor to add vertical text; click existing text to edit it.	プログラムモニターでクリックして縦書きテキストを追加します。既存のテキストをクリックすると編集できます。

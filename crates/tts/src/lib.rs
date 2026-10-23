@@ -9,6 +9,8 @@
 //!
 //! Everything is deterministic: the same script and settings give the same samples.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+
 pub mod catalog;
 pub mod formant;
 #[cfg(feature = "kokoro")]

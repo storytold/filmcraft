@@ -237,6 +237,11 @@ pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &To
 /// A small pill toggle button with text (e.g. "M", "S" on track headers).
 pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: Color32, t: &Tokens, id: egui::Id) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
+    // A rect clipped to nothing (a track header scrolled out of its half) still has a centre:
+    // painting there put the letter over the other half (#2538).
+    if rect.is_negative() {
+        return resp;
+    }
     let bg = if on {
         on_color
     } else if resp.hovered() {
@@ -248,18 +253,21 @@ pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: 
     if !on {
         ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
     }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, letter, Tokens::semibold(10.5), if on { Color32::BLACK } else { t.text_dim });
+    ui.painter().with_clip_rect(rect).text(rect.center(), Align2::CENTER_CENTER, letter, Tokens::semibold(10.5), if on { Color32::BLACK } else { t.text_dim });
     resp
 }
 
 /// A flat icon toggle inside a rect.
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
+    if rect.is_negative() {
+        return resp;
+    }
     if resp.hovered() {
         ui.painter().rect_filled(rect, 2.0, t.hover);
     }
     let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
-    icons::paint(ui.painter(), rect.shrink(rect.width() * 0.16), icon, col);
+    icons::paint(&ui.painter().with_clip_rect(rect), rect.shrink(rect.width() * 0.16), icon, col);
     resp
 }
 
@@ -417,5 +425,28 @@ mod tests {
         frame(vec![press(to, false)]);
         let end = frame(Vec::new());
         assert!((end.center() - (start.center() + egui::vec2(-200.0, -150.0))).length() < 2.0, "moved with the drag: {start:?} -> {end:?}");
+    }
+
+    /// #2538: a toggle whose rect was clipped to nothing (a track header scrolled out of its
+    /// half of the Timeline) paints nothing; the centre of such a rect lies in the other half.
+    #[test]
+    fn a_toggle_clipped_to_nothing_paints_nothing() {
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &t);
+        let shapes = |rect: Rect| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                letter_toggle(ui, rect, "M", true, egui::Color32::GREEN, &t, egui::Id::new("m"));
+                icon_toggle(ui, rect, Icon::SyncLock, true, &t, egui::Id::new("s"), None);
+            });
+            // no renderer takes the font atlas upload here; drop it explicitly (epaint panics otherwise)
+            out.textures_delta.clear();
+            out.shapes.iter().map(|c| c.shape.clone()).filter(|s| !matches!(s, egui::Shape::Noop)).count()
+        };
+        let visible = Rect::from_min_max(egui::pos2(0.0, 100.0), egui::pos2(300.0, 200.0));
+        let on_screen = Rect::from_center_size(egui::pos2(50.0, 150.0), vec2(14.0, 14.0));
+        let scrolled_out = Rect::from_center_size(egui::pos2(50.0, 80.0), vec2(14.0, 14.0));
+        assert!(shapes(on_screen.intersect(visible)) > 0);
+        assert_eq!(shapes(scrolled_out.intersect(visible)), 0);
     }
 }
