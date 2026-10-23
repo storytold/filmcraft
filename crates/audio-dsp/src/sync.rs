@@ -21,7 +21,7 @@
 //! References: Knapp & Carter, "The generalized correlation method for estimation of time delay",
 //! IEEE Trans. ASSP 24(4), 1976; the β-weighted PHAT variant is standard textbook practice.
 
-use crate::fft::Fft;
+use crate::fft::{Fft, MAX_LEN as MAX_FFT};
 
 /// Tuning of [`find_offset`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,6 +77,9 @@ pub fn mixdown(channels: &[&[f32]]) -> Vec<f32> {
 /// Low-pass filter (Blackman-windowed sinc, cutoff at 0.42 × the new sample rate) and keep every
 /// `d`-th sample.
 pub fn decimate(x: &[f32], d: usize) -> Vec<f32> {
+    // a factor beyond the signal length gains nothing (find_offset rejects such signals): cap it
+    // so the filter taps stay bounded
+    let d = d.min(x.len());
     if d <= 1 {
         return x.to_vec();
     }
@@ -190,6 +193,10 @@ pub fn find_offset(a: &[f32], b: &[f32], sample_rate: u32, opts: &SyncOptions) -
     }
     // ---- coarse
     let d = (sr.div_ceil(opts.coarse_rate.max(500) as usize)).max((a.len() + b.len()).div_ceil(opts.max_coarse_samples.max(1 << 12))).max(1);
+    // too short for this decimation factor (huge `max_coarse_samples`/rate mismatch): no estimate
+    if d > a.len().min(b.len()) {
+        return None;
+    }
     let mut ca = a.to_vec();
     let mut cb = b.to_vec();
     normalise(&mut ca);
@@ -197,12 +204,15 @@ pub fn find_offset(a: &[f32], b: &[f32], sample_rate: u32, opts: &SyncOptions) -
     let (ca, cb) = (decimate(&ca, d), decimate(&cb, d));
     let (la, lb) = (ca.len() as i64, cb.len() as i64);
     let n = ((la + lb) as usize).next_power_of_two();
+    if n > MAX_FFT {
+        return None; // far longer than any real clip: no estimate rather than an enormous transform
+    }
     let rate_c = sr as f32 / d as f32;
     let band = ((40.0 / rate_c).min(0.05), if d > 1 { 0.40 } else { 0.5 });
     let r = gcc(&ca, &cb, n, opts.phat_beta, band);
     // valid lags: b[0..lb) against a[L..L+lb) must overlap by a minimum amount
     let min_overlap = ((rate_c as i64) / 2).min(la.min(lb) / 4).max(8);
-    let max_lag_c = opts.max_lag.map(|m| m.abs() / d as i64 + 1);
+    let max_lag_c = opts.max_lag.map(|m| (m.saturating_abs() / d as i64).saturating_add(1));
     let lo = -(lb - min_overlap);
     let hi = la - min_overlap;
     if hi < lo {
@@ -283,6 +293,9 @@ pub fn find_offset(a: &[f32], b: &[f32], sample_rate: u32, opts: &SyncOptions) -
     normalise(&mut aw);
     normalise(&mut bw);
     let n2 = (aw.len() + bw.len()).next_power_of_two();
+    if n2 > MAX_FFT {
+        return None;
+    }
     let r2 = gcc(&aw, &bw, n2, opts.phat_beta, (20.0 / sr as f32, 0.5));
     // r2[L'] = Σ aw[i + L']·bw[i]; L' = margin + δ
     let sign = if inverted { -1.0 } else { 1.0 };
@@ -490,6 +503,14 @@ mod tests {
         assert!(!r.reliable(), "{r:?}");
         assert!(find_offset(&a, &[0.0; 48_000], sr, &SyncOptions::default()).is_none());
         assert!(find_offset(&a[..100], &a, sr, &SyncOptions::default()).is_none());
+    }
+
+    #[test]
+    fn too_short_for_the_decimation_factor_gives_none() {
+        // the long signal forces d = 300_064 / 4096 = 74 > the 64-sample one: no estimate
+        let long: Vec<f32> = (0..300_000).map(|i| (i as f32 * 0.05).sin()).collect();
+        let short: Vec<f32> = (0..64).map(|i| (i as f32 * 0.05).sin()).collect();
+        assert!(find_offset(&long, &short, 640, &SyncOptions { max_coarse_samples: 1, ..Default::default() }).is_none());
     }
 
     #[test]

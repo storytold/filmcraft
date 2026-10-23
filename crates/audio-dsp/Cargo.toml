@@ -9,8 +9,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-# Intentionally dependency-free (layer L1): planar `&mut [f32]` slices in, planar slices out.
+# Dependency-free (layer L1) apart from the `log` facade, which reports input that had to be sanitised:
+# planar `&mut [f32]` slices in, planar slices out.
 [dependencies]
+log = { workspace = true }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

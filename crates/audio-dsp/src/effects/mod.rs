@@ -68,9 +68,43 @@ impl std::fmt::Debug for EffectInfo {
     }
 }
 
+/// Sample rates the effects are built for. Anything outside (zero, negative, NaN, infinite or
+/// absurdly large, as a corrupt file can claim) is mapped into range before construction so the
+/// DSP designs and delay-line sizes stay finite.
+const MIN_RATE: f32 = 1_000.0;
+const MAX_RATE: f32 = 1_000_000.0;
+/// Effects are built for at most this many channels; per the `AudioEffect` contract extra
+/// channels in `process` are passed through (channel-generic effects still process them).
+const MAX_CHANNELS: usize = 64;
+
+fn sane_rate(sr: f32) -> f32 {
+    // NaN, zero and negative rates are meaningless: the usual default; the rest is clamped
+    if sr > 0.0 { sr.clamp(MIN_RATE, MAX_RATE) } else { 48_000.0 }
+}
+
+/// The rate and channel count effect `id` is actually built for, with a warning when they differ from
+/// the request: an effect built for another rate than the stream it is fed processes it wrongly, and a
+/// corrupt file should be visible in the log.
+fn sanitised(id: &str, sr: f32, ch: usize) -> (f32, usize) {
+    let (rate, channels) = (sane_rate(sr), ch.min(MAX_CHANNELS));
+    if rate.to_bits() != sr.to_bits() || channels != ch {
+        log::warn!("effect {id}: requested {sr} Hz x {ch} channels is out of range; building it for {rate} Hz x {channels} channels");
+    }
+    (rate, channels)
+}
+
 macro_rules! entry {
     ($id:literal, $name:literal, $cat:ident, $ty:ty) => {
-        EffectInfo { id: $id, name: $name, category: Category::$cat, params: <$ty>::PARAMS, create: |sr, ch| Box::new(<$ty>::new(sr, ch)) }
+        EffectInfo {
+            id: $id,
+            name: $name,
+            category: Category::$cat,
+            params: <$ty>::PARAMS,
+            create: |sr, ch| {
+                let (sr, ch) = sanitised($id, sr, ch);
+                Box::new(<$ty>::new(sr, ch))
+            },
+        }
     };
 }
 
@@ -164,6 +198,26 @@ pub fn create_effect(id: &str, sample_rate: f32, channels: usize) -> Option<Box<
 mod tests {
     use super::*;
     use crate::Unit;
+
+    #[test]
+    fn ordinary_rates_and_channel_counts_are_not_changed() {
+        for sr in [8_000.0, 22_050.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0, MIN_RATE, MAX_RATE] {
+            for ch in [0, 1, 2, 6, 8, MAX_CHANNELS] {
+                let (rate, channels) = sanitised("eq_test", sr, ch);
+                assert_eq!((rate.to_bits(), channels), (sr.to_bits(), ch), "{sr} Hz x {ch}");
+            }
+        }
+    }
+
+    #[test]
+    fn absurd_rates_and_channel_counts_are_mapped_into_range() {
+        for sr in [0.0, -1.0, f32::NAN, f32::NEG_INFINITY] {
+            assert_eq!(sanitised("eq_test", sr, 2).0, 48_000.0);
+        }
+        assert_eq!(sanitised("eq_test", f32::INFINITY, 2).0, MAX_RATE);
+        assert_eq!(sanitised("eq_test", 1e-9, 2).0, MIN_RATE);
+        assert_eq!(sanitised("eq_test", 48_000.0, usize::MAX).1, MAX_CHANNELS);
+    }
     use crate::testutil::*;
 
     const SR: f32 = 48000.0;

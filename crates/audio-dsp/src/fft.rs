@@ -4,6 +4,14 @@
 //! the STFT effects only need a few fixed power-of-two sizes.
 
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Largest transform `Fft::new` plans (2^26 points). Callers that derive a size from file data should
+/// check it against this and give up, rather than rely on the clamp in [`Fft::new`].
+pub const MAX_LEN: usize = 1 << 26;
+
+/// Set once a short buffer has been reported, so a misused FFT in an audio callback logs once, not per block.
+static SHORT_BUFFER_REPORTED: AtomicBool = AtomicBool::new(false);
 
 /// A planned FFT of fixed power-of-two size.
 #[derive(Clone, Debug)]
@@ -16,9 +24,16 @@ pub struct Fft {
 }
 
 impl Fft {
-    /// Plan an FFT of size `n` (must be a power of two ≥ 2).
+    /// Plan an FFT of size `n`, which must be a power of two in `2..=`[`MAX_LEN`]. FilmCraft never
+    /// panics on bad input, so any other size is not rejected with an assertion: it is logged as an
+    /// error (it is a bug in the caller, which must check sizes that come from file data first, as
+    /// `sync` and `remix` do) and rounded up to a power of two and clamped into that range so the allocation stays bounded.
     pub fn new(n: usize) -> Fft {
-        assert!(n >= 2 && n.is_power_of_two(), "FFT size must be a power of two");
+        let planned = n.clamp(2, MAX_LEN).next_power_of_two();
+        if planned != n {
+            log::error!("FFT size {n} is not a power of two in 2..={MAX_LEN}; planning {planned} points instead");
+        }
+        let n = planned;
         let bits = n.trailing_zeros();
         let rev = (0..n as u32).map(|i| i.reverse_bits() >> (32 - bits)).collect();
         let (tw_re, tw_im) = (0..n / 2)
@@ -38,7 +53,8 @@ impl Fft {
         false
     }
 
-    /// Forward transform (e^{-iωt}), unscaled.
+    /// Forward transform (e^{-iωt}), unscaled. Buffers shorter than [`Fft::len`] are left untouched
+    /// (and the first time that happens is logged as an error: the caller sized them wrongly).
     pub fn forward(&self, re: &mut [f32], im: &mut [f32]) {
         self.run(re, im, false);
     }
@@ -50,7 +66,12 @@ impl Fft {
 
     fn run(&self, re: &mut [f32], im: &mut [f32], inverse: bool) {
         let n = self.n;
-        assert!(re.len() >= n && im.len() >= n);
+        if re.len() < n || im.len() < n {
+            if !SHORT_BUFFER_REPORTED.swap(true, Ordering::Relaxed) {
+                log::error!("FFT of {n} points given buffers of {} and {} samples; left untouched", re.len(), im.len());
+            }
+            return;
+        }
         for i in 0..n {
             let j = self.rev[i] as usize;
             if j > i {
@@ -111,5 +132,28 @@ mod tests {
             assert!((re[t] / n as f32 - x[t]).abs() < 1e-5);
             assert!((im[t] / n as f32).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn valid_sizes_are_planned_as_asked() {
+        for n in [2usize, 4, 256, 2048, 1 << 16] {
+            assert_eq!(Fft::new(n).len(), n);
+        }
+    }
+
+    #[test]
+    fn invalid_sizes_are_rounded_into_range_instead_of_panicking() {
+        assert_eq!(Fft::new(0).len(), 2);
+        assert_eq!(Fft::new(1).len(), 2);
+        assert_eq!(Fft::new(1000).len(), 1024);
+        assert_eq!(Fft::new(usize::MAX).len(), MAX_LEN);
+    }
+
+    #[test]
+    fn short_buffers_are_left_untouched() {
+        let fft = Fft::new(8);
+        let (mut re, mut im) = (vec![1.0f32; 4], vec![2.0f32; 8]);
+        fft.forward(&mut re, &mut im);
+        assert_eq!((re, im), (vec![1.0; 4], vec![2.0; 8]));
     }
 }
