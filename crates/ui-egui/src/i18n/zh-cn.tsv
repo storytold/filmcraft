@@ -3592,3 +3592,10 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+
+	AI Rotoscope…	AI 转描…
+	AI Rotoscope Settings	AI 转描设置
+	AI Mask Point	AI 蒙版点
+	Remove AI Mask Point	移除 AI 蒙版点
+	Generate AI Mask	生成 AI 蒙版
+	Preview AI Mask	预览 AI 蒙版

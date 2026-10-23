@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "edge_revision": "7711e012a30a2402c4eaab637bdb00a521302c91",
+  "edge_sha256": "ed2d4850b8792c239689b043c47046ec239b6e808a3d9b6ae676c803fd8780df",
+  "matte_revision": "6a0e75d7214b01f4d1163ede0f15b23afbbd480b",
+  "matte_sha256": "7bbe217ec9d6945679b6191ccd071006a3975675326312df1ecb5518488049a8",
+  "opset": 23,
+  "files": [
+    {
+      "name": "image",
+      "file": "image.onnx",
+      "bytes": 19801552,
+      "sha256": "d2e3999e2f9671cac127f9738b8ae65041c7a00ca619bb1dde861a42fe7913f8"
+    },
+    {
+      "name": "prompt_one",
+      "file": "prompt_one.onnx",
+      "bytes": 17788006,
+      "sha256": "80de9312dffe918de0509aabcbc558f160176bb10ce6c318164bd163f370de43"
+    },
+    {
+      "name": "prompt_many",
+      "file": "prompt_many.onnx",
+      "bytes": 18001256,
+      "sha256": "a8252972a4d5d5b1eea375f8ac4d4f5a2c2bda94afeacb839f14e961aebc75f0"
+    },
+    {
+      "name": "track",
+      "file": "track.onnx",
+      "bytes": 38428922,
+      "sha256": "8e4dc9c092874142f9af9844c79e74e1e0ef3361b8d13649986f066437a9bc7b"
+    },
+    {
+      "name": "memory",
+      "file": "memory.onnx",
+      "bytes": 6787157,
+      "sha256": "241d645eed150df3f01c75495d28313b035c6b7f5b45f2e4f00ce8c85f642ac3"
+    },
+    {
+      "name": "matte",
+      "file": "matte.onnx",
+      "bytes": 104286749,
+      "sha256": "8efc28a9a5dcca47c6f7b8bf1c4330889f19893aa589645823cabd776dca9eb5"
+    }
+  ]
+}

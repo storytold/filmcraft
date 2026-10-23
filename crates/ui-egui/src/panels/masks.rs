@@ -77,6 +77,9 @@ pub(crate) fn effect_rows(
         }
     }
     let defs = filmcraft_project::mask::mask_param_defs();
+    if e.effect == "opacity" && app.session.ai_mask_backend.is_some() {
+        crate::panels::ai_masks::effect_rows(app, ui, body, clip, actions);
+    }
     for (k, m) in e.masks.iter().enumerate() {
         let key = format!("mask:{}:{}:{}", clip.0, idx, k);
         let open = !app.ui.collapsed_fx.contains(&key);
@@ -149,6 +152,9 @@ pub(crate) fn effect_rows(
             continue;
         }
         for pd in defs {
+            if m.raster.is_some() && pd.id != "opacity" {
+                continue;
+            }
             crate::panels::effect_controls::param_row(app, ui, body, clip, idx, e, Some(k), pd, mt, actions, lane, lx, it, keys);
             if pd.id != "path"
                 && app.ui.expanded_fx.contains(&crate::panels::effect_controls::graph_key(clip, idx, &format!("mask{k}.{}", pd.id)))
@@ -246,6 +252,9 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let it = it.clone();
     let Some(e) = it.effects.get(sel.effect) else { return };
     let Some(m) = e.masks.get(sel.mask) else { return };
+    if m.raster.is_some() {
+        return;
+    }
     let mt = it.source_time_at(ph);
     let Some(to_screen) = clip_to_screen(app, &it, mt, pic, frame) else { return };
     let Some(to_clip) = to_screen.inverse() else { return };

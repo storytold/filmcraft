@@ -11,6 +11,7 @@ workspace = true
 
 [features]
 default = []
+experimental-ai-rotoscope = ["filmcraft-rotoscope/inference"]
 # Speech-to-text with Whisper (candle, CPU). Off by default and in wasm builds.
 whisper = ["filmcraft-speech/whisper"]
 # Speech-model downloads over HTTPS.
@@ -38,6 +39,7 @@ filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
 filmcraft-tts = { workspace = true }
+filmcraft-rotoscope = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

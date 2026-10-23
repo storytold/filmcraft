@@ -181,7 +181,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         let screen_scale = (pic.width() * ppp / frame_size.0.max(1) as f32).max(pic.height() * ppp / frame_size.1.max(1) as f32).min(1.0);
         let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
         let frame = rate.frame_at(time);
-        let rev = match target {
+        let mut rev = match target {
             Target::Item(i) => app.item_revision(i),
             _ => app.session.revision,
         };
@@ -195,8 +195,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         };
         // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
         let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
+        let preview = if !playing && which == Which::Program {
+            match target {
+                Target::Sequence(s) | Target::SequencePlan(s) => filmcraft_engine::ai_masks::monitor_preview(&app.session, s, time),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let project = match preview {
+            Some((project, revision)) => {
+                rev = revision;
+                project
+            }
+            None => app.session.project.clone(),
+        };
         let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
-        let project = app.session.project.clone();
         if playing {
             let preroll = which == Which::Program && app.playback.preroll.is_some();
             let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
@@ -300,7 +314,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         // them (the selected clip's transform handles cover it, #1023)
         if app.ui.eyedropper.is_some() {
             eyedropper(app, ui, &pic_resp, pic, target, rate, time);
-        } else {
+        } else if !crate::panels::ai_masks::monitor_overlay(app, ui, pic, frame_size) {
             crate::panels::graphics::monitor_overlay(app, ui, pic, frame_size);
             crate::panels::masks::monitor_overlay(app, ui, pic, frame_size);
             crate::panels::transform_handles::monitor_overlay(app, ui, pic, frame_size);

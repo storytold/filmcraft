@@ -90,6 +90,37 @@ OS window or prove physical-keyboard delivery.
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
 `project.item.<id>`, `effects.item.gaussian_blur`, `panel.tab.Timeline`, `program.transport.playback.toggle`.
 
+Experimental AI masks (`--features experimental-ai-rotoscope` with verified native models):
+`masks.ai.select {clip?, kind: foreground|background|refine|off?, clear?}` starts or
+changes selection; `masks.ai.point {x,y,kind?,preview?=true,stroke?:uint}` adds a source-pixel point at the playhead;
+`masks.ai.removePoint {point: index, preview?=true}` removes one zero-based draft point,
+cancels stale previews and refreshes the current frame when it still has an Include point;
+`masks.ai.settings {mode: fast|quality?, frames: 1..120?, band: 1..32?, view: region|alpha|composite?}` changes the draft;
+`masks.ai.generate {wait?}` creates a cancellable job. The job applies one undoable mask
+only after successful validation, provided the clip still matches its starting snapshot.
+The range is the clip's first `frames` source frames. `masks.list` includes raster dimensions,
+mode, count and exact source range; `jobs.list`/`jobs.cancel` inspect/cancel inference.
+Include/Exclude points automatically request a one-frame preview. `masks.ai.preview {wait?}`
+requests it explicitly (including Refine corrections). Rapid requests cancel older previews;
+preview alpha tints included areas green over the original paused Program frame. Selecting
+Exclude also displays excluded areas in red; switching back to Include removes the red
+overlay immediately using the same cached alpha. Refine Edge switches to Quality and runs ViTMatte after completed strokes. Paint marks
+unknown regions for matting; it does not fill alpha. Its `region`, `alpha` and `composite`
+views show actual inferred transparency and switch without rerunning inference. Existing
+generated frames can be refined without fresh Include points, preserving alpha outside
+the brush.
+Preview jobs leave the project/history unchanged; point additions, removal and Clear
+points share transient undo/redo steps with document edits, without dirtying the project.
+A shared `stroke` id coalesces Refine points into one undo step. `edit.undo` / `edit.redo`
+(and Cmd/Ctrl-Z / Shift-Cmd/Ctrl-Z) restore those drafts and refresh their preview.
+Playback uses the actual document; model inference runs in Rust on the CPU.
+Option/Alt-click a dot to remove it; Cmd/Ctrl-click also removes it. Option/Alt-click
+away from a dot adds an Exclude point without changing the selected tool.
+UI ids: `aiMask.select`, `aiMask.clear`, `aiMask.Foreground`, `aiMask.Background`,
+`aiMask.Refine`, `aiMask.Off`, `aiMask.Fast`, `aiMask.Quality`, `aiMask.generate`,
+`aiMask.preview`, `aiMask.cancel`, `aiMask.frames`, `aiMask.band`, `program.aiMask`,
+`program.aiMask.point.<index>` (visible points on the current source frame).
+
 Audio mixing: `mixer.*` commands (strips `"A1"`, `"S1"`, `"Mix"` or ids; lanes `volume`, `pan`,
 `mute`, `send.<i>.level`, `fx.<slot>.<param>`): `mixer.inspect`, `mixer.setStrip` (volume, pan, mute,
 solo, record arm, solo safe, mode Off/Read/Latch/Touch/Write, output, input map, channels),

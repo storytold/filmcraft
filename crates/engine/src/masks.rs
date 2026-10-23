@@ -545,6 +545,9 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
                         "path": path_to_json(&m.path_at(mt)),
                         "pathKeyframes": m.path.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(),
                         "selected": s.state.selected_mask == Some(MaskSel { clip: it.id, effect: ei, mask: mi }),
+                        "raster": m.raster.as_ref().map(|r| json!({"width": r.width, "height":r.height,
+                            "frames":r.frames.len(), "mode": if r.quality {"quality"} else {"fast"},
+                            "sourceStart":r.frames.first().map(|f| f.time.0), "sourceEnd":r.end.0})),
                     }));
                 }
             }

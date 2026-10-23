@@ -21,6 +21,12 @@ In order. Each item links to its gap entry, which says what "done" means.
 
 ## Alpha gate
 
+The [#1733 AI Rotoscope experiment](../experiments/rotoscope/README.md) is available through
+an opt-in native build. It previews clicks and persists raster alpha from local EdgeTAM /
+ViTMatte inference in Rust on CPU, with undoable point edits and automatic Refine Edge matting with alpha views.
+It does not satisfy the shipping AI milestone: frame/resolution caps, Rust GPU inference
+and missing temporal / GPU alpha work remain explicit limits.
+
 Premiere's core daily workflows, checked end to end on the main platform (macOS, Apple silicon),
 including saving the work as `.fcproj` and reopening it (atomic saves, schema migrations,
 auto-save and crash recovery; migration tests). Strict reading: a "partial" that stops the
