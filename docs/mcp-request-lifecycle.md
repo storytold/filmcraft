@@ -23,7 +23,9 @@ Admission and retained work share a limit of 1,024 active operations; excess wor
 One guarded writer owns response output. Initialization, output failure and competing EOF paths
 preserve an observed write/flush diagnostic. If service failure and cleanup failure coexist, the
 returned diagnostic starts with the original error and includes labeled cleanup failures, even
-without a logger. Single-error outcomes are unchanged. The output writer's final
+without a logger. Input I/O and invalid UTF-8 errors are reported with their underlying cause,
+rather than treated as successful EOF. Inner output/service failures and output cleanup timeouts
+also preserve both diagnostics. Single-error outcomes are unchanged. The output writer's final
 join has a two-second budget; guards abort transport tasks when their owner drops.
 
 Process stdin is bridged through 64 KiB of bounded storage on a dedicated input runtime. After
@@ -53,7 +55,7 @@ that a cancelled client receives it. The job remains observable through `jobs.li
 | Observation during cleanup | Outcome |
 |---|---|
 | Export succeeded, including a race with cancellation | Keep successful output; report cancellation after completion / successful output retained. |
-| Export failed | Report that the job stopped but file ownership is unconfirmed; retain output. |
+| Export failed | Include the engine failure reason; report that the job stopped but file ownership is unconfirmed; retain output. |
 | Cancellation failed, job disappeared, state is malformed, or deadline expired | Report cleanup unconfirmed; retain output. |
 
 The engine's job result does not prove which files that job exclusively owns. A path, matching

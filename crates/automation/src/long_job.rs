@@ -174,8 +174,9 @@ impl FilmcraftMcp {
                 match terminal_result(&state) {
                     TerminalResult::Success => return Ok(()),
                     TerminalResult::Failure => {
+                        let reason = state.pointer("/result/error").and_then(Value::as_str).unwrap_or("engine failure reason unavailable");
                         return Err(unconfirmed(format!(
-                            "export stopped, but file ownership is unconfirmed for {path:?}; filenames and timestamps do not establish ownership"
+                            "export stopped: {reason}; file ownership is unconfirmed for {path:?}; filenames and timestamps do not establish ownership"
                         )));
                     }
                     TerminalResult::Unknown => return Err(unconfirmed("terminal result is missing or malformed".into())),
@@ -447,6 +448,22 @@ mod tests {
         let error = result.expect_err("terminal failure does not prove file ownership");
         assert!(error.to_string().contains("ownership") && error.to_string().contains("unconfirmed"), "{error}");
         assert!(retained, "terminal worker state alone must not authorize deleting output");
+    }
+
+    /// Cancel cleanup retains the engine's failure cause and the unowned output file.
+    #[tokio::test]
+    async fn review_cancelled_failure_preserves_engine_reason() {
+        let (result, retained) = cleanup_helper_fixture(
+            json!([{"id": 7, "finished": true, "result": {"error": "synthetic encoder failure: disk full"}}]),
+            None,
+            Duration::ZERO,
+            Duration::from_secs(1),
+        )
+        .await;
+        let error = result.expect_err("failed job must remain an error").to_string();
+        assert!(error.contains("synthetic encoder failure: disk full"), "{error}");
+        assert!(error.contains("ownership") && error.contains("unconfirmed"), "{error}");
+        assert!(retained, "failure text cannot establish ownership");
     }
 
     #[tokio::test]

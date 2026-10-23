@@ -360,3 +360,75 @@ fn successful_service_preserves_cleanup_error_variant() {
 fn successful_service_and_cleanup_remain_successful() {
     assert!(finish_with_cleanup(Ok(()), Ok(()), "MCP input cleanup").is_ok());
 }
+
+/// Writer failure stays primary while its service cleanup diagnostic survives.
+#[test]
+fn review_output_failures_keep_service_cleanup() {
+    for context in ["MCP service cleanup after output failure", "MCP service stopped with output failure"] {
+        let result =
+            finish_output_cleanup(Err(AutomationError::Other("service failed".into())), Some(Err(AutomationError::Other("output failed".into()))), context);
+        assert_eq!(result.unwrap_err().to_string(), format!("output failed; {context}: service failed"));
+    }
+}
+
+/// A writer timeout must survive an earlier service failure.
+#[test]
+fn review_output_timeout_keeps_service_error_and_deadline() {
+    let result = finish_output_cleanup(Err(AutomationError::Other("service failed".into())), None, "unused");
+    assert_eq!(result.unwrap_err().to_string(), "service failed; MCP output cleanup: MCP output cleanup timed out");
+}
+
+/// Single errors retain their established meaning and variant.
+#[test]
+fn review_output_single_failures_keep_their_meaning() {
+    assert_eq!(finish_output_cleanup(Ok(()), None, "unused").unwrap_err().to_string(), "MCP output cleanup timed out");
+    let result = finish_output_cleanup(Ok(()), Some(Err(AutomationError::Bridge("writer".into()))), "cleanup");
+    assert!(matches!(result, Err(AutomationError::Bridge(message)) if message == "writer"));
+}
+
+/// Invalid UTF-8 before initialization reports the input cause rather than only EOF.
+#[tokio::test]
+async fn review_invalid_utf8_before_initialization_reports_input_error() {
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(3), FilmcraftMcp::headless(Session::default()).serve_io(&b"\xff\n"[..], tokio::io::sink()))
+            .await
+            .expect("invalid input must settle");
+    let error = result.expect_err("invalid input cannot be successful EOF").to_string();
+    assert!(error.contains("MCP input read") && error.contains("UTF-8"), "{error}");
+}
+
+/// Ordinary I/O errors retain their actionable diagnostic.
+#[tokio::test]
+async fn review_input_io_failure_retains_cause() {
+    struct FailedInput;
+    impl tokio::io::AsyncRead for FailedInput {
+        fn poll_read(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>, _: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("synthetic input read failure")))
+        }
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), FilmcraftMcp::headless(Session::default()).serve_io(FailedInput, tokio::io::sink()))
+        .await
+        .expect("input failure must settle");
+    let error = result.expect_err("failed input cannot be EOF success").to_string();
+    assert!(error.contains("MCP input read") && error.contains("synthetic input read failure"), "{error}");
+}
+
+/// Invalid UTF-8 after a completed handshake also fails the actual service.
+#[tokio::test]
+async fn review_invalid_utf8_after_initialization_reports_input_error() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (mut requests, input) = tokio::io::duplex(4096);
+    let (output, replies) = tokio::io::duplex(4096);
+    let mut serving = tokio::spawn(FilmcraftMcp::headless(Session::default()).serve_io(input, output));
+    let mut replies = tokio::io::BufReader::new(replies).lines();
+    requests.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}\n").await.unwrap();
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.next_line()).await.unwrap().unwrap().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&reply).unwrap()["id"], 0);
+    requests.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n\xff\n").await.unwrap();
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(3), &mut serving).await;
+    if stopped.is_err() {
+        serving.abort();
+    }
+    let error = stopped.expect("invalid input must settle").unwrap().expect_err("input failure cannot be successful EOF").to_string();
+    assert!(error.contains("MCP input read") && error.contains("UTF-8"), "{error}");
+}

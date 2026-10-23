@@ -218,6 +218,19 @@ fn finish_with_cleanup(result: Result<(), AutomationError>, cleanup: Result<(), 
     }
 }
 
+/// Choose transport outcomes after one writer observation; `None` denotes its expired budget.
+fn finish_output_cleanup(
+    service: Result<(), AutomationError>,
+    output: Option<Result<(), AutomationError>>,
+    context: &'static str,
+) -> Result<(), AutomationError> {
+    match output {
+        Some(Ok(())) => service,
+        Some(Err(error)) => finish_with_cleanup(Err(error), service, context),
+        None => finish_with_cleanup(service, Err(AutomationError::Other("MCP output cleanup timed out".into())), "MCP output cleanup"),
+    }
+}
+
 impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
         Self {
@@ -274,9 +287,19 @@ impl FilmcraftMcp {
         let (mut to_service, service_in) = tokio::io::duplex(1 << 20);
         let (service_out, from_service) = tokio::io::duplex(1 << 20);
         let (err_tx, mut err_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let input_error = Arc::new(Mutex::new(None));
+        let reader_error = input_error.clone();
         let reader = AbortOnDrop(tokio::spawn(async move {
             let mut lines = BufReader::new(input).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            loop {
+                let line = match lines.next_line().await {
+                    Ok(Some(line)) => line,
+                    Ok(None) => break,
+                    Err(error) => {
+                        *reader_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+                        break;
+                    }
+                };
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -292,7 +315,7 @@ impl FilmcraftMcp {
                     }
                 }
             }
-            // EOF: closing the pipe ends the service
+            // EOF or failed input: closing the pipe ends the service
             let _ = to_service.shutdown().await;
         }));
         let mut writer = AbortOnDrop(tokio::spawn(async move {
@@ -333,15 +356,7 @@ impl FilmcraftMcp {
                             reader.0.abort();
                             cancellation.cancel();
                             let service = waiting.await.map(|_| ()).map_err(join_error);
-                            match joined.map_err(join_error).and_then(|output| output) {
-                                Err(error) => {
-                                    if let Err(cleanup) = service {
-                                        log::warn!("MCP service cleanup after output failure: {cleanup}");
-                                    }
-                                    Err(error)
-                                }
-                                Ok(()) => service,
-                            }
+                            finish_output_cleanup(service, Some(joined.map_err(join_error).and_then(|output| output)), "MCP service cleanup after output failure")
                         }
                         stopped = &mut waiting => stopped.map(|_| ()).map_err(join_error),
                     }
@@ -350,6 +365,13 @@ impl FilmcraftMcp {
             }
         };
         reader.0.abort();
+        // The reader records a failure before closing its pipe; no join or new wait
+        // is needed, including when an OS input read remains blocked.
+        let input_cleanup = match input_error.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            Some(error) => Err(AutomationError::Other(format!("MCP input read: {error}"))),
+            None => Ok(()),
+        };
+        let result = finish_with_cleanup(result, input_cleanup, "MCP reader");
         if writer_finished {
             // This JoinHandle has already been observed; polling it twice can panic.
             return result;
@@ -359,21 +381,10 @@ impl FilmcraftMcp {
         // a still-pending writer retains the existing bounded cleanup budget.
         let output = tokio::time::timeout(std::time::Duration::from_secs(2), &mut writer.0).await;
         match output {
-            Ok(joined) => match joined.map_err(join_error).and_then(|output| output) {
-                Ok(()) => result,
-                Err(error) => {
-                    if let Err(service) = result {
-                        log::warn!("MCP service stopped with output failure: {service}");
-                    }
-                    Err(error)
-                }
-            },
+            Ok(joined) => finish_output_cleanup(result, Some(joined.map_err(join_error).and_then(|output| output)), "MCP service stopped with output failure"),
             Err(_) => {
                 writer.0.abort();
-                if result.is_err() {
-                    log::warn!("MCP output cleanup timed out after service failure");
-                }
-                result.and(Err(AutomationError::Other("MCP output cleanup timed out".into())))
+                finish_output_cleanup(result, None, "MCP output cleanup")
             }
         }
     }
