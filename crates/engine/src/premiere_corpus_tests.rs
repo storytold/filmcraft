@@ -2,7 +2,36 @@
 //! MIT OR Apache-2.0.
 use crate::{Session, premiere::hash_file};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+fn sequence_audio_and_links(project: &filmcraft_project::Project) -> Vec<Value> {
+    project
+        .items
+        .values()
+        .filter_map(|item| item.as_sequence())
+        .map(|seq| {
+            let mut links = BTreeMap::<u64, (usize, usize)>::new();
+            for clip in seq.video_tracks.iter().flat_map(|track| &track.items) {
+                if let Some(link) = clip.link {
+                    let group = links.entry(link).or_default();
+                    group.0 = group.0.saturating_add(1);
+                }
+            }
+            for clip in seq.audio_tracks.iter().flat_map(|track| &track.items) {
+                if let Some(link) = clip.link {
+                    let group = links.entry(link).or_default();
+                    group.1 = group.1.saturating_add(1);
+                }
+            }
+            let av: Vec<_> = links.values().filter(|(video, audio)| *video > 0 && *audio > 0).collect();
+            json!({"sampleRate":seq.settings.sample_rate,"avLinkGroups":av.len(),
+            "avPairs":av.iter().fold(0usize, |sum, (video, audio)| sum.saturating_add(video.saturating_mul(*audio))),
+            "linkedVideoClips":av.iter().map(|(video, _)| *video).sum::<usize>(),
+            "linkedAudioClips":av.iter().map(|(_, audio)| *audio).sum::<usize>()})
+        })
+        .collect()
+}
 
 /// Manifest: [{"source":"...","maxOffline":N,"frameRate":{"num":25,"den":1}}].
 /// frameRate is an optional expectation, never an import override. Linked copies stay under target/.
@@ -35,6 +64,7 @@ fn premiere_private_corpus_preserves_sources_and_offline_counts() {
         let media_count = observations["media"].as_array().unwrap().iter().filter(|m| m["sha256"].is_string()).count();
         assert_eq!(result["sourceSha256"], before.0);
         assert_eq!(hash_file(&destination.join("source.prproj")).unwrap(), before);
+        let audio_and_links = sequence_audio_and_links(&session.project);
         let project = folder.join("project.fcproj");
         session.execute("file.saveAs", json!({"path":project})).unwrap();
         // Compare the record as represented by JSON: its decimal parser can normalize an f64
@@ -42,6 +72,7 @@ fn premiere_private_corpus_preserves_sources_and_offline_counts() {
         let expected: filmcraft_project::workflow::Workflow = serde_json::from_slice(&serde_json::to_vec(workflow.as_ref()).unwrap()).unwrap();
         session.execute("file.open", json!({"path":project})).unwrap();
         assert_eq!(session.project.workflow.as_deref(), Some(&expected));
+        assert_eq!(sequence_audio_and_links(&session.project), audio_and_links);
         assert_eq!(session.execute("premiere.hashMedia", json!({"import":0})).unwrap(), observations);
         let rates: Vec<_> = session.project.items.values().filter_map(|i| i.as_sequence().map(|s| s.frame_rate())).collect();
         if let Some(expected) = case.get("frameRate") {
@@ -56,7 +87,8 @@ fn premiere_private_corpus_preserves_sources_and_offline_counts() {
         assert_eq!(after, before);
         assert_eq!(hash_file(&input).unwrap(), before);
         rows.push(json!({"case":index,"sourceBefore":before.0,"sourceAfter":after.0,"offline":offline,
-            "warnings":result["report"].as_array().unwrap().len(),"rates":rates,"observedMediaUnchanged":media_count,"hardwareSessions":0}));
+            "warnings":result["report"].as_array().unwrap().len(),"rates":rates,"observedMediaUnchanged":media_count,"hardwareSessions":0,
+            "sequenceAudioAndLinks":audio_and_links}));
         std::fs::write(root.join("results.json"), serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
     }
     println!("Corpus results: {}", root.join("results.json").display());

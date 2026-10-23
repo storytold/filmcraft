@@ -56,8 +56,9 @@ available at their recorded locations; automatic portable-project conversion is 
 
 Supported: video/audio tracks (track `IsMuted` only; the track-fader mute checkbox is not read),
 exact tick ranges, constant positive speed, nested
-sequences, still media, caption text, plain text graphics, static Motion scale/position/rotation,
-and clip-edge fades following the Python importer's transition mapping. Unknown effects remain
+sequences, still media, caption text, plain text graphics, editable Motion scale/position/rotation,
+intrinsic audio controls, scalar Lumetri controls, and named native transitions. Legacy transition
+records without absolute timing retain clip-edge fades. Unknown effects remain
 in the original snapshot and are reported once per distinct effect name with an occurrence count,
 rather than silently recreated with guessed parameters. Fader-muted audio imports audible unless
 the track is also muted through `IsMuted`.
@@ -85,17 +86,17 @@ values are rejected. Integer timeline ticks are preserved in every case. Media a
 duplicate sequence/media display names do not affect a resolved reference. If the chain cannot
 be resolved, an unambiguous title match is used with a warning; ambiguous fallbacks stay offline.
 Only timeline-referenced media is imported; unused bin media and bin organization
-are not reconstructed. Reverse/time-remapped clips, native effect parameters and unsupported caption
+are not reconstructed. Reverse/time-remapped clips, unmapped native effect parameters and unsupported caption
 encodings need additional fixtures before claiming fidelity. No rendered-preview substitution
 is performed.
 
-Static Motion uses `MatchName` (`AE.ADBE Motion` / `ADBE Motion`) and ParameterID 1 (Position),
+Motion uses `MatchName` (`AE.ADBE Motion` / `ADBE Motion`) and ParameterID 1 (Position),
 2 (Scale), and 5 (Rotation); localized display/parameter names are diagnostic text only. Values
-come from `CurrentValue` or the static `StartKeyframe` record. Animated parameters are reported
-and retained in provenance; their animation is not reconstructed. Other Motion parameter IDs
-are not mapped. These fixes address the name/reference defects discussed in
+come from `CurrentValue` or the static `StartKeyframe` record. Bounded source-time keyframes
+for these controls are imported with linear/hold interpolation; original easing remains approximate.
+Other Motion parameter IDs are not mapped. These fixes address the name/reference defects discussed in
 [issue #978](https://github.com/storytold/filmcraft/issues/978#issuecomment-6254913542);
-they do not add track-fader mute or change audio gain conversion.
+track-fader mute remains unsupported. See the fidelity sections below for audio and animation limits.
 
 Text graphics match the text component's `MatchName` and Source Text ParameterID 1, then decode
 the static base64 `StartKeyframeValue` using the bounded length-prefixed UTF-8 envelope heuristic
@@ -112,7 +113,8 @@ Input is bounded to 64 MiB compressed gzip and 512 MiB plain/expanded XML, 16,00
 of 5,000,000 units and 64 times the parsed node count. Each visited subtree charges its node count
 plus one unit per 64 bytes, including repeated references and caption payloads; increasing document
 capacity does not exempt repeated work. Diagnostics are capped at 1,024 entries plus a truncation
-notice. Large XML still requires substantial memory and parses synchronously. Clips with nonpositive
+notice. Shared link-group identifiers are limited to 4,096 bytes before per-clip copying.
+Large XML still requires substantial memory and parses synchronously. Clips with nonpositive
 timeline duration, non-finite speed or speed outside 0.001–1000, or inverted/unsupported source
 ranges are skipped with a warning naming the clip. Other clips keep their original timeline
 positions; skipped clips can leave gaps. A transition whose end precedes its start is skipped with
@@ -149,11 +151,19 @@ The test copies
 projects under `target/premiere-corpus/`, imports with linked media through a headless engine
 session without registering platform hardware, verifies source/project hashes and offline counts,
 and saves/reopens each result. Media SHA-256 is explicitly inspected before and after save/reopen;
-linked provenance must remain unhashed throughout. Its private result JSON stays under `target/`. Only hand-written
+linked provenance must remain unhashed throughout. Each sequence's audio sample rate and explicit
+A/V links are recorded and compared across save/reopen. A/V link groups contain at least one video
+and one audio clip; the pair count sums video-count times audio-count per group. Its private result
+JSON stays under `target/`. Only hand-written
 synthetic XML is committed in the regression tests; never add corpus projects or media paths.
 
 
 ## Edit links and intrinsic audio controls
+
+The fidelity additions are by [@cshapiro](https://github.com/cshapiro), contributed in
+[fork PR #1](https://github.com/willluecke/filmcraft/pull/1) and
+[fork PR #2](https://github.com/willluecke/filmcraft/pull/2), with contributor-authored project
+observations and hand-written fixtures. Their original authorship is preserved in the commits.
 
 Explicit Premiere Link groups are imported as sequence-local FilmCraft link IDs; clips are
 never linked merely because their timing or filenames match. Each sequence also reads its
@@ -167,7 +177,9 @@ Keyframes are bounded, validated, sorted and retained in provenance. Native audi
 handles cannot be represented exactly by this mapping: interpolation uses linear dB segments
 and the import report explicitly warns about the approximation. Mute/bypass automation is still
 unsupported and reported. This is control-point preservation, not a claim of rendered-audio
-parity. Original source snapshots and existing user-edited imports are never rewritten.
+parity. Audio parameter selection currently recognizes the English names `Level`, `Left`, `Right`,
+`Mute` and `Bypass`; localized audio parameter names are not yet mapped. Original source snapshots
+and existing user-edited imports are never rewritten.
 
 
 ## Picture controls, transitions and generated graphics
@@ -192,6 +204,8 @@ Transition list entries are never treated as media clips. Head/Tail references t
 create one native transition with both sides, original timing and the named supported effect.
 Leading transitions are clipped at sequence zero. Unrecognised effects use the existing warned
 transition fallback. Older provenance without absolute transition fields retains legacy edge fades.
+Transition effect selection currently uses `DisplayName` and FilmCraft's named-effect aliases;
+localized or unknown names can use the warned fallback.
 
 A generated Shape component identifies a native graphic canvas, not a filesystem image, so its
 internal numeric pseudo-path no longer becomes a missing-media item. Opaque shape paths/appearance
