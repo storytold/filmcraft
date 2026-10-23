@@ -28,6 +28,9 @@ use serde_json::{Value, json};
 const MAX_CLICK_COUNT: u64 = 10;
 const MAX_DRAG_STEPS: u64 = 1_024;
 
+/// Read a pointer repetition count, using `default` when `key` is absent or null.
+///
+/// Reject non-integer, negative and above-`maximum` values; raise accepted counts to `minimum`.
 fn bounded_repetitions(params: &Value, key: &str, default: u64, minimum: u64, maximum: u64) -> Result<u64, String> {
     // The MCP bridge serializes omitted optional counts as null.
     let value = match params.get(key) {
@@ -650,16 +653,19 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
 mod input_bounds_tests {
     use super::*;
 
+    /// Create an empty editor session for inspecting queued synthetic input without a window.
     fn app() -> FilmcraftApp {
         FilmcraftApp::new(filmcraft_engine::Session::default())
     }
 
+    /// Dispatch a control request and fail the test if hostile parameters cause a panic.
     fn request(app: &mut FilmcraftApp, method: &str, params: Value) -> Outcome {
         let (req, _) = ControlRequest::new(method, params);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(app, &egui::Context::default(), &req)))
             .expect("hostile control parameters must not panic")
     }
 
+    /// Require an immediate error naming `field`, with all previously queued input unchanged.
     fn assert_rejected(app: &mut FilmcraftApp, method: &str, params: Value, field: &str) {
         let before = app.synthetic.clone();
         let Outcome::Done(reply) = request(app, method, params) else { panic!("invalid input must return an error immediately") };
@@ -668,17 +674,20 @@ mod input_bounds_tests {
         assert_eq!(app.synthetic, before, "rejection must not queue partial input or change existing input");
     }
 
+    /// Check the first rejected click count without allocating an enormous event queue.
     #[test]
     fn click_count_above_limit_is_rejected() {
         // A small boundary value reproduces the missing guard without exhausting memory.
         assert_rejected(&mut app(), "ui.click", json!({"x": 10, "y": 20, "count": 11}), "count");
     }
 
+    /// Check that one step above the drag limit returns an error before queuing input.
     #[test]
     fn drag_steps_above_limit_are_rejected() {
         assert_rejected(&mut app(), "ui.drag", json!({"from": {"x": 0, "y": 0}, "to": {"x": 10, "y": 20}, "steps": 1025}), "steps");
     }
 
+    /// Reject extreme counts and malformed types while preserving pending and subsequent input.
     #[test]
     fn hostile_counts_and_steps_leave_pending_input_unchanged() {
         let mut app = app();
@@ -691,6 +700,7 @@ mod input_bounds_tests {
         assert!(matches!(request(&mut app, "ui.click", json!({"x": 10, "y": 20})), Outcome::AfterInput));
     }
 
+    /// Verify missing/null defaults, accepted click bounds, button pairs and modifier resets.
     #[test]
     fn valid_click_counts_preserve_button_pairs_and_modifiers() {
         let mut app = app();
@@ -717,6 +727,7 @@ mod input_bounds_tests {
         assert_eq!(app.synthetic.len(), 3, "ui.move does not use count");
     }
 
+    /// Verify missing/null defaults and accepted drag bounds retain endpoints and button release.
     #[test]
     fn valid_drag_steps_preserve_defaults_endpoints_and_release() {
         let mut app = app();

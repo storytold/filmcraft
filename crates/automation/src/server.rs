@@ -498,6 +498,7 @@ impl FilmcraftMcp {
         self.ui("ui.elements", json!({"prefix": p.prefix.unwrap_or_default()})).await
     }
 
+    /// Forward a click to the live editor; an omitted count is sent as null and uses its default.
     #[tool(
         title = "Live app: click",
         description = "Live app: click an element by id or at x,y (points). Supports right/middle button, double-click (count=2) and modifiers.",
@@ -514,6 +515,7 @@ impl FilmcraftMcp {
         self.ui("ui.click", v).await
     }
 
+    /// Forward a drag to the live editor, which applies the step default and validates its bounds.
     #[tool(
         title = "Live app: drag",
         description = "Live app: press-drag-release from one point/element to another (move clips, trim edges, scrub, resize panels, drop project items onto tracks).",

@@ -71,6 +71,7 @@ impl Driver {
     }
 }
 
+/// Rejected pointer counts must preserve the editor and allow later MCP-default and double clicks.
 #[test]
 fn rejected_pointer_counts_leave_the_ui_usable() {
     let mut d = Driver::new();
