@@ -234,16 +234,16 @@ fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah: f32) -> Op
     }
 }
 
-/// The top of each of `n` video rows `vh` high, V1 first: V1 sits at the bottom of `area` and the
-/// tracks stack upward; `v_scroll` (clamped here) shifts them up. Also gives the largest `v_scroll`.
-/// The scroll range includes one empty track's height above the top track: without it, tracks that
-/// fill the area leave no space where a drop adds a new one (#1522).
-fn video_row_tops(area: Rect, n: usize, vh: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
-    let total = (n + 1) as f32 * vh;
+/// The top of each video row, V1 first, given each row's height in `heights`: V1 sits at the bottom
+/// of `area` and the tracks stack upward; `v_scroll` (clamped here) shifts them up. Also gives the
+/// largest `v_scroll`. The scroll range includes one empty track `spare` high above the top track:
+/// without it, tracks that fill the area leave no space where a drop adds a new one (#1522).
+fn video_row_tops(area: Rect, heights: &[f32], spare: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
+    let total = heights.iter().sum::<f32>() + spare;
     let v_off = (area.height() - total).max(0.0);
     let max_vs = (total - area.height()).max(0.0);
     *v_scroll = v_scroll.clamp(0.0, max_vs);
-    let tops = (0..n).map(|i| area.min.y + v_off + (n - i) as f32 * vh - (max_vs - *v_scroll)).collect();
+    let tops = (0..heights.len()).map(|i| area.min.y + v_off + spare + heights[i + 1..].iter().sum::<f32>() - (max_vs - *v_scroll)).collect();
     (tops, max_vs)
 }
 
@@ -428,22 +428,25 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let split_y = tracks_area.min.y + (tracks_area.height() - DIVIDER_H) * app.ui.timeline.split;
     let video_area = Rect::from_min_max(pos2(rect.min.x, tracks_area.min.y), pos2(content.max.x, split_y));
     let audio_area = Rect::from_min_max(pos2(rect.min.x, split_y + DIVIDER_H), pos2(content.max.x, tracks_area.max.y - MASTER_H));
-    let vh = app.ui.timeline.video_track_h;
-    let ah = app.ui.timeline.audio_track_h;
+    let tv = &app.ui.timeline;
     let mut rows = Vec::new();
-    let nv = seq.video_tracks.len();
-    let (video_tops, max_vs) = video_row_tops(video_area, nv, vh, &mut app.ui.timeline.v_scroll);
-    for ((i, tr), top) in seq.video_tracks.iter().enumerate().zip(video_tops) {
-        let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + vh));
+    let heights: Vec<f32> = seq.video_tracks.iter().map(|tr| tv.track_h(tr.id.0, TrackKind::Video)).collect();
+    let vh = tv.video_track_h;
+    let (video_tops, max_vs) = video_row_tops(video_area, &heights, vh, &mut app.ui.timeline.v_scroll);
+    for (((i, tr), top), h) in seq.video_tracks.iter().enumerate().zip(video_tops).zip(heights) {
+        let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + h));
         rows.push(Row { track: tr.id, kind: TrackKind::Video, index: i, rect, lane: false });
     }
-    let na = seq.audio_tracks.len();
-    let max_as = (na as f32 * ah - audio_area.height()).max(0.0);
+    let tv = &app.ui.timeline;
+    let audio_total: f32 = seq.audio_tracks.iter().map(|tr| tv.track_h(tr.id.0, TrackKind::Audio)).sum();
+    let max_as = (audio_total - audio_area.height()).max(0.0);
     app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, max_as);
+    let mut top = audio_area.min.y - app.ui.timeline.a_scroll;
     for (i, tr) in seq.audio_tracks.iter().enumerate() {
-        let top = audio_area.min.y + i as f32 * ah - app.ui.timeline.a_scroll;
-        let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
+        let h = app.ui.timeline.track_h(tr.id.0, TrackKind::Audio);
+        let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + h));
         rows.push(Row { track: tr.id, kind: TrackKind::Audio, index: i, rect, lane: app.ui.timeline.track_lanes.contains_key(&tr.id.0) });
+        top += h;
     }
     let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y };
     app.tl.layout = Some(layout.clone());
@@ -466,7 +469,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         painter.line_segment([pos2(row.min.x, r.rect.max.y - 0.5), pos2(row.max.x, r.rect.max.y - 0.5)], Stroke::new(1.0, t.separator));
         // the top video track also gets a line above it
-        if r.kind == TrackKind::Video && r.index + 1 == nv {
+        if r.kind == TrackKind::Video && r.index + 1 == seq.video_tracks.len() {
             painter.line_segment([pos2(row.min.x, r.rect.min.y + 0.5), pos2(row.max.x, r.rect.min.y + 0.5)], Stroke::new(1.0, t.separator));
         }
     }
@@ -1421,7 +1424,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             }
             if eresp.dragged() {
                 let d = eresp.drag_delta().y * if r.kind == TrackKind::Video { -1.0 } else { 1.0 };
-                let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
+                let h = app.ui.timeline.track_h_mut(r.track.0, r.kind);
                 *h = (*h + d).clamp(22.0, 220.0);
             }
         }
@@ -1431,7 +1434,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             Sense::click(),
         );
         if resp.double_clicked() {
-            let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
+            let h = app.ui.timeline.track_h_mut(r.track.0, r.kind);
             *h = if *h < 50.0 { 64.0 } else { 30.0 };
         }
     }
@@ -1539,13 +1542,11 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                     let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
                 }
                 ui.separator();
-                if ui.button(tl!("Expand All Tracks")).clicked() {
-                    app.ui.timeline.video_track_h = 64.0;
-                    app.ui.timeline.audio_track_h = 64.0;
-                }
-                if ui.button(tl!("Minimize All Tracks")).clicked() {
-                    app.ui.timeline.video_track_h = 26.0;
-                    app.ui.timeline.audio_track_h = 26.0;
+                for (label, h) in [(tl!("Expand All Tracks"), 64.0), (tl!("Minimize All Tracks"), 26.0)] {
+                    if ui.button(label).clicked() {
+                        app.ui.timeline.set_kind_h(TrackKind::Video, h);
+                        app.ui.timeline.set_kind_h(TrackKind::Audio, h);
+                    }
                 }
             });
         }
@@ -3393,7 +3394,7 @@ mod new_track_tests {
         // video area 0..150 holds V1..V3 exactly; scrolled up as far as it goes
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 150.0));
         let mut v_scroll = f32::MAX;
-        let (tops, _) = video_row_tops(area, 3, 50.0, &mut v_scroll);
+        let (tops, _) = video_row_tops(area, &[50.0; 3], 50.0, &mut v_scroll);
         let rows = seq
             .video_tracks
             .iter()
@@ -3418,7 +3419,23 @@ mod new_track_tests {
         assert_eq!(new_track_at(&seq, &layout, 10.0, 50.0, 50.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 50.0)))));
         // scrolled to the bottom, V1..V3 fill the area as before
         let mut v_scroll = 0.0;
-        assert_eq!(video_row_tops(area, 3, 50.0, &mut v_scroll).0, vec![100.0, 50.0, 0.0]);
+        assert_eq!(video_row_tops(area, &[50.0; 3], 50.0, &mut v_scroll).0, vec![100.0, 50.0, 0.0]);
+    }
+
+    /// #1485 with #1522: each video track keeps its own height, every track starts where the ones
+    /// above it end, and the empty row above the top track is `spare` high.
+    #[test]
+    fn video_rows_of_different_heights_stack_under_the_spare_row() {
+        // V1 30, V2 80, V3 50 plus a 50 spare row = 210, in a 150 area: 60 to scroll
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 150.0));
+        let mut v_scroll = f32::MAX;
+        let (tops, max_vs) = video_row_tops(area, &[30.0, 80.0, 50.0], 50.0, &mut v_scroll);
+        assert_eq!((max_vs, v_scroll), (60.0, 60.0));
+        // scrolled all the way up: the spare row at 0..50, then V3 50..100, V2 100..180, V1 180..210
+        assert_eq!(tops, vec![180.0, 100.0, 50.0]);
+        // scrolled to the bottom: V1 ends at the bottom of the area
+        let mut v_scroll = 0.0;
+        assert_eq!(video_row_tops(area, &[30.0, 80.0, 50.0], 50.0, &mut v_scroll).0, vec![120.0, 40.0, -10.0]);
     }
 }
 

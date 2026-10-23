@@ -186,8 +186,15 @@ pub struct TimelineView {
     pub a_scroll: f32,
     /// Fraction of the track area given to video tracks.
     pub split: f32,
+    /// Height of the video / audio tracks that were not resized on their own.
     pub video_track_h: f32,
     pub audio_track_h: f32,
+    /// Tracks resized on their own (as in Premiere, dragging a track's edge resizes only that
+    /// track): track id -> height. Setting the height of all the tracks of a kind clears them.
+    #[serde(default)]
+    pub video_heights: std::collections::BTreeMap<u64, f32>,
+    #[serde(default)]
+    pub audio_heights: std::collections::BTreeMap<u64, f32>,
     pub header_w: f32,
     pub show_thumbnails: bool,
     /// Which frames a video clip shows while `show_thumbnails` is on (the wrench menu).
@@ -215,6 +222,34 @@ impl TimelineView {
     pub fn animating(&self) -> bool {
         self.pps != self.target_pps || self.scroll != self.target_scroll
     }
+
+    /// The height of one track.
+    pub fn track_h(&self, track: u64, kind: filmcraft_project::TrackKind) -> f32 {
+        let (all, own) = self.heights(kind);
+        own.get(&track).copied().unwrap_or(all)
+    }
+
+    /// The height of one track, to change it alone.
+    pub fn track_h_mut(&mut self, track: u64, kind: filmcraft_project::TrackKind) -> &mut f32 {
+        let all = self.heights(kind).0;
+        let own = if kind == filmcraft_project::TrackKind::Video { &mut self.video_heights } else { &mut self.audio_heights };
+        own.entry(track).or_insert(all)
+    }
+
+    /// Gives every track of `kind` the height `h`, the ones resized on their own included.
+    pub fn set_kind_h(&mut self, kind: filmcraft_project::TrackKind, h: f32) {
+        if kind == filmcraft_project::TrackKind::Video {
+            self.video_track_h = h;
+            self.video_heights.clear();
+        } else {
+            self.audio_track_h = h;
+            self.audio_heights.clear();
+        }
+    }
+
+    fn heights(&self, kind: filmcraft_project::TrackKind) -> (f32, &std::collections::BTreeMap<u64, f32>) {
+        if kind == filmcraft_project::TrackKind::Video { (self.video_track_h, &self.video_heights) } else { (self.audio_track_h, &self.audio_heights) }
+    }
 }
 
 impl Default for TimelineView {
@@ -229,6 +264,8 @@ impl Default for TimelineView {
             split: 0.5,
             video_track_h: 60.0,
             audio_track_h: 56.0,
+            video_heights: Default::default(),
+            audio_heights: Default::default(),
             header_w: 204.0,
             show_thumbnails: true,
             thumbnail_mode: ThumbnailMode::Head,

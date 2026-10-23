@@ -20,7 +20,16 @@ fn three_tabs() -> (Session, [ItemId; 3]) {
 }
 
 fn view(pps: f64, scroll: f64) -> SequenceView {
-    SequenceView { pps, scroll, v_scroll: 12.0, a_scroll: 7.0, video_track_h: 90.0, audio_track_h: 40.0 }
+    SequenceView {
+        pps,
+        scroll,
+        v_scroll: 12.0,
+        a_scroll: 7.0,
+        video_track_h: 90.0,
+        audio_track_h: 40.0,
+        video_heights: Default::default(),
+        audio_heights: Default::default(),
+    }
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -153,6 +162,37 @@ fn each_sequence_reopens_with_its_playhead_where_it_was_left() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A track resized on its own keeps its height in the saved project. Read back, the heights are
+/// not trusted: one that is not a number is dropped (the track gets the shared height), the others
+/// are brought into range, and no more than a sequence has tracks are kept.
+#[test]
+fn track_heights_resized_on_their_own_are_saved_and_read_back_with_limits() {
+    let (mut s, [_, b, _]) = three_tabs();
+    let mut v = view(40.0, 0.0);
+    v.video_heights = [(7, 120.0), (9, 33.0)].into();
+    v.audio_heights = [(11, 80.0)].into();
+    s.state.timeline_views.insert(b, v.clone());
+    let dir = temp_dir("own-heights");
+    let path = dir.join("tabs.fcproj").to_string_lossy().to_string();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let mut t = Session::default();
+    t.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(t.state.timeline_views.get(&b), Some(&v));
+
+    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let many: serde_json::Map<String, serde_json::Value> = (0..5000u64).map(|id| (id.to_string(), json!(50.0))).collect();
+    doc["view"]["sequences"][b.0.to_string()]["video_heights"] = json!({"1": 1e300, "2": 0.0, "3": 1e9, "4": -7.0});
+    doc["view"]["sequences"][b.0.to_string()]["audio_heights"] = serde_json::Value::Object(many);
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let mut t = Session::default();
+    t.execute("file.open", json!({"path": path})).unwrap();
+    let v = &t.state.timeline_views[&b];
+    assert_eq!(v.video_heights, [(2, 8.0), (3, 600.0), (4, 8.0)].into());
+    assert_eq!(v.audio_heights.len(), SequenceView::MAX_TRACK_HEIGHTS);
+    assert_eq!((v.video_track_h, v.audio_track_h), (90.0, 40.0), "the shared heights are left as they were");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The view in a project file is not trusted: ids of things that are not sequences, repeats and
 /// numbers out of range are dropped or brought into range, and a view that cannot be read at all
 /// does not stop the project from opening.
@@ -192,7 +232,7 @@ fn a_damaged_view_in_a_project_file_is_cleaned_up_or_ignored() {
     assert_eq!(t.state.open_sequences, [c, b]);
     assert_eq!(t.state.active_sequence, Some(c), "an active tab that is not open: the first tab");
     assert_eq!(t.state.timeline_views.len(), 1);
-    let v = t.state.timeline_views[&b];
+    let v = &t.state.timeline_views[&b];
     assert!(v.pps <= 1e5 && v.scroll == 0.0 && v.v_scroll <= 1e6 && v.a_scroll == 0.0);
     assert!(v.video_track_h >= 8.0 && v.audio_track_h <= 600.0);
     // playheads: only sequences keep one, never before zero or past the bound, always on a frame

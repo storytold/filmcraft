@@ -807,7 +807,7 @@ impl FilmcraftApp {
             self.timeline_view_of = None;
             return;
         };
-        let stored = self.session.state.timeline_views.get(&active).copied();
+        let stored = self.session.state.timeline_views.get(&active).cloned();
         let v = &mut self.ui.timeline;
         let shown = filmcraft_engine::project::SequenceView {
             pps: v.target_pps,
@@ -816,34 +816,38 @@ impl FilmcraftApp {
             a_scroll: v.a_scroll,
             video_track_h: v.video_track_h,
             audio_track_h: v.audio_track_h,
+            video_heights: v.video_heights.clone(),
+            audio_heights: v.audio_heights.clone(),
         };
-        let show = |v: &mut state::TimelineView, s: filmcraft_engine::project::SequenceView| {
+        let show = |v: &mut state::TimelineView, s: &filmcraft_engine::project::SequenceView| {
             (v.pps, v.target_pps, v.scroll, v.target_scroll) = (s.pps, s.pps, s.scroll, s.scroll);
             (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (s.v_scroll, s.a_scroll, s.video_track_h, s.audio_track_h);
+            (v.video_heights, v.audio_heights) = (s.video_heights.clone(), s.audio_heights.clone());
             (v.fit_pending, v.fit_empty) = (false, None);
         };
         if self.timeline_view_of != Some(active) {
             self.timeline_view_of = Some(active);
             match stored.and_then(|s| s.checked()) {
                 Some(s) => {
-                    show(v, s);
+                    show(v, &s);
                     self.timeline_view_last = Some(s);
                 }
                 None => {
                     let d = state::TimelineView::default();
                     (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (0.0, 0.0, d.video_track_h, d.audio_track_h);
+                    (v.video_heights, v.audio_heights) = (d.video_heights, d.audio_heights);
                     (v.fit_pending, v.fit_empty) = (true, None);
                     self.timeline_view_last = None;
                 }
             }
         } else if v.fit_pending {
             // the panel has not fitted the sequence yet: nothing to keep
-        } else if self.timeline_view_last != Some(shown) {
-            self.session.state.timeline_views.insert(active, shown);
+        } else if self.timeline_view_last.as_ref() != Some(&shown) {
+            self.session.state.timeline_views.insert(active, shown.clone());
             self.timeline_view_last = Some(shown);
         } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
-            show(v, s);
-            self.timeline_view_last = Some(s);
+            show(v, &s);
+            self.timeline_view_last = Some(s.clone());
             self.session.state.timeline_views.insert(active, s);
         }
     }

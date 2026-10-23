@@ -38,13 +38,18 @@ pub struct KeysState {
     pub maximized: Option<PanelKind>,
     /// Track heights before Expand / Minimize All Tracks (pressing again restores them).
     pub saved_heights: Option<[f32; 2]>,
+    /// The video / audio tracks resized on their own before Expand / Minimize All Tracks (track
+    /// id -> height), restored with `saved_heights`.
+    pub saved_own_heights: [std::collections::BTreeMap<u64, f32>; 2],
+    /// The sequence they were saved in: only that one gets them back.
+    pub saved_for: Option<filmcraft_engine::project::ItemId>,
     /// Icon view columns in the last frame (Move Selection Up / Down step).
     pub icon_columns: usize,
 }
 
 impl Default for KeysState {
     fn default() -> Self {
-        Self { maximized: None, saved_heights: None, icon_columns: 1 }
+        Self { maximized: None, saved_heights: None, saved_own_heights: Default::default(), saved_for: None, icon_columns: 1 }
     }
 }
 
@@ -196,8 +201,9 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         "timeline.increaseVideoHeight" | "timeline.decreaseVideoHeight" | "timeline.increaseAudioHeight" | "timeline.decreaseAudioHeight" => {
             let d = if id.contains("increase") { HEIGHT_STEP } else { -HEIGHT_STEP };
             let tv = &mut app.ui.timeline;
-            let h = if id.contains("Video") { &mut tv.video_track_h } else { &mut tv.audio_track_h };
-            *h = (*h + d).clamp(MIN_TRACK_H, MAX_TRACK_H);
+            let kind = if id.contains("Video") { filmcraft_project::TrackKind::Video } else { filmcraft_project::TrackKind::Audio };
+            let h = if id.contains("Video") { tv.video_track_h } else { tv.audio_track_h };
+            tv.set_kind_h(kind, (h + d).clamp(MIN_TRACK_H, MAX_TRACK_H));
             Ok(json!({"videoTrackHeight": tv.video_track_h, "audioTrackHeight": tv.audio_track_h}))
         }
         "timeline.nextScreen" | "timeline.prevScreen" => {
@@ -320,20 +326,24 @@ fn play_range(app: &mut FilmcraftApp, preroll: bool) -> Result<Value, String> {
 }
 
 fn all_heights(app: &mut FilmcraftApp, expand: bool) -> Value {
+    let active = app.session.state.active_sequence;
     let tv = &mut app.ui.timeline;
     let target = if expand { 120.0 } else { MIN_TRACK_H };
-    let at_target = tv.video_track_h == target && tv.audio_track_h == target;
-    match (at_target, app.ui.keys.saved_heights) {
+    let at_target = tv.video_track_h == target && tv.audio_track_h == target && tv.video_heights.is_empty() && tv.audio_heights.is_empty();
+    match (at_target, app.ui.keys.saved_heights.filter(|_| app.ui.keys.saved_for == active)) {
         // pressing again restores the heights from before
         (true, Some([v, a])) => {
-            tv.video_track_h = v;
-            tv.audio_track_h = a;
+            tv.set_kind_h(filmcraft_project::TrackKind::Video, v);
+            tv.set_kind_h(filmcraft_project::TrackKind::Audio, a);
+            [tv.video_heights, tv.audio_heights] = std::mem::take(&mut app.ui.keys.saved_own_heights);
             app.ui.keys.saved_heights = None;
         }
         _ => {
             app.ui.keys.saved_heights = Some([tv.video_track_h, tv.audio_track_h]);
-            tv.video_track_h = target;
-            tv.audio_track_h = target;
+            app.ui.keys.saved_own_heights = [tv.video_heights.clone(), tv.audio_heights.clone()];
+            app.ui.keys.saved_for = active;
+            tv.set_kind_h(filmcraft_project::TrackKind::Video, target);
+            tv.set_kind_h(filmcraft_project::TrackKind::Audio, target);
         }
     }
     json!({"videoTrackHeight": tv.video_track_h, "audioTrackHeight": tv.audio_track_h})
