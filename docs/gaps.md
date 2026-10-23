@@ -155,11 +155,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G8. UI fidelity: monitor handles, Effect Controls, docking
 
+- **Have:** Effect Controls has its draggable divider, row lines, scalar and Position value/velocity
+  curves, and a zoom bar that scopes the ruler, property keyframes and graphs. The range scrolls/zooms
+  by dragging, scrubs within the visible time, and is available to automation through `ui.set` /
+  `ui.inspect`. Keyframe and graph coordinates follow the zoom, including drags; five-frame minimum
+  view width and malformed ranges are covered by tests.
 - **Missing:** on-screen transform handles for Motion / Transform in the Program monitor (#639);
-  Effect Controls keyframe zoom bar, draggable divider, row lines (#640–#645); panel docking
-  rearrangement (#493); filmstrip thumbnails (#614);
+  panel docking rearrangement (#493); filmstrip thumbnails (#614);
   Freeform bins and middle-mouse pan (#579);
-  Program monitor Button Editor (+) (#431); keyframe curves for Position (#448); transition
+  Program monitor Button Editor (+) (#431); transition
   editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize,
   drag the cut to move it with the transition; the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
   X11 (#457).
@@ -350,5 +354,6 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-21 | minor | G10: PSD stills import the flattened composite, 8/16-bit grayscale and RGB (#2116) |
+| 2026-10-23 | minor | G8: Effect Controls keyframe zoom bar, zoom-aware ruler/lane/graphs and automation; validated with headless UI tests |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |

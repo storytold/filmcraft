@@ -22,9 +22,12 @@ const ROW_H: f32 = 22.0;
 /// laid out for at least 260 points (values from 150 points in, the reset button at the end).
 const MIN_LIST_W: f32 = 260.0;
 const MIN_LANE_W: f32 = 60.0;
+const MIN_ZOOM_THUMB_W: f32 = 34.0;
+const MIN_ZOOM_FRAMES: i64 = 5;
 /// Keyframe lane header: the time ruler (beside the Source / Sequence pills) and the clip's bar.
 const RULER_H: f32 = 24.0;
 const CLIP_BAR_H: f32 = 18.0;
+const ZOOM_BAR_H: f32 = 10.0;
 /// Distance between the keyframe navigator's buttons (◀ ◆ ▶).
 const NAV_STEP: f32 = 16.0;
 /// The Y curve of a point parameter's value graph (X uses the accent colour).
@@ -39,6 +42,117 @@ const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
     let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
     it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
+}
+
+/// A possibly UI-supplied range, clamped to the clip. Invalid / stale ranges show the full clip.
+fn time_zoom_range(zoom: Option<[f64; 2]>) -> (f64, f64) {
+    let Some([start, end]) = zoom.filter(|[start, end]| start.is_finite() && end.is_finite()) else { return (0.0, 1.0) };
+    let (start, end) = (start.clamp(0.0, 1.0), end.clamp(0.0, 1.0));
+    if start < end { (start, end) } else { (0.0, 1.0) }
+}
+
+/// Keep the minimum view width at five frames, including ranges supplied through UI automation or
+/// restored from an older UI-state snapshot.
+fn constrained_time_zoom(zoom: Option<[f64; 2]>, duration: Tick, rate: filmcraft_time::FrameRate) -> Option<[f64; 2]> {
+    let (start, end) = time_zoom_range(zoom);
+    let duration = duration.0.max(1);
+    let min_span = (rate.frame_duration().0.max(1).saturating_mul(MIN_ZOOM_FRAMES) as f64 / duration as f64).clamp(0.0, 1.0);
+    let span = (end - start).max(min_span).min(1.0);
+    let start = start.min(1.0 - span);
+    let end = start + span;
+    (start > 0.0 || end < 1.0).then_some([start, end])
+}
+
+fn shown_range(start: Tick, duration: Tick, zoom: Option<[f64; 2]>) -> (Tick, Tick) {
+    let (from, to) = time_zoom_range(zoom);
+    let duration = duration.0.max(1);
+    let at = |fraction: f64| Tick(start.0.saturating_add((fraction * duration as f64).round().clamp(0.0, duration as f64) as i64));
+    let shown_start = at(from);
+    let shown_end = at(to).max(Tick(shown_start.0.saturating_add(1)));
+    (shown_start, shown_end)
+}
+
+/// The overview bar under the clip. Its thumb is the part of the clip shown in the lane: drag the
+/// middle to scroll and either handle to change the zoom. A full-width thumb shows the whole clip.
+fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, duration: Tick, rate: filmcraft_time::FrameRate) {
+    let t = app.tokens;
+    let clip_duration = duration;
+    let duration = duration.0.max(1);
+    let frame = rate.frame_duration().0.max(1);
+    let min_span = (frame.saturating_mul(MIN_ZOOM_FRAMES) as f64 / duration as f64).clamp(0.0, 1.0);
+    let (start, end) = time_zoom_range(constrained_time_zoom(app.ui.effect_controls_time_zoom, clip_duration, rate));
+    let span = end - start;
+    let w = (span as f32 * bar.width()).clamp(MIN_ZOOM_THUMB_W.min(bar.width()), bar.width());
+    let travel = (bar.width() - w).max(0.0);
+    let range = (1.0 - span).max(0.0);
+    let left = bar.min.x + if range > 0.0 { (start / range).clamp(0.0, 1.0) as f32 * travel } else { 0.0 };
+    let per_point = if travel > 0.5 { range / travel as f64 } else { 0.0 };
+    let thumb = Rect::from_min_max(pos2(left, bar.min.y), pos2(left + w, bar.max.y));
+    let p = ui.painter();
+    p.rect_filled(bar, bar.height() / 2.0, t.separator);
+    p.rect_filled(thumb, thumb.height() / 2.0, if ui.rect_contains_pointer(thumb) { t.scroll_thumb_hover } else { t.scroll_thumb });
+    for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
+        p.circle_filled(pos2(x, thumb.center().y), 3.5, t.panel_bg);
+        p.circle_stroke(pos2(x, thumb.center().y), 3.5, Stroke::new(1.25, t.icon_active));
+    }
+    app.auto.add("effectControls.zoomBar", thumb, "keyframe zoom range");
+    app.auto.add("effectControls.zoomBar.track", bar, "keyframe zoom track");
+    let response = ui.interact(bar, egui::Id::unique("effect-controls-zoom-bar"), Sense::click_and_drag());
+    let jump = |x: f32| ((x - bar.min.x - w / 2.0) as f64 * per_point).clamp(0.0, range);
+    let mut next = None;
+    if response.clicked()
+        && per_point > 0.0
+        && let Some(pos) = response.interact_pointer_pos().filter(|pos| !thumb.contains(*pos))
+    {
+        let start = jump(pos.x);
+        next = Some((start, start + span));
+    }
+    let drag_id = egui::Id::unique("effect-controls-zoom-drag");
+    if response.drag_started()
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos())
+    {
+        let mut drag_start = start;
+        let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+            if per_point > 0.0 {
+                drag_start = jump(pos.x);
+                next = Some((drag_start, drag_start + span));
+            }
+            0u8
+        } else if (pos.x - thumb.min.x).abs() < 9.0 {
+            1
+        } else if (pos.x - thumb.max.x).abs() < 9.0 {
+            2
+        } else {
+            0
+        };
+        ui.data_mut(|d| d.insert_temp(drag_id, (pos.x, drag_start, mode)));
+    }
+    if response.dragged()
+        && let Some((grab, drag_start, mode)) = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id))
+    {
+        match mode {
+            0 => {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let next_start = (drag_start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
+                    next = Some((next_start, next_start + span));
+                }
+            }
+            1 => {
+                let dx = response.drag_delta().x as f64 / bar.width().max(1.0) as f64;
+                next = Some(((start + dx).clamp(0.0, (end - min_span).max(0.0)), end));
+            }
+            _ => {
+                let dx = response.drag_delta().x as f64 / bar.width().max(1.0) as f64;
+                next = Some((start, (end + dx).clamp((start + min_span).min(1.0), 1.0)));
+            }
+        }
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<(f32, f64, u8)>(drag_id));
+    }
+    if let Some((start, end)) = next {
+        app.ui.effect_controls_time_zoom = (start > 0.0 || end < 1.0).then_some([start, end.min(1.0)]);
+    }
 }
 
 // The press frame can include movement before the button went down. Start from the press
@@ -211,18 +325,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let lane = Rect::from_min_max(pos2(split + 4.0, rect.min.y + 4.0), pos2(rect.max.x - 6.0, rect.max.y - 26.0));
     ui.painter().rect_filled(lane, 0.0, t.tl_bg);
     let ph = app.session.playhead();
-    let dur = it.duration.0.max(1) as f64;
-    let lx = |tk: Tick| -> f32 { lane.min.x + (((tk - it.start).0 as f64 / dur) as f32).clamp(0.0, 1.0) * lane.width() };
     let rate = seq.settings.frame_rate;
+    app.ui.effect_controls_time_zoom = constrained_time_zoom(app.ui.effect_controls_time_zoom, it.duration, rate);
+    let (shown_start, shown_end) = shown_range(it.start, it.duration, app.ui.effect_controls_time_zoom);
+    let shown_duration = shown_end.0.saturating_sub(shown_start.0).max(1) as f64;
+    let lx = |tk: Tick| -> f32 { lane.min.x + (((tk.0.saturating_sub(shown_start.0) as f64 / shown_duration) as f32).clamp(0.0, 1.0)) * lane.width() };
     let ruler = Rect::from_min_max(lane.min, pos2(lane.max.x, lane.min.y + RULER_H));
     let bar = Rect::from_min_max(pos2(lane.min.x, ruler.max.y + 4.0), pos2(lane.max.x, ruler.max.y + 4.0 + CLIP_BAR_H));
+    let zoom_bar = Rect::from_min_size(pos2(lane.min.x, bar.max.y + 5.0), vec2(lane.width(), ZOOM_BAR_H));
     let scrub = Rect::from_min_max(ruler.min, bar.max);
     app.auto.add("effectControls.lane", lane, "keyframe lane");
     app.auto.add("effectControls.ruler", scrub, "time ruler");
     let body = Rect::from_min_max(pos2(rect.min.x, head.max.y + 4.0), pos2(split, rect.max.y - 26.0));
     let mut actions: Vec<(String, Value)> = Vec::new();
-    let selection_area = Rect::from_min_max(pos2(lane.min.x, bar.max.y), lane.max).intersect(ui.clip_rect());
-    let mut keys = Interaction::begin(app, ui, selection_area, clip.0);
+    let selection_area = Rect::from_min_max(pos2(lane.min.x, zoom_bar.max.y + 2.0), lane.max).intersect(ui.clip_rect());
+    let mut keys = Interaction::begin(app, ui, selection_area, clip.0, (shown_start, shown_end));
     // the rows span the list and the keyframe area: the wheel scrolls anywhere over them and the
     // scrollbar sits at the panel's right edge (#643)
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(body.min, pos2(lane.max.x, body.max.y))).id_salt("ec-body"));
@@ -340,17 +457,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     custom_setup_row(app, bui, body, &lane, clip, idx, &e.effect);
                 }
                 for pd in &def.params {
-                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it, &mut keys);
+                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, (shown_start, shown_end), it, &mut keys);
                     if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
                         && let Some(param) = e.params.get(pd.id)
                         && param.is_animated()
                         && graphable(&param.value)
                     {
-                        graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, it, &mut actions);
+                        graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, (shown_start, shown_end), it, &mut actions);
                     }
                 }
                 if crate::panels::masks::maskable(e) {
-                    crate::panels::masks::effect_rows(app, bui, body, clip, idx, e, mt_now, &mut actions, &lane, &lx, it, &mut keys);
+                    crate::panels::masks::effect_rows(app, bui, body, clip, idx, e, mt_now, &mut actions, &lane, &lx, (shown_start, shown_end), it, &mut keys);
                 }
             }
         }
@@ -359,9 +476,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // the ruler and the clip's bar, painted after the rows so rows scrolled up under them (their
     // lines and keyframes) stay hidden
     ui.painter().rect_filled(Rect::from_min_max(lane.min, pos2(lane.max.x, bar.max.y)), 0.0, t.tl_bg);
-    paint_ruler(ui.painter(), ruler, &it, rate, seq.settings.drop_frame, &t);
+    paint_ruler(ui.painter(), ruler, shown_start, shown_end, rate, seq.settings.drop_frame, &t);
     ui.painter().rect_filled(bar.shrink2(vec2(0.0, 2.0)), 2.0, t.clip_bar_bg);
     ui.painter().with_clip_rect(bar).text(pos2(bar.min.x + 4.0, bar.center().y), Align2::LEFT_CENTER, &it.name, Tokens::ui(10.0), t.text);
+    time_zoom_bar(app, ui, zoom_bar, it.duration, rate);
     // click or drag anywhere on the ruler (or the bar) to move the playhead (after the rows, which
     // reach under it, so it gets the pointer first)
     let sresp = ui.interact(scrub, egui::Id::unique(("ec-scrub", clip.0)), Sense::click_and_drag());
@@ -369,7 +487,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some(pos) = sresp.interact_pointer_pos()
     {
         let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
-        let tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64));
+        let tk = rate.snap_nearest(shown_start + Tick((f * shown_duration) as i64));
         app.stop_for_scrub();
         app.session.set_playhead(tk);
     }
@@ -383,7 +501,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.painter().line_segment([pos2(split + 1.5, rect.min.y), pos2(split + 1.5, rect.max.y - 26.0)], Stroke::new(1.0, dcol));
     app.auto.add("effectControls.divider", divider, "divider");
     // playhead: a handle on the ruler and a line down the lane, while it is on the clip
-    if ph >= it.start && ph <= it.end() {
+    if ph >= shown_start && ph <= shown_end {
         let px = lx(ph);
         let (top, tip) = (ruler.max.y - 13.0, ruler.max.y);
         let head = vec![pos2(px - 5.0, top), pos2(px + 5.0, top), pos2(px + 5.0, tip - 5.0), pos2(px, tip), pos2(px - 5.0, tip - 5.0)];
@@ -445,11 +563,10 @@ fn seq_name(app: &FilmcraftApp) -> String {
     app.session.state.active_sequence.and_then(|s| app.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default()
 }
 
-/// The keyframe lane's time ruler: ticks and sequence timecode across the clip's stretch of the
-/// timeline (the lane shows exactly the clip, so the ruler starts at the clip's start).
-fn paint_ruler(p: &egui::Painter, ruler: Rect, it: &TrackItem, rate: filmcraft_time::FrameRate, drop_frame: bool, t: &Tokens) {
+/// The keyframe lane's time ruler: ticks and sequence timecode across the visible part of the clip.
+fn paint_ruler(p: &egui::Painter, ruler: Rect, start: Tick, end: Tick, rate: filmcraft_time::FrameRate, drop_frame: bool, t: &Tokens) {
     let p = p.with_clip_rect(ruler);
-    let dur = it.duration.0.max(1) as f64;
+    let dur = end.0.saturating_sub(start.0).max(1) as f64;
     let frame_px = ruler.width() as f64 * rate.frame_duration().0.max(1) as f64 / dur;
     let base = rate.timecode_base();
     let steps = [
@@ -474,21 +591,26 @@ fn paint_ruler(p: &egui::Painter, ruler: Rect, it: &TrackItem, rate: filmcraft_t
     // labels far enough apart to read; the small ticks divide the labelled ones evenly
     let label_step = steps.iter().copied().find(|s| *s > 0 && *s as f64 * frame_px >= 80.0);
     let minor = steps.iter().copied().find(|s| *s > 0 && *s as f64 * frame_px >= 8.0 && label_step.is_none_or(|l| l % s == 0));
-    let (f0, f1) = (rate.frame_at(it.start), rate.frame_at(it.end()));
+    let (f0, f1) = (rate.frame_at(start), rate.frame_at(end));
     let base_y = ruler.max.y - 1.0;
     for (step, h, labelled) in [(minor, 3.0, false), (label_step, 7.0, true)] {
         let Some(step) = step else { continue };
         let mut f = f0.div_euclid(step).saturating_mul(step);
+        if f < f0 {
+            f = f.saturating_add(step);
+        }
         // a step is at least 8 px wide, so this covers any ruler; the cap is for damaged numbers
         for _ in 0..4096 {
             if f > f1 {
                 break;
             }
-            let x = ruler.min.x + ((rate.tick_of(f) - it.start).0 as f64 / dur) as f32 * ruler.width();
+            let x = ruler.min.x + (rate.tick_of(f).0.saturating_sub(start.0) as f64 / dur) as f32 * ruler.width();
             p.line_segment([pos2(x, base_y - h), pos2(x, base_y)], Stroke::new(1.0, t.tl_ruler_tick));
             if labelled {
                 let label = filmcraft_time::format_time(rate.tick_of(f), rate, drop_frame, filmcraft_time::TimeDisplay::Timecode, 48000);
-                p.text(pos2(x, ruler.min.y + 7.0), Align2::CENTER_CENTER, label, Tokens::ui(10.0), t.tl_ruler_text);
+                let half = p.layout_no_wrap(label.clone(), Tokens::ui(10.0), t.tl_ruler_text).size().x / 2.0;
+                let label_x = x.clamp(ruler.min.x + half, (ruler.max.x - half).max(ruler.min.x + half));
+                p.text(pos2(label_x, ruler.min.y + 7.0), Align2::CENTER_CENTER, label, Tokens::ui(10.0), t.tl_ruler_text);
             }
             f = f.saturating_add(step);
         }
@@ -591,10 +713,10 @@ pub(crate) fn param_row(
     actions: &mut Vec<(String, Value)>,
     lane: &Rect,
     lx: &dyn Fn(Tick) -> f32,
+    timeline_range: (Tick, Tick),
     it: &TrackItem,
     keys: &mut Interaction,
 ) {
-    let _ = lx;
     let t = app.tokens;
     let param = match mask {
         Some(k) => e.masks.get(k).and_then(|m| m.param(pd.id)),
@@ -696,15 +818,13 @@ pub(crate) fn param_row(
     // keyframes in the lane: draggable diamonds; right-click for interpolation
     if param.is_animated() {
         let y = r.center().y;
-        let dur = it.duration.0.max(1) as f64;
         for k in &param.keyframes {
             let tl = timeline_time_of(it, k.time);
-            let f = ((tl - it.start).0 as f64 / dur) as f32;
-            if !(-0.01..=1.01).contains(&f) {
+            if tl < timeline_range.0 || tl > timeline_range.1 {
                 continue;
             }
             let id = egui::Id::unique(("kf", clip.0, idx, pkey, k.time.0));
-            let original = Rect::from_center_size(pos2(lane.min.x + f * lane.width(), y), vec2(15.0, 15.0));
+            let original = Rect::from_center_size(pos2(lx(tl), y), vec2(15.0, 15.0));
             let resp = ui.interact(original.expand(2.0), id, Sense::click_and_drag());
             let reference = KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time };
             let kr = keys.key(app, ui, reference.clone(), it, *lane, original, &resp, k.interp);
@@ -1330,6 +1450,7 @@ pub(crate) fn graph_rows(
     pd: &filmcraft_project::ParamDef,
     param: &filmcraft_project::Param,
     lane: &Rect,
+    timeline_range: (Tick, Tick),
     it: &TrackItem,
     actions: &mut Vec<(String, Value)>,
 ) {
@@ -1337,12 +1458,17 @@ pub(crate) fn graph_rows(
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
     let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
     row_line(ui, velr, lane, &t);
-    let speed = it.speed.abs().max(1e-6);
-    let dur = it.duration.0.max(1) as f64;
-    let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
+    let speed = if it.speed.is_finite() { it.speed.abs().max(1e-6) } else { 1.0 };
+    let shown_duration = timeline_range.1.0.saturating_sub(timeline_range.0.0).max(1);
+    let timeline_at = |f: f64| Tick(timeline_range.0.0.saturating_add((f * shown_duration as f64).round() as i64));
+    let to_media = |f: f64| it.source_time_at(timeline_at(f));
+    let to_f = |m: Tick| {
+        let time = timeline_time_of(it, m);
+        (time.0.saturating_sub(timeline_range.0.0) as f64 / shown_duration as f64) as f32
+    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
-    let n = (lane.width() / 2.0).max(8.0) as usize;
+    let n = ((lane.width() / 2.0).max(8.0) as usize).min(4096);
     let vals: Vec<Vec<f64>> = (0..=n).map(|i| graph_components(&param.value_at(to_media(i as f64 / n as f64)))).collect();
     let curves = graph_components(&param.value).len();
     let at_keys: Vec<Vec<f64>> = param.keyframes.iter().map(|k| graph_components(&k.value)).collect();
@@ -1394,7 +1520,7 @@ pub(crate) fn graph_rows(
         p.add(egui::Shape::line(line, Stroke::new(1.5, curve_color(c))));
     }
     // velocity (units per second, derivative of the sampled value; a point's speed along its path)
-    let secs = (dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
+    let secs = (shown_duration as f64 * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
     let vel: Vec<f64> = vals
         .windows(2)
         .map(|w| {
@@ -1715,7 +1841,7 @@ mod lane_tests {
                             it.start = Tick(start);
                             it.duration = Tick(duration);
                             let ruler = Rect::from_min_size(pos2(10.0, 10.0), vec2(width, RULER_H));
-                            paint_ruler(ui.painter(), ruler, &it, filmcraft_time::FrameRate { num, den }, false, &t);
+                            paint_ruler(ui.painter(), ruler, it.start, it.end(), filmcraft_time::FrameRate { num, den }, false, &t);
                         }
                     }
                 }
@@ -1736,7 +1862,7 @@ mod lane_tests {
         let ctx = context();
         let t = Tokens::for_kind(Default::default());
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            paint_ruler(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, RULER_H)), &it, rate, false, &t);
+            paint_ruler(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, RULER_H)), it.start, it.end(), rate, false, &t);
         });
         out.textures_delta.clear();
         fn texts(s: egui::Shape, out: &mut Vec<String>) {
@@ -1749,6 +1875,18 @@ mod lane_tests {
         let mut labels = Vec::new();
         out.shapes.into_iter().for_each(|c| texts(c.shape, &mut labels));
         assert_eq!(labels, ["00:01:00:00", "00:01:02:00", "00:01:04:00"]);
+
+        // A zoomed view starts between ruler ticks: its first label must be a tick inside the
+        // visible range, not the previous timecode clamped onto the left edge.
+        let zoom_start = rate.tick_of(24 * 60 + 7);
+        let zoom_end = rate.tick_of(24 * 65);
+        let mut zoomed = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint_ruler(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, RULER_H)), zoom_start, zoom_end, rate, false, &t);
+        });
+        zoomed.textures_delta.clear();
+        let mut labels = Vec::new();
+        zoomed.shapes.into_iter().for_each(|c| texts(c.shape, &mut labels));
+        assert_eq!(labels.first().map(String::as_str), Some("00:01:02:00"));
     }
 }
 
@@ -1808,7 +1946,7 @@ mod graph_drag_tests {
                 let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
                 let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
                 let mut actions = Vec::new();
-                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, &it, &mut actions);
+                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, (it.start, it.end()), &it, &mut actions);
                 run(&mut self.app, ui.ctx(), actions);
             });
             out.textures_delta.clear();

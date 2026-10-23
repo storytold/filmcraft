@@ -480,6 +480,10 @@ pub struct UiState {
     /// share of the panel). Dragging the divider sets it (#643).
     #[serde(default)]
     pub effect_controls_split: f32,
+    /// Effect Controls: the part of the selected clip shown in the keyframe lane, as fractions of
+    /// its timeline duration. None shows the whole clip.
+    #[serde(default)]
+    pub effect_controls_time_zoom: Option<[f64; 2]>,
     pub show_menu_bar: bool,
     /// The header bar (Home, Import, Edit, Export, workspaces). An app that embeds FilmCraft can hide it.
     #[serde(default = "shown")]
@@ -1012,6 +1016,7 @@ impl Default for UiState {
             lumetri_grid_folder: None,
             collapsed_fx: vec![],
             effect_controls_split: 0.0,
+            effect_controls_time_zoom: None,
             show_menu_bar: true,
             show_header: true,
             show_status_bar: true,

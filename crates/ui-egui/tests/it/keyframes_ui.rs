@@ -306,6 +306,91 @@ fn effect_controls_ruler_moves_the_playhead() {
     d.rect("effectControls.ruler");
 }
 
+/// The Effect Controls zoom bar scopes the ruler, keyframe lanes, playhead and graphs to one
+/// visible part of the selected clip. Dragging its right handle zooms without changing the clip.
+#[test]
+fn effect_controls_zoom_bar_scales_keyframes_and_ruler() {
+    let (mut d, clip) = Driver::demo();
+    let at_fraction = |f: f64| Tick(clip.start + (f * clip.duration as f64) as i64);
+    let to_seconds = |time: Tick| time.seconds();
+    let first_time = d.seek(to_seconds(at_fraction(0.3)));
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    let second_time = d.seek(to_seconds(at_fraction(0.7)));
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    let keys = d.parameter(&clip, "motion", "scale").keyframes;
+    let key_id = |time: Tick| format!("effectControls.motion.scale.keyframe.{}", time.0);
+    let first_id = key_id(keys[0].time);
+    let second_id = key_id(keys[1].time);
+
+    d.ok("ui.set", json!({"effectControls": {"timeZoom": [0.2, 0.6]}}));
+    d.frames(3);
+    assert_eq!(d.harness.state().ui.effect_controls_time_zoom, Some([0.2, 0.6]));
+    assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["effect_controls_time_zoom"], json!([0.2, 0.6]));
+    let lane = d.rect("effectControls.lane");
+    let first = d.rect(&first_id);
+    let expected_x = lane[0] + lane[2] * ((first_time - at_fraction(0.2).0) as f64 / (at_fraction(0.6).0 - at_fraction(0.2).0) as f64);
+    assert!((first[0] + first[2] / 2.0 - expected_x).abs() < 2.0, "a keyframe maps to its time in the zoomed range: {first:?} {lane:?}, expected {expected_x}");
+    assert!(d.find(&second_id).is_none(), "the keyframe outside the zoomed time range is not drawn");
+    d.click("effectControls.motion.scale.graphs");
+    let graph_key = format!("effectControls.scale.graph.keyframe.{}", keys[0].time.0);
+    let graph = d.rect(&graph_key);
+    assert!((graph[0] + graph[2] / 2.0 - expected_x).abs() < 2.0, "the value graph uses the same zoom range: {graph:?}, expected {expected_x}");
+    d.shot("keyframes-zoomed");
+    let frame = Tick::from_seconds_f64(1.0 / 23.976).0;
+
+    // A screen-space keyframe drag is converted through the zoomed range, not the whole clip.
+    let lane = d.rect("effectControls.lane");
+    let first = d.rect(&first_id);
+    let from = egui::pos2((first[0] + first[2] / 2.0) as f32, (first[1] + first[3] / 2.0) as f32);
+    let before = d.parameter(&clip, "motion", "scale");
+    d.gesture(from, from + egui::vec2(lane[2] as f32 * 0.1, 0.0), egui::Modifiers::NONE, None);
+    let moved = d.parameter(&clip, "motion", "scale");
+    let delta = moved.keyframes[0].time - before.keyframes[0].time;
+    let expected_delta = (at_fraction(0.6).0 - at_fraction(0.2).0) as f64 * 0.1;
+    assert!((delta.0 as f64 - expected_delta).abs() <= frame as f64, "keyframe drag follows the zoomed scale: {delta:?} vs {expected_delta}");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.parameter(&clip, "motion", "scale"), before, "the drag is one undoable edit");
+
+    d.exec("playhead.set", json!({"time": first_time}));
+    assert!(d.find("effectControls.playhead").is_some());
+    d.exec("playhead.set", json!({"time": second_time}));
+    assert!(d.find("effectControls.playhead").is_none(), "the playhead outside the view is not pinned to the edge");
+
+    let ruler = d.rect("effectControls.ruler");
+    d.ok("ui.click", json!({"x": ruler[0] + ruler[2] * 0.75, "y": ruler[1] + ruler[3] * 0.3}));
+    d.frames(2);
+    let expected = at_fraction(0.5).0;
+    assert!((d.playhead() - expected).abs() <= frame, "the ruler maps into the visible range: {} vs {expected}", d.playhead());
+
+    let old = d.harness.state().ui.effect_controls_time_zoom;
+    let thumb = d.rect("effectControls.zoomBar");
+    let from = egui::pos2((thumb[0] + thumb[2] - 1.0) as f32, (thumb[1] + thumb[3] / 2.0) as f32);
+    let to = from - egui::vec2(18.0, 0.0);
+    d.ok("ui.drag", json!({"from": {"x": from.x, "y": from.y}, "to": {"x": to.x, "y": to.y}, "steps": 5}));
+    d.frames(3);
+    let zoomed = d.harness.state().ui.effect_controls_time_zoom;
+    assert!(
+        zoomed.is_some_and(|[start, end]| start == old.map_or(0.0, |range| range[0]) && end < old.map_or(1.0, |range| range[1])),
+        "dragging the end handle narrows the visible range: {old:?} -> {zoomed:?}"
+    );
+    d.shot("keyframes-zoomed-in");
+    assert_eq!(d.parameter(&clip, "motion", "scale").keyframes.len(), 2, "zooming is a UI-only operation");
+
+    let invalid = d.call("ui.set", json!({"effectControls": {"timeZoom": [0.8, 0.2]}}));
+    assert_eq!(invalid["ok"], false, "a reversed range is refused");
+    assert_eq!(d.harness.state().ui.effect_controls_time_zoom, zoomed, "a bad range cannot change the view");
+    d.ok("ui.set", json!({"effectControls": {"timeZoom": [0.5, 0.500001]}}));
+    d.frames(2);
+    let constrained = d.harness.state().ui.effect_controls_time_zoom;
+    let min_span = 5.0 * d.harness.state().session.sequence_rate().frame_duration().0 as f64 / clip.duration as f64;
+    assert!(
+        constrained.is_some_and(|[start, end]| (end - start) >= min_span - 1e-12),
+        "automation cannot zoom past the five-frame minimum: {constrained:?} (min span {min_span})"
+    );
+    d.ok("ui.set", json!({"effectControls": {"timeZoom": null}}));
+    assert_eq!(d.harness.state().ui.effect_controls_time_zoom, None, "null restores the full-clip range");
+}
+
 /// #412: Scale and Position both have a keyframe at the same time. A click on Scale's keyframe in
 /// the Effect Controls lane selects that keyframe only (every keyframe under the playhead, which
 /// the click moves there, used to light up); a keyframe that is gone drops out of the selection.

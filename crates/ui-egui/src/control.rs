@@ -180,6 +180,19 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
             Err(e) => return err(format!("`keyframeSelection`: {e}")),
         }
     }
+    if let Some(patch) = p.get("effectControls") {
+        let Some(patch) = patch.as_object() else { return err("`effectControls` must be an object") };
+        if let Some(v) = patch.get("timeZoom") {
+            let zoom: Option<[f64; 2]> = match serde_json::from_value(v.clone()) {
+                Ok(zoom) => zoom,
+                Err(e) => return err(format!("`effectControls.timeZoom`: {e}")),
+            };
+            if zoom.is_some_and(|[start, end]| !start.is_finite() || !end.is_finite() || start < 0.0 || end > 1.0 || start >= end) {
+                return err("`effectControls.timeZoom` must be null or an increasing range within 0..1");
+            }
+            app.ui.effect_controls_time_zoom = zoom;
+        }
+    }
     if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
         app.ui.program.safe_margins = v;
     }

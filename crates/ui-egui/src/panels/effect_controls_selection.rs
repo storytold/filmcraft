@@ -48,6 +48,7 @@ enum Gesture {
 #[derive(Clone, Default)]
 struct State {
     clip: u64,
+    timeline_range: (Tick, Tick),
     points: Vec<Point>,
     gesture: Option<Gesture>,
 }
@@ -56,6 +57,7 @@ pub(crate) struct Interaction {
     state: State,
     points: Vec<Point>,
     area: Rect,
+    timeline_range: (Tick, Tick),
     background: Response,
     cancelled: bool,
 }
@@ -104,12 +106,13 @@ fn update(group: &mut Group, points: &[Point], pos: Pos2, shift: bool, playhead:
 }
 
 impl Interaction {
-    /// Begin keyframe selection for `clip`: reset on a clip change, cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
+    /// Begin keyframe selection for `clip`: reset on a clip change or when the visible range moves,
+    /// cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
     /// gestures as UI-only previews.
-    pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64) -> Self {
+    pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64, timeline_range: (Tick, Tick)) -> Self {
         let mut state = ui.data(|d| d.get_temp::<State>(state_id())).unwrap_or_default();
-        if state.clip != clip {
-            state = State { clip, ..Default::default() };
+        if state.clip != clip || state.timeline_range != timeline_range {
+            state = State { clip, timeline_range, ..Default::default() };
         }
         let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if cancelled {
@@ -135,7 +138,7 @@ impl Interaction {
                 None => {}
             }
         }
-        Self { state, points: Vec::new(), area, background, cancelled }
+        Self { state, points: Vec::new(), area, timeline_range, background, cancelled }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -163,7 +166,8 @@ impl Interaction {
             }
         }
         let time = super::timeline_time_of(it, key.time);
-        let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
+        let shown_duration = self.timeline_range.1.0.saturating_sub(self.timeline_range.0.0).max(1);
+        let pixels_per_tick = f64::from(lane.width().max(1.0)) / shown_duration as f64;
         if self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
             self.points.push(Point { key: key.clone(), rect, time, pixels_per_tick, interp });
         }

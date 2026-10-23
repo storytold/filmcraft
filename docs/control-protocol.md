@@ -71,6 +71,8 @@ These limits also apply to the MCP bridge's `ui_click`, `ui_drag` and `ui_contro
 **Timeline thumbnails.** `ui.set {timeline: {thumbnails}}` sets the Timeline wrench menu's Show Video
 Thumbnails: `off`, `head`, `headAndTail` or `continuous`.
 
+Effect Controls' visible keyframe time range is agent-drivable with `ui.set {"effectControls":{"timeZoom":[start,end]}}`, where the finite fractions satisfy `0 ≤ start < end ≤ 1`; the displayed range is at least five sequence frames, and `null` resets to the full clip. `ui.inspect` reports it as `ui.effect_controls_time_zoom`. The on-screen `effectControls.zoomBar` and `effectControls.zoomBar.track` ids expose its draggable range and track.
+
 **Selection or explicit targets.** A command that acts on the selection is "not available right now" when
 nothing is selected. When `params` name the targets under a key the command documents (`clips` /
 `clip`: timeline clips of the active sequence, `items` / `item`: project items), enablement is
