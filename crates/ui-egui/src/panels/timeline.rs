@@ -147,8 +147,10 @@ pub enum Drag {
         /// As in [`Drag::Trim`].
         from: Tick,
     },
-    /// A transition dragged by an end (`edge`: its duration) or its middle (slides it over the
-    /// cut); `start` / `duration` are where it is shown now, committed on release (#224).
+    /// A transition dragged by an end (its duration, the alignment kept: Center at Cut moves both
+    /// ends out, Start / End at Cut pin the cut-side end) or its middle (slides it over the cut,
+    /// into Custom Start); `start` / `duration` are where it is shown now, committed on release
+    /// (#224).
     Transition {
         id: filmcraft_project::TransitionId,
         edge: Option<filmcraft_edit::Edge>,
@@ -2253,6 +2255,27 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
     app.session.set_playhead(tt);
 }
 
+/// Whether a timeline transition's end zone is a resize handle: a pinned end (a one-sided
+/// transition's clip edge, Start / End at Cut's cut-side end) is anchored and shows no trim
+/// cursor ([`trn::draggable_end`], which the drag agrees with). Unknown transitions stay handles,
+/// as before.
+fn transition_end_draggable(
+    seq: &Sequence,
+    track: filmcraft_project::TrackId,
+    id: filmcraft_project::TransitionId,
+    edge: filmcraft_edit::Edge,
+    frame: Tick,
+) -> bool {
+    seq.track(track)
+        .and_then(|t| {
+            t.transitions
+                .iter()
+                .find(|x| x.id == id)
+                .and_then(|x| filmcraft_edit::transitions::bounds(t, x).map(|b| filmcraft_edit::transitions::draggable_end(x, b.1, frame, edge)))
+        })
+        .unwrap_or(true)
+}
+
 fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {
     let ctx = ui.ctx().clone();
     let area = Rect::from_min_max(pos2(layout.content.min.x, layout.ruler.min.y), layout.content.max);
@@ -2346,7 +2369,14 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         } else {
             match (tool, g) {
                 (_, Grab::Edge { .. }) => CursorIcon::ResizeColumn,
-                (Tool::Selection, Grab::Other(Hit::Transition { edge: Some(_), .. })) => CursorIcon::ResizeColumn,
+                (Tool::Selection, Grab::Other(Hit::Transition { track, id, edge: Some(edge) }))
+                    if transition_end_draggable(seq, track, id, edge, rate.frame_duration()) =>
+                {
+                    CursorIcon::ResizeColumn
+                }
+                // a pinned end (Start / End at Cut's cut-side end, a one-sided clip edge) is anchored:
+                // no trim handle there
+                (Tool::Selection, Grab::Other(Hit::Transition { edge: Some(_), .. })) => CursorIcon::Default,
                 (Tool::Selection, Grab::Other(Hit::Transition { edge: None, .. })) => CursorIcon::Grab,
                 (_, Grab::Volume { .. }) if tool == Tool::Pen || mods.command => CursorIcon::Crosshair,
                 (_, Grab::Volume { .. }) => CursorIcon::ResizeVertical,
@@ -2500,7 +2530,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 }
             }
             // click a transition to select it (Shift adds / removes); drag an end to change its
-            // duration or its middle to slide it over the cut (#430, #224)
+            // duration (keeping its alignment) or its middle to slide it over the cut (#430, #224)
             (Tool::Selection, Grab::Other(Hit::Transition { id, edge, .. })) => {
                 // a drag of a selected transition (Shift too) moves it rather than toggling it out first
                 if !(app.session.state.transition_selection.contains(&id) && resp.drag_started()) {

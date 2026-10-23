@@ -7,9 +7,9 @@
 //! Right of the settings, as in Premiere, is the transition's own timeline (#577): a time ruler over
 //! the cut, the outgoing clip (A) above, the incoming clip (B) below and the transition between
 //! them. Dragging the transition's middle slides it over the cut; dragging one of its ends changes
-//! its duration from that end, the other staying put (the Timeline's rules,
-//! [`trn::drag_span`]); each drag is one undo step. Clicking or dragging the ruler moves the
-//! playhead. The divider between the settings and the timeline is the clip view's.
+//! its duration without breaking the alignment (Center at Cut moves both ends out together, Start
+//! / End at Cut pin the cut-side end), the Timeline's rules ([`trn::drag_span`]); each drag is one
+//! undo step. Clicking or dragging the ruler moves the playhead. The divider between the settings and the timeline is the clip view's.
 //!
 //! Not here yet: the A/B preview thumbnails with their Start / End sliders, Show Actual Sources,
 //! and a rolling edit by dragging clip A or B in the transition's timeline.
@@ -329,7 +329,14 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     };
     let sresp = ui.interact(span, egui::Id::new(("tr-ec-span", id.0)), Sense::click_and_drag());
     if let Some(h) = sresp.hover_pos() {
-        ui.ctx().set_cursor_icon(if grab(h.x).is_some() { egui::CursorIcon::ResizeColumn } else { egui::CursorIcon::Grab });
+        let edge = grab(h.x);
+        let cur = match edge {
+            Some(e) if trn::draggable_end(x, cut, frame, e) => egui::CursorIcon::ResizeColumn,
+            // a pinned end (Start / End at Cut's cut-side end, a one-sided clip edge) is anchored
+            Some(_) => egui::CursorIcon::Default,
+            None => egui::CursorIcon::Grab,
+        };
+        ui.ctx().set_cursor_icon(cur);
     }
     if sresp.drag_started() {
         let from = ui.input(|i| i.pointer.press_origin()).or(sresp.interact_pointer_pos()).map_or(span.center().x, |p: Pos2| p.x);

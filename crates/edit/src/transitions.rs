@@ -68,6 +68,15 @@ pub fn bounds(track: &Track, tr: &Transition) -> Option<(Tick, Tick, Tick)> {
     }
 }
 
+/// Can `edge` of `tr` be dragged to resize it? A one-sided transition pins the end at its clip's
+/// edge, Start at Cut pins its start on the cut and End at Cut pins its end, so those ends do not
+/// move ([`drag_span`] leaves them where they are). The two timelines show a trim handle only on
+/// draggable ends.
+pub fn draggable_end(tr: &Transition, cut: Tick, frame: Tick, edge: Edge) -> bool {
+    let align = alignment(tr, cut, frame);
+    !(edge == Edge::In && align == Alignment::Start) && !(edge == Edge::Out && align == Alignment::End)
+}
+
 /// A transition's alignment on `cut`. Centred means within half a `frame` of the cut, as
 /// centring an odd number of frames lands on a frame boundary.
 pub fn alignment(tr: &Transition, cut: Tick, frame: Tick) -> Alignment {
@@ -154,12 +163,16 @@ pub fn set_span(seq: &mut Sequence, id: TransitionId, start: Tick, duration: Tic
 }
 
 /// Where dragging a transition by `delta` in the Timeline puts it, as `(start, duration)`. Its
-/// middle (`edge` None) slides it over the cut. An end trims that end only (Premiere shows the
-/// Trim-In / Trim-Out icon there): the other end stays, whatever the alignment, so a Center at
-/// Cut transition becomes Custom Start. (A typed duration, in Effect Controls or Set Transition
-/// Duration, follows the alignment instead: see [`start_for`].) A fade to or from nothing keeps
-/// its clip-edge end, and does not slide. Always clamped to where it may be ([`bounds`], over the
-/// cut, at least one `frame`). `None` when its clips are gone.
+/// middle (`edge` None) slides it over the cut, the one move that turns a transition into
+/// Custom Start. An end changes the duration without breaking the alignment: the grabbed end
+/// follows the pointer, the other end moves as the alignment says. Center at Cut keeps its
+/// midpoint on the cut, so dragging the right end out also pulls the left end out by the same
+/// amount; Start at Cut keeps its start on the cut and End at Cut its end, the cut-side end
+/// pinned where it is (dragging it does nothing); Custom Start trims just the grabbed end. (A
+/// typed duration, in Effect Controls or Set Transition Duration, follows the alignment too: see
+/// [`start_for`].) A fade to or from nothing keeps its clip-edge end, and does not slide. Always
+/// clamped to where it may be ([`bounds`], over the cut, at least one `frame`). `None` when its
+/// clips are gone.
 pub fn drag_span(track: &Track, tr: &Transition, edge: Option<Edge>, delta: Tick, frame: Tick) -> Option<(Tick, Tick)> {
     let (lo, cut, hi) = bounds(track, tr)?;
     let frame = frame.max(Tick(1));
@@ -173,17 +186,37 @@ pub fn drag_span(track: &Track, tr: &Transition, edge: Option<Edge>, delta: Tick
             if min_s > max_s { unchanged } else { Some(((s0 + delta).clamp(min_s, max_s), d0)) }
         }
         Some(Edge::In) if tr.from.is_none() => unchanged,
-        Some(Edge::In) => {
-            let max_s = cut.min(e0 - frame).max(lo);
-            let st = (s0 + delta).clamp(lo, max_s);
-            Some((st, e0 - st))
-        }
         Some(Edge::Out) if tr.to.is_none() => unchanged,
-        Some(Edge::Out) => {
-            let min_e = cut.max(s0 + frame).min(hi);
-            let en = (e0 + delta).clamp(min_e, hi);
-            Some((s0, en - s0))
-        }
+        Some(e) if !draggable_end(tr, cut, frame, e) => unchanged, // pinned: see [`draggable_end`]
+        Some(e) => match (alignment(tr, cut, frame), e) {
+            // Center at Cut: the grabbed end tracks the pointer, the other moves the same way,
+            // so the midpoint (on the cut) holds; it stops when a side of its clips runs out
+            (Alignment::Center, Edge::In) => {
+                let shrink = d0.0.saturating_sub(frame.0) / 2;
+                let grab = delta.0.clamp((lo.0 - s0.0).max(e0.0 - hi.0), shrink);
+                let (st, en) = (Tick(s0.0 + grab), Tick(e0.0 - grab));
+                Some((st, en - st))
+            }
+            (Alignment::Center, Edge::Out) => {
+                let shrink = d0.0.saturating_sub(frame.0) / 2;
+                let grab = delta.0.clamp(-shrink, (s0.0 - lo.0).min(hi.0 - e0.0));
+                let (st, en) = (Tick(s0.0 - grab), Tick(e0.0 + grab));
+                Some((st, en - st))
+            }
+            // a Custom Start's ends, and the free end of a Start / End at Cut transition, trim
+            // alone: that end follows the pointer, the other stays (Premiere shows the Trim-In /
+            // Trim-Out icon there)
+            (_, Edge::In) => {
+                let max_s = cut.min(e0 - frame).max(lo);
+                let st = (s0 + delta).clamp(lo, max_s);
+                Some((st, e0 - st))
+            }
+            (_, Edge::Out) => {
+                let min_e = cut.max(s0 + frame).min(hi);
+                let en = (e0 + delta).clamp(min_e, hi);
+                Some((s0, en - s0))
+            }
+        },
     }
 }
 
@@ -350,22 +383,40 @@ mod tests {
     #[test]
     fn dragging_a_transition() {
         let mut q = seq();
-        // centred (36..60 over the cut at 48): an end trims that end only, the other stays
-        assert_eq!(drag(&q, 1, Some(Edge::In), -4), (32, 28));
-        assert_eq!(drag(&q, 1, Some(Edge::Out), -10), (36, 14));
-        assert_eq!(drag(&q, 1, Some(Edge::Out), -100), (36, 12), "the end stops at the cut");
-        assert_eq!(drag(&q, 1, Some(Edge::Out), 100), (36, 60), "and at the incoming clip's end");
-        assert_eq!(drag(&q, 1, Some(Edge::In), -100), (0, 60), "the start at the outgoing clip's start");
+        // centred (36..60 over the cut at 48): an end drags that end and mirrors the other, so
+        // the midpoint stays on the cut and the alignment never becomes Custom Start
+        assert_eq!(drag(&q, 1, Some(Edge::In), -4), (32, 32));
+        assert_eq!(drag(&q, 1, Some(Edge::Out), -10), (46, 4));
+        assert_eq!(drag(&q, 1, Some(Edge::Out), -100), (47, 1), "shrinking stops at a one-frame centre (47.5..48.5)");
+        assert_eq!(drag(&q, 1, Some(Edge::Out), 100), (0, 96), "and at the ends of both clips");
+        assert_eq!(drag(&q, 1, Some(Edge::In), -100), (0, 96), "the start edge the same way");
+        // an odd centred duration (half a frame off the cut) drags centred too
+        set_span(&mut q, TransitionId(1), f(42), f(13), f(1), f(1)).unwrap();
+        assert_eq!(align(&q, 1), Alignment::Center);
+        assert_eq!(drag(&q, 1, Some(Edge::Out), 2), (40, 17), "the midpoint (half a frame right of the cut) holds");
+        set_span(&mut q, TransitionId(1), f(36), f(24), f(1), f(1)).unwrap();
         // the middle slides it, staying over the cut and inside the clips
         assert_eq!(drag(&q, 1, None, 5), (41, 24));
         assert_eq!(drag(&q, 1, None, 100), (48, 24));
         assert_eq!(drag(&q, 1, None, -100), (24, 24));
-        // not centred: the other end stays
+        // off-centre, Custom Start: an end trims that end only, the other stays
         set_span(&mut q, TransitionId(1), f(40), f(20), f(1), f(1)).unwrap();
         assert_eq!(drag(&q, 1, Some(Edge::In), -4), (36, 24));
         assert_eq!(drag(&q, 1, Some(Edge::In), 100), (48, 12), "the start stops at the cut");
         assert_eq!(drag(&q, 1, Some(Edge::Out), 6), (40, 26));
         assert_eq!(drag(&q, 1, Some(Edge::Out), -100), (40, 8), "the end stops at the cut");
+        // Start at Cut keeps its start on the cut (dragging it does nothing), End at Cut its end
+        set_span(&mut q, TransitionId(1), f(48), f(20), f(1), f(1)).unwrap();
+        assert_eq!(align(&q, 1), Alignment::Start);
+        assert_eq!(drag(&q, 1, Some(Edge::In), -5), (48, 20), "the start can't leave the cut");
+        assert_eq!(drag(&q, 1, Some(Edge::In), 5), (48, 20), "either way");
+        assert_eq!(drag(&q, 1, Some(Edge::Out), 4), (48, 24), "its duration grows from the end");
+        assert_eq!(drag(&q, 1, Some(Edge::Out), -100), (48, 1), "and shrinks at least a frame");
+        set_span(&mut q, TransitionId(1), f(28), f(20), f(1), f(1)).unwrap();
+        assert_eq!(align(&q, 1), Alignment::End);
+        assert_eq!(drag(&q, 1, Some(Edge::Out), 5), (28, 20), "the end can't leave the cut");
+        assert_eq!(drag(&q, 1, Some(Edge::Out), -5), (28, 20), "either way");
+        assert_eq!(drag(&q, 1, Some(Edge::In), -4), (24, 24), "its duration grows from the start");
         // a fade in keeps its start, a fade out its end; neither slides
         assert_eq!(drag(&q, 2, Some(Edge::In), 3), (0, 12));
         assert_eq!(drag(&q, 2, Some(Edge::Out), 3), (0, 15));
@@ -378,6 +429,30 @@ mod tests {
             let (st, d) = drag_span(t, x, edge, f(n), f(1)).unwrap();
             let mut c = q.clone();
             set_span(&mut c, TransitionId(id), st, d, f(1), f(1)).unwrap();
+        }
+    }
+
+    #[test]
+    fn pinned_ends_are_not_draggable() {
+        let q = seq();
+        let (t, x) = find(&q, TransitionId(1)).unwrap();
+        let (_, cut, _) = bounds(t, x).unwrap();
+        // Center at Cut: both ends are trim handles
+        assert!(draggable_end(x, cut, f(1), Edge::In) && draggable_end(x, cut, f(1), Edge::Out));
+        // Start at Cut pins its start, End at Cut its end
+        for (start, in_draggable, out_draggable) in [(48, false, true), (28, true, false)] {
+            let mut y = x.clone();
+            y.start = f(start);
+            y.duration = f(20);
+            assert_eq!(draggable_end(&y, cut, f(1), Edge::In), in_draggable, "start {start}");
+            assert_eq!(draggable_end(&y, cut, f(1), Edge::Out), out_draggable, "start {start}");
+        }
+        // a one-sided transition pins its clip edge (a fade in the start, a fade out the end)
+        for (id, in_draggable, out_draggable) in [(2, false, true), (3, true, false)] {
+            let (t, z) = find(&q, TransitionId(id)).unwrap();
+            let (_, cut, _) = bounds(t, z).unwrap();
+            assert_eq!(draggable_end(z, cut, f(1), Edge::In), in_draggable, "transition {id}");
+            assert_eq!(draggable_end(z, cut, f(1), Edge::Out), out_draggable, "transition {id}");
         }
     }
 
