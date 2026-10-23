@@ -413,6 +413,17 @@ pub struct Eyedropper {
     pub mask: Option<usize>,
 }
 
+impl Eyedropper {
+    /// The `param` of Lumetri's WB Selector: its click sets Temperature and Tint
+    /// (`lumetri.whiteBalance`) instead of filling a colour parameter.
+    pub const WHITE_BALANCE: &'static str = "wb_selector";
+
+    /// Lumetri ▸ Basic Correction ▸ WB Selector on the Lumetri effect `effect` of `clip`.
+    pub fn white_balance(clip: u64, effect: usize) -> Self {
+        Self { clip, effect, param: Self::WHITE_BALANCE.to_string(), mask: None }
+    }
+}
+
 /// A keyframe selected in the Effect Controls keyframe lane: clip, effect index, parameter (of an
 /// effect mask when `mask` is set) and the keyframe's media time. The panel drops references that
 /// no longer match a keyframe (deleted, moved, another clip selected).

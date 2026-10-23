@@ -621,6 +621,33 @@ fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32
     o.map(|q| q * m)
 }
 
+/// Lumetri ▸ Basic Correction white balance: the per-channel gains in linear light for
+/// Temperature and Tint (slider / 100, so -1 … 1). Shared by the CPU and GPU paths.
+#[inline]
+pub fn lumetri_wb_gains(temp: f32, tint: f32) -> [f32; 3] {
+    [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp]
+}
+
+/// Lumetri ▸ Basic Correction ▸ WB Selector: the Temperature and Tint (slider units, -100 … 100)
+/// whose gains ([`lumetri_wb_gains`]) turn the linear colour `c`, as it enters the white balance
+/// (after the Input LUT), into a neutral grey. Temperature evens out red and blue, Tint brings
+/// green to their mean. A cast beyond the sliders' range is removed as far as they reach. `None`
+/// for a colour that cannot be balanced: not finite, or a channel at (or below) black.
+pub fn lumetri_white_balance(c: [f32; 3]) -> Option<[f32; 2]> {
+    const MIN: f32 = 1e-4;
+    if c.iter().any(|v| !v.is_finite() || *v < MIN) {
+        return None;
+    }
+    let [r, g, b] = c;
+    // r (1 + 0.35 t) = b (1 - 0.35 t)
+    let t = ((b - r) / (0.35 * (r + b))).clamp(-1.0, 1.0);
+    let gains = lumetri_wb_gains(t, 0.0);
+    let grey = 0.5 * (r * gains[0] + b * gains[2]);
+    // g (1 - 0.3 tint) = grey
+    let tint = ((1.0 - grey / g) / 0.3).clamp(-1.0, 1.0);
+    Some([t * 100.0, tint * 100.0])
+}
+
 fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
@@ -647,7 +674,7 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let vround = f(e, "vignette_roundness", cx) / 100.0;
     let vfeather = f(e, "vignette_feather", cx) / 100.0;
     let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
-    let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
+    let gains = lumetri_wb_gains(temp, tint);
     let (w, h) = (img.w as f32, img.h as f32);
     let aspect = w / h;
     img.map_rgb(|c, x, y| {
@@ -1365,6 +1392,52 @@ fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
         pass(&mut t, h, w, r);
     }
     p.copy_from_slice(&transpose(&t, h, w));
+}
+
+#[cfg(test)]
+mod white_balance_tests {
+    use super::*;
+
+    fn balanced(c: [f32; 3], wb: [f32; 2]) -> [f32; 3] {
+        let g = lumetri_wb_gains(wb[0] / 100.0, wb[1] / 100.0);
+        [c[0] * g[0], c[1] * g[1], c[2] * g[2]]
+    }
+
+    #[test]
+    fn a_picked_cast_becomes_neutral() {
+        for c in [[0.30, 0.25, 0.18], [0.12, 0.15, 0.22], [0.40, 0.33, 0.40], [0.2, 0.26, 0.2], [0.18, 0.18, 0.18]] {
+            let wb = lumetri_white_balance(c).unwrap();
+            let o = balanced(c, wb);
+            assert!((o[0] - o[1]).abs() < 1e-5 && (o[2] - o[1]).abs() < 1e-5, "{c:?} -> {wb:?} -> {o:?}");
+        }
+        // warm grey: cooled (negative Temperature); green-heavy grey: towards magenta (positive Tint)
+        assert!(lumetri_white_balance([0.30, 0.25, 0.18]).unwrap()[0] < 0.0);
+        assert!(lumetri_white_balance([0.12, 0.15, 0.22]).unwrap()[0] > 0.0);
+        assert!(lumetri_white_balance([0.2, 0.26, 0.2]).unwrap()[1] > 0.0);
+        let n = lumetri_white_balance([0.18, 0.18, 0.18]).unwrap();
+        assert!(n[0].abs() < 1e-3 && n[1].abs() < 1e-3, "a neutral pick keeps the balance: {n:?}");
+    }
+
+    #[test]
+    fn exposure_does_not_change_the_pick() {
+        let a = lumetri_white_balance([0.30, 0.25, 0.18]).unwrap();
+        let b = lumetri_white_balance([0.30 * 4.0, 0.25 * 4.0, 0.18 * 4.0]).unwrap();
+        assert!((a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3, "{a:?} vs {b:?}");
+    }
+
+    #[test]
+    fn a_strong_cast_stops_at_the_slider_range() {
+        let wb = lumetri_white_balance([0.5, 0.05, 0.01]).unwrap();
+        assert!(wb.iter().all(|v| (-100.0..=100.0).contains(v)), "{wb:?}");
+        assert_eq!(wb[0], -100.0);
+    }
+
+    #[test]
+    fn black_and_hostile_picks_solve_nothing() {
+        for c in [[0.0, 0.2, 0.2], [0.2, 0.0, 0.2], [0.0; 3], [-0.1, 0.2, 0.2], [f32::NAN, 0.2, 0.2], [f32::INFINITY, 0.2, 0.2]] {
+            assert_eq!(lumetri_white_balance(c), None, "{c:?}");
+        }
+    }
 }
 
 #[cfg(test)]

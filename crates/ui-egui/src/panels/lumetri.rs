@@ -5,8 +5,9 @@
 //! HDR Specular and Curves shows HDR Range (cd/m²): the sliders and curves then span 0 … that
 //! many nits (see `filmcraft_color::grade`). Automation ids for those and HSL Secondary ▸ Refine:
 //! `lumetri.param.<id>` (`hdr_white`, `hdr_specular`, `curves_hdr_range`, `hsl_denoise`,
-//! `hsl_blur`); Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
-//! Comparison View, whose reference frame Apply Match then uses).
+//! `hsl_blur`); Basic Correction ▸ WB Selector: `lumetri.wbSelector`; Color Match:
+//! `lumetri.match.comparisonView` (toggles the Program monitor's Comparison View, whose reference
+//! frame Apply Match then uses).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamValue};
@@ -71,6 +72,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if open_section(ui, app, &e, "Basic Correction", "basic_on", "basic", &mut sections) {
             lut_combo(ui, app, &e, "input_lut", tl!("Input LUT"), true, &mut lut_actions);
             sub(ui, &t, tl!("Color"));
+            wb_selector(ui, app, clip, idx, &t, &mut auto_rows);
             slider(ui, &e, mt, "temperature", tl!("Temperature"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "tint", tl!("Tint"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "saturation", tl!("Saturation"), None, &t, &mut actions, clip, idx);
@@ -363,6 +365,22 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, on: bool) -> (
         }
     }
     (open, false)
+}
+
+/// Basic Correction ▸ WB Selector: arms a pipette; a click on the Program picture then sets
+/// Temperature and Tint so that point turns neutral (`lumetri.whiteBalance`, see the monitor's
+/// eyedropper). Esc or a second click on the pipette disarms it.
+fn wb_selector(ui: &mut egui::Ui, app: &mut FilmcraftApp, clip: ClipId, idx: usize, t: &Tokens, auto_rows: &mut Vec<(String, Rect, &'static str)>) {
+    let target = crate::state::Eyedropper::white_balance(clip.0, idx);
+    let armed = app.ui.eyedropper.as_ref() == Some(&target);
+    ui.horizontal(|ui| {
+        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("WB Selector")).color(t.text_dim)));
+        let b = icons::button(ui, Icon::Eyedropper, 18.0, armed, t, tl!("White balance selector (click something white or gray in the Program monitor)"));
+        auto_rows.push(("lumetri.wbSelector".into(), b.rect, "WB Selector"));
+        if b.clicked() {
+            app.ui.eyedropper = if armed { None } else { Some(target) };
+        }
+    });
 }
 
 fn sub(ui: &mut egui::Ui, t: &Tokens, name: &str) {

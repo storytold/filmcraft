@@ -549,7 +549,7 @@ impl FxOp {
                 let vmid = f(e, "vignette_midpoint", cx) / 100.0;
                 let vround = f(e, "vignette_roundness", cx) / 100.0;
                 let vfeather = f(e, "vignette_feather", cx) / 100.0;
-                let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
+                let gains = crate::effects::lumetri_wb_gains(temp, tint);
                 let aspect = if h > 0 { (w as f32 / h as f32).max(1e-4) } else { 1.0 };
 
                 FxOp::Lumetri {
