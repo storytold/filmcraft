@@ -196,7 +196,8 @@ fn num(v: &Value) -> f64 {
     v.as_f64().unwrap_or_else(|| panic!("not a number: {v}"))
 }
 
-/// #807: the wheel over a monitor zooms about the pointer, a middle-button drag pans, Fit resets,
+/// #807: the wheel with Cmd / Ctrl over a monitor zooms about the pointer (#2685 gave the plain
+/// wheel to scrolling), a middle-button drag pans, Fit resets,
 /// and each monitor keeps its own view.
 #[test]
 fn wheel_zooms_about_the_pointer_and_the_middle_button_pans() {
@@ -206,18 +207,18 @@ fn wheel_zooms_about_the_pointer_and_the_middle_button_pans() {
     let area = d.rect("program.picture");
     let centre = (area[0] + area[2] / 2.0, area[1] + area[3] / 2.0);
     let at = (area[0] + area[2] * 0.25, area[1] + area[3] * 0.4);
-    // one wheel notch (40 points) up: 10% larger; the point under the pointer stays under it
-    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": 40.0}));
+    // one Cmd+wheel notch (40 points) up: 10% larger; the point under the pointer stays under it
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": 40.0, "modifiers": {"command": true}}));
     d.frames(2);
     let p = d.program();
     assert!((num(&p["zoom"]) - 1.1).abs() < 1e-4, "{p}");
     let want = ((centre.0 - at.0) * 0.1, (centre.1 - at.1) * 0.1);
     assert!((num(&p["pan"][0]) - want.0).abs() < 1.0 && (num(&p["pan"][1]) - want.1).abs() < 1.0, "pan {} for {want:?}", p["pan"]);
     // a notch down, then up again, comes back to the same zoom
-    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": -40.0}));
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": -40.0, "modifiers": {"command": true}}));
     d.frames(2);
     assert!((num(&d.program()["zoom"]) - 1.0).abs() < 1e-4, "{}", d.program());
-    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": 40.0}));
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": 40.0, "modifiers": {"command": true}}));
     d.frames(2);
     let p = d.program();
     assert!((num(&p["zoom"]) - 1.1).abs() < 1e-4, "{p}");
@@ -242,7 +243,7 @@ fn wheel_zooms_about_the_pointer_and_the_middle_button_pans() {
 
     // zooming out stops at the menu's smallest level; Fit resets zoom and pan
     for _ in 0..12 {
-        d.ok("ui.scroll", json!({"x": centre.0, "y": centre.1, "dx": 0.0, "dy": -200.0}));
+        d.ok("ui.scroll", json!({"x": centre.0, "y": centre.1, "dx": 0.0, "dy": -200.0, "modifiers": {"command": true}}));
     }
     d.frames(2);
     assert!((num(&d.program()["zoom"]) - 0.1).abs() < 1e-6, "stops at 10%");
@@ -250,12 +251,109 @@ fn wheel_zooms_about_the_pointer_and_the_middle_button_pans() {
     let p = d.program();
     assert!(p["zoom"].is_null() && p["pan"] == json!([0.0, 0.0]), "{p}");
 
-    // from Fit, the wheel zooms in too; the Source monitor keeps its own view
-    d.ok("ui.scroll", json!({"x": centre.0, "y": centre.1, "dx": 0.0, "dy": 20.0}));
+    // from Fit, Cmd+wheel zooms in too; the Source monitor keeps its own view
+    d.ok("ui.scroll", json!({"x": centre.0, "y": centre.1, "dx": 0.0, "dy": 20.0, "modifiers": {"command": true}}));
     d.frames(2);
     assert!(d.program()["zoom"].as_f64().is_some(), "zoomed in from Fit");
     let source = d.ok("ui.inspect", json!({}))["ui"]["source"].clone();
     assert!(source["zoom"].is_null() && source["pan"] == json!([0.0, 0.0]), "{source}");
+}
+
+fn pan_of(v: &Value) -> (f64, f64) {
+    (num(&v["pan"][0]), num(&v["pan"][1]))
+}
+
+fn centre_of(r: [f64; 4]) -> (f64, f64) {
+    (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+}
+
+/// #2685: past Fit a monitor's picture can be moved off centre. Scroll bars show along the axes
+/// the magnified picture overflows; the wheel scrolls it (vertically, sideways with Shift, both
+/// ways on a trackpad), the bars drag and jump, the pan stays within the picture whatever sets
+/// it, and Fit takes the bars away and recentres. The Source monitor does the same.
+#[test]
+fn magnified_monitor_scrolls_with_bars_and_the_wheel() {
+    let mut d = Driver::demo();
+    assert!(d.try_rect("program.scroll.h").is_none() && d.try_rect("program.scroll.v").is_none(), "no scroll bars at Fit");
+    d.menu("view.magnification.400");
+    d.frames(2);
+    let (h, v) = (d.rect("program.scroll.h"), d.rect("program.scroll.v"));
+    let (ht, vt) = (d.rect("program.scroll.h.track"), d.rect("program.scroll.v.track"));
+    assert!(h[2] < ht[2] * 0.5 && v[3] < vt[3] * 0.5, "at 400% the thumbs show a small part: {h:?} of {ht:?}, {v:?} of {vt:?}");
+    assert!((centre_of(h).0 - centre_of(ht).0).abs() < 1.0 && (centre_of(v).1 - centre_of(vt).1).abs() < 1.0, "centred");
+    let at = centre_of(d.rect("program.picture"));
+
+    // the wheel scrolls (content follows the wheel), Shift turns it sideways, a trackpad does both
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": -50.0}));
+    d.frames(2);
+    let p = d.program();
+    assert_eq!(num(&p["zoom"]), 4.0, "the plain wheel does not zoom");
+    assert!((pan_of(&p).0).abs() < 1e-3 && (pan_of(&p).1 + 50.0).abs() < 1e-3, "{p}");
+    assert!(d.rect("program.scroll.v")[1] > v[1] + 0.5, "the vertical thumb moved down");
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": -30.0, "modifiers": {"shift": true}}));
+    d.frames(2);
+    let pan = pan_of(&d.program());
+    assert!((pan.0 + 30.0).abs() < 1e-3 && (pan.1 + 50.0).abs() < 1e-3, "{pan:?}");
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 20.0, "dy": 10.0}));
+    d.frames(2);
+    let pan = pan_of(&d.program());
+    assert!((pan.0 + 10.0).abs() < 1e-3 && (pan.1 + 40.0).abs() < 1e-3, "{pan:?}");
+
+    // the wheel stops at the picture's top edge: the thumb at the track's top
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": 100_000.0}));
+    d.frames(2);
+    let max_y = pan_of(&d.program()).1;
+    assert!(max_y > 100.0, "{max_y}");
+    assert!((d.rect("program.scroll.v")[1] - vt[1]).abs() < 1.0, "thumb at the top");
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": 500.0}));
+    d.frames(2);
+    assert_eq!(pan_of(&d.program()).1, max_y, "clamped");
+
+    // drag the horizontal thumb past the track's right end: the picture's right edge in view
+    let h = d.rect("program.scroll.h");
+    let (hx, hy) = centre_of(h);
+    d.ok("ui.drag", json!({"from": {"x": hx, "y": hy}, "to": {"x": ht[0] + ht[2] + 60.0, "y": hy}, "steps": 6}));
+    d.frames(2);
+    let h = d.rect("program.scroll.h");
+    assert!((h[0] + h[2] - (ht[0] + ht[2])).abs() < 1.0, "thumb at the right end: {h:?} of {ht:?}");
+    let min_x = pan_of(&d.program()).0;
+    assert!(min_x < -100.0, "{min_x}");
+    // a press beside a thumb brings it there: the bottom of the vertical track
+    d.ok("ui.click", json!({"x": vt[0] + vt[2] / 2.0, "y": vt[1] + vt[3] - 2.0}));
+    d.frames(2);
+    assert!((pan_of(&d.program()).1 + max_y).abs() < 1e-2, "scrolled to the bottom: {}", d.program()["pan"]);
+
+    // a pan set from outside reads back clamped to the picture
+    d.ok("ui.set", json!({"program": {"pan": [1.0e6, -1.0e6]}}));
+    d.frames(2);
+    let pan = pan_of(&d.program());
+    assert!((pan.0 + min_x).abs() < 1e-2 && (pan.1 + max_y).abs() < 1e-2, "{pan:?}");
+    d.shot("scrolled");
+
+    // Fit: no bars, centred
+    d.menu("view.magnification.fit");
+    d.frames(2);
+    let p = d.program();
+    assert!(p["zoom"].is_null() && p["pan"] == json!([0.0, 0.0]), "{p}");
+    assert!(d.try_rect("program.scroll.h").is_none() && d.try_rect("program.scroll.v").is_none());
+    // a pan set at Fit has nothing to move
+    d.ok("ui.set", json!({"program": {"pan": [40.0, 40.0]}}));
+    d.frames(2);
+    assert_eq!(d.program()["pan"], json!([0.0, 0.0]));
+
+    // the Source monitor scrolls its own picture
+    let project = d.exec("project.inspect", json!({}));
+    let item = first_media_item(&project).expect("media item");
+    d.exec("source.open", json!({"item": item}));
+    d.ok("ui.menu.invoke", json!({"id": "view.magnification.200", "params": {"monitor": "source"}}));
+    d.frames(3);
+    assert!(d.try_rect("source.scroll.h").is_some() && d.try_rect("source.scroll.v").is_some(), "source bars at 200%");
+    let at = centre_of(d.rect("source.picture"));
+    d.ok("ui.scroll", json!({"x": at.0, "y": at.1, "dx": 0.0, "dy": -25.0}));
+    d.frames(2);
+    let s = d.ok("ui.inspect", json!({}))["ui"]["source"].clone();
+    assert!((pan_of(&s).1 + 25.0).abs() < 1e-3, "{s}");
+    assert_eq!(d.program()["pan"], json!([0.0, 0.0]), "the Program monitor keeps its own view");
 }
 
 /// The x positions of the tick marks drawn on the time ruler `bar`.

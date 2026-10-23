@@ -15,7 +15,7 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 | `view.display.multicam` | Display Mode ▸ Multi-Camera | the Program's multi-camera view (`multicam.toggleView`) |
 | `view.display.audioWaveform`, `view.display.videoAndWaveform` | Display Mode ▸ Audio Waveform / Video and Audio Waveform Split | Source Monitor: the clip's waveform (click to move the source playhead); audio-only clips always show it |
 | `view.display.comparison` | Display Mode ▸ Comparison View | Program: the reference frame (left) beside the current frame; the reference starts at the playhead and is stepped or reset with the buttons under it, or `view.compare.setReference {time\|seconds}` |
-| `view.magnification.<fit\|10\|25\|50\|75\|100\|150\|200\|400\|800\|1600>` | View ▸ Magnification and the zoom dropdown | 100% = one frame pixel per screen pixel. The mouse wheel (or a pinch) over a monitor zooms about the pointer, from Fit too, within 10%–1600%; drag with the middle mouse button, or with the Hand tool, to pan; Fit resets both. Each monitor keeps its own zoom and pan |
+| `view.magnification.<fit\|10\|25\|50\|75\|100\|150\|200\|400\|800\|1600>` | View ▸ Magnification and the zoom dropdown | 100% = one frame pixel per screen pixel. A pinch, or the mouse wheel with Cmd / Ctrl, over a monitor zooms about the pointer, from Fit too, within 10%–1600%. A picture magnified past the monitor gets horizontal / vertical scroll bars (drag a thumb, or press beside it) and scrolls with the wheel (Shift+wheel sideways, a two-finger trackpad swipe both ways), a middle-button drag or a Hand tool drag (#2685); `pan` (points from the centre) is kept within the picture. Fit resets both. Each monitor keeps its own zoom and pan |
 | `view.showRulers`, `view.showGuides`, `view.lockGuides`, `view.clearGuides` | View | toggles take `{"enabled": bool}` |
 | `view.addGuide` | View ▸ Add Guide… | dialog, or `{"orientation": "vertical\|horizontal", "position": px}` |
 | `view.snapInProgramMonitor` | View ▸ Snap in Program Monitor | graphic moves snap to the frame edges / centre and the guides (6 pt) |
@@ -25,7 +25,8 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 Guides are in frame pixels. Drag out of the top ruler for a horizontal guide or the left ruler for
 a vertical one; drag a guide to move it (unless locked) and drop it outside the picture to remove it.
 
-Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<level>`, `<monitor>.settings.<command suffix>`
+Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<level>`, `<monitor>.scroll.h|v` (scroll bar thumbs),
+`<monitor>.scroll.h|v.track`, `<monitor>.settings.<command suffix>`
 (wrench menu items, e.g. `program.settings.display.alpha`), `<monitor>.ruler.top|left`,
 `<monitor>.guide.<n>`, `program.compare.reference|prev|next|set`, `source.waveform`, and in the
 dialogs `guides.add.vertical|horizontal|position|ok|cancel`, `guides.save.name|ok|cancel`,
