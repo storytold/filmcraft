@@ -61,6 +61,12 @@ impl Whisper {
     /// Load a model directory (`config.json`, `generation_config.json`, `tokenizer.json`,
     /// `model.safetensors`).
     pub fn load(dir: &Path, id: &str) -> Result<Self, SpeechError> {
+        Self::load_with(dir, id, candle_core::Device::Cpu, candle_core::DType::F32)
+    }
+
+    /// [`Whisper::load`] onto a chosen candle device (the CPU, or the Apple GPU with the `metal`
+    /// feature) with a chosen float type (F32 on the CPU; F16 halves memory on the GPU).
+    pub fn load_with(dir: &Path, id: &str, device: candle_core::Device, dtype: candle_core::DType) -> Result<Self, SpeechError> {
         let read = |n: &str| std::fs::read(dir.join(n)).map_err(|e| SpeechError::Model(format!("{}: {e}", dir.join(n).display())));
         let cfg: Config = serde_json::from_slice(&read("config.json")?).map_err(|e| SpeechError::Model(format!("config.json: {e}")))?;
         let gen_cfg: serde_json::Value = serde_json::from_slice(&read("generation_config.json")?).unwrap_or_default();
@@ -80,7 +86,7 @@ impl Whisper {
             .as_array()
             .map(|a| a.iter().filter_map(|x| x.as_u64().map(|v| v as u32)).collect())
             .unwrap_or_else(|| vec![220, tok.eot]);
-        let model = Model::load(cfg, weights).map_err(merr)?;
+        let model = Model::load_on(cfg, weights, device, dtype).map_err(merr)?;
         Ok(Self { id: id.to_string(), model: Mutex::new(model), tok, alignment_heads, suppress, begin_suppress })
     }
 
@@ -169,11 +175,15 @@ impl Whisper {
         let mut seq: Vec<u32> = Vec::new();
         let (logits, _) = m.decoder.forward(prompt, xa, true, None).map_err(merr)?;
         // no-speech probability from the start-of-transcript position
-        let first = logits.get(0).and_then(|l| l.get(0)).and_then(|l| l.to_vec1::<f32>()).map_err(merr)?;
+        let sot_at = prompt.iter().position(|&t| t == self.tok.sot).unwrap_or(0);
+        let first =
+            logits.get(0).and_then(|l| l.get(sot_at)).and_then(|l| l.to_dtype(candle_core::DType::F32)).and_then(|l| l.to_vec1::<f32>()).map_err(merr)?;
         let no_speech = self.tok.no_speech.map(|ns| softmax_at(&first, ns as usize)).unwrap_or(0.0);
         let mut cur = Model::last_logits(&logits).map_err(merr)?;
         let mut sum_lp = 0f32;
-        for _ in 0..MAX_TOKENS.min(m.cfg.max_target_positions / 2) {
+        // stay inside the decoder's position table
+        let budget = MAX_TOKENS.min(m.cfg.max_target_positions / 2).min(m.cfg.max_target_positions.saturating_sub(prompt.len() + 1));
+        for _ in 0..budget {
             let lp = log_softmax(&cur);
             self.constrain(&mut cur, &seq, Some(50));
             let next = argmax(&cur);
@@ -264,7 +274,7 @@ impl Transcriber for Whisper {
             }
             let seg_frames = N_FRAMES.min(content_frames - seek);
             let win = Self::window(&mel, n_mels, frames, seek);
-            let x = Tensor::from_vec(win, (1, n_mels, N_FRAMES), &m.device).map_err(merr)?;
+            let x = Tensor::from_vec(win, (1, n_mels, N_FRAMES), &m.device).and_then(|x| x.to_dtype(m.dtype)).map_err(merr)?;
             let xa = m.encoder.forward(&x).map_err(merr)?;
             if trace {
                 eprintln!("encode {:.3}s", clock.elapsed().as_secs_f64());
@@ -316,7 +326,7 @@ impl Transcriber for Whisper {
             }
             seek += advance;
         }
-        let mut t = Transcript { language: language.unwrap_or_else(|| "en".into()), source: self.id.clone(), speakers: Vec::new(), words };
+        let mut t = Transcript { language: language.unwrap_or_else(|| "en".into()), source: self.id.clone(), speakers: Vec::new(), words, voice: Vec::new() };
         t.normalize();
         crate::vad::tighten_words(audio, &mut t.words);
         if opts.diarize && !t.words.is_empty() {
