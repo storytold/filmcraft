@@ -1177,8 +1177,13 @@ mod tests {
     fn korean_covers_the_menus_and_has_no_dead_entries() {
         let (entries, errors) = catalog::parse_entries(include_str!("ko.tsv"));
         assert!(errors.is_empty(), "{errors:?}");
+        let audio = include_str!("../../../../apps/filmcraft/src/audio.rs");
         for (ctx, en, _) in &entries {
-            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Korean entry without a Spanish one: {ctx:?} {en:?}");
+            let live_audio_warning = audio.contains(&format!("t({en:?})"));
+            assert!(
+                ctx.is_empty() && (Language::Es.has(en) || en == "Settings" || live_audio_warning),
+                "Korean entry without a live source: {ctx:?} {en:?}"
+            );
         }
         for en in core_menu_labels() {
             assert!(Language::Ko.has(&en), "missing Korean menu label: {en}");
