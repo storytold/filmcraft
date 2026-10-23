@@ -873,7 +873,7 @@ fn mini_timeline(
     if let Some(tk) = scrub {
         match which {
             Which::Program => {
-                app.stop();
+                app.stop_for_scrub();
                 app.session.set_playhead(tk);
             }
             Which::Source => {

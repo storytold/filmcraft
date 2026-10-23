@@ -354,7 +354,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         drag = None;
     }
     if let Some(tk) = seek {
-        app.stop();
+        app.stop_for_scrub();
         app.session.set_playhead(tk);
     }
     ui.data_mut(|m| match drag {

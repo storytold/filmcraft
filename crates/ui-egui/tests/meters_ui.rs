@@ -2,6 +2,7 @@
 //! narrower (the loudness readout and the dB scale give way, the bars stay), and that it moves
 //! while the playhead is scrubbed with audio scrubbing on.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -17,11 +18,13 @@ type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;
 /// An output that keeps the callback it was started with, for the test to pull samples from.
 struct Out {
     fill: Arc<Mutex<Option<Fill>>>,
+    starts: Arc<AtomicUsize>,
 }
 
 impl AudioOut for Out {
     fn start(&mut self, fill: Fill) -> Result<u32, String> {
         *self.fill.lock().unwrap() = Some(fill);
+        self.starts.fetch_add(1, Ordering::Relaxed);
         Ok(48_000)
     }
     fn stop(&mut self) {
@@ -39,6 +42,8 @@ struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
     fill: Arc<Mutex<Option<Fill>>>,
+    /// How many times the output was started.
+    starts: Arc<AtomicUsize>,
 }
 
 impl Driver {
@@ -48,10 +53,11 @@ impl Driver {
         session.prefs.audio.scrub_audio = true;
         let (tx, rx) = channel();
         let fill = Arc::new(Mutex::new(None));
+        let starts = Arc::new(AtomicUsize::new(0));
         let mut app = FilmcraftApp::new(session).with_control(rx);
-        app.audio = Some(Box::new(Out { fill: fill.clone() }));
+        app.audio = Some(Box::new(Out { fill: fill.clone(), starts: starts.clone() }));
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, fill };
+        let mut d = Driver { harness, tx, fill, starts };
         d.frames(4);
         d
     }
@@ -169,4 +175,83 @@ fn the_meters_move_while_scrubbing() {
         modifiers: Default::default(),
     });
     d.frames(1);
+}
+
+/// A drag along a scrub bar moves the playhead on every frame; the output stream is opened once
+/// for the whole drag and only re-aimed, as the module promises, not stopped and reopened per
+/// frame (which made a monitor's scrub bar stutter while its timecode scrubbed smoothly).
+#[test]
+fn dragging_a_scrub_bar_keeps_one_output_stream_open() {
+    for id in ["program.scrubBar", "timeline.ruler"] {
+        let mut d = Driver::demo();
+        let bar = d.element(id).unwrap_or_else(|| panic!("{id}"));
+        let r = &bar["rect"];
+        let (x, y, w) = (r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32 + r[3].as_f64().unwrap() as f32 / 2.0, r[2].as_f64().unwrap() as f32);
+        let at = |f: f32| egui::pos2(x + w * f, y);
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(at(0.2)));
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at(0.2),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        d.frames(2);
+        let before = d.starts.load(Ordering::Relaxed);
+        for i in 1..=8 {
+            d.harness.input_mut().events.push(egui::Event::PointerMoved(at(0.2 + 0.03 * i as f32)));
+            d.frames(2);
+        }
+        {
+            let mut fill = d.fill.lock().unwrap();
+            let f = fill.as_mut().unwrap_or_else(|| panic!("{id}: the output is open during the drag"));
+            let mut buf = vec![0.0; 4096 * 2];
+            f(&mut buf, 2);
+            assert!(buf.iter().any(|s| *s != 0.0), "{id}: the drag plays a grain");
+        }
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at(0.44),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        d.frames(1);
+        let starts = d.starts.load(Ordering::Relaxed);
+        assert!(starts >= 1, "{id}: the drag opened the output");
+        assert!(starts - before.min(starts) <= 1, "{id}: the output was restarted {} times during the drag", starts - before.min(starts));
+    }
+}
+
+/// A take can record while playback is stopped (`audio.voiceover.start` is a command like any
+/// other); scrubbing a bar ends it, as every other way of stopping does.
+#[test]
+fn a_scrub_ends_a_take_that_records_while_stopped() {
+    for id in ["program.scrubBar", "timeline.ruler"] {
+        let mut d = Driver::demo();
+        d.ok("engine.execute", json!({"command": "audio.voiceover.start", "params": {"track": "A1", "time": 0, "preroll": 0}}));
+        d.frames(2);
+        assert!(d.harness.state().session.voiceover.recording(), "{id}: the take records");
+        assert_eq!(d.ok("ui.inspect", json!({}))["playback"]["playing"], json!(false), "{id}: nothing plays");
+        let bar = d.element(id).unwrap_or_else(|| panic!("{id}"));
+        let r = &bar["rect"];
+        let (x, y, w) = (r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32 + r[3].as_f64().unwrap() as f32 / 2.0, r[2].as_f64().unwrap() as f32);
+        let at = |f: f32| egui::pos2(x + w * f, y);
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(at(0.2)));
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at(0.2),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        d.frames(2);
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(at(0.3)));
+        d.frames(2);
+        assert!(!d.harness.state().session.voiceover.recording(), "{id}: the scrub ended the take: {}", d.harness.state().ui.status);
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at(0.3),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        d.frames(1);
+    }
 }
