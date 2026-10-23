@@ -108,7 +108,7 @@ pub struct ClickParams {
     /// left | right | middle
     #[serde(default)]
     pub button: Option<String>,
-    /// 2 for double-click.
+    /// Number of clicks (0–10; defaults to 1). Use 2 for double-click. Larger values are rejected.
     #[serde(default)]
     pub count: Option<u32>,
     /// {"shift":bool,"alt":bool,"command":bool,"ctrl":bool}
@@ -122,6 +122,7 @@ pub struct DragParams {
     pub from: Value,
     /// End point, same forms.
     pub to: Value,
+    /// Movement steps (0–1024; defaults to 12; 0 or 1 uses 2). Larger values are rejected.
     #[serde(default)]
     pub steps: Option<u32>,
     #[serde(default)]
