@@ -3592,3 +3592,7 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	AV1 1080p Full HD	AV1 1080p 全高清
+	AV1 2160p 4K Ultra HD	AV1 2160p 4K 超高清
+	AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps	AV1 1920×1080，VBR 1 次，目标 14 Mbps，AAC 320 kbps
+	AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps	AV1 3840×2160，VBR 1 次，目标 35 Mbps，AAC 320 kbps

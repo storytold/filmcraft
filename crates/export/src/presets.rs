@@ -46,6 +46,18 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
     }
 }
 
+fn av1(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
+    ExportSettings {
+        format: Format::Av1,
+        frame_size: size,
+        bitrate_kbps: kbps,
+        max_bitrate_kbps: Some(max_kbps),
+        bitrate_mode: BitrateMode::Vbr1Pass,
+        audio: AudioSettings { codec: AudioCodec::Aac, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 16, ..Default::default() },
+        ..Default::default()
+    }
+}
+
 fn adaptive(bpp: f32) -> ExportSettings {
     ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) }
 }
@@ -97,7 +109,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
     let web = "Web & Social";
     let bc = "Broadcast";
     let vertical = ExportSettings { scaling: Scaling::ScaleToFill, ..h264(Some((1080, 1920)), 12_000, 16_000) };
-    vec![
+    let mut presets = vec![
         p(DEFAULT_PRESET, ms, "H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)", adaptive(0.2)),
         p("Match Source – Adaptive Medium Bitrate", ms, "H.264 at the sequence's frame size and rate; 0.1 bits per pixel", adaptive(0.1)),
         p("Match Source – Adaptive Low Bitrate", ms, "H.264 at the sequence's frame size and rate; 0.05 bits per pixel", adaptive(0.05)),
@@ -186,7 +198,12 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             },
         ),
         p("FLAC 48 kHz 24-bit", "Audio Only", "FLAC, stereo 48 kHz 24-bit, lossless", audio_only(Format::Flac, 24)),
-    ]
+    ];
+    if crate::available(Format::Av1) {
+        presets.push(p("AV1 1080p Full HD", web, "AV1 1920×1080, VBR 1 pass, 14 Mbps target, AAC 320 kbps", av1(Some((1920, 1080)), 14_000, 18_000)));
+        presets.push(p("AV1 2160p 4K Ultra HD", web, "AV1 3840×2160, VBR 1 pass, 35 Mbps target, AAC 320 kbps", av1(Some((3840, 2160)), 35_000, 45_000)));
+    }
+    presets
 }
 
 /// A built-in preset by name ([`preset_key`] comparison).

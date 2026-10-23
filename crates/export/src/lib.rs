@@ -73,9 +73,10 @@ pub enum Format {
     /// ([`hdr_available`]); elsewhere they are tone-mapped to SDR.
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
-    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Like H.265 it has no built-in encoder: offered
-    /// where a hardware encoder registers one.
-    #[serde(rename = "av1", alias = "Av1")]
+    /// MPEG-4 (or QuickTime, see [`Multiplexer`]), AV1 Main profile (8-bit or 10-bit HDR) video + AAC audio.
+    /// There is no built-in encoder: a platform hardware encoder registers one ([`register_encoder`])
+    /// and says so with [`register_format_probe`]; [`available`] is false without it.
+    #[serde(rename = "av1", alias = "Av1", alias = "AV1")]
     Av1,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
     #[serde(rename = "prores", alias = "ProRes")]
@@ -265,7 +266,7 @@ impl Format {
     pub fn is_mp4_video(self) -> bool {
         matches!(self, Format::H264 | Format::Hevc | Format::Av1)
     }
-    /// Whether the file is MPEG-4 rather than QuickTime for `mux`.
+    /// Whether the file is MPEG-4 rather than QuickTime for mux.
     pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
         self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
     }
@@ -638,11 +639,8 @@ impl ExportSettings {
         if self.effects.image_overlay.enabled && self.effects.image_overlay.path.trim().is_empty() {
             return Err(ExportError::Unsupported("image overlay: no image file chosen".into()));
         }
-        if self.format == Format::Hevc && self.bitrate_mode == BitrateMode::Vbr2Pass {
-            return Err(ExportError::Unsupported("H.265 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
-        }
-        if self.format == Format::Av1 && self.bitrate_mode == BitrateMode::Vbr2Pass {
-            return Err(ExportError::Unsupported("AV1 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
+        if (self.format == Format::Hevc || self.format == Format::Av1) && self.bitrate_mode == BitrateMode::Vbr2Pass {
+            return Err(ExportError::Unsupported(format!("{} export has no two-pass mode: choose CBR or VBR, 1 pass", self.format.label())));
         }
         if self.bitrate_mode == BitrateMode::Crf {
             if self.format == Format::Hevc {
