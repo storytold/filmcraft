@@ -252,6 +252,11 @@ pub struct Playback {
     /// Resting playhead for an inclusive marked range; unlike stop_at, this
     /// names the last visible frame, not the following playback boundary.
     pub rest_at: Option<Tick>,
+    /// How long the sound keeps playing past the sequence end so track, submix and Mix effect
+    /// tails (reverb, echo) decay instead of being cut (#2731): the mixer graph's
+    /// [`filmcraft_render::mixer::effect_tail`], taken when playback starts. The playhead rests
+    /// on the last frame meanwhile.
+    pub ring_out: Tick,
 }
 
 /// How long (s) the audio clock may stand still during playback before the wall clock takes over.
@@ -1003,6 +1008,7 @@ impl FilmcraftApp {
         }
         self.playback.playing = true;
         self.playback.speed = speed;
+        self.playback.ring_out = self.session.active_sequence().map(filmcraft_render::mixer::effect_tail).unwrap_or_default();
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends
         self.playback.preroll = Some(-1.0);
@@ -1209,6 +1215,10 @@ impl FilmcraftApp {
             if self.playback.looping {
                 self.session.set_playhead(lo);
                 self.play(self.playback.speed);
+            } else if self.playback.audio_clock && t < hi + self.playback.ring_out {
+                // effect tails ring out past the end (#2731): the sound plays on, the playhead
+                // rests on the last frame
+                self.session.set_playhead(hi - rate.frame_duration());
             } else {
                 self.session.set_playhead(hi - rate.frame_duration());
                 self.stop();
@@ -2529,6 +2539,75 @@ mod audio_recovery_tests {
         fn played_frames(&self) -> Option<u64> {
             self.reading
         }
+    }
+
+    /// #2731: at the sequence end a track reverb keeps sounding until its tail has decayed (the
+    /// playhead resting on the last frame); without one, playback stops right there.
+    #[test]
+    fn track_effect_tails_ring_out_past_the_sequence_end() {
+        use std::sync::atomic::AtomicU64;
+        struct Clocked(Arc<AtomicU64>);
+        impl AudioOut for Clocked {
+            fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+                Ok(48_000)
+            }
+            fn stop(&mut self) {}
+            fn sample_rate(&self) -> u32 {
+                48_000
+            }
+            fn played_frames(&self) -> Option<u64> {
+                Some(self.0.load(Ordering::Relaxed))
+            }
+        }
+        let mut session = Session::default();
+        session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+        let inter: Vec<f32> = (0..48_000).flat_map(|i| [(0.2 * (std::f64::consts::TAU * 440.0 * i as f64 / 48_000.0).sin()) as f32; 2]).collect();
+        let bytes: Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&inter, 48_000).into();
+        let item = filmcraft_engine::commands::import_bytes(&mut session, "/tail-tone.wav", bytes, None).unwrap();
+        session.execute("timeline.place", json!({"item":item.0,"audioTrack":"A1","seconds":0.0})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let played = Arc::new(AtomicU64::new(0));
+        app.audio = Some(Box::new(Clocked(played.clone())));
+        let ctx = egui::Context::default();
+        let end = app.session.active_sequence().unwrap().duration();
+        let last = end - app.session.sequence_rate().frame_duration();
+        let from = Tick::from_seconds_f64(0.5);
+        let run = |app: &mut FilmcraftApp, seconds_played: f64| {
+            played.store((seconds_played * 48_000.0) as u64, Ordering::Relaxed);
+            app.advance_playback(&ctx);
+        };
+        let start = |app: &mut FilmcraftApp| {
+            app.session.set_playhead(from);
+            app.play(1.0);
+            app.end_preroll(0.0);
+            assert!(app.playback.audio_clock);
+        };
+        // dry: stops on the last frame at the end
+        played.store(0, Ordering::Relaxed);
+        start(&mut app);
+        assert_eq!(app.playback.ring_out, Tick::ZERO);
+        run(&mut app, (end - from).seconds() + 0.05);
+        assert!(!app.playback.playing, "no effect tail: playback stops at the end");
+        assert_eq!(app.session.playhead(), last);
+        // a post-fader reverb on A1 rings on past the end
+        app.session.execute("mixer.addInsert", json!({"strip":"A1","effect":"studio_reverb"})).unwrap();
+        app.session.execute("mixer.setInsert", json!({"strip":"A1","slot":0,"postFader":true})).unwrap();
+        played.store(0, Ordering::Relaxed);
+        start(&mut app);
+        let ring = app.playback.ring_out;
+        assert!(ring > Tick::from_seconds_f64(0.5), "reverb tail {ring:?}");
+        run(&mut app, (end - from).seconds() + 0.05);
+        assert!(app.playback.playing, "the reverb tail is still sounding");
+        assert_eq!(app.session.playhead(), last, "the playhead rests on the last frame");
+        run(&mut app, (end - from).seconds() + ring.seconds() * 0.9);
+        assert!(app.playback.playing);
+        run(&mut app, (end - from).seconds() + ring.seconds() + 0.05);
+        assert!(!app.playback.playing, "stops once the tail has rung out");
+        assert_eq!(app.session.playhead(), last);
+        // replaying from the end starts over from the beginning, as before
+        app.play(1.0);
+        assert_eq!(app.session.playhead(), Tick::ZERO);
+        app.stop();
     }
 
     #[test]

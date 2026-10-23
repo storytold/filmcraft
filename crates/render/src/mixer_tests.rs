@@ -749,3 +749,79 @@ fn a_nest_trimmed_in_starts_later_in_its_sequence() {
     let mix = mix_graph(&p, p.sequence(outer).unwrap(), start, 4800, &map, None);
     assert!(worst(&mix, start, 8, |t| tone.at(t + 3.0)) < 0.01);
 }
+
+/// One clip of `signal` on A1 covering `[0, len)` samples.
+fn short_clip(signal: fn(i64, usize) -> f32, len: i64) -> Rig {
+    let mut r = Rig::new(&[signal]);
+    r.track(0).items[0].duration = Tick::from_units(len, SR);
+    r
+}
+
+fn energy(x: &[f32]) -> f32 {
+    x.iter().map(|s| s * s).sum()
+}
+
+fn studio_reverb(post: bool) -> filmcraft_project::EffectInstance {
+    let mut e = filmcraft_project::find_effect("studio_reverb").unwrap().instance();
+    e.post_fader = post;
+    e
+}
+
+#[test]
+fn track_reverb_rings_out_over_a_gap_and_into_the_next_clip() {
+    // #2731: a burst ends at 0.5 s; the track's reverb keeps sounding after the clip's end, the
+    // same in export batches, small playback blocks and a fresh start inside the gap.
+    for post in [false, true] {
+        let mut r = short_clip(noise, 24_000);
+        r.track(0).effects.push(studio_reverb(post));
+        let export = r.mix_cut(0, 48_000, &[8_000], None);
+        let live = LiveMix::new();
+        let playback = r.mix_cut(0, 48_000, &[512, 480], Some(&live));
+        assert_eq!(export, playback, "post-fader {post}");
+        let tail = energy(&export[0][24_100..28_800]) + energy(&export[1][24_100..28_800]);
+        assert!(tail > 1e-3, "post-fader {post}: reverb tail after the clip end: {tail}");
+        let cold = r.mix(24_100, 4_700);
+        let cold_tail = energy(&cold[0]) + energy(&cold[1]);
+        assert!((cold_tail - tail).abs() <= tail * 0.05, "a fresh start in the gap pre-rolls the tail: {cold_tail} vs {tail}");
+        // without the reverb the gap is silent
+        r.track(0).effects.clear();
+        let dry = r.mix(24_100, 4_700);
+        assert_eq!(energy(&dry[0]) + energy(&dry[1]), 0.0);
+    }
+    // a following (silent) clip on the same track: the tail carries on under it
+    fn burst_then_silence(i: i64, c: usize) -> f32 {
+        if i < 24_000 { noise(i, c) } else { 0.0 }
+    }
+    let mut r = Rig::new(&[burst_then_silence]);
+    r.track(0).effects.push(studio_reverb(true));
+    let mut next = r.track(0).items[0].clone();
+    r.track(0).items[0].duration = Tick::from_units(24_000, SR);
+    next.id = filmcraft_project::ClipId(r.p.alloc_id());
+    next.start = Tick::from_units(24_000, SR);
+    next.duration = Tick::from_units(24_000, SR);
+    next.source_in = Tick::from_units(24_000, SR);
+    r.track(0).items.push(next);
+    let out = r.mix_cut(0, 48_000, &[1_024], None);
+    assert!(energy(&out[0][24_100..28_800]) > 1e-3, "tail under the next clip");
+}
+
+#[test]
+fn effect_tail_follows_the_inserts() {
+    let mut r = short_clip(noise, 24_000);
+    let tail = |r: &Rig| mixer::effect_tail(r.p.sequence(r.seq).unwrap());
+    assert_eq!(tail(&r), Tick::ZERO, "no inserts: nothing rings on");
+    r.track(0).effects.push(filmcraft_project::find_effect("amplify").unwrap().instance());
+    assert_eq!(tail(&r), Tick::ZERO, "a gain insert has no tail");
+    r.track(0).effects.push(studio_reverb(true));
+    let t = tail(&r);
+    assert!(t >= Tick::from_seconds_f64(1.0) && t <= Tick::from_seconds_f64(mixer::MAX_TAIL_S), "{t:?}");
+    // a longer decay rings on longer; on a submix or the Mix it counts too
+    r.track(0).effects[1].param_mut("decay").unwrap().value = ParamValue::Float(100.0);
+    assert!(tail(&r) > t);
+    r.track(0).effects.clear();
+    r.p.sequence_mut(r.seq).unwrap().master_effects.push(studio_reverb(false));
+    assert!(tail(&r) > Tick::ZERO, "Mix insert");
+    // a bypassed insert is silent
+    r.p.sequence_mut(r.seq).unwrap().master_effects[0].enabled = false;
+    assert_eq!(tail(&r), Tick::ZERO);
+}

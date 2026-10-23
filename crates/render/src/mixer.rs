@@ -62,6 +62,8 @@ pub const MASTER: TrackId = filmcraft_project::mixer::MASTER_STRIP;
 pub const PARAM_BLOCK: i64 = 64;
 /// Longest pre-roll for a fresh graph (seconds).
 const MAX_PREROLL_S: f64 = 3.0;
+/// Longest effect tail played past the end of a sequence (seconds; see [`effect_tail`]).
+pub const MAX_TAIL_S: f64 = 10.0;
 
 // ------------------------------------------------------------------------------------- live state
 
@@ -481,10 +483,16 @@ impl<'a> Plan<'a> {
         h.finish()
     }
 
+    /// How long (seconds) the inserts of audible strips keep sounding after their input falls
+    /// silent at `t` (reverb and echo tails, dynamics release): the pre-roll a fresh graph needs.
+    fn tail_s(&self, t: Tick) -> f64 {
+        let s = self.strips.iter().filter(|s| !s.silent).flat_map(|s| s.pre.iter().chain(&s.post)).map(|i| (i.map.preroll)(&i.effect, t)).fold(0.0, f64::max);
+        if s.is_finite() { s.max(0.0) } else { 0.0 }
+    }
+
     /// Longest pre-roll the inserts need for a fresh graph (samples).
     fn preroll(&self, t: Tick, sr: u32) -> usize {
-        let s = self.strips.iter().flat_map(|s| s.pre.iter().chain(&s.post)).map(|i| (i.map.preroll)(&i.effect, t)).fold(0.0, f64::max);
-        (s.min(MAX_PREROLL_S) * sr as f64).ceil() as usize
+        (self.tail_s(t).min(MAX_PREROLL_S) * sr as f64).ceil() as usize
     }
 }
 
@@ -583,6 +591,21 @@ fn cache() -> &'static Mutex<HashMap<u64, Vec<GraphState>>> {
 pub fn graph_latency(seq: &Sequence) -> usize {
     let plan = Plan::build(seq, &HashMap::new());
     build_state(&plan, seq.settings.sample_rate).latency
+}
+
+/// How long the mixer graph keeps sounding once the timeline falls silent at its end: the longest
+/// tail of the track, submix and Mix inserts (reverb, echo, dynamics release) plus the graph
+/// latency, capped at [`MAX_TAIL_S`]. Zero when no insert can ring on. Playback keeps the sound
+/// running this long past the sequence end so effect tails decay instead of being cut (#2731).
+pub fn effect_tail(seq: &Sequence) -> Tick {
+    let plan = Plan::build(seq, &HashMap::new());
+    let sr = seq.settings.sample_rate.max(1);
+    let tail = plan.tail_s(seq.duration()).min(MAX_TAIL_S);
+    if tail <= 0.0 {
+        return Tick::ZERO;
+    }
+    let latency = build_state(&plan, sr).latency;
+    Tick::from_seconds_f64(tail) + Tick::from_units(i64::try_from(latency).unwrap_or(0), sr as i64)
 }
 
 // ------------------------------------------------------------------------------------- processing
