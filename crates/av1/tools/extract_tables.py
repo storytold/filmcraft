@@ -17,6 +17,16 @@ dimensions; the element type is the narrowest of u8/i8/u16/i16/i32 that holds ev
 import os
 import re
 import sys
+from pathlib import Path
+
+
+def _spec_path(arg):
+    """Resolve a CLI path argument and require it to be an existing regular file."""
+    path = Path(arg).resolve()
+    if not path.is_file():
+        sys.exit(f"not a readable file: {arg}")
+    return path
+
 
 root = sys.argv[1]
 files = sorted(f for f in os.listdir(root) if f.endswith(".md"))

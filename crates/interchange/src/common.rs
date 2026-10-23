@@ -65,7 +65,9 @@ pub fn file_url_to_path(url: &str) -> String {
         return url.to_string();
     }
     let rest = &url[7..];
-    let rest = if rest.get(..9).is_some_and(|s| s.eq_ignore_ascii_case("localhost")) { &rest[9..] } else { rest };
+    let is_localhost =
+        rest.get(..9).is_some_and(|s| s.eq_ignore_ascii_case("localhost")) && rest.get(9..).is_some_and(|after| after.is_empty() || after.starts_with('/'));
+    let rest = if is_localhost { &rest[9..] } else { rest };
     let decoded = percent_decode(rest);
     // file:///C:/x -> C:/x
     if decoded.len() >= 3 && decoded.starts_with('/') && is_windows_abs(&decoded[1..]) {
@@ -690,6 +692,14 @@ mod tests {
             assert_eq!(file_url_to_path(&path_to_file_url(p, true)), p);
             assert_eq!(file_url_to_path(&path_to_file_url(p, false)), p);
         }
+    }
+
+    #[test]
+    fn file_url_localhost_prefix_host_is_kept() {
+        assert_eq!(file_url_to_path("file://localhost-nas/share/a.mov"), "//localhost-nas/share/a.mov");
+        assert_eq!(file_url_to_path("file://LOCALHOSTX/a"), "//LOCALHOSTX/a");
+        assert_eq!(file_url_to_path("file://localhost/a/b"), "/a/b");
+        assert_eq!(file_url_to_path("file://LocalHost/a"), "/a");
     }
 
     #[test]

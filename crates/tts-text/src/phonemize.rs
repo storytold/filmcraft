@@ -1336,6 +1336,16 @@ PERCENT  P ER0 S EH1 N T
     }
 
     #[test]
+    fn am_reads_the_letter_name_not_the_article() {
+        for text in ["At 9:00 a.m.", "At 9:00am"] {
+            let chunks = phonemize(text, Lang::EnUs, &test_lex(), &Overrides::default()).unwrap();
+            let joined = format!("{chunks:?}");
+            assert!(joined.contains("ˈA"), "{text}: {joined}");
+            assert!(!joined.contains('ə'), "{text}: {joined}");
+        }
+    }
+
+    #[test]
     fn every_output_char_is_in_symbols() {
         let inputs = [
             "Call 555-0134 by 3:30 p.m. on Oct. 7th, it's $3.50 (20% off)",

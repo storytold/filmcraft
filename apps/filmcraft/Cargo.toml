@@ -38,6 +38,8 @@ collabcraft-share = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 serde_json = { workspace = true }
+# Constant-time comparison of control-channel credentials.
+subtle = "2.6"
 log = { workspace = true }
 rfd = { workspace = true }
 cpal = "0.16"

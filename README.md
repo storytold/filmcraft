@@ -8,6 +8,10 @@
 </p>
 
 
+<p align="center">
+  <img src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.filmcraft.png" width="128" height="128" alt="FilmCraft icon: an engraved owl on a purple tile">
+</p>
+
 <h1 align="center">FilmCraft</h1>
 
 <p align="center">

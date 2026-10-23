@@ -39,6 +39,7 @@ cargo xtask web --serve 8765                          # the web app on http://12
 | Variable | Effect |
 |---|---|
 | `FILMCRAFT_CONTROL_PORT` | Same as `--control <port>` |
+| `FILMCRAFT_CONTROL_TOKEN` | Required for `--control`: 64 random hex characters, inherited by authorized clients; [setup](control-protocol.md) |
 | `FILMCRAFT_CPU_COMPOSITE=1` | Disables the GPU compositor |
 | `FILMCRAFT_DEV_DESKTOP_ENTRY=1` | Linux, opt-in: a run from a source tree installs a user-level desktop entry (and the icons from `assets/app-icon`) so the taskbar shows the FilmCraft icon. Nothing is written without it; packaged runs never write one |
 | `FILMCRAFT_DATA_DIR` | Same as `--data-dir <dir>`: auto-save, crash recovery, settings and logs |

@@ -38,6 +38,9 @@ parameters, so a random-access point without its own sequence header still decod
 
 - Main Profile at Low/Main/High-1440/High Level, 4:2:2 Profile (IMX / D-10, XDCAM HD422),
   Simple Profile, MPEG-1 (including D pictures). 4:4:4 is refused (no profile in use for it).
+- Pictures above 2^25 luma samples (8192 x 4096; 8K UHD at 7680 x 4320 fits, and the largest MPEG-2 level,
+  High, is 1920 x 1152) are refused as `Unsupported`: the 14-bit header fields allow 16383 x 16383, which
+  would ask for gigabytes per frame from hostile input.
 - Frame pictures with frame and field motion compensation, dual prime, frame and field DCT;
   field pictures with field, 16x8 and dual-prime motion compensation, the second field of a
   P frame predicted from the first; open and closed GOPs; B pictures without a forward

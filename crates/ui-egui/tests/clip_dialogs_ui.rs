@@ -347,6 +347,26 @@ fn quitting_with_unsaved_changes_asks_to_save() {
     assert!(!d.sent(&egui::ViewportCommand::CancelClose), "the confirmed quit goes through");
 }
 
+/// #1943: the macOS menu bar's Quit (Cmd+Q) sends `app.quit` to the command inbox; with unsaved
+/// changes that closes the window through the prompt instead of quitting outright.
+#[test]
+fn native_menu_quit_with_unsaved_changes_asks_to_save() {
+    let mut d = Driver::new();
+    d.edit();
+    let (tx, rx) = channel();
+    d.app().command_inbox = Some(rx);
+    tx.send("app.quit".to_string()).unwrap();
+    d.frames(1);
+    assert!(d.sent(&egui::ViewportCommand::Close), "Quit asks the window to close");
+    assert!(!d.app().quit_confirmed, "nothing is confirmed yet");
+    // the window's close request is cancelled and the prompt asks instead
+    d.request_close();
+    assert!(d.sent(&egui::ViewportCommand::CancelClose), "the window must stay open");
+    d.frames(2);
+    assert!(d.has("quit.save") && d.has("quit.dontSave") && d.has("quit.cancel"));
+    assert!(d.app().session.is_dirty());
+}
+
 #[test]
 fn quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_ask() {
     let path = std::env::temp_dir().join(format!("fc-quit-save-{}.fcproj", std::process::id()));

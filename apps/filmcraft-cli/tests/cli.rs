@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn cli(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).output().expect("spawn filmcraft-cli")
@@ -147,6 +147,23 @@ fn export_wav_waits_for_job() {
     let o = cli(&["--demo", "export", out.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(std::fs::metadata(&out).map(|m| m.len() > 44).unwrap_or(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_waits_for_an_export_on_its_last_line() {
+    // #2342: `file.exportMedia` as the last line of a script is written before `run` exits
+    let dir = std::env::temp_dir().join(format!("fc-cli-run-x-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("last.wav");
+    // `"wait": null` waits too: only an explicit `false` doesn't
+    let script = json!({"id": "file.exportMedia", "params": {"path": out.to_str().unwrap(), "format": "wav", "wait": null}}).to_string();
+    let mut child =
+        Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(format!("{script}\n").as_bytes()).unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(std::fs::metadata(&out).map(|m| m.len() > 44).unwrap_or(false), "{}", String::from_utf8_lossy(&o.stdout));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

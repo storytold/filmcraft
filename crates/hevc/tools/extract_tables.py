@@ -13,8 +13,18 @@ initType following Table 9-4, default scaling lists (Table 7-6), intraPredAngle 
 """
 import re
 import sys
+from pathlib import Path
 
-text = open(sys.argv[1], encoding="utf-8").read().replace("−", "-").replace("–", "-")
+
+def _spec_path(arg):
+    """Resolve a CLI path argument and require it to be an existing regular file."""
+    path = Path(arg).resolve()
+    if not path.is_file():
+        sys.exit(f"not a readable file: {arg}")
+    return path
+
+
+text = open(_spec_path(sys.argv[1]), encoding="utf-8").read().replace("−", "-").replace("–", "-")
 lines = text.split("\n")
 
 

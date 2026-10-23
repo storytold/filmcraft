@@ -568,11 +568,11 @@ impl FilmcraftMcp {
         if let Err(e) = b.call("ui.screenshot", json!({"path": path.to_string_lossy(), "panel": panel})).await {
             return Ok(fail(e));
         }
-        let bytes = match std::fs::read(&path) {
+        let bytes = match tokio::fs::read(&path).await {
             Ok(b) => b,
             Err(e) => return Ok(fail(format!("screenshot: {e}"))),
         };
-        let _ = std::fs::remove_file(&path);
+        let _ = tokio::fs::remove_file(&path).await;
         let bytes = match image::load_from_memory(&bytes) {
             Ok(img) => {
                 let rgba = img.to_rgba8();

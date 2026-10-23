@@ -125,6 +125,13 @@ motion vectors nor CDFs reach another frame — skip deblocking, CDEF and loop r
 (super-resolution still runs, it sets the output size) and are flagged `Picture::draft`. In
 SVT-AV1's hierarchical GOPs that is the top layer, half of the frames.
 
+## Limits
+
+Frames beyond the AV1 level 6.x limits (Annex A: at most 16384 wide, 8704 high and 35 651 584 luma samples
+in total, so 16384 x 2176 or 8192 x 4352 at most) are refused with `Error::Invalid("frame size")`. The sequence
+header can code up to 65536 x 65536, which would ask for gigabytes of buffers from a few bytes of hostile input;
+no real stream comes close to level 6.3, the highest defined level.
+
 ## API
 
 ```rust

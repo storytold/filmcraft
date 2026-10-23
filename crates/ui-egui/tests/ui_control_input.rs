@@ -275,3 +275,22 @@ fn modified_control_drag_keeps_shift_until_release_and_clears_it_afterward() {
     d.frames(3, false);
     assert_eq!(d.h.ctx.input(|input| input.modifiers), Modifiers::NONE);
 }
+
+/// CodeRabbit on #2006: in control-only mode the native menu's commands are ignored, but its Quit
+/// item (now `app.quit` through the command inbox, #1943) must still close the window, as the
+/// predefined Quit item did.
+#[test]
+fn native_quit_still_quits_in_control_only_mode() {
+    let mut d = Driver::new(true);
+    let (tx, rx) = channel();
+    d.h.state_mut().command_inbox = Some(rx);
+    // another menu command is ignored
+    let project = d.h.state().session.project.clone();
+    tx.send("file.newBin".to_string()).unwrap();
+    d.frames(2, true);
+    assert!(Arc::ptr_eq(&project, &d.h.state().session.project), "menu commands do not run in control-only mode");
+    tx.send("app.quit".to_string()).unwrap();
+    d.frames(1, true);
+    let closing = d.h.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close));
+    assert!(closing, "Quit asks the window to close");
+}

@@ -673,8 +673,8 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
         out.push_str(r);
     }
     out.push_str("  </resources>\n");
-    out.push_str(&format!("  <library>\n    <event name=\"{}\">\n", crate::xml::escape(&p.name)));
-    out.push_str(&format!("      <project name=\"{}\">\n", crate::xml::escape(&name)));
+    out.push_str(&format!("  <library>\n    <event name=\"{}\">\n", crate::xml::escape_attr(&p.name)));
+    out.push_str(&format!("      <project name=\"{}\">\n", crate::xml::escape_attr(&name)));
     out.push_str(&body);
     out.push_str("      </project>\n    </event>\n  </library>\n</fcpxml>\n");
     Ok(out)
@@ -728,7 +728,7 @@ impl Exp<'_, '_> {
         let start = m.info.start_timecode.map(|f| mrate.tick_of(f)).unwrap_or(Tick::ZERO);
         let mut a = format!(
             "    <asset id=\"{id}\" name=\"{}\" start=\"{}\" duration=\"{}\" hasVideo=\"{}\" hasAudio=\"{}\"",
-            crate::xml::escape(&name),
+            crate::xml::escape_attr(&name),
             fmt_time(start, mrate),
             fmt_time(m.info.duration, mrate),
             m.info.video.is_some() as u8,
@@ -742,7 +742,7 @@ impl Exp<'_, '_> {
         }
         let path = item_path(self.p, item).unwrap_or("");
         let src = if crate::common::is_absolute(path) { path_to_file_url(path, false) } else { path.to_string() };
-        a.push_str(&format!(">\n      <media-rep kind=\"original-media\" src=\"{}\"/>\n    </asset>\n", crate::xml::escape(&src)));
+        a.push_str(&format!(">\n      <media-rep kind=\"original-media\" src=\"{}\"/>\n    </asset>\n", crate::xml::escape_attr(&src)));
         self.res_out.push(a);
         self.assets.insert(item, Res { id: id.clone() });
         let _ = file_name;
@@ -764,7 +764,7 @@ impl Exp<'_, '_> {
         let body = self.sequence_xml(item, &fmt, 3);
         self.building.pop();
         let name = self.p.item(item).map(|i| i.name.clone()).unwrap_or_default();
-        self.res_out.push(format!("    <media id=\"{id}\" name=\"{}\">\n{body}    </media>\n", crate::xml::escape(&name)));
+        self.res_out.push(format!("    <media id=\"{id}\" name=\"{}\">\n{body}    </media>\n", crate::xml::escape_attr(&name)));
         id
     }
 
@@ -773,7 +773,11 @@ impl Exp<'_, '_> {
             return r.id.clone();
         }
         let id = self.rid();
-        self.res_out.push(format!("    <effect id=\"{id}\" name=\"{}\" uid=\"filmcraft.{}\"/>\n", crate::xml::escape(name), crate::xml::escape(id_hint)));
+        self.res_out.push(format!(
+            "    <effect id=\"{id}\" name=\"{}\" uid=\"filmcraft.{}\"/>\n",
+            crate::xml::escape_attr(name),
+            crate::xml::escape_attr(id_hint)
+        ));
         self.effects.insert(name.to_string(), Res { id: id.clone() });
         id
     }
@@ -934,7 +938,7 @@ impl Exp<'_, '_> {
             "<transition name=\"{n}\" offset=\"{}\" duration=\"{}\"><filter-video ref=\"{r}\" name=\"{n}\"/></transition>",
             fmt_time(tc0 + tr.start, rate),
             fmt_time(tr.duration, rate),
-            n = crate::xml::escape(&name)
+            n = crate::xml::escape_attr(&name)
         )
     }
 
@@ -946,7 +950,7 @@ impl Exp<'_, '_> {
         let is_seq = matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_)));
         let generator = generator_of(self.p, base).cloned();
         let lane_attr = lane.map(|l| format!(" lane=\"{l}\"")).unwrap_or_default();
-        let name = crate::xml::escape(&it.name);
+        let name = crate::xml::escape_attr(&it.name);
         if let Some(g) = generator {
             self.report.warn(format!("generator \"{}\" is not supported in FCPXML; written as a gap", g.label()));
             return El {
@@ -1043,7 +1047,7 @@ impl Exp<'_, '_> {
             let n = e.def().map(|d| d.name).unwrap_or(&e.effect).to_string();
             let r = self.effect(&n, &e.effect);
             let tag = if kind == TrackKind::Video { "filter-video" } else { "filter-audio" };
-            let mut s = format!("<{tag} ref=\"{r}\" name=\"{}\"", crate::xml::escape(&n));
+            let mut s = format!("<{tag} ref=\"{r}\" name=\"{}\"", crate::xml::escape_attr(&n));
             if !e.enabled {
                 s.push_str(" enabled=\"0\"");
             }
@@ -1169,8 +1173,8 @@ fn kparam_xml(
 fn marker_xml(m: &Marker, local: Tick, rate: FrameRate) -> String {
     let tag = if m.kind == MarkerKind::Chapter { "chapter-marker" } else { "marker" };
     let dur = if m.duration > Tick::ZERO { m.duration } else { rate.frame_duration() };
-    let note = if m.comment.is_empty() { String::new() } else { format!(" note=\"{}\"", crate::xml::escape(&m.comment)) };
-    format!("<{tag} start=\"{}\" duration=\"{}\" value=\"{}\"{note}/>", fmt_time(local, rate), fmt_time(dur, rate), crate::xml::escape(&m.name))
+    let note = if m.comment.is_empty() { String::new() } else { format!(" note=\"{}\"", crate::xml::escape_attr(&m.comment)) };
+    format!("<{tag} start=\"{}\" duration=\"{}\" value=\"{}\"{note}/>", fmt_time(local, rate), fmt_time(dur, rate), crate::xml::escape_attr(&m.name))
 }
 
 #[cfg(test)]
