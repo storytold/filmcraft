@@ -135,15 +135,40 @@ ln -s /Applications "$STAGE/Applications"
 mkdir -p "$STAGE/.background"
 cp "$HERE/dmg/background.tiff" "$STAGE/.background/background.tiff"
 cp "$HERE/dmg/dmg-layout.DS_Store" "$STAGE/.DS_Store"
-rm -f "$DMG" "$WORK/raw.dmg"
-# makehybrid + convert builds the image without attaching a device, unlike `create -srcfolder`,
-# which is flaky on CI runners ("Resource busy") and hangs in sandboxed sessions.
-# The volume name has no version: .DS_Store finds the background through an alias that includes it.
-hdiutil makehybrid -hfs -hfs-volume-name "FilmCraft" -hfs-openfolder "$STAGE" -o "$WORK/raw.dmg" "$STAGE"
-hdiutil convert "$WORK/raw.dmg" -format UDZO -imagekey zlib-level=9 -o "$DMG"
-rm -f "$WORK/raw.dmg"
+rm -f "$DMG"
+# `hdiutil create -srcfolder` writes the files as they are. `makehybrid -hfs` gave every file a
+# com.apple.FinderInfo, which `codesign --verify --strict` rejects as "Finder information, or
+# similar detritus" on the app in the image and on a copy installed from it (as VectorCraft's
+# storytold/vectorcraft#1085 and PdfCraft's storytold/pdfcraft#823). `create` attaches a device
+# while it copies, which fails now and then on CI runners ("Resource busy"), so it gets a few
+# tries. The volume name has no version: .DS_Store finds the background through an alias that
+# includes it.
+# Usage: hdiutil_retry <what> <hdiutil args…>; tries five times with growing pauses.
+hdiutil_retry() {
+  local what="$1" attempt
+  shift
+  for attempt in 1 2 3 4 5; do
+    if hdiutil "$@"; then
+      return 0
+    fi
+    [ "$attempt" = 5 ] && { echo "hdiutil $what failed 5 times" >&2; return 1; }
+    echo "hdiutil $what failed (attempt $attempt of 5); retrying in $((attempt * 10))s" >&2
+    sleep $((attempt * 10))
+  done
+}
+hdiutil_retry create create -srcfolder "$STAGE" -volname "FilmCraft" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "$DMG"
 sign "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
+# The app inside the image must still pass --strict, so a makehybrid-style regression can't ship.
+MOUNT="$WORK/dmg-check"
+rm -rf "$MOUNT"
+mkdir -p "$MOUNT"
+hdiutil_retry attach attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG" >/dev/null
+if ! codesign --verify --strict --deep --verbose=2 "$MOUNT/FilmCraft.app"; then
+  hdiutil_retry detach detach "$MOUNT" >/dev/null || true
+  exit 1
+fi
+hdiutil_retry detach detach "$MOUNT" >/dev/null
 if [ "$NOTARIZE" = 1 ]; then
   notarize "$DMG"
   xcrun stapler staple "$DMG"
