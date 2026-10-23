@@ -7,7 +7,7 @@
 //! what the container signals, which wins.
 
 use filmcraft_color::{ColorInfo, Matrix, Range, Transfer};
-use filmcraft_isobmff::{AvcConfig, CodecConfig, HevcConfig};
+use filmcraft_isobmff::{AvcConfig, CodecConfig, HevcConfig, SampleEntry};
 
 use crate::video::primaries_from_code;
 
@@ -91,4 +91,47 @@ pub fn resolve(width: u32, height: u32, sources: &[ColorCodes]) -> ColorInfo {
         c.range = Range::Full;
     }
     c
+}
+
+/// Colour of a visual sample entry using the same field-by-field container/configuration
+/// precedence as the MP4 source. Dimensions are the source's output dimensions after cropping.
+pub(crate) fn sample_entry_color(entry: &SampleEntry, width: u32, height: u32) -> ColorInfo {
+    use filmcraft_isobmff::ColorInfo as Colr;
+    let colr = match entry.video.as_ref().and_then(|v| v.color.as_ref()) {
+        Some(Colr::Nclx { primaries, transfer, matrix, full_range }) => {
+            Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), Some(*full_range)))
+        }
+        Some(Colr::Nclc { primaries, transfer, matrix }) => Some(ColorCodes::from_wide((*primaries).into(), (*transfer).into(), (*matrix).into(), None)),
+        _ => None,
+    };
+    let stream = match &entry.codec {
+        CodecConfig::Vp9(v) => Some(ColorCodes {
+            primaries: v.colour_primaries,
+            transfer: v.transfer_characteristics,
+            matrix: v.matrix_coefficients,
+            full_range: Some(v.full_range),
+        }),
+        CodecConfig::Apv(a) if a.color_description_present => Some(ColorCodes {
+            primaries: a.color_primaries,
+            transfer: a.transfer_characteristics,
+            matrix: a.matrix_coefficients,
+            full_range: Some(a.full_range),
+        }),
+        CodecConfig::Apv(_) => None,
+        codec => from_codec_config(codec),
+    };
+    match (colr, stream) {
+        (Some(container), Some(stream)) => resolve(width, height, &[container, stream]),
+        (Some(c), None) | (None, Some(c)) => resolve(width, height, &[c]),
+        (None, None) => resolve(width, height, &[]),
+    }
+}
+
+/// The whole-frame YUV colour override the MP4 source applies for `nclx` / `nclc`.
+/// Unspecified or unknown fields resolve from the original configuration, including range
+/// inheritance for `nclc`. Absent `colr` and ICC profiles do not create this override.
+/// Pass the same output dimensions as the source; a native owner must decline unresolved crops.
+pub fn sample_entry_output_color_override(entry: &SampleEntry, width: u32, height: u32) -> Option<ColorInfo> {
+    use filmcraft_isobmff::ColorInfo as Colr;
+    entry.video.as_ref().filter(|v| matches!(v.color, Some(Colr::Nclx { .. } | Colr::Nclc { .. }))).map(|_| sample_entry_color(entry, width, height))
 }

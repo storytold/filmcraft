@@ -31,6 +31,9 @@ mod gpu;
 #[allow(unsafe_code)]
 mod mft;
 mod stream;
+// Safe policy only; native decoder wiring follows separately.
+#[allow(dead_code)]
+mod av1_run;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

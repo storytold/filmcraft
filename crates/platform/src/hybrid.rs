@@ -198,7 +198,14 @@ impl VideoDecoder for HybridDecoder {
         }
         self.remember(sample, pts);
         if self.parameter_sets_changed(sample) {
-            return self.fall_back(CodecError::Decode("in-band parameter sets differ from the sample entry".into()));
+            // The native owner may prepare a compatible change. Keep the original entry/info
+            // and logged sample untouched so a later failure replays the software stream.
+            let adoption = self.hw.as_mut().map_or(Ok(false), |hw| hw.try_adopt_parameter_change(sample));
+            match adoption {
+                Ok(true) => {}
+                Ok(false) => return self.fall_back(CodecError::Decode("in-band parameter sets differ from the sample entry".into())),
+                Err(e) => return self.fall_back(e),
+            }
         }
         let Some(hw) = self.hw.as_mut() else {
             return Err(CodecError::Decode("no decoder".into()));

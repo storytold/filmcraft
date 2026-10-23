@@ -897,6 +897,27 @@ mod tests {
     use crate::video::DecodedFrame;
     use std::collections::VecDeque;
 
+    #[test]
+    fn explicit_color_override_alone_controls_yuv_retagging() {
+        use filmcraft_color::{Matrix, Primaries, Range, Transfer};
+        use filmcraft_frame::{Chroma, PixelData};
+        let pq = ColorInfo { primaries: Primaries::Bt2020, transfer: Transfer::Pq, matrix: Matrix::Bt2020Ncl, range: Range::Limited };
+        let frame = VideoFrame {
+            width: 2,
+            height: 2,
+            data: PixelData::Yuv8 { planes: [Arc::new(vec![16; 4]), Arc::new(vec![128]), Arc::new(vec![128])], chroma: Chroma::C420, alpha: None },
+            color: pq,
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        };
+        assert_eq!(GopCache::new(None).finish(frame.clone()).color, pq, "av1C-only source preserves effective in-band color");
+        assert_eq!(GopCache::new(Some(ColorInfo::REC709)).finish(frame.clone()).color, ColorInfo::REC709);
+        assert_eq!(GopCache::new(Some(pq)).finish(frame).color, pq);
+        let mut rgb = VideoFrame::rgba8(2, 2, vec![0; 16]);
+        rgb.color = pq;
+        assert_eq!(GopCache::new(Some(ColorInfo::REC709)).finish(rgb).color, pq, "the existing override applies only to YUV");
+    }
+
     /// `n` samples, a sync sample every `gop`, pts = 1000 · index (no reordering).
     struct Samples {
         n: usize,

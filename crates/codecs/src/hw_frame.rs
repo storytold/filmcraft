@@ -10,6 +10,9 @@ use filmcraft_isobmff::{CodecConfig, SampleEntry};
 use crate::video::primaries_from_code;
 use crate::{CodecError, Result};
 
+mod av1;
+pub use av1::{Av1ParameterDifference, Av1ReplayConfigurationRefresh};
+
 /// The two frame-coded codecs hardware decoders take besides H.264 / HEVC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameCodec {
@@ -267,6 +270,10 @@ impl FrameStreamInfo {
 }
 
 #[cfg(test)]
+#[path = "hw_frame/av1_tests.rs"]
+mod av1_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -299,6 +306,7 @@ mod tests {
         assert!(!i.parameters_changed(&AV1C), "the same header");
         // used to send every SVT-AV1 MP4 to the software decoder from its first frame
         assert!(!i.parameters_changed(&IN_BAND), "only coding tool flags differ");
+        assert_eq!(i.av1_parameter_difference(&IN_BAND).unwrap(), Av1ParameterDifference::Unchanged);
         // a header that does not parse is a change
         assert!(i.parameters_changed(&[0x0a, 0x02, 0xe0, 0x00]));
         // no sequence header in the sample: nothing changed

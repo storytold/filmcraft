@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use filmcraft_isobmff::{CodecConfig, SampleEntry};
 
-pub use crate::hw_frame::{FrameCodec, FrameStreamInfo, PictureParams};
+pub use crate::hw_frame::{Av1ParameterDifference, Av1ReplayConfigurationRefresh, FrameCodec, FrameStreamInfo, PictureParams};
+pub use crate::stream_color::sample_entry_output_color_override;
 use crate::video::{avcc_length_size, h264_disposable, hevc_disposable, hvcc_length_size_and_tid, sar_par, vui_color};
 use crate::{CodecError, Result};
 
