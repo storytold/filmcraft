@@ -463,7 +463,7 @@ fn hex_field_takes_typing_a_character_at_a_time() {
 #[test]
 fn long_translations_stay_on_the_page() {
     let mut d = Driver::demo();
-    for lang in ["en", "fr", "es", "pt-br", "de", "ru", "uk", "id"] {
+    for lang in ["en", "fr", "es", "pt-br", "de", "ru", "uk", "id", "ar"] {
         d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": lang}));
         d.frames(3);
         for c in CATEGORIES {

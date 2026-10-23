@@ -1,0 +1,8 @@
+asset:        ar.tsv
+title:        Arabic interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-10-13 by hicbest
+notes:        Original clean-room English-to-Arabic menu translations, from the meaning of FilmCraft's English menu labels, using Modern Standard Arabic video-editing vocabulary. Menus-only coverage; other interface strings fall back to English.
