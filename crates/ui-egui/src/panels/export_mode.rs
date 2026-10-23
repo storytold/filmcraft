@@ -24,7 +24,7 @@ use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
     AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec,
-    Placement, SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes,
+    Placement, SampleFormat, Scaling, TextOverlay, UncompressedPixelFormat, builtin_presets, format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -577,7 +577,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if (s.has_audio()
             || !s.has_video()
             || s.format.is_mp4_video()
-            || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
+            || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::Uncompressed)
             || s.format.is_mxf())
             && !s.is_image_sequence()
             && s.format != Format::Gif
@@ -624,7 +624,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if section(ui, &mut reg, &mut ex.open_sections, "effects", tl!("Effects"), &t) {
             pick_overlay = effects_section(ui, &mut reg, s, &t);
         }
-        if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
+        if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::Uncompressed)
             && section(ui, &mut reg, &mut ex.open_sections, "metadata", tl!("Metadata"), &t)
         {
             let m = &mut s.metadata;
@@ -851,6 +851,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 let cur = keys.iter().position(|k| *k == s.apv_profile).unwrap_or(0);
                 if let Some(i) = combo(ui, reg, "export.video.apvProfile", labels[cur], &opts(&labels), 220.0) {
                     s.apv_profile = keys[i].into();
+                }
+            });
+        }
+        Format::Uncompressed => {
+            row(ui, t, tl!("Pixel Format"), |ui| {
+                let labels: Vec<&str> = UncompressedPixelFormat::ALL.iter().map(|l| l.label()).collect();
+                if let Some(i) = combo(ui, reg, "export.video.uncompressedPixelFormat", s.uncompressed_pixel_format.label(), &opts(&labels), 220.0) {
+                    s.uncompressed_pixel_format = UncompressedPixelFormat::ALL[i];
                 }
             });
         }

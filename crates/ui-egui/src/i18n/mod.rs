@@ -835,6 +835,7 @@ mod tests {
         }
         ex::Format::ALL.iter().for_each(|f| push(&mut out, f.label()));
         ex::MxfVideoCodec::ALL.iter().for_each(|c| push(&mut out, c.label()));
+        ex::UncompressedPixelFormat::ALL.iter().for_each(|l| push(&mut out, l.label()));
         ex::Placement::ALL.iter().for_each(|p| push(&mut out, p.label()));
         [ex::FieldOrder::Progressive, ex::FieldOrder::UpperFirst, ex::FieldOrder::LowerFirst].iter().for_each(|f| push(&mut out, f.label()));
         [ex::BitrateMode::Cbr, ex::BitrateMode::Vbr1Pass, ex::BitrateMode::Vbr2Pass, ex::BitrateMode::Crf].iter().for_each(|m| push(&mut out, m.label()));

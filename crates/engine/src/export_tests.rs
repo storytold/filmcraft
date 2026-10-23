@@ -319,6 +319,32 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert!(got_profile == p || got_profile == idc, "{name}: profile {got_profile} != {p} ({idc})");
                 assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
             }
+            "uncompressed" => {
+                // QuickTime, uncompressed: ffprobe names the codec by its tag and can decode it
+                assert!(fmt_name.contains("mov"), "{name}: {fmt_name}");
+                use filmcraft_export::UncompressedPixelFormat as Layout;
+                let layout = match settings["uncompressedPixelFormat"].as_str().unwrap() {
+                    "v210" => Layout::V210,
+                    "rgb24" => Layout::Rgb24,
+                    other => {
+                        assert_eq!(other, "uyvy8", "{name}");
+                        Layout::Uyvy8
+                    }
+                };
+                let (tag, pix) = match layout {
+                    Layout::V210 => ("v210", "yuv422p10le"),
+                    Layout::Rgb24 => ("raw ", "rgb24"),
+                    Layout::Uyvy8 => ("2vuy", "uyvy422"),
+                };
+                assert_eq!(v["codec_tag_string"], tag, "{name}");
+                assert_eq!(v["pix_fmt"], pix, "{name}");
+                assert_eq!((v["width"].as_u64().unwrap(), v["height"].as_u64().unwrap()), (w, h), "{name}");
+                assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
+                // the samples are the picture's own bytes: one a frame, nothing compressed
+                let per_frame = layout.row_bytes(w as u32) * h as usize;
+                let file = std::fs::metadata(&out).unwrap().len();
+                assert!(file > (per_frame * frames as usize) as u64, "{name}: {file} bytes for {frames} pictures of {per_frame}");
+            }
             "mxf-op1a" => {
                 assert_eq!(fmt_name, "mxf", "{name}");
                 let codec = match settings["mxfVideoCodec"].as_str().unwrap() {

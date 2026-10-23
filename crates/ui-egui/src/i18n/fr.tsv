@@ -2908,6 +2908,10 @@
 	Match Source	Identique à la source
 	Field Order	Ordre des trames
 	Aspect	Format
+	Pixel Format	Format de pixel
+	UYVY 8-bit 4:2:2	UYVY 8 bits 4:2:2
+	v210 10-bit 4:2:2	v210 10 bits 4:2:2
+	RGB 24-bit	RGB 24 bits
 	Profile	Profil
 	Bitrate Encoding	Encodage du débit
 	Target Bitrate	Débit cible
@@ -3207,6 +3211,7 @@
 	Progressive	Progressif
 	ProjectPanel	Panneau Projet
 	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime (Uncompressed)	QuickTime (non compressé)
 	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-10 (10 bits 4:2:2), PCM 24 bits 48 kHz
 	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-12 (12 bits 4:2:2), PCM 24 bits 48 kHz
 	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR HQ (8 bits 4:2:2), PCM 24 bits 48 kHz
@@ -3219,6 +3224,12 @@
 	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) avec couche alpha, PCM 24 bits 48 kHz
 	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), PCM 24 bits 48 kHz
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, PCM 24 bits 48 kHz
+	QuickTime, uncompressed 10-bit 4:2:2 (v210), 24-bit 48 kHz PCM	QuickTime, 4:2:2 10 bits non compressé (v210), PCM 24 bits 48 kHz
+	QuickTime, uncompressed 24-bit RGB (raw), 24-bit 48 kHz PCM	QuickTime, RGB 24 bits non compressé (raw), PCM 24 bits 48 kHz
+	QuickTime, uncompressed 8-bit 4:2:2 (2vuy), 24-bit 48 kHz PCM	QuickTime, 4:2:2 8 bits non compressé (2vuy), PCM 24 bits 48 kHz
+	Uncompressed 10-bit 4:2:2 (v210)	Non compressé 10 bits 4:2:2 (v210)
+	Uncompressed 8-bit 4:2:2 (UYVY)	Non compressé 8 bits 4:2:2 (UYVY)
+	Uncompressed 8-bit RGB	Non compressé 8 bits RGB
 	Quit FilmCraft	Quitter FilmCraft
 	Rate Stretch Tool	Outil Étirement de la vitesse
 	Razor Tool	Outil Cutter

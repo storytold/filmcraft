@@ -867,6 +867,15 @@ pub fn apv_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     matches!(e.codec, CodecConfig::Apv(_)).then(|| Ok(Box::new(ApvDecoder) as Box<dyn VideoDecoder>))
 }
 
+/// Uncompressed QuickTime video: `2vuy` (8-bit 4:2:2), `v210` (10-bit 4:2:2) or `raw ` (24-bit RGB,
+/// by the sample entry's depth). `None` for a `raw ` depth we have no layout for.
+pub fn uncompressed_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    let CodecConfig::Uncompressed { fourcc } = &e.codec else { return None };
+    let v = e.video.clone().unwrap_or_default();
+    let format = RawFormat::from_mov(fourcc.0, v.depth)?;
+    Some(RawVideoDecoder::quicktime(format, v.width as u32, v.height as u32).map(|d| Box::new(d) as Box<dyn VideoDecoder>))
+}
+
 /// Our DNxHD / DNxHR (VC-3) decoder (every frame is intra; macroblock rows decode in parallel).
 pub struct DnxDecoder;
 
@@ -1149,17 +1158,21 @@ mod disposable_tests {
     }
 }
 
-/// Uncompressed video layouts (AVI `BI_RGB` and YUV FourCCs).
+/// Uncompressed video layouts (AVI `BI_RGB` and YUV FourCCs, QuickTime `raw ` and `v210`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RawFormat {
     /// 24-bit B, G, R; rows padded to 4 bytes.
     Bgr24,
     /// 32-bit B, G, R, X.
     Bgrx32,
+    /// 24-bit R, G, B; rows tightly packed (QuickTime `raw `).
+    Rgb24,
     /// Packed 4:2:2: Y0 U Y1 V (`YUY2`, `YUYV`).
     Yuy2,
     /// Packed 4:2:2: U Y0 V Y1 (`UYVY`, `2vuy`).
     Uyvy,
+    /// Packed 10-bit 4:2:2: six pixels (three chroma pairs) per 16 bytes (`v210`).
+    V210,
     /// Planar 4:2:0: Y, U, V (`I420`, `IYUV`).
     I420,
     /// Planar 4:2:0: Y, V, U (`YV12`).
@@ -1193,11 +1206,25 @@ impl RawFormat {
         })
     }
 
+    /// The layout of an uncompressed QuickTime video sample entry: `2vuy` (8-bit 4:2:2), `v210`
+    /// (10-bit 4:2:2) or `raw ` — 24-bit RGB with the depth every QuickTime writer puts in the
+    /// entry. `None` for the depths we have no layout for.
+    pub fn from_mov(fourcc: [u8; 4], depth: u16) -> Option<RawFormat> {
+        Some(match &fourcc {
+            b"2vuy" => RawFormat::Uyvy,
+            b"v210" => RawFormat::V210,
+            b"raw " if depth == 24 => RawFormat::Rgb24,
+            _ => return None,
+        })
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             RawFormat::Bgr24 => "Uncompressed RGB 24-bit",
             RawFormat::Bgrx32 => "Uncompressed RGB 32-bit",
+            RawFormat::Rgb24 => "Uncompressed RGB 24-bit",
             RawFormat::Yuy2 | RawFormat::Uyvy => "Uncompressed YUV 4:2:2",
+            RawFormat::V210 => "Uncompressed YUV 4:2:2 10-bit",
             RawFormat::I420 | RawFormat::Yv12 | RawFormat::Nv12 => "Uncompressed YUV 4:2:0",
             RawFormat::Gray8 => "Uncompressed greyscale",
         }
@@ -1211,6 +1238,9 @@ pub struct RawVideoDecoder {
     height: u32,
     /// RGB rows are stored bottom-up (a positive `BITMAPINFOHEADER` height).
     bottom_up: bool,
+    /// A packed 4:2:2 row's length comes from the sample: QuickTime `v210` pads rows to 48 pixels
+    /// and older writers pad to less, so only the sample says where the next row starts.
+    rows_from_sample: bool,
 }
 
 impl RawVideoDecoder {
@@ -1218,7 +1248,24 @@ impl RawVideoDecoder {
         if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
             return Err(CodecError::Unsupported(format!("{width}x{height} uncompressed video")));
         }
-        Ok(Self { format, width, height, bottom_up })
+        Ok(Self { format, width, height, bottom_up, rows_from_sample: false })
+    }
+
+    /// Uncompressed QuickTime frames ([`RawFormat::from_mov`]).
+    pub fn quicktime(format: RawFormat, width: u32, height: u32) -> Result<Self> {
+        Ok(Self { rows_from_sample: true, ..Self::new(format, width, height, false)? })
+    }
+
+    /// Bytes per row: the layout's own stride, or the one a longer sample implies (never a shorter
+    /// one: a padded row is at least a tight row). The sample-implied stride is only trusted
+    /// when the sample holds whole rows (`sample % height == 0`): trailing bytes shorter than
+    /// a row fall back to the tight layout, and trailing bytes of a full row or more that
+    /// still divide evenly are read as a wider stride (documented, pinned by test).
+    fn stride(&self, sample: usize, tight: usize) -> usize {
+        match self.rows_from_sample && self.height > 0 && sample.is_multiple_of(self.height as usize) {
+            true => (sample / self.height as usize).max(tight),
+            false => tight,
+        }
     }
 
     fn yuv(&self, planes: [Vec<u8>; 3], chroma: filmcraft_frame::Chroma) -> VideoFrame {
@@ -1228,6 +1275,25 @@ impl RawVideoDecoder {
             width: self.width,
             height: self.height,
             data: filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma, alpha: None },
+            color: vui_color(self.width, self.height, 2, 2, 2, false),
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        }
+    }
+
+    /// The 10-bit counterpart of [`RawVideoDecoder::yuv`].
+    fn yuv10(&self, planes: [Vec<u16>; 3]) -> VideoFrame {
+        use std::sync::Arc;
+        let [y, u, v] = planes;
+        VideoFrame {
+            width: self.width,
+            height: self.height,
+            data: filmcraft_frame::PixelData::Yuv16 {
+                planes: [Arc::new(y), Arc::new(u), Arc::new(v)],
+                chroma: filmcraft_frame::Chroma::C422,
+                bits: 10,
+                alpha: None,
+            },
             color: vui_color(self.width, self.height, 2, 2, 2, false),
             par: (1, 1),
             pts: filmcraft_time::Tick::ZERO,
@@ -1254,8 +1320,22 @@ impl RawVideoDecoder {
                 }
                 VideoFrame::rgba8(self.width, self.height, rgba)
             }
+            RawFormat::Rgb24 => {
+                let stride = self.stride(s.len(), w * 3);
+                if s.len() < stride * h {
+                    return Err(short());
+                }
+                let mut rgba = Vec::with_capacity(w * h * 4);
+                for row in 0..h {
+                    let src = if self.bottom_up { h - 1 - row } else { row };
+                    for px in s.get(src * stride..src * stride + w * 3).unwrap_or_default().as_chunks::<3>().0 {
+                        rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+                    }
+                }
+                VideoFrame::rgba8(self.width, self.height, rgba)
+            }
             RawFormat::Yuy2 | RawFormat::Uyvy => {
-                let stride = cw * 4;
+                let stride = self.stride(s.len(), cw * 4);
                 if s.len() < stride * h {
                     return Err(short());
                 }
@@ -1272,6 +1352,40 @@ impl RawVideoDecoder {
                     }
                 }
                 self.yuv([y, u, v], filmcraft_frame::Chroma::C422)
+            }
+            // Six pixels (three chroma pairs) to a 16-byte group, each word a pair of components in
+            // bits 0–9, 10–19 and 20–29: Cb0 Y0 Cr0 | Y1 Cb1 Y2 | Cr1 Y3 Cb2 | Y4 Cr2 Y5.
+            RawFormat::V210 => {
+                let groups = w.div_ceil(6);
+                let stride = self.stride(s.len(), groups * 16);
+                if s.len() < stride * h {
+                    return Err(short());
+                }
+                let (mut y, mut u, mut v) = (Vec::with_capacity(w * h), Vec::with_capacity(cw * h), Vec::with_capacity(cw * h));
+                for row in s.chunks_exact(stride).take(h) {
+                    // a padded row holds 48-pixel-aligned groups: the picture ends mid-group
+                    let (ny, nc) = (y.len() + w, u.len() + cw);
+                    for g in row.as_chunks::<16>().0 {
+                        let word = |k: usize| u32::from_le_bytes([g[k * 4], g[k * 4 + 1], g[k * 4 + 2], g[k * 4 + 3]]);
+                        let (w0, w1, w2, w3) = (word(0), word(1), word(2), word(3));
+                        u.push((w0 & 0x3FF) as u16);
+                        y.push(((w0 >> 10) & 0x3FF) as u16);
+                        v.push(((w0 >> 20) & 0x3FF) as u16);
+                        y.push((w1 & 0x3FF) as u16);
+                        u.push(((w1 >> 10) & 0x3FF) as u16);
+                        y.push(((w1 >> 20) & 0x3FF) as u16);
+                        v.push((w2 & 0x3FF) as u16);
+                        y.push(((w2 >> 10) & 0x3FF) as u16);
+                        u.push(((w2 >> 20) & 0x3FF) as u16);
+                        y.push((w3 & 0x3FF) as u16);
+                        v.push(((w3 >> 10) & 0x3FF) as u16);
+                        y.push(((w3 >> 20) & 0x3FF) as u16);
+                    }
+                    y.truncate(ny);
+                    u.truncate(nc);
+                    v.truncate(nc);
+                }
+                self.yuv10([y, u, v])
             }
             RawFormat::I420 | RawFormat::Yv12 | RawFormat::Nv12 | RawFormat::Gray8 => {
                 let luma = w * h;
@@ -1308,5 +1422,99 @@ impl VideoDecoder for RawVideoDecoder {
     }
     fn intra_only(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod raw_tests {
+    use super::*;
+    use filmcraft_frame::PixelData;
+
+    /// Decode one sample of `format` and return its planes.
+    fn planes(format: RawFormat, width: u32, height: u32, sample: &[u8]) -> Vec<Vec<u16>> {
+        let mut d = RawVideoDecoder::quicktime(format, width, height).unwrap();
+        let f = d.decode(sample, 0).unwrap().remove(0).frame;
+        match f.data {
+            PixelData::Yuv16 { planes, bits, chroma, .. } => {
+                assert_eq!((bits, chroma), (10, filmcraft_frame::Chroma::C422));
+                planes.iter().map(|p| p.to_vec()).collect()
+            }
+            PixelData::Yuv8 { planes, chroma, .. } => {
+                assert_eq!(chroma, filmcraft_frame::Chroma::C422);
+                planes.iter().map(|p| p.iter().map(|&v| u16::from(v)).collect()).collect()
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A `v210` group is six pixels (three chroma pairs) in four little-endian words:
+    /// Cb0 Y0 Cr0 | Y1 Cb1 Y2 | Cr1 Y3 Cb2 | Y4 Cr2 Y5.
+    #[test]
+    fn v210_groups_hold_six_pixels() {
+        let word = |a: u32, b: u32, c: u32| a | (b << 10) | (c << 20);
+        let mut row = Vec::new();
+        for w in [word(300, 100, 500), word(101, 301, 102), word(501, 103, 302), word(104, 502, 105)] {
+            row.extend_from_slice(&w.to_le_bytes());
+        }
+        let p = planes(RawFormat::V210, 6, 1, &row);
+        assert_eq!(p[0], [100, 101, 102, 103, 104, 105]);
+        assert_eq!(p[1], [300, 301, 302]);
+        assert_eq!(p[2], [500, 501, 502]);
+    }
+
+    /// A row that stops at the picture (nothing pads it): 8 pixels, so the second group's last two
+    /// pixels are not part of it and neither is their chroma.
+    #[test]
+    fn v210_rows_without_padding_end_at_the_picture() {
+        let word = |a: u32, b: u32, c: u32| a | (b << 10) | (c << 20);
+        let mut sample = Vec::new();
+        for w in [word(10, 1, 20), word(2, 11, 3), word(21, 4, 12), word(5, 22, 6), word(13, 7, 23), word(8, 14, 9), word(24, 15, 25), word(16, 26, 17)] {
+            sample.extend_from_slice(&w.to_le_bytes());
+        }
+        let p = planes(RawFormat::V210, 8, 1, &sample);
+        assert_eq!(p[0], [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(p[1], [10, 11, 12, 13]);
+        assert_eq!(p[2], [20, 21, 22, 23]);
+    }
+
+    /// 8-bit 4:2:2 of an odd width: the last pixel has no partner, and the row is still tight.
+    #[test]
+    fn uyvy_odd_width_keeps_the_last_pixel() {
+        // U Y0 V Y1 | U Y2 V Y3 | U Y4 V -
+        let sample = [10u8, 1, 20, 2, 11, 3, 21, 4, 12, 5, 22, 6];
+        let p = planes(RawFormat::Uyvy, 5, 1, &sample);
+        assert_eq!(p[0], [1, 2, 3, 4, 5]);
+        assert_eq!(p[1], [10, 11, 12]);
+        assert_eq!(p[2], [20, 21, 22]);
+    }
+
+    /// 24-bit RGB rows are tight and the fourth channel is opaque.
+    #[test]
+    fn rgb24_rows_are_tight() {
+        let sample = [1u8, 2, 3, 4, 5, 6];
+        let mut d = RawVideoDecoder::quicktime(RawFormat::Rgb24, 2, 1).unwrap();
+        let f = d.decode(&sample, 0).unwrap().remove(0).frame;
+        assert_eq!(f.to_rgba8(), [1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    /// Trailing bytes shorter than a row do not shift row starts: a 2x2 RGB sample with
+    /// 3 trailing bytes still decodes the tight 2x2 picture, ignoring the tail.
+    #[test]
+    fn trailing_bytes_shorter_than_a_row_fall_back_to_tight() {
+        // tight rows: [1,2,3,4,5,6] + [7,8,9,10,11,12], then 3 trailing bytes.
+        let sample = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 99, 98, 97];
+        let mut d = RawVideoDecoder::quicktime(RawFormat::Rgb24, 2, 2).unwrap();
+        let f = d.decode(&sample, 0).unwrap().remove(0).frame;
+        assert_eq!(f.to_rgba8(), [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]);
+    }
+
+    /// What the sample entry says: `2vuy` and `v210` whatever their depth, `raw ` only at 24 bits.
+    #[test]
+    fn mov_layouts_come_from_the_fourcc_and_depth() {
+        assert_eq!(RawFormat::from_mov(*b"2vuy", 24), Some(RawFormat::Uyvy));
+        assert_eq!(RawFormat::from_mov(*b"v210", 24), Some(RawFormat::V210));
+        assert_eq!(RawFormat::from_mov(*b"raw ", 24), Some(RawFormat::Rgb24));
+        assert_eq!(RawFormat::from_mov(*b"raw ", 32), None);
+        assert_eq!(RawFormat::from_mov(*b"2VUY", 24), None, "MOV fourccs are case-sensitive");
     }
 }

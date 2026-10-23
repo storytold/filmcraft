@@ -90,6 +90,13 @@ pub enum Format {
     /// QuickTime, Motion-JPEG + PCM.
     #[serde(rename = "mjpeg", alias = "Mjpeg")]
     Mjpeg,
+    /// QuickTime, uncompressed video ([`ExportSettings::uncompressed_pixel_format`]: 8-bit 4:2:2
+    /// `2vuy`, 10-bit 4:2:2 `v210`, or 24-bit RGB `raw `) + PCM. Lossless and much larger than the
+    /// codecs above. The picture is BT.709 limited range, which the sample entry's `colr` box
+    /// signals: uncompressed video is the one format here with no colour description of its own.
+    /// HDR sequences tone-map to SDR, like Motion-JPEG.
+    #[serde(rename = "uncompressed", alias = "Uncompressed")]
+    Uncompressed,
     /// Numbered PNG stills ([`image_sequence_path`]).
     #[serde(rename = "png", alias = "PngSequence")]
     PngSequence,
@@ -145,6 +152,7 @@ impl Format {
             "mxf" | "mxfop1a" | "op1a" => Format::MxfOp1a,
             "mxfopatom" | "opatom" | "mxfatom" | "avidmxf" => Format::MxfOpAtom,
             "mjpeg" | "motionjpeg" | "jpeg" => Format::Mjpeg,
+            "uncompressed" => Format::Uncompressed,
             "png" | "pngsequence" => Format::PngSequence,
             "tif" | "tiff" | "tiffsequence" => Format::TiffSequence,
             "bmp" | "bmpsequence" => Format::BmpSequence,
@@ -171,6 +179,7 @@ impl Format {
             Format::DnxHr => "dnxhr",
             Format::Apv => "apv",
             Format::Mjpeg => "mjpeg",
+            Format::Uncompressed => "uncompressed",
             Format::PngSequence => "png",
             Format::TiffSequence => "tiff",
             Format::BmpSequence => "bmp",
@@ -190,7 +199,7 @@ impl Format {
     pub fn extension(self) -> &'static str {
         match self {
             Format::H264 | Format::Hevc | Format::Av1 => "mp4",
-            Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "mov",
+            Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::Uncompressed => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
             Format::BmpSequence => "bmp",
@@ -215,6 +224,7 @@ impl Format {
             Format::DnxHr => "Avid DNxHR",
             Format::Apv => "APV",
             Format::Mjpeg => "QuickTime (Motion JPEG)",
+            Format::Uncompressed => "QuickTime (Uncompressed)",
             Format::PngSequence => "PNG",
             Format::TiffSequence => "TIFF",
             Format::BmpSequence => "BMP",
@@ -269,7 +279,7 @@ impl Format {
     pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
         self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
     }
-    pub const ALL: [Format; 21] = [
+    pub const ALL: [Format; 22] = [
         Format::H264,
         Format::Hevc,
         Format::Av1,
@@ -277,6 +287,7 @@ impl Format {
         Format::DnxHr,
         Format::Apv,
         Format::Mjpeg,
+        Format::Uncompressed,
         Format::PngSequence,
         Format::TiffSequence,
         Format::BmpSequence,
@@ -334,6 +345,9 @@ pub struct ExportSettings {
     /// APV profile: `422-10`, `422-12`, `444-10` or `444-12` (empty = `422-10`).
     #[serde(default)]
     pub apv_profile: String,
+    /// Uncompressed QuickTime pixel layout ([`Format::Uncompressed`]).
+    #[serde(default)]
+    pub uncompressed_pixel_format: UncompressedPixelFormat,
     /// Video codec of the MXF formats (DNxHR unless set; the ProRes / DNxHR profile fields apply).
     #[serde(default)]
     pub mxf_video_codec: MxfVideoCodec,
@@ -574,6 +588,7 @@ impl Default for ExportSettings {
             prores_profile: String::new(),
             dnx_profile: String::new(),
             apv_profile: String::new(),
+            uncompressed_pixel_format: UncompressedPixelFormat::default(),
             mxf_video_codec: MxfVideoCodec::default(),
             sdr: false,
             alpha: false,
@@ -792,7 +807,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory, uncompressed_factory]))
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
@@ -1096,6 +1111,65 @@ fn mjpeg_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSett
     (format == Format::Mjpeg).then(|| Ok(Box::new(MjpegEncoder { w: w as u16, h: h as u16, quality: s.quality.clamp(1, 100), rate }) as Box<dyn VideoEncoder>))
 }
 
+/// Uncompressed QuickTime encoder: straight RGBA8 to the chosen pixel layout, one sample per
+/// picture. Nothing is compressed, so every sample is a keyframe and the file is as large as the
+/// picture and its rate say ([`UncompressedPixelFormat::frame_bytes`]). An HDR sequence arrives
+/// tone-mapped here, like Motion-JPEG's: this format does not signal HDR.
+struct UncompressedEncoder {
+    layout: UncompressedPixelFormat,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    /// `v210`'s 10-bit 4:2:2 planes, kept between frames.
+    y: Vec<u16>,
+    cb: Vec<u16>,
+    cr: Vec<u16>,
+}
+
+impl VideoEncoder for UncompressedEncoder {
+    fn sample_entry(&self) -> SampleEntry {
+        let mut e = SampleEntry::uncompressed(filmcraft_isobmff::FourCc(self.layout.fourcc()), self.w as u16, self.h as u16);
+        // Uncompressed video carries no colour description of its own and the picture is BT.709
+        // limited range (every other format here signals it in the bitstream or its frame headers):
+        // the `colr` box is the only place a decoder can learn it.
+        if let Some(v) = e.video.as_mut() {
+            v.color = Some(filmcraft_isobmff::ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 });
+        }
+        e
+    }
+    fn timescale(&self) -> u32 {
+        self.rate.num as u32
+    }
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        let (w, h) = (f.width as usize, f.height as usize);
+        let layout = self.layout;
+        let mut data = Vec::with_capacity(layout.frame_bytes(f.width, f.height));
+        timed(Stage::Convert, || match layout {
+            UncompressedPixelFormat::Uyvy8 => rgba_to_uyvy8(f.rgba, w, h, &mut data),
+            UncompressedPixelFormat::Rgb24 => rgba_to_rgb24(f.rgba, w, h, &mut data),
+            UncompressedPixelFormat::V210 => {
+                self.y.resize(w * h, 0);
+                self.cb.resize(w.div_ceil(2) * h, 0);
+                self.cr.resize(w.div_ceil(2) * h, 0);
+                // the shared 4:2:2 10-bit conversion, used by the DNxHR and APV encoders too
+                rgba_to_yuv422_10(f.rgba, w, h, &mut self.y, &mut self.cb, &mut self.cr);
+                yuv422_10_to_v210(&self.y, &self.cb, &self.cr, w, h, &mut data);
+            }
+        });
+        Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        Ok(Vec::new())
+    }
+}
+
+fn uncompressed_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    (format == Format::Uncompressed).then(|| {
+        Ok(Box::new(UncompressedEncoder { layout: s.uncompressed_pixel_format, w, h, rate, y: Vec::new(), cb: Vec::new(), cr: Vec::new() })
+            as Box<dyn VideoEncoder>)
+    })
+}
+
 /// AAC-LC (our encoder), 320 kbps stereo by default.
 struct AacEncoder {
     enc: filmcraft_aac::Encoder,
@@ -1271,6 +1345,45 @@ pub fn to_yuv444_10(
     }
 }
 
+/// BT.709 limited-range 8-bit 4:2:2 (`U Y0 V Y1`) from straight RGBA8, rows tight.
+///
+/// On this thread rather than on the pool, like [`yuv422_10_to_v210`]: the encode side of an
+/// overlapping export owns the calling thread while the pool renders the next batch (`job.rs`), and
+/// the picture converts in a couple of milliseconds (1080p) against the megabytes it writes.
+pub fn rgba_to_uyvy8(rgba: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    let cw = w.div_ceil(2);
+    debug_assert!(rgba.len() >= w * h * 4);
+    out.clear();
+    out.resize(cw * 4 * h, 0);
+    for (row, dst) in out.chunks_mut(cw * 4).enumerate() {
+        let src = &rgba[row * w * 4..(row + 1) * w * 4];
+        let rgb = |x: usize| (src[x * 4] as f32 / 255.0, src[x * 4 + 1] as f32 / 255.0, src[x * 4 + 2] as f32 / 255.0);
+        // the last pair of an odd width pairs the last pixel with itself
+        for (cx, q) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (a, b) = (cx * 2, (cx * 2 + 1).min(w - 1));
+            let (r0, g0, b0) = rgb(a);
+            let (r1, g1, b1) = rgb(b);
+            let (y0, y1) = (0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0, 0.2126 * r1 + 0.7152 * g1 + 0.0722 * b1);
+            let u = ((b0 - y0) + (b1 - y1)) * 0.5 / 1.8556;
+            let v = ((r0 - y0) + (r1 - y1)) * 0.5 / 1.5748;
+            q[0] = (128.0 + 224.0 * u).round().clamp(1.0, 254.0) as u8;
+            q[1] = (16.0 + 219.0 * y0).round().clamp(1.0, 254.0) as u8;
+            q[2] = (128.0 + 224.0 * v).round().clamp(1.0, 254.0) as u8;
+            q[3] = (16.0 + 219.0 * y1).round().clamp(1.0, 254.0) as u8;
+        }
+    }
+}
+
+/// Straight 24-bit RGB from straight RGBA8 (the alpha channel is dropped), rows tight.
+pub fn rgba_to_rgb24(rgba: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    debug_assert!(rgba.len() >= w * h * 4);
+    out.clear();
+    out.reserve(w * h * 3);
+    for p in rgba.as_chunks::<4>().0.iter().take(w * h) {
+        out.extend_from_slice(&p[..3]);
+    }
+}
+
 /// BT.709 limited-range 10-bit 4:2:2 from straight RGBA8 (chroma averaged horizontally).
 pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
     let cw = w.div_ceil(2);
@@ -1295,6 +1408,34 @@ pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mu
             crr[cx] = (512.0 + 896.0 * v).round().clamp(4.0, 1019.0) as u16;
         }
     });
+}
+
+/// Pack 10-bit 4:2:2 planes into `v210`: six pixels (three chroma pairs) to a 16-byte group in four
+/// little-endian words — `Cb0 Y0 Cr0 | Y1 Cb1 Y2 | Cr1 Y3 Cb2 | Y4 Cr2 Y5` — and every row padded to
+/// a multiple of 48 pixels (`v210` never stores a row shorter than that). Pixels past the picture
+/// and the row's padding bytes are zero.
+pub fn yuv422_10_to_v210(y: &[u16], cb: &[u16], cr: &[u16], w: usize, h: usize, out: &mut Vec<u8>) {
+    let groups = w.div_ceil(48) * 48 / 6;
+    debug_assert!(y.len() >= w * h && cb.len() >= w.div_ceil(2) * h && cr.len() >= w.div_ceil(2) * h);
+    out.clear();
+    out.resize(groups * 16 * h, 0);
+    let at = |plane: &[u16], i: usize| u32::from(plane.get(i).copied().unwrap_or(0)) & 0x3FF;
+    // see `rgba_to_uyvy8`: a packing pass on the thread that encodes, with the pool rendering
+    for dst in out.chunks_mut(groups * 16) {
+        for (g, d) in dst.as_chunks_mut::<16>().0.iter_mut().enumerate() {
+            let (x, c) = (g * 6, g * 3);
+            let word = |a: u32, b: u32, e: u32| a | (b << 10) | (e << 20);
+            let words = [
+                word(at(cb, c), at(y, x), at(cr, c)),
+                word(at(y, x + 1), at(cb, c + 1), at(y, x + 2)),
+                word(at(cr, c + 1), at(y, x + 3), at(cb, c + 2)),
+                word(at(y, x + 4), at(cr, c + 2), at(y, x + 5)),
+            ];
+            for (k, v) in words.iter().enumerate() {
+                d[k * 4..k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
 }
 
 /// The ProRes profile named by [`ExportSettings::prores_profile`].
@@ -2029,3 +2170,6 @@ mod determinism_tests;
 
 #[cfg(test)]
 mod hdr_tests;
+
+#[cfg(test)]
+mod uncompressed_tests;

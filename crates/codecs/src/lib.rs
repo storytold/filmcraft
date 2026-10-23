@@ -77,7 +77,7 @@ impl From<CodecError> for filmcraft_media::MediaError {
 }
 
 /// Our own (pure-Rust) decoders, in the order they are tried.
-const BUILTIN_FACTORIES: [VideoDecoderFactory; 10] = [
+const BUILTIN_FACTORIES: [VideoDecoderFactory; 11] = [
     video::h264_factory,
     video::hevc_factory,
     video::vp8_factory,
@@ -88,6 +88,7 @@ const BUILTIN_FACTORIES: [VideoDecoderFactory; 10] = [
     video::dnx_factory,
     video::mjpeg_factory,
     video::mpeg2_factory,
+    video::uncompressed_factory,
 ];
 
 fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {

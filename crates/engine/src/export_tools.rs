@@ -286,6 +286,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = str_p(p, "apvProfile") {
         settings.apv_profile = v.to_string();
     }
+    if let Some(v) = p.get("uncompressedPixelFormat") {
+        settings.uncompressed_pixel_format = serde_json::from_value(v.clone()).map_err(|_| bad(cmd, "uncompressedPixelFormat: uyvy8 | v210 | rgb24"))?;
+    }
     if let Some(v) = str_p(p, "audioCodec") {
         settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
     }

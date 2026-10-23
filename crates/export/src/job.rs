@@ -188,7 +188,16 @@ pub struct Exporter {
 pub fn stepped(format: Format) -> bool {
     matches!(
         format,
-        Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom
+        Format::H264
+            | Format::Hevc
+            | Format::Av1
+            | Format::ProRes
+            | Format::DnxHr
+            | Format::Apv
+            | Format::Mjpeg
+            | Format::Uncompressed
+            | Format::MxfOp1a
+            | Format::MxfOpAtom
     )
 }
 

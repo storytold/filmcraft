@@ -2262,6 +2262,7 @@
 	PiP 35% Upper Right	PiP 35% 오른쪽 위
 	Pitch Shifter	피치 시프터
 	Pixel Aspect Ratio:	픽셀 종횡비:
+	Pixel Format	픽셀 형식
 	Place files dropped onto the Timeline directly on the Timeline	타임라인에 놓은 파일을 타임라인에 바로 배치
 	Placement	배치
 	Placement:	배치:
@@ -2393,6 +2394,7 @@
 	Quick Export: open a sequence first	빠른 내보내기: 먼저 시퀀스를 여세요
 	Quick Export: {path}	빠른 내보내기: {path}
 	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime (Uncompressed)	QuickTime (비압축)
 	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-10 (10비트 4:2:2), 24비트 48 kHz PCM
 	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-12 (12비트 4:2:2), 24비트 48 kHz PCM
 	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR HQ (8비트 4:2:2), 24비트 48 kHz PCM
@@ -2405,6 +2407,9 @@
 	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) 알파 채널 포함, 24비트 48 kHz PCM
 	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), 24비트 48 kHz PCM
 	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), 24비트 48 kHz PCM
+	QuickTime, uncompressed 10-bit 4:2:2 (v210), 24-bit 48 kHz PCM	QuickTime, 비압축 10비트 4:2:2 (v210), 24비트 48 kHz PCM
+	QuickTime, uncompressed 24-bit RGB (raw), 24-bit 48 kHz PCM	QuickTime, 비압축 24비트 RGB (raw), 24비트 48 kHz PCM
+	QuickTime, uncompressed 8-bit 4:2:2 (2vuy), 24-bit 48 kHz PCM	QuickTime, 비압축 8비트 4:2:2 (2vuy), 24비트 48 kHz PCM
 	Quit FilmCraft	FilmCraft 종료
 	Radial	방사형
 	Radial Blur	방사형 흐림
@@ -2579,6 +2584,7 @@
 	Revert to the preset's colors and names	사전 설정의 색상과 이름으로 되돌리기
 	Review	검토
 	RGB	RGB
+	RGB 24-bit	RGB 24비트
 	RGB Curves	RGB 곡선
 	RGB Split	RGB 분할
 	RGB-White	RGB-흰색
@@ -3295,6 +3301,9 @@
 	UI:	UI:
 	Ultra Key	울트라 키
 	Uncompressed (PCM)	비압축(PCM)
+	Uncompressed 10-bit 4:2:2 (v210)	비압축 10비트 4:2:2 (v210)
+	Uncompressed 8-bit 4:2:2 (UYVY)	비압축 8비트 4:2:2 (UYVY)
+	Uncompressed 8-bit RGB	비압축 8비트 RGB
 	Underline	밑줄
 	Undo	실행 취소
 	Undock Panel	패널 도킹 해제
@@ -3339,6 +3348,8 @@
 	User Order	사용자 순서
 	Username	사용자 이름
 	Utility	유틸리티
+	UYVY 8-bit 4:2:2	UYVY 8비트 4:2:2
+	v210 10-bit 4:2:2	v210 10비트 4:2:2
 	Validate Content Credentials on import	가져올 때 콘텐츠 자격 증명 확인
 	Value	값
 	Variations:	변형:

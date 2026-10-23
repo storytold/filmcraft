@@ -200,6 +200,60 @@ impl ExrCompression {
     }
 }
 
+/// Pixel layout of an uncompressed QuickTime movie ([`Format::Uncompressed`]). Every layout is
+/// lossless: the choice trades bytes against chroma resolution and bit depth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UncompressedPixelFormat {
+    /// 8-bit 4:2:2, `U Y0 V Y1` per pixel pair (`2vuy`): two bytes a pixel, the most widely
+    /// supported of the three layouts (read back verified against ffmpeg; QuickTime Player
+    /// and NLE verification is a follow-up).
+    #[default]
+    Uyvy8,
+    /// 10-bit 4:2:2 (`v210`), the broadcast uncompressed format: 8 bytes for 6 pixels, and rows
+    /// padded to a multiple of 48 pixels (128 bytes).
+    V210,
+    /// 8-bit R, G, B with no chroma subsampling (`raw `), for graphics, keys and mattes
+    /// where RGB is required.
+    Rgb24,
+}
+
+impl UncompressedPixelFormat {
+    pub const ALL: [UncompressedPixelFormat; 3] = [UncompressedPixelFormat::Uyvy8, UncompressedPixelFormat::V210, UncompressedPixelFormat::Rgb24];
+
+    /// The sample entry fourcc this layout is stored under.
+    pub fn fourcc(self) -> [u8; 4] {
+        match self {
+            UncompressedPixelFormat::Uyvy8 => *b"2vuy",
+            UncompressedPixelFormat::V210 => *b"v210",
+            UncompressedPixelFormat::Rgb24 => *b"raw ",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UncompressedPixelFormat::Uyvy8 => "UYVY 8-bit 4:2:2",
+            UncompressedPixelFormat::V210 => "v210 10-bit 4:2:2",
+            UncompressedPixelFormat::Rgb24 => "RGB 24-bit",
+        }
+    }
+
+    /// Bytes one `width`-wide row takes: `v210` pads its rows to 48 pixels, the others are tight.
+    pub fn row_bytes(self, width: u32) -> usize {
+        let w = width as usize;
+        match self {
+            UncompressedPixelFormat::Uyvy8 => w.div_ceil(2) * 4,
+            UncompressedPixelFormat::V210 => (w.div_ceil(48) * 48) / 6 * 16,
+            UncompressedPixelFormat::Rgb24 => w * 3,
+        }
+    }
+
+    /// Bytes a `width`×`height` picture takes, its row padding included.
+    pub fn frame_bytes(self, width: u32, height: u32) -> usize {
+        self.row_bytes(width) * height as usize
+    }
+}
+
 /// Audio codec. `Auto` = AAC in MP4 and AAC Audio, PCM in QuickTime / WAV / AIFF, FLAC in FLAC.
 /// MP4 and QuickTime can also carry FLAC; MXF is always PCM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -624,6 +678,8 @@ impl ExportSettings {
                 px * fps * bpp
             }
             Format::Mjpeg | Format::JpegSequence => px * 8.0 * (0.4 + self.quality as f64 / 100.0 * 2.0) * fps / 8.0,
+            // uncompressed: exactly the picture's samples (row padding included), not an estimate
+            Format::Uncompressed => self.uncompressed_pixel_format.frame_bytes(r.width, r.height) as f64 * fps * 8.0,
             Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
             Format::BmpSequence => px * 3.0 * 8.0 * fps,
             Format::TiffSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 8.0 * fps,
@@ -720,6 +776,7 @@ impl ExportSettings {
                 Format::DnxHr => v += &format!(", DNxHR {}", if self.dnx_profile.is_empty() { "HQ".into() } else { self.dnx_profile.to_ascii_uppercase() }),
                 Format::Apv => v += &format!(", {}", crate::apv_profile(&self.apv_profile).name()),
                 Format::Mjpeg | Format::JpegSequence => v += &format!(", quality {}", self.quality),
+                Format::Uncompressed => v += &format!(", {}", self.uncompressed_pixel_format.label()),
                 Format::DpxSequence => v += ", 10-bit RGB",
                 Format::ExrSequence => {
                     v += ", 16-bit half float, linear";
@@ -754,7 +811,7 @@ impl ExportSettings {
         let container = match self.format {
             Format::H264 | Format::Hevc if self.multiplexer == Multiplexer::Mov => "QuickTime",
             Format::H264 | Format::Hevc | Format::Av1 => "MP4",
-            Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "QuickTime",
+            Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::Uncompressed => "QuickTime",
             Format::MxfOp1a | Format::MxfOpAtom => self.mxf_video_codec.label(),
             f if f.is_image_sequence() => "Image sequence",
             _ => "",

@@ -5,7 +5,7 @@
 use filmcraft_time::FrameRate;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{AudioCodec, AudioSettings, BitrateMode, MxfVideoCodec, Scaling};
+use crate::settings::{AudioCodec, AudioSettings, BitrateMode, MxfVideoCodec, Scaling, UncompressedPixelFormat};
 use crate::{ExportSettings, Format};
 
 /// A named set of export settings (`path` and `range` are left empty).
@@ -60,9 +60,16 @@ fn mov(format: Format, profile: &str) -> ExportSettings {
     match format {
         Format::ProRes => s.prores_profile = profile.into(),
         Format::Apv => s.apv_profile = profile.into(),
+        // uncompressed has no profile: its pixel layout is [`UncompressedPixelFormat`]
+        Format::Uncompressed => {}
         _ => s.dnx_profile = profile.into(),
     }
     s
+}
+
+/// An uncompressed QuickTime movie in the given pixel layout, 24-bit 48 kHz PCM.
+fn uncompressed(layout: UncompressedPixelFormat) -> ExportSettings {
+    ExportSettings { uncompressed_pixel_format: layout, ..mov(Format::Uncompressed, "") }
 }
 
 fn mxf(format: Format, codec: MxfVideoCodec, profile: &str) -> ExportSettings {
@@ -133,6 +140,14 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p("Avid DNxHR HQ", bc, "QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "hq")),
         p("Avid DNxHR SQ", bc, "QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "sq")),
         p("Avid DNxHR LB", bc, "QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::DnxHr, "lb")),
+        p("Uncompressed 8-bit 4:2:2 (UYVY)", bc, "QuickTime, uncompressed 8-bit 4:2:2 (2vuy), 24-bit 48 kHz PCM", uncompressed(UncompressedPixelFormat::Uyvy8)),
+        p(
+            "Uncompressed 10-bit 4:2:2 (v210)",
+            bc,
+            "QuickTime, uncompressed 10-bit 4:2:2 (v210), 24-bit 48 kHz PCM",
+            uncompressed(UncompressedPixelFormat::V210),
+        ),
+        p("Uncompressed 8-bit RGB", bc, "QuickTime, uncompressed 24-bit RGB (raw), 24-bit 48 kHz PCM", uncompressed(UncompressedPixelFormat::Rgb24)),
         p("APV 422-10", bc, "QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::Apv, "422-10")),
         p("APV 422-12", bc, "QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM", mov(Format::Apv, "422-12")),
         p("MXF OP1a DNxHR HQ", bc, "MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode", mxf(Format::MxfOp1a, MxfVideoCodec::Dnxhr, "hq")),

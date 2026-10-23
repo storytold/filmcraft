@@ -623,6 +623,12 @@ fn codec_label(c: &CodecConfig) -> String {
             b"ap4x" => "Apple ProRes 4444 XQ".into(),
             _ => "Apple ProRes".into(),
         },
+        CodecConfig::Uncompressed { fourcc } => match &fourcc.0 {
+            b"2vuy" => "Uncompressed 8-bit 4:2:2".into(),
+            b"v210" => "Uncompressed 10-bit 4:2:2".into(),
+            b"raw " => "Uncompressed RGB 24-bit".into(),
+            _ => "Uncompressed".into(),
+        },
         CodecConfig::Aac(a) => {
             if a.object_type == 5 || a.object_type == 29 {
                 "HE-AAC".into()
@@ -703,6 +709,12 @@ fn pixfmt_label(c: &CodecConfig) -> String {
         CodecConfig::ProRes { fourcc } if fourcc.0[2] == b'4' => "YUV 4:4:4 12-bit".into(),
         CodecConfig::ProRes { .. } => "YUV 4:2:2 10-bit".into(),
         CodecConfig::Jpeg { .. } => "YUV 4:2:x 8-bit".into(),
+        CodecConfig::Uncompressed { fourcc } => match &fourcc.0 {
+            b"2vuy" => "YUV 4:2:2 8-bit".into(),
+            b"v210" => "YUV 4:2:2 10-bit".into(),
+            b"raw " => "RGB 24-bit".into(),
+            _ => String::new(),
+        },
         _ => String::new(),
     }
 }

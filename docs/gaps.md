@@ -228,7 +228,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   encoder does).
 - **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
   sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
-  (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342).
+  (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342);
+  uncompressed QuickTime (8-bit 4:2:2 `2vuy`, 10-bit 4:2:2 `v210`, 24-bit RGB `raw `, read and
+  written).
 - **Estimate:** 60–110 h. Doc: [file-format-parity.md](file-format-parity.md).
 
 ## G14. Localization: 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese)
