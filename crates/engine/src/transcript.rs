@@ -11,11 +11,12 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use filmcraft_edit as edit;
 use filmcraft_edit::transcript::{self as tx, CaptionRules, SeqWord};
-use filmcraft_project::{CaptionFormat, CaptionTrack, ItemId, ItemKind, TrackId, Transcript};
+use filmcraft_project::{CaptionFormat, CaptionStyle, CaptionTrack, ItemId, ItemKind, TrackId, Transcript};
 use filmcraft_speech::{Options, SpeechError, Transcriber};
 use filmcraft_time::{TICKS_PER_SECOND, Tick, TimeRange};
 
@@ -381,14 +382,20 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let max_words = u64_p(p, "wordsPerCaption").map(|n| n.min(1000) as usize).unwrap_or(0);
     // word-by-word captions keep each word's own timing unless a minimum is asked for
     let min_default = if max_words > 0 && max_words <= 3 { Tick::ZERO } else { d.min_duration };
+    // hostile numbers: lines × characters is multiplied when laying out, durations become ticks
+    let seconds = |key: &str| f64_p(p, key).filter(|x| x.is_finite()).map(|x| Tick::from_seconds_f64(x.clamp(0.0, 3600.0)));
     let rules = CaptionRules {
-        max_chars: u64_p(p, "maxChars").map(|n| n as usize).unwrap_or(d.max_chars),
-        lines: u64_p(p, "lines").map(|n| n as usize).unwrap_or(d.lines),
+        max_chars: u64_p(p, "maxChars").map(|n| n.clamp(1, 10_000) as usize).unwrap_or(d.max_chars),
+        lines: u64_p(p, "lines").map(|n| n.clamp(1, 4) as usize).unwrap_or(d.lines),
         max_words,
-        min_duration: f64_p(p, "minSeconds").map(Tick::from_seconds_f64).unwrap_or(min_default),
-        max_duration: f64_p(p, "maxSeconds").map(Tick::from_seconds_f64).unwrap_or(d.max_duration),
-        gap_frames: p.get("gapFrames").and_then(Value::as_i64).unwrap_or(d.gap_frames),
+        min_duration: seconds("minSeconds").unwrap_or(min_default),
+        max_duration: seconds("maxSeconds").unwrap_or(d.max_duration),
+        gap_frames: p.get("gapFrames").and_then(Value::as_i64).map(|n| n.clamp(0, 10_000)).unwrap_or(d.gap_frames),
         break_pause: d.break_pause,
+    };
+    let style = match p.get("style").filter(|v| !v.is_null()) {
+        Some(v) => Some(serde_json::from_value::<CaptionStyle>(v.clone()).map_err(|e| bad("transcript.createCaptions", format!("style: {e}")))?),
+        None => None,
     };
     let blocks = tx::caption_blocks(&words, &rules, s.sequence_rate());
     let format = str_p(p, "format").and_then(CaptionFormat::from_name).unwrap_or_default();
@@ -397,12 +404,102 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let tid = s.edit_sequence("Create Captions", |q, ctx, st| {
         let tid = TrackId(ctx.alloc());
         let mut t = CaptionTrack::new(tid, name, format);
+        if let Some(style) = style {
+            t.style = style;
+        }
         t.captions = tx::blocks_to_captions(&blocks, ctx);
         q.caption_tracks.insert(0, t);
         st.caption_selection.clear();
         Ok(tid)
     })?;
     Ok(json!({"track": tid.0, "captions": n}))
+}
+
+/// Create Captions dialog settings (Premiere's "Captioning Preferences"), as
+/// `transcript.createCaptions` takes them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptionSettings {
+    /// [`CaptionFormat`] label: `Subtitle`, `CEA-608`, `CEA-708`, `Teletext`.
+    pub format: String,
+    /// 1 = Single Line, 2 = Double Line.
+    pub lines: u32,
+    pub max_chars: u32,
+    pub min_seconds: f64,
+    pub gap_frames: u32,
+    /// Most words per caption (0 = no limit; 1 = word by word).
+    pub words_per_caption: u32,
+    /// Track style for the new track (`None` = the default style).
+    pub style: Option<CaptionStyle>,
+    /// What the Style menu shows for `style` (the track it was taken from).
+    pub style_name: String,
+}
+
+impl Default for CaptionSettings {
+    fn default() -> Self {
+        let d = CaptionRules::default();
+        Self {
+            format: CaptionFormat::Subtitle.label().into(),
+            lines: d.lines as u32,
+            max_chars: d.max_chars as u32,
+            min_seconds: d.min_duration.seconds(),
+            gap_frames: d.gap_frames as u32,
+            words_per_caption: 0,
+            style: None,
+            style_name: String::new(),
+        }
+    }
+}
+
+impl CaptionSettings {
+    /// The `transcript.createCaptions` parameters.
+    pub fn params(&self) -> Value {
+        let mut p = json!({
+            "format": self.format,
+            "lines": self.lines.clamp(1, 2),
+            "maxChars": self.max_chars.max(1),
+            "minSeconds": self.min_seconds,
+            "gapFrames": self.gap_frames,
+        });
+        if self.words_per_caption > 0 {
+            p["wordsPerCaption"] = json!(self.words_per_caption);
+        }
+        if let Some(s) = &self.style {
+            p["style"] = json!(s);
+        }
+        p
+    }
+}
+
+/// A named set of [`CaptionSettings`] (the dialog's Caption preset menu).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptionPreset {
+    pub name: String,
+    pub settings: CaptionSettings,
+}
+
+/// Preferences ▸ the Create Captions dialog: the settings last used (it opens with them, unlike
+/// Premiere, which goes back to its default preset every time) and the presets the user saved.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptionPrefs {
+    pub last: CaptionSettings,
+    pub user_presets: Vec<CaptionPreset>,
+}
+
+/// The built-in caption presets.
+pub fn builtin_caption_presets() -> Vec<CaptionPreset> {
+    let base = CaptionSettings::default();
+    vec![
+        CaptionPreset { name: "Subtitle Default".into(), settings: base.clone() },
+        CaptionPreset { name: "Single Line".into(), settings: CaptionSettings { lines: 1, max_chars: 32, ..base.clone() } },
+        CaptionPreset { name: "Word by Word".into(), settings: CaptionSettings { lines: 1, words_per_caption: 1, min_seconds: 0.0, ..base.clone() } },
+        CaptionPreset {
+            name: "CEA-608 Closed Captions".into(),
+            settings: CaptionSettings { format: CaptionFormat::Cea608.label().into(), max_chars: 32, ..base },
+        },
+    ]
 }
 
 fn models(_: &mut Session, _: &Value) -> Result<Value> {
@@ -488,7 +585,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.createCaptions",
             "Create Captions from Transcript…",
             &["Sequence", "Transcript"],
-            r#"{"maxChars":n?,"lines":1|2?,"wordsPerCaption":n?,"minSeconds":f?,"maxSeconds":f?,"gapFrames":n?,"format":str?,"name":str?}"#,
+            r#"{"maxChars":n?,"lines":1|2?,"wordsPerCaption":n?,"minSeconds":f?,"maxSeconds":f?,"gapFrames":n?,"format":str?,"name":str?,"style":CaptionStyle?}"#,
             has_transcript,
             create_captions,
             true,

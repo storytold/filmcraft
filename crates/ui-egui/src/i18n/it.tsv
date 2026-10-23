@@ -3609,5 +3609,27 @@
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
 # Parakeet speech model and word-by-word captions.
-	Create word-by-word captions	Crea sottotitoli parola per parola
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (massima precisione, tempi per parola)
+	0 = no limit. 1 makes word-by-word captions that keep each word's own timing.	0 = nessun limite. 1 crea sottotitoli parola per parola che mantengono la temporizzazione di ogni parola.
+	A shorter caption is held into the silence after it, never over the next caption.	Un sottotitolo più breve viene prolungato nel silenzio che segue, mai sopra il sottotitolo successivo.
+	Caption preset	Predefinito sottotitoli
+	Captioning Preferences (format, max/min length, lines)	Preferenze sottotitoli (formato, lunghezza max/min, righe)
+	Couldn't save caption settings: {e}	Impossibile salvare le impostazioni dei sottotitoli: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Crea sottotitoli dalla trascrizione, inizia una traccia sottotitoli vuota o importa un file di sottotitoli.
+	Create captions from transcript	Crea sottotitoli dalla trascrizione
+	Created {n} captions	Creati {n} sottotitoli
+	Delete preset	Elimina predefinito
+	Double Line	Due righe
+	Frames left empty between one caption and the next.	Fotogrammi lasciati vuoti tra un sottotitolo e il successivo.
+	Gap between captions (frames)	Spazio tra i sottotitoli (fotogrammi)
+	Layout	Layout
+	Maximum length in characters	Lunghezza massima in caratteri
+	Maximum words per caption	Numero massimo di parole per sottotitolo
+	Minimum duration in seconds	Durata minima in secondi
+	Save as preset…	Salva come predefinito…
+	Single Line	Una riga
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	Lo stile della nuova traccia sottotitoli: lo stile predefinito o lo stile di una traccia sottotitoli di questa sequenza.
+	Words wrap to a new line, or a new caption, at this many characters.	Le parole vanno a capo, o in un nuovo sottotitolo, a questo numero di caratteri.
+	characters	caratteri
+	words	parole
+	words (no limit)	parole (nessun limite)
