@@ -1,5 +1,6 @@
 //! Atomic movement of keys across effect/mask parameters; the common timeline delta keeps
 //! relative timing intact, including at the clip boundaries. Selection itself is a UI concern.
+//! [`edit_many`] does the same for a selection's interpolation and for deleting it (#1916).
 use std::collections::{BTreeMap, HashSet};
 
 use filmcraft_project::{ClipId, Keyframe, Param, Sequence, TrackItem};
@@ -37,6 +38,57 @@ fn param_mut<'a>(sequence: &'a mut Sequence, lane: &Lane) -> Result<&'a mut Para
 
 fn direction(it: &TrackItem) -> f64 {
     it.speed.abs() * if it.reverse { -1.0 } else { 1.0 }
+}
+
+/// `effects.setInterpolation` / `effects.deleteKeyframe` with a `keyframes` list: every key is
+/// checked first, then all change in one undo step, so a selection cannot be half edited (#1916).
+pub(crate) fn edit_many(s: &mut Session, p: &Value, command: &str, interp: Option<filmcraft_project::Interpolation>) -> Result<Value> {
+    let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(command, "need keyframes"))?;
+    if raw.is_empty() || raw.len() > MAX_KEYS {
+        return Err(bad(command, "keyframe count must be between 1 and 4096"));
+    }
+    let keys: Vec<Key> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(command, "invalid keyframe reference"))?;
+    let mut unique = HashSet::new();
+    let q = s.active_sequence().ok_or(crate::EngineError::NoSequence)?;
+    for key in &keys {
+        if key.param.len() > 256 || !unique.insert(key.clone()) {
+            return Err(bad(command, "duplicate or invalid keyframe reference"));
+        }
+        let (_, it) = q.find_item(ClipId(key.clip)).ok_or_else(|| bad(command, "clip does not exist"))?;
+        let effect = it.effects.get(key.effect).ok_or_else(|| bad(command, "effect does not exist"))?;
+        let param = match key.mask {
+            Some(mask) => effect.masks.get(mask).and_then(|m| m.param(&key.param)),
+            None => effect.params.get(&key.param),
+        }
+        .ok_or_else(|| bad(command, "parameter does not exist"))?;
+        if !param.keyframes.iter().any(|k| k.time == key.time) {
+            return Err(bad(command, "keyframe does not exist"));
+        }
+    }
+    let mut lanes: BTreeMap<Lane, Vec<Tick>> = BTreeMap::new();
+    for key in &keys {
+        lanes.entry((key.clip, key.effect, key.mask, key.param.clone())).or_default().push(key.time);
+    }
+    let label = if interp.is_some() { "Keyframe Interpolation" } else { "Delete Keyframes" };
+    s.edit_sequence(label, |sequence, _, _| {
+        for (lane, mut times) in lanes {
+            let param = param_mut(sequence, &lane)?;
+            match interp {
+                Some(kind) => param.keyframes.iter_mut().filter(|k| times.contains(&k.time)).for_each(|k| k.interp = kind),
+                None => {
+                    // one at a time, earliest first, exactly as single deletes would go: when the
+                    // last keyframe of a parameter goes, the parameter keeps that keyframe's value
+                    // (`remove_keyframe_at`), so a lane cleared whole ends at its latest keyframe
+                    times.sort_unstable();
+                    for t in times {
+                        param.remove_keyframe_at(t);
+                    }
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(json!({"keyframes": keys}))
 }
 
 pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
@@ -111,6 +163,7 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filmcraft_project::ParamValue;
     use std::sync::Arc;
 
     fn fixture() -> (Session, Vec<Value>) {
@@ -131,6 +184,76 @@ mod tests {
     fn values(s: &Session, key: &Value) -> Vec<Keyframe> {
         let it = s.active_sequence().unwrap().find_item(ClipId(key["clip"].as_u64().unwrap())).unwrap().1;
         it.effects[key["effect"].as_u64().unwrap() as usize].params[key["param"].as_str().unwrap()].keyframes.clone()
+    }
+
+    /// #1916: a selection's interpolation changes across lanes in one undo step, and a selection
+    /// with one bad reference changes nothing at all; the same for deleting it.
+    #[test]
+    fn selection_interpolation_and_deletion_are_atomic_and_one_undo_step() {
+        let (mut s, keys) = fixture();
+        let project = s.project.clone();
+        let undo = s.history.undo.len();
+        s.execute("effects.setInterpolation", json!({"keyframes":keys,"interpolation":"hold"})).unwrap();
+        assert!(keys.iter().all(|k| {
+            let t = Tick(k["time"].as_i64().unwrap());
+            values(&s, k).iter().find(|x| x.time == t).unwrap().interp == filmcraft_project::Interpolation::Hold
+        }));
+        assert_eq!(s.history.undo.len(), undo + 1);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project, project);
+
+        let mut invalid = keys[2].clone();
+        invalid["time"] = json!(Tick(12_345_678).0);
+        for params in [
+            json!({"keyframes":[keys[0],invalid],"interpolation":"hold"}),
+            json!({"keyframes":[keys[0],keys[0]],"interpolation":"hold"}),
+            json!({"keyframes":[],"interpolation":"hold"}),
+        ] {
+            assert!(s.execute("effects.setInterpolation", params.clone()).is_err(), "{params}");
+            assert!(s.execute("effects.deleteKeyframe", params).is_err());
+            assert_eq!(s.project, project);
+            assert_eq!(s.history.undo.len(), undo);
+        }
+
+        s.execute("effects.deleteKeyframe", json!({"keyframes":[keys[0],keys[2]]})).unwrap();
+        assert_eq!(values(&s, &keys[0]).len(), 1, "scale keeps its other keyframe");
+        assert!(values(&s, &keys[2]).is_empty(), "rotation's only keyframe is gone");
+        assert_eq!(s.history.undo.len(), undo + 1);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project, project);
+    }
+
+    /// Clearing every keyframe of a parameter in one go leaves the parameter at the value of the
+    /// latest keyframe, exactly as deleting them one at a time (earliest first) does: the base
+    /// value a parameter had before it was animated does not come back.
+    #[test]
+    fn clearing_a_whole_lane_keeps_the_latest_keyframes_value_like_single_deletes() {
+        let (mut s, keys) = fixture();
+        let clip = keys[0]["clip"].as_u64().unwrap();
+        // scale: keyframes at 0.5 s and 1.0 s with values 40 and 80 over a base value of 100
+        for (key, value) in [(&keys[0], 40.0), (&keys[1], 80.0)] {
+            s.execute("effects.setKeyframe", json!({"clip":clip,"effect":"motion","param":"scale","mediaTime":key["time"],"value":value})).unwrap();
+        }
+        let param = |s: &Session| {
+            let it = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1;
+            it.effect("motion").unwrap().param("scale").unwrap().clone()
+        };
+        assert_eq!(param(&s).keyframes.len(), 2);
+        // one at a time, through the single-keyframe form
+        let one_by_one = s.project.clone();
+        for key in [&keys[0], &keys[1]] {
+            s.execute("effects.deleteKeyframe", json!({"clip":clip,"effect":"motion","param":"scale","mediaTime":key["time"]})).unwrap();
+        }
+        let single = param(&s);
+        assert!(single.keyframes.is_empty());
+        assert_eq!(single.value, ParamValue::Float(80.0), "single deletes end at the latest keyframe's value");
+        s.project = one_by_one;
+        s.bump();
+        // the whole lane at once, listed latest first to show the order of the list does not matter
+        s.execute("effects.deleteKeyframe", json!({"keyframes":[keys[1],keys[0]]})).unwrap();
+        let batch = param(&s);
+        assert!(batch.keyframes.is_empty());
+        assert_eq!(batch.value, single.value, "the batch ends where single deletes end");
     }
 
     #[test]

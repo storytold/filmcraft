@@ -605,6 +605,53 @@ fn effect_and_mask_keyframes_move_together_without_crossing_parameters() {
     assert!(it.effects[keys[0].effect].masks[0].feather.keyframes.is_empty());
 }
 
+/// #1916: with several keyframes selected, the menu on one of them sets the interpolation of all
+/// of them (and Clear removes all of them), as one undo step; a keyframe outside the selection
+/// still acts alone.
+#[test]
+fn interpolation_and_clear_apply_to_the_whole_keyframe_selection() {
+    let (mut d, clip) = Driver::demo();
+    for (seconds, value) in [(0.5, 40.0), (1.5, 60.0), (2.5, 80.0)] {
+        d.seek(seconds);
+        d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+        d.exec("effects.setParam", json!({"clip": clip.id, "effect": "motion", "param": "scale", "value": value}));
+    }
+    let before = d.parameter(&clip, "motion", "scale");
+    assert_eq!(before.keyframes.len(), 3);
+    let key = |i: usize| json!({"clip": clip.id, "effect": 0, "param": "scale", "time": before.keyframes[i].time.0});
+    d.ok("ui.set", json!({"keyframeSelection": [key(0), key(2)]}));
+    let undo = d.undo_len();
+    d.right_click(&format!("effectControls.motion.scale.keyframe.{}", before.keyframes[0].time.0));
+    d.click("effectControls.keyframeMenu.hold");
+    let changed = d.parameter(&clip, "motion", "scale");
+    assert_eq!(changed.keyframes[0].interp, Interpolation::Hold, "the clicked keyframe");
+    assert_eq!(changed.keyframes[2].interp, Interpolation::Hold, "the other selected keyframe");
+    assert_eq!(changed.keyframes[1].interp, Interpolation::Linear, "not the unselected one");
+    assert_eq!(d.undo_len(), undo + 1, "one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.parameter(&clip, "motion", "scale"), before);
+    d.exec("edit.redo", json!({}));
+    assert_eq!(d.parameter(&clip, "motion", "scale"), changed);
+
+    // a keyframe outside the selection acts alone
+    d.right_click(&format!("effectControls.motion.scale.keyframe.{}", before.keyframes[1].time.0));
+    d.click("effectControls.keyframeMenu.easeIn");
+    let alone = d.parameter(&clip, "motion", "scale");
+    assert_eq!(alone.keyframes[1].interp, Interpolation::EaseIn);
+    assert_eq!(alone.keyframes[0].interp, Interpolation::Hold);
+
+    // Clear removes the whole selection in one step
+    d.ok("ui.set", json!({"keyframeSelection": [key(0), key(2)]}));
+    let undo = d.undo_len();
+    d.right_click(&format!("effectControls.motion.scale.keyframe.{}", before.keyframes[2].time.0));
+    d.click("effectControls.keyframeMenu.clear");
+    let remaining = d.parameter(&clip, "motion", "scale");
+    assert_eq!(remaining.keyframes, alone.keyframes[1..2]);
+    assert_eq!(d.undo_len(), undo + 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.parameter(&clip, "motion", "scale"), alone);
+}
+
 /// #962: graph points need the same interpolation menu as lane diamonds, including either
 /// coordinate of Transform Position. Opening a menu never changes the value or creates an undo.
 #[test]
