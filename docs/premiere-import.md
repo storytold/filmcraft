@@ -18,7 +18,8 @@ default is linked media and a new `source.filmcraft-import-N` directory beside t
 Use the explicit command for a custom destination, copied media or frame rate. Existing destination
 directories are refused. `sequence` optionally chooses the active sequence by ObjectUID or unique
 name; an ambiguous requested name requires its ObjectUID. All sequences
-are imported. Without it, “Sequence 01” wins, then the sequence with the most video items.
+are imported. Without it, the sequence with the most video items wins; “Sequence 01” is only
+a tie-break, followed by the latest video end time.
 
 The destination contains the unchanged `source.prproj`, `provenance.json`, and (copy mode) a
 `media/` directory with full SHA-256 named files. Link mode uses original absolute paths without
@@ -41,8 +42,13 @@ in the original snapshot and are reported once per distinct effect name with an 
 rather than silently recreated with guessed parameters. Fader-muted audio imports audible unless
 the track is also muted through `IsMuted`.
 Fonts/styles and transition appearance are not guaranteed to match Premiere. Missing, ambiguous
-or unreadable media remains visible as offline placeholders. A failure to open/read a media
-file for hashing reports its path and the OS error, leaves its hash/size unknown, and continues
+or unreadable media remains visible as offline placeholders. Document references pass the existing
+document-path policy before canonicalization. Both the reference and resolved file must have a
+recognized media extension, and the registered media opener must accept the file before it is
+hashed or copied. Non-media, refused paths and failed probes stay offline with only their original
+reference recorded, no hash/size, and no copied file. Probing may read media headers or, for formats
+without a streaming opener, the file itself; a recognized extension alone is insufficient.
+A failure to open/read an accepted media file reports its path and the error and continues
 the import in both link and copy modes. It does not attempt to change permissions or copy an
 unreadable source. Destination write failures and failed copy-integrity checks still abort.
 
@@ -71,6 +77,13 @@ are not mapped. These fixes address the name/reference defects discussed in
 [issue #978](https://github.com/storytold/filmcraft/issues/978#issuecomment-6254913542);
 they do not add track-fader mute or change audio gain conversion.
 
+Text graphics match the text component's `MatchName` and Source Text ParameterID 1, then decode
+the static base64 `StartKeyframeValue` using the bounded length-prefixed UTF-8 envelope heuristic
+also used for captions. This is based on structural observations of user-owned XML, not a complete
+text-format specification. `InstanceName` is a layer label and is never substituted for visible text.
+Missing, unreadable or animated Source Text is reported and left unresolved; fonts, styling and
+text animation are not reconstructed.
+
 Projects containing only settings and no `Sequence` objects currently report an empty-document
 error. They do not create an imported project or destination; settings-only import is unsupported.
 
@@ -79,11 +92,17 @@ per kind and 100,000 timeline items. A traversal budget also accounts for repeat
 text size; diagnostics are capped at 1,024 entries plus a truncation notice. Clips with nonpositive
 timeline duration, non-finite speed or speed outside 0.001–1000, or inverted/unsupported source
 ranges are skipped with a warning naming the clip. Other clips keep their original timeline
-positions; skipped clips can leave gaps. DTD/entity expansion, duplicate IDs, negative/non-integer
+positions; skipped clips can leave gaps. A transition whose end precedes its start is skipped with
+a warning, preserving its clip and any valid transition. DTD/entity expansion, duplicate IDs, negative/non-integer
 timeline or source ticks, non-numeric speeds, cyclic nesting and nesting deeper than 64 levels
 still produce errors. The referenced graph is validated before unsupported clips are removed,
 so skipping a clip does not bypass the corruption or resource-limit checks. A failed import removes only
 its newly created destination and leaves the editor project unchanged.
+
+Open workflow issues: probing, hashing and copying are synchronous and can block the calling UI
+thread on large inputs. Imports without an explicit `destination` write beside the source project;
+the destination-prompt policy and background-job dispatch remain follow-up work. These checks do
+not ask for consent for each valid media reference, and do not verify rendered appearance.
 
 ## Regression and private-corpus checks
 
