@@ -186,6 +186,17 @@ Annotations, argument checking, errors and export progress / cancellation:
 
 Time is in ticks (254 016 000 000 per second); commands also accept `seconds`, `frame` or `timecode`.
 
+## Parameter dialogs
+
+From a menu, a shortcut or `ui.menu.invoke`, a command sent without parameters opens the dialog
+that asks for them (Sequence Settings…, Add Tracks…, Audio Gain…, Interpret Footage…, Remix
+Properties…, New Sequence…, Color Management…, Find…, Media Properties…, Simplify Sequence…, Link
+Media…, Make Offline…, Create Proxies…, Project Manager… and the other dialog commands).
+`engine.execute` never does (#1540): an agent can neither see nor close a dialog. The engine command runs with the parameters given (so `sequence.addTracks {}`
+adds its default one video track, `clip.audioGain {}` answers "need `db`"), and
+`sequence.settings {}` answers `{"settings"}`, the active sequence's settings as `sequence.inspect`
+reports them, instead of showing them. Confirmations (`file.revert`, `file.recover`) still ask.
+
 ## Panel docking commands
 
 `ui.menu.invoke` and `engine.execute` route these frontend commands:
