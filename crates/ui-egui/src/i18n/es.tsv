@@ -600,6 +600,11 @@
 	(gap)	(hueco)
 	Out: {name}	Salida: {name}
 	In: {name}	Entrada: {name}
+	Previous: {name}	Anterior: {name}
+	Next: {name}	Siguiente: {name}
+	Slip: {offset} frame	Desplazamiento: {offset} fotograma
+	Slip: {offset} frames	Desplazamiento: {offset} fotogramas
+	at the media limit	en el límite del medio
 	Play Around Edit (Space loops, Shift+K once)	Reproducir alrededor de la edición (Espacio en bucle, Mayús+K una vez)
 	Trim Backward Many	Recortar varios fotogramas hacia atrás
 	Trim Backward	Recortar hacia atrás

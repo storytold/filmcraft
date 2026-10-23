@@ -597,6 +597,11 @@
 	(gap)	(spazio vuoto)
 	Out: {name}	Uscita: {name}
 	In: {name}	Entrata: {name}
+	Previous: {name}	Precedente: {name}
+	Next: {name}	Successivo: {name}
+	Slip: {offset} frame	Scorrimento sorgente: {offset} fotogramma
+	Slip: {offset} frames	Scorrimento sorgente: {offset} fotogrammi
+	at the media limit	al limite del media
 	Play Around Edit (Space loops, Shift+K once)	Riproduci attorno al taglio (Spazio in loop, Shift+K una volta)
 	Trim Backward Many	Rifila molto indietro
 	Trim Backward	Rifila indietro

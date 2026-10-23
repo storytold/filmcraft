@@ -604,6 +604,11 @@
 	(gap)	(lacuna)
 	Out: {name}	Saída: {name}
 	In: {name}	Entrada: {name}
+	Previous: {name}	Anterior: {name}
+	Next: {name}	Próximo: {name}
+	Slip: {offset} frame	Deslizar conteúdo: {offset} quadro
+	Slip: {offset} frames	Deslizar conteúdo: {offset} quadros
+	at the media limit	no limite da mídia
 	Play Around Edit (Space loops, Shift+K once)	Reproduzir ao redor da edição (Espaço em loop, Shift+K uma vez)
 	Trim Backward Many	Aparar muitos para trás
 	Trim Backward	Aparar para trás

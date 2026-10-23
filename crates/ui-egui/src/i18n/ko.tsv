@@ -1507,6 +1507,11 @@
 	In the project	프로젝트에
 	In/Out Duration	시작/끝 지속 시간
 	In: {name}	시작: {name}
+	Previous: {name}	이전: {name}
+	Next: {name}	다음: {name}
+	Slip: {offset} frame	슬립: {offset}프레임
+	Slip: {offset} frames	슬립: {offset}프레임
+	at the media limit	미디어 경계에 도달
 	Include Alpha Channel	알파 채널 포함
 	Include captions on import	가져올 때 자막 포함
 	Include Handles:	핸들 포함:

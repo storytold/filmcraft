@@ -487,7 +487,8 @@ pub(crate) fn slip_together(q: &mut filmcraft_project::Sequence, ctx: &mut edit:
             Err(e) => return Err(e.into()),
             Ok(x) => {
                 any = true;
-                scale = scale.min(x.0.abs() as f64 / d.0.abs() as f64);
+                // unsigned: `abs` of i64::MIN (a hostile `delta`) overflows
+                scale = scale.min(x.0.unsigned_abs() as f64 / d.0.unsigned_abs() as f64);
             }
         }
     }
@@ -503,6 +504,25 @@ pub(crate) fn slip_together(q: &mut filmcraft_project::Sequence, ctx: &mut edit:
         }
     }
     Ok(())
+}
+
+/// `timeline.slip`'s edit: `clips` (a clip and its linked partners) slipped by one media delta,
+/// clamped together so picture and sound stay in sync (#529). The Slip Monitor runs this same
+/// function on a copy of the sequence ([`crate::slip::preview`]), so the drag shows what the
+/// release commits.
+pub(crate) fn slip_linked(q: &mut filmcraft_project::Sequence, ctx: &mut edit::EditCtx<'_>, clips: &[ClipId], delta: Tick) -> Result<()> {
+    let deltas: Vec<(ClipId, Tick)> = clips.iter().map(|c| (*c, delta)).collect();
+    slip_together(q, ctx, &deltas)
+}
+
+/// The media delta of `timeline.slip` / `timeline.slipPreview`: `delta` ticks, else `deltaFrames`
+/// sequence frames, else none.
+fn slip_delta_p(s: &Session, p: &Value) -> Tick {
+    p.get("delta")
+        .and_then(Value::as_i64)
+        .map(Tick)
+        .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
+        .unwrap_or_default()
 }
 
 /// Clips an audio effect should land on: audio ids as given, plus the linked audio of any video
@@ -2795,19 +2815,15 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("timeline.slip", "Slip", [], None, r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slip", "need `clip`"))?;
-            let d = p
-                .get("delta")
-                .and_then(Value::as_i64)
-                .map(Tick)
-                .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
-                .unwrap_or_default();
+            let d = slip_delta_p(s, p);
             let clips = with_links(s, &[c]);
-            s.edit_sequence("Slip", |q, ctx, _| {
-                // clamp across all linked partners, then slip them by the common delta
-                let deltas: Vec<(ClipId, Tick)> = clips.iter().map(|c| (*c, d)).collect();
-                slip_together(q, ctx, &deltas)
-            })?;
+            s.edit_sequence("Slip", |q, ctx, _| slip_linked(q, ctx, &clips, d))?;
             Ok(Value::Null)
+        }),
+        // What `timeline.slip` with the same params would do, without editing: the Slip Monitor
+        query!("timeline.slipPreview", "Slip Preview", r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, |s, p| {
+            let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slipPreview", "need `clip`"))?;
+            crate::slip::preview(s, c, slip_delta_p(s, p))
         }),
         cmd!("timeline.slide", "Slide", [], None, r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.slide", "need `clip`"))?;

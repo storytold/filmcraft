@@ -607,6 +607,11 @@
 	(gap)	(celah)
 	Out: {name}	Keluar: {name}
 	In: {name}	Masuk: {name}
+	Previous: {name}	Sebelumnya: {name}
+	Next: {name}	Berikutnya: {name}
+	Slip: {offset} frame	Slip: {offset} bingkai
+	Slip: {offset} frames	Slip: {offset} bingkai
+	at the media limit	di batas media
 	Play Around Edit (Space loops, Shift+K once)	Putar di Sekitar Edit (Space berulang, Shift+K sekali)
 	Trim Backward Many	Pangkas Mundur Banyak
 	Trim Backward	Pangkas Mundur

@@ -602,6 +602,11 @@
 	(gap)	(espace vide)
 	Out: {name}	Sortie : {name}
 	In: {name}	Entrée : {name}
+	Previous: {name}	Précédent : {name}
+	Next: {name}	Suivant : {name}
+	Slip: {offset} frame	Glissement : {offset} image
+	Slip: {offset} frames	Glissement : {offset} images
+	at the media limit	à la limite du média
 	Play Around Edit (Space loops, Shift+K once)	Lire autour du point de montage (Espace en boucle, Maj+K une fois)
 	Trim Backward Many	Rogner de plusieurs images en arrière
 	Trim Backward	Rogner en arrière

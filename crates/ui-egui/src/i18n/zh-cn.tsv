@@ -591,6 +591,11 @@
 	(gap)	（间隙）
 	Out: {name}	出点：{name}
 	In: {name}	入点：{name}
+	Previous: {name}	上一个：{name}
+	Next: {name}	下一个：{name}
+	Slip: {offset} frame	错动：{offset} 帧
+	Slip: {offset} frames	错动：{offset} 帧
+	at the media limit	已到媒体边界
 	Play Around Edit (Space loops, Shift+K once)	围绕编辑点播放（空格循环，Shift+K 触发一次）
 	Trim Backward Many	大幅向后修剪
 	Trim Backward	向后修剪

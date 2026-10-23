@@ -597,6 +597,11 @@
 	(gap)	(ギャップ)
 	Out: {name}	アウト: {name}
 	In: {name}	イン: {name}
+	Previous: {name}	前: {name}
+	Next: {name}	次: {name}
+	Slip: {offset} frame	スリップ: {offset} フレーム
+	Slip: {offset} frames	スリップ: {offset} フレーム
+	at the media limit	メディアの端
 	Play Around Edit (Space loops, Shift+K once)	編集点の前後を再生 (Space でループ、Shift+K で 1 回)
 	Trim Backward Many	後方へ複数フレームトリム
 	Trim Backward	後方へトリム

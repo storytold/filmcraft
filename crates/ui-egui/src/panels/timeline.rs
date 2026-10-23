@@ -125,7 +125,11 @@ pub enum Drag {
     },
     Slip {
         clip: ClipId,
+        /// The media delta `timeline.slip` gets on release (it clamps it at the media's ends).
         delta: Tick,
+        /// What the Slip Monitor shows for `delta` (`timeline.slipPreview`), worked out when the
+        /// delta changes; `None` when it can't be (the Program monitor then stays as it is).
+        preview: Option<Arc<Value>>,
     },
     Slide {
         clip: ClipId,
@@ -1919,6 +1923,23 @@ fn preview_drag(app: &FilmcraftApp, seq: &Sequence, out: &mut HashMap<ClipId, (T
                 out.insert(*clip, (it.start + *delta, it.duration, None));
             }
         }
+        // a slip keeps every clip where it is and shows other media in it: its sound is drawn from
+        // the source In the Slip Monitor shows (the release commits it), so the waveform slides
+        // under the pointer. Its waveform is cached peaks; the picture's thumbnails would be new
+        // decodes for every position, so they wait for the release and the Slip Monitor shows the
+        // frames.
+        Drag::Slip { preview: Some(p), .. } => {
+            for c in p["clips"].as_array().into_iter().flatten() {
+                let (Some(id), Some(source_in)) = (c["clip"].as_u64(), c["sourceIn"].as_i64()) else { continue };
+                if let Some((tid, it)) = seq.find_item(ClipId(id))
+                    && seq.track(tid).is_some_and(|t| t.kind == TrackKind::Audio)
+                {
+                    let mut e = it.clone();
+                    e.source_in = Tick(source_in);
+                    edited.insert(e.id, e);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -2481,7 +2502,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 super::timeline_volume::add_keyframe(app, seq, layout, clip, p.x);
                 None
             }
-            (Tool::Slip, Grab::Other(Hit::Clip { clip, .. })) => Some(Drag::Slip { clip, delta: Tick::ZERO }),
+            // the Slip Monitor replaces the Program monitor as soon as the drag starts
+            (Tool::Slip, Grab::Other(Hit::Clip { clip, .. })) => {
+                Some(Drag::Slip { clip, delta: Tick::ZERO, preview: super::slip_monitor::preview(app, clip, Tick::ZERO) })
+            }
             (Tool::Slide, Grab::Other(Hit::Clip { clip, .. })) => Some(Drag::Slide { clip, delta: Tick::ZERO }),
             (_, Grab::Other(Hit::Clip { clip, track, .. })) => {
                 // select (shift toggles; alt selects one side of a link)
@@ -2550,6 +2574,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 scrub_playhead(app, seq, layout, p, mods.shift);
             }
             if resp.drag_started() {
+                if matches!(d, Drag::Slip { .. }) {
+                    // the Slip Monitor takes over the Program monitor, which may be drawn already
+                    ctx.request_repaint();
+                }
                 app.tl.drag = Some(d);
             }
         }
@@ -2657,10 +2685,19 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let target = snap(app, seq, layout, rate.snap_nearest(l.end() + (t_here - from)), &[left, right]);
                 Drag::Roll { left, right, delta: target - l.end(), from }
             }),
-            Drag::Slip { clip, .. } => {
+            Drag::Slip { clip, delta: was, preview } => {
                 let start = resp.interact_pointer_pos().map(|_| ()).and(ctx.input(|i| i.pointer.press_origin()));
                 let origin = start.map(|o| layout.tick_at(o.x)).unwrap_or(t_here);
-                Some(Drag::Slip { clip, delta: -(rate.snap_nearest(t_here - origin)) })
+                let delta = -(rate.snap_nearest(t_here - origin));
+                // the four-up follows the drag frame by frame; a pointer still within one frame keeps it
+                let preview = if delta == was && preview.is_some() {
+                    preview
+                } else {
+                    // the Program monitor may have been drawn already this frame: show it on the next
+                    ctx.request_repaint();
+                    super::slip_monitor::preview(app, clip, delta)
+                };
+                Some(Drag::Slip { clip, delta, preview })
             }
             Drag::Slide { clip, .. } => {
                 let origin = ctx.input(|i| i.pointer.press_origin()).map(|o| layout.tick_at(o.x)).unwrap_or(t_here);
@@ -2701,6 +2738,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
             !blocked
         });
+        // a slip shows its offset at the pointer as well as in the Slip Monitor
+        if matches!(app.tl.drag, Some(Drag::Slip { .. })) {
+            super::slip_monitor::paint_timeline_offset(app, ui.painter(), p);
+        }
         // auto-scroll when dragging near the edges
         if !matches!(app.tl.drag, Some(Drag::Pan { .. }) | Some(Drag::ZoomBar { .. }) | Some(Drag::Volume(_))) {
             let v = &mut app.ui.timeline;
@@ -2740,7 +2781,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     Some(app.session.execute("clip.remix", json!({"clip": clip.0, "duration": d.0})))
                 }
                 Drag::Roll { left, right, delta, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.roll", json!({"left": left.0, "right": right.0, "delta": delta.0}))),
-                Drag::Slip { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slip", json!({"clip": clip.0, "delta": delta.0}))),
+                Drag::Slip { clip, delta, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.slip", json!({"clip": clip.0, "delta": delta.0}))),
                 Drag::Slide { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slide", json!({"clip": clip.0, "delta": delta.0}))),
                 Drag::Transition { id, start, duration, .. } => {
                     let moved = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
@@ -3233,6 +3274,32 @@ mod trim_preview_tests {
         let (mut out, mut edited) = (HashMap::new(), HashMap::new());
         preview_drag(&app, &seq, &mut out, &mut edited);
         assert!(edited.is_empty() && out.contains_key(&left.id));
+    }
+
+    #[test]
+    fn a_slip_draws_the_clip_and_its_partners_from_the_slipped_media_in_place() {
+        let (mut app, seq) = demo();
+        let clip = seq.video_tracks[0].items.iter().find(|i| i.link.is_some()).unwrap().clone();
+        let delta = Tick(filmcraft_time::TICKS_PER_SECOND / 5);
+        let preview = crate::panels::slip_monitor::preview(&app, clip.id, delta);
+        let applied = Tick(preview.as_ref().unwrap()["delta"].as_i64().unwrap());
+        assert_ne!(applied, Tick::ZERO, "the demo clip has media to slip into");
+        app.tl.drag = Some(Drag::Slip { clip: clip.id, delta, preview });
+        let (mut out, mut edited) = (HashMap::new(), HashMap::new());
+        preview_drag(&app, &seq, &mut out, &mut edited);
+        assert!(out.is_empty(), "nothing moves or changes length");
+        let partners = filmcraft_engine::commands::with_links(&app.session, &[clip.id]);
+        let sound: Vec<ClipId> = partners.iter().copied().filter(|c| seq.audio_tracks.iter().any(|t| t.item(*c).is_some())).collect();
+        assert!(!sound.is_empty(), "the demo clip has linked sound");
+        for c in &sound {
+            let was = seq.find_item(*c).unwrap().1;
+            let shown = &edited[c];
+            assert_eq!((shown.start, shown.duration), (was.start, was.duration));
+            assert_eq!(shown.source_in, was.source_in + applied, "the sound's waveform follows the slip");
+        }
+        // the picture's thumbnails would be a decode per position: they keep the clip's media
+        assert!(!edited.contains_key(&clip.id));
+        assert_eq!(edited.len(), sound.len());
     }
 }
 

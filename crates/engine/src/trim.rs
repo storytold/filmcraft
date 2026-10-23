@@ -293,7 +293,7 @@ pub fn to_playhead(s: &mut Session, p: &Value) -> Result<Value> {
 // ------------------------------------------------------------------ Trim Monitor
 
 /// One side of the Trim Monitor: the clip and the frame shown for it.
-fn side_json(s: &Session, seq: &Sequence, clip: ClipId, outgoing: bool) -> Option<Value> {
+pub(crate) fn side_json(s: &Session, seq: &Sequence, clip: ClipId, outgoing: bool) -> Option<Value> {
     let (tid, it) = seq.find_item(clip)?;
     let rate = seq.settings.frame_rate;
     let fd = rate.frame_duration();
