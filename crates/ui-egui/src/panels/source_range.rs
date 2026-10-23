@@ -117,7 +117,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         if edge == RangeEdge::Out {
             result.out_hot = response.hovered();
         }
-        if response.drag_started() {
+        if response.drag_started_by(egui::PointerButton::Primary) {
             let Some(pointer) = ctx.input(|i| i.pointer.press_origin()) else { continue };
             let bounds = TimeRange::from_bounds(view.start, view.end);
             let original = view.selected_range();

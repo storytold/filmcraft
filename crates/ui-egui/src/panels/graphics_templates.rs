@@ -249,7 +249,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                         elems.push((format!("gfxTemplates.item.{}", e.template.id), r, e.template.name.clone()));
                         let resp = resp.on_hover_text(crate::i18n::t(&e.template.description));
-                        if resp.drag_started() {
+                        if resp.drag_started_by(egui::PointerButton::Primary) {
                             crate::panels::start_drag_template(ui, &e.template.id, &e.template.name);
                         }
                         if resp.double_clicked() {

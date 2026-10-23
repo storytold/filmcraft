@@ -605,7 +605,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
         let grip = Rect::from_min_size(g.rect.min, vec2(if compact { g.rect.width() } else { 10.0 }, if compact { 8.0 } else { t.tab_h }));
         let response = ui.interact(grip, egui::Id::new(("panel-drag", g.path.clone())), Sense::drag());
         reg.add_response(&format!("panel.drag.{}", panel.id()), &response, "Move panel");
-        if response.drag_started() {
+        if response.drag_started_by(egui::PointerButton::Primary) {
             actions.push(DockAction::BeginDrag(panel));
         }
     }
@@ -714,7 +714,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
                 Some(id) => ui.interact(tab_rect, egui::Id::new(("tab-seq", g.path.clone(), id)), Sense::click_and_drag()),
                 None => ui.interact(tab_rect, egui::Id::new(("tab", g.path.clone(), i)), Sense::click_and_drag()),
             };
-            if tab.seq.is_none() && resp.drag_started() {
+            if tab.seq.is_none() && resp.drag_started_by(egui::PointerButton::Primary) {
                 actions.push(DockAction::BeginDrag(*p));
             }
             if let Some((_, rect)) = tab_rects.iter_mut().find(|(panel, _)| panel == p) {
@@ -730,12 +730,12 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
             paint_widget_focus(&painter, &resp, t);
             if let Some(id) = tab.seq {
                 seq_rects.push((id, tab_rect));
-                if resp.dragged() {
+                if resp.dragged_by(egui::PointerButton::Primary) {
                     dragged = Some(id);
                 }
                 // Escape puts a dragged tab back where it was (egui ends the drag on Escape, #580)
                 let home = egui::Id::new(("tab-seq-home", id));
-                if resp.drag_started()
+                if resp.drag_started_by(egui::PointerButton::Primary)
                     && let Some(at) = seqs.open.iter().position(|(s, _)| *s == id)
                 {
                     ui.data_mut(|d| d.insert_temp(home, at));
@@ -788,7 +788,7 @@ pub fn draw_group_chrome_details(ui: &mut egui::Ui, g: &Group, seqs: &SeqTabs, t
                     actions.push(DockAction::PanelMenu(*p, mr.left_bottom()));
                 }
             }
-            if (resp.clicked() || resp.drag_started()) && !closed {
+            if (resp.clicked() || resp.drag_started_by(egui::PointerButton::Primary)) && !closed {
                 activate(tab, &mut actions);
                 actions.push(DockAction::Focus(*p));
             }

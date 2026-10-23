@@ -307,7 +307,7 @@ impl FilmcraftApp {
             let strip = Rect::from_min_size(rect.min, vec2(rect.width(), header));
             let response = ui.interact(strip, id.with("move"), Sense::drag());
             self.auto.add_response(&format!("panel.float.{index}.move"), &response, "Move floating panel");
-            let mut next = if response.dragged() { rect.translate(response.drag_delta()) } else { rect };
+            let mut next = if response.dragged_by(egui::PointerButton::Primary) { rect.translate(response.drag_delta()) } else { rect };
             let group = Group {
                 path: format!("f{index}"),
                 rect,
@@ -447,10 +447,10 @@ fn target(group: &Group, mut tabs: Vec<(PanelKind, Rect)>, allow_splits: bool) -
 
 /// A corner is a two-axis resize control; focused arrows belong to it and Tab moves on.
 fn floating_resize_delta(ui: &mut egui::Ui, response: &egui::Response) -> egui::Vec2 {
-    if response.drag_started() {
+    if response.drag_started_by(egui::PointerButton::Primary) {
         response.request_focus();
     }
-    let mut delta = if response.dragged() { response.drag_delta() } else { egui::Vec2::ZERO };
+    let mut delta = if response.dragged_by(egui::PointerButton::Primary) { response.drag_delta() } else { egui::Vec2::ZERO };
     if response.has_focus() {
         ui.memory_mut(|memory| {
             memory.set_focus_lock_filter(response.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() })

@@ -16,7 +16,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     p.rect_filled(rect, 0.0, t.header_bg);
     p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, Color32::BLACK));
     let drag = ui.interact(rect, egui::Id::new("header-drag"), Sense::click_and_drag());
-    if drag.drag_started() {
+    if drag.drag_started_by(egui::PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
     if drag.double_clicked() {

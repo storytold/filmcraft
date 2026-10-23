@@ -313,7 +313,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     if let Some((top, left)) = ruler_rects {
         monitor_view::rulers(app, ui, which, top, left, video_area, pic, frame_size);
     }
-    if which == Which::Source && show_picture && pic_resp.drag_started() && app.ui.tool != crate::state::Tool::Hand {
+    if which == Which::Source && show_picture && pic_resp.drag_started_by(egui::PointerButton::Primary) && app.ui.tool != crate::state::Tool::Hand {
         crate::panels::source_drag::begin(app, ui, true, true);
     }
     if pic_resp.double_clicked() && which == Which::Source {
@@ -697,7 +697,7 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
     // under the pointer when the button went down)
     let drag_id = egui::Id::new((prefix, "zoomBar-drag"));
-    if resp.drag_started()
+    if resp.drag_started_by(egui::PointerButton::Primary)
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
         let mut start = s;

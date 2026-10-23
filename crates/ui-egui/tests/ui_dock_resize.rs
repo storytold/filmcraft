@@ -137,3 +137,33 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     press(&mut h, Key::Space);
     assert!(!h.state().playback.playing);
 }
+
+/// Only the primary button moves a panel: a right-button drag on a panel's grip starts no panel
+/// drag, a left-button one does.
+#[test]
+fn only_a_left_button_drag_on_a_panel_grip_moves_the_panel() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(session);
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_max_steps(10_000).build_eframe(move |_| app);
+    frames(&mut h, 4);
+    let r = h.state().auto.find("panel.drag.Timeline").expect("the Timeline's grip").rect;
+    let grip = pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    // the dock keeps the panel being dragged under this id while the drag lasts
+    let dragging = |h: &Harness<'_, FilmcraftApp>| h.ctx.data(|d| d.get_temp::<PanelKind>(Id::new("dock-panel-drag")));
+    for (button, moves) in [(PointerButton::Secondary, false), (PointerButton::Primary, true)] {
+        // the pointer arrives a frame before the press, as a hand on a mouse does
+        h.input_mut().events.push(Event::PointerMoved(grip));
+        frames(&mut h, 2);
+        h.input_mut().events.push(Event::PointerButton { pos: grip, button, pressed: true, modifiers: Modifiers::NONE });
+        frames(&mut h, 1);
+        for i in 1..=6 {
+            h.input_mut().events.push(Event::PointerMoved(grip + vec2(0.0, 10.0 * i as f32)));
+            frames(&mut h, 1);
+        }
+        assert_eq!(dragging(&h).is_some(), moves, "{button:?}: a panel drag {}", if moves { "starts" } else { "does not start" });
+        h.input_mut().events.push(Event::PointerButton { pos: grip + vec2(0.0, 60.0), button, pressed: false, modifiers: Modifiers::NONE });
+        h.input_mut().events.push(Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        frames(&mut h, 3);
+    }
+}

@@ -184,3 +184,23 @@ fn escape_cancels_the_box_and_restores_the_selection() {
     d.frames(2);
     assert!(d.selected(a) && !d.selected(b), "Escape put back the selection the drag began with");
 }
+
+/// Only the primary button draws the box: a right-button drag over clips selects none of them.
+#[test]
+fn a_right_button_drag_draws_no_box() {
+    let mut d = Driver::demo();
+    let (a, b, ra, rb, start) = d.setup();
+    d.exec("timeline.select", json!({"clips": []}));
+    let modifiers = d.modifiers;
+    let secondary = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers };
+    d.send(egui::Event::PointerMoved(start));
+    d.send(secondary(start, true));
+    let over_b = egui::pos2(rb.center().x, start.y + 2.0);
+    d.move_to(start, over_b);
+    let over_a = egui::pos2(ra.center().x, start.y + 2.0);
+    d.move_to(over_b, over_a);
+    assert!(!d.selected(a) && !d.selected(b), "a right-button drag selected clips");
+    d.send(secondary(over_a, false));
+    d.frames(2);
+    assert!(!d.selected(a) && !d.selected(b));
+}

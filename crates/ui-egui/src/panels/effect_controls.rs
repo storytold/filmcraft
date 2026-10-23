@@ -43,7 +43,7 @@ fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
 // The press frame can include movement before the button went down. Start from the press
 // origin so that only gesture motion enters the preview, including same-frame movement.
 fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::Vec2) -> egui::Vec2 {
-    if response.drag_started() {
+    if response.drag_started_by(egui::PointerButton::Primary) {
         response
             .interact_pointer_pos()
             .zip(ui.input(|i| i.pointer.press_origin()))

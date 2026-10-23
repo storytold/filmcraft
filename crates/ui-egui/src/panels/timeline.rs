@@ -1694,7 +1694,7 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     }
     // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
     // under the pointer when the button went down)
-    if resp.drag_started()
+    if resp.drag_started_by(egui::PointerButton::Primary)
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
         let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
@@ -2374,7 +2374,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     }
 
     // ---- press: act on what was under the pointer when the button went down (#259)
-    if !app.tl.cancelled && (resp.drag_started() || (resp.clicked() && app.tl.drag.is_none())) {
+    // (the primary button selects, moves, trims and cuts, the middle one pans; a right-button drag
+    // starts nothing)
+    let press_began = resp.drag_started_by(egui::PointerButton::Primary) || resp.drag_started_by(egui::PointerButton::Middle);
+    if !app.tl.cancelled && (press_began || (resp.clicked() && app.tl.drag.is_none())) {
         let pressed = match app.tl.pressed.take() {
             Some(pr) => pr,
             // a press and release in the same frame is never stored: it happened where egui says
