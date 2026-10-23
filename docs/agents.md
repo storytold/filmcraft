@@ -177,6 +177,9 @@ Notes:
   nearest frame.
 - `sequence.inspect` reports `durationFrames` as the number of frames export renders: a sequence
   that ends partway through a frame counts that frame.
+  Video and audio clips include `scaleToFrame` (boolean) and `frameHold` (held source time in
+  ticks, or `null`). Effect parameter `value` uses the project's serde JSON format, for example
+  `{"Float": 100.0}` or `{"Vec2": {"x": 1920.0, "y": 1080.0}}`; `keyframes` remains a count.
 - `engine.execute` also runs UI-only commands (`tool.razor`, `playback.toggle`,
   `window.workspace.color`, `window.panel.<name>`).
 - A command that works on the selection is disabled ("no clips selected", "select a clip in the

@@ -148,16 +148,14 @@ impl Driver {
     }
 }
 
-/// A parameter value from `sequence.inspect` (`"Float(3.5)"`, `"Bool(true)"`) or
+/// A parameter value from `sequence.inspect` (`{"Float": 3.5}`, `{"Bool": true}`) or
 /// `mixer.inspect` (plain JSON).
 fn num(v: &Value) -> f64 {
-    v.as_f64()
-        .or_else(|| v.as_str().and_then(|s| s.trim_start_matches("Float(").trim_start_matches("Choice(").trim_end_matches(')').parse().ok()))
-        .unwrap_or(f64::NAN)
+    v.as_f64().or_else(|| v["Float"].as_f64()).or_else(|| v["Choice"].as_f64()).unwrap_or(f64::NAN)
 }
 
 fn truthy(v: &Value) -> bool {
-    v.as_bool().unwrap_or(false) || v.as_str() == Some("Bool(true)")
+    v.as_bool().or_else(|| v["Bool"].as_bool()).unwrap_or(false)
 }
 
 #[test]

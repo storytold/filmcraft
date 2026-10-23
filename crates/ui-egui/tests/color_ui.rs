@@ -160,10 +160,10 @@ fn lumetri_lut_menus_and_section_switches() {
     // clicking a section switch bypasses the section (an undoable engine command)
     d.click("lumetri.switch.Creative");
     let e = lumetri(&mut d, clip);
-    assert_eq!(e["params"]["creative_on"]["value"], json!("Bool(false)"), "{e}");
+    assert_eq!(e["params"]["creative_on"]["value"], json!({"Bool": false}), "{e}");
     d.exec("edit.undo", json!({}));
     let e = lumetri(&mut d, clip);
-    assert_eq!(e["params"]["creative_on"]["value"], json!("Bool(true)"), "{e}");
+    assert_eq!(e["params"]["creative_on"]["value"], json!({"Bool": true}), "{e}");
 }
 
 #[test]
@@ -225,7 +225,8 @@ fn apply_match_from_the_color_wheels_section() {
     d.frames(4);
     d.snapshot("color-apply-match", None);
     let e = lumetri(&mut d, clip);
-    assert!(e["params"]["wheel_highlights"]["value"].as_str().unwrap() != "Vec2(Vec2 { x: 0.0, y: 0.0 })", "{e}");
+    let point = &e["params"]["wheel_highlights"]["value"]["Vec2"];
+    assert_ne!((point["x"].as_f64().unwrap(), point["y"].as_f64().unwrap()), (0.0, 0.0), "{e}");
     // the button runs the same command (here with the default reference inside the clip: refused, reported in the status line)
     d.click("lumetri.match.apply");
     let ui = d.ok("ui.inspect", json!({}));
@@ -262,7 +263,7 @@ fn hdr_lumetri_controls_hsl_refine_and_comparison_view() {
     d.ok("ui.click", json!({"x": r[0] + 112.0 + 4.0, "y": r[1] + r[3] / 2.0}));
     d.frames(3);
     let e = lumetri(&mut d, clip);
-    assert_ne!(e["params"]["hdr_white"]["value"], json!("Float(1000.0)"), "{e}");
+    assert_ne!(e["params"]["hdr_white"]["value"]["Float"].as_f64().unwrap(), 1000.0, "{e}");
     // HSL Secondary ▸ Refine (fold Basic Correction and Curves so the section is on screen)
     d.click("lumetri.section.Curves");
     d.click("lumetri.section.Basic Correction");
@@ -286,7 +287,8 @@ fn hdr_lumetri_controls_hsl_refine_and_comparison_view() {
     d.snapshot("color-comparison-view", None);
     d.click("lumetri.match.apply");
     let e = lumetri(&mut d, clip);
-    assert!(e["params"]["wheel_highlights"]["value"].as_str().unwrap() != "Vec2(Vec2 { x: 0.0, y: 0.0 })", "matched to the comparison reference: {e}");
+    let point = &e["params"]["wheel_highlights"]["value"]["Vec2"];
+    assert_ne!((point["x"].as_f64().unwrap(), point["y"].as_f64().unwrap()), (0.0, 0.0), "matched to the comparison reference: {e}");
     d.click("lumetri.match.comparisonView");
     assert_ne!(d.app().ui.program.display_mode(), Some(filmcraft_ui_egui::state::DisplayMode::Comparison));
 }
@@ -306,7 +308,7 @@ fn lumetri_presets_in_the_effects_panel() {
     d.frames(3);
     d.click("effects.presetMenu.apply");
     let e = lumetri(&mut d, clip);
-    assert_eq!(e["params"]["saturation"]["value"], json!("Float(0.0)"), "{e}");
+    assert_eq!(e["params"]["saturation"]["value"], json!({"Float": 0.0}), "{e}");
     d.exec("edit.undo", json!({}));
     // maximized (wide) panel: the folder's thumbnail grid next to the tree
     d.app().ui.keys.maximized = Some(filmcraft_ui_egui::dock::PanelKind::Effects);
@@ -322,7 +324,7 @@ fn lumetri_presets_in_the_effects_panel() {
     d.frames(3);
     d.click("effects.presetMenu.apply");
     let e = lumetri(&mut d, clip);
-    assert_eq!(e["params"]["temperature"]["value"], json!("Float(35.0)"), "{e}");
+    assert_eq!(e["params"]["temperature"]["value"], json!({"Float": 35.0}), "{e}");
 }
 
 #[test]
@@ -341,7 +343,7 @@ fn lumetri_presets_drag_onto_a_timeline_clip() {
     d.ok("ui.drag", json!({"from": {"id": "effects.lumetriPreset.Neutral Mono"}, "to": {"id": format!("timeline.clip.{target}")}, "steps": 8}));
     d.frames(3);
     let e = lumetri(&mut d, target);
-    assert_eq!(e["params"]["saturation"]["value"], json!("Float(0.0)"), "dropped preset on the target clip: {e}");
+    assert_eq!(e["params"]["saturation"]["value"], json!({"Float": 0.0}), "dropped preset on the target clip: {e}");
     assert_eq!(lumetri(&mut d, selected), Value::Null, "the selected clip it was not dropped on is untouched");
     // one undo step removes it again
     d.exec("edit.undo", json!({}));

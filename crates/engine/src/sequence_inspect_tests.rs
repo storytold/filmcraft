@@ -37,10 +37,19 @@ fn sequence_inspect_reports_clip_ends_gain_and_marker_comments() {
                 assert_eq!(j["endFrame"], rate.frame_at(c.end()));
                 assert_eq!(j["sourceOut"], c.source_out().0, "{j}");
                 assert_eq!(j["gainDb"], c.gain_db);
-                // the keys that were there before stay
-                for old in ["item", "name", "start", "duration", "startFrame", "durationFrames", "sourceIn", "speed", "enabled", "link", "label", "effects"] {
-                    assert!(j.get(old).is_some(), "{old} is still reported");
-                }
+                // Existing fields retain their values and JSON types.
+                assert_eq!(j["item"], c.item.0);
+                assert_eq!(j["name"], c.name);
+                assert_eq!(j["start"], c.start.0);
+                assert_eq!(j["duration"], c.duration.0);
+                assert_eq!(j["startFrame"], rate.frame_at(c.start));
+                assert_eq!(j["durationFrames"], rate.frame_at(c.duration));
+                assert_eq!(j["sourceIn"], c.source_in.0);
+                assert_eq!(j["speed"], c.speed);
+                assert_eq!(j["enabled"], c.enabled);
+                assert_eq!(j["link"], json!(c.link));
+                assert_eq!(j["label"], c.label.name());
+                assert_eq!(j["effects"].as_array().unwrap().len(), c.effects.len());
                 if c.id == fast {
                     assert_eq!(j["speed"], 2.0);
                     assert_eq!(
@@ -86,4 +95,95 @@ fn sequence_inspect_reports_a_reversed_clip() {
     s.execute("edit.undo", json!({})).unwrap();
     let js = s.execute("sequence.inspect", json!({})).unwrap();
     assert!(all(&js).iter().all(|(_, reversed)| !reversed));
+}
+
+#[test]
+fn sequence_inspect_reports_scale_to_frame_and_frame_hold() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let (video, audio) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[0].items[0].id, q.audio_tracks[0].items[0].id)
+    };
+    s.execute("timeline.select", json!({"clips": [video.0, audio.0]})).unwrap();
+    let rate = s.sequence_rate();
+    let before = s.execute("sequence.inspect", json!({})).unwrap();
+    for (scaled, hold_frame) in [(false, None), (true, Some(0)), (true, Some(12)), (false, None)] {
+        if s.active_sequence().unwrap().video_tracks[0].items[0].scale_to_frame != scaled {
+            s.execute("clip.scaleToFrameSize", json!({})).unwrap();
+        }
+        let held = hold_frame.map(|f| rate.tick_of(f));
+        if let Some(held) = held {
+            s.execute("clip.frameHoldOptions", json!({"clips": [video.0], "holdOn": "sourceTimecode", "time": held.0})).unwrap();
+        } else {
+            s.execute("clip.frameHoldOptions", json!({"clips": [video.0], "enabled": false})).unwrap();
+        }
+        let q = s.active_sequence().unwrap().clone();
+        let js = s.execute("sequence.inspect", json!({})).unwrap();
+        for (key, tracks) in [("video", &q.video_tracks), ("audio", &q.audio_tracks)] {
+            for (ti, t) in tracks.iter().enumerate() {
+                for (ci, c) in t.items.iter().enumerate() {
+                    let j = &js[key][ti]["items"][ci];
+                    assert_eq!(j["scaleToFrame"].as_bool(), Some(scaled && (c.id == video || c.id == audio)));
+                    assert_eq!(j["scaleToFrame"], c.scale_to_frame);
+                    let hold = if c.id == video { json!(held) } else { serde_json::Value::Null };
+                    assert_eq!(j.get("frameHold"), Some(&hold), "{j}");
+                    assert_eq!(j["frameHold"], serde_json::to_value(c.frame_hold).unwrap());
+                }
+            }
+        }
+        if !scaled {
+            assert_eq!(js, before, "clearing the states restores the original inspection");
+        }
+    }
+}
+
+#[test]
+fn sequence_inspect_effect_values_match_project_serde() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let (video, audio) = {
+        let q = s.active_sequence().unwrap();
+        (q.video_tracks[0].items[0].id, q.audio_tracks[0].items[0].id)
+    };
+    for (clip, effect, param, value) in [
+        (video, "motion", "scale", json!(125.0)),
+        (video, "motion", "position", json!([1920.0, 1080.0])),
+        (audio, "volume", "level", json!(-3.0)),
+    ] {
+        s.execute("effects.setParam", json!({"clip": clip.0, "effect": effect, "param": param, "value": value})).unwrap();
+    }
+    let q = s.active_sequence().unwrap().clone();
+    let project = s.project.to_json();
+    let revision = s.revision;
+    let js = s.execute("sequence.inspect", json!({})).unwrap();
+    let motion = js["video"][0]["items"][0]["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "motion").unwrap();
+    assert_eq!(motion["params"]["scale"]["value"], json!({"Float": 125.0}));
+    assert_eq!(motion["params"]["position"]["value"], json!({"Vec2": {"x": 1920.0, "y": 1080.0}}));
+    let mut animated = 0;
+    for (key, tracks) in [("video", &q.video_tracks), ("audio", &q.audio_tracks)] {
+        for (ti, t) in tracks.iter().enumerate() {
+            for (ci, c) in t.items.iter().enumerate() {
+                let effects = js[key][ti]["items"][ci]["effects"].as_array().unwrap();
+                assert_eq!(effects.len(), c.effects.len());
+                for (j, e) in effects.iter().zip(&c.effects) {
+                    assert_eq!(j["effect"], e.effect);
+                    assert_eq!(j["enabled"], e.enabled);
+                    assert_eq!(j["masks"], e.masks.len());
+                    assert_eq!(j["params"].as_object().unwrap().len(), e.params.len());
+                    for (name, p) in &e.params {
+                        assert_eq!(j["params"][name]["value"], serde_json::to_value(&p.value).unwrap(), "{key} clip {} {name}", c.id.0);
+                        assert_eq!(j["params"][name]["keyframes"], p.keyframes.len());
+                        if p.is_animated() {
+                            animated += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(animated > 0, "the demo includes animated parameters; keyframes remains a count");
+    assert_eq!(s.project.to_json(), project, "inspection leaves the stored parameters unchanged");
+    assert_eq!(s.revision, revision);
 }

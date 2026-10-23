@@ -271,7 +271,7 @@ fn clip_mixer_strips_follow_the_playhead() {
     let seq = d.exec("sequence.inspect", json!({}));
     let fx = &seq["audio"][0]["items"][0]["effects"];
     let vol = fx.as_array().unwrap().iter().find(|e| e["effect"] == "volume").unwrap();
-    let level: f64 = vol["params"]["level"]["value"].as_str().and_then(|v| v.strip_prefix("Float(")?.strip_suffix(')')?.parse().ok()).unwrap();
+    let level = vol["params"]["level"]["value"]["Float"].as_f64().unwrap();
     assert!(level < -8.0, "clip volume lowered from the demo's -8 dB: {level}");
     d.snapshot("mixer-clip-mixer", Some("clipMixer."));
 }
@@ -373,7 +373,7 @@ fn clip_mixer_db_value_can_be_typed() {
     let seq = d.exec("sequence.inspect", json!({}));
     let fx = &seq["audio"][0]["items"][0]["effects"];
     let vol = fx.as_array().unwrap().iter().find(|e| e["effect"] == "volume").unwrap();
-    let level: f64 = vol["params"]["level"]["value"].as_str().and_then(|v| v.strip_prefix("Float(")?.strip_suffix(')')?.parse().ok()).unwrap();
+    let level = vol["params"]["level"]["value"]["Float"].as_f64().unwrap();
     assert!((level + 20.0).abs() < 1e-6, "typed -20 dB into the clip mixer readout: {level}");
 }
 
@@ -389,7 +389,7 @@ fn clip_mixer_db_value_takes_a_calculation() {
         let seq = d.exec("sequence.inspect", json!({}));
         let fx = &seq["audio"][0]["items"][0]["effects"];
         let vol = fx.as_array().unwrap().iter().find(|e| e["effect"] == "volume").unwrap();
-        vol["params"]["level"]["value"].as_str().and_then(|v| v.strip_prefix("Float(")?.strip_suffix(')')?.parse().ok()).unwrap()
+        vol["params"]["level"]["value"]["Float"].as_f64().unwrap()
     };
     let enter = |d: &mut Driver, keys: &[&str], text: &str| {
         d.click("clipMixer.A1.value");
