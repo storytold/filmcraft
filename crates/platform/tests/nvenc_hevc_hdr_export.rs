@@ -310,6 +310,7 @@ fn sdr_stays_main_8_bit_and_the_sdr_setting_tone_maps_hdr_sequences() {
     }
 }
 
+/// The NVENC factory validates HDR/SDR frame inputs, clamps hostile floats, and populates `colr`/`mdcv`/`clli` sample entries.
 #[test]
 fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -345,11 +346,13 @@ fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     }
     packets += ten.flush().unwrap().len();
     assert_eq!(packets, 4);
-    // the sample entry of the HDR encoder carries colr + mdcv + clli, the SDR one nothing HDR
+    // the sample entry of the HDR encoder carries colr + mdcv + clli, the SDR one BT.709 colr and nothing HDR (#2142)
     let e = ten.sample_entry();
     let v = e.video.as_ref().unwrap();
     assert!(v.color.is_some() && v.mastering_display.is_some() && v.content_light == Some((0, 0)));
-    assert!(eight.sample_entry().video.as_ref().unwrap().color.is_none());
+    let sdr_v = eight.sample_entry().video.unwrap();
+    assert_eq!(sdr_v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false }));
+    assert!(sdr_v.mastering_display.is_none() && sdr_v.content_light.is_none());
     // HLG: colr only
     let Some(Ok(hlg)) = factory(Format::Hevc, w, h, rate, &ExportSettings { signal: ColorSignal::HLG, ..sdr_settings.clone() }) else {
         panic!("an HLG encoder")

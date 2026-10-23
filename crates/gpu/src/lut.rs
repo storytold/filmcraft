@@ -103,14 +103,13 @@ impl GpuLut {
             pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535), 1);
         }
         enc.copy_buffer_to_buffer(&ob, 0, &rb, 0, size);
-        self.queue.submit([enc.finish()]);
+        let sub = self.queue.submit([enc.finish()]);
         let slice = rb.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        d.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(8)) }).ok()?;
-        rx.recv().ok()?.ok()?;
+        crate::wait_mapped(d, sub, &rx)?;
         let data = slice.get_mapped_range().ok()?;
         let out = data.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
         drop(data);

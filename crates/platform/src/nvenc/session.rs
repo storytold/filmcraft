@@ -33,9 +33,18 @@ fn load() -> Result<Api, String> {
     use windows::Win32::Foundation::HMODULE;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
     use windows::core::{PCSTR, w};
+    // On Windows on ARM (such as NVIDIA RTX Spark / N1X), `nvEncodeAPI64.dll` in System32 is an
+    // x86_64 binary for emulation; the native ARM64 encoder library is `nvEncodeAPIa64.dll` (and
+    // `nvEncodeAPI.dll`).
+    #[cfg(target_arch = "aarch64")]
+    let names = [w!("nvEncodeAPIa64.dll"), w!("nvEncodeAPI.dll"), w!("nvEncodeAPI64.dll")];
+    #[cfg(not(target_arch = "aarch64"))]
+    let names = [w!("nvEncodeAPI64.dll"), w!("nvEncodeAPI.dll")];
     // SAFETY: loads the driver's library from the system directory only.
-    let module: HMODULE =
-        unsafe { LoadLibraryExW(w!("nvEncodeAPI64.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }.map_err(|_| "no NVIDIA encoder driver".to_string())?;
+    let module: HMODULE = names
+        .into_iter()
+        .find_map(|name| unsafe { LoadLibraryExW(name, None, LOAD_LIBRARY_SEARCH_SYSTEM32) }.ok())
+        .ok_or_else(|| "no NVIDIA encoder driver".to_string())?;
     // SAFETY: both symbols are looked up with the signatures of nvEncodeAPI.h; the table is
     // zero-initialised (all-zero is valid: null pointers) with its version set, as the API asks.
     unsafe {

@@ -117,14 +117,16 @@ pub struct Display {
 }
 
 impl Display {
+    /// Create a headless display target (GPU compositor when `gpu` is true and an adapter is available).
     pub fn new(gpu: bool) -> Self {
         let gpu = if gpu {
-            let instance = eframe::wgpu::Instance::default();
-            let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
-            adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
-                let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
-                (c, d)
-            })
+            filmcraft_gpu::adapter::offscreen_instance()
+                .and_then(|(instance, backends)| filmcraft_gpu::adapter::offscreen_adapter(&instance, backends))
+                .and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok())
+                .map(|(d, q)| {
+                    let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
+                    (c, d)
+                })
         } else {
             None
         };
