@@ -1,7 +1,11 @@
-//! Premiere project reader, based on llm-video-editor's `premiere.py` and user-owned XML structure.
+//! Premiere project reader, based on the author's [MIT-licensed][python-license] LLM Video Editor
+//! [`premiere.py`][python-parser] and user-owned XML structure.
 //! No Adobe application code, proprietary documentation or assets were consulted or copied.
 //! MIT OR Apache-2.0. Unsupported features remain in the source snapshot
 //! and are reported; this is not a promise of pixel-identical Premiere rendering.
+//!
+//! [python-parser]: https://github.com/willluecke/llm-video-editor/blob/1539ae2be12c0a783df86182dffb08dabef25ba1/src/video_pipeline/premiere.py
+//! [python-license]: https://github.com/willluecke/llm-video-editor/blob/1539ae2be12c0a783df86182dffb08dabef25ba1/LICENSE
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
