@@ -96,6 +96,12 @@ pub struct ProjectPanelUi {
     pub rename: Option<Rename>,
     pub dialog: Option<ProjectDialog>,
     pub hover: Option<Hover>,
+    /// List view column being resized and its width so far; the preference is written on release.
+    #[serde(skip)]
+    pub column_drag: Option<(String, f32)>,
+    /// The Project panel's thumbnail size while its slider is dragged; written on release.
+    #[serde(skip)]
+    pub icon_size_drag: Option<f32>,
 }
 
 /// Which panel instance a view belongs to.
@@ -149,7 +155,7 @@ pub fn view_of(app: &FilmcraftApp, inst: Inst) -> View {
                 prefix: "project".into(),
                 bin: valid_bin(app, app.ui.project_panel.bin).unwrap_or(root),
                 mode: v.mode,
-                icon_size: v.icon_size,
+                icon_size: app.ui.project_panel.icon_size_drag.unwrap_or(v.icon_size),
             }
         }
     }
@@ -575,7 +581,8 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         }
         x += 28.0;
     }
-    // thumbnail size: in-memory while dragging, saved on release
+    // thumbnail size: in UI state while dragging, saved on release (had the drag changed the
+    // preferences already, the command would see nothing new and not write preferences.json)
     let sw = (bar.width() - 300.0).clamp(40.0, 120.0);
     let sr = Rect::from_min_size(pos2(x + 8.0, bar.min.y + 8.0), vec2(sw, 16.0));
     let mut sz = v.icon_size;
@@ -595,12 +602,15 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     }
     if sz != v.icon_size {
         match v.inst {
-            Inst::Main => app.session.prefs.project_panel.view.icon_size = sz,
+            Inst::Main => app.ui.project_panel.icon_size_drag = Some(sz),
             Inst::Tab(k) => app.ui.project_panel.tabs[k].icon_size = sz,
         }
     }
-    if v.inst == Inst::Main && !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
-        actions.push(("project.view.set".into(), json!({"iconSize": sz})));
+    if v.inst == Inst::Main && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
+        app.ui.project_panel.icon_size_drag = None;
+        if !escaped {
+            actions.push(("project.view.set".into(), json!({"iconSize": sz})));
+        }
     }
     x = sr.max.x + 6.0;
     // Sort Icons (Icon view)

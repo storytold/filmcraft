@@ -1128,3 +1128,98 @@ fn escape_takes_back_a_media_browser_drag() {
     assert_eq!(d.app().session.project.to_json(), before, "nothing was placed on the Timeline");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- a dragged size or width is written to preferences.json on release
+
+/// A session that saves its preferences in a fresh temporary directory, and that file's path.
+fn session_saving_prefs(tag: &str, demo: bool) -> (Session, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("fc-prefs-drag-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut session = Session::default();
+    if demo {
+        session.execute("file.openDemoProject", json!({})).unwrap();
+    }
+    session.prefs_path = Some(dir.join("preferences.json"));
+    (session, dir.join("preferences.json"))
+}
+
+fn saved_prefs(path: &std::path::Path) -> filmcraft_engine::autosave::Preferences {
+    filmcraft_engine::autosave::Preferences::load(path)
+}
+
+#[test]
+fn a_dragged_list_column_width_is_written_to_preferences() {
+    let (session, path) = session_saving_prefs("column", true);
+    let mut d = Driver::with(session);
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    footage_in(&mut d, "list");
+    let width = |p: &filmcraft_engine::autosave::Preferences| p.project_panel.view.columns.iter().find(|c| c.name == "Frame Rate").map(|c| c.width);
+    let w0 = width(&d.app().session.prefs).unwrap();
+    let r = d.rect("project.list.resize.Frame Rate");
+    let (cx, cy) = centre(r);
+    d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + 60.0, "y": cy}}));
+    d.frames(3);
+    let w1 = width(&d.app().session.prefs).unwrap();
+    assert!(w1 > w0 + 30.0, "{w0} → {w1}");
+    assert_eq!(width(&saved_prefs(&path)), Some(w1), "preferences.json");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_list_column_dragged_past_the_header_is_still_written_to_preferences() {
+    let (session, path) = session_saving_prefs("column-out", true);
+    let mut d = Driver::with(session);
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    footage_in(&mut d, "list");
+    // in the docked panel, 800 points of drag take the edge (and its handle) past the header's end
+    let r = d.rect("project.list.resize.Frame Rate");
+    let (cx, cy) = centre(r);
+    d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + 800.0, "y": cy}}));
+    d.frames(3);
+    assert_eq!(d.app().ui.project_panel.column_drag, None, "the drag ended");
+    let width = saved_prefs(&path).project_panel.view.columns.iter().find(|c| c.name == "Frame Rate").map(|c| c.width);
+    assert_eq!(width, Some(800.0), "preferences.json");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_dragged_icon_size_is_written_to_preferences() {
+    let (session, path) = session_saving_prefs("icon-size", true);
+    let mut d = Driver::with(session);
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    footage_in(&mut d, "icon");
+    let s0 = d.app().session.prefs.project_panel.view.icon_size;
+    let r = d.rect("project.iconSize");
+    let y = r[1] + r[3] / 2.0;
+    d.ok("ui.drag", json!({"from": {"x": r[0] + r[2] * 0.3, "y": y}, "to": {"x": r[0] + r[2] * 0.9, "y": y}}));
+    d.frames(3);
+    let s1 = d.app().session.prefs.project_panel.view.icon_size;
+    assert!(s1 > s0 + 20.0, "{s0} → {s1}");
+    assert_eq!(saved_prefs(&path).project_panel.view.icon_size, s1, "preferences.json");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_dragged_media_browser_thumbnail_size_is_written_to_preferences() {
+    let dir = media_dir("thumbnail-size");
+    let (session, path) = session_saving_prefs("thumbnail-size", false);
+    let mut d = Driver::with(session);
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    d.ok("ui.set", json!({"focused": "MediaBrowser"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.exec("mediaBrowser.navigate", json!({"path": dir.to_string_lossy()}));
+    d.exec("mediaBrowser.settings", json!({"view": "thumbnails", "thumbnailSize": 100.0}));
+    d.wait_for("mediaBrowser.thumbnailSize");
+    let r = d.rect("mediaBrowser.thumbnailSize");
+    let y = r[1] + r[3] / 2.0;
+    d.ok("ui.drag", json!({"from": {"x": r[0] + r[2] * 0.2, "y": y}, "to": {"x": r[0] + r[2] * 0.9, "y": y}}));
+    d.frames(3);
+    let s1 = d.app().session.prefs.media_browser.thumbnail_size;
+    assert!(s1 > 150.0, "100 → {s1}");
+    assert_eq!(saved_prefs(&path).media_browser.thumbnail_size, s1, "preferences.json");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}

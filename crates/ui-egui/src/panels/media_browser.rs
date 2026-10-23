@@ -31,6 +31,9 @@ pub struct MediaBrowserUi {
     pub path_edit: Option<String>,
     /// Edit Columns… dialog: the columns being chosen (open when Some).
     pub edit_columns: Option<Vec<String>>,
+    /// The thumbnail size while its slider is dragged; the preference is written on release.
+    #[serde(skip)]
+    pub thumbnail_drag: Option<f32>,
     /// Width of the directory tree (points).
     pub tree_width: f32,
     /// The thumbnail under the pointer and the hovered fraction of its duration.
@@ -229,7 +232,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     if prefs.view == "thumbnails" {
         let sr = Rect::from_min_size(pos2(rect.max.x - 130.0, rect.max.y - 20.0), vec2(120.0, 16.0));
-        let mut sz = prefs.thumbnail_size;
+        let shown = app.ui.media_browser.thumbnail_drag.unwrap_or(prefs.thumbnail_size);
+        let mut sz = shown;
         let resp = ui.put(sr, egui::Slider::new(&mut sz, 60.0..=320.0).show_value(false));
         app.auto.add("mediaBrowser.thumbnailSize", sr, "Thumbnail size");
         // a drag ended by Escape goes back to the size it started from (#580)
@@ -244,11 +248,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         {
             sz = before;
         }
-        if sz != prefs.thumbnail_size {
-            app.session.prefs.media_browser.thumbnail_size = sz;
+        // in UI state while dragging: had the drag changed the preferences already, the command
+        // would see nothing new and not write preferences.json
+        if sz != shown {
+            app.ui.media_browser.thumbnail_drag = Some(sz);
         }
-        if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
-            exec(app, &ctx, "mediaBrowser.settings", json!({"thumbnailSize": sz}));
+        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+            app.ui.media_browser.thumbnail_drag = None;
+            if !escaped {
+                exec(app, &ctx, "mediaBrowser.settings", json!({"thumbnailSize": sz}));
+            }
         }
     }
 }
@@ -642,7 +651,7 @@ fn preview_item(
 fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry]) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    let size = app.session.prefs.media_browser.thumbnail_size;
+    let size = app.ui.media_browser.thumbnail_drag.unwrap_or(app.session.prefs.media_browser.thumbnail_size);
     let hover_scrub = app.session.prefs.media_browser.hover_scrub;
     let th_h = size * 9.0 / 16.0;
     let cell = vec2(size + 16.0, th_h + 30.0);
