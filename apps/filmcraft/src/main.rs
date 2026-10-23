@@ -305,6 +305,14 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         {
             app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
         }
+        // macOS: the synchronous picker runs the panel modally inside the UI pass, and a Finder
+        // drag onto the open dialog queues a winit event while the outer event is still being
+        // handled — the re-entrancy guard aborts the app (#2018). Begin the panel as a
+        // completion-handler sheet instead: the frame loop keeps running while it is open.
+        #[cfg(target_os = "macos")]
+        {
+            app.hooks.run_dialog = Some(Box::new(run_dialog_sheet));
+        }
         app.hooks.open_path = Some(Box::new(open_path));
         // Help menu, About and Discord links (#642): eframe is built without its `links`
         // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
@@ -465,7 +473,14 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
                     rfd::FileDialog::new().add_filter(&project, &project_exts).set_file_name(name).save_file().map(path).into_iter().collect()
                 }
                 FileDialog::SaveAs { filter, exts, name } => {
-                    rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(name).save_file().map(path).into_iter().collect()
+                    // the suggested name may be a full path (Quick Export's): suggest the basename
+                    // in the existing parent, like the macOS sheet and the sync pick_save_as
+                    let (dir, file) = crate::save_name_parts(&name);
+                    let mut d = rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(file);
+                    if let Some(dir) = dir {
+                        d = d.set_directory(dir);
+                    }
+                    d.save_file().map(path).into_iter().collect()
                 }
                 FileDialog::Folder { at } => {
                     let d = rfd::FileDialog::new();
@@ -490,10 +505,10 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
     rx
 }
 
-/// A dialog as the Linux dialog thread shows it: filter names translated (here, on the UI thread:
-/// the interface language is per thread) and every extension list turned into the
+/// A dialog as the Linux and macOS dialog threads show it: filter names translated (here, on the
+/// UI thread: the interface language is per thread) and every extension list turned into the
 /// case-insensitive patterns the synchronous pickers use, so `CLIP.MP4` stays visible (#262).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> filmcraft_ui_egui::native_dialogs::FileDialog {
     use filmcraft_ui_egui::native_dialogs::FileDialog;
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
@@ -508,9 +523,97 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
 }
 
 /// The project dialogs' filter patterns (`EDIT.FCPROJ` included).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn project_patterns() -> Vec<String> {
     file_filters::extensions(&["fcproj"])
+}
+
+/// macOS: begin the panel as a completion-handler sheet (rfd's async API) and answer on a
+/// channel. The future is created here — on the main thread, as AppKit requires — and begins
+/// the sheet without blocking: the main run loop stays free, so a Finder drag onto the open
+/// dialog cannot trip winit's re-entrancy guard (#2018). The future is `Send`, so a worker
+/// thread parks on it while the sheet is up and the answer lands on the channel.
+#[cfg(target_os = "macos")]
+fn run_dialog_sheet(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> std::sync::mpsc::Receiver<Vec<String>> {
+    use filmcraft_ui_egui::native_dialogs::FileDialog;
+    let media = filmcraft_ui_egui::i18n::t("Media").to_string();
+    let project = filmcraft_ui_egui::i18n::t("FilmCraft Project").to_string();
+    let project_exts = project_patterns();
+    let dialog = prepare_dialog(dialog);
+    let path = |f: rfd::FileHandle| f.path().to_string_lossy().into_owned();
+    type Paths = std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send>>;
+    let future: Paths = match dialog {
+        FileDialog::OpenFiles { exts } => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&media, &exts).pick_files();
+            Box::pin(async move { f.await.unwrap_or_default().into_iter().map(path).collect() })
+        }
+        FileDialog::OpenFile { filter, exts } => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&filter, &exts).pick_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::Relink { exts, .. } => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&media, &exts).pick_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::OpenProject => {
+            let f = rfd::AsyncFileDialog::new().add_filter(&project, &project_exts).pick_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::SaveProject { name } => {
+            let f = save_dialog(&project, &project_exts, &name).save_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::SaveAs { filter, exts, name } => {
+            let f = save_dialog(&filter, &exts, &name).save_file();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+        FileDialog::Folder { at } => {
+            let mut f = rfd::AsyncFileDialog::new();
+            if let Some(dir) = at.filter(|d| !d.is_empty()) {
+                f = f.set_directory(dir);
+            }
+            let f = f.pick_folder();
+            Box::pin(async move { f.await.map(&path).into_iter().collect() })
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("file-dialog".into()).spawn(move || {
+        let shown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || pollster::block_on(future)));
+        match shown {
+            Ok(paths) => {
+                let _ = tx.send(paths);
+            }
+            Err(_) => log::warn!("the file dialog thread panicked; taken as cancelled"),
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("could not start the file dialog thread: {e}");
+    }
+    rx
+}
+
+/// A save dialog's suggested `name` may be a full path (Quick Export's): the basename is the
+/// suggested file name and, when the parent exists, the dialog starts in its folder — the same
+/// splitting the synchronous `pick_save_as` hook does. Without it, a full path in
+/// `set_file_name` opens the dialog in the wrong folder (CodeRabbit review of #2075).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn save_name_parts(name: &str) -> (Option<String>, String) {
+    let p = std::path::Path::new(name);
+    let file = p.file_name().map_or_else(|| name.to_string(), |n| n.to_string_lossy().into_owned());
+    let dir = p.parent().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned());
+    (dir, file)
+}
+
+/// The macOS async save sheet (project saves and exports): filtered, suggesting `file`, and
+/// starting in the suggested path's existing folder (see [`save_name_parts`]).
+#[cfg(target_os = "macos")]
+fn save_dialog(filter: &str, exts: &[String], name: &str) -> rfd::AsyncFileDialog {
+    let (dir, file) = save_name_parts(name);
+    let mut f = rfd::AsyncFileDialog::new().add_filter(filter, exts).set_file_name(file);
+    if let Some(dir) = dir {
+        f = f.set_directory(dir);
+    }
+    f
 }
 
 #[cfg(test)]
@@ -552,5 +655,24 @@ mod tests {
         let project = super::project_patterns();
         assert_eq!(project.first().map(String::as_str), Some("fcproj"));
         assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
+    }
+
+    /// A full-path save suggestion splits into the existing parent directory and the basename;
+    /// a missing parent suggests no directory and a bare name suggests none either.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn save_name_splits_a_full_path_into_directory_and_basename() {
+        let in_tmp = std::env::temp_dir().join("clip.mp4");
+        let (dir, file) = super::save_name_parts(&in_tmp.to_string_lossy());
+        assert_eq!(file, "clip.mp4");
+        assert_eq!(dir.as_deref(), in_tmp.parent().and_then(std::path::Path::to_str));
+        // a parent that doesn't exist must not be suggested
+        let (dir, file) = super::save_name_parts("/no/such/dir/clip.mp4");
+        assert_eq!(file, "clip.mp4");
+        assert_eq!(dir, None);
+        // a bare name stays as-is
+        let (dir, file) = super::save_name_parts("clip.mp4");
+        assert_eq!(file, "clip.mp4");
+        assert_eq!(dir, None);
     }
 }

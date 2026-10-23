@@ -1804,6 +1804,8 @@ impl FilmcraftApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
     }
 
+    /// One UI pass: drain the engine's events and the native menu's commands, run the shortcuts
+    /// and the playback, then draw the header, the panels and the status line.
     fn frame(&mut self, ui: &mut egui::Ui) {
         i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
@@ -1847,6 +1849,14 @@ impl FilmcraftApp {
             while let Ok(id) = rx.try_recv() {
                 // control-only mode ignores native menu commands, but Quit stays available (#1943)
                 if self.control_input_only && id != "app.quit" {
+                    continue;
+                }
+                // The native menu bar's Quit is a custom item: the system predefined one called
+                // NSApplication terminate:, which quits without the unsaved-changes prompt and
+                // with a file dialog up. Route it through the window-close flow instead, so
+                // intercept_quit asks to save and refuses while a file dialog is open (#2018).
+                if id == "app.quit" {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     continue;
                 }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {

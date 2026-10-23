@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::{FilmcraftApp, HostHooks, RelinkHint};
+use crate::{FilmcraftApp, HostHooks, RelinkHint, panels};
 
 /// A native file dialog. Filters are a name and extensions without dots.
 #[derive(Clone, Debug)]
@@ -113,6 +113,12 @@ fn refs(v: &[String]) -> Vec<&str> {
 }
 
 impl FilmcraftApp {
+    /// Whether a file dialog is open and waiting for the user (`pick`/`pick_ui` refuse while it
+    /// is, and quitting is refused until it is cancelled).
+    pub fn dialog_pending(&self) -> bool {
+        self.native_dialog.is_some()
+    }
+
     /// Show `dialog`, then call `then` with the chosen paths (empty when cancelled). With a host
     /// that shows dialogs without blocking, this returns `{"dialog": "open"}` and `then` runs on a
     /// later frame; otherwise `then` runs now and its result is returned. While a dialog is open
@@ -176,6 +182,9 @@ impl FilmcraftApp {
         if let Err(e) = (pending.then)(self, paths) {
             self.ui.status = e;
         }
+        // a save sheet opened from a Quit / Close-project confirmation: a successful save
+        // resumes the close or quit it was asked for
+        panels::clip_dialogs::resume_close_after_save(self, ctx);
         ctx.request_repaint();
     }
 }

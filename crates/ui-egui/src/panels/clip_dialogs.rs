@@ -110,6 +110,12 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
 pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
+    if app.dialog_pending() {
+        // A file picker is up: refuse to quit until it is cancelled, as Premiere does (with the
+        // modal pickers this was implicit — AppKit deferred termination during the modal loop).
+        app.ui.status = tl!("A file dialog is already open").to_string();
+        return true;
+    }
     if app.quit_confirmed || !app.session.is_dirty() {
         return false;
     }
@@ -117,6 +123,32 @@ pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
         app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: Value::Null, error: String::new() });
     }
     true
+}
+
+/// `poll_native_dialog`: the Save button on a Quit / Close-project confirmation for a never-saved
+/// project opened the async save sheet; once the sheet has completed with a successful save,
+/// resume the close or quit it was asked for without a second choice. A cancelled sheet leaves the
+/// session dirty and the confirmation up, as when it was opened.
+pub(crate) fn resume_close_after_save(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if app.session.is_dirty() {
+        return;
+    }
+    match app.ui.clip_dialog.as_ref().map(|d| d.command.as_str()) {
+        Some("file.closeProject") => {
+            if let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
+                app.ui.status = e.to_string();
+            }
+            app.ui.clip_dialog = None;
+        }
+        Some("app.quit") => {
+            // the changes are in the file: closing the project would clear their recovery
+            // snapshot, so just quit (the same as the inline Save path in `show`)
+            app.quit_confirmed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            app.ui.clip_dialog = None;
+        }
+        _ => {}
+    }
 }
 
 /// Initial parameters (and display info) of a command's dialog.

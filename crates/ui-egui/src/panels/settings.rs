@@ -645,25 +645,42 @@ fn label_presets(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) {
             if preset_button(app, ui, "revert", Icon::Reset, tl!("Revert to the preset's colors and names"), modified) {
                 pick = selected.cloned();
             }
-            if preset_button(app, ui, "import", Icon::Import, tl!("Import a preset file…"), true)
-                && let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Label Color Presets"), &["json"]))
-            {
-                d.label_presets = None;
-                match app.session.import_label_preset(std::path::Path::new(&path)) {
-                    Ok(p) => {
-                        d.preset_message = tlf!("Imported “{name}”", name = p.name);
-                        pick = Some(p);
+            // Import / Export go through the async dialog: a synchronous picker here ran the
+            // panel modally inside the UI pass, and a Finder drag onto it re-entered the event
+            // handler and aborted (#2018).
+            if preset_button(app, ui, "import", Icon::Import, tl!("Import a preset file…"), true) {
+                app.pick_ui(FileDialog::open_file(tl!("Label Color Presets"), &["json"]), |app, paths| {
+                    let Some(path) = paths.first() else { return };
+                    let Some(d) = app.ui.settings.as_mut() else { return };
+                    d.label_presets = None;
+                    match app.session.import_label_preset(std::path::Path::new(path)) {
+                        Ok(p) => {
+                            d.preset_message = tlf!("Imported “{name}”", name = p.name);
+                            // select the imported preset, as the direct picker's path did
+                            let mut labels: settings::LabelPrefs = serde_json::from_value(get(&d.values, "labels").clone()).unwrap_or_default();
+                            p.apply(&mut labels);
+                            if let Ok(v) = serde_json::to_value(&labels) {
+                                put(&mut d.values, "labels", v);
+                            }
+                        }
+                        Err(e) => d.preset_message = e,
                     }
-                    Err(e) => d.preset_message = e,
-                }
+                });
             }
-            if preset_button(app, ui, "export", Icon::Export, tl!("Export the labels to a preset file…"), true)
-                && let Some(path) = app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Label Color Presets"), &["json"], &format!("{}.json", labels.preset)))
-            {
-                d.preset_message = match settings::LabelPreset::export(std::path::Path::new(&path), &labels) {
-                    Ok(_) => tlf!("Exported to {path}", path),
-                    Err(e) => e,
-                };
+            if preset_button(app, ui, "export", Icon::Export, tl!("Export the labels to a preset file…"), true) {
+                let labels: settings::LabelPrefs = serde_json::from_value(get(&d.values, "labels").clone()).unwrap_or_default();
+                let name = format!("{}.json", labels.preset);
+                app.pick_ui(FileDialog::save_as(tl!("Label Color Presets"), &["json"], &name), move |app, paths| {
+                    let Some(path) = paths.first() else { return };
+                    let Some(d) = app.ui.settings.as_mut() else { return };
+                    d.preset_message = match settings::LabelPreset::export(std::path::Path::new(path), &labels) {
+                        Ok(_) => {
+                            let path = path.to_string();
+                            tlf!("Exported to {path}", path)
+                        }
+                        Err(e) => e,
+                    };
+                });
             }
             if preset_button(app, ui, "folder", Icon::Folder, tl!("Show the presets folder"), folder.is_some())
                 && let Some(dir) = &folder
