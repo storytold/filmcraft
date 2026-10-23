@@ -107,9 +107,12 @@ text animation are not reconstructed.
 Projects containing only settings and no `Sequence` objects currently report an empty-document
 error. They do not create an imported project or destination; settings-only import is unsupported.
 
-Input is bounded to 64 MiB compressed/expanded XML, 500,000 XML nodes, 256 sequences, 256 tracks
-per kind and 100,000 timeline items. A traversal budget also accounts for repeated references and
-text size; diagnostics are capped at 1,024 entries plus a truncation notice. Clips with nonpositive
+Input is bounded to 64 MiB compressed gzip and 512 MiB plain/expanded XML, 16,000,000 XML nodes,
+256 sequences, 256 tracks per kind and 100,000 timeline items. The traversal budget is the greater
+of 5,000,000 units and 64 times the parsed node count. Each visited subtree charges its node count
+plus one unit per 64 bytes, including repeated references and caption payloads; increasing document
+capacity does not exempt repeated work. Diagnostics are capped at 1,024 entries plus a truncation
+notice. Large XML still requires substantial memory and parses synchronously. Clips with nonpositive
 timeline duration, non-finite speed or speed outside 0.001–1000, or inverted/unsupported source
 ranges are skipped with a warning naming the clip. Other clips keep their original timeline
 positions; skipped clips can leave gaps. A transition whose end precedes its start is skipped with
@@ -130,6 +133,10 @@ not ask for consent for each valid media reference, and do not verify rendered a
 
 ```sh
 cargo test --locked -p filmcraft-engine -p filmcraft-interchange --lib premiere
+# Explicit capacity checks: generated 150 MiB XML, 83 sequences, no private media.
+# Run separately to measure each process's peak RSS (on macOS, /usr/bin/time -l).
+cargo test --locked -p filmcraft-interchange --lib synthetic_150_mib_plain_import -- --ignored --nocapture
+cargo test --locked -p filmcraft-interchange --lib synthetic_150_mib_gzip_import -- --ignored --nocapture
 FILMCRAFT_PREMIERE_CORPUS=/path/to/local-manifest.json \
   cargo test --locked -p filmcraft-engine -p filmcraft-interchange --lib premiere_private_corpus -- --ignored --nocapture
 ```
