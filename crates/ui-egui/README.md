@@ -9,11 +9,13 @@ Dragging a video or audio transition over a compatible clip shows its actual tim
 selected cut and an In/Out label. Shared cuts center the span; isolated edges use a one-sided
 span. The preview uses the engine's read-only transition planner, including Timeline duration
 preferences, and release dispatches `effects.apply` with the same edge. Locked tracks and
-incompatible clip types show no valid transition preview. Ordinary effects retain their clip
-outline. `timeline.transitionDropPreview` exposes the span and edge to automation.
+incompatible clip types show no valid transition preview. The drop snaps to Start at Cut, Center
+at Cut or End at Cut by where the pointer is relative to the cut. Ordinary effects retain their
+clip outline. `timeline.transitionDropPreview` exposes the span and alignment to automation.
 
-`transition_drop_ui` covers both edges of short video/audio clips, hover without project edits,
-the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screenshots with wgpu.
+`transition_drop_ui` covers the three alignments on video/audio cuts and a one-sided clip edge,
+hover without project edits, the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to
+render screenshots with wgpu.
 
 ## Localisation
 

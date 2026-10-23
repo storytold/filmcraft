@@ -756,6 +756,11 @@ mod tests {
         }
         crate::panels::timeline::CLIP_MENU.iter().flat_map(|g| g.iter()).for_each(|(l, _)| push(&mut out, l));
         crate::panels::timeline::EDIT_POINT_TYPES.iter().for_each(|(l, ..)| push(&mut out, l));
+        // Effect Controls' Alignment menu and the Timeline's transition-drop label.
+        filmcraft_edit::transitions::Alignment::MENU
+            .into_iter()
+            .chain([filmcraft_edit::transitions::Alignment::Custom])
+            .for_each(|a| push(&mut out, a.label()));
         crate::panels::project::NEW_ITEMS.iter().for_each(|(l, _)| push(&mut out, l));
         // section headers keyed by their English name (collapsed state), translated when drawn
         let sections = [

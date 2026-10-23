@@ -246,6 +246,12 @@ fn set_transition_duration_and_alignment_menu() {
     // Reverse
     d.click("effectControls.transition.reverse");
     assert_eq!(d.transition(c.id).unwrap()["reverse"], json!(true));
+    // The Alignment menu follows the interface language, like the Timeline's drop label.
+    d.harness.state_mut().ui.language = filmcraft_ui_egui::i18n::Language::Es;
+    d.frames(2);
+    assert_eq!(d.label("effectControls.transition.alignment"), "Inicio en el corte");
+    d.harness.state_mut().ui.language = filmcraft_ui_egui::i18n::Language::En;
+    d.frames(1);
 }
 
 /// A transition's own settings are in Effect Controls and change it (Push: Direction, Motion Blur).

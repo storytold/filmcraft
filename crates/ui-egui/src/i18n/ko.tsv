@@ -510,6 +510,10 @@
 	Center align text	텍스트 가운데 정렬
 	Center Channel Pan	센터 채널 팬
 	Center Gradient	중앙 그레이디언트
+	Center at Cut	컷 중앙
+	Start at Cut	컷 시작
+	End at Cut	컷 끝
+	Custom Start	사용자 정의 시작
 	Center Horizontally	가로 중앙
 	Center Input	센터 입력
 	Center Left	중앙 왼쪽

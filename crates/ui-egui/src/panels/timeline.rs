@@ -3044,24 +3044,39 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 _ => None,
             });
             let edge = if p.x - layout.x_of(it.start) < layout.x_of(it.end()) - p.x { "in" } else { "out" };
-            let params = json!({"effect": effect, "clip": clip.0, "edge": edge});
+            let mut params = json!({"effect": effect, "clip": clip.0, "edge": edge});
             if let Some(kind) = transition_kind {
                 if let Ok((_, tr)) = filmcraft_engine::commands::preview_transition(&app.session, &params, kind) {
-                    let r = Rect::from_min_max(pos2(layout.x_of(tr.start), row.rect.min.y + 1.0), pos2(layout.x_of(tr.end()), row.rect.max.y - 1.0));
-                    let painter = ui.painter().with_clip_rect(layout.content);
-                    painter.rect_filled(r, 2.0, app.tokens.accent.gamma_multiply(0.35));
-                    paint_hatch(&painter, r.intersect(layout.content));
-                    painter.rect_stroke(r, 2.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                    // Snap the drop to the cut: Start at Cut, Center at Cut or End at Cut, by
+                    // where the pointer is relative to it (beyond half the transition's span).
                     let cut = if edge == "in" { it.start } else { it.end() };
-                    let x = layout.x_of(cut);
-                    painter.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(3.0, app.tokens.accent));
-                    // Keep the edge label readable even when the clip/transition is only a few pixels wide.
-                    let label = if edge == "in" { tl!("In") } else { tl!("Out") };
-                    let label_width = painter.layout_no_wrap(label.to_string(), Tokens::ui(11.0), app.tokens.accent).size().x + 8.0;
-                    let label_rect = Rect::from_center_size(pos2(p.x, row.rect.top() + 10.0), vec2(label_width, 15.0));
-                    painter.rect_filled(label_rect, 2.0, app.tokens.panel_bg);
-                    painter.text(label_rect.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.0), app.tokens.accent);
-                    app.auto.add("timeline.transitionDropPreview", r.intersect(layout.content), edge);
+                    let half = tr.duration.mul_ratio(1, 2);
+                    let align = if layout.tick_at(p.x) < cut - half {
+                        filmcraft_edit::transitions::Alignment::End
+                    } else if layout.tick_at(p.x) > cut + half {
+                        filmcraft_edit::transitions::Alignment::Start
+                    } else {
+                        filmcraft_edit::transitions::Alignment::Center
+                    };
+                    params["align"] = json!(align.id());
+                    if let Ok((_, tr)) = filmcraft_engine::commands::preview_transition(&app.session, &params, kind) {
+                        let r = Rect::from_min_max(pos2(layout.x_of(tr.start), row.rect.min.y + 1.0), pos2(layout.x_of(tr.end()), row.rect.max.y - 1.0));
+                        let painter = ui.painter().with_clip_rect(layout.content);
+                        painter.rect_filled(r, 2.0, app.tokens.accent.gamma_multiply(0.35));
+                        paint_hatch(&painter, r.intersect(layout.content));
+                        painter.rect_stroke(r, 2.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                        let x = layout.x_of(cut);
+                        painter.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(3.0, app.tokens.accent));
+                        // Keep the alignment label readable even when the transition is only a few pixels wide.
+                        let label = filmcraft_edit::transitions::alignment(&tr, cut, rate.frame_duration()).label();
+                        let shown = crate::i18n::t(label);
+                        let label_width = painter.layout_no_wrap(shown.to_string(), Tokens::ui(11.0), app.tokens.accent).size().x + 8.0;
+                        let label_rect = Rect::from_center_size(pos2(p.x, row.rect.top() + 10.0), vec2(label_width, 15.0));
+                        painter.rect_filled(label_rect, 2.0, app.tokens.panel_bg);
+                        painter.text(label_rect.center(), Align2::CENTER_CENTER, shown, Tokens::ui(11.0), app.tokens.accent);
+                        // Automation stays in English so tests and the control channel match a fixed label.
+                        app.auto.add("timeline.transitionDropPreview", r.intersect(layout.content), label);
+                    }
                 }
             } else {
                 let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));

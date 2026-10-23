@@ -125,7 +125,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
             row_line(ui);
 
             ui.label(tl!("Alignment"));
-            let shown = align.label();
+            let shown = crate::i18n::t(align.label());
             let r = ui
                 .add_enabled_ui(!one_sided, |ui| {
                     egui::ComboBox::from_id_salt(("tr-align", id.0))
@@ -133,11 +133,12 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
                         .width(170.0)
                         .show_ui(ui, |ui| {
                             for a in Alignment::MENU {
-                                let o = ui.selectable_label(a == align, a.label());
+                                let label = crate::i18n::t(a.label());
+                                let o = ui.selectable_label(a == align, label);
                                 if o.clicked() && a != align {
                                     changes.push(json!({"align": a.id()}));
                                 }
-                                elems.push((format!("effectControls.transition.alignment.option.{}", a.id()), o.rect, a.label().to_string()));
+                                elems.push((format!("effectControls.transition.alignment.option.{}", a.id()), o.rect, label.to_string()));
                             }
                         })
                         .response

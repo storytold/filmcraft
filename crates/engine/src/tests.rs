@@ -1053,6 +1053,35 @@ fn transition_duration_alignment_and_position() {
     assert_eq!(*s.project, before);
 }
 
+/// Applying a transition with `align`: Start at Cut begins on the cut, End at Cut ends on it,
+/// Center at Cut (default) centres it; the stored alignment matches where it sits.
+#[test]
+fn applying_a_transition_respects_the_alignment() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    let q = s.active_sequence().unwrap();
+    let (clip, cut) = (q.video_tracks[0].items[1].id, q.video_tracks[0].items[1].start);
+    let dur = s.prefs.timeline.video_transition_duration(rate);
+    let apply = |s: &mut Session, align: &str| {
+        let r = s.execute("sequence.applyVideoTransition", json!({"clip": clip.0, "edge": "in", "align": align})).unwrap();
+        let id = r["transition"].as_u64().unwrap();
+        s.active_sequence().unwrap().all_tracks().flat_map(|t| t.transitions.iter()).find(|x| x.id.0 == id).unwrap().clone()
+    };
+    for (align, want_start, want_align) in [
+        ("start", cut, filmcraft_project::TransitionAlign::StartAtCut),
+        ("end", cut - dur, filmcraft_project::TransitionAlign::EndAtCut),
+        ("center", rate.snap(cut - dur.mul_ratio(1, 2)), filmcraft_project::TransitionAlign::CenterAtCut),
+    ] {
+        let t = apply(&mut s, align);
+        assert_eq!((t.start, t.duration, t.align), (want_start, dur, want_align), "{align}");
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    // a bad alignment is refused, and nothing is applied
+    let before = (*s.project).clone();
+    assert!(s.execute("sequence.applyVideoTransition", json!({"clip": clip.0, "edge": "in", "align": "middle"})).is_err());
+    assert_eq!(*s.project, before);
+}
+
 /// #484: Enable flips each selected clip on its own, as in Premiere. With one enabled and one
 /// disabled clip selected it swaps them, instead of first making both the same.
 #[test]
