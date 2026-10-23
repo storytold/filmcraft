@@ -158,6 +158,9 @@ progress and stop it:
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
+For ownership states, shutdown budgets and retained-output behavior, see
+[MCP request lifecycle](mcp-request-lifecycle.md).
+
 ## 2. Control channel
 
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one
