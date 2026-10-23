@@ -22,7 +22,7 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default: Settings ▸ Speech model, `whisper-base` out of the box; `parakeet-tdt-0.6b-v3` for word-level timing), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
@@ -37,10 +37,17 @@ the control channel and MCP agents can do the same.
 
 ## Speech recognition
 
-Recognition goes through the `Transcriber` trait (`crates/speech`). The built-in recogniser is
-OpenAI's Whisper, run in pure Rust on [candle](https://github.com/huggingface/candle) on the CPU,
-with timestamp decoding, language detection and word times from cross-attention alignment (see the
-`filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
+Recognition goes through the `Transcriber` trait (`crates/speech`). There are two built-in
+recognisers, both run in pure Rust on [candle](https://github.com/huggingface/candle) on the CPU:
+
+- OpenAI's **Whisper**, with timestamp decoding, language detection and word times from
+  cross-attention alignment (see the `filmcraft_speech::whisper` module docs).
+- NVIDIA's **Parakeet TDT 0.6B v3**, a FastConformer encoder with a token-and-duration transducer
+  decoder. The decoder times every token itself (80 ms frames), so word times are tight enough for
+  word-by-word captions, and it writes punctuation and capitals. It recognises English and 24 other
+  European languages without being told which; the transcript's language is guessed from common
+  words. Long clips are cut into chunks of at most 90 s in pauses (see the
+  `filmcraft_speech::parakeet` module docs). It needs about 4 GB of memory while transcribing. Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
 
 Both are **optional features**, off by default and never built for the web:
@@ -62,13 +69,14 @@ install any recogniser in `Session::transcriber`, which enables transcription in
 
 Weights are **never** bundled or committed. They are downloaded on request into
 `<data dir>/models/<id>/` (see `filmcraft_engine::autosave::default_data_dir`), each file pinned to a
-revision of OpenAI's Hugging Face repositories and checked against its SHA-256:
+revision of the publisher's Hugging Face repository and checked against its SHA-256:
 
 | Id | Languages | Licence |
 |---|---|---|
 | `whisper-tiny` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
 | `whisper-base` (default) | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
 | `whisper-small` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
+| `parakeet-tdt-0.6b-v3` (2.5 GB) | 25 European languages | CC-BY-4.0 (NVIDIA) |
 
 ### Testing
 
@@ -78,7 +86,9 @@ in `target/models/<id>/` (or `$FILMCRAFT_MODELS_DIR`) and speech samples (mono 1
 reference `.txt`) are in `target/fixtures/speech/`; it reports the word error rate and otherwise
 prints SKIPPED. Measured on 2026-10-01: `whisper-tiny`, English, 12.2 % WER over 797 words of
 the local speech samples (LibriSpeech read speech and dialogue clips) (about 9.5 minutes for the run in a release build on an
-Apple-silicon laptop CPU).
+Apple-silicon laptop CPU). Measured on 2026-10-22: `parakeet-tdt-0.6b-v3`, English, 5.5 % WER over 799
+words of synthesized speech, where every remaining error is a number written as digits
+("nine thirty" → "9 30") or one rare word; 11× faster than real time on an Apple-silicon laptop CPU.
 
 ## Limits
 

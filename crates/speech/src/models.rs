@@ -7,7 +7,10 @@
 //!
 //! Licence: OpenAI released the Whisper code and model weights under the MIT licence
 //! (<https://github.com/openai/whisper/blob/main/LICENSE>); the safetensors conversions OpenAI
-//! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0. Both are permissive.
+//! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0. NVIDIA publishes
+//! Parakeet TDT 0.6B v3 at `huggingface.co/nvidia/parakeet-tdt-0.6b-v3` under CC-BY-4.0, which
+//! allows use and redistribution with attribution (the catalogue entry carries it). All are
+//! permissive.
 
 use std::path::{Path, PathBuf};
 
@@ -23,10 +26,19 @@ pub struct ModelFile {
     pub size: u64,
 }
 
+/// The recogniser that runs a model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    Whisper,
+    Parakeet,
+}
+
 /// A downloadable speech model.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ModelInfo {
     pub id: &'static str,
+    pub engine: Engine,
     pub name: &'static str,
     /// Recognises languages other than English (and detects the language).
     pub multilingual: bool,
@@ -55,11 +67,26 @@ macro_rules! hf {
     };
 }
 
+#[cfg(test)]
+const PARAKEET_REV: &str = "541d1f99c6b0c3cd0b11a95167540bb8edefd82b";
+
+macro_rules! nvidia {
+    ($name:literal, $sha:literal, $size:expr) => {
+        ModelFile {
+            name: $name,
+            url: concat!("https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/", "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "/", $name),
+            sha256: $sha,
+            size: $size,
+        }
+    };
+}
+
 const TOKENIZER_MULTI: &str = "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566";
 
 static CATALOGUE: &[ModelInfo] = &[
     ModelInfo {
         id: "whisper-tiny",
+        engine: Engine::Whisper,
         name: "Whisper tiny (multilingual)",
         multilingual: true,
         description: "39 M parameters. Fastest; fine for clear speech, rough on noisy audio.",
@@ -100,6 +127,7 @@ static CATALOGUE: &[ModelInfo] = &[
     },
     ModelInfo {
         id: "whisper-base",
+        engine: Engine::Whisper,
         name: "Whisper base (multilingual)",
         multilingual: true,
         description: "74 M parameters. The default: a good balance of speed and accuracy.",
@@ -140,6 +168,7 @@ static CATALOGUE: &[ModelInfo] = &[
     },
     ModelInfo {
         id: "whisper-small",
+        engine: Engine::Whisper,
         name: "Whisper small (multilingual)",
         multilingual: true,
         description: "244 M parameters. Most accurate here; about 4× slower than base.",
@@ -176,6 +205,22 @@ static CATALOGUE: &[ModelInfo] = &[
                 "1d7734884874f1a1513ed9aa760a4f8e97aaa02fd6d93a3a85d27b2ae9ca596b",
                 966995080
             ),
+        ],
+    },
+    ModelInfo {
+        id: "parakeet-tdt-0.6b-v3",
+        engine: Engine::Parakeet,
+        name: "Parakeet TDT 0.6B v3 (25 European languages)",
+        multilingual: true,
+        description: "600 M parameters (NVIDIA). The most accurate here, with punctuation and precise per-word timing for word-by-word captions. English and 24 other European languages, detected automatically. Needs about 3 GB of memory.",
+        license: "CC-BY-4.0 (NVIDIA Parakeet TDT 0.6B v3)",
+        license_url: "https://creativecommons.org/licenses/by/4.0/",
+        author: "NVIDIA",
+        source: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+        files: &[
+            nvidia!("config.json", "e747b85e1bdfd300c8b8ac63bac8dd5221f8fe9bc275b48d06c735fcd6971b6e", 1153),
+            nvidia!("tokenizer.json", "bd321b096832a3f270bd3b2a88823957920f1a5c5ada71114a26ea729d0cbe91", 1159960),
+            nvidia!("model.safetensors", "3a2026366188c8c68598edbbff92f8d11590a08e0ae2e6775544e7b07d6a5e11", 2508311120),
         ],
     },
 ];
@@ -326,11 +371,14 @@ mod tests {
         for m in catalogue() {
             assert!(m.size() > 100_000_000, "{}", m.id);
             for f in m.files {
-                assert!(f.url.starts_with("https://huggingface.co/openai/whisper-"), "{}", f.url);
+                match m.engine {
+                    Engine::Whisper => assert!(f.url.starts_with("https://huggingface.co/openai/whisper-"), "{}", f.url),
+                    Engine::Parakeet => assert!(f.url.starts_with("https://huggingface.co/nvidia/parakeet-") && f.url.contains(PARAKEET_REV), "{}", f.url),
+                }
                 assert!(f.url.contains("/resolve/") && f.url.ends_with(f.name));
                 assert_eq!(f.sha256.len(), 64);
                 assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
-                if f.name == "tokenizer.json" {
+                if f.name == "tokenizer.json" && m.engine == Engine::Whisper {
                     assert_eq!(f.sha256, shared_tokenizer_sha());
                 }
             }
@@ -364,6 +412,7 @@ mod tests {
         }];
         let model = ModelInfo {
             id: "integrity-test",
+            engine: Engine::Whisper,
             name: "integrity test",
             multilingual: false,
             description: "",

@@ -8,6 +8,8 @@
 //!   `download`) the verified downloader. Weights are **never** bundled or committed.
 //! - [`whisper`] (feature `whisper`): Whisper inference in pure Rust on candle, with timestamp
 //!   decoding, language detection and word-level timestamps from cross-attention alignment (DTW).
+//! - [`parakeet`] (feature `whisper`, which turns on speech inference in general): NVIDIA
+//!   Parakeet TDT on candle, whose decoder times every token itself (word-by-word captions).
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
@@ -19,6 +21,10 @@
 pub mod diarize;
 pub mod mel;
 pub mod models;
+#[cfg(feature = "whisper")]
+pub mod parakeet;
+#[cfg(feature = "whisper")]
+mod safetensors;
 pub mod vad;
 #[cfg(feature = "whisper")]
 pub mod whisper;
@@ -126,7 +132,11 @@ pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn
     }
     #[cfg(feature = "whisper")]
     {
-        Ok(std::sync::Arc::new(whisper::Whisper::load(&models::model_dir(models_dir, m), m.id)?))
+        let dir = models::model_dir(models_dir, m);
+        Ok(match m.engine {
+            models::Engine::Whisper => std::sync::Arc::new(whisper::Whisper::load(&dir, m.id)?),
+            models::Engine::Parakeet => std::sync::Arc::new(parakeet::Parakeet::load(&dir, m.id)?),
+        })
     }
     #[cfg(not(feature = "whisper"))]
     {
