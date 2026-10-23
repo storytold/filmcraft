@@ -209,6 +209,15 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
     })
 }
 
+/// Preserve secondary cleanup diagnostics even when the caller has no logger.
+fn finish_with_cleanup(result: Result<(), AutomationError>, cleanup: Result<(), AutomationError>, context: &'static str) -> Result<(), AutomationError> {
+    match (result, cleanup) {
+        (Err(error), Err(cleanup)) => Err(AutomationError::Other(format!("{error}; {context}: {cleanup}"))),
+        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
 impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
         Self {
@@ -229,14 +238,7 @@ impl FilmcraftMcp {
         let (mut input_driver, input) = crate::stdio_input::StdioInput::start()?;
         let result = self.serve_io(input, tokio::io::stdout()).await;
         let cleanup = input_driver.finish().await;
-        match (result, cleanup) {
-            (Err(error), Err(cleanup)) => {
-                log::warn!("MCP input cleanup: {cleanup}");
-                Err(error)
-            }
-            (Err(error), _) | (Ok(()), Err(error)) => Err(error),
-            (Ok(()), Ok(())) => Ok(()),
-        }
+        finish_with_cleanup(result, cleanup, "MCP input cleanup")
     }
 
     /// Serve MCP over any line stream. A line that isn't JSON gets a JSON-RPC parse error
@@ -261,14 +263,7 @@ impl FilmcraftMcp {
             .catch_unwind()
             .await
             .unwrap_or_else(|_| Err(AutomationError::Other("MCP request cleanup panicked; completion unconfirmed".into())));
-        match (result, request_cleanup) {
-            (Err(error), Err(cleanup)) => {
-                log::warn!("MCP request cleanup: {cleanup}");
-                Err(error)
-            }
-            (Err(error), _) | (Ok(()), Err(error)) => Err(error),
-            (Ok(()), Ok(())) => Ok(()),
-        }
+        finish_with_cleanup(result, request_cleanup, "MCP request cleanup")
     }
     async fn serve_io_inner(
         self,

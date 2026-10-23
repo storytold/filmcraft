@@ -304,3 +304,59 @@ mod reusable_service_tests {
         second.eof_and_join().await;
     }
 }
+/// Both shutdown failures must remain observable without a logging backend.
+#[test]
+fn input_cleanup_failure_keeps_both_diagnostics() {
+    let result = finish_with_cleanup(
+        Err(AutomationError::Other("transport failed".into())),
+        Err(AutomationError::Other("input completion unconfirmed".into())),
+        "MCP input cleanup",
+    );
+    assert_eq!(result.unwrap_err().to_string(), "transport failed; MCP input cleanup: input completion unconfirmed");
+}
+
+/// An unconfirmed admitted-request drain must survive a primary service failure.
+#[test]
+fn request_cleanup_failure_keeps_both_diagnostics() {
+    let result = finish_with_cleanup(
+        Err(AutomationError::Other("transport failed".into())),
+        Err(AutomationError::Other("request completion unconfirmed".into())),
+        "MCP request cleanup",
+    );
+    assert_eq!(result.unwrap_err().to_string(), "transport failed; MCP request cleanup: request completion unconfirmed");
+}
+
+/// The nested service/input wrappers retain failures in primary-first order.
+#[test]
+fn nested_cleanup_failures_keep_both_contexts() {
+    let service = finish_with_cleanup(
+        Err(AutomationError::Other("transport failed".into())),
+        Err(AutomationError::Other("request completion unconfirmed".into())),
+        "MCP request cleanup",
+    );
+    let result = finish_with_cleanup(service, Err(AutomationError::Other("input completion unconfirmed".into())), "MCP input cleanup");
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "transport failed; MCP request cleanup: request completion unconfirmed; MCP input cleanup: input completion unconfirmed"
+    );
+}
+
+/// A lone primary error preserves its variant as well as its message.
+#[test]
+fn successful_cleanup_preserves_primary_error_variant() {
+    let result = finish_with_cleanup(Err(AutomationError::Bridge("primary".into())), Ok(()), "MCP input cleanup");
+    assert!(matches!(result, Err(AutomationError::Bridge(message)) if message == "primary"));
+}
+
+/// A lone cleanup error keeps its original variant.
+#[test]
+fn successful_service_preserves_cleanup_error_variant() {
+    let result = finish_with_cleanup(Ok(()), Err(AutomationError::App("cleanup".into())), "MCP request cleanup");
+    assert!(matches!(result, Err(AutomationError::App(message)) if message == "cleanup"));
+}
+
+/// Two successful stages still succeed.
+#[test]
+fn successful_service_and_cleanup_remain_successful() {
+    assert!(finish_with_cleanup(Ok(()), Ok(()), "MCP input cleanup").is_ok());
+}

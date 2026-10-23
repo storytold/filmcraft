@@ -22,7 +22,8 @@ Admission and retained work share a limit of 1,024 active operations; excess wor
 
 One guarded writer owns response output. Initialization, output failure and competing EOF paths
 preserve an observed write/flush diagnostic. If service failure and cleanup failure coexist, the
-original error is returned and the additional cleanup error is logged. The output writer's final
+returned diagnostic starts with the original error and includes labeled cleanup failures, even
+without a logger. Single-error outcomes are unchanged. The output writer's final
 join has a two-second budget; guards abort transport tasks when their owner drops.
 
 Process stdin is bridged through 64 KiB of bounded storage on a dedicated input runtime. After
