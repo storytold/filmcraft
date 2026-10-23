@@ -2186,6 +2186,7 @@ dependencies = [
  "filmcraft-export",
  "filmcraft-frame",
  "filmcraft-h264",
+ "filmcraft-h264enc",
  "filmcraft-hevc",
  "filmcraft-isobmff",
  "filmcraft-media",

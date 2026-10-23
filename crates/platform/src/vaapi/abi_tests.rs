@@ -363,3 +363,153 @@ fn bit_fields_match_the_header() {
     assert_eq!(1u32 << hevc_slice_bits::COLLOCATED_FROM_L0, 0x1000, "LongSliceFlags.collocated_from_l0_flag");
     assert_eq!(1u32 << hevc_slice_bits::SLICE_LOOP_FILTER_ACROSS_SLICES_ENABLED, 0x2000, "LongSliceFlags.slice_loop_filter_across_slices_enabled_flag");
 }
+
+/// The encode declarations (`va.h` misc / coded buffers, `va_enc_h264.h`), generated the same way
+/// as the decode layouts above (a C program printing `sizeof` / `offsetof` of each structure and
+/// the constants, compiled against libva 2.23's headers).
+#[test]
+fn encode_layouts_match_the_header() {
+    assert_eq!(VAEntrypointEncSlice as i64, 6, "VAEntrypointEncSlice");
+    assert_eq!(VAEntrypointEncSliceLP as i64, 8, "VAEntrypointEncSliceLP");
+    assert_eq!(VAConfigAttribRateControl as i64, 5, "VAConfigAttribRateControl");
+    assert_eq!(VAConfigAttribMaxPictureWidth as i64, 18, "VAConfigAttribMaxPictureWidth");
+    assert_eq!(VAConfigAttribMaxPictureHeight as i64, 19, "VAConfigAttribMaxPictureHeight");
+    assert_eq!(VA_ATTRIB_NOT_SUPPORTED as i64, 2147483648, "VA_ATTRIB_NOT_SUPPORTED");
+    assert_eq!(VA_RC_CBR as i64, 2, "VA_RC_CBR");
+    assert_eq!(VA_RC_VBR as i64, 4, "VA_RC_VBR");
+    assert_eq!(VAEncCodedBufferType as i64, 21, "VAEncCodedBufferType");
+    assert_eq!(VAEncSequenceParameterBufferType as i64, 22, "VAEncSequenceParameterBufferType");
+    assert_eq!(VAEncPictureParameterBufferType as i64, 23, "VAEncPictureParameterBufferType");
+    assert_eq!(VAEncSliceParameterBufferType as i64, 24, "VAEncSliceParameterBufferType");
+    assert_eq!(VAEncMiscParameterBufferType as i64, 27, "VAEncMiscParameterBufferType");
+    assert_eq!(VAEncMiscParameterTypeFrameRate as i64, 0, "VAEncMiscParameterTypeFrameRate");
+    assert_eq!(VAEncMiscParameterTypeRateControl as i64, 1, "VAEncMiscParameterTypeRateControl");
+    assert_eq!(VAEncMiscParameterTypeHRD as i64, 5, "VAEncMiscParameterTypeHRD");
+    assert_eq!((size_of::<VAEncSequenceParameterBufferH264>(), align_of::<VAEncSequenceParameterBufferH264>()), (1132, 4), "VAEncSequenceParameterBufferH264");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, seq_parameter_set_id), 0, "VAEncSequenceParameterBufferH264.seq_parameter_set_id");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, level_idc), 1, "VAEncSequenceParameterBufferH264.level_idc");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, intra_period), 4, "VAEncSequenceParameterBufferH264.intra_period");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, intra_idr_period), 8, "VAEncSequenceParameterBufferH264.intra_idr_period");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, ip_period), 12, "VAEncSequenceParameterBufferH264.ip_period");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, bits_per_second), 16, "VAEncSequenceParameterBufferH264.bits_per_second");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, max_num_ref_frames), 20, "VAEncSequenceParameterBufferH264.max_num_ref_frames");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, picture_width_in_mbs), 24, "VAEncSequenceParameterBufferH264.picture_width_in_mbs");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, picture_height_in_mbs), 26, "VAEncSequenceParameterBufferH264.picture_height_in_mbs");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, seq_fields), 28, "VAEncSequenceParameterBufferH264.seq_fields");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, bit_depth_luma_minus8), 32, "VAEncSequenceParameterBufferH264.bit_depth_luma_minus8");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, bit_depth_chroma_minus8), 33, "VAEncSequenceParameterBufferH264.bit_depth_chroma_minus8");
+    assert_eq!(
+        offset_of!(VAEncSequenceParameterBufferH264, num_ref_frames_in_pic_order_cnt_cycle),
+        34,
+        "VAEncSequenceParameterBufferH264.num_ref_frames_in_pic_order_cnt_cycle"
+    );
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, offset_for_non_ref_pic), 36, "VAEncSequenceParameterBufferH264.offset_for_non_ref_pic");
+    assert_eq!(
+        offset_of!(VAEncSequenceParameterBufferH264, offset_for_top_to_bottom_field),
+        40,
+        "VAEncSequenceParameterBufferH264.offset_for_top_to_bottom_field"
+    );
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, offset_for_ref_frame), 44, "VAEncSequenceParameterBufferH264.offset_for_ref_frame");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, frame_cropping_flag), 1068, "VAEncSequenceParameterBufferH264.frame_cropping_flag");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, frame_crop_left_offset), 1072, "VAEncSequenceParameterBufferH264.frame_crop_left_offset");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, frame_crop_right_offset), 1076, "VAEncSequenceParameterBufferH264.frame_crop_right_offset");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, frame_crop_top_offset), 1080, "VAEncSequenceParameterBufferH264.frame_crop_top_offset");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, frame_crop_bottom_offset), 1084, "VAEncSequenceParameterBufferH264.frame_crop_bottom_offset");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, vui_parameters_present_flag), 1088, "VAEncSequenceParameterBufferH264.vui_parameters_present_flag");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, vui_fields), 1092, "VAEncSequenceParameterBufferH264.vui_fields");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, aspect_ratio_idc), 1096, "VAEncSequenceParameterBufferH264.aspect_ratio_idc");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, sar_width), 1100, "VAEncSequenceParameterBufferH264.sar_width");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, sar_height), 1104, "VAEncSequenceParameterBufferH264.sar_height");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, num_units_in_tick), 1108, "VAEncSequenceParameterBufferH264.num_units_in_tick");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, time_scale), 1112, "VAEncSequenceParameterBufferH264.time_scale");
+    assert_eq!(offset_of!(VAEncSequenceParameterBufferH264, va_reserved), 1116, "VAEncSequenceParameterBufferH264.va_reserved");
+    assert_eq!((size_of::<VAEncPictureParameterBufferH264>(), align_of::<VAEncPictureParameterBufferH264>()), (648, 4), "VAEncPictureParameterBufferH264");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, CurrPic), 0, "VAEncPictureParameterBufferH264.CurrPic");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, ReferenceFrames), 36, "VAEncPictureParameterBufferH264.ReferenceFrames");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, coded_buf), 612, "VAEncPictureParameterBufferH264.coded_buf");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, pic_parameter_set_id), 616, "VAEncPictureParameterBufferH264.pic_parameter_set_id");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, seq_parameter_set_id), 617, "VAEncPictureParameterBufferH264.seq_parameter_set_id");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, last_picture), 618, "VAEncPictureParameterBufferH264.last_picture");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, frame_num), 620, "VAEncPictureParameterBufferH264.frame_num");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, pic_init_qp), 622, "VAEncPictureParameterBufferH264.pic_init_qp");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, num_ref_idx_l0_active_minus1), 623, "VAEncPictureParameterBufferH264.num_ref_idx_l0_active_minus1");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, num_ref_idx_l1_active_minus1), 624, "VAEncPictureParameterBufferH264.num_ref_idx_l1_active_minus1");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, chroma_qp_index_offset), 625, "VAEncPictureParameterBufferH264.chroma_qp_index_offset");
+    assert_eq!(
+        offset_of!(VAEncPictureParameterBufferH264, second_chroma_qp_index_offset),
+        626,
+        "VAEncPictureParameterBufferH264.second_chroma_qp_index_offset"
+    );
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, pic_fields), 628, "VAEncPictureParameterBufferH264.pic_fields");
+    assert_eq!(offset_of!(VAEncPictureParameterBufferH264, va_reserved), 632, "VAEncPictureParameterBufferH264.va_reserved");
+    assert_eq!((size_of::<VAEncSliceParameterBufferH264>(), align_of::<VAEncSliceParameterBufferH264>()), (3140, 4), "VAEncSliceParameterBufferH264");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, macroblock_address), 0, "VAEncSliceParameterBufferH264.macroblock_address");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, num_macroblocks), 4, "VAEncSliceParameterBufferH264.num_macroblocks");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, macroblock_info), 8, "VAEncSliceParameterBufferH264.macroblock_info");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, slice_type), 12, "VAEncSliceParameterBufferH264.slice_type");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, pic_parameter_set_id), 13, "VAEncSliceParameterBufferH264.pic_parameter_set_id");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, idr_pic_id), 14, "VAEncSliceParameterBufferH264.idr_pic_id");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, pic_order_cnt_lsb), 16, "VAEncSliceParameterBufferH264.pic_order_cnt_lsb");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, delta_pic_order_cnt_bottom), 20, "VAEncSliceParameterBufferH264.delta_pic_order_cnt_bottom");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, delta_pic_order_cnt), 24, "VAEncSliceParameterBufferH264.delta_pic_order_cnt");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, direct_spatial_mv_pred_flag), 32, "VAEncSliceParameterBufferH264.direct_spatial_mv_pred_flag");
+    assert_eq!(
+        offset_of!(VAEncSliceParameterBufferH264, num_ref_idx_active_override_flag),
+        33,
+        "VAEncSliceParameterBufferH264.num_ref_idx_active_override_flag"
+    );
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, num_ref_idx_l0_active_minus1), 34, "VAEncSliceParameterBufferH264.num_ref_idx_l0_active_minus1");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, num_ref_idx_l1_active_minus1), 35, "VAEncSliceParameterBufferH264.num_ref_idx_l1_active_minus1");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, RefPicList0), 36, "VAEncSliceParameterBufferH264.RefPicList0");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, RefPicList1), 1188, "VAEncSliceParameterBufferH264.RefPicList1");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, luma_log2_weight_denom), 2340, "VAEncSliceParameterBufferH264.luma_log2_weight_denom");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, chroma_log2_weight_denom), 2341, "VAEncSliceParameterBufferH264.chroma_log2_weight_denom");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, luma_weight_l0_flag), 2342, "VAEncSliceParameterBufferH264.luma_weight_l0_flag");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, luma_weight_l0), 2344, "VAEncSliceParameterBufferH264.luma_weight_l0");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, luma_offset_l0), 2408, "VAEncSliceParameterBufferH264.luma_offset_l0");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, chroma_weight_l0_flag), 2472, "VAEncSliceParameterBufferH264.chroma_weight_l0_flag");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, chroma_weight_l0), 2474, "VAEncSliceParameterBufferH264.chroma_weight_l0");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, chroma_offset_l0), 2602, "VAEncSliceParameterBufferH264.chroma_offset_l0");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, luma_weight_l1_flag), 2730, "VAEncSliceParameterBufferH264.luma_weight_l1_flag");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, luma_weight_l1), 2732, "VAEncSliceParameterBufferH264.luma_weight_l1");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, luma_offset_l1), 2796, "VAEncSliceParameterBufferH264.luma_offset_l1");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, chroma_weight_l1_flag), 2860, "VAEncSliceParameterBufferH264.chroma_weight_l1_flag");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, chroma_weight_l1), 2862, "VAEncSliceParameterBufferH264.chroma_weight_l1");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, chroma_offset_l1), 2990, "VAEncSliceParameterBufferH264.chroma_offset_l1");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, cabac_init_idc), 3118, "VAEncSliceParameterBufferH264.cabac_init_idc");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, slice_qp_delta), 3119, "VAEncSliceParameterBufferH264.slice_qp_delta");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, disable_deblocking_filter_idc), 3120, "VAEncSliceParameterBufferH264.disable_deblocking_filter_idc");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, slice_alpha_c0_offset_div2), 3121, "VAEncSliceParameterBufferH264.slice_alpha_c0_offset_div2");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, slice_beta_offset_div2), 3122, "VAEncSliceParameterBufferH264.slice_beta_offset_div2");
+    assert_eq!(offset_of!(VAEncSliceParameterBufferH264, va_reserved), 3124, "VAEncSliceParameterBufferH264.va_reserved");
+    assert_eq!((size_of::<VAEncMiscParameterRateControl>(), align_of::<VAEncMiscParameterRateControl>()), (60, 4), "VAEncMiscParameterRateControl");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, bits_per_second), 0, "VAEncMiscParameterRateControl.bits_per_second");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, target_percentage), 4, "VAEncMiscParameterRateControl.target_percentage");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, window_size), 8, "VAEncMiscParameterRateControl.window_size");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, initial_qp), 12, "VAEncMiscParameterRateControl.initial_qp");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, min_qp), 16, "VAEncMiscParameterRateControl.min_qp");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, basic_unit_size), 20, "VAEncMiscParameterRateControl.basic_unit_size");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, rc_flags), 24, "VAEncMiscParameterRateControl.rc_flags");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, ICQ_quality_factor), 28, "VAEncMiscParameterRateControl.ICQ_quality_factor");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, max_qp), 32, "VAEncMiscParameterRateControl.max_qp");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, quality_factor), 36, "VAEncMiscParameterRateControl.quality_factor");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, target_frame_size), 40, "VAEncMiscParameterRateControl.target_frame_size");
+    assert_eq!(offset_of!(VAEncMiscParameterRateControl, va_reserved), 44, "VAEncMiscParameterRateControl.va_reserved");
+    assert_eq!((size_of::<VAEncMiscParameterFrameRate>(), align_of::<VAEncMiscParameterFrameRate>()), (24, 4), "VAEncMiscParameterFrameRate");
+    assert_eq!(offset_of!(VAEncMiscParameterFrameRate, framerate), 0, "VAEncMiscParameterFrameRate.framerate");
+    assert_eq!(offset_of!(VAEncMiscParameterFrameRate, framerate_flags), 4, "VAEncMiscParameterFrameRate.framerate_flags");
+    assert_eq!(offset_of!(VAEncMiscParameterFrameRate, va_reserved), 8, "VAEncMiscParameterFrameRate.va_reserved");
+    assert_eq!((size_of::<VAEncMiscParameterHRD>(), align_of::<VAEncMiscParameterHRD>()), (24, 4), "VAEncMiscParameterHRD");
+    assert_eq!(offset_of!(VAEncMiscParameterHRD, initial_buffer_fullness), 0, "VAEncMiscParameterHRD.initial_buffer_fullness");
+    assert_eq!(offset_of!(VAEncMiscParameterHRD, buffer_size), 4, "VAEncMiscParameterHRD.buffer_size");
+    assert_eq!(offset_of!(VAEncMiscParameterHRD, va_reserved), 8, "VAEncMiscParameterHRD.va_reserved");
+    assert_eq!(offset_of!(VAEncMisc<VAEncMiscParameterRateControl>, data), 4, "VAEncMiscParameterBuffer.data");
+    assert_eq!((size_of::<VACodedBufferSegment>(), align_of::<VACodedBufferSegment>()), (48, 8), "VACodedBufferSegment");
+    assert_eq!(offset_of!(VACodedBufferSegment, size), 0, "VACodedBufferSegment.size");
+    assert_eq!(offset_of!(VACodedBufferSegment, bit_offset), 4, "VACodedBufferSegment.bit_offset");
+    assert_eq!(offset_of!(VACodedBufferSegment, status), 8, "VACodedBufferSegment.status");
+    assert_eq!(offset_of!(VACodedBufferSegment, reserved), 12, "VACodedBufferSegment.reserved");
+    assert_eq!(offset_of!(VACodedBufferSegment, buf), 16, "VACodedBufferSegment.buf");
+    assert_eq!(offset_of!(VACodedBufferSegment, next), 24, "VACodedBufferSegment.next");
+    assert_eq!(offset_of!(VACodedBufferSegment, va_reserved), 32, "VACodedBufferSegment.va_reserved");
+}

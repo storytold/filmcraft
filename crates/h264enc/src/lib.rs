@@ -27,7 +27,9 @@ mod dsp;
 mod intra;
 mod lookahead;
 mod mbinfo;
-mod nal;
+/// NAL units and parameter sets (SPS, PPS, VUI), also written for hardware encoders whose drivers
+/// need the stream's own headers (`filmcraft-platform`'s VA-API encoder).
+pub mod nal;
 mod picture;
 mod ratecontrol;
 mod slice;

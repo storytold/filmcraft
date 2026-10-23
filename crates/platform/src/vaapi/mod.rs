@@ -6,13 +6,17 @@
 //! drives libva (loaded at run time; no libva means no hardware decoder, never a failure to start),
 //! and [`VaDecoder`] puts them together as a [`VideoDecoder`]. H.264 8-bit 4:2:0 progressive
 //! (Constrained Baseline / Main / High) and HEVC 4:2:0 (Main, Main 10, Main Still Picture), the
-//! latter through [`hevc`] the same way; everything else stays in software.
+//! latter through [`hevc`] the same way; everything else stays in software. H.264 export encoding
+//! goes through `h264enc` (Linux), on the same shared display.
 //!
 //! The FFI is in [`ffi`] (declarations) and `va` (calls); the rest of this module is safe code.
 
 pub mod ffi;
 pub mod h264;
+#[cfg(target_os = "linux")]
+pub mod h264enc;
 pub mod hevc;
+pub(crate) mod nv12;
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 pub mod va;

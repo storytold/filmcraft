@@ -27,6 +27,7 @@ filmcraft-color = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-h264 = { workspace = true }
+filmcraft-h264enc = { workspace = true }
 filmcraft-hevc = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
