@@ -3468,6 +3468,7 @@
 	Color Matte Color	カラーマットの色
 	Color:	色:
 	 · {time} left	 · 残り {time}
+	Done in {time}	完了（{time}）
 	Discard take	テイクを破棄
 	Voice-over take discarded	ナレーションのテイクを破棄しました
 	Binary assets added	追加したバイナリアセット

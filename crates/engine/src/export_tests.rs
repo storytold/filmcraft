@@ -453,6 +453,10 @@ fn queue_orders_cancels_and_retries() {
     // jobs ran in queue order
     let job = |id: u64| items.iter().find(|i| i["id"] == id).unwrap()["job"].as_u64().unwrap();
     assert!(job(c) < job(b) && job(b) < job(a));
+    // each finished item says how long its encode took, the cancelled one says nothing
+    let took = |id: u64| items.iter().find(|i| i["id"] == id).unwrap()["renderSeconds"].clone();
+    assert!([c, b, a].iter().all(|&id| took(id).as_f64().is_some_and(|s| s >= 0.0)), "{items:?}");
+    assert!(took(d).is_null(), "{items:?}");
     for f in ["a.mp4", "b.mov", "c.wav"] {
         assert!(Path::new(&dir.path(f)).exists(), "{f}");
     }
@@ -554,6 +558,39 @@ fn jobs_and_queue_items_report_the_time_they_have_left() {
     let jobs = s.execute("jobs.list", json!({})).unwrap();
     let listed = jobs["jobs"].as_array().or(jobs.as_array()).expect("a list of jobs").iter().find(|j| j["id"] == 77).cloned().expect("the job is listed");
     assert!(listed["etaSeconds"].as_f64().is_some(), "{listed}");
+}
+
+#[test]
+fn queue_items_report_how_long_a_finished_export_took() {
+    use crate::export_tools::QueueStatus;
+    let mut s = demo();
+    let dir = Scratch::new("render-time");
+    // the exporter measures its own encode time into the report; a done item shows that, never the
+    // time of another job
+    let report = |seconds: f64| filmcraft_export::Report { path: "a.wav".into(), frames: 1, seconds, bytes: 1, render_fps: 1.0, extra_files: Vec::new() };
+    let job = |id: u64, r: std::result::Result<filmcraft_export::Report, String>| {
+        let j = crate::Job { id, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+        *j.result.lock().unwrap() = Some(r);
+        j
+    };
+    s.jobs.push(job(78, Ok(report(5.0))));
+    s.jobs.push(job(79, Ok(report(83.0))));
+    s.jobs.push(job(80, Err("disk full".into())));
+    for name in ["a.wav", "b.wav", "c.wav"] {
+        s.execute(
+            "export.queue.add",
+            json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": dir.path(name), "range": "custom", "startSeconds": 0, "endSeconds": 0.25}),
+        )
+        .unwrap();
+    }
+    s.export_queue.items[0].status = QueueStatus::Done;
+    s.export_queue.items[0].job = Some(79);
+    s.export_queue.items[1].status = QueueStatus::Failed;
+    s.export_queue.items[1].job = Some(80);
+    let items = queue(&mut s);
+    assert_eq!(items[0]["renderSeconds"], json!(83.0), "{}", items[0]);
+    assert!(items[1]["renderSeconds"].is_null(), "a failed export took no render time: {}", items[1]);
+    assert!(items[2]["renderSeconds"].is_null(), "a waiting export has none yet: {}", items[2]);
 }
 
 #[test]
