@@ -99,6 +99,7 @@ const NEW_IDS: &[&str] = &[
     "rgb_split",
     "volumetric_rays",
     "wonder_glow",
+    "video_denoise",
     "long_shadow",
     "brush_strokes",
     "color_emboss",
@@ -1181,5 +1182,531 @@ fn transform_shutter_uses_the_sequence_frame_rate_without_env() {
     }
     for frame in [60, 90, 120] {
         assert!(delta(frame) > 1e-3, "frame {frame} moves but is sharp");
+    }
+}
+
+// ------------------------------------------------------------------ Video De-Noise
+
+mod video_denoise {
+    use std::ops::Range;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// Half-width of the uniform noise added to every channel and pixel (standard deviation ≈ 0.035).
+    const GRAIN: f32 = 0.06;
+    const BRIGHT: [f32; 3] = [0.85, 0.80, 0.30];
+    const DARK: [f32; 3] = [0.25, 0.30, 0.45];
+
+    // Pictures are display-encoded colours; `dec` turns them into the linear values the compositor holds.
+
+    /// Two tinted halves meeting at x = 48.
+    fn flat(x: f64) -> [f32; 3] {
+        if x < 48.0 { [0.30, 0.40, 0.55] } else { [0.65, 0.45, 0.35] }
+    }
+    /// A bar 14 px wide moving 4 px a frame over a flat background.
+    fn bar(x: f64, t: f64) -> [f32; 3] {
+        let left = 20.0 + 96.0 * t;
+        if x >= left && x < left + 14.0 { BRIGHT } else { DARK }
+    }
+    /// A hard cut at 0.49 s: the bright half switches sides.
+    fn shots(x: f64, t: f64) -> [f32; 3] {
+        if (x < 48.0) == (t < 0.49) { BRIGHT } else { DARK }
+    }
+    /// Five colours that share nothing in brightness (0.20 to 0.80) or in colour, one per frame in
+    /// turn: no frame within four of another looks like it.
+    fn unrelated(x: f64, t: f64) -> [f32; 3] {
+        const PALETTE: [[f32; 3]; 5] = [[0.10, 0.204, 0.45], [0.60, 0.296, 0.15], [0.25, 0.584, 0.40], [0.95, 0.556, 0.70], [0.75, 0.845, 0.50]];
+        let f = (t * 24.0).round() as i64;
+        let side = if x < 48.0 { 0 } else { 2 };
+        PALETTE[(f + side).rem_euclid(5) as usize]
+    }
+    /// A static fine texture as faint as the noise itself.
+    fn texture_static(x: f64, y: f64) -> [f32; 3] {
+        std::array::from_fn(|k| 0.5 + (hash01(x.floor() as i64, y.floor() as i64, k as i64, 5) - 0.5) * 0.09)
+    }
+    /// Noise that changes with the frame, the pixel and the channel.
+    fn grained(c: [f32; 3], x: f64, y: f64, t: f64) -> [f32; 3] {
+        let f = (t * 24.0).round() as i64;
+        std::array::from_fn(|k| c[k] + (hash01(x.floor() as i64, y.floor() as i64, f * 3 + k as i64, 41) - 0.5) * 2.0 * GRAIN)
+    }
+
+    fn flat_clean(x: f64, _: f64, _: f64) -> [f32; 3] {
+        dec(flat(x))
+    }
+    fn flat_noisy(x: f64, y: f64, t: f64) -> [f32; 3] {
+        dec(grained(flat(x), x, y, t))
+    }
+    fn bar_clean(x: f64, _: f64, t: f64) -> [f32; 3] {
+        dec(bar(x, t))
+    }
+    fn bar_noisy(x: f64, y: f64, t: f64) -> [f32; 3] {
+        dec(grained(bar(x, t), x, y, t))
+    }
+    fn shots_clean(x: f64, _: f64, t: f64) -> [f32; 3] {
+        dec(shots(x, t))
+    }
+    fn shots_noisy(x: f64, y: f64, t: f64) -> [f32; 3] {
+        dec(grained(shots(x, t), x, y, t))
+    }
+    fn unrelated_noisy(x: f64, y: f64, t: f64) -> [f32; 3] {
+        dec(grained(unrelated(x, t), x, y, t))
+    }
+    fn texture_noisy(x: f64, y: f64, t: f64) -> [f32; 3] {
+        dec(grained(texture_static(x, y), x, y, t))
+    }
+    /// Two tinted halves meeting at x = 48; the left one has a negative red, as an out-of-gamut colour does.
+    fn gamut(x: f64) -> [f32; 3] {
+        if x < 48.0 { [-0.30, 0.40, 0.55] } else { [0.65, 0.45, 0.35] }
+    }
+    /// Like `dec`, with the curve mirrored around 0 so that a negative channel stays negative.
+    fn dec_mirrored(c: [f32; 3]) -> [f32; 3] {
+        let linear = dec(c.map(f32::abs));
+        std::array::from_fn(|k| linear[k].copysign(c[k]))
+    }
+    fn gamut_clean(x: f64, _: f64, _: f64) -> [f32; 3] {
+        dec_mirrored(gamut(x))
+    }
+    fn gamut_noisy(x: f64, y: f64, t: f64) -> [f32; 3] {
+        dec_mirrored(grained(gamut(x), x, y, t))
+    }
+    /// Two saturated colours meeting at x = 48. Each has one channel on the gamut boundary: its
+    /// display value is below 0, so `dec` makes it exactly 0 under any grain.
+    fn deep(x: f64) -> [f32; 3] {
+        if x < 48.0 { [-0.15, 0.30, 0.30] } else { [0.30, 0.30, -0.15] }
+    }
+    /// `deep` under the usual grain; `dec` keeps every linear channel in 0..=1.
+    fn deep_noisy(x: f64, y: f64, t: f64) -> [f32; 3] {
+        dec(grained(deep(x), x, y, t))
+    }
+
+    /// A clip environment that hands back neighbouring frames at the working scale and counts how
+    /// many it was asked for.
+    struct Probe {
+        inner: ClipEnv,
+        scale: f32,
+        asked: AtomicUsize,
+    }
+    impl Probe {
+        fn new(pic: fn(f64, f64, f64) -> [f32; 3], now: f64, scale: f32) -> Self {
+            Probe { inner: ClipEnv { w: 96, h: 64, fps: 24.0, secs: 2.0, now, key: 0xDE01, seq: (96, 64), pic }, scale, asked: AtomicUsize::new(0) }
+        }
+        fn asked(&self) -> usize {
+            self.asked.load(Ordering::Relaxed)
+        }
+    }
+    impl FxEnv for Probe {
+        fn frame(&self, dt: f64, _: &EffectInstance) -> Option<Image> {
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            Some(self.inner.render(((self.inner.now + dt) * self.inner.fps).round() / self.inner.fps, self.scale))
+        }
+        fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+            self.inner.source_frame(dt, scale)
+        }
+        fn track(&self, index: usize) -> Option<Image> {
+            self.inner.track(index)
+        }
+        fn layer_to_output(&self) -> Affine {
+            self.inner.layer_to_output()
+        }
+        fn clip_seconds(&self) -> f64 {
+            self.inner.clip_seconds()
+        }
+        fn clip_offset(&self) -> f64 {
+            self.inner.clip_offset()
+        }
+        fn frame_rate(&self) -> f64 {
+            self.inner.frame_rate()
+        }
+        fn media_timecode(&self) -> String {
+            self.inner.media_timecode()
+        }
+        fn file_name(&self) -> String {
+            self.inner.file_name()
+        }
+        fn sequence_name(&self) -> String {
+            self.inner.sequence_name()
+        }
+        fn sequence_size(&self) -> (u32, u32) {
+            self.inner.sequence_size()
+        }
+        fn source_size(&self) -> (u32, u32) {
+            self.inner.source_size()
+        }
+        fn clip_key(&self) -> u64 {
+            self.inner.clip_key()
+        }
+    }
+
+    fn denoise(luma: f64, chroma: f64, temporal: f64, detail: f64) -> EffectInstance {
+        let mut e = inst("video_denoise");
+        setf(&mut e, "luma", luma);
+        setf(&mut e, "chroma", chroma);
+        setf(&mut e, "temporal", temporal);
+        setf(&mut e, "detail", detail);
+        e
+    }
+    /// The effect applied to the clip's picture at `now`, rendered at `scale` of full size.
+    fn run_on(env: &Probe, e: &EffectInstance, scale: f32) -> Image {
+        let t = env.inner.now;
+        let mut img = env.inner.render(t, scale);
+        crate::effects::apply(&mut img, e, &FxCtx { seconds: t, px_scale: scale, env: Some(env), ..cx() });
+        img
+    }
+    fn render_of(pic: fn(f64, f64, f64) -> [f32; 3], now: f64, scale: f32) -> Image {
+        Probe::new(pic, now, scale).inner.render(now, scale)
+    }
+
+    type Area = (Range<usize>, Range<usize>);
+
+    /// Mean absolute and root-mean-square display-space error of `img` against `clean` over `area`.
+    fn error(img: &Image, clean: &Image, (xs, ys): &Area) -> (f32, f32) {
+        let (mut abs, mut sq, mut n) = (0.0f64, 0.0f64, 0usize);
+        for y in ys.clone() {
+            for x in xs.clone() {
+                let (a, b) = (enc_px(img, x, y), enc_px(clean, x, y));
+                for k in 0..3 {
+                    let d = f64::from(a[k] - b[k]);
+                    abs += d.abs();
+                    sq += d * d;
+                    n += 1;
+                }
+            }
+        }
+        ((abs / n as f64) as f32, (sq / n as f64).sqrt() as f32)
+    }
+    /// Display-space luma and the two colour differences of one pixel.
+    fn yuv(img: &Image, x: usize, y: usize) -> [f32; 3] {
+        let p = enc_px(img, x, y);
+        let l = luma([p[0], p[1], p[2]]);
+        [l, p[2] - l, p[0] - l]
+    }
+    /// Root-mean-square error of one of the `yuv` planes against `clean` over `area`.
+    fn plane_error(img: &Image, clean: &Image, plane: usize, (xs, ys): &Area) -> f32 {
+        let (mut sq, mut n) = (0.0f64, 0usize);
+        for y in ys.clone() {
+            for x in xs.clone() {
+                let d = f64::from(yuv(img, x, y)[plane] - yuv(clean, x, y)[plane]);
+                sq += d * d;
+                n += 1;
+            }
+        }
+        (sq / n as f64).sqrt() as f32
+    }
+    /// The mean of the clip's frame before, this one and the next: plain temporal averaging.
+    fn plain_average(env: &Probe) -> Image {
+        let frames: Vec<Image> = [-1.0, 0.0, 1.0].iter().filter_map(|k| env.frame(k / 24.0, &inst("video_denoise"))).collect();
+        let mut out = Image::new(frames[0].w, frames[0].h);
+        for f in &frames {
+            for (o, v) in out.px.iter_mut().zip(&f.px) {
+                *o += v / frames.len() as f32;
+            }
+        }
+        out
+    }
+
+    const LEFT: fn() -> Area = || (8..40, 8..56);
+    const RIGHT: fn() -> Area = || (56..88, 8..56);
+
+    #[test]
+    fn static_noise_drops_and_the_static_edge_survives() {
+        let env = Probe::new(flat_noisy, 0.5, 1.0);
+        let clean = render_of(flat_clean, 0.5, 1.0);
+        let input = env.inner.render(0.5, 1.0);
+        let out = run_on(&env, &denoise(30.0, 50.0, 1.0, 50.0), 1.0);
+        for area in [LEFT(), RIGHT()] {
+            let (before, after) = (error(&input, &clean, &area).1, error(&out, &clean, &area).1);
+            assert!(after < before / 3.0, "noise {before} -> {after}");
+        }
+        // every neighbouring frame that matches takes more of it away
+        let left_noise = |radius: f64| error(&run_on(&env, &denoise(30.0, 50.0, radius, 50.0), 1.0), &clean, &LEFT()).1;
+        let (r0, r1, r2) = (left_noise(0.0), left_noise(1.0), left_noise(2.0));
+        assert!(r1 < r0 * 0.85 && r2 < r1 * 0.85, "noise left with radius 0, 1, 2: {r0} {r1} {r2}");
+        // the colour edge at x = 48 is neither smeared nor lost: next to it the noise falls just as far
+        let edge = (44..52, 8..56);
+        let (before, after) = (error(&input, &clean, &edge).0, error(&out, &clean, &edge).0);
+        assert!(after < before * 0.5, "edge error {before} -> {after}");
+    }
+
+    #[test]
+    fn a_moving_edge_does_not_ghost() {
+        let env = Probe::new(bar_noisy, 0.25, 1.0); // the bar spans x = 44..58, 4 px further each frame
+        let clean = render_of(bar_clean, 0.25, 1.0);
+        let out = run_on(&env, &denoise(30.0, 50.0, 1.0, 50.0), 1.0);
+        let average = plain_average(&env);
+        let near_edges = (36..70, 8..56);
+        let (input, ours, plain) =
+            (error(&env.inner.render(0.25, 1.0), &clean, &near_edges).0, error(&out, &clean, &near_edges).0, error(&average, &clean, &near_edges).0);
+        assert!(ours < plain * 0.5, "error at the moving edges: {ours} against {plain} for a plain 3-frame average");
+        // ... without giving up the denoising there: it is still well below the noisy picture's own error
+        assert!(ours < input * 0.5, "error at the moving edges: {ours} against {input} before");
+    }
+
+    #[test]
+    fn a_cut_gives_the_temporal_radius_zero_result() {
+        // nothing in the neighbouring frames resembles this one: radius 2 must equal radius 0
+        let env = Probe::new(unrelated_noisy, 0.5, 1.0);
+        let with = run_on(&env, &denoise(30.0, 50.0, 2.0, 50.0), 1.0);
+        let without = run_on(&env, &denoise(30.0, 50.0, 0.0, 50.0), 1.0);
+        assert_eq!(env.asked(), 4);
+        assert_eq!(with.px, without.px);
+        // the first frame of a new shot takes nothing from the shot before it, only from the next frame
+        let env = Probe::new(shots_noisy, 0.5, 1.0);
+        let clean = render_of(shots_clean, 0.5, 1.0);
+        let out = run_on(&env, &denoise(30.0, 50.0, 1.0, 50.0), 1.0);
+        let average = plain_average(&env);
+        let away_from_the_edge = (4..44, 8..56);
+        let (ours, plain) = (error(&out, &clean, &away_from_the_edge).0, error(&average, &clean, &away_from_the_edge).0);
+        assert!(ours < 0.02 && plain > 0.1, "previous shot leaks: {ours} against {plain} for a plain average");
+    }
+
+    #[test]
+    fn half_resolution_looks_like_full_resolution() {
+        let measure = |scale: f32| {
+            let env = Probe::new(flat_noisy, 0.5, scale);
+            let (clean, input) = (render_of(flat_clean, 0.5, scale), env.inner.render(0.5, scale));
+            let out = run_on(&env, &denoise(30.0, 50.0, 1.0, 50.0), scale);
+            let s = |v: usize| (v as f32 * scale).round() as usize;
+            let (flat, edge) = ((s(8)..s(40), s(8)..s(56)), (s(44)..s(52), s(8)..s(56)));
+            (error(&out, &clean, &flat).1 / error(&input, &clean, &flat).1, error(&out, &clean, &edge).0 / error(&input, &clean, &edge).0)
+        };
+        let ((noise_full, edge_full), (noise_half, edge_half)) = (measure(1.0), measure(0.5));
+        // the half-size picture has a quarter of the pixels to average over, so it keeps a little more noise
+        assert!(noise_full < 0.35 && noise_half < 0.35, "noise left: {noise_full} at full size, {noise_half} at half");
+        assert!((noise_full - noise_half).abs() < 0.15, "noise left: {noise_full} at full size, {noise_half} at half");
+        assert!(edge_full < 0.5 && edge_half < 0.5, "edge error left: {edge_full} at full size, {edge_half} at half");
+        assert!((edge_full - edge_half).abs() < 0.2, "edge error left: {edge_full} at full size, {edge_half} at half");
+    }
+
+    #[test]
+    fn luma_and_chroma_levels_act_separately() {
+        let env = Probe::new(flat_noisy, 0.5, 1.0);
+        let (clean, input) = (render_of(flat_clean, 0.5, 1.0), env.inner.render(0.5, 1.0));
+        let area = LEFT();
+        let ratio = |out: &Image, plane: usize| plane_error(out, &clean, plane, &area) / plane_error(&input, &clean, plane, &area);
+        let chroma_only = run_on(&env, &denoise(0.0, 100.0, 1.0, 50.0), 1.0);
+        assert!((ratio(&chroma_only, 0) - 1.0).abs() < 0.01, "luma moved with luma at 0: {}", ratio(&chroma_only, 0));
+        assert!(ratio(&chroma_only, 1) < 0.4 && ratio(&chroma_only, 2) < 0.4, "chroma noise left: {} {}", ratio(&chroma_only, 1), ratio(&chroma_only, 2));
+        let luma_only = run_on(&env, &denoise(100.0, 0.0, 1.0, 50.0), 1.0);
+        assert!((ratio(&luma_only, 1) - 1.0).abs() < 0.01 && (ratio(&luma_only, 2) - 1.0).abs() < 0.01, "colour moved with chroma at 0");
+        assert!(ratio(&luma_only, 0) < 0.4, "luma noise left: {}", ratio(&luma_only, 0));
+        // both at 0 is off: not one value changes
+        assert_eq!(run_on(&env, &denoise(0.0, 0.0, 2.0, 0.0), 1.0).px, input.px);
+    }
+
+    #[test]
+    fn show_noise_shows_what_was_removed() {
+        let env = Probe::new(flat_noisy, 0.5, 1.0);
+        let input = env.inner.render(0.5, 1.0);
+        let cleaned = run_on(&env, &denoise(30.0, 50.0, 1.0, 50.0), 1.0);
+        let mut e = denoise(30.0, 50.0, 1.0, 50.0);
+        set(&mut e, "show_noise", ParamValue::Bool(true));
+        let shown = run_on(&env, &e, 1.0);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for y in 8..56 {
+            for x in 8..40 {
+                let (s, i, c) = (enc_px(&shown, x, y), enc_px(&input, x, y), enc_px(&cleaned, x, y));
+                for k in 0..3 {
+                    a.push(f64::from(s[k] - 0.5));
+                    b.push(f64::from(i[k] - c[k]));
+                }
+            }
+        }
+        let n = a.len() as f64;
+        let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+        let cov: f64 = a.iter().zip(&b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+        let (va, vb): (f64, f64) = (a.iter().map(|x| (x - ma).powi(2)).sum(), b.iter().map(|y| (y - mb).powi(2)).sum());
+        let corr = cov / (va * vb).sqrt();
+        assert!(corr > 0.99, "the picture shown does not follow input - result: correlation {corr}");
+        assert!(ma.abs() < 0.01, "noise is shown around mid grey: mean offset {ma}");
+        assert!((va / n).sqrt() > 0.03, "the noise is shown, not a blank picture: {}", (va / n).sqrt());
+    }
+
+    #[test]
+    fn show_noise_with_nothing_to_remove_shows_flat_grey_not_the_source() {
+        let env = Probe::new(flat_noisy, 0.5, 1.0);
+        let mut input = env.inner.render(0.5, 1.0);
+        let at = |x: usize, y: usize| (y * input.w + x) * 4;
+        // a half-transparent pixel (premultiplied), a transparent one that still holds a colour, and one that is not a number
+        let (half, clear, broken) = (at(20, 20), at(30, 30), at(31, 30));
+        input.px[half..half + 3].iter_mut().for_each(|v| *v *= 0.5);
+        input.px[half + 3] = 0.5;
+        input.px[clear..clear + 4].copy_from_slice(&[0.7, 0.2, 0.1, 0.0]);
+        input.px[broken] = f32::NAN;
+        let show = |level: f64| {
+            let mut e = denoise(level, level, 1.0, 50.0);
+            set(&mut e, "show_noise", ParamValue::Bool(true));
+            let mut img = input.clone();
+            crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.5, env: Some(&env), ..cx() });
+            img
+        };
+        let off = show(0.0);
+        assert_eq!(env.asked(), 0, "with nothing to filter no neighbouring frame is read");
+        // 0.05 % is just above the level the filter acts on; it matches no sample, so it removes next to nothing
+        let barely = show(0.05);
+        assert!(env.asked() > 0, "the comparison level must run the filter");
+        let pixels = off.px.as_chunks::<4>().0.iter().zip(barely.px.as_chunks::<4>().0).zip(input.px.as_chunks::<4>().0);
+        for (i, ((o, b), s)) in pixels.enumerate() {
+            let (x, y) = (i % input.w, i / input.w);
+            if [clear, broken].contains(&(i * 4)) {
+                assert!(o.iter().zip(s).all(|(a, b)| a.to_bits() == b.to_bits()), "({x},{y}) must be left alone: {o:?} for {s:?}");
+                continue;
+            }
+            assert_eq!(o[3], s[3], "alpha changed at ({x},{y})");
+            assert!(o[..3] != s[..3], "the source picture is shown at ({x},{y}): {o:?}");
+            assert!(o.iter().zip(b).all(|(a, b)| close(*a, *b, 1e-4)), "({x},{y}) is {o:?} with nothing removed but {b:?} with next to nothing removed");
+        }
+    }
+
+    #[test]
+    fn preserve_detail_keeps_texture_the_filter_would_flatten() {
+        let env = Probe::new(texture_noisy, 0.5, 1.0);
+        let input = env.inner.render(0.5, 1.0);
+        let spread = |img: &Image| {
+            let (mut s, mut s2, mut n) = (0.0f64, 0.0f64, 0usize);
+            for y in 8..56 {
+                for x in 8..88 {
+                    for k in 0..3 {
+                        let v = f64::from(enc_px(img, x, y)[k]);
+                        s += v;
+                        s2 += v * v;
+                        n += 1;
+                    }
+                }
+            }
+            (s2 / n as f64 - (s / n as f64).powi(2)).sqrt()
+        };
+        let at = |detail: f64| spread(&run_on(&env, &denoise(30.0, 50.0, 0.0, detail), 1.0));
+        let (open, half, kept) = (at(0.0), at(50.0), at(100.0));
+        assert!(kept > open * 1.5, "texture spread: {open} with no detail kept, {kept} with all of it");
+        assert!(open < half && half < kept, "texture spread at 0, 50, 100 % detail: {open} {half} {kept}");
+        assert!(kept > spread(&input) * 0.9, "all detail kept should leave the picture as it was");
+    }
+
+    #[test]
+    fn negative_channels_keep_their_sign() {
+        // the left half is out of gamut: a negative linear red under the usual grain, alpha 1
+        let env = Probe::new(gamut_noisy, 0.5, 1.0);
+        let clean = render_of(gamut_clean, 0.5, 1.0);
+        let input = env.inner.render(0.5, 1.0);
+        let out = run_on(&env, &denoise(30.0, 50.0, 1.0, 50.0), 1.0);
+        let (xs, ys) = LEFT();
+        let (mut n, mut changed, mut sign_lost) = (0usize, 0usize, 0usize);
+        let (mut before, mut after) = (0.0f64, 0.0f64);
+        for y in ys {
+            for x in xs.clone() {
+                let (i, o, c) = (input.get(x, y), out.get(x, y), clean.get(x, y));
+                n += 1;
+                changed += usize::from(o[0] != i[0]);
+                sign_lost += usize::from(o[0] >= 0.0);
+                before += f64::from((i[0] - c[0]).abs());
+                after += f64::from((o[0] - c[0]).abs());
+            }
+        }
+        // the red channel really went through the filter, so a pass-through cannot satisfy the rest
+        assert!(changed * 2 > n, "the filter changed the red of only {changed} of {n} pixels");
+        let clean_red = clean.get(xs.start, 8)[0];
+        assert_eq!(sign_lost, 0, "{sign_lost} of {n} pixels lost the sign of their red (clean value {clean_red})");
+        let (before, after) = (before / n as f64, after / n as f64);
+        assert!(after < before, "red error {before} -> {after} (clean value {clean_red})");
+    }
+
+    #[test]
+    fn in_gamut_input_never_comes_out_negative() {
+        let env = Probe::new(deep_noisy, 0.5, 1.0);
+        let input = env.inner.render(0.5, 1.0);
+        assert!(input.px.iter().all(|v| *v >= 0.0), "the scene must be in gamut");
+        let out = run_on(&env, &denoise(30.0, 50.0, 1.0, 50.0), 1.0);
+        let changed = out.px.iter().zip(&input.px).filter(|(o, i)| o != i).count();
+        assert!(changed * 2 > out.px.len(), "the filter changed only {changed} of {} values", out.px.len());
+        // luma and the colour differences are averaged apart, so their sum can undershoot 0 by itself
+        let below: Vec<(usize, f32)> = out.px.iter().copied().enumerate().filter(|(_, v)| *v < 0.0).collect();
+        assert!(below.is_empty(), "{} of {} channels came out below 0, first (index, value): {:?}", below.len(), out.px.len(), below.first());
+    }
+
+    #[test]
+    fn temporal_radius_bounds_the_frames_read() {
+        let asked = |now: f64, radius: f64| {
+            let env = Probe::new(flat_noisy, now, 1.0);
+            run_on(&env, &denoise(30.0, 50.0, radius, 50.0), 1.0);
+            env.asked()
+        };
+        assert_eq!(asked(0.5, 0.0), 0, "radius 0 is spatial only");
+        assert_eq!(asked(0.5, 1.0), 2);
+        assert_eq!(asked(0.5, 2.0), 4);
+        assert_eq!(asked(0.5, 1e9), 4, "a huge radius is capped at the parameter's range");
+        assert_eq!(asked(0.0, 2.0), 2, "no frames from before the clip starts");
+        assert_eq!(asked(2.0 - 1.0 / 24.0, 2.0), 2, "no frames from after the clip ends");
+    }
+
+    #[test]
+    fn hostile_input_neither_panics_nor_returns_garbage() {
+        let env = Probe::new(flat_noisy, 0.5, 1.0);
+        let src = env.inner.render(0.5, 1.0);
+        let sane = |img: &Image, src: &Image, what: &str| {
+            assert_eq!((img.w, img.h, img.px.len()), (src.w, src.h, src.px.len()), "{what}: size");
+            for (o, i) in img.px.as_chunks::<4>().0.iter().zip(src.px.as_chunks::<4>().0) {
+                assert!(o.iter().all(|v| v.is_finite()), "{what}: {o:?}");
+                assert_eq!(o[3], i[3], "{what}: alpha");
+                assert!(o[..3].iter().all(|v| (0.0..=2.0).contains(v)), "{what}: {o:?}");
+            }
+        };
+        // levels, radius and detail: NaN, infinities, negative and absurd values
+        for id in ["luma", "chroma", "temporal", "detail"] {
+            for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -50.0, 1e30, 1e300] {
+                for show in [false, true] {
+                    let mut e = denoise(30.0, 50.0, 1.0, 50.0);
+                    setf(&mut e, id, v);
+                    set(&mut e, "show_noise", ParamValue::Bool(show));
+                    sane(&run_on(&env, &e, 1.0), &src, &format!("{id} = {v}"));
+                }
+            }
+        }
+        // a working scale that is not a number
+        for px_scale in [f32::NAN, f32::INFINITY, 0.0, -1.0, 1e9] {
+            let mut img = src.clone();
+            crate::effects::apply(&mut img, &denoise(30.0, 50.0, 1.0, 50.0), &FxCtx { px_scale, env: Some(&env), ..cx() });
+            sane(&img, &src, &format!("px_scale {px_scale}"));
+        }
+        // tiny, transparent, half-transparent and broken images, with neighbours of another size or none at all
+        let mut e = denoise(30.0, 50.0, 2.0, 50.0);
+        let mut images = vec![Image::filled(1, 1, [0.2, 0.4, 0.6, 1.0]), Image::filled(1, 7, [0.2, 0.4, 0.6, 1.0]), Image::filled(7, 1, [0.2, 0.4, 0.6, 1.0])];
+        images.push(Image::filled(5, 5, [0.1, 0.2, 0.3, 0.2]));
+        images.push(Image::filled(9, 9, [0.7, f32::NAN, 5.0, 0.0])); // transparent with garbage colour
+        for show in [false, true] {
+            set(&mut e, "show_noise", ParamValue::Bool(show));
+            for img in &images {
+                for with_env in [false, true] {
+                    let mut out = img.clone();
+                    let env = with_env.then_some(&env as &dyn FxEnv);
+                    crate::effects::apply(&mut out, &e, &FxCtx { env, ..cx() });
+                    if img.px.iter().all(|v| v.is_finite()) {
+                        sane(&out, img, &format!("{}x{} env {with_env} show {show}", img.w, img.h));
+                    }
+                    if img.px.as_chunks::<4>().0.iter().all(|p| p[3] == 0.0) {
+                        assert!(out.px.iter().zip(&img.px).all(|(a, b)| a.to_bits() == b.to_bits()), "transparent pixels must stay as they were");
+                    }
+                }
+            }
+        }
+        set(&mut e, "show_noise", ParamValue::Bool(false));
+        // a pixel that is not a number is left as it was and does not spread to its neighbours
+        let mut img = Image::filled(8, 8, [0.2, 0.4, 0.6, 1.0]);
+        img.px[..3].fill(f32::NAN);
+        crate::effects::apply(&mut img, &e, &FxCtx { env: Some(&env), ..cx() });
+        assert!(img.px[..3].iter().all(|v| v.is_nan()) && img.px[4..].iter().all(|v| v.is_finite()));
+        // a buffer that does not match its size is refused, not indexed
+        let mut broken = Image { w: 4, h: 4, px: vec![0.5; 10] };
+        crate::effects::apply(&mut broken, &e, &FxCtx { env: Some(&env), ..cx() });
+        assert_eq!(broken.px, vec![0.5; 10]);
+        // no environment: spatial only, the same as radius 0
+        let mut alone = src.clone();
+        crate::effects::apply(&mut alone, &e, &FxCtx { env: None, ..cx() });
+        let mut spatial = src.clone();
+        crate::effects::apply(&mut spatial, &denoise(30.0, 50.0, 0.0, 50.0), &FxCtx { env: None, ..cx() });
+        assert_eq!(alone.px, spatial.px);
+        // neighbours of another size are ignored
+        let wrong = Probe::new(flat_noisy, 0.5, 0.5);
+        assert_eq!(run_on(&wrong, &denoise(30.0, 50.0, 2.0, 50.0), 1.0).px, spatial.px);
     }
 }

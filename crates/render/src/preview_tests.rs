@@ -210,6 +210,16 @@ fn need_classification_none_yellow_red() {
 }
 
 #[test]
+fn video_denoise_on_a_generated_clip_needs_a_render() {
+    // a generated clip decodes for almost nothing, so at 24 fps the effect's own cost decides
+    let (mut p, matte, _ocean, seq) = setup();
+    let c = place(&mut p, seq, 0, matte, 0, 24);
+    add_fx(&mut p, seq, c, "video_denoise");
+    let s = video_segments(&p, seq);
+    assert_eq!(s[0].need, Need::Render, "Video De-Noise alone: {} ms per frame", s[0].cost_ms);
+}
+
+#[test]
 fn effect_tiers_are_ordered() {
     assert!(effect_cost_ms("lumetri") > effect_cost_ms("tint"));
     assert!(effect_cost_ms("tint") > effect_cost_ms("crop"));

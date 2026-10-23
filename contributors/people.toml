@@ -88,3 +88,8 @@ sync_github_name = false
 
 [people.webdevtodayjason]
 display_name = "Jason Brashear"
+
+[people.danielbanariba]
+real_name = "Daniel Alejandro Barrientos Anariba"
+display_name = "Daniel Banariba"
+sync_github_name = false

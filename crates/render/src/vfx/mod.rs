@@ -14,6 +14,7 @@
 mod blur;
 mod color;
 pub(crate) use color::cdl;
+mod denoise;
 mod distort;
 mod immersive;
 mod lights;
@@ -86,7 +87,7 @@ fn resize(img: Image, w: usize, h: usize) -> Image {
 
 /// Effects that read other frames (skipped when rendering another frame for one of them).
 pub fn is_temporal(id: &str) -> bool {
-    matches!(id, "posterize_time" | "echo" | "warp_stabilizer" | "auto_reframe")
+    matches!(id, "posterize_time" | "echo" | "warp_stabilizer" | "auto_reframe" | "video_denoise")
 }
 
 impl FxEnv for ItemEnv<'_> {
@@ -466,6 +467,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "track_matte" => color::track_matte(img, e, cx),
         "cineon_converter" => color::cineon(img, e, cx),
         "noise" | "noise_legacy" => color::noise(img, e, cx),
+        "video_denoise" => denoise::video_denoise(img, e, cx),
         // Blur & Sharpen
         "bokeh_blur" => blur::bokeh(img, e, cx),
         "channel_blur" => blur::channel_blur(img, e, cx),

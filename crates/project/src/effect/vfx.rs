@@ -624,6 +624,19 @@ pub(super) fn defs() -> Vec<EffectDef> {
                 grp(seed(), "Evolution Options"),
             ],
         ),
+        // ---- Noise & Grain ----
+        video(
+            "video_denoise",
+            "Video De-Noise",
+            NOISE,
+            vec![
+                pct("luma", "Luma Noise Level", 30.0),
+                pct("chroma", "Chroma Noise Level", 50.0),
+                fs("temporal", "Temporal Radius", 1.0, (0.0, 2.0), (0.0, 2.0), "", 0),
+                pct("detail", "Preserve Detail", 50.0),
+                b("show_noise", "Show Only Noise", false),
+            ],
+        ),
         // ---- Time ----
         video("posterize_time", "Posterize Time", TIME, vec![fs("rate", "Frame Rate", 12.0, (0.1, 99.0), (1.0, 60.0), "", 2)]),
         // ---- Transform ----
@@ -1152,7 +1165,8 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
         let accel = match e.category.first().copied() {
             Some("Legacy") => !matches!(id, "camera_blur"),
             _ if folder == "Obsolete" => false,
-            _ => !matches!(id, "clone" | "stroke"),
+            // CPU only: no GPU op, so no Accelerated badge
+            _ => !matches!(id, "clone" | "stroke" | "video_denoise"),
         };
         e.accelerated = accel;
         e.float32 = a32;
@@ -1229,6 +1243,10 @@ mod tests {
         ("Video", &["Metadata & Timecode Burn-in"]),
     ];
 
+    /// Effects FilmCraft adds beyond the catalogue above, as (folder, name). They sit in the folder
+    /// their kind belongs to; nothing else may.
+    const BEYOND_CATALOGUE: &[(&str, &str)] = &[("Noise & Grain", "Video De-Noise")];
+
     const LEGACY_NAMES: &[&str] = &[
         "Alpha Glow",
         "Block Dissolve",
@@ -1267,7 +1285,7 @@ mod tests {
             if f == "Obsolete" {
                 continue;
             }
-            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name));
+            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name)) || BEYOND_CATALOGUE.contains(&(f, d.name));
             assert!(listed, "{} in {f} is not in Premiere's list", d.name);
         }
         for name in LEGACY_NAMES {

@@ -428,6 +428,9 @@ pub fn effect_cost_ms(id: &str) -> f64 {
         | "vr_glow"
         | "vr_denoise"
         | "vr_sharpen" => 50.0,
+        // far beyond the heavy tier: at 1920 x 1080 on 16 cores (`filmcraft-cli render`) it adds
+        // about 0.37 s per frame at the default Temporal Radius 1 (0.28 s at 0, 0.56 s at 2)
+        "video_denoise" => 370.0,
         "vertical_flip" | "horizontal_flip" | "crop" | "timecode" | "black_white" | "extract" | "clip_name" | "strobe" | "mosaic" | "mirror"
         | "simple_text" | "track_matte" => 6.0,
         _ => 20.0,
