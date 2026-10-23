@@ -1,5 +1,7 @@
 //! Premiere project reader, based on the author's [MIT-licensed][python-license] LLM Video Editor
 //! [`premiere.py`][python-parser] and user-owned XML structure.
+//! Contributor fidelity mappings and their additional FilmCraft PR references are documented in
+//! `docs/premiere-import.md` and this crate's README.
 //! No Adobe application code, proprietary documentation or assets were consulted or copied.
 //! MIT OR Apache-2.0. Unsupported features remain in the source snapshot
 //! and are reported; this is not a promise of pixel-identical Premiere rendering.
@@ -353,6 +355,10 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     for group in root.children().filter(|n| n.has_tag_name("Link")) {
         spend(&mut work_left, group)?;
         let Some(id) = group.attribute("ObjectID") else { continue };
+        // This shared identifier is copied into each linked item's provenance.
+        if id.len() > 4096 {
+            return Err(error("link group identifier is too long"));
+        }
         for pointer in group.descendants().filter(|n| n.has_tag_name("TrackItem")) {
             let Some(item) = pointer.attribute("ObjectRef") else { continue };
             if links.insert(item, id).is_some_and(|old| old != id) {
