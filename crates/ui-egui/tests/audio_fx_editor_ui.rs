@@ -237,3 +237,25 @@ fn track_fx_editor_from_the_mixer_slot() {
     assert!(xo2 > 2200.0, "crossover after drag: {xo2} ({a1})");
     d.snapshot("fx-editor-multiband");
 }
+
+#[test]
+fn studio_reverb_parameters_can_be_edited_on_an_audio_mixer_strip() {
+    let mut d = Driver::demo();
+    d.exec("mixer.addInsert", json!({"strip": "A2", "effect": "studio_reverb"}));
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.frames(3);
+    d.click("mixer.showEffects");
+    d.click("mixer.A2.fx.0");
+    d.click("mixer.A2.fx.0.edit");
+    d.frames(3);
+
+    let ids = d.ids("fxEditor.studio_reverb.param.");
+    for param in ["room", "decay", "damping", "dry", "wet"] {
+        assert!(ids.iter().any(|id| id == &format!("fxEditor.studio_reverb.param.{param}")), "{param} missing from {ids:?}");
+    }
+    d.drag("fxEditor.studio_reverb.param.wet", 55.0, 0.0, 6);
+    let mixer = d.exec("mixer.inspect", json!({}));
+    let a2 = mixer["strips"].as_array().unwrap().iter().find(|strip| strip["ref"] == "A2").unwrap();
+    let wet = a2["inserts"][0]["params"]["wet"].as_f64().unwrap_or_default();
+    assert!(wet > 35.0, "Wet should update on A2's Studio Reverb: {a2}");
+}

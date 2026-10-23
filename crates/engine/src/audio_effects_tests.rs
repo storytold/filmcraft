@@ -97,6 +97,37 @@ fn parameters_are_set_by_id_and_change_the_sound() {
 }
 
 #[test]
+fn studio_reverb_track_insert_changes_the_rendered_audio() {
+    let mut s = demo();
+    s.execute("mixer.addInsert", json!({"strip": "A1", "effect": "studio_reverb"})).unwrap();
+    let before = render(&s, 4800);
+    s.execute("mixer.setInsert", json!({"strip": "A1", "slot": 0, "params": {"dry": 0.0, "wet": 100.0}})).unwrap();
+    let after = render(&s, 4800);
+
+    let peak = |b: &filmcraft_frame::AudioBuffer| b.channels.iter().flatten().fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+    assert!(peak(&after) > 1e-3, "the fully wet track insert should still produce an audible signal");
+
+    let mut compared_samples = 0usize;
+    let absolute_difference = before
+        .channels
+        .iter()
+        .zip(after.channels.iter())
+        .flat_map(|(before, after)| before.iter().zip(after))
+        .map(|(before, after)| {
+            compared_samples = compared_samples.saturating_add(1);
+            f64::from((*before - *after).abs())
+        })
+        .sum::<f64>();
+    assert!(compared_samples > 0, "the demo render should contain samples to compare");
+    let mean_absolute_difference = absolute_difference / compared_samples as f64;
+    println!("track reverb mean absolute sample delta = {mean_absolute_difference:.6}");
+    assert!(
+        mean_absolute_difference > 1e-4,
+        "track reverb mean absolute sample delta should exceed 1e-4 normalized amplitude, got {mean_absolute_difference:.6}"
+    );
+}
+
+#[test]
 fn shared_names_resolve_by_track_kind() {
     let mut s = demo();
     let clip = a1_clip(&s);
