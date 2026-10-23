@@ -1,4 +1,7 @@
-//! Intra prediction (8.3): Intra_4x4, Intra_8x8 (with reference filtering), Intra_16x16 and chroma.
+//! Intra prediction (8.3): Intra_4x4, Intra_8x8 (with reference filtering), Intra_16x16 and chroma
+//! (4:2:0 and 4:2:2), for any sample type; `bd` is the bit depth.
+
+use crate::picture::Sample;
 
 /// Neighbouring sample availability for one block.
 #[derive(Clone, Copy, Debug, Default)]
@@ -30,16 +33,17 @@ impl Edge {
     }
 }
 
-fn load_edge(plane: &[u8], stride: usize, x: usize, y: usize, n: usize, a: Avail) -> Edge {
-    let mut e = Edge { top: [128; 16], left: [128; 8], tl: 128 };
+fn load_edge<S: Sample>(plane: &[S], stride: usize, x: usize, y: usize, n: usize, a: Avail, bd: u32) -> Edge {
+    let mid = 1 << (bd - 1);
+    let mut e = Edge { top: [mid; 16], left: [mid; 8], tl: mid };
     if a.top {
         let row = &plane[(y - 1) * stride + x..];
         for i in 0..n {
-            e.top[i] = row[i] as i32;
+            e.top[i] = row[i].to_i32();
         }
         if a.top_right {
             for i in n..2 * n {
-                e.top[i] = row[i] as i32;
+                e.top[i] = row[i].to_i32();
             }
         } else {
             let v = e.top[n - 1];
@@ -50,18 +54,18 @@ fn load_edge(plane: &[u8], stride: usize, x: usize, y: usize, n: usize, a: Avail
     }
     if a.left {
         for i in 0..n {
-            e.left[i] = plane[(y + i) * stride + x - 1] as i32;
+            e.left[i] = plane[(y + i) * stride + x - 1].to_i32();
         }
     }
     if a.top_left {
-        e.tl = plane[(y - 1) * stride + x - 1] as i32;
+        e.tl = plane[(y - 1) * stride + x - 1].to_i32();
     }
     e
 }
 
 /// Directional / DC prediction shared by Intra_4x4 and Intra_8x8 (8.3.1.2.x, 8.3.2.2.x).
-fn pred_nxn(mode: u8, e: &Edge, n: i32, a: Avail, out: &mut [u8], stride: usize) {
-    let mut put = |x: i32, y: i32, v: i32| out[y as usize * stride + x as usize] = v as u8;
+fn pred_nxn<S: Sample>(mode: u8, e: &Edge, n: i32, a: Avail, out: &mut [S], stride: usize, bd: u32) {
+    let mut put = |x: i32, y: i32, v: i32| out[y as usize * stride + x as usize] = S::from_i32(v);
     match mode {
         0 => {
             for y in 0..n {
@@ -85,7 +89,7 @@ fn pred_nxn(mode: u8, e: &Edge, n: i32, a: Avail, out: &mut [u8], stride: usize)
                 (true, true) => (st + sl + n) >> (shift + 1),
                 (false, true) => (sl + (n >> 1)) >> shift,
                 (true, false) => (st + (n >> 1)) >> shift,
-                _ => 128,
+                _ => 1 << (bd - 1),
             };
             for y in 0..n {
                 for x in 0..n {
@@ -185,14 +189,14 @@ fn pred_nxn(mode: u8, e: &Edge, n: i32, a: Avail, out: &mut [u8], stride: usize)
 }
 
 /// Intra_4x4 prediction written into `plane` at (x, y).
-pub fn pred4x4(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, a: Avail) {
-    let e = load_edge(plane, stride, x, y, 4, a);
-    pred_nxn(mode, &e, 4, a, &mut plane[y * stride + x..], stride);
+pub fn pred4x4<S: Sample>(plane: &mut [S], stride: usize, x: usize, y: usize, mode: u8, a: Avail, bd: u32) {
+    let e = load_edge(plane, stride, x, y, 4, a, bd);
+    pred_nxn(mode, &e, 4, a, &mut plane[y * stride + x..], stride, bd);
 }
 
 /// Intra_8x8 prediction (with reference sample filtering) written into `plane` at (x, y).
-pub fn pred8x8(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, a: Avail) {
-    let p = load_edge(plane, stride, x, y, 8, a);
+pub fn pred8x8<S: Sample>(plane: &mut [S], stride: usize, x: usize, y: usize, mode: u8, a: Avail, bd: u32) {
+    let p = load_edge(plane, stride, x, y, 8, a, bd);
     let mut f = p;
     if a.top {
         f.top[0] = if a.top_left { (p.tl + 2 * p.top[0] + p.top[1] + 2) >> 2 } else { (3 * p.top[0] + p.top[1] + 2) >> 2 };
@@ -216,26 +220,26 @@ pub fn pred8x8(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, a:
         }
         f.left[7] = (p.left[6] + 3 * p.left[7] + 2) >> 2;
     }
-    pred_nxn(mode, &f, 8, a, &mut plane[y * stride + x..], stride);
+    pred_nxn(mode, &f, 8, a, &mut plane[y * stride + x..], stride, bd);
 }
 
 #[inline(always)]
-fn clip(v: i32) -> u8 {
-    v.clamp(0, 255) as u8
+fn clip<S: Sample>(v: i32, bd: u32) -> S {
+    S::clip(v, (1 << bd) - 1)
 }
 
 /// Intra_16x16 prediction (8.3.3) for the macroblock at luma (x, y).
-pub fn pred16x16(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, a: Avail) {
+pub fn pred16x16<S: Sample>(plane: &mut [S], stride: usize, x: usize, y: usize, mode: u8, a: Avail, bd: u32) {
     let mut top = [0i32; 16];
     let mut left = [0i32; 16];
     if a.top {
         for i in 0..16 {
-            top[i] = plane[(y - 1) * stride + x + i] as i32;
+            top[i] = plane[(y - 1) * stride + x + i].to_i32();
         }
     }
     if a.left {
         for i in 0..16 {
-            left[i] = plane[(y + i) * stride + x - 1] as i32;
+            left[i] = plane[(y + i) * stride + x - 1].to_i32();
         }
     }
     let base = y * stride + x;
@@ -243,13 +247,13 @@ pub fn pred16x16(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, 
         0 => {
             for r in 0..16 {
                 for c in 0..16 {
-                    plane[base + r * stride + c] = top[c] as u8;
+                    plane[base + r * stride + c] = S::from_i32(top[c]);
                 }
             }
         }
         1 => {
             for r in 0..16 {
-                plane[base + r * stride..base + r * stride + 16].fill(left[r] as u8);
+                plane[base + r * stride..base + r * stride + 16].fill(S::from_i32(left[r]));
             }
         }
         2 => {
@@ -259,14 +263,15 @@ pub fn pred16x16(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, 
                 (true, true) => (st + sl + 16) >> 5,
                 (false, true) => (sl + 8) >> 4,
                 (true, false) => (st + 8) >> 4,
-                _ => 128,
-            } as u8;
+                _ => 1 << (bd - 1),
+            };
+            let dc = S::from_i32(dc);
             for r in 0..16 {
                 plane[base + r * stride..base + r * stride + 16].fill(dc);
             }
         }
         _ => {
-            let tl = if a.top_left { plane[(y - 1) * stride + x - 1] as i32 } else { 128 };
+            let tl = if a.top_left { plane[(y - 1) * stride + x - 1].to_i32() } else { 1 << (bd - 1) };
             let t = |i: i32| if i < 0 { tl } else { top[i as usize] };
             let l = |i: i32| if i < 0 { tl } else { left[i as usize] };
             let mut h = 0;
@@ -280,34 +285,34 @@ pub fn pred16x16(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, 
             let c = (5 * v + 32) >> 6;
             for r in 0..16 {
                 for cc in 0..16 {
-                    plane[base + r * stride + cc] = clip((aa + b * (cc as i32 - 7) + c * (r as i32 - 7) + 16) >> 5);
+                    plane[base + r * stride + cc] = clip((aa + b * (cc as i32 - 7) + c * (r as i32 - 7) + 16) >> 5, bd);
                 }
             }
         }
     }
 }
 
-/// Chroma intra prediction for a 4:2:0 macroblock (8x8 block at chroma (x, y)), 8.3.4.
-/// Modes: 0 DC, 1 horizontal, 2 vertical, 3 plane.
-pub fn pred_chroma(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8, a: Avail) {
+/// Chroma intra prediction (8.3.4) of one macroblock's chroma block at chroma (x, y): 8 wide and
+/// `h` = 8 (4:2:0) or 16 (4:2:2) high. Modes: 0 DC, 1 horizontal, 2 vertical, 3 plane.
+pub fn pred_chroma<S: Sample>(plane: &mut [S], stride: usize, x: usize, y: usize, mode: u8, a: Avail, h: usize, bd: u32) {
     const W: usize = 8;
-    const H: usize = 8;
+    let mid = 1i32 << (bd - 1);
     let mut top = [0i32; W];
-    let mut left = [0i32; H];
+    let mut left = [0i32; 16];
     if a.top {
         for i in 0..W {
-            top[i] = plane[(y - 1) * stride + x + i] as i32;
+            top[i] = plane[(y - 1) * stride + x + i].to_i32();
         }
     }
     if a.left {
-        for i in 0..H {
-            left[i] = plane[(y + i) * stride + x - 1] as i32;
+        for i in 0..h {
+            left[i] = plane[(y + i) * stride + x - 1].to_i32();
         }
     }
     let base = y * stride + x;
     match mode {
         0 => {
-            for by in 0..H / 4 {
+            for by in 0..h / 4 {
                 for bx in 0..W / 4 {
                     let st: i32 = top[bx * 4..bx * 4 + 4].iter().sum();
                     let sl: i32 = left[by * 4..by * 4 + 4].iter().sum();
@@ -316,7 +321,7 @@ pub fn pred_chroma(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8
                             (true, true) => (st + sl + 4) >> 3,
                             (false, true) => (sl + 2) >> 2,
                             (true, false) => (st + 2) >> 2,
-                            _ => 128,
+                            _ => mid,
                         }
                     } else if bx > 0 {
                         if a.top {
@@ -324,50 +329,54 @@ pub fn pred_chroma(plane: &mut [u8], stride: usize, x: usize, y: usize, mode: u8
                         } else if a.left {
                             (sl + 2) >> 2
                         } else {
-                            128
+                            mid
                         }
                     } else if a.left {
                         (sl + 2) >> 2
                     } else if a.top {
                         (st + 2) >> 2
                     } else {
-                        128
+                        mid
                     };
                     for r in 0..4 {
                         let o = base + (by * 4 + r) * stride + bx * 4;
-                        plane[o..o + 4].fill(dc as u8);
+                        plane[o..o + 4].fill(S::from_i32(dc));
                     }
                 }
             }
         }
         1 => {
-            for r in 0..H {
-                plane[base + r * stride..base + r * stride + W].fill(left[r] as u8);
+            for r in 0..h {
+                plane[base + r * stride..base + r * stride + W].fill(S::from_i32(left[r]));
             }
         }
         2 => {
-            for r in 0..H {
+            for r in 0..h {
                 for c in 0..W {
-                    plane[base + r * stride + c] = top[c] as u8;
+                    plane[base + r * stride + c] = S::from_i32(top[c]);
                 }
             }
         }
         _ => {
-            let tl = if a.top_left { plane[(y - 1) * stride + x - 1] as i32 } else { 128 };
+            let tl = if a.top_left { plane[(y - 1) * stride + x - 1].to_i32() } else { mid };
             let t = |i: i32| if i < 0 { tl } else { top[i as usize] };
             let l = |i: i32| if i < 0 { tl } else { left[i as usize] };
-            let mut h = 0;
-            let mut v = 0;
+            // xCF = 0; yCF = 4 for 4:2:2 (the block is 16 high): (8-141) .. (8-146)
+            let ycf = (h as i32 - 8) / 2;
+            let mut hh = 0;
+            let mut vv = 0;
             for k in 0..4 {
-                h += (k + 1) * (t(4 + k) - t(2 - k));
-                v += (k + 1) * (l(4 + k) - l(2 - k));
+                hh += (k + 1) * (t(4 + k) - t(2 - k));
             }
-            let aa = 16 * (left[H - 1] + top[W - 1]);
-            let b = (34 * h + 32) >> 6;
-            let c = (34 * v + 32) >> 6;
-            for r in 0..H {
+            for k in 0..4 + ycf {
+                vv += (k + 1) * (l(4 + ycf + k) - l(2 + ycf - k));
+            }
+            let aa = 16 * (left[h - 1] + top[W - 1]);
+            let b = (34 * hh + 32) >> 6;
+            let c = ((if h == 16 { 5 } else { 34 }) * vv + 32) >> 6;
+            for r in 0..h {
                 for cc in 0..W {
-                    plane[base + r * stride + cc] = clip((aa + b * (cc as i32 - 3) + c * (r as i32 - 3) + 16) >> 5);
+                    plane[base + r * stride + cc] = clip((aa + b * (cc as i32 - 3) + c * (r as i32 - 3 - ycf) + 16) >> 5, bd);
                 }
             }
         }
@@ -396,12 +405,12 @@ mod tests {
     #[test]
     fn i4_vertical_horizontal_dc() {
         let (mut p, s) = setup();
-        pred4x4(&mut p, s, 4, 4, 0, ALL);
+        pred4x4(&mut p, s, 4, 4, 0, ALL, 8);
         assert_eq!(&p[4 * s + 4..4 * s + 8], &[10, 20, 30, 40]);
         assert_eq!(&p[7 * s + 4..7 * s + 8], &[10, 20, 30, 40]);
-        pred4x4(&mut p, s, 4, 4, 1, ALL);
+        pred4x4(&mut p, s, 4, 4, 1, ALL, 8);
         assert_eq!(&p[5 * s + 4..5 * s + 8], &[2, 2, 2, 2]);
-        pred4x4(&mut p, s, 4, 4, 2, ALL);
+        pred4x4(&mut p, s, 4, 4, 2, ALL, 8);
         // (10+20+30+40 + 1+2+3+4 + 4) >> 3 = 114 >> 3 = 14
         assert_eq!(p[4 * s + 4], 14);
     }
@@ -409,7 +418,7 @@ mod tests {
     #[test]
     fn i4_diag_down_left_hand_computed() {
         let (mut p, s) = setup();
-        pred4x4(&mut p, s, 4, 4, 3, ALL);
+        pred4x4(&mut p, s, 4, 4, 3, ALL, 8);
         // pred[0,0] = (t0 + 2 t1 + t2 + 2) >> 2 = (10 + 40 + 30 + 2) >> 2 = 20
         assert_eq!(p[4 * s + 4], 20);
         // pred[3,3] = (t6 + 3 t7 + 2) >> 2 = (70 + 240 + 2) >> 2 = 78
@@ -419,7 +428,7 @@ mod tests {
     #[test]
     fn i4_diag_down_right_hand_computed() {
         let (mut p, s) = setup();
-        pred4x4(&mut p, s, 4, 4, 4, ALL);
+        pred4x4(&mut p, s, 4, 4, 4, ALL, 8);
         // x==y: (t0 + 2 tl + l0 + 2) >> 2 = (10 + 10 + 1 + 2) >> 2 = 5
         assert_eq!(p[4 * s + 4], 5);
         // x=1,y=0: (tl + 2 t0 + t1 + 2)>>2 = (5 + 20 + 20 + 2) >> 2 = 11
@@ -432,7 +441,7 @@ mod tests {
     fn i4_top_right_substitution() {
         let (mut p, s) = setup();
         let a = Avail { top_right: false, ..ALL };
-        pred4x4(&mut p, s, 4, 4, 3, a);
+        pred4x4(&mut p, s, 4, 4, 3, a, 8);
         // top-right replaced by t3 = 40: pred[3,3] = (40 + 120 + 2) >> 2 = 40
         assert_eq!(p[7 * s + 7], 40);
     }
@@ -441,7 +450,7 @@ mod tests {
     fn i16_plane_flat_is_flat() {
         let s = 32;
         let mut p = vec![77u8; s * 32];
-        pred16x16(&mut p, s, 8, 8, 3, ALL);
+        pred16x16(&mut p, s, 8, 8, 3, ALL, 8);
         assert!(p[8 * s + 8..8 * s + 24].iter().all(|&v| v == 77));
     }
 
@@ -453,10 +462,88 @@ mod tests {
             p[3 * s + 4 + i] = if i < 4 { 40 } else { 80 };
             p[(4 + i) * s + 3] = if i < 4 { 8 } else { 16 };
         }
-        pred_chroma(&mut p, s, 4, 4, 0, ALL);
+        pred_chroma(&mut p, s, 4, 4, 0, ALL, 8, 8);
         assert_eq!(p[4 * s + 4], (160 + 32 + 4) >> 3); // top-left block: both
         assert_eq!(p[4 * s + 8], 80); // top-right block: top only
         assert_eq!(p[8 * s + 4], 16); // bottom-left: left only
         assert_eq!(p[8 * s + 8], ((320 + 64 + 4) >> 3) as u8); // bottom-right: both
+    }
+
+    #[test]
+    fn chroma_422_prediction_modes() {
+        // 8 wide, 16 high block at (4, 4) in a 16 x 24 plane; top row 100.., left column 20, 30, 40...
+        let stride = 16;
+        let setup = |bd: u32| {
+            let scale = 1u16 << (bd - 8);
+            let mut p = vec![0u16; stride * 24];
+            for i in 0..8 {
+                p[3 * stride + 4 + i] = (100 + i as u16) * scale;
+            }
+            for i in 0..16 {
+                p[(4 + i) * stride + 3] = (20 + 10 * i as u16) * scale;
+            }
+            p[3 * stride + 3] = 90 * scale;
+            p
+        };
+        for bd in [8, 10] {
+            let scale = 1i32 << (bd - 8);
+            let mut p = setup(bd);
+            pred_chroma(&mut p, stride, 4, 4, 1, ALL, 16, bd); // horizontal
+            for r in 0..16 {
+                assert!((0..8).all(|c| p[(4 + r) * stride + 4 + c] as i32 == (20 + 10 * r as i32) * scale));
+            }
+            let mut p = setup(bd);
+            pred_chroma(&mut p, stride, 4, 4, 2, ALL, 16, bd); // vertical
+            for r in 0..16 {
+                assert!((0..8).all(|c| p[(4 + r) * stride + 4 + c] as i32 == (100 + c as i32) * scale));
+            }
+            // DC: block (0,0) top + left, (4,0) top only, (0,4..) left only, (4,4..) top + left
+            let mut p = setup(bd);
+            pred_chroma(&mut p, stride, 4, 4, 0, ALL, 16, bd);
+            let sum = |v: Vec<i32>| v.iter().sum::<i32>() * scale;
+            let top0 = sum((0..4).map(|i| 100 + i).collect());
+            let top1 = sum((4..8).map(|i| 100 + i).collect());
+            let left = |b: i32| sum((0..4).map(|i| 20 + 10 * (4 * b + i)).collect());
+            assert_eq!(p[4 * stride + 4] as i32, (top0 + left(0) + 4) >> 3);
+            assert_eq!(p[4 * stride + 8] as i32, (top1 + 2) >> 2);
+            assert_eq!(p[(4 + 4) * stride + 4] as i32, (left(1) + 2) >> 2);
+            assert_eq!(p[(4 + 8) * stride + 4] as i32, (left(2) + 2) >> 2);
+            assert_eq!(p[(4 + 4) * stride + 8] as i32, (top1 + left(1) + 4) >> 3);
+            assert_eq!(p[(4 + 12) * stride + 8] as i32, (top1 + left(3) + 4) >> 3);
+            // nothing available: the mid value
+            let mut p = vec![0u16; stride * 24];
+            let none = Avail::default();
+            pred_chroma(&mut p, stride, 4, 4, 0, none, 16, bd);
+            assert!((0..16).all(|r| (0..8).all(|c| p[(4 + r) * stride + 4 + c] as i32 == 128 * scale)));
+        }
+    }
+
+    #[test]
+    fn chroma_422_plane_of_a_flat_area_is_flat_and_clips_at_the_bit_depth() {
+        let stride = 16;
+        let mut p = vec![700u16; stride * 24];
+        pred_chroma(&mut p, stride, 4, 4, 3, ALL, 16, 10);
+        assert!((0..16).all(|r| (0..8).all(|c| p[(4 + r) * stride + 4 + c] == 700)));
+        // extreme random neighbours never leave the sample range (clipping instead of wrapping)
+        let mut rng = 0x1234_5678_9abc_def1u64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let mut clipped = false;
+        for _ in 0..200 {
+            let mut p: Vec<u16> = (0..stride * 24).map(|_| if next() % 2 == 0 { 0 } else { 1023 }).collect();
+            pred_chroma(&mut p, stride, 4, 4, 3, ALL, 16, 10);
+            for r in 0..16 {
+                for c in 0..8 {
+                    let v = p[(4 + r) * stride + 4 + c];
+                    assert!(v <= 1023);
+                    clipped |= v == 0 || v == 1023;
+                }
+            }
+        }
+        assert!(clipped);
     }
 }

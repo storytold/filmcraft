@@ -29,6 +29,12 @@ fn spec(name: &str) -> Vec<String> {
             NOISE,
             &["-t", "1", "-c:v", "libx264", "-bf", "0", "-g", "10", "-pix_fmt", "yuv420p", "-c:a", "pcm_s24le", "-ac", "2", "-timecode", "01:00:00;00"],
         ]),
+        // FX6-style essence: 10-bit 4:2:2 all-intra AVC in MXF, with 24-bit PCM.
+        "mxf_h264_422_10_intra.mxf" => cat(&[
+            &["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24000/1001"],
+            NOISE,
+            &["-t", "0.5", "-c:v", "libx264", "-g", "1", "-pix_fmt", "yuv422p10le", "-c:a", "pcm_s24le", "-ac", "2"],
+        ]),
         "mxf_dnxhr_lb.mxf" => {
             cat(&[V25, TONE, &["-t", "1", "-c:v", "dnxhd", "-profile:v", "dnxhr_lb", "-pix_fmt", "yuv422p", "-c:a", "pcm_s24le", "-ac", "2"]])
         }
@@ -112,6 +118,7 @@ fn spec(name: &str) -> Vec<String> {
 pub const ALL: &[&str] = &[
     "mxf_h264_bf2.mxf",
     "mxf_h264_2997df.mxf",
+    "mxf_h264_422_10_intra.mxf",
     "mxf_dnxhr_lb.mxf",
     "mxf_prores.mxf",
     "mxf_mpeg2.mxf",
@@ -203,6 +210,18 @@ fn check_audio_exact(ff: &Path, file: &Path, extra: &[&str]) {
         }
     }
     eprintln!("{}: {n} sample frames × {ch} channels exact", file.display());
+}
+
+#[test]
+fn h264_422_10_intra_and_24_bit_audio_are_exact() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = make(&ff, "mxf_h264_422_10_intra.mxf");
+    let src = open(&f);
+    let info = src.info();
+    assert_eq!(info.video.as_ref().unwrap().frame_rate, FrameRate::FPS_23_976);
+    assert_eq!(info.audio().unwrap().bits_per_sample, Some(24));
+    check_video(&ff, &f, "yuv422p10le", (2, 1), 2, 0, 12);
+    check_audio_exact(&ff, &f, &[]);
 }
 
 #[test]

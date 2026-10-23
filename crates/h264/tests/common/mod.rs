@@ -377,6 +377,38 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
     Some((h264, yuv))
 }
 
+/// A libx264 stream encoded from the lavfi source `lavfi` (its pixel format included) with the
+/// encoder arguments `args`, and, with `reference`, ffmpeg's raw decode of it in that pixel format,
+/// each generated once and serialised with [`ensure`]'s generation. `None` (with a message) when
+/// ffmpeg is unavailable; a failing encode or decode is an assertion, distinct from that skip.
+pub fn ensure_stream(name: &str, lavfi: &str, frames: u32, args: &[&str], reference: Option<&str>) -> Option<(PathBuf, Option<PathBuf>)> {
+    let ff = filmcraft_testkit::ffmpeg_or_skip(name)?;
+    let _generation = FIXTURE_GENERATION.lock().unwrap_or_else(PoisonError::into_inner);
+    let dir = fixtures_dir();
+    let h264 = dir.join(format!("{name}.h264"));
+    if !h264.exists() {
+        let tmp = filmcraft_testkit::temp_path(&h264);
+        let mut c = Command::new(&ff);
+        c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", lavfi, "-frames:v", &frames.to_string(), "-c:v", "libx264"]);
+        c.args(args).args(["-f", "h264"]).arg(&tmp);
+        assert!(run(&mut c), "fixture generation failed for {name}");
+        std::fs::rename(&tmp, &h264).unwrap();
+    }
+    let yuv = reference.map(|pix_fmt| {
+        let yuv = dir.join(format!("{name}.yuv"));
+        if !yuv.exists() {
+            let tmp = filmcraft_testkit::temp_path(&yuv);
+            let mut c = Command::new(&ff);
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&h264);
+            c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt]).arg(&tmp);
+            assert!(run(&mut c), "reference decode failed for {name}");
+            std::fs::rename(&tmp, &yuv).unwrap();
+        }
+        yuv
+    });
+    Some((h264, yuv))
+}
+
 /// Split an Annex-B stream into access units (new AU at AUD/SPS/PPS/SEI after a slice, or at a slice with
 /// first_mb_in_slice == 0).
 pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
