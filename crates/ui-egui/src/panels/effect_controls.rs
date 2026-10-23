@@ -334,9 +334,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().line_segment([pos2(px, tip), pos2(px, lane.max.y)], Stroke::new(1.0, t.playhead));
         app.auto.add("effectControls.playhead", Rect::from_min_max(pos2(px - 5.0, top), pos2(px + 5.0, tip)), "playhead");
     }
-    // footer timecode
-    let tc = filmcraft_time::format_time(ph, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48000);
-    ui.painter().text(pos2(rect.min.x + 10.0, rect.max.y - 13.0), Align2::LEFT_CENTER, tc, Tokens::mono(13.0), t.timecode);
+    // footer timecode: drag to scrub, click to type a time, as on the Timeline and the monitors
+    let rate = seq.settings.frame_rate;
+    let tc = filmcraft_time::format_time(ph, rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48000);
+    let tc_rect = Rect::from_min_size(pos2(rect.min.x + 10.0, rect.max.y - 26.0), vec2(110.0, 26.0));
+    match crate::widgets::timecode_field(ui, egui::Id::new("effectControls-timecode"), tc_rect, &tc, ph, Tick::ZERO, rate, seq.settings.drop_frame, t.timecode)
+    {
+        Some(Ok(time)) => {
+            if let Err(e) = app.session.execute("playhead.set", json!({"time": time.0})) {
+                app.ui.status = e.to_string();
+            }
+        }
+        Some(Err(e)) => app.ui.status = e,
+        None => {}
+    }
+    app.auto.add("effectControls.timecode", tc_rect, &tc);
     keys.finish(app, ui);
     run(app, ui.ctx(), actions);
 }
