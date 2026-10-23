@@ -13,7 +13,7 @@
 //! The shelves are sized for the busiest work, so they are a lot to keep once it is over: whoever
 //! finishes such work (a standalone export) calls [`trim_f32`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{PixelData, VideoFrame};
@@ -61,11 +61,22 @@ impl<T> Shelf<T> {
         self.bytes += n;
         self.bufs.push(b);
     }
+
+    fn trim_to(&mut self, max_bytes: usize) {
+        while self.bytes > max_bytes && !self.bufs.is_empty() {
+            if let Some(b) = self.bufs.pop() {
+                self.bytes = self.bytes.saturating_sub(Self::size(&b));
+            }
+        }
+    }
 }
 
 static U8: Mutex<Shelf<u8>> = Mutex::new(Shelf::new());
 static U16: Mutex<Shelf<u16>> = Mutex::new(Shelf::new());
 static REUSED: AtomicU64 = AtomicU64::new(0);
+
+static U8_MAX: AtomicUsize = AtomicUsize::new(MAX_BYTES);
+static U16_MAX: AtomicUsize = AtomicUsize::new(MAX_BYTES);
 
 /// Idle float images. Unlike the plane shelves a buffer keeps its length *and its old contents*:
 /// whoever overwrites every element gets it back without a zero-fill pass over tens of megabytes.
@@ -73,6 +84,7 @@ static F32: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
 
 /// Bytes of idle float images kept; a buffer that does not fit is freed.
 const F32_MAX_BYTES: usize = 320 << 20;
+static F32_MAX: AtomicUsize = AtomicUsize::new(F32_MAX_BYTES);
 
 fn take<T>(shelf: &Mutex<Shelf<T>>, len: usize) -> Vec<T> {
     let found = shelf.lock().unwrap_or_else(PoisonError::into_inner).take(len);
@@ -85,10 +97,10 @@ fn take<T>(shelf: &Mutex<Shelf<T>>, len: usize) -> Vec<T> {
     }
 }
 
-fn give<T>(shelf: &Mutex<Shelf<T>>, plane: Arc<Vec<T>>) {
+fn give<T>(shelf: &Mutex<Shelf<T>>, plane: Arc<Vec<T>>, max_bytes: usize) {
     // a plane something else still shows (a monitor, a GPU upload in flight) is theirs
     if let Ok(b) = Arc::try_unwrap(plane) {
-        shelf.lock().unwrap_or_else(PoisonError::into_inner).give(b, MAX_BYTES);
+        shelf.lock().unwrap_or_else(PoisonError::into_inner).give(b, max_bytes);
     }
 }
 
@@ -124,7 +136,8 @@ pub fn recycle_f32(buf: Vec<f32>) {
     }
     let mut idle = F32.lock().unwrap_or_else(PoisonError::into_inner);
     let held: usize = idle.iter().map(|b| b.len().saturating_mul(4)).sum();
-    if held.saturating_add(bytes) <= F32_MAX_BYTES {
+    let max = F32_MAX.load(Ordering::Relaxed);
+    if held.saturating_add(bytes) <= max {
         idle.push(buf);
     }
 }
@@ -133,11 +146,37 @@ pub fn recycle_f32(buf: Vec<f32>) {
 /// [`take_u16`] unless something else still holds the frame or a plane.
 pub fn recycle(frame: Arc<VideoFrame>) {
     let Ok(f) = Arc::try_unwrap(frame) else { return };
+    let u8_max = U8_MAX.load(Ordering::Relaxed);
+    let u16_max = U16_MAX.load(Ordering::Relaxed);
     match f.data {
-        PixelData::Rgba8(d) => give(&U8, d),
+        PixelData::Rgba8(d) => give(&U8, d, u8_max),
         PixelData::RgbaF32(_) => {}
-        PixelData::Yuv8 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U8, p)),
-        PixelData::Yuv16 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U16, p)),
+        PixelData::Yuv8 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U8, p, u8_max)),
+        PixelData::Yuv16 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U16, p, u16_max)),
+    }
+}
+
+/// Dynamically configure the memory caps for the recycled buffer shelves.
+pub fn set_shelves_budget(u8_bytes: usize, u16_bytes: usize, f32_bytes: usize) {
+    U8_MAX.store(u8_bytes.max(16 << 20), Ordering::Relaxed);
+    U16_MAX.store(u16_bytes.max(16 << 20), Ordering::Relaxed);
+    F32_MAX.store(f32_bytes.max(32 << 20), Ordering::Relaxed);
+    trim_all();
+}
+
+/// Trim all shelves down to their current maximum budgets.
+pub fn trim_all() {
+    let max_u8 = U8_MAX.load(Ordering::Relaxed);
+    let max_u16 = U16_MAX.load(Ordering::Relaxed);
+    let max_f32 = F32_MAX.load(Ordering::Relaxed);
+    U8.lock().unwrap_or_else(PoisonError::into_inner).trim_to(max_u8);
+    U16.lock().unwrap_or_else(PoisonError::into_inner).trim_to(max_u16);
+    let mut idle = F32.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut held: usize = idle.iter().map(|b| b.len().saturating_mul(4)).sum();
+    while held > max_f32 && !idle.is_empty() {
+        if let Some(b) = idle.pop() {
+            held = held.saturating_sub(b.len().saturating_mul(4));
+        }
     }
 }
 

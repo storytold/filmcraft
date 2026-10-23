@@ -552,3 +552,40 @@ fn hdr_input_gpu_matches_cpu() {
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
 }
+
+#[test]
+fn upload_cache_limits_and_lru_eviction() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.set_upload_limits(3, 10 * 1024 * 1024);
+
+    let make_frame = |val: u8| {
+        let data = PixelData::Rgba8(Arc::new(vec![val; 64 * 64 * 4]));
+        VideoFrame { width: 64, height: 64, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: Default::default() }
+    };
+
+    let f1 = make_frame(10);
+    let f2 = make_frame(20);
+    let f3 = make_frame(30);
+    let f4 = make_frame(40);
+
+    let k1 = c.upload(&f1, None);
+    let k2 = c.upload(&f2, None);
+    let _k3 = c.upload(&f3, None);
+    assert_eq!(c.upload_cached_count(), 3);
+
+    // Upload 4th frame: should evict k1 (oldest)
+    let _k4 = c.upload(&f4, None);
+    assert_eq!(c.upload_cached_count(), 3);
+    assert!(c.src_info(&f1, k1).is_none(), "k1 should have been evicted");
+    assert!(c.src_info(&f2, k2).is_some(), "k2 should remain");
+
+    // Test byte budget capping:
+    // 64x64 RGBA8 is 16384 bytes. Capping budget to 25000 bytes allows at most 1 frame.
+    c.set_upload_limits(10, 25_000);
+    assert_eq!(c.upload_cached_count(), 1);
+    assert_eq!(c.upload_cached_bytes(), 16_384);
+}

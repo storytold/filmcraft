@@ -266,3 +266,71 @@ pub fn nvdec_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft
         }
     }
 }
+
+/// Total physical system RAM in bytes, or `None` if unable to determine.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+pub fn system_memory_bytes() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        dwMemoryLoad: 0,
+        ullTotalPhys: 0,
+        ullAvailPhys: 0,
+        ullTotalPageFile: 0,
+        ullAvailPageFile: 0,
+        ullTotalVirtual: 0,
+        ullAvailVirtual: 0,
+        ullAvailExtendedVirtual: 0,
+    };
+    // SAFETY: GlobalMemoryStatusEx is called with a properly initialized MEMORYSTATUSEX structure.
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    if ok.is_ok() && status.ullTotalPhys > 0 { Some(status.ullTotalPhys) } else { None }
+}
+
+/// Total physical system RAM in bytes, or `None` if unable to determine.
+#[cfg(target_os = "linux")]
+pub fn system_memory_bytes() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            let kb: u64 = rest.trim().strip_suffix("kB")?.trim().parse().ok()?;
+            return Some(kb.saturating_mul(1024));
+        }
+    }
+    None
+}
+
+/// Total physical system RAM in bytes, or `None` if unable to determine.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub fn system_memory_bytes() -> Option<u64> {
+    let mut mem: u64 = 0;
+    let mut len = std::mem::size_of::<u64>();
+    let mib = [libc::CTL_HW, libc::HW_MEMSIZE];
+    // SAFETY: sysctl is called with a valid pointer and length to a u64 buffer.
+    let ret = unsafe { libc::sysctl(mib.as_ptr() as *mut _, 2, &mut mem as *mut _ as *mut _, &mut len, std::ptr::null_mut(), 0) };
+    if ret == 0 && mem > 0 { Some(mem) } else { None }
+}
+
+/// Total physical system RAM in bytes, or `None` if unable to determine.
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+pub fn system_memory_bytes() -> Option<u64> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_system_memory_bytes() {
+        let mem = system_memory_bytes();
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        {
+            assert!(mem.is_some(), "system_memory_bytes should return Some on major desktop OS");
+            let bytes = mem.unwrap();
+            assert!(bytes >= 1024 * 1024 * 1024, "system memory should be at least 1 GB: {bytes}");
+        }
+    }
+}

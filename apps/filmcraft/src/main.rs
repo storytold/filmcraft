@@ -206,12 +206,24 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }),
         );
         let mut session = Session::default();
+        let total_mem = filmcraft_platform::system_memory_bytes();
+        if let Some(bytes) = total_mem {
+            log::info!("detected system memory: {:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+            session.prefs.memory = filmcraft_engine::settings::MemoryPrefs::for_total_memory(Some(bytes));
+            session.apply_memory_prefs();
+        }
         if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
             let mut cfg = AutosaveConfig::new(dir);
             cfg.local_offset = local_offset;
             if let Err(e) = session.start_autosave(cfg) {
                 log::warn!("auto-save and crash recovery unavailable: {e}");
             }
+        }
+        if let Some(bytes) = total_mem
+            && session.prefs.memory == filmcraft_engine::settings::MemoryPrefs::default()
+        {
+            session.prefs.memory = filmcraft_engine::settings::MemoryPrefs::for_total_memory(Some(bytes));
+            session.apply_memory_prefs();
         }
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));

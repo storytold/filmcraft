@@ -433,7 +433,8 @@ pub fn software_rasterizer(info: &eframe::wgpu::AdapterInfo) -> Option<String> {
 
 fn rasterizer_reason(name: &str, device_type: eframe::wgpu::DeviceType) -> Option<String> {
     let lower = name.to_ascii_lowercase();
-    if device_type == eframe::wgpu::DeviceType::Cpu || ["llvmpipe", "swiftshader", "softpipe"].iter().any(|s| lower.contains(s)) {
+    if device_type == eframe::wgpu::DeviceType::Cpu || ["llvmpipe", "swiftshader", "softpipe", "basic render driver", "warp"].iter().any(|s| lower.contains(s))
+    {
         return Some(format!("software rasterizer ({name}, {device_type:?})"));
     }
     None
@@ -483,8 +484,11 @@ impl FilmcraftApp {
         }));
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue)));
         match made {
-            Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
+            Ok(mut compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
+                let mem_mb = self.session.prefs.memory.frame_cache_mb;
+                let upload_byte_limit = ((mem_mb as usize / 3) * (1 << 20)).clamp(64 << 20, 512 << 20);
+                compositor.set_upload_limits(16, upload_byte_limit);
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }
             _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
@@ -760,7 +764,14 @@ impl FilmcraftApp {
             }
             i18n::set_current(self.ui.language);
         }
+        self.session.apply_memory_prefs();
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
+        self.frames.set_plan_budget(p.memory.plan_cache_budget_bytes());
+        if let Some(gpu) = &mut self.gpu {
+            let mem_mb = p.memory.frame_cache_mb;
+            let upload_byte_limit = ((mem_mb as usize / 3) * (1 << 20)).clamp(64 << 20, 512 << 20);
+            gpu.compositor.set_upload_limits(16, upload_byte_limit);
+        }
         self.ui.play_after_render = p.timeline.play_after_rendering;
         let hardware_changed = prev.as_ref().is_none_or(|q| q.audio_hardware != p.audio_hardware);
         let pitch_changed = prev.as_ref().is_some_and(|q| q.audio.maintain_pitch_shuttling != p.audio.maintain_pitch_shuttling);

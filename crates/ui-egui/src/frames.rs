@@ -283,16 +283,40 @@ impl GpuPlan {
 }
 
 /// Finished plans, bounded by count and bytes (oldest use evicted first).
-#[derive(Default)]
 struct PlanCache {
     map: HashMap<FrameKey, (Arc<GpuPlan>, u64, usize)>,
     clock: u64,
     bytes: usize,
+    budget: usize,
+    max_plans: usize,
+}
+
+impl Default for PlanCache {
+    fn default() -> Self {
+        Self { map: HashMap::new(), clock: 0, bytes: 0, budget: 1 << 30, max_plans: 96 }
+    }
 }
 
 impl PlanCache {
-    const MAX: usize = 96;
-    const BUDGET: usize = 1 << 30;
+    fn set_budget(&mut self, budget: usize) {
+        self.budget = budget;
+        self.max_plans = (budget / (16 << 20)).clamp(8, 96);
+        self.trim();
+    }
+
+    fn trim(&mut self) {
+        if self.map.len() > self.max_plans || self.bytes > self.budget {
+            let mut v: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, v)| (v.1, *k, v.2)).collect();
+            v.sort_unstable_by_key(|x| x.0);
+            for (_, k, b) in v {
+                if self.map.len() <= self.max_plans && self.bytes <= self.budget {
+                    break;
+                }
+                self.map.remove(&k);
+                self.bytes -= b;
+            }
+        }
+    }
 
     fn get(&mut self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
         self.clock += 1;
@@ -310,17 +334,7 @@ impl PlanCache {
         if let Some((_, _, old)) = self.map.insert(k, (Arc::new(p), self.clock, b)) {
             self.bytes -= old;
         }
-        if self.map.len() > Self::MAX || self.bytes > Self::BUDGET {
-            let mut v: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, v)| (v.1, *k, v.2)).collect();
-            v.sort_unstable_by_key(|x| x.0);
-            for (_, k, b) in v {
-                if self.map.len() <= Self::MAX && self.bytes <= Self::BUDGET {
-                    break;
-                }
-                self.map.remove(&k);
-                self.bytes -= b;
-            }
-        }
+        self.trim();
     }
 }
 
@@ -402,6 +416,12 @@ impl FrameServer {
             // re-inserting an entry runs the eviction pass
             c.insert(k, v);
         }
+    }
+
+    /// Set the GPU Plan cache budget (bytes); evicts down to it right away.
+    pub fn set_plan_budget(&self, bytes: usize) {
+        let mut p = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+        p.set_budget(bytes.max(16 << 20));
     }
 
     /// (bytes cached, budget).

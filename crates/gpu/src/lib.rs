@@ -62,6 +62,7 @@ struct Uploaded {
     alpha_scale: f32,
     chroma: (u32, u32),
     last_used: u64,
+    bytes: usize,
     /// The uploaded pixel buffers, kept alive while cached: the cache key is the buffer address,
     /// and a freed buffer's address can be reused by a different frame (stale texture).
     _pixels: PixelData,
@@ -85,6 +86,8 @@ pub struct GpuCompositor {
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
     dummy: wgpu::TextureView,
+    upload_limit: usize,
+    upload_byte_limit: usize,
     /// The effect stage (None on devices without compute shaders or storage textures: layers
     /// with effects are then rendered on the CPU here).
     fx: Option<fx::FxStage>,
@@ -421,12 +424,47 @@ impl GpuCompositor {
             uploads: HashMap::new(),
             clock: 0,
             dummy,
+            upload_limit: 16,
+            upload_byte_limit: 256 * 1024 * 1024,
             fx,
             transition: transition::PushStage::new(device),
             transition_inputs: [None, None],
             gpu_transitions: 0,
             cpu_transitions: 0,
             uploaded_bytes: 0,
+        }
+    }
+
+    /// Set the max number of uploads and max cached upload bytes to keep in VRAM/RAM.
+    pub fn set_upload_limits(&mut self, max_count: usize, max_bytes: usize) {
+        self.upload_limit = max_count.max(2);
+        self.upload_byte_limit = max_bytes.max(1024);
+        self.evict_uploads();
+    }
+
+    /// Total bytes of pixel textures currently cached in the upload cache.
+    pub fn upload_cached_bytes(&self) -> usize {
+        self.uploads.values().map(|u| u.bytes).sum()
+    }
+
+    /// Number of frames currently cached in the upload cache.
+    pub fn upload_cached_count(&self) -> usize {
+        self.uploads.len()
+    }
+
+    fn evict_uploads(&mut self) {
+        let mut total_bytes: usize = self.uploads.values().map(|u| u.bytes).sum();
+        if self.uploads.len() > self.upload_limit || total_bytes > self.upload_byte_limit {
+            let mut v: Vec<(u64, usize, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, u.bytes, *k)).collect();
+            v.sort_unstable_by_key(|&(last_used, _, _)| last_used);
+            for (_, b, k) in v {
+                if (self.uploads.len() <= self.upload_limit && total_bytes <= self.upload_byte_limit) || self.uploads.len() <= 1 {
+                    break;
+                }
+                if self.uploads.remove(&k).is_some() {
+                    total_bytes = total_bytes.saturating_sub(b);
+                }
+            }
         }
     }
 
@@ -497,6 +535,7 @@ impl GpuCompositor {
         let up = match &f.data {
             PixelData::Rgba8(d) => {
                 let v = self.plane_texture(w, h, wgpu::TextureFormat::Rgba8UnormSrgb, d, 4);
+                let bytes = (w as usize).saturating_mul(h as usize).saturating_mul(4);
                 Uploaded {
                     views: [v, dummy(), dummy(), dummy()],
                     kind: 0,
@@ -504,6 +543,7 @@ impl GpuCompositor {
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
+                    bytes,
                     _pixels: f.data.clone(),
                 }
             }
@@ -517,6 +557,7 @@ impl GpuCompositor {
                     }
                 };
                 let v = self.plane_texture(w, h, wgpu::TextureFormat::Rgba16Float, half, 8);
+                let bytes = (w as usize).saturating_mul(h as usize).saturating_mul(8);
                 Uploaded {
                     views: [v, dummy(), dummy(), dummy()],
                     kind: 1,
@@ -524,6 +565,7 @@ impl GpuCompositor {
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
+                    bytes,
                     _pixels: f.data.clone(),
                 }
             }
@@ -535,6 +577,10 @@ impl GpuCompositor {
                 let v = self.plane_texture(cw, ch, wgpu::TextureFormat::R8Unorm, &planes[2], 1);
                 let a = alpha.as_ref().map(|a| self.plane_texture(w, h, wgpu::TextureFormat::R8Unorm, a, 1));
                 let alpha_scale = if a.is_some() { 1.0 } else { 0.0 };
+                let y_bytes = (w as usize).saturating_mul(h as usize);
+                let uv_bytes = (cw as usize).saturating_mul(ch as usize).saturating_mul(2);
+                let a_bytes = if a.is_some() { y_bytes } else { 0 };
+                let bytes = y_bytes.saturating_add(uv_bytes).saturating_add(a_bytes);
                 Uploaded {
                     views: [y, u, v, a.unwrap_or_else(dummy)],
                     kind: 2,
@@ -542,6 +588,7 @@ impl GpuCompositor {
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
+                    bytes,
                     _pixels: f.data.clone(),
                 }
             }
@@ -564,6 +611,10 @@ impl GpuCompositor {
                 let a = alpha.as_ref().and_then(|_| p.planes.get(3)).map(|b| self.plane_texture(w, h, wgpu::TextureFormat::R16Float, b, 2));
                 let alpha_scale = if a.is_some() { scale / (scale - 1.0) } else { 0.0 };
                 let _ = Chroma::C420;
+                let y_bytes = (w as usize).saturating_mul(h as usize).saturating_mul(2);
+                let uv_bytes = (cw as usize).saturating_mul(ch as usize).saturating_mul(4);
+                let a_bytes = if a.is_some() { y_bytes } else { 0 };
+                let bytes = y_bytes.saturating_add(uv_bytes).saturating_add(a_bytes);
                 Uploaded {
                     views: [y, u, v, a.unwrap_or_else(dummy)],
                     kind: 2,
@@ -571,19 +622,13 @@ impl GpuCompositor {
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
+                    bytes,
                     _pixels: f.data.clone(),
                 }
             }
         };
         self.uploads.insert(key, up);
-        // keep the most recent uploads (enough for several stacked layers + playback lookahead)
-        if self.uploads.len() > 24 {
-            let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
-            v.sort_unstable();
-            for (_, k) in v.into_iter().take(self.uploads.len() - 24) {
-                self.uploads.remove(&k);
-            }
-        }
+        self.evict_uploads();
         key
     }
 

@@ -701,6 +701,41 @@ impl Default for MemoryPrefs {
     }
 }
 
+impl MemoryPrefs {
+    /// Compute recommended default memory settings given total host RAM in bytes.
+    pub fn for_total_memory(total_bytes: Option<u64>) -> Self {
+        let total_gb = total_bytes.map(|b| (b as f64 / (1024.0 * 1024.0 * 1024.0)).round() as u32).unwrap_or(16);
+        let ram_reserved_gb = if total_gb <= 8 {
+            3.min(total_gb.saturating_sub(2))
+        } else if total_gb <= 16 {
+            4
+        } else if total_gb <= 32 {
+            6
+        } else {
+            8
+        };
+        let available_gb = total_gb.saturating_sub(ram_reserved_gb).max(2);
+        let frame_cache_mb = ((available_gb as f64 * 0.08) * 1024.0).clamp(128.0, 4096.0).round() as u32;
+        Self { ram_reserved_gb, frame_cache_mb }
+    }
+
+    /// Process-wide decoded frame (GOP) cache budget in bytes.
+    pub fn gop_cache_budget_bytes(&self) -> usize {
+        (self.frame_cache_mb as usize * (1 << 20)).max(64 << 20)
+    }
+
+    /// UI GPU PlanCache budget in bytes.
+    pub fn plan_cache_budget_bytes(&self) -> usize {
+        (self.frame_cache_mb as usize * (1 << 20) * 3 / 2).max(96 << 20)
+    }
+
+    /// Buffer shelves budget in bytes (u8, u16, f32).
+    pub fn pool_shelves_bytes(&self) -> (usize, usize, usize) {
+        let base = (self.frame_cache_mb as usize * (1 << 20) / 4).clamp(32 << 20, 256 << 20);
+        (base, base, base * 2)
+    }
+}
+
 /// Settings ▸ Timeline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
