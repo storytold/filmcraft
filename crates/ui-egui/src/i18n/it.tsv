@@ -3608,3 +3608,6 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+# Parakeet speech model and word-by-word captions.
+	Create word-by-word captions	Crea sottotitoli parola per parola
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (massima precisione, tempi per parola)

@@ -32,7 +32,7 @@ the control channel and MCP agents can do the same.
 | `transcript.renameSpeaker` | Rename a speaker by name (every transcript) or by index in one `item`. |
 | `transcript.removeFillers` | Ripple-delete filler words (`fillers`, default um/uh/erm/…; phrases such as "you know" allowed). |
 | `transcript.removePauses` | Ripple-delete pauses longer than `minSeconds`, keeping `keepSeconds` of air on both sides. |
-| `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `minSeconds`, `maxSeconds`, `gapFrames`). |
+| `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `wordsPerCaption` (1 = word-by-word captions; with 3 or fewer, each caption keeps its words' own timing unless `minSeconds` is given), `minSeconds`, `maxSeconds`, `gapFrames`). The Text panel's Create word-by-word captions button runs it with `wordsPerCaption: 1`. |
 | `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one. |
 
 ## Speech recognition

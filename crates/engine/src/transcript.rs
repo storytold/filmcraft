@@ -378,10 +378,14 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
 fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let words = sequence_words(s);
     let d = CaptionRules::default();
+    let max_words = u64_p(p, "wordsPerCaption").map(|n| n.min(1000) as usize).unwrap_or(0);
+    // word-by-word captions keep each word's own timing unless a minimum is asked for
+    let min_default = if max_words > 0 && max_words <= 3 { Tick::ZERO } else { d.min_duration };
     let rules = CaptionRules {
         max_chars: u64_p(p, "maxChars").map(|n| n as usize).unwrap_or(d.max_chars),
         lines: u64_p(p, "lines").map(|n| n as usize).unwrap_or(d.lines),
-        min_duration: f64_p(p, "minSeconds").map(Tick::from_seconds_f64).unwrap_or(d.min_duration),
+        max_words,
+        min_duration: f64_p(p, "minSeconds").map(Tick::from_seconds_f64).unwrap_or(min_default),
         max_duration: f64_p(p, "maxSeconds").map(Tick::from_seconds_f64).unwrap_or(d.max_duration),
         gap_frames: p.get("gapFrames").and_then(Value::as_i64).unwrap_or(d.gap_frames),
         break_pause: d.break_pause,
@@ -484,7 +488,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.createCaptions",
             "Create Captions from Transcript…",
             &["Sequence", "Transcript"],
-            r#"{"maxChars":n?,"lines":1|2?,"minSeconds":f?,"maxSeconds":f?,"gapFrames":n?,"format":str?,"name":str?}"#,
+            r#"{"maxChars":n?,"lines":1|2?,"wordsPerCaption":n?,"minSeconds":f?,"maxSeconds":f?,"gapFrames":n?,"format":str?,"name":str?}"#,
             has_transcript,
             create_captions,
             true,

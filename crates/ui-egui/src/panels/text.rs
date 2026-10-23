@@ -569,11 +569,19 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let highlights = app.transcript_cache.highlights(&app.ui.transcript_search);
     let mut x = bar.min.x + sw + 10.0;
     let range = sel.map(|(a, b)| json!({"from": a.min(b), "to": a.max(b)}));
-    let tools: [(Icon, &str, &str, bool, &str, Value); 4] = [
+    let tools: [(Icon, &str, &str, bool, &str, Value); 5] = [
         (Icon::Razor, "text.transcript.extract", tl!("Extract selected text"), sel.is_some(), "transcript.extract", range.clone().unwrap_or_default()),
         (Icon::Trash, "text.transcript.lift", tl!("Lift selected text"), sel.is_some(), "transcript.lift", range.unwrap_or_default()),
         (Icon::Link, "text.transcript.removeFillers", tl!("Remove filler words"), true, "transcript.removeFillers", json!({})),
         (Icon::Captions, "text.transcript.createCaptions", tl!("Create captions"), true, "transcript.createCaptions", json!({})),
+        (
+            Icon::Type,
+            "text.transcript.createWordCaptions",
+            tl!("Create word-by-word captions"),
+            true,
+            "transcript.createCaptions",
+            json!({"wordsPerCaption": 1, "lines": 1, "name": "Word by word"}),
+        ),
     ];
     for (icon, id, label, enabled, cmd, params) in tools {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
