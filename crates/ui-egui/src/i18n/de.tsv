@@ -1665,6 +1665,7 @@
 	Don't label speakers	Sprecher nicht kennzeichnen
 	Double-click	Doppelklick
 	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Entwurfsdekodierung bei reduzierter Wiedergabeauflösung (H.264: schneller, manche Frames weniger gefiltert)
+	J and L step speed through zero (shuttle): J slows down before reversing	J und L ändern die Geschwindigkeit schrittweise über null (Shuttle): J bremst vor dem Umkehren
 	Drive	Drive
 	Drop Shadow	Schlagschatten
 	Dry	Dry

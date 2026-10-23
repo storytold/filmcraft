@@ -10,7 +10,8 @@
 //! ([`TrimShift`]) that count how far each side moved since the edit point was selected.
 //!
 //! **Dynamic trimming** ([`TrimPlayback`]): in trim mode J/L "play" the edit point — it moves at the
-//! shuttle speed (L forward, J backward, pressing again doubles the speed up to 8×, Shift = slow)
+//! shuttle speed (L forward, J backward, pressing again doubles the speed up to 8×, Shift = slow;
+//! with Settings ▸ Playback ▸ `playback.jklSignedSpeed` J/L step a signed speed instead, see [`crate::jkl`])
 //! and the sequence updates live. K stops and commits: the whole dynamic trim is **one** undo step.
 //! Space loops playback around the edit (Preferences ▸ Playback preroll/postroll). Everything is
 //! driven by a caller-supplied clock (`clock`, seconds): the UI passes its frame time, tests pass
@@ -427,11 +428,13 @@ fn frames_for(s: &Session, secs: f64) -> Tick {
 
 /// `trim.shuttle {direction: "forward"|"reverse", slow?, clock}` (L / J in trim mode): start a
 /// dynamic trim, speed it up (pressing the same direction again doubles the speed, up to 8×) or
-/// reverse it.
+/// reverse it. With `playback.jklSignedSpeed` on, J/L step the signed speed instead (J while moving
+/// forward slows down; 0 holds the edit point without committing, K still commits).
 pub fn shuttle(s: &mut Session, p: &Value) -> Result<Value> {
     let clock = clock_p(p);
     let dir = direction_p(p);
     let slow = p.get("slow").and_then(Value::as_bool).unwrap_or(false);
+    let signed = s.prefs.playback.jkl_signed_speed;
     s.trim_play.around = None;
     if s.trim_play.dynamic.is_none() {
         s.trim_play.dynamic = Some(DynamicTrim {
@@ -449,13 +452,9 @@ pub fn shuttle(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let rate = s.sequence_rate();
     let d = s.trim_play.dynamic.as_mut().ok_or_else(|| EngineError::Other("dynamic trimming is not active".into()))?;
-    let speed = if slow {
-        0.25 * dir
-    } else if d.speed * dir > 0.0 && !d.at_limit {
-        (d.speed * 2.0).clamp(-8.0, 8.0)
-    } else {
-        dir
-    };
+    let key = if dir < 0.0 { crate::jkl::ShuttleKey::Reverse } else { crate::jkl::ShuttleKey::Forward };
+    // at a limit the edit point is held (speed 0): the next press starts again at ±1×
+    let speed = if slow { 0.25 * dir } else { crate::jkl::next_speed(if d.at_limit { 0.0 } else { d.speed }, key, signed) };
     d.speed = speed;
     d.anchor_clock = clock;
     d.anchor_offset = d.offset;

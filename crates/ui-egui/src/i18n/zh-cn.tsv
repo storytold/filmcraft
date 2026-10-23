@@ -1622,6 +1622,7 @@
 	Don't label speakers	不标记说话人
 	Double-click	双击
 	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	以降低的播放分辨率进行草稿解码（H.264：更快，部分帧滤波较少）
+	J and L step speed through zero (shuttle): J slows down before reversing	J 和 L 逐级调整速度并经过零（穿梭）：J 先减速再反向
 	Drive	驱动器
 	Drop Shadow	投影
 	Dry	干声

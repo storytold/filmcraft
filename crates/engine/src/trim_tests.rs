@@ -282,3 +282,25 @@ fn trim_delta_stops_at_the_end_of_the_media() {
     let back = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, -small).unwrap();
     assert_eq!(back, -small, "a trim within the media is not clamped");
 }
+
+/// `playback.jklSignedSpeed` (#2718): in dynamic trimming J while moving forward slows down, 0 holds
+/// the edit point without committing, and the next J moves it backward.
+#[test]
+fn signed_jl_steps_dynamic_trim_speed_through_zero() {
+    let mut s = demo();
+    s.prefs.playback.jkl_signed_speed = true;
+    let (left, cut) = select_first_cut(&mut s, "roll");
+    let rate = s.sequence_rate();
+    let press = |s: &mut Session, dir: &str, clock: f64| s.execute("trim.shuttle", json!({"direction": dir, "clock": clock})).unwrap()["speed"].clone();
+    assert_eq!(press(&mut s, "forward", 0.0), json!(1.0));
+    assert_eq!(press(&mut s, "forward", 0.5), json!(2.0));
+    assert_eq!(press(&mut s, "reverse", 1.0), json!(1.0));
+    assert_eq!(press(&mut s, "reverse", 1.5), json!(0.0));
+    let held = frames(&s, 0.5) + frames(&s, 1.0) + frames(&s, 0.5);
+    s.execute("trim.tick", json!({"clock": 3.0})).unwrap();
+    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut + rate.tick_of(held), "0 holds the edit point");
+    assert!(s.trim_play.dynamic.is_some(), "0 does not commit; K does");
+    assert_eq!(press(&mut s, "reverse", 3.0), json!(-1.0));
+    s.execute("trim.shuttleStop", json!({"clock": 3.0})).unwrap();
+    assert!(s.trim_play.dynamic.is_none());
+}
