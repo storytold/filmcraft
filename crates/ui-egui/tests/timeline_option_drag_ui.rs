@@ -69,7 +69,7 @@ fn option_drag_copies_a_clip_and_a_plain_drag_moves_it() {
     let v2 = q.video_tracks[1].items[0].clone();
     let n = clip_count(&mut d);
     let r = d.rect(&format!("timeline.clip.{}", v2.id.0));
-    let (x, y) = (r[0] + 10.0, r[1] + r[3] / 2.0);
+    let (x, y) = (r[0] + 14.0, r[1] + r[3] / 2.0);
     d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 240.0, "y": y}, "steps": 12, "modifiers": {"alt": true}}));
     d.frames(3);
     let q2 = d.harness.state().session.active_sequence().unwrap().clone();

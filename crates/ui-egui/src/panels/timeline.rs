@@ -693,13 +693,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 
     // ---- scroll bars
-    zoom_scrollbar(
-        app,
-        ui,
-        Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0)),
-        seq.duration().seconds(),
-        &t,
-    );
     vertical_scrollbar(
         ui,
         Rect::from_min_max(pos2(content.max.x, video_area.min.y), pos2(rect.max.x, video_area.max.y)),
@@ -722,6 +715,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- interaction
     interact(app, ui, seq, &layout, rect);
     super::timeline_volume::interact(app, ui, seq, &layout, aclip);
+    // Register the scrollbar after the timeline's broad interaction area so its expanded hit
+    // target keeps priority over the tracks immediately above it.
+    zoom_scrollbar(
+        app,
+        ui,
+        Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0)),
+        seq.duration().seconds(),
+        &t,
+    );
     // track keyframes (drawn and edited on top of the clips)
     super::timeline_automation::show(app, ui, seq, &layout, aclip);
     if cap_n > 0 {
@@ -1645,7 +1647,8 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
 
 /// The narrowest the zoom scroll bar's thumb gets: room for its two handles and a part between
 /// them to grab.
-const MIN_THUMB_W: f32 = 34.0;
+const MIN_THUMB_W: f32 = 48.0;
+const ZOOM_BAR_INTERACT_EXTENT: f32 = 10.0;
 
 /// Where the zoom scroll bar's thumb is: (left edge, width, seconds of scroll per point of thumb
 /// travel). The thumb is as wide as the share of the Timeline in view (never narrower than
@@ -1677,7 +1680,7 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     }
     app.auto.add("timeline.zoomBar", thumb, "zoom scroll bar");
     app.auto.add("timeline.zoomBar.track", bar, "zoom scroll bar track");
-    let resp = ui.interact(bar, egui::Id::new("tl-zoombar"), Sense::click_and_drag());
+    let resp = ui.interact(bar.expand2(vec2(0.0, ZOOM_BAR_INTERACT_EXTENT)), egui::Id::new("tl-zoombar"), Sense::click_and_drag());
     let range = (total - vis).max(0.0);
     // a press beside the thumb brings the thumb's middle under the pointer (and a drag goes on
     // from there)
@@ -1697,12 +1700,12 @@ fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, seq_seco
     if resp.drag_started()
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
-        let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+        let mode = if !thumb.expand2(vec2(0.0, 10.0)).contains(pos) {
             jump(&mut app.ui.timeline, pos.x);
             0
-        } else if (pos.x - thumb.min.x).abs() < 9.0 {
+        } else if (pos.x - thumb.min.x).abs() < 12.0 {
             1
-        } else if (pos.x - thumb.max.x).abs() < 9.0 {
+        } else if (pos.x - thumb.max.x).abs() < 12.0 {
             2
         } else {
             0
@@ -2255,7 +2258,9 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
 
 fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, rect: Rect) {
     let ctx = ui.ctx().clone();
-    let area = Rect::from_min_max(pos2(layout.content.min.x, layout.ruler.min.y), layout.content.max);
+    // Keep the track interaction area out of the zoom bar's expanded hit target.
+    let area_bottom = (rect.max.y - SCROLLBAR_H + 2.0 - ZOOM_BAR_INTERACT_EXTENT).min(layout.content.max.y);
+    let area = Rect::from_min_max(pos2(layout.content.min.x, layout.ruler.min.y), pos2(layout.content.max.x, area_bottom));
     let resp = ui.interact(area, egui::Id::new("timeline-area"), Sense::click_and_drag());
     let pos = resp.hover_pos().or(resp.interact_pointer_pos());
     let mods = ctx.input(|i| i.modifiers);

@@ -113,7 +113,7 @@ fn escape_cancels_clip_move_drag() {
     let q = d.app().session.active_sequence().unwrap().clone();
     let v2 = q.video_tracks[1].items[0].clone();
     let r = d.rect(&format!("timeline.clip.{}", v2.id.0));
-    let from = pos2(r[0] as f32 + 10.0, (r[1] + r[3] / 2.0) as f32);
+    let from = pos2(r[0] as f32 + 14.0, (r[1] + r[3] / 2.0) as f32);
     let to = pos2(from.x + 120.0, from.y);
 
     d.send(egui::Event::PointerMoved(from));

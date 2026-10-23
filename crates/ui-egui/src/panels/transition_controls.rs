@@ -41,7 +41,7 @@ const MIN_LANE_W: f32 = 60.0;
 const RULER_H: f32 = 24.0;
 const BAR_H: f32 = 18.0;
 /// How far into the transition from either end a press grabs that end (the Timeline's width).
-const EDGE_PX: f32 = 7.0;
+const EDGE_PX: f32 = super::timeline_hit::EDGE_PX;
 
 /// The selected transition, when it still exists, with its alignment and how many frames it may
 /// last at most (the clips it joins).
