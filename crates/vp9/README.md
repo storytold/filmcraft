@@ -127,6 +127,10 @@ draft mode.
 - Robustness (`tests/it/robustness.rs`): bit flips, byte replacement and truncation of real streams,
   truncated frames, random data and oversized frames never panic (debug and release) or hang,
   single- and multi-threaded.
+- Superframe length regressions (`header::tests::hostile_lengths_*`, #2801) run without media
+  fixtures on native and 32-bit WASI targets. Oversized frame lengths cannot wrap an offset;
+  truncated indexes retain the existing remaining-payload fallback. See
+  [32-bit parser tests](../../docs/testing.md#32-bit-parser-regressions).
 
 ### Fixture matrix (all bit-exact, 1 thread and thread pool)
 

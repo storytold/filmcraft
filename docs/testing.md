@@ -48,6 +48,42 @@ stays a binary of its own in `tests/`. Select one file's tests with its module p
 
 Commit `*.proptest-regressions` files so failing cases are re-run.
 
+### 32-bit parser regressions
+
+The `hostile_lengths` unit tests in `bitstream`, `vp9` and `av1` cover #2801: NAL and superframe
+offset overflow, tile-size increment overflow and truncating an OBU's LEB128 size to `usize`.
+They also check valid payloads, truncated inputs and bit mutations. The NAL splitter rejects
+prefix widths outside 1–4 bytes with `BitError::InvalidNalLengthSize`, including zero (which
+would otherwise make no progress). These tests need no external media or ffmpeg.
+
+A native 64-bit run does not reproduce the original overflows. Run the tests on
+`wasm32-wasip1` with a WASI runner as well as natively; `cargo xtask wasm` only checks compilation
+for the browser target. For example, with Node.js supporting the `node:wasi` preview1 API:
+
+```sh
+rustup target add wasm32-wasip1
+cat > /tmp/filmcraft-wasi-runner.cjs <<'EOF'
+const { WASI } = require('node:wasi');
+const fs = require('node:fs');
+(async () => {
+  const args = process.argv.slice(2);
+  const wasi = new WASI({ version: 'preview1', args, env: process.env });
+  const module = await WebAssembly.compile(fs.readFileSync(args[0]));
+  const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
+  process.exitCode = wasi.start(instance);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+EOF
+export CARGO_TARGET_WASM32_WASIP1_RUNNER="node /tmp/filmcraft-wasi-runner.cjs"
+cargo test -p filmcraft-bitstream -p filmcraft-vp9 -p filmcraft-av1 --lib \
+  --no-default-features --target wasm32-wasip1 hostile_lengths -- --test-threads=1
+# Repeat with --release: wrapping arithmetic is also dangerous without overflow checks.
+```
+
+The runner forwards the WASI exit code to Node.js so Cargo also fails when a test fails.
+The WASI build disables proptest's subprocess-based fork/timeout features; native builds retain
+them. The tests wrap parser calls in `catch_unwind`; on WASI an aborting panic still fails the
+test process, so a trapped regression cannot count as a pass.
+
 ## 2. ffmpeg oracle tests
 
 ffmpeg and ffprobe are **external processes** used to generate fixtures and to check results. They

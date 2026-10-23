@@ -617,12 +617,12 @@ pub fn split_superframe(data: &[u8]) -> Vec<&[u8]> {
                     sz |= (data[p + b] as usize) << (8 * b);
                 }
                 p += sz_bytes;
-                if pos + sz > end {
+                let Some(next) = pos.checked_add(sz).filter(|&next| next <= end) else {
                     frames.push(&data[pos..end]);
                     return frames;
-                }
-                frames.push(&data[pos..pos + sz]);
-                pos += sz;
+                };
+                frames.push(&data[pos..next]);
+                pos = next;
             }
             return frames;
         }
@@ -633,6 +633,38 @@ pub fn split_superframe(data: &[u8]) -> Vec<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostile_lengths_superframe_size_does_not_wrap() {
+        // #2801: the second frame's size overflowed usize after the first byte on wasm32.
+        let marker = 0xd9; // two frames, four bytes per size
+        let data = [0x88, 0x89, marker, 1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, marker];
+        let result = std::panic::catch_unwind(|| split_superframe(&data));
+        // Preserve the existing truncated-superframe policy: return the remaining payload.
+        assert_eq!(result.expect("superframe splitting must not panic"), vec![&data[..1], &data[1..2]]);
+    }
+
+    #[test]
+    fn hostile_lengths_superframe_mutations_and_truncations() {
+        for width in 1..=4 {
+            let marker = 0xc1 | ((width - 1) << 3) as u8;
+            let mut data = vec![0x88, 0x89, marker];
+            data.extend_from_slice(&1u32.to_le_bytes()[..width]);
+            data.extend_from_slice(&1u32.to_le_bytes()[..width]);
+            data.push(marker);
+            assert_eq!(split_superframe(&data), vec![&data[..1], &data[1..2]]);
+            for end in 0..=data.len() {
+                std::panic::catch_unwind(|| split_superframe(&data[..end])).expect("truncated superframe must not panic");
+            }
+            for index in 0..data.len() {
+                for bit in 0..8 {
+                    let mut mutated = data.clone();
+                    mutated[index] ^= 1 << bit;
+                    std::panic::catch_unwind(|| split_superframe(&mutated)).expect("mutated superframe must not panic");
+                }
+            }
+        }
+    }
 
     #[test]
     fn superframe_index() {

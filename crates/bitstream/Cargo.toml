@@ -10,5 +10,9 @@ workspace = true
 
 [dependencies]
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = { workspace = true }
+
+# WASI can run these tests, but cannot fork subprocesses for proptest's timeout support.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }

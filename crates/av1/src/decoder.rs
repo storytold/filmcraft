@@ -412,7 +412,7 @@ impl Decoder {
             let size = if has_size {
                 let (v, n) = leb128(data.get(p..).ok_or(Error::Truncated)?)?;
                 p += n;
-                v as usize
+                usize::try_from(v).map_err(|_| Error::Truncated)?
             } else {
                 data.len().checked_sub(p).ok_or(Error::Truncated)?
             };
@@ -575,12 +575,14 @@ impl Decoder {
             let size = if tile_num == tg_end {
                 data.len().checked_sub(pos).ok_or(Error::Truncated)?
             } else {
+                let prefix_end = pos.checked_add(tsb as usize).ok_or(Error::Truncated)?;
+                let prefix = data.get(pos..prefix_end).ok_or(Error::Truncated)?;
                 let mut v = 0usize;
-                for i in 0..tsb as usize {
-                    v |= (*data.get(pos + i).ok_or(Error::Truncated)? as usize) << (8 * i);
+                for (i, &byte) in prefix.iter().enumerate() {
+                    v |= usize::from(byte) << (8 * i);
                 }
-                pos += tsb as usize;
-                v + 1
+                pos = prefix_end;
+                v.checked_add(1).ok_or(Error::Truncated)?
             };
             let end = pos.checked_add(size).filter(|&e| e <= data.len()).ok_or(Error::Truncated)?;
             if job.tile_covered.get(tile_num).copied() != Some(false) {
@@ -972,7 +974,106 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::frame_size_allowed;
+    use super::*;
+    use crate::header::TileInfo;
+
+    fn tile_group_decoder(tile_size_bytes: u32) -> Decoder {
+        let mut decoder = Decoder::with_threads(1);
+        decoder.pending = Some(Box::new(FrameJob {
+            seq: SequenceHeader::default(),
+            fh: FrameHeader { tile_info: TileInfo { cols: 3, rows: 1, cols_log2: 2, tile_size_bytes, ..Default::default() }, ..Default::default() },
+            refs: Default::default(),
+            ref_info: Default::default(),
+            tiles: Vec::new(),
+            tile_covered: vec![false; 3],
+            slot: Slot::new(),
+            picture: None,
+            pts: 0,
+            apply_film_grain: false,
+            draft: false,
+        }));
+        decoder
+    }
+
+    #[test]
+    fn hostile_lengths_tile_size_does_not_wrap() {
+        // #2801: tile_size_minus_1 + 1 overflowed usize on wasm32. A partial group
+        // (tiles 0..1 of three) isolates parsing without submitting synthetic tile data.
+        let result = std::panic::catch_unwind(|| tile_group_decoder(4).tile_group(&[0x88, 0xff, 0xff, 0xff, 0xff]));
+        assert!(matches!(result.expect("tile size parsing must not panic"), Err(Error::Truncated)));
+    }
+
+    #[test]
+    fn hostile_lengths_obu_size_does_not_truncate() {
+        // #2801: the LEB128 size 2^32 became zero on wasm32, accepting a truncated OBU.
+        let result = std::panic::catch_unwind(|| Decoder::with_threads(1).decode(&[0x7a, 0x80, 0x80, 0x80, 0x80, 0x10]));
+        assert!(matches!(result.expect("OBU size parsing must not panic"), Err(Error::Truncated)));
+    }
+
+    #[test]
+    fn hostile_lengths_obu_size_requires_termination() {
+        let mut data = [0x80; 9];
+        data[0] = 0x7a; // Padding OBU with eight unterminated size bytes.
+        let result = std::panic::catch_unwind(|| Decoder::with_threads(1).decode(&data));
+        assert!(matches!(result.expect("OBU size parsing must not panic"), Err(Error::Truncated)));
+        data[8] = 0; // A terminated eight-byte encoding of zero remains valid.
+        assert!(Decoder::with_threads(1).decode(&data).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hostile_lengths_tile_mutations_and_truncations() {
+        for width in 1..=4 {
+            let mut data = vec![0x88]; // tiles 0..1 of three
+            data.extend_from_slice(&0u32.to_le_bytes()[..width]); // first tile has one byte
+            data.extend([0xab, 0xcd]);
+            let mut decoder = tile_group_decoder(width as u32);
+            assert!(decoder.tile_group(&data).unwrap().is_none());
+            assert_eq!(decoder.pending.as_ref().unwrap().tiles, vec![(0, vec![0xab]), (1, vec![0xcd])]);
+            for end in 0..=data.len() {
+                std::panic::catch_unwind(|| tile_group_decoder(width as u32).tile_group(&data[..end])).expect("truncated tile group must not panic").ok();
+            }
+            // Keep the group header unchanged so mutations cannot submit a decoding job.
+            for index in 1..=width {
+                for bit in 0..8 {
+                    let mut mutated = data.clone();
+                    mutated[index] ^= 1 << bit;
+                    std::panic::catch_unwind(|| tile_group_decoder(width as u32).tile_group(&mutated)).expect("mutated tile length must not panic").ok();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hostile_lengths_obu_mutations_and_truncations() {
+        // Padding OBUs are ignored, but their declared size must still fit the input.
+        let data = [0x7a, 3, 0, 0, 0, 0x12, 0]; // padding, then a temporal delimiter
+        assert!(Decoder::with_threads(1).decode(&data).unwrap().is_empty());
+        for end in 0..=data.len() {
+            std::panic::catch_unwind(|| Decoder::with_threads(1).decode(&data[..end])).expect("truncated OBU must not panic").ok();
+        }
+        for size in [u32::MAX as u64, 1u64 << 32, (1u64 << 32) + 1, (1u64 << 56) - 1] {
+            let mut data = vec![0x7a];
+            let mut remaining = size;
+            loop {
+                let byte = (remaining & 0x7f) as u8;
+                remaining >>= 7;
+                data.push(byte | if remaining == 0 { 0 } else { 0x80 });
+                if remaining == 0 {
+                    break;
+                }
+            }
+            data.push(0); // the low 32 bits of 2^32 + 1 would fit this payload
+            let result = std::panic::catch_unwind(|| Decoder::with_threads(1).decode(&data));
+            assert!(matches!(result.expect("oversized OBU must not panic"), Err(Error::Truncated)));
+            for index in 1..data.len() - 1 {
+                for bit in 0..8 {
+                    let mut mutated = data.clone();
+                    mutated[index] ^= 1 << bit;
+                    std::panic::catch_unwind(|| Decoder::with_threads(1).decode(&mutated)).expect("mutated OBU length must not panic").ok();
+                }
+            }
+        }
+    }
 
     #[test]
     fn frames_up_to_the_level_6_3_limits_are_allowed() {

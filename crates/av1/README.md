@@ -43,6 +43,12 @@ reference) is used only as an external test oracle.
 
 ## Accuracy
 
+OBU and tile length regressions (`decoder::tests::hostile_lengths_*`, #2801) use synthetic
+inputs, including truncations and bit flips, without ffmpeg. Oversized LEB128 OBU lengths and
+four-byte tile lengths return `Error::Truncated` instead of wrapping or truncating on 32-bit
+targets. Valid partial tile groups retain their payloads. See
+[32-bit parser tests](../../docs/testing.md#32-bit-parser-regressions).
+
 `tests/it/oracle_intra.rs` encodes all-intra streams with ffmpeg's libsvtav1 (with and without the
 in-loop filters; 64×64 and 128×128 superblocks; intra edge filter on and off) and compares every
 decoded frame with libdav1d: **bit-exact** on all 13 fixtures (8- and 10-bit 4:2:0; 128×128 to
