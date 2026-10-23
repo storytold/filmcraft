@@ -133,6 +133,70 @@ fn exporting_unrepresentable_stream_channel_mapping_reports_error() {
     assert!(export(&p, seq, Format::Fcp7Xml, &ExportOptions::default()).is_err());
 }
 
+/// Both selected and sibling stream descriptions must be valid before XML is returned.
+fn rejects_export_metadata(mut invalidate: impl FnMut(&mut filmcraft_media::AudioStreamInfo)) {
+    for index in 0..2 {
+        let (mut p, seq) = multi_stream_project();
+        let item = p.sequence(seq).unwrap().audio_tracks[0].items[0].item;
+        invalidate(&mut p.item_mut(item).unwrap().as_media_mut().unwrap().info.audio_streams[index]);
+        let result = std::panic::catch_unwind(|| export(&p, seq, Format::Fcp7Xml, &ExportOptions::default()));
+        assert!(result.unwrap().is_err(), "invalid metadata in stream {index} was exported");
+    }
+}
+
+#[test]
+fn export_rejects_invalid_audio_sample_rates() {
+    for value in [0, 384_001, u32::MAX] {
+        rejects_export_metadata(|stream| stream.sample_rate = value);
+    }
+}
+
+#[test]
+fn export_rejects_invalid_audio_channel_counts() {
+    for value in [0, 65, u32::MAX] {
+        rejects_export_metadata(|stream| stream.channels = value);
+    }
+}
+
+#[test]
+fn export_rejects_invalid_audio_bit_depths() {
+    for value in [0, 65, u32::MAX] {
+        rejects_export_metadata(|stream| stream.bits_per_sample = Some(value));
+    }
+}
+
+#[test]
+fn export_keeps_supported_audio_metadata_boundaries() {
+    for (sample_rate, channels, depth) in [(1, 1, None), (384_000, 64, Some(64)), (48_000, 2, Some(1))] {
+        let (mut p, seq) = multi_stream_project();
+        let item = p.sequence(seq).unwrap().audio_tracks[0].items[0].item;
+        for stream in &mut p.item_mut(item).unwrap().as_media_mut().unwrap().info.audio_streams {
+            stream.sample_rate = sample_rate;
+            stream.channels = channels;
+            stream.bits_per_sample = depth;
+        }
+        let (bytes, _) = export(&p, seq, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+        let imp = read(std::str::from_utf8(&bytes).unwrap());
+        assert_eq!(streams(&imp).len(), 2);
+        for stream in streams(&imp) {
+            assert_eq!((stream.sample_rate, stream.channels, stream.bits_per_sample), (sample_rate, channels, Some(depth.unwrap_or(16))));
+        }
+    }
+}
+
+#[test]
+fn imported_exploded_multistream_mapping_refuses_lossy_export() {
+    let xml = REPRO.replace(
+        "<track>\n          <!-- intended",
+        "<track currentExplodedTrackIndex=\"1\" totalExplodedTrackCount=\"2\" premiereTrackType=\"Stereo\">\n          <!-- intended",
+    );
+    let imp = read(&xml);
+    assert_eq!(audio(&imp).source_channels, vec![1]);
+    assert_eq!(streams(&imp).len(), 2);
+    assert_eq!(balance(audio(&imp)), 100.0);
+    assert!(export(&imp.project, only_seq(&imp), Format::Fcp7Xml, &ExportOptions::default()).is_err());
+}
+
 const AUDIO: &str =
     "<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio>";
 fn with_index(index: &str) -> String {

@@ -1249,6 +1249,12 @@ impl Exp<'_, '_> {
             self.error.get_or_insert_with(|| Error::Other("too many source audio streams for FCP7 XML".into()));
             return;
         }
+        if m.info.audio_streams.iter().any(|a| {
+            !(1..=384_000).contains(&a.sample_rate) || !(1..=64).contains(&a.channels) || a.bits_per_sample.is_some_and(|depth| !(1..=64).contains(&depth))
+        }) {
+            self.error.get_or_insert_with(|| Error::Other("invalid audio stream metadata for FCP7 XML".into()));
+            return;
+        }
         let name = self.p.item(item).map(|i| i.name.clone()).unwrap_or_default();
         let frate = m.info.video.as_ref().map(|v| m.interpret.frame_rate.unwrap_or(v.frame_rate)).unwrap_or(seq_rate);
         self.w.open("file", &[("id", &fid)]);

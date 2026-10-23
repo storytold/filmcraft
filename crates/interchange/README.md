@@ -33,11 +33,16 @@ that stream without splitting or automatically panning its channels. Single-stre
 mapping and explicit Premiere exploded tracks keep their existing channel semantics. Authored Audio
 Pan values and keyframes take precedence. Import reads declared XML metadata without opening media.
 
-Export retains all stream descriptions and the selected stream. A simultaneous channel subset of a
-multi-stream source is not encoded by this mapping: export returns an unsupported-mapping error
-instead of selecting different audio. Invalid source-stream selectors are reported and their audio
-clip is skipped; malformed stream descriptions return a parse error. Descriptions are bounded to
-64 streams, 64 channels per stream, 384 kHz and 64-bit samples. `tests/fcp7_audio_streams.rs` covers
+Export retains all stream descriptions and the selected stream for supported mappings. A simultaneous
+channel subset of a multi-stream source is not encoded by this mapping: export returns an
+unsupported-mapping error instead of selecting different audio. This includes imported Premiere
+exploded-track clips on multi-stream media and authored clips combining stream and channel selection;
+the previous export discarded sibling metadata and could not round-trip these mappings losslessly.
+The error preserves the project mapping rather than silently rewriting it. Invalid source-stream
+selectors are reported and their audio clip is skipped; malformed stream descriptions return a parse
+error. Descriptions are bounded to
+64 streams, 64 channels per stream, 384 kHz and 64-bit samples. Export checks every stream against
+the same numeric bounds before returning XML. `tests/fcp7_audio_streams.rs` covers
 the issue #2872 reporter's XML, authored pan, source references, project/XML round trips and malformed
 metadata; the existing `tests/fcp7.rs` covers single-stream split channels and their pan.
 
