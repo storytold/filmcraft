@@ -80,6 +80,15 @@ impl<T: Clone> Slot<T> {
         self.cv.notify_all();
     }
 
+    /// Release waiters when a job is abandoned, without replacing a published result.
+    fn fail_if_pending(&self, error: Error) {
+        let mut g = self.value.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_none() {
+            *g = Some(Err(error));
+            self.cv.notify_all();
+        }
+    }
+
     fn is_set(&self) -> bool {
         self.value.lock().map(|g| g.is_some()).unwrap_or(true)
     }
@@ -128,6 +137,17 @@ struct FrameJob {
     draft: bool,
     #[cfg(test)]
     force_panic: bool,
+}
+
+impl Drop for FrameJob {
+    fn drop(&mut self) {
+        // A queued job can be discarded or unwind before publishing. Later reference jobs
+        // and output drains must see an error rather than wait forever for that job.
+        self.slot.fail_if_pending(Error::Invalid("AV1 frame job did not complete"));
+        if let Some(picture) = &self.picture {
+            picture.fail_if_pending(Error::Invalid("AV1 frame job did not complete"));
+        }
+    }
 }
 
 /// A shown picture in output order.
@@ -685,6 +705,8 @@ impl Decoder {
 /// slots unset and every later `wait` on them would block forever.
 fn run_job(job: FrameJob, pool: &Pool, stats: &Mutex<DecodeStats>) {
     let mut st = DecodeStats::default();
+    // Frame workers and the sequential path share this boundary. Mutable frame state is
+    // local to decode_frame; a failed reference is published to every dependent job below.
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_frame(&job, pool, &mut st)));
     match res.unwrap_or(Err(Error::Invalid("decoder panicked"))) {
         Ok((rf, pic)) => {
@@ -1171,5 +1193,131 @@ mod tests {
         assert!(!frame_size_allowed(4096, 8705)); // one row over MaxVSize
         assert!(!frame_size_allowed(16385, 1)); // one column over MaxHSize
         assert!(!frame_size_allowed(65536, 65536));
+    }
+}
+
+#[cfg(test)]
+mod worker_recovery_tests {
+    use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    fn job(panics: bool) -> FrameJob {
+        // Inject an impossible internal reference index to panic inside decode_frame,
+        // without accepting malformed media or adding a production panic hook.
+        let fh = FrameHeader { ref_frame_idx: [if panics { NUM_REF_FRAMES } else { 0 }; REFS_PER_FRAME], ..Default::default() };
+        FrameJob {
+            seq: SequenceHeader::default(),
+            fh,
+            refs: Default::default(),
+            ref_info: Default::default(),
+            tiles: Vec::new(),
+            slot: Slot::new(),
+            picture: Some(Slot::new()),
+            pts: 0,
+            apply_film_grain: false,
+            draft: false,
+        }
+    }
+
+    #[test]
+    fn abandoned_frame_job_releases_both_result_slots() {
+        let job = job(false);
+        let slot = job.slot.clone();
+        let picture = job.picture.clone().unwrap();
+        drop(job);
+        assert!(slot.is_set(), "abandoned job left its reference waiters blocked");
+        assert!(picture.is_set(), "abandoned job left its output waiters blocked");
+        assert!(slot.wait().is_err());
+        assert!(picture.wait().is_err());
+    }
+
+    #[test]
+    fn abandoning_a_job_preserves_already_published_results() {
+        let completed = Slot::new();
+        completed.set(Ok(7u8));
+        completed.fail_if_pending(Error::Invalid("must not overwrite success"));
+        assert_eq!(completed.wait(), Ok(7));
+        let job = job(false);
+        let slot = job.slot.clone();
+        let picture = job.picture.clone().unwrap();
+        slot.set(Err(Error::Truncated));
+        picture.set(Err(Error::Unsupported("already published")));
+        drop(job);
+        assert!(matches!(slot.wait(), Err(Error::Truncated)));
+        assert!(matches!(picture.wait(), Err(Error::Unsupported("already published"))));
+    }
+
+    #[test]
+    fn sequential_panicking_job_returns_errors_to_all_waiters() {
+        let job = job(true);
+        let slot = job.slot.clone();
+        let picture = job.picture.clone().unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| run_job(job, &Pool::new(1), &Mutex::new(DecodeStats::default()))));
+        assert!(result.is_ok(), "a frame-job panic escaped to the decoder caller");
+        assert!(slot.is_set());
+        assert!(picture.is_set());
+        assert!(slot.wait().is_err());
+        assert!(picture.wait().is_err());
+    }
+
+    #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
+    #[test]
+    fn threaded_panicking_job_does_not_strand_waiters_or_shutdown() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        const CHILD: &str = "FILMCRAFT_AV1_WORKER_TEST_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok("1") {
+            let mut decoder = Decoder::with_threads(4);
+            assert!(decoder.workers.is_some(), "regression requires real frame workers");
+            let first = job(true);
+            let mut dependent = job(false);
+            dependent.refs[0] = Some(first.slot.clone());
+            for work in [first, dependent] {
+                if let Some(output) = decoder.submit(Box::new(work)) {
+                    decoder.out.push_back(output);
+                }
+            }
+            // Exercise the submit-side in-flight wait as well as output drain and worker join.
+            for _ in 0..10 {
+                if let Some(output) = decoder.submit(Box::new(job(false))) {
+                    decoder.out.push_back(output);
+                }
+            }
+            assert!(decoder.flush_result().is_err(), "failed jobs cannot become successful output");
+            assert!(decoder.workers.as_ref().unwrap().handles.iter().all(|worker| !worker.is_finished()), "a caught job panic must not kill a frame worker");
+            let old = std::mem::replace(&mut decoder, Decoder::with_threads(1));
+            drop(old); // The codecs adapter resets by replacing and dropping its decoder.
+            assert!(decoder.flush_result().unwrap().is_empty());
+            drop(decoder);
+            return;
+        }
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = ChildGuard(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "decoder::worker_recovery_tests::threaded_panicking_job_does_not_strand_waiters_or_shutdown", "--nocapture"])
+                .env(CHILD, "1")
+                .stdin(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success(), "worker recovery child failed: {status}");
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.0.kill();
+                let _ = child.0.wait();
+                panic!("AV1 worker panic stranded submit/drain/reset/drop beyond the deadline");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
