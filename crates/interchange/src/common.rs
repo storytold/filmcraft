@@ -464,19 +464,21 @@ impl Builder {
     }
 
     /// Place `item` on the first track at or after `preferred` where it does not overlap anything,
-    /// creating tracks as needed. Returns the track index.
-    pub fn place(&mut self, seq: &mut Sequence, kind: TrackKind, preferred: usize, item: TrackItem) -> usize {
+    /// creating tracks as needed. Returns the track index, or `None` (item dropped) when none of the
+    /// first [`MAX_TRACKS`] tracks has room.
+    pub fn place(&mut self, seq: &mut Sequence, kind: TrackKind, preferred: usize, item: TrackItem) -> Option<usize> {
         let mut i = preferred;
-        loop {
+        while i < MAX_TRACKS {
             self.ensure_tracks(seq, kind, i + 1);
             let t = &mut seq.tracks_mut(kind)[i];
             if !t.items.iter().any(|o| o.start < item.end() && item.start < o.end()) {
                 t.items.push(item);
                 t.sort();
-                return i;
+                return Some(i);
             }
             i += 1;
         }
+        None
     }
 
     /// Finish: grow media durations to cover every use, return the fragment.
@@ -502,6 +504,10 @@ impl Builder {
         Imported { project: self.p, sequences: self.top }
     }
 }
+
+/// Most tracks of one kind a sequence has (the engine's `sequence_tools::MAX_TRACKS`): [`Builder::place`]
+/// stops looking for a free track there, so overlapping clips cannot grow a sequence without bound.
+pub(crate) const MAX_TRACKS: usize = 999;
 
 pub(crate) fn empty_sequence(settings: SequenceSettings) -> Sequence {
     Sequence {

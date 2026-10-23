@@ -26,7 +26,7 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use roxmltree::Node;
 
 use crate::common::{
-    Builder, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, gain_to_db, generator_of, item_media, item_path, kind_from_ext, param,
+    Builder, MAX_TRACKS, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, gain_to_db, generator_of, item_media, item_path, kind_from_ext, param,
     param_modified, path_to_file_url, resolve_path, scaled, set_param, settings_for, standard_effects, transition_effect, transition_name,
 };
 use crate::xml::{child, children, elements, num};
@@ -68,6 +68,10 @@ pub(crate) fn parse_time(s: &str) -> Option<Tick> {
     }
     s.parse::<f64>().ok().map(Tick::from_seconds_f64)
 }
+
+/// Video lane N is track N (the spine is track 0) and audio lane -N is track N - 1, so the lanes the
+/// importer keeps run from -MAX_TRACKS to MAX_TRACKS - 1 (`MAX_TRACKS` is the engine's limit).
+const LANES: std::ops::Range<i64> = -(MAX_TRACKS as i64)..MAX_TRACKS as i64;
 
 /// Format ticks as an FCPXML rational time, frame-based at `rate` when the value is on a frame.
 pub(crate) fn fmt_time(t: Tick, rate: FrameRate) -> String {
@@ -444,7 +448,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                     }
                 };
                 let id = ti.id;
-                self.b.place(seq, kind, pref, ti);
+                if self.b.place(seq, kind, pref, ti).is_none() {
+                    self.report.warn(format!("a clip overlaps clips on all {MAX_TRACKS} tracks a sequence can have; skipped"));
+                    continue;
+                }
                 placed.push((kind, id));
                 if kind == TrackKind::Video {
                     vclip = Some(id);
@@ -459,10 +466,25 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         // Connected clips and secondary storylines.
         for c in elements(el) {
-            let Some(l) = c.attribute("lane").and_then(|l| l.parse::<i32>().ok()) else { continue };
+            let Some(lane_attr) = c.attribute("lane") else { continue };
+            // a lane that is not an integer that fits (`1.5`, `99999999999`) was dropped without a word
+            let Ok(l) = lane_attr.trim().parse::<i32>() else {
+                self.report.warn(format!("<{}> has lane \"{lane_attr}\", which is not a lane a sequence can have; skipped", c.tag_name().name()));
+                continue;
+            };
             let off = attr_time(c, "offset").unwrap_or(Tick::ZERO);
             let ct0 = t0 + (off - local_start);
-            let clane = if lane > 0 && l > 0 { lane + l } else { l };
+            let clane = if lane > 0 && l > 0 { lane.saturating_add(l) } else { l };
+            // Every lane up to this one becomes a track, so a hostile `lane` is an allocation of that size.
+            if !LANES.contains(&i64::from(clane)) {
+                self.report.warn(format!(
+                    "<{}> on lane {clane} is beyond the lanes a sequence can have ({} to {}); skipped",
+                    c.tag_name().name(),
+                    LANES.start,
+                    LANES.end - 1
+                ));
+                continue;
+            }
             if c.has_tag_name("spine") {
                 // Secondary storyline: children offsets are in the storyline's local time.
                 let first = elements(c).filter(|x| !x.has_tag_name("transition")).find_map(|x| attr_time(x, "offset")).unwrap_or(Tick::ZERO);

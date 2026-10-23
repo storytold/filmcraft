@@ -104,3 +104,8 @@ OMF carries no video at all.
   nested compositions tagged top-level) reads back as the same edit.
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.
+- `tests/fcpxml_lanes.rs`: a connected clip's `lane` is a track index, so lanes beyond the 999 tracks a sequence can have (video 1 to 998, audio -1 to -999; nested lanes
+  add up) are skipped with a warning instead of creating that many tracks; a lane of 100000 made 200 002 tracks
+  and a lane in the billions exhausted memory. The largest lanes that fit are still imported. A clip that overlaps clips on every track up to the 999th (piled
+  on one lane, or at the last one) is skipped with a warning, because `Builder::place` would otherwise keep adding tracks; a `lane`
+  that is not an integer that fits (`1.5`, `99999999999`) is reported instead of dropped silently (FCP7 XML overlaps share the cap).
