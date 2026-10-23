@@ -184,7 +184,7 @@ fn transport_editor_keeps_its_own_space_and_customizes_compact_controls() {
             assert!(reset.top() < reset_before.top(), "real wheel moves clipped editor controls");
             assert!(scroll.contains(reset.center()), "Reset is visible after scrolling: {reset:?}, {scroll:?}");
             click(&mut h, "program.transport.editor.reset");
-            assert_eq!(h.state().ui.program.transport_hidden, vec!["playback.loop".to_string()]);
+            assert_eq!(h.state().ui.program.transport_hidden, filmcraft_ui_egui::state::MonitorView::default().transport_hidden);
         }
     }
 }
@@ -216,6 +216,34 @@ fn compact_source_overflow_keeps_source_navigation_routing() {
     click(&mut h, "source.transport.src.goOut");
     assert!(h.state().session.state.source_playhead > before);
     assert_eq!(h.state().session.playhead(), program);
+}
+
+/// #1800: as in Premiere, Go to Previous / Next Edit Point are optional Program transport
+/// buttons: off the default bar, added from the Button Editor, beside the one-frame steps (which
+/// stay one-frame steps).
+#[test]
+fn program_transport_edit_point_buttons_come_from_the_button_editor() {
+    let mut h = harness(720.0, ThemeKind::Dark, Which::Program);
+    let has = |h: &Harness<'_, FilmcraftApp>, id: &str| h.state().auto.elements.iter().any(|e| e.id == id);
+    for command in ["playhead.prevEdit", "playhead.nextEdit"] {
+        assert!(!has(&h, &format!("program.transport.{command}")), "{command} is off the default bar");
+        click(&mut h, "program.transport.editor");
+        click(&mut h, &format!("program.transport.editor.{command}"));
+        h.event(Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        h.run_steps(3);
+    }
+    let step_back = element(&h, "program.transport.playhead.stepBack");
+    let step_fwd = element(&h, "program.transport.playhead.stepForward");
+    assert!(element(&h, "program.transport.playhead.prevEdit").right() <= step_back.left(), "Previous Edit Point sits left of Step Back");
+    assert!(element(&h, "program.transport.playhead.nextEdit").left() >= step_fwd.right(), "Next Edit Point sits right of Step Forward");
+
+    let first = h.state().session.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    h.state_mut().session.set_playhead(first.start + first.duration.mul_ratio(1, 2));
+    h.run_steps(2);
+    click(&mut h, "program.transport.playhead.nextEdit");
+    assert_eq!(h.state().session.playhead(), first.end(), "Next Edit Point lands on the cut after the first clip");
+    click(&mut h, "program.transport.playhead.prevEdit");
+    assert_eq!(h.state().session.playhead(), first.start, "Previous Edit Point goes back to the first clip's start");
 }
 
 fn source_drag_choices(width: f32) {
