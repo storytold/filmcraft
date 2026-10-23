@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line, revision history and roadmap link added; content checked against the crate list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (separate registered encoders and GPU poll behavior from pending #2488 / #2490 proposals; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 FilmCraft is a Cargo workspace of small crates with strictly enforced layering. The engine is
 headless: every feature can be reached without a window, and the egui UI is one client among the
@@ -78,7 +78,7 @@ and `filmcraft-cli`.
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
-| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 encoding (VideoToolbox, opt-in) and H.265 encoding (VideoToolbox, the only H.265 encoder; the format exists only where a hardware encoder does) and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) and H.265 (Windows) and Media Foundation H.264 / H.265 on Windows behind NVENC (the vendor-neutral path for Intel, AMD and Qualcomm) encoding behind `export::VideoEncoder`; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
+| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; Media Foundation / Direct3D 11 H.264 / HEVC / VP9 / AV1 on Windows; VA-API H.264 / HEVC on Linux, with our own parsers and DPBs driving the stateless hardware; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders, and hardware H.264 / H.265 encoding through VideoToolbox on macOS and NVIDIA NVENC H.264 (Windows and 64-bit Linux, opt-in) / H.265 (Windows) behind `export::VideoEncoder`; H.265 is offered only where a registered hardware probe succeeds. Media Foundation H.264 / H.265 encoding is proposed in [#2488](https://github.com/storytold/filmcraft/pull/2488), not registered at this documentation branch's source head; H.264 declines to the built-in encoder for what the hardware does not take. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
@@ -300,20 +300,19 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `filmcraft_export::register_format_probe`, so the H.265 format exists where an HEVC encoder does,
   and choosing it is the opt-in (the Hardware encoding toggle governs H.264 only). With no software
   H.265 encoder, what NVENC declines is counted and ends the export with an error that says why.
-  On Windows, `platform::media_foundation::encode::factory` is registered **before** NVENC's
-  (`register_encoder` tries the most recently registered factory first, so NVENC still wins on an
-  NVIDIA machine) and Media Foundation uses available hardware encoder MFTs across vendors. Qualcomm and AMD
-  results are reported; Intel and explicit per-adapter session validation remain pending. Vendors' encoder MFTs are
-  asynchronous — every call answers `MF_E_TRANSFORM_ASYNC_LOCKED` until `MF_TRANSFORM_ASYNC_UNLOCK` is
-  set. Candidates come from an unfiltered hardware enumeration and are configured one output type
-  at a time. Filtered enumeration follows `MFTEnumEx`'s input-then-output argument order; earlier
-  empty results from reversed arguments were not evidence of absent registered media types.
-  The same opt-in rules apply
-  (Export ▸ Hardware encoding for H.264, the format choice for H.265), and its H.265 probe is a second
-  alternative for `Format::Hevc`, so the format is offered wherever *either* encoder opens a session.
-  An encoder that runs a fixed number of pictures behind is taken, with the delay written as an edit
-  list; one whose delay changes is reordering and is declined by the presentation-time check rather
-  than writing wrong timestamps. `mfcaps` lists the machine's encoder MFTs.
+  **Pending Media Foundation encoder proposal:** [#2488](https://github.com/storytold/filmcraft/pull/2488)
+  adds a vendor-neutral Windows hardware encoder factory behind NVENC and an alternative HEVC
+  format probe. Neither is registered at this documentation branch's source head; Media Foundation
+  decoding remains available. In the proposal, asynchronous hardware MFTs are unlocked with
+  `MF_TRANSFORM_ASYNC_UNLOCK`, enumerated without a media-type filter, and configured output type
+  before input type. Filtered enumeration follows `MFTEnumEx`'s input-then-output argument order.
+  The proposed H.264 path uses Export ▸ Hardware encoding; choosing H.265 requests that format.
+  Its planned timestamp policy accepts a constant native offset of 0–16 pictures while packets
+  remain ordered, with uniform durations, zero composition offsets and no edit-list trim of valid
+  initial pictures. Changing offsets are rejected. This behavior and the `mfcaps` encoder diagnostic
+  depend on #2488 landing; they are not implemented at this documentation branch's source head.
+  Historical Qualcomm / AMD observations do not establish acceptance of the revised proposal;
+  Intel and explicit per-adapter validation remain open.
   On macOS, `platform::hardware_encode` (VideoToolbox H.264, opt-in the same way, and H.265) is
   registered likewise. It too takes the RGBA pictures as they are (`32BGRA` buffers tagged BT.709)
   and VideoToolbox converts them to 4:2:0, so the encode thread only copies: converting on the CPU
@@ -795,3 +794,4 @@ native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone st
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | trivial | Status line and revision history added; milestone link points at docs/roadmap.md |
+| 2026-10-23 | minor | Clarified registered encoder support, pending Media Foundation / GPU callback proposals and historical acceptance limits |

@@ -78,11 +78,15 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
-- **Windows: Media Foundation hardware H.264 and H.265 (HEVC) encoding** (`media_foundation/encode.rs`),
-  8-bit SDR 4:2:0 for Export, registered *behind* NVENC so an NVIDIA machine keeps NVENC. This is
-  a vendor-neutral path through available hardware encoder MFTs. Qualcomm and AMD results are
-  reported; Intel and explicit per-adapter acceptance remain pending. Transform activation and
-  media-type negotiation are handled in `media_foundation/mft.rs`:
+- **Pending Windows Media Foundation hardware H.264 / H.265 encoder proposal**
+  ([#2488](https://github.com/storytold/filmcraft/pull/2488), `media_foundation/encode.rs`).
+  This encoder module and its registration are absent at this documentation branch's source head;
+  the Media Foundation decoder described above is already registered. The following describes
+  the proposed 8-bit SDR 4:2:0 path, not released or accepted behavior. It registers behind NVENC
+  so an NVIDIA machine keeps NVENC, using available hardware encoder MFTs across vendors.
+  Historical Qualcomm / AMD observations do not validate the revised transport. Intel and explicit
+  per-adapter acceptance remain pending. In the proposal, transform activation and media-type
+  negotiation are handled in `media_foundation/mft.rs`:
   - they are **asynchronous** MFTs, and an asynchronous MFT answers `MF_E_TRANSFORM_ASYNC_LOCKED`
     (`0xC00D6D77`) to *every* call until the caller sets `MF_TRANSFORM_ASYNC_UNLOCK`, so activation
     unlocks it before anything else. The HRESULT's message text does not mention the cause;
@@ -391,9 +395,10 @@ Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on mac
 textures on Windows); B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
 VideoToolbox; VP9 and AV1 through VA-API (Linux), and VA-API encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
 H.264 with NVENC (HDR H.264 stays with the software encoder), HDR10 MaxCLL / MaxFALL measured from
-the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 on Linux, 10-bit / HDR through
-Media Foundation and B-frames in it, and AV1 through Media Foundation (FilmCraft has no AV1 encoder
-plumbing at all, though the MFTs exist); VP9 / AV1 4:4:4 and 12-bit on Windows.
+the pictures (they are written as 0, unknown), AV1 with NVENC and H.265 on Linux; Media Foundation
+H.264 / HEVC encoding (pending #2488), followed by its 10-bit / HDR and B-frame support, and AV1
+through Media Foundation (FilmCraft has no AV1 encoder plumbing at all, though the MFTs exist);
+VP9 / AV1 4:4:4 and 12-bit on Windows.
 
 ### Linux NVENC sources and limits
 

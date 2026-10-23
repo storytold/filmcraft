@@ -105,19 +105,22 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** hardware decode on macOS (VideoToolbox H.264 / HEVC), Windows (Media Foundation /
   D3D11: H.264, HEVC, VP9, AV1) and Linux (VA-API and NVDEC: H.264, HEVC); hardware encode
   VideoToolbox H.264 / HEVC 8-bit, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
-  (Windows); Media Foundation H.264 / HEVC 8-bit on Windows behind NVENC (#2488, split from #1575), using
-  available hardware encoder MFTs (verified on Qualcomm and AMD; Intel validation pending);
+  (Windows);
   GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
-  GPU export rendering (#421). GPU export read-back bounds the GPU poll and callback receive
-  separately to eight seconds each, allowing CPU fallback when mapping is late (#2490). This is
-  not a deadline for the entire export or a guarantee against arbitrary driver stalls.
+  GPU export rendering (#421). GPU export read-back bounds the GPU poll to eight seconds,
+  allowing CPU fallback when that poll times out. The subsequent callback receive uses `rx.recv()` without a timeout at this
+  documentation branch's source head. [#2490](https://github.com/storytold/filmcraft/pull/2490) proposes
+  a separate eight-second callback receive bound; it remains pending. Neither bound is a deadline
+  for the entire export or a guarantee against arbitrary driver stalls.
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
-  encode on Apple silicon; 10-bit / HDR in the Media Foundation encoder (a constant 0–16-picture
-  timestamp offset is accepted without trimming ordered packets; changing offsets are rejected);
+  encode on Apple silicon; Media Foundation H.264 / HEVC hardware encoding on Windows
+  ([#2488](https://github.com/storytold/filmcraft/pull/2488), split from #1575), which is not implemented
+  at this documentation branch's source head. That proposal targets 8-bit SDR; 10-bit / HDR and
+  explicit per-adapter acceptance remain open;
   VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode — there is no AV1
-  encoder plumbing at all. The MFTs do exist and open (`QCOM Hardware Encoder - AV1` on a Snapdragon
-  X, Adreno X1-85, driver `31.0.137.0`, takes NV12 and writes pictures), and an earlier note here
+  encoder plumbing at all. Historical prototype diagnostics opened `QCOM Hardware Encoder - AV1`
+  on a Snapdragon X (Adreno X1-85, driver `31.0.137.0`, NV12 input and encoded output), and an earlier note here
   blamed the `av01` / `av1C` writer on its output "not being a whole number of low-overhead OBUs".
   That was wrong: the MFT was fine and the reader was wrong, see the sample-length note in
   `crates/platform/README.md`; ~48 of Premiere's
@@ -355,6 +358,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
+| 2026-10-23 | minor | Clarified registered encoder support, pending Media Foundation / GPU callback proposals and historical acceptance limits |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |

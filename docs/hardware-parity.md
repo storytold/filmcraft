@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** major (Windows H.264 / HEVC hardware export through Media Foundation; Qualcomm / AMD results and remaining Intel validation; bounded GPU map waits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (separate registered encoders and GPU poll behavior from pending #2488 / #2490 proposals; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
 [`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
@@ -34,20 +34,21 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 
 | Codec | Premiere macOS | **Ours macOS** | Premiere Windows | **Ours Windows** | **Ours Linux** |
 |---|---|---|---|---|---|
-| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames; takes the RGBA pictures and converts them itself) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC only** |
+| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames; takes the RGBA pictures and converts them itself) | Intel QSV, NVENC, AMD | **NVENC** (opt-in); Media Foundation pending #2488 | **NVENC only** |
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
-| HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC, Media Foundation** | no (#1648 proposed) |
-| HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`); Media Foundation 8-bit only | no |
+| HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC**; Media Foundation pending #2488 | no (#1648 proposed) |
+| HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`); pending Media Foundation proposal is 8-bit SDR only | no |
 | ProRes | Apple silicon | software only | software | software | software |
 | AV1 | — | no | via plug-ins / newer GPUs | no (encoder MFTs exist; no plumbing) | no |
 
 Measured: VideoToolbox H.264 1080p25 encode 200 fps on M1; a 9:29 timeline exported in 311 s
 against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9 dB luma PSNR
-(8-bit), 71.1 dB (10-bit) on an RTX 5060. Media Foundation H.264 / HEVC encode verified on a
-Snapdragon X (Adreno X1-85, Windows 11 ARM64) and on an AMD Radeon RX 6900 XT: H.264 profile
-selection (Baseline / Main / High) is honoured on both, and an export comes out *smaller* than the
-software encoder at the same target bit rate. Media Foundation can use available Intel, AMD and Qualcomm encoder MFTs rather than a backend
-of our own for each vendor; Intel and explicit per-adapter session validation remain pending.
+(8-bit), 71.1 dB (10-bit) on an RTX 5060. These measurements describe the registered
+VideoToolbox and NVENC backends. Media Foundation H.264 / HEVC encoding is pending
+[#2488](https://github.com/storytold/filmcraft/pull/2488); it is not registered at this documentation
+branch's source head. Earlier prototype observations on Qualcomm Snapdragon X / Adreno X1-85
+and AMD Radeon RX 6900 XT do not validate the revised proposal. Its intended vendor-neutral MFT
+path still needs dedicated acceptance, including Intel and explicit per-adapter sessions.
 
 ## GPU rendering
 
@@ -79,7 +80,7 @@ of our own for each vendor; Intel and explicit per-adapter session validation re
 
 **Hardware dimension: ~45%, 120–200 h.** Ahead of Premiere: hardware decode on Linux (VA-API,
 NVDEC) and FreeBSD builds. Behind, by user impact: zero-copy upload; GPU effects beyond 35
-(Lumetri curves / wheels / HSL, keys, masks, transitions); Quick Sync and AMD encoders on Windows;
+(Lumetri curves / wheels / HSL, keys, masks, transitions); Windows encoding beyond NVENC (Media Foundation pending #2488; native Quick Sync / AMF backends absent);
 VideoToolbox Main 10 HDR encode; 10-bit / 4:2:2 decode off macOS; HDR display; external video
 I/O and control surfaces (need hardware we don't own). Calibration: one decode backend ~3–5 h,
 one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
@@ -88,4 +89,5 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | Clarified registered encoder support, pending Media Foundation / GPU callback proposals and historical acceptance limits |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |
