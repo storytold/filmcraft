@@ -18,6 +18,13 @@
 //! - [`AudioFileSource`]: standalone compressed audio files (MP3, FLAC, AIFF, …).
 //! - [`Y4mSource`]: uncompressed YUV4MPEG2 (`.y4m`) video, frames read on demand.
 //! - [`openers`]: the openers to register with the engine's media pool.
+//!
+//! Video metadata: AV1's pixel format comes from `av1C` (AOM AV1 ISOBMFF binding v1.3.0,
+//! §2.3.4), including 8/10/12-bit depth and monochrome. Matroska AVC/HEVC/AV1 tracks reuse
+//! their parsed codec configuration for pixel-format labels; AVC also reports its profile.
+//! Missing, unreadable or inconsistent AV1 configuration leaves the format unknown. Metadata
+//! labels do not change decoder selection. `tests/video_metadata.rs` opens and decodes generated
+//! MP4/MKV fixtures, and the module tests cover malformed and unsupported configurations.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 

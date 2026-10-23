@@ -387,6 +387,12 @@ impl MkvSource {
                 }
             };
             ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);
+            // Missing/malformed AV1 CodecPrivate can still decode from its sequence OBU, but
+            // the decoder's default configuration is not evidence for a metadata label.
+            let metadata_entry = ventry.as_ref().filter(|_| match &t.codec {
+                Codec::Av1 { av1c } => filmcraft_isobmff::Av1Config::parse(av1c).is_ok(),
+                _ => true,
+            });
             let (color, explicit) = color_of(&v, w, h, ventry.as_ref().and_then(|e| crate::stream_color::from_codec_config(&e.codec)));
             if explicit {
                 explicit_color = Some(color);
@@ -399,8 +405,12 @@ impl MkvSource {
                 height: h,
                 frame_rate: rate,
                 par,
-                codec: codec_label(&t.codec),
-                pixel_format: String::new(),
+                codec: metadata_entry
+                    .filter(|e| matches!(e.codec, CodecConfig::Avc(_)))
+                    .map_or_else(|| codec_label(&t.codec), |e| crate::mp4::codec_label(&e.codec)),
+                pixel_format: metadata_entry
+                    .filter(|e| matches!(e.codec, CodecConfig::Avc(_) | CodecConfig::Hevc(_) | CodecConfig::Av1(_)))
+                    .map_or_else(String::new, |e| crate::mp4::pixfmt_label(&e.codec)),
                 color,
                 has_alpha: v.alpha_mode != 0,
                 bitrate,
@@ -681,6 +691,28 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedRe
         return None;
     }
     Some(MkvSource::open_reader(name, reader.clone()).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use filmcraft_matroska::{MkvWriter, MuxOptions, TrackKind, TrackSpec};
+    use filmcraft_media::MediaSource;
+
+    #[test]
+    fn av1_without_readable_codec_private_keeps_the_pixel_format_unknown() {
+        for private in [Vec::new(), vec![0x81, 0], vec![0, 0, 0, 0], vec![0x81, 0xe0, 0, 0]] {
+            let mut track = TrackSpec::new(TrackKind::Video, "V_AV1");
+            track.video_size = Some((64, 64));
+            track.default_duration_ns = Some(40_000_000);
+            track.codec_private = private;
+            let mut writer = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![track], MuxOptions::default()).unwrap();
+            writer.write_frame(0, 0, true, &[0], Some(40_000_000)).unwrap();
+            let source = super::MkvSource::open("unknown.mkv", writer.finish().unwrap().into_inner().into()).unwrap();
+            let video = source.info().video.as_ref().unwrap();
+            assert_eq!(video.pixel_format, "");
+            assert_eq!(video.codec, "AV1");
+        }
+    }
 }
 
 #[cfg(test)]

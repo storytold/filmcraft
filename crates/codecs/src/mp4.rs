@@ -592,7 +592,7 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
     Some(AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec, bits_per_sample: bits })
 }
 
-fn codec_label(c: &CodecConfig) -> String {
+pub(crate) fn codec_label(c: &CodecConfig) -> String {
     match c {
         CodecConfig::Avc(a) => format!(
             "H.264 ({})",
@@ -680,8 +680,37 @@ fn hevc_format(h: &filmcraft_isobmff::HevcConfig) -> (u32, u32) {
     }
 }
 
-fn pixfmt_label(c: &CodecConfig) -> String {
+pub(crate) fn pixfmt_label(c: &CodecConfig) -> String {
     match c {
+        // AV1 ISOBMFF binding v1.3.0 §2.3.4: av1C carries the sequence's colour configuration.
+        CodecConfig::Av1(a) => {
+            if a.seq_profile > 2
+                || (a.twelve_bit && (!a.high_bitdepth || a.seq_profile != 2))
+                || (!a.chroma_subsampling_x && a.chroma_subsampling_y)
+                || (a.seq_profile == 1 && (a.monochrome || a.chroma_subsampling_x || a.chroma_subsampling_y))
+                || ((a.monochrome || a.seq_profile == 0) && !(a.chroma_subsampling_x && a.chroma_subsampling_y))
+                || (a.seq_profile == 2 && !a.twelve_bit && !a.monochrome && (!a.chroma_subsampling_x || a.chroma_subsampling_y))
+            {
+                return String::new();
+            }
+            let bits = if a.twelve_bit {
+                12
+            } else if a.high_bitdepth {
+                10
+            } else {
+                8
+            };
+            let chroma = if a.monochrome {
+                0
+            } else if a.chroma_subsampling_y {
+                1
+            } else if a.chroma_subsampling_x {
+                2
+            } else {
+                3
+            };
+            yuv_label(chroma, bits)
+        }
         CodecConfig::Avc(a) => avc_format(a).map(|(chroma, bits)| yuv_label(chroma, bits)).unwrap_or_default(),
         CodecConfig::Hevc(h) => {
             let (chroma, bits) = hevc_format(h);
@@ -1065,6 +1094,38 @@ mod tests {
         for (chroma, bits, want) in [(1, 8, "YUV 4:2:0 8-bit"), (1, 10, "YUV 4:2:0 10-bit"), (2, 8, "YUV 4:2:2 8-bit"), (2, 10, "YUV 4:2:2 10-bit")] {
             let c = filmcraft_isobmff::HevcConfig { general_profile_idc: 1, chroma_format_idc: chroma, bit_depth_luma: bits, ..Default::default() };
             assert_eq!(pixfmt_label(&CodecConfig::Hevc(c)), want);
+        }
+    }
+
+    #[test]
+    fn av1_pixel_format_comes_from_av1c() {
+        use filmcraft_isobmff::Av1Config;
+        for (profile, high, twelve, mono, x, y, want) in [
+            (0, false, false, false, true, true, "YUV 4:2:0 8-bit"),
+            (0, true, false, false, true, true, "YUV 4:2:0 10-bit"),
+            (1, false, false, false, false, false, "YUV 4:4:4 8-bit"),
+            (2, true, false, false, true, false, "YUV 4:2:2 10-bit"),
+            (2, true, true, false, false, false, "YUV 4:4:4 12-bit"),
+            (0, true, false, true, true, true, "YUV 4:0:0 10-bit"),
+            (0, false, true, false, true, true, ""),
+            (0, true, true, false, true, true, ""),
+            (7, false, false, false, true, true, ""),
+            (2, true, true, false, false, true, ""),
+            (0, false, false, false, false, false, ""),
+            (2, true, false, false, true, true, ""),
+            (2, false, false, false, false, false, ""),
+            (0, true, false, true, false, false, ""),
+        ] {
+            let c = Av1Config {
+                seq_profile: profile,
+                high_bitdepth: high,
+                twelve_bit: twelve,
+                monochrome: mono,
+                chroma_subsampling_x: x,
+                chroma_subsampling_y: y,
+                ..Default::default()
+            };
+            assert_eq!(pixfmt_label(&CodecConfig::Av1(c)), want);
         }
     }
 
