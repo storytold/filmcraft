@@ -1329,119 +1329,140 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?}"#, always, |s, p| {
-            let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
-            let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
-                Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
-                None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
-            };
-            if paths.is_empty() {
-                return Err(bad("file.import", "need `paths`"));
-            }
-            if bool_p(p, "replace").unwrap_or(false) {
-                let name = s.project.name.clone();
-                s.execute("file.newProject", json!({ "name": name }))?;
-            }
-            let mut ids = Vec::new();
-            let mut errors = Vec::new();
-            let mut sequences = Vec::new();
-            let mut reports = Vec::new();
-            let mut image_sequences = Vec::new();
-            // Image Sequence: each path is the first frame of a numbered still sequence. With
-            // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
-            let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
-            let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
-            for path in paths {
-                if as_sequence || (detect && detect_image_sequence(s, &path)) {
-                    match import_image_sequence(s, &path, bin) {
-                        Ok((id, frames, missing)) => {
-                            ids.push(id.0);
-                            image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
+        cmd!(
+            "file.import",
+            "Import…",
+            ["File"],
+            Some("Cmd+I"),
+            r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?,"edlFrameRate":{"num":int,"den":int}?}"#,
+            always,
+            |s, p| {
+                // Validate before `replace` or any file access: a bad rate must not clear a project.
+                let edl_frame_rate = match p.get("edlFrameRate") {
+                    None => None,
+                    Some(value) => {
+                        let num = value.get("num").and_then(Value::as_i64).filter(|n| *n > 0);
+                        let den = value.get("den").and_then(Value::as_i64).filter(|n| *n > 0);
+                        match (num, den) {
+                            (Some(num), Some(den)) => Some(FrameRate::new(num, den)),
+                            _ => return Err(bad("file.import", "`edlFrameRate` needs positive integer `num` and `den`")),
                         }
-                        Err(e) => errors.push(format!("{path}: {e}")),
                     }
-                    continue;
+                };
+                let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
+                let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
+                    Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                    None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
+                };
+                if paths.is_empty() {
+                    return Err(bad("file.import", "need `paths`"));
                 }
-                // Media files through the host's reader (no whole-file read) when it has one.
-                let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
-                let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
-                match read {
-                    Ok(_) if streamed => match import_streamed(s, &path, bin) {
-                        Ok(id) => ids.push(id.0),
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    },
-                    Ok(b) => {
-                        if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
-                                Ok(r) => reports.push(r),
-                                Err(e) => errors.push(format!("{path}: {e}")),
+                if bool_p(p, "replace").unwrap_or(false) {
+                    let name = s.project.name.clone();
+                    s.execute("file.newProject", json!({ "name": name }))?;
+                }
+                let mut ids = Vec::new();
+                let mut errors = Vec::new();
+                let mut sequences = Vec::new();
+                let mut reports = Vec::new();
+                let mut image_sequences = Vec::new();
+                // Image Sequence: each path is the first frame of a numbered still sequence. With
+                // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
+                let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
+                let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
+                for path in paths {
+                    if as_sequence || (detect && detect_image_sequence(s, &path)) {
+                        match import_image_sequence(s, &path, bin) {
+                            Ok((id, frames, missing)) => {
+                                ids.push(id.0);
+                                image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
                             }
-                        } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt) {
-                                Ok(r) => {
-                                    sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
-                                    reports.push(r);
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                        continue;
+                    }
+                    // Media files through the host's reader (no whole-file read) when it has one.
+                    let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
+                    let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
+                    match read {
+                        Ok(_) if streamed => match import_streamed(s, &path, bin) {
+                            Ok(id) => ids.push(id.0),
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        },
+                        Ok(b) => {
+                            if let Some(fmt) = crate::captions::detect(&path, &b) {
+                                match crate::captions::import(s, &path, &b, fmt, None) {
+                                    Ok(r) => reports.push(r),
+                                    Err(e) => errors.push(format!("{path}: {e}")),
                                 }
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else {
-                            match import_bytes(s, &path, b.into(), bin) {
-                                Ok(id) => ids.push(id.0),
-                                Err(e) => errors.push(format!("{path}: {e}")),
+                            } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
+                                match crate::interchange::import_with_rate(s, &path, &b, fmt, edl_frame_rate) {
+                                    Ok(r) => {
+                                        sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                        reports.push(r);
+                                    }
+                                    Err(e) => errors.push(format!("{path}: {e}")),
+                                }
+                            } else {
+                                match import_bytes(s, &path, b.into(), bin) {
+                                    Ok(id) => ids.push(id.0),
+                                    Err(e) => errors.push(format!("{path}: {e}")),
+                                }
                             }
                         }
-                    }
-                    Err(e) => errors.push(format!("{path}: {e}")),
-                }
-            }
-            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
-                return Err(EngineError::Other(errors.join("; ")));
-            }
-            // Project Settings ▸ Ingest: copy / transcode / create proxies
-            // (image sequences are many files: ingest copies and transcodes single files only)
-            let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
-            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
-            let ma = &s.prefs.media_analysis;
-            if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
-                let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
-                if !audio.is_empty() {
-                    // without speech-to-text the setting can't act: say so instead of importing
-                    // silently untranscribed (#89)
-                    let r = crate::transcript::can_transcribe(s)
-                        .map_err(EngineError::Other)
-                        .and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
-                    if let Err(e) = r {
-                        errors.push(format!("transcription: {e}"));
+                        Err(e) => errors.push(format!("{path}: {e}")),
                     }
                 }
-            }
-            let ingest = match crate::proxies::ingest(s, &item_ids) {
-                Ok(v) => v,
-                Err(e) => {
-                    errors.push(format!("ingest: {e}"));
-                    Value::Null
+                if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
+                    return Err(EngineError::Other(errors.join("; ")));
                 }
-            };
-            let mut out = if !ingest.is_null() {
-                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
-            } else if reports.is_empty() {
-                json!({"items": ids, "errors": errors})
-            } else {
-                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
-            };
-            if !image_sequences.is_empty() {
-                out["imageSequences"] = json!(image_sequences);
+                // Project Settings ▸ Ingest: copy / transcode / create proxies
+                // (image sequences are many files: ingest copies and transcodes single files only)
+                let item_ids: Vec<ItemId> =
+                    ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
+                // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
+                let ma = &s.prefs.media_analysis;
+                if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
+                    let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
+                    if !audio.is_empty() {
+                        // without speech-to-text the setting can't act: say so instead of importing
+                        // silently untranscribed (#89)
+                        let r = crate::transcript::can_transcribe(s)
+                            .map_err(EngineError::Other)
+                            .and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
+                        if let Err(e) = r {
+                            errors.push(format!("transcription: {e}"));
+                        }
+                    }
+                }
+                let ingest = match crate::proxies::ingest(s, &item_ids) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        errors.push(format!("ingest: {e}"));
+                        Value::Null
+                    }
+                };
+                let mut out = if !ingest.is_null() {
+                    json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
+                } else if reports.is_empty() {
+                    json!({"items": ids, "errors": errors})
+                } else {
+                    json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
+                };
+                if !image_sequences.is_empty() {
+                    out["imageSequences"] = json!(image_sequences);
+                }
+                // Newly imported files may resolve paths the project already listed as offline
+                // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
+                // the cached slate of every item that came back so the monitors show the file again.
+                let was_missing = s.offline.missing.clone();
+                crate::relink::refresh(s);
+                for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
+                    s.media.remove(*item);
+                }
+                Ok(out)
             }
-            // Newly imported files may resolve paths the project already listed as offline
-            // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
-            // the cached slate of every item that came back so the monitors show the file again.
-            let was_missing = s.offline.missing.clone();
-            crate::relink::refresh(s);
-            for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
-                s.media.remove(*item);
-            }
-            Ok(out)
-        }),
+        ),
         cmd!(
             "file.exportInterchange",
             "Export Interchange",

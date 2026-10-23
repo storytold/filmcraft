@@ -256,3 +256,89 @@ fn an_interchange_import_links_media_without_reading_the_files_whole() {
     assert_eq!(s.project.source_size(clip.item), Some((320, 180)), "the file's real size, from its index");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn file_import_accepts_an_explicit_external_edl_rate() {
+    let d = tmp_dir("edl-explicit-rate");
+    let doc = d.join("cut.edl");
+    std::fs::write(&doc, "TITLE: External\nFCM: NON-DROP FRAME\n001 CAM V C 00:00:00:00 00:00:08:00 00:00:00:00 00:00:08:00\n").unwrap();
+    for (parameter, rate) in
+        [(json!({"num":25,"den":1}), filmcraft_time::FrameRate::FPS_25), (json!({"num":24000,"den":1001}), filmcraft_time::FrameRate::FPS_23_976)]
+    {
+        let mut s = Session::default();
+        let r = s.execute("file.import", json!({"paths":[doc.to_string_lossy()],"edlFrameRate":parameter})).unwrap();
+        let seq = s.project.sequence(ItemId(r["sequences"][0].as_u64().unwrap())).unwrap();
+        assert_eq!(seq.settings.frame_rate, rate);
+        assert_eq!(seq.video_tracks[0].items[0].duration, rate.tick_of(if rate == filmcraft_time::FrameRate::FPS_25 { 200 } else { 192 }));
+    }
+}
+
+#[test]
+fn file_import_rejects_invalid_edl_rates_before_replacing_the_project() {
+    for parameter in [
+        json!(null),
+        json!(25),
+        json!({"num":25}),
+        json!({"num":25,"den":0}),
+        json!({"num":-25,"den":1}),
+        json!({"num":25,"den":-1}),
+        json!({"num":0,"den":1}),
+        json!({"num":25.5,"den":1}),
+        json!({"num":"25","den":1}),
+        json!({"num":9223372036854775808u64,"den":1}),
+    ] {
+        let mut s = Session::default();
+        let before = serde_json::to_value(&s.project).unwrap();
+        let r = s.execute("file.import", json!({"paths":["missing.edl"],"replace":true,"edlFrameRate":parameter}));
+        assert!(r.is_err(), "{parameter}");
+        assert!(r.unwrap_err().to_string().contains("edlFrameRate"), "{parameter}");
+        assert_eq!(serde_json::to_value(&s.project).unwrap(), before, "{parameter}");
+    }
+}
+
+#[test]
+fn file_import_edl_rate_keeps_fallback_comment_and_override_precedence() {
+    let d = tmp_dir("edl-rate-precedence");
+    let doc = d.join("cut.edl");
+    let event = "TITLE: External\nFCM: NON-DROP FRAME\n001 CAM V C 00:00:00:00 00:00:08:00 00:00:00:00 00:00:08:00\n";
+    for (annotation, parameter, rate) in [
+        ("", None, filmcraft_time::FrameRate::FPS_24),
+        ("* FILMCRAFT FRAME RATE: 25/1\n", None, filmcraft_time::FrameRate::FPS_25),
+        ("* FILMCRAFT FRAME RATE: 25/1\n", Some(json!({"num":30,"den":1})), filmcraft_time::FrameRate::FPS_30),
+    ] {
+        std::fs::write(&doc, format!("{annotation}{event}")).unwrap();
+        let mut s = Session::default();
+        let mut params = json!({"paths":[doc.to_string_lossy()]});
+        if let Some(parameter) = parameter {
+            params["edlFrameRate"] = parameter;
+        }
+        let r = s.execute("file.import", params).unwrap();
+        let seq = s.project.sequence(ItemId(r["sequences"][0].as_u64().unwrap())).unwrap();
+        assert_eq!(seq.settings.frame_rate, rate);
+        assert_eq!(seq.video_tracks[0].items[0].duration, rate.tick_of(8 * rate.timecode_base()));
+    }
+}
+
+#[test]
+fn file_import_extreme_edl_rates_use_saturating_time_arithmetic() {
+    let d = tmp_dir("edl-extreme-rate");
+    let doc = d.join("cut.edl");
+    let event = "TITLE: Extreme\nFCM: NON-DROP FRAME\n001 CAM V C 00:00:00:00 00:00:01:00 00:00:00:00 00:00:01:00\n";
+    for (num, den) in [(i64::MAX, 1), (1, i64::MAX)] {
+        for annotated in [false, true] {
+            let text = if annotated { format!("* FILMCRAFT FRAME RATE: {num}/{den}\n{event}") } else { event.to_owned() };
+            std::fs::write(&doc, text).unwrap();
+            let mut params = json!({"paths":[doc.to_string_lossy()]});
+            if !annotated {
+                params["edlFrameRate"] = json!({"num":num,"den":den});
+            }
+            let mut s = Session::default();
+            let r = s.execute("file.import", params).unwrap();
+            let seq = s.project.sequence(ItemId(r["sequences"][0].as_u64().unwrap())).unwrap();
+            let rate = filmcraft_time::FrameRate::new(num, den);
+            assert_eq!(seq.settings.frame_rate, rate);
+            assert_eq!(seq.video_tracks[0].items[0].duration, if rate.num == i64::MAX { Tick(filmcraft_time::TICKS_PER_SECOND) } else { Tick(i64::MAX) });
+        }
+    }
+    let _ = std::fs::remove_dir_all(d);
+}

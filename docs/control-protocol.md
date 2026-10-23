@@ -208,3 +208,28 @@ resizes the root split; path entries use `false` for the first child and `true` 
 the second. `{"action":{"MoveFloating":{"panel":"Info","rect":[45,65,420,320]}}}`
 repositions and resizes the floating group containing Info. Invalid actions leave the
 layout unchanged. Pointer gestures dispatch through this same catalog command.
+
+### Importing an external EDL with an explicit rate
+
+`file.import` accepts an optional `edlFrameRate` object containing positive integer
+`num` and `den` fields (frames per second as an exact rational). For example,
+`{"paths":["cut.edl"],"edlFrameRate":{"num":25,"den":1}}` imports at 25 fps;
+use `{"num":24000,"den":1001}` for 23.976 fps. This overrides a FilmCraft EDL
+frame-rate comment. If omitted, the comment or normal EDL rate inference applies.
+Other interchange formats retain the rate stored in their document. Invalid rate
+parameters return an error before `replace` can clear the current project.
+
+FilmCraft writes a separate `* FILMCRAFT FRAME RATE: num/den` comment after the
+`FCM:` line on every EDL export, including rates that the event timecodes already
+identify. Import reads the rate from this comment syntax. This changes exported
+EDL bytes; compatibility with external editors or conform tools has not been verified.
+
+`FCM: DROP FRAME` applies drop-frame counting only when the selected rate supports
+it (NTSC rates such as 30000/1001). An explicit rate or comment of 25/1 therefore
+imports as 25 fps non-drop-frame, even if `FCM:` says `DROP FRAME`.
+
+Positive rates are not restricted to a video-rate range. Frame/time conversions
+use wide, saturating arithmetic: values outside the integer frame or tick range
+clamp to its limit. Extreme ratios such as 9223372036854775807/1 or
+1/9223372036854775807 can therefore lose timing precision; accepting them does not
+make them practical video rates.

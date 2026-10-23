@@ -243,8 +243,9 @@ pub struct Imported {
 pub struct ImportOptions {
     /// Directory relative media paths are resolved against (normally the document's directory).
     pub base_dir: Option<String>,
-    /// EDLs carry no frame rate: the rate to interpret timecode at (default: guessed, 29.97 for
-    /// drop-frame lists, else 24 unless frame fields show otherwise).
+    /// Override the rate used to interpret EDL timecode. By default, use the FilmCraft frame-rate
+    /// comment when present, else guess 29.97 for drop-frame lists or 24 unless frame fields
+    /// show otherwise. Standard EDLs carry no frame rate.
     pub edl_frame_rate: Option<FrameRate>,
     /// Name for documents without a title (EDL without `TITLE:`).
     pub name: Option<String>,

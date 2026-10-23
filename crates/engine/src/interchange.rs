@@ -55,11 +55,16 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
 /// Import a document: merge its bins, media and sequences into the project (one undo step), then
 /// link each media file that exists on disk. Returns the new sequences.
 pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Result<Value> {
+    import_with_rate(s, path, bytes, format, None)
+}
+
+/// Import with an explicit rate for EDLs; other formats retain their document's rate.
+pub fn import_with_rate(s: &mut Session, path: &str, bytes: &[u8], format: Format, edl_frame_rate: Option<filmcraft_time::FrameRate>) -> Result<Value> {
     let p = std::path::Path::new(path);
     let opts = ImportOptions {
+        edl_frame_rate,
         base_dir: p.parent().map(|d| d.to_string_lossy().to_string()),
         name: p.file_stem().map(|n| n.to_string_lossy().to_string()),
-        ..Default::default()
     };
     let (fragment, report) = match format {
         // AAF / OMF may embed audio: write it next to the document (the media items point there)
