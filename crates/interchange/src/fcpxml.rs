@@ -96,7 +96,8 @@ fn rate_from_frame_duration(s: &str) -> Option<FrameRate> {
     let s = s.trim().strip_suffix('s')?;
     let (a, b) = s.split_once('/').unwrap_or((s, "1"));
     let (a, b): (i64, i64) = (a.parse().ok()?, b.parse().ok()?);
-    (a > 0).then(|| FrameRate::new(b, a))
+    // both parts must be positive: a zero or negative numerator of the rate divides by zero later
+    (a > 0 && b > 0).then(|| FrameRate::new(b, a))
 }
 
 fn audio_rate_str(sr: u32) -> String {
@@ -170,7 +171,13 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
             let Some(id) = r.attribute("id") else { continue };
             match r.tag_name().name() {
                 "format" => {
-                    let rate = r.attribute("frameDuration").and_then(rate_from_frame_duration).unwrap_or_default();
+                    let rate = match r.attribute("frameDuration") {
+                        Some(fd) => rate_from_frame_duration(fd).unwrap_or_else(|| {
+                            imp.report.warn(format!("format \"{id}\" has an invalid frameDuration \"{fd}\"; the default frame rate was used"));
+                            FrameRate::default()
+                        }),
+                        None => FrameRate::default(),
+                    };
                     let w = r.attribute("width").and_then(|v| v.parse().ok()).unwrap_or(1920);
                     let h = r.attribute("height").and_then(|v| v.parse().ok()).unwrap_or(1080);
                     imp.formats.insert(id.into(), (rate, w, h));
@@ -1200,5 +1207,27 @@ mod tests {
         assert_eq!(parse_time(&fmt_time(odd, r)), Some(odd));
         assert_eq!(rate_from_frame_duration("1001/30000s"), Some(FrameRate::FPS_29_97));
         assert_eq!(rate_from_frame_duration("100/2500s"), Some(FrameRate::FPS_25));
+        for bad in ["100/0s", "0/100s", "-100/2500s", "100/-2500s", "0s", "x"] {
+            assert_eq!(rate_from_frame_duration(bad), None, "{bad}");
+        }
+    }
+
+    /// A zero frame duration denominator gave the format a zero frame rate, and export then
+    /// divided by zero (`fmt_time`) as soon as the sequence had a start timecode or a marker.
+    #[test]
+    fn zero_frame_duration_falls_back_to_the_default_rate() {
+        for fd in ["100/0s", "0/100s", "-100/2500s"] {
+            let xml = format!(
+                r#"<?xml version="1.0"?><fcpxml version="1.10"><resources><format id="f1" frameDuration="{fd}" width="1920" height="1080"/>
+<asset id="a1" name="c" start="0s" duration="10s" hasVideo="1" format="f1"><media-rep kind="original-media" src="file:///tmp/c.mov"/></asset></resources>
+<library><event name="E"><project name="P"><sequence format="f1" tcStart="3600/1s" tcFormat="DF"><spine>
+<asset-clip ref="a1" offset="3600s" duration="5s"><marker start="1s" duration="1/25s" value="m"/></asset-clip></spine></sequence></project></event></library></fcpxml>"#
+            );
+            let (imported, report) = crate::import(xml.as_bytes(), crate::Format::Fcpxml, None).expect("import succeeds");
+            for seq in &imported.sequences {
+                crate::export(&imported.project, *seq, crate::Format::Fcpxml, &crate::ExportOptions::default()).expect("export succeeds");
+            }
+            assert!(report.mentions("invalid frameDuration"), "{fd}: {report}");
+        }
     }
 }
