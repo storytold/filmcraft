@@ -179,6 +179,16 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
+    // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
+    // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
+    if app.ui.focused == PanelKind::Project && id == "edit.selectAll" {
+        let (cmd, params) = crate::panels::project::select_all_command(app);
+        return invoke(app, ctx, &cmd, params);
+    }
+    if app.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
+        return invoke(app, ctx, "project.deselectAll", params);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
