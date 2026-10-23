@@ -269,6 +269,25 @@ pub fn is_internal_key(k: &str) -> bool {
     INTERNAL_KEYS.contains(&k) || k.starts_with(ARRANGEMENT_PREFIX)
 }
 
+/// Keep ordinary legacy headings; qualify collisions with built-ins and the selector prefix.
+pub fn metadata_column(key: &str) -> String {
+    if BUILTIN_COLUMNS.iter().chain(["All", "Type", "Duration", "Path"].iter()).any(|c| c.eq_ignore_ascii_case(key))
+        || filmcraft_project::find::metadata_key(key).is_some()
+    {
+        filmcraft_project::find::metadata_id(key)
+    } else {
+        key.to_string()
+    }
+}
+
+/// Presentation only; commands and saved preferences always use the original selector.
+pub fn column_label(column: &str) -> String {
+    match filmcraft_project::find::metadata_key(column) {
+        Some(key) => format!("{key} (metadata)"),
+        None => column.to_string(),
+    }
+}
+
 pub fn default_width(c: &str) -> f32 {
     match c {
         "Name" => 220.0,
@@ -285,8 +304,12 @@ pub fn all_columns(p: &Project) -> Vec<String> {
     let mut extra: Vec<String> = Vec::new();
     for it in p.items.values() {
         for k in it.metadata.keys() {
-            if !is_internal_key(k) && !v.iter().any(|c| c.eq_ignore_ascii_case(k)) && !extra.contains(k) {
-                extra.push(k.clone());
+            // Exact log headings already refer to the same stored value.
+            if !is_internal_key(k) && !crate::panels::LOG_FIELDS.contains(&k.as_str()) && k != "Good" {
+                let column = metadata_column(k);
+                if !extra.contains(&column) {
+                    extra.push(column);
+                }
             }
         }
     }
@@ -327,6 +350,11 @@ pub fn usage(p: &Project, id: ItemId) -> (usize, usize) {
 
 /// The text and sort key of one List view cell.
 pub fn cell(p: &Project, it: &ProjectItem, column: &str) -> (String, SortKey) {
+    if let Some(key) = filmcraft_project::find::metadata_key(column) {
+        let value = it.metadata.get(key).cloned().unwrap_or_default();
+        let sort = SortKey::Text(value.to_lowercase());
+        return (value, sort);
+    }
     let media = media_of(p, it);
     let rate = match &it.kind {
         ItemKind::Subclip { parent, .. } => p.item(*parent).map(|x| x.frame_rate()).unwrap_or_default(),
@@ -430,7 +458,7 @@ pub fn cell(p: &Project, it: &ProjectItem, column: &str) -> (String, SortKey) {
             None => (String::new(), SortKey::Num(-1.0)),
         },
         "Date Created" => (it.created.to_string(), SortKey::Num(it.created as f64)),
-        _ => text(it.metadata.iter().find(|(k, _)| k.eq_ignore_ascii_case(column)).map(|(_, v)| v.clone()).unwrap_or_default()),
+        _ => text(it.metadata.get(column).cloned().unwrap_or_default()),
     }
 }
 
@@ -939,10 +967,10 @@ fn view_set(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(v) = p.get("iconSort") {
         match v {
-            Value::String(c) => pp.view.icon_sort.column = canonical_column(&s.project, c).unwrap_or_default(),
+            Value::String(c) => pp.view.icon_sort.column = canonical_column(&s.project, &pp.view.columns, c).unwrap_or_default(),
             Value::Object(_) => {
                 if let Some(c) = str_p(v, "column") {
-                    pp.view.icon_sort.column = canonical_column(&s.project, c).unwrap_or_default();
+                    pp.view.icon_sort.column = canonical_column(&s.project, &pp.view.columns, c).unwrap_or_default();
                 }
                 if let Some(d) = bool_p(v, "descending") {
                     pp.view.icon_sort.descending = d;
@@ -956,8 +984,20 @@ fn view_set(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The column's canonical spelling, or None for an unknown column ("" / "User Order" = None).
-fn canonical_column(p: &Project, c: &str) -> Option<String> {
-    all_columns(p).into_iter().find(|x| x.eq_ignore_ascii_case(c.trim()))
+fn canonical_column(p: &Project, shown: &[Column], c: &str) -> Option<String> {
+    if shown.iter().any(|x| x.name == c) {
+        return Some(c.to_string());
+    }
+    let columns = all_columns(p);
+    if columns.iter().any(|x| x == c) {
+        return Some(c.to_string());
+    }
+    // Explicit metadata selectors are case-sensitive, including unknown fields configured
+    // before import. Only built-in aliases retain the historical case-insensitive spelling.
+    if let Some(key) = filmcraft_project::find::metadata_key(c) {
+        return p.items.values().any(|it| it.metadata.contains_key(key)).then(|| c.to_string());
+    }
+    BUILTIN_COLUMNS.iter().find(|x| x.eq_ignore_ascii_case(c.trim())).map(|x| x.to_string())
 }
 
 fn columns_set(s: &mut Session, p: &Value) -> Result<Value> {
@@ -970,9 +1010,10 @@ fn columns_set(s: &mut Session, p: &Value) -> Result<Value> {
             _ => return Err(bad("project.columns.set", "columns are names or {name, width}")),
         };
         // custom fields may be added before any item has them
-        let name = canonical_column(&s.project, &name).unwrap_or_else(|| name.trim().to_string());
-        if name.is_empty() {
-            return Err(bad("project.columns.set", "empty column name"));
+        let name = canonical_column(&s.project, &s.prefs.project_panel.view.columns, &name)
+            .unwrap_or_else(|| if filmcraft_project::find::metadata_key(&name).is_some() { name.clone() } else { name.trim().to_string() });
+        if name.is_empty() || filmcraft_project::find::metadata_key(&name).is_some_and(|k| k.trim().is_empty() || is_internal_key(k)) {
+            return Err(bad("project.columns.set", "empty or internal column name"));
         }
         if cols.iter().any(|c| c.name == name) {
             continue;
@@ -1002,13 +1043,13 @@ fn columns_resize(s: &mut Session, p: &Value) -> Result<Value> {
     let c = str_p(p, "column").ok_or_else(|| bad("project.columns.resize", "need `column`"))?;
     let w = f64_p(p, "width").ok_or_else(|| bad("project.columns.resize", "need `width`"))? as f32;
     let mut prefs = s.prefs.clone();
-    let col = prefs
-        .project_panel
-        .view
-        .columns
-        .iter_mut()
-        .find(|x| x.name.eq_ignore_ascii_case(c))
-        .ok_or_else(|| bad("project.columns.resize", format!("`{c}` is not shown")))?;
+    let name = if prefs.project_panel.view.columns.iter().any(|x| x.name == c) {
+        c.to_string()
+    } else {
+        canonical_column(&s.project, &prefs.project_panel.view.columns, c).unwrap_or_else(|| c.to_string())
+    };
+    let col =
+        prefs.project_panel.view.columns.iter_mut().find(|x| x.name == name).ok_or_else(|| bad("project.columns.resize", format!("`{c}` is not shown")))?;
     col.width = w.clamp(30.0, 800.0);
     save_prefs(s, prefs)?;
     Ok(json!({"columns": s.prefs.project_panel.view.columns}))
@@ -1016,7 +1057,7 @@ fn columns_resize(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn sort(s: &mut Session, p: &Value) -> Result<Value> {
     let c = str_p(p, "column").ok_or_else(|| bad("project.sort", "need `column`"))?;
-    let c = canonical_column(&s.project, c).ok_or_else(|| bad("project.sort", format!("unknown column `{c}`")))?;
+    let c = canonical_column(&s.project, &s.prefs.project_panel.view.columns, c).ok_or_else(|| bad("project.sort", format!("unknown column `{c}`")))?;
     let mut prefs = s.prefs.clone();
     let cur = &mut prefs.project_panel.view.sort;
     let desc = bool_p(p, "descending").unwrap_or(cur.column == c && !cur.descending);
@@ -1224,7 +1265,10 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         ),
         q("project.columns.list", "List Project Columns", "{}", |s, _| {
             let shown = &s.prefs.project_panel.view.columns;
-            let all: Vec<Value> = all_columns(&s.project).into_iter().map(|n| json!({"name": n, "shown": shown.iter().any(|c| c.name == n)})).collect();
+            let all: Vec<Value> = all_columns(&s.project)
+                .into_iter()
+                .map(|n| json!({"name": n, "label": column_label(&n), "shown": shown.iter().any(|c| c.name == n)}))
+                .collect();
             Ok(json!({"columns": shown, "available": all}))
         }),
         c("project.columns.set", "Metadata Display", r#"{"columns":[name|{"name":str,"width":f32}]}"#, always, columns_set),

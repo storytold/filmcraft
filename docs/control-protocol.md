@@ -208,3 +208,26 @@ resizes the root split; path entries use `false` for the first child and `true` 
 the second. `{"action":{"MoveFloating":{"panel":"Info","rect":[45,65,420,320]}}}`
 repositions and resizes the floating group containing Info. Invalid actions leave the
 layout unchanged. Pointer gestures dispatch through this same catalog command.
+
+### Stored metadata field identity
+
+Project metadata keys are case-sensitive: `Scene` and `scene` retain independent values.
+`metadata.get` returns each row's display `name` and command `id`. Pass the `id` back to
+`metadata.set`; a row named `Name` in the Metadata section is distinct from the clip name.
+
+An explicit selector `metadata:<exact key>` addresses only `ProjectItem.metadata`, in
+`metadata.set`, project columns/sorting, and Find/search-bin queries. For example,
+`{"field":"metadata:Name","value":"Original camera name"}` never renames the clip.
+Only one prefix is removed: a literal key `metadata:Name` is addressed with
+`metadata:metadata:Name`. Spaces, Unicode and case in the remaining key are retained.
+Explicit setters preserve an empty string as a present value; legacy unqualified setters
+still remove an ordinary metadata field when given an empty value. Internal layout keys
+are not offered as metadata fields.
+
+`project.columns.list` returns selector `name` and presentation `label` for each available
+column. Colliding stored headings display as e.g. `Name (metadata)`. Built-in column names
+and existing ordinary custom headings stay valid; built-in command aliases remain
+case-insensitive, while metadata lookup never falls back to a different case variant.
+The metadata map and project file format are unchanged. Older preferences that used the
+new reserved `metadata:` prefix as a literal heading must select that field again using
+its qualified selector; no original metadata value is rewritten.

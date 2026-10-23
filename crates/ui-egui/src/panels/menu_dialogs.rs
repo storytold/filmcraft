@@ -19,6 +19,7 @@
 use crate::widgets::CenteredDialog as _;
 use egui::{Align2, RichText};
 use filmcraft_project::{FindOp, find::COLUMNS};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -26,6 +27,17 @@ use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::native_dialogs::FileDialog;
 use crate::state::ClipDialogDraft;
+
+fn find_columns(app: &FilmcraftApp) -> Vec<(String, String)> {
+    let mut columns = pairs(&COLUMNS);
+    for c in filmcraft_engine::project_panel::all_columns(&app.session.project) {
+        if !filmcraft_engine::project_panel::BUILTIN_COLUMNS.contains(&c.as_str()) {
+            let label = filmcraft_engine::project_panel::column_label(&c);
+            columns.push((c, label));
+        }
+    }
+    columns
+}
 
 /// Frontend state of the M3.11 menu items (`UiState::extras`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -488,7 +500,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         &[("all", tl!("Clip Names and Markers")), ("clips", tl!("Clip Names")), ("markers", tl!("Markers"))],
                     );
                 } else {
-                    let cols = pairs(&COLUMNS);
+                    let cols = find_columns(app);
                     let ops: Vec<(String, String)> = FindOp::ALL.iter().map(|o| (o.name().to_string(), o.label().to_string())).collect();
                     for n in 0..2 {
                         let mut row = p["rows"][n].clone();
@@ -520,7 +532,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             "file.newSearchBin" => {
                 text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
-                combo(ui, &mut elems, "searchBin.column", tl!("Search:"), &mut p["column"], &pairs(&COLUMNS));
+                combo(ui, &mut elems, "searchBin.column", tl!("Search:"), &mut p["column"], &find_columns(app));
                 let ops: Vec<(String, String)> = FindOp::ALL.iter().map(|o| (o.name().to_string(), o.label().to_string())).collect();
                 combo(ui, &mut elems, "searchBin.operator", "", &mut p["operator"], &ops);
                 text(ui, &mut elems, pre, p, "text", tl!("Find:"), 220.0);

@@ -40,7 +40,7 @@ pub fn target(app: &FilmcraftApp) -> Option<ItemId> {
 }
 
 pub fn field_id(name: &str) -> String {
-    format!("metadata.field.{}", name.replace(' ', ""))
+    if filmcraft_project::find::metadata_key(name).is_some() { format!("metadata.field.{name}") } else { format!("metadata.field.{}", name.replace(' ', "")) }
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -74,8 +74,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 elems.push((format!("metadata.section.{section}"), r.rect, section.to_string()));
             }
             ui.horizontal(|ui| {
-                ui.add_sized(vec2(label_w, 20.0), egui::Label::new(RichText::new(format!("{}:", crate::i18n::t(&f.name))).color(t.text_dim)).truncate());
-                if f.name == "Label" {
+                let heading = if filmcraft_project::find::metadata_key(&f.id).is_some() { f.name.clone() } else { crate::i18n::t(&f.name).to_string() };
+                ui.add_sized(vec2(label_w, 20.0), egui::Label::new(RichText::new(format!("{heading}:")).color(t.text_dim)).truncate());
+                if f.id == "Label" {
                     let cur = Label::from_name(&f.value).unwrap_or(Label::Violet);
                     let mut sel = cur;
                     let r = egui::ComboBox::from_id_salt(("md-label", item.0))
@@ -102,7 +103,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 } else {
                     let r = ui.add(egui::Label::new(RichText::new(&f.value).color(t.text)).truncate());
-                    elems.push((field_id(&f.name), r.rect, f.value.clone()));
+                    elems.push((field_id(&f.id), r.rect, f.value.clone()));
                 }
             });
         }
@@ -120,16 +121,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 /// An editable value: a text field whose edit is committed when it loses focus (Enter, Tab or a
 /// click elsewhere). Returns (field, new value) on commit.
 fn text_field(ui: &mut egui::Ui, item: ItemId, f: &Field, elems: &mut Vec<(String, Rect, String)>) -> Option<(String, String)> {
-    let id = egui::Id::new(("md-draft", item.0, f.name.clone()));
+    let id = egui::Id::new(("md-draft", item.0, f.id.clone()));
     let mut draft: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| f.value.clone());
-    let r = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(ui.available_width()).id_salt(("md-edit", item.0, f.name.clone())));
-    elems.push((field_id(&f.name), r.rect, f.value.clone()));
+    let r = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(ui.available_width()).id_salt(("md-edit", item.0, f.id.clone())));
+    elems.push((field_id(&f.id), r.rect, f.value.clone()));
     let mut out = None;
     if r.has_focus() {
         ui.data_mut(|d| d.insert_temp(id, draft.clone()));
     } else {
         if r.lost_focus() && draft != f.value {
-            out = Some((f.name.clone(), draft));
+            out = Some((f.id.clone(), draft));
         }
         ui.data_mut(|d| d.remove::<String>(id));
     }

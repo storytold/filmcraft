@@ -525,7 +525,7 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
             if resp.hovered() {
                 hp.rect_filled(cr, 0.0, t.hover);
             }
-            let g = hp.layout_no_wrap(crate::i18n::t(&c.name).to_string(), Tokens::ui(f - 0.5), t.text_dim);
+            let g = hp.layout_no_wrap(crate::i18n::t(&pp::column_label(&c.name)).to_string(), Tokens::ui(f - 0.5), t.text_dim);
             // The sort arrow sits in the right of the header. Leave it a gap so it does not cover the name (#1295).
             let arrow = if sort.column == c.name { 14.0 } else { 0.0 };
             let label = cr.shrink2(vec2(4.0, 0.0));
