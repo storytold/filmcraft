@@ -23,8 +23,28 @@ a tie-break, followed by the latest video end time.
 
 The destination contains the unchanged `source.prproj`, `provenance.json`, and (copy mode) a
 `media/` directory with full SHA-256 named files. Link mode uses original absolute paths without
-writing to those files. The project stores the original source paths, hashes, source tree and
-warnings independently of timeline edits. Undo does not delete the saved source snapshot.
+writing to those files. Linked imports probe media and retain the existing size/head/tail relink
+fingerprint in both the media item and immutable provenance (at most 2 MiB read by the native
+host), but defer full-file SHA-256. A matching fingerprint is not proof that every byte is unchanged.
+Their provenance
+`sha256` is null, even when the media is online; `bytes` records its size when available.
+The source project is still hashed and snapshotted immediately. Copied media is hashed and verified
+synchronously. The project stores the original source paths, available import-time hashes, source
+tree and warnings independently of timeline edits. Undo does not delete the saved source snapshot.
+
+For an explicit, potentially expensive inspection of current media, use:
+
+```sh
+filmcraft-cli --project /path/to/episode.fcproj exec premiere.hashMedia '{"import":0}'
+```
+
+`import` is the zero-based provenance record index. This read-only command repeats document-path,
+extension and opener checks before hashing each current imported path. It returns SHA-256/size
+or a per-file error; `matchesImport` compares against an existing import-time hash, or is null
+when none was recorded. A later hash cannot prove what bytes existed at import time. The command
+does not backfill provenance, rewrite `provenance.json`, save the project or add an undo step.
+It runs synchronously only when explicitly requested; it is not a background job or a promise
+that the remaining probe/copy work cannot block the UI.
 
 Files with workflow provenance use the distinct `filmcraft.project.workflow` format tag and
 workflow version 1. Once saved with provenance, a file requires a build that understands this
@@ -99,9 +119,11 @@ still produce errors. The referenced graph is validated before unsupported clips
 so skipping a clip does not bypass the corruption or resource-limit checks. A failed import removes only
 its newly created destination and leaves the editor project unchanged.
 
-Open workflow issues: probing, hashing and copying are synchronous and can block the calling UI
-thread on large inputs. Imports without an explicit `destination` write beside the source project;
-the destination-prompt policy and background-job dispatch remain follow-up work. These checks do
+Open workflow issues: probing, copying and explicitly requested hashing are synchronous and can
+block the caller on large inputs. Default linked import avoids the full-file SHA-256 pass;
+formats without streaming openers may still be read in full for probing. Imports without an
+explicit `destination` write beside the source project; the destination-prompt policy and
+background-job dispatch remain follow-up work. These checks do
 not ask for consent for each valid media reference, and do not verify rendered appearance.
 
 ## Regression and private-corpus checks
@@ -119,5 +141,6 @@ it does not override the file's rate. When omitted, rates are recorded without a
 The test copies
 projects under `target/premiere-corpus/`, imports with linked media through a headless engine
 session without registering platform hardware, verifies source/project hashes and offline counts,
-and saves/reopens each result. Its private result JSON stays under `target/`. Only hand-written
+and saves/reopens each result. Media SHA-256 is explicitly inspected before and after save/reopen;
+linked provenance must remain unhashed throughout. Its private result JSON stays under `target/`. Only hand-written
 synthetic XML is committed in the regression tests; never add corpus projects or media paths.

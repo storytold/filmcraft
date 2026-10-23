@@ -106,6 +106,10 @@ impl Drop for OwnedDirectory {
 }
 
 pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
+    import_with_hasher(s, p, &hash_file)
+}
+
+pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path) -> Result<(String, u64)>) -> Result<Value> {
     if s.services.export_in_memory() {
         return Err(bad(COMMAND, "Premiere link/copy import requires a native filesystem host"));
     }
@@ -181,40 +185,44 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
         let MediaRef::File { path } = &mut m.media else { continue };
         let original = path.clone();
         if !records.contains_key(&original) {
-            let mut record = SourceMedia { original_path: original.clone(), imported_path: original.clone(), sha256: None, bytes: None };
+            let mut record = SourceMedia { original_path: original.clone(), imported_path: original.clone(), sha256: None, bytes: None, identity: None };
             match probe_media(s, &original, &source) {
                 Ok((src, info)) => {
-                    let (hash, size) = match hash_file(&src) {
-                        Ok(identity) => identity,
-                        Err(error) => {
-                            filmcraft_interchange::premiere::warning(
-                                &mut report,
-                                format!("unreadable media: {}; {error}; offline placeholder retained", stored_path(&src)),
-                            );
-                            records.insert(original, record);
-                            m.offline = true;
-                            continue;
-                        }
-                    };
                     record.original_path = stored_path(&src);
-                    record.sha256 = Some(hash.clone());
-                    record.bytes = Some(size);
+                    record.imported_path = record.original_path.clone();
+                    record.identity = crate::relink::identity_of(&*s.services, &record.original_path).ok();
                     if mode == "copy" {
+                        let (digest, size) = match hash(&src) {
+                            Ok(identity) => identity,
+                            Err(error) => {
+                                filmcraft_interchange::premiere::warning(
+                                    &mut report,
+                                    format!("unreadable media: {}; {error}; offline placeholder retained", stored_path(&src)),
+                                );
+                                records.insert(original, record);
+                                m.offline = true;
+                                continue;
+                            }
+                        };
+                        record.sha256 = Some(digest.clone());
+                        record.bytes = Some(size);
                         let ext = src
                             .extension()
                             .and_then(|e| e.to_str())
                             .filter(|s| s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric()))
                             .unwrap_or("media");
-                        let target = media_dir.join(format!("{hash}.{ext}"));
+                        let target = media_dir.join(format!("{digest}.{ext}"));
                         if !target.exists() {
                             copy_new(&src, &target)?;
                         }
-                        if hash_file(&target)?.0 != hash {
+                        if hash(&target)?.0 != digest {
                             return Err(bad(COMMAND, "media changed while copying; import cancelled"));
                         }
                         record.imported_path = stored_path(&target);
                     } else {
-                        record.imported_path = stored_path(&src);
+                        // Linked media stays online after a successful probe without a full-file
+                        // read for provenance. A later hash is an observation, not import-time proof.
+                        record.bytes = record.identity.as_ref().map(|i| i.size);
                     }
                     probed.insert(original.clone(), info);
                 }
@@ -224,24 +232,19 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(record) = records.get(&original) {
             *path = record.imported_path.clone();
-            if record.sha256.is_none() {
-                m.offline = true;
-                continue;
-            }
+            m.identity = record.identity;
         }
         if let Some(info) = probed.get(&original) {
             m.info = info.clone();
             m.offline = false;
-            m.identity = crate::relink::identity_of(&*s.services, path).ok();
         } else {
             m.offline = true;
-            filmcraft_interchange::premiere::warning(&mut report, format!("media could not be decoded: {path}"));
         }
     }
     // Offline placeholder dimensions are provisional; leave their source anchors automatic.
     fragment.project.resolve_placed_auto_points(|_| true, |it| it.as_media().is_none_or(|m| !m.offline));
     // Refuse a changed project input rather than attaching the wrong source hash to its snapshot.
-    if hash_file(&source)?.0 != source_hash {
+    if hash(&source)?.0 != source_hash {
         return Err(bad(COMMAND, "project changed during import; try again"));
     }
     let warnings: Vec<String> = report.entries.iter().map(|e| e.message.clone()).collect();
@@ -292,17 +295,64 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
+/// Explicit, synchronous inspection of current files. Never backfills immutable provenance:
+/// linked media without an import-time hash cannot be certified unchanged since import.
+fn hash_media(s: &mut Session, p: &Value) -> Result<Value> {
+    const COMMAND: &str = "premiere.hashMedia";
+    if s.services.export_in_memory() {
+        return Err(bad(COMMAND, "media hashing requires a native filesystem host"));
+    }
+    let index = p
+        .get("import")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| bad(COMMAND, "import must be a nonnegative integer index"))?;
+    let record = s.project.workflow.as_ref().and_then(|w| w.imports.get(index)).ok_or_else(|| bad(COMMAND, "unknown import index"))?;
+    if record.media.len() > 100_000 {
+        return Err(bad(COMMAND, "import exceeds media inspection limit"));
+    }
+    let mut media = Vec::new();
+    for reference in &record.media {
+        let mut row = json!({"originalPath":reference.original_path,"path":reference.imported_path,
+            "importSha256":reference.sha256,"sha256":null,"bytes":null,"matchesImport":null});
+        // Project records are untrusted too; repeat policy, extension and opener checks even
+        // when the same path was accepted by an earlier import.
+        match probe_media(s, &reference.imported_path, Path::new(&record.snapshot_path)).and_then(|(path, _)| hash_file(&path).map_err(|e| e.to_string())) {
+            Ok((digest, size)) => {
+                row["matchesImport"] = json!(reference.sha256.as_ref().map(|expected| *expected == digest));
+                row["sha256"] = json!(digest);
+                row["bytes"] = json!(size);
+            }
+            Err(error) => row["error"] = json!(error),
+        }
+        media.push(row);
+    }
+    Ok(json!({"import":index,"sourceSha256":record.source_sha256,"observation":"current files","media":media}))
+}
+
 pub fn commands() -> Vec<CommandSpec> {
-    vec![CommandSpec {
-        id: COMMAND,
-        label: "Import Premiere Project",
-        menu: &[],
-        shortcut: None,
-        params: r#"{"path":str,"destination":str? (new directory),"mediaMode":"link"|"copy","sequence":str? (ObjectUID or unique name),"frameRate":{"num":int,"den":int}?}"#,
-        enabled: always,
-        run: import,
-        journal: true,
-    }]
+    vec![
+        CommandSpec {
+            id: COMMAND,
+            label: "Import Premiere Project",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"path":str,"destination":str? (new directory),"mediaMode":"link"|"copy","sequence":str? (ObjectUID or unique name),"frameRate":{"num":int,"den":int}?}"#,
+            enabled: always,
+            run: import,
+            journal: true,
+        },
+        CommandSpec {
+            id: "premiere.hashMedia",
+            label: "Hash Imported Premiere Media",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"import":int (zero-based provenance import index; reads current media in full)}"#,
+            enabled: always,
+            run: hash_media,
+            journal: false,
+        },
+    ]
 }
 
 #[cfg(test)]

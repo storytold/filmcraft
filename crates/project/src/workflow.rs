@@ -29,6 +29,11 @@ pub struct PremiereImport {
 pub struct SourceMedia {
     pub original_path: String,
     pub imported_path: String,
+    /// Import-time digest, present for copied media (and older linked imports). New linked
+    /// imports defer it; later inspection must not backfill a hash observed at a different time.
     pub sha256: Option<String>,
     pub bytes: Option<u64>,
+    /// Import-time size/head/tail fingerprint, not a full-file cryptographic digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<crate::MediaIdentity>,
 }
