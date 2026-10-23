@@ -735,6 +735,8 @@ fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef,
     if let Some(mask) = target.mask {
         params["mask"] = json!(mask);
     }
+    // A selected keyframe stands for the whole selection, as when dragging it (#1916).
+    let interpolated = if app.ui.keyframe_selection.contains(&target) { json!({"keyframes": app.ui.keyframe_selection}) } else { params.clone() };
     ui.label(egui::RichText::new(tl!("Temporal Interpolation")).color(app.tokens.text_dim));
     for (label, key) in [
         (tl!("Linear"), "linear"),
@@ -748,7 +750,7 @@ fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef,
         let response = ui.button(label);
         app.auto.add(&format!("effectControls.keyframeMenu.{key}"), response.rect, label);
         if response.clicked() {
-            let mut params = params.clone();
+            let mut params = interpolated.clone();
             params["interpolation"] = json!(key);
             actions.push(("effects.setInterpolation".into(), params));
             ui.close();
