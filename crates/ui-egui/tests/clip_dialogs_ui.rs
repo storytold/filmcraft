@@ -466,3 +466,33 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+/// #1885: Project panel ▸ right-click one of several selected clips ▸ Proxy ▸ Create Proxies…
+/// makes proxies for all of them, as in Premiere; a clip right-clicked outside the selection gets
+/// one for itself only.
+#[test]
+fn create_proxies_from_the_item_menu_takes_the_whole_selection() {
+    let mut d = Driver::new();
+    let wav: std::sync::Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&[0.0; 9_600], 48_000).into();
+    let mut items = Vec::new();
+    for name in ["/takes/a.wav", "/takes/b.wav", "/takes/c.wav"] {
+        items.push(filmcraft_engine::commands::import_bytes(&mut d.app().session, name, wav.clone(), None).unwrap().0);
+    }
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.exec("project.select", json!({"items": [items[0], items[1]]}));
+    d.frames(4);
+    let create_from = |d: &mut Driver, item: u64| -> Vec<u64> {
+        d.ok("ui.click", json!({"id": format!("project.item.{item}"), "button": "right"}));
+        d.frames(3);
+        d.click("project.itemMenu.proxy");
+        d.click("project.itemMenu.proxy.create");
+        let draft = d.app().ui.create_proxies.take().map(|p| p.items);
+        draft.unwrap_or_else(|| panic!("Create Proxies… did not open its dialog"))
+    };
+    // right-click the second of the two selected clips: both get a proxy
+    assert_eq!(create_from(&mut d, items[1]), vec![items[0], items[1]]);
+    assert_eq!(d.app().session.state.project_selection.iter().map(|i| i.0).collect::<Vec<_>>(), vec![items[0], items[1]], "the selection stays");
+    // right-click a clip that is not selected: only that one
+    assert_eq!(create_from(&mut d, items[2]), vec![items[2]]);
+}
