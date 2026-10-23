@@ -17,9 +17,9 @@ release notes (Premiere does not run on Linux).
 | Codec / profile | Premiere macOS | **Ours macOS** (VideoToolbox) | Premiere Windows | **Ours Windows** (Media Foundation / D3D11) | **Ours Linux** (NVDEC, VA-API) |
 |---|---|---|---|---|---|
 | H.264 8-bit 4:2:0 | yes | **yes** | Intel, NVIDIA, AMD | **yes** (Baseline / Main / High) | **yes** (NVDEC; VA-API Intel / AMD / Mesa) |
-| H.264 10-bit / 4:2:2 | Apple silicon | **yes** where the chip decodes it | Intel; NVIDIA Blackwell (MXF too) | no (declined; no software fallback, [G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)) | no |
+| H.264 10-bit / 4:2:2 | Apple silicon | **yes** where the chip decodes it | Intel; NVIDIA Blackwell (MXF too) | **yes** on NVIDIA Blackwell (NVDEC, behind Media Foundation, loaded when such a stream is first opened; tested on one GPU; the software decoder otherwise, [G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)) | software only |
 | HEVC Main / Main 10 4:2:0 | yes | **yes** | yes | **yes** | **yes** (NVDEC 8/10; VA-API Main / Main 10) |
-| HEVC 4:2:2 10-bit | Apple silicon | **yes** where supported | Intel; NVIDIA Blackwell | no | no |
+| HEVC 4:2:2 10-bit | Apple silicon | **yes** where supported | Intel; NVIDIA Blackwell | NVDEC on NVIDIA Blackwell (enabled, untested) | no |
 | VP9 profile 0 / 2 | — | software | — | **yes** | software (VA-API VP9 not yet) |
 | AV1 main 8 / 10 | — | software | yes | **yes** | software |
 | ProRes | Apple silicon (M1 Pro / Max and later) | software (fast: 318 fps) | software | software | software |

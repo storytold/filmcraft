@@ -556,3 +556,137 @@ fn poc_type1_reordering() {
         }
     }
 }
+
+// ------------------------------------------------------------------------------------------------
+// I_PCM above 8 bits and in 4:2:2 (the sample syntax depends on BitDepth and MbHeightC)
+// ------------------------------------------------------------------------------------------------
+
+/// A High 4:2:2 SPS (profile 122) for the synthetic stream: `chroma_format_idc` 1 or 2, `bit_depth` bits.
+fn sps_high(chroma_format_idc: u32, bit_depth: u32) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.write_bits(122, 8);
+    w.write_bits(0, 8);
+    w.write_bits(30, 8);
+    w.write_ue(0); // sps id
+    w.write_ue(chroma_format_idc);
+    w.write_ue(bit_depth - 8);
+    w.write_ue(bit_depth - 8);
+    w.write_bit(false); // qpprime_y_zero_transform_bypass_flag
+    w.write_bit(false); // seq_scaling_matrix_present_flag
+    w.write_ue(0); // log2_max_frame_num - 4
+    w.write_ue(2); // pic_order_cnt_type
+    w.write_ue(0); // max_num_ref_frames
+    w.write_bit(false);
+    w.write_ue(MB_W as u32 - 1);
+    w.write_ue(MB_H as u32 - 1);
+    w.write_bit(true); // frame_mbs_only
+    w.write_bit(true); // direct_8x8_inference
+    w.write_bit(false); // cropping
+    w.write_bit(false); // vui
+    w.rbsp_trailing();
+    nal(3, 7, &w.finish())
+}
+
+/// Random PCM samples of one macroblock (`bit_depth` bits each; 256 luma, then 2 * 8 * `mb_hc` chroma)
+/// and the same packed MSB first as the macroblock_layer() syntax carries them.
+fn random_pcm(seed: &mut u32, bit_depth: u32, mb_hc: usize) -> (Vec<u16>, Vec<u8>) {
+    let n = 256 + 2 * 8 * mb_hc;
+    let samples: Vec<u16> = (0..n)
+        .map(|_| {
+            *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (*seed >> (32 - bit_depth)) as u16
+        })
+        .collect();
+    let mut w = BitWriter::new();
+    for &s in &samples {
+        w.write_bits(s as u32, bit_depth);
+    }
+    (samples, w.finish())
+}
+
+fn pcm_high_bit_depth_check(cabac: bool, chroma_format_idc: u32, bit_depth: u32, threads: usize) {
+    let mb_hc = if chroma_format_idc == 2 { 16 } else { 8 };
+    let mut seed = 7u32;
+    let mut mbs = Vec::new();
+    let (w, h) = (MB_W * 16, MB_H * 16);
+    let (cw, ch) = (w / 2, MB_H * mb_hc);
+    let (mut ey, mut eu, mut ev) = (vec![0u16; w * h], vec![0u16; cw * ch], vec![0u16; cw * ch]);
+    for i in 0..NMB {
+        let (samples, packed) = random_pcm(&mut seed, bit_depth, mb_hc);
+        let (x0, y0) = ((i % MB_W) * 16, (i / MB_W) * 16);
+        for r in 0..16 {
+            ey[(y0 + r) * w + x0..(y0 + r) * w + x0 + 16].copy_from_slice(&samples[r * 16..r * 16 + 16]);
+        }
+        let cy0 = (i / MB_W) * mb_hc;
+        for r in 0..mb_hc {
+            let o = (cy0 + r) * cw + x0 / 2;
+            eu[o..o + 8].copy_from_slice(&samples[256 + r * 8..256 + r * 8 + 8]);
+            ev[o..o + 8].copy_from_slice(&samples[256 + 8 * mb_hc + r * 8..256 + 8 * mb_hc + r * 8 + 8]);
+        }
+        mbs.push(Some(packed));
+    }
+    let pic = Pic { idr: true, frame_num: 0, ref_idc: 3, mbs, ..Default::default() };
+    let mut stream = sps_high(chroma_format_idc, bit_depth);
+    stream.extend(pps(cabac, false));
+    stream.extend(slice_nal(&pic, cabac));
+    let mut dec = Decoder::with_threads(threads);
+    let mut pics = dec.decode(&stream, 0).unwrap_or_else(|e| panic!("cabac {cabac} format {chroma_format_idc} {bit_depth}-bit: {e}"));
+    pics.extend(dec.flush());
+    assert!(dec.take_error().is_none());
+    assert_eq!(pics.len(), 1);
+    let p = &pics[0];
+    assert_eq!((p.width as usize, p.height as usize, p.bit_depth, p.chroma_422), (w, h, bit_depth, chroma_format_idc == 2));
+    assert_eq!((p.chroma_width as usize, p.chroma_height as usize), (cw, ch));
+    let widen = |v: &[u8]| v.iter().map(|&b| b as u16).collect::<Vec<u16>>();
+    let (gy, gu, gv) = if bit_depth > 8 { (p.y_wide.clone(), p.u_wide.clone(), p.v_wide.clone()) } else { (widen(&p.y), widen(&p.u), widen(&p.v)) };
+    assert!(gy == ey && gu == eu && gv == ev, "cabac {cabac} format {chroma_format_idc} {bit_depth}-bit: PCM samples differ");
+    // ffmpeg reads the hand-built stream as the same samples (9-bit is not an ffmpeg pixel format)
+    if bit_depth != 9 && threads == 1 {
+        let pix_fmt = match (chroma_format_idc, bit_depth) {
+            (2, 10) => "yuv422p10le",
+            (1, 10) => "yuv420p10le",
+            _ => "yuv422p",
+        };
+        let name = format!("synth_pcm_{chroma_format_idc}_{bit_depth}_{}", if cabac { "cabac" } else { "cavlc" });
+        let Some(ff) = filmcraft_testkit::ffmpeg_or_skip(&name) else { return };
+        let dir = filmcraft_testkit::fixtures_dir("h264");
+        let src = filmcraft_testkit::temp_path(&dir.join(format!("{name}.h264")));
+        let dst = filmcraft_testkit::temp_path(&dir.join(format!("{name}.yuv")));
+        std::fs::write(&src, &stream).unwrap();
+        let ok = std::process::Command::new(&ff)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&src)
+            .args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt])
+            .arg(&dst)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "ffmpeg failed to decode {name}");
+        let got = std::fs::read(&dst).unwrap();
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+        let want: Vec<u8> = if bit_depth > 8 {
+            ey.iter().chain(&eu).chain(&ev).flat_map(|v| v.to_le_bytes()).collect()
+        } else {
+            ey.iter().chain(&eu).chain(&ev).map(|&v| v as u8).collect()
+        };
+        assert!(got == want, "ffmpeg output differs from the expected output of {name} ({} vs {} bytes)", got.len(), want.len());
+    }
+}
+
+#[test]
+fn pcm_422_10_bit_cavlc_and_cabac() {
+    for threads in [1, 2] {
+        pcm_high_bit_depth_check(false, 2, 10, threads);
+        pcm_high_bit_depth_check(true, 2, 10, threads);
+    }
+}
+
+#[test]
+fn pcm_420_10_bit_and_422_8_bit() {
+    for cabac in [false, true] {
+        pcm_high_bit_depth_check(cabac, 1, 10, 1);
+        pcm_high_bit_depth_check(cabac, 2, 8, 1);
+        pcm_high_bit_depth_check(cabac, 1, 9, 1);
+    }
+}

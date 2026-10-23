@@ -78,9 +78,21 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
-- **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
-  8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
-  run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
+- **Linux and Windows: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's driver (`nvdec/`).
+  Linux: H.264 8-bit and HEVC 8- / 10-bit, 4:2:0 progressive (unchanged). Windows: the camera
+  formats Media Foundation cannot decode, 4:2:2 and 10-bit H.264 (Sony XAVC S-I and S, Canon,
+  Panasonic), whichever of them the GPU's `cuvidGetDecoderCaps` accepts (4:2:2 needs a Blackwell GPU,
+  RTX 50 series; output surfaces NV12 / P016 / NV16 / P216). `libnvcuvid.so.1` and `libcuda.so.1`
+  (Windows: `nvcuvid.dll`, `nvcuda.dll`, loaded from the system directory only, with
+  `LOAD_LIBRARY_SEARCH_SYSTEM32`) are loaded at run time; without them (or without a device) nothing
+  is registered on Linux and the stream stays with the software decoder on Windows. On Windows the
+  NVDEC factory sits *behind* Media Foundation, is registered without loading anything, and
+  `nvdec_wanted` lets it look at a stream only if it is one of those formats: the driver libraries are
+  loaded (and the GPU woken) when such a stream is first opened, never at start-up
+  (`tests/nvdec_lazy.rs`). A stream with an Intra profile (`NalStreamInfo::is_all_intra`) is
+  `intra_only`, so the frame workers decode different frames on separate sessions in parallel (a 4K
+  4:2:2 10-bit picture takes about 16 ms on one session, 9 ms of it on the GPU; six sessions reach
+  ~150 fps on an RTX 5090). Tested on that one GPU so far. NVIDIA's own parser takes the
   stream as Annex B access units, so there is no host-side DPB: `cuvid::Session` creates the decoder
   in the parser's sequence callback, decodes in its picture callback, and reads each displayed
   picture back (NV12 / P016) through the CUDA driver into the same planes as the other backends.
