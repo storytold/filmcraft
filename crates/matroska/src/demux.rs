@@ -12,6 +12,9 @@ use crate::track::{Sample, Track, TrackKind, gcd};
 const WIN: usize = 64 * 1024;
 /// Upper bound for level-1 metadata elements read into memory (Info, Tracks, Cues, Tags…).
 const MAX_META: u64 = 256 << 20;
+/// Retained frame records plus their sync indexes may use at most 128 MiB per file.
+const MAX_SAMPLE_INDEX_BYTES: usize = 128 << 20;
+const MAX_INDEXED_SAMPLES: usize = MAX_SAMPLE_INDEX_BYTES / (std::mem::size_of::<Sample>() + std::mem::size_of::<u32>());
 
 /// Options for [`open_with`] / [`Demuxer::with_options`].
 #[derive(Clone, Debug)]
@@ -501,6 +504,7 @@ fn scan_cluster<S: ByteSource + ?Sized>(
     limit: u64,
     tracks: &[Track],
     warnings: &mut Vec<String>,
+    frame_limit: usize,
 ) -> Result<(ClusterInfo, Vec<BlockRef>)> {
     let lookup = track_lookup(tracks);
     let ds = h.data_start();
@@ -511,6 +515,7 @@ fn scan_cluster<S: ByteSource + ?Sized>(
     let lim = known_end.unwrap_or(limit);
     let mut ts: i64 = 0;
     let mut blocks = Vec::new();
+    let mut frame_count = 0usize;
     let mut pos = ds;
     let end = loop {
         if pos >= lim {
@@ -535,6 +540,10 @@ fn scan_cluster<S: ByteSource + ?Sized>(
             TIMESTAMP => ts = ebml::uint(io.peek(c.data_start(), (ce - c.data_start()) as usize)?) as i64,
             SIMPLE_BLOCK | BLOCK_GROUP => {
                 if let Some(b) = parse_block_elem(io, &c, ce, ts, &lookup)? {
+                    frame_count = frame_count.checked_add(b.frames.len()).ok_or_else(|| Error::Invalid("sample index too large".into()))?;
+                    if frame_count > frame_limit {
+                        return Err(Error::Invalid("sample index too large".into()));
+                    }
                     blocks.push(b);
                 }
             }
@@ -659,12 +668,13 @@ impl Walker<'_> {
                             break;
                         }
                     }
-                    let (ci, blocks) = scan_cluster(io, &h, seg_end, &file.tracks, &mut file.warnings)?;
+                    let frame_limit = remaining_sample_budget(file)?;
+                    let (ci, blocks) = scan_cluster(io, &h, seg_end, &file.tracks, &mut file.warnings, frame_limit)?;
                     if self.opts.verify_crc && h.size != Size::Unknown {
                         let data = io.read_vec(h.data_start(), ci.end - h.data_start())?;
                         self.check_crc(file, h.pos, &data);
                     }
-                    add_blocks(file, file.clusters.len() as u32, &blocks);
+                    add_blocks(file, file.clusters.len() as u32, &blocks)?;
                     self.blocks_seen = true;
                     file.clusters.push(ci);
                     pos = ci.end.max(h.data_start());
@@ -799,7 +809,18 @@ impl Walker<'_> {
     }
 }
 
-fn add_blocks(file: &mut MkvFile, cluster: u32, blocks: &[BlockRef]) {
+fn remaining_sample_budget(file: &MkvFile) -> Result<usize> {
+    let used =
+        file.tracks.iter().try_fold(0usize, |total, t| total.checked_add(t.samples.len())).ok_or_else(|| Error::Invalid("sample index too large".into()))?;
+    MAX_INDEXED_SAMPLES.checked_sub(used).ok_or_else(|| Error::Invalid("sample index too large".into()))
+}
+
+fn add_blocks(file: &mut MkvFile, cluster: u32, blocks: &[BlockRef]) -> Result<()> {
+    let incoming =
+        blocks.iter().try_fold(0usize, |total, b| total.checked_add(b.frames.len())).ok_or_else(|| Error::Invalid("sample index too large".into()))?;
+    if incoming > remaining_sample_budget(file)? {
+        return Err(Error::Invalid("sample index too large".into()));
+    }
     let scale = file.info.timestamp_scale;
     let mut frames: Vec<FrameRef> = Vec::new();
     for b in blocks {
@@ -824,6 +845,7 @@ fn add_blocks(file: &mut MkvFile, cluster: u32, blocks: &[BlockRef]) {
             });
         }
     }
+    Ok(())
 }
 
 fn finish_tracks(file: &mut MkvFile) {
@@ -1057,7 +1079,7 @@ impl<S: ByteSource> Demuxer<S> {
             return Ok(None);
         }
         let mut warnings = Vec::new();
-        let (ci, blocks) = scan_cluster(&mut io, &h, self.file.segment_end, &self.file.tracks, &mut warnings)?;
+        let (ci, blocks) = scan_cluster(&mut io, &h, self.file.segment_end, &self.file.tracks, &mut warnings, MAX_INDEXED_SAMPLES)?;
         let t = &self.file.tracks[track];
         let mut frames = Vec::new();
         for b in blocks.iter().filter(|b| b.track == track && b.keyframe) {

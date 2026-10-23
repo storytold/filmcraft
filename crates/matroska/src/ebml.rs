@@ -312,6 +312,9 @@ pub fn parse_lacing(lacing: Lacing, data: &[u8]) -> Result<Vec<(usize, usize)>> 
         return invalid("lace sizes exceed block");
     }
     sizes.push(data.len() - pos - used);
+    if sizes.iter().any(|&size| size == 0) {
+        return invalid("empty laced frame");
+    }
     let mut out = Vec::with_capacity(count);
     for s in sizes {
         out.push((pos, s));
@@ -468,6 +471,7 @@ mod tests {
         let f = parse_lacing(Lacing::FixedSize, &d).unwrap();
         assert_eq!(frames(&d, &f), [&[1u8, 1][..], &[2, 2], &[3, 3]]);
         assert!(parse_lacing(Lacing::FixedSize, &[2, 1, 1]).is_err());
+        assert!(parse_lacing(Lacing::FixedSize, &[1]).is_err());
         assert_eq!(parse_lacing(Lacing::None, &[9, 9]).unwrap(), [(0, 2)]);
         assert_eq!(Lacing::from_flags(0x80 | 0x06), Lacing::Ebml);
         assert_eq!(Lacing::from_flags(0x02), Lacing::Xiph);
