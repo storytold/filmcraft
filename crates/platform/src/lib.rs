@@ -3,7 +3,9 @@
 //!
 //! [`register`] puts the platform's hardware decoder factory in front of FilmCraft's own decoders
 //! (`filmcraft_codecs::register_video_decoder`). Today that is VideoToolbox on macOS for H.264
-//! (`avcC`) and HEVC (`hvcC`) streams, 8- and 10-bit, 4:2:0 and 4:2:2; Media Foundation / DXVA on
+//! (`avcC`) and HEVC (`hvcC`) streams, 8- and 10-bit, 4:2:0 and 4:2:2, VP9 (`vpcC`, profile 0
+//! and 2, on Macs with a VP9 decoder) and AV1 (`av1C`, main profile 8- and 10-bit, on Macs with an
+//! AV1 decoder: the M3 and later); Media Foundation / DXVA on
 //! Windows; NVDEC ([`nvdec`], NVIDIA's driver) and VA-API ([`vaapi`]) on Linux for H.264 and HEVC; on other systems (and on
 //! Linux with neither) registration does nothing and reports [`Availability::Unavailable`]. It also registers a
 //! hardware H.264 encoder factory (`filmcraft_export::register_encoder`) that only acts when an
@@ -167,7 +169,7 @@ pub fn registered() -> bool {
 pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
     #[cfg(target_os = "macos")]
     {
-        filmcraft_codecs::hw::NalStreamInfo::from_entry(entry).and_then(|r| r.ok()).is_some_and(|info| videotoolbox::VtDecoder::new(info).is_ok())
+        videotoolbox_decoder(entry).is_some_and(|r| r.is_ok())
     }
     #[cfg(target_os = "windows")]
     {
@@ -190,16 +192,37 @@ pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
     }
 }
 
+/// A VideoToolbox decoder for an `avcC` / `hvcC` / `vpcC` / `av1C` stream with its stream info, the
+/// reason VideoToolbox does not take it, or `None` for other codecs.
+#[cfg(target_os = "macos")]
+fn videotoolbox_decoder(
+    entry: &filmcraft_isobmff::SampleEntry,
+) -> Option<std::result::Result<(videotoolbox::VtDecoder, filmcraft_codecs::hw::StreamInfo), String>> {
+    use filmcraft_codecs::hw::{FrameStreamInfo, NalStreamInfo};
+    match &entry.codec {
+        filmcraft_isobmff::CodecConfig::Vp9(c) => {
+            let info = FrameStreamInfo::from_entry(entry)?.ok()?;
+            return Some(videotoolbox::VtDecoder::new_vp9(info.clone(), c).map(|vt| (vt, info.into())));
+        }
+        filmcraft_isobmff::CodecConfig::Av1(c) => {
+            let info = FrameStreamInfo::from_entry(entry)?.ok()?;
+            return Some(videotoolbox::VtDecoder::new_av1(info.clone(), c).map(|vt| (vt, info.into())));
+        }
+        _ => {}
+    }
+    let info = NalStreamInfo::from_entry(entry)?.ok()?;
+    Some(videotoolbox::VtDecoder::new(info.clone()).map(|vt| (vt, info.into())))
+}
+
 /// The VideoToolbox factory: a [`HybridDecoder`] around [`videotoolbox::VtDecoder`] for `avcC` /
-/// `hvcC` streams VideoToolbox can decode in hardware, `None` otherwise.
+/// `hvcC` / `vpcC` / `av1C` streams VideoToolbox can decode in hardware, `None` otherwise.
 #[cfg(target_os = "macos")]
 pub fn videotoolbox_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft_codecs::Result<Box<dyn filmcraft_codecs::VideoDecoder>>> {
     if !filmcraft_codecs::hw::hardware_decoding() {
         return None;
     }
-    let info = filmcraft_codecs::hw::NalStreamInfo::from_entry(entry)?.ok()?;
-    match videotoolbox::VtDecoder::new(info.clone()) {
-        Ok(vt) => Some(Ok(Box::new(HybridDecoder::new(Box::new(vt), entry.clone(), info)))),
+    match videotoolbox_decoder(entry)? {
+        Ok((vt, info)) => Some(Ok(Box::new(HybridDecoder::new(Box::new(vt), entry.clone(), info)))),
         Err(why) => {
             log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
             filmcraft_codecs::hw::note_hw_declined();
