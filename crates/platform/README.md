@@ -61,7 +61,7 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   - After a `flush` (which drains the MFT) the MFT only restarts at an IDR picture; the GOP cache
     always seeks after a flush, and a caller that continues from the middle of a GOP gets an error
     that `HybridDecoder` answers by replaying the run in software.
-- **Windows and 64-bit Linux: NVIDIA NVENC H.264 encoding, and H.265 (HEVC) on Windows** (`nvenc/`), 8-bit SDR 4:2:0 for Export. The driver's
+- **Windows and 64-bit Linux: NVIDIA NVENC H.264 and H.265 (HEVC) encoding** (`nvenc/`), 8-bit SDR 4:2:0 for Export. The driver's
   `nvEncodeAPI64.dll` (Windows) or `libnvidia-encode.so.1` (Linux), API 12.1, is loaded at run time,
   so machines without NVIDIA still start. Windows uses a Direct3D 11 device; Linux retains a primary
   CUDA context through the runtime-loaded `libcuda.so.1`, released after the encoder is destroyed.
@@ -76,8 +76,8 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   It declines two-pass VBR, HDR, MXF, interlaced output, sizes outside NVENC's limits and systems
   without an NVIDIA GPU or driver, and the software encoder runs instead. A failure during an export
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
-  ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
-  NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
+  ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows and 64-bit Linux,
+  NVENC)](#hardware-h265-hevc-encoding-windows-and-64-bit-linux-nvenc).
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
@@ -188,7 +188,7 @@ The sample entry's `hvcC` record is the one VideoToolbox wrote for the stream (r
 format description's sample description extension atoms, with the VPS / SPS / PPS), so profile,
 level and flags are the encoder's own. If it is missing the export stops with that reason.
 
-## Hardware H.265 (HEVC) encoding (Windows, NVENC)
+## Hardware H.265 (HEVC) encoding (Windows and 64-bit Linux, NVENC)
 
 One codec enum (`nvenc::Codec`, chosen by `Profile::HevcMain` the way `VtProfile::HevcMain` does it
 for VideoToolbox) parameterises the NVENC session: the codec and profile GUIDs, the capability
