@@ -209,12 +209,13 @@ fn golden_premiere_style_nested_and_transitions() {
     assert_eq!(bin.name, "Footage");
     assert_eq!(p.root.parent_of(tower.id), Some(bin.id));
 
-    // V1: -1 start/end resolved from in/out, centred dissolve.
+    // V1: -1 start/end resolved from the centred dissolve (36-60: cut at 48); the second clip's
+    // `in` 100 is its source at the dissolve's start, so at the cut it is 112 (#1687).
     let v1 = &s.video_tracks[0];
     assert_eq!(v1.items.len(), 2);
     let (c1, c2) = (&v1.items[0], &v1.items[1]);
     assert_eq!((c1.start, c1.duration), (r.tick_of(0), r.tick_of(48)));
-    assert_eq!((c2.start, c2.duration, c2.source_in), (r.tick_of(48), r.tick_of(72), r.tick_of(100)));
+    assert_eq!((c2.start, c2.duration, c2.source_in), (r.tick_of(48), r.tick_of(72), r.tick_of(112)));
     assert_eq!(c1.label, Label::Cerulean);
     assert_eq!(media_key(p, c2.item), "/proj/media/waves.mov");
     let t = &v1.transitions[0];
@@ -662,4 +663,57 @@ fn centred_mono_breakout_round_trips_centred() {
     }
     let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
     assert_eq!(balances(&imp), vec![0.0, 0.0], "{xml}");
+}
+
+/// #1687: a clip edge under a transition is written as -1 (Premiere and Resolve both do), meaning
+/// the neighbouring `transitionitem` defines it: the edge is the transition's cut, and `in` / `out`
+/// are the source at the transition's start. Six takes joined by five centred 12-frame dissolves,
+/// as Resolve 21 exports them; the expected places and source ins are Resolve's own API readback.
+/// Before the fix the four clips with both edges at -1 were skipped, and the dissolves with them.
+#[test]
+fn transition_defined_clip_edges_come_from_the_neighbouring_transition() {
+    const R: &str = "<rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate>";
+    let file = r#"<file id="file-1"><name>takes.mov</name><pathurl>file://localhost/Volumes/S/takes.mov</pathurl><rate><timebase>30</timebase><ntsc>FALSE</ntsc></rate><duration>3000</duration><media><video><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></video></media></file>"#;
+    let clip = |id: usize, start: i64, end: i64, src_in: i64, src_out: i64, f: &str| {
+        format!(r#"<clipitem id="c{id}"><name>take {id}</name>{R}<start>{start}</start><end>{end}</end><in>{src_in}</in><out>{src_out}</out>{f}</clipitem>"#)
+    };
+    let dissolve = |s: i64| {
+        format!(
+            r#"<transitionitem>{R}<start>{s}</start><end>{}</end><alignment>center</alignment><effect><name>Cross Dissolve</name><effectid>Cross Dissolve</effectid><effecttype>transition</effecttype><mediatype>video</mediatype></effect></transitionitem>"#,
+            s + 12
+        )
+    };
+    let track = [
+        clip(1, 54, -1, 589, 787, file),
+        dissolve(246),
+        clip(2, -1, -1, 789, 828, r#"<file id="file-1"/>"#),
+        dissolve(285),
+        clip(3, -1, -1, 835, 1151, r#"<file id="file-1"/>"#),
+        dissolve(601),
+        clip(4, -1, -1, 1170, 1396, r#"<file id="file-1"/>"#),
+        dissolve(827),
+        clip(5, -1, -1, 1781, 1857, r#"<file id="file-1"/>"#),
+        dissolve(903),
+        clip(6, -1, 1171, 1870, 2132, r#"<file id="file-1"/>"#),
+    ]
+    .concat();
+    let doc = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE xmeml><xmeml version="5"><project><name>Takes</name><children><sequence id="seq-1"><name>Cut</name>{R}<media><video><format><samplecharacteristics>{R}<width>1920</width><height>1080</height></samplecharacteristics></format><track>{track}</track></video></media></sequence></children></project></xmeml>"#
+    );
+    let (imp, rep) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(!rep.mentions("skipped"), "{rep}");
+    let s = imp.project.sequence(imp.sequences[0]).unwrap();
+    let r = FrameRate::FPS_30;
+    let v1 = &s.video_tracks[0];
+    let starts: Vec<i64> = v1.items.iter().map(|c| c.start.0 / r.tick_of(1).0).collect();
+    let ends: Vec<i64> = v1.items.iter().map(|c| c.end().0 / r.tick_of(1).0).collect();
+    let ins: Vec<i64> = v1.items.iter().map(|c| c.source_in.0 / r.tick_of(1).0).collect();
+    assert_eq!(starts, [54, 252, 291, 607, 833, 909]);
+    assert_eq!(ends, [252, 291, 607, 833, 909, 1171]);
+    assert_eq!(ins, [589, 795, 841, 1176, 1787, 1876]);
+    assert_eq!(v1.transitions.len(), 5, "{rep}");
+    for (t, (i, at)) in v1.transitions.iter().zip([246, 285, 601, 827, 903].into_iter().enumerate()) {
+        assert_eq!((t.start, t.duration, t.align), (r.tick_of(at), r.tick_of(12), TransitionAlign::CenterAtCut), "dissolve {i}");
+        assert_eq!((t.from, t.to), (Some(v1.items[i].id), Some(v1.items[i + 1].id)), "dissolve {i} joins takes {} and {}", i + 1, i + 2);
+    }
 }
