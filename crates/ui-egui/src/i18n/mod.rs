@@ -20,6 +20,9 @@
 //! Simplified Chinese uses the Chinese fallback `theme::install` always adds (craft-fonts Hans/Hant
 //! faces, otherwise one installed system face, see `cjk.rs`); without one, switching to Chinese is
 //! refused the same way ([`chinese_font_available`]).
+//!
+//! Korean and Thai likewise need an installed face ([`korean_font_available`],
+//! [`thai_font_available`]) because no such font is bundled.
 
 mod catalog;
 
@@ -49,6 +52,8 @@ pub enum Language {
     It,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    /// Thai; the Thai script needs an installed system font ([`thai_font_available`]).
+    Th,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -62,9 +67,11 @@ static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static THAI: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 13] =
+        [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It, Self::Th];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -80,6 +87,7 @@ impl Language {
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
             Self::Ko => "한국어",
+            Self::Th => "ไทย",
         }
     }
 
@@ -97,6 +105,7 @@ impl Language {
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
             "ko" => Some(Self::Ko),
+            "th" => Some(Self::Th),
             _ => None,
         }
     }
@@ -107,11 +116,11 @@ impl Language {
     /// any German (`de-AT`, `de_CH.UTF-8`…) gets the German one and any French (`fr-CA`, `fr_BE.UTF-8`…)
     /// the French one; any Indonesian (`id-ID`, `id_ID.UTF-8`, and the legacy `in-ID` that older Java
     /// and Android runtimes report) the Indonesian one; any Italian (`it-IT`, `it-CH`, `it_IT.UTF-8`…)
-    /// the Italian one. Chinese gets the Simplified catalog
-    /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
-    /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
+    /// the Italian one, and any Thai (`th-TH`, `th_TH.UTF-8`…) the Thai one. Chinese gets the
+    /// Simplified catalog only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`);
+    /// Traditional ones (`zh-TW`, `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 13] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -124,6 +133,7 @@ impl Language {
             ("in", Language::Id),
             ("it", Language::It),
             ("ko", Language::Ko),
+            ("th", Language::Th),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -156,6 +166,7 @@ impl Language {
             Self::Id => "id",
             Self::It => "it",
             Self::Ko => "ko",
+            Self::Th => "th",
         }
     }
 
@@ -174,6 +185,7 @@ impl Language {
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Th => Some(THAI.get_or_init(|| Catalog::parse(include_str!("th.tsv")))),
         }
     }
 
@@ -336,6 +348,13 @@ pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }
 
+/// Whether the interface can show Thai: `theme::install` adds an installed system Thai face
+/// (Leelawadee UI, Tahoma, Noto Sans Thai…, see `cjk.rs`) when there is one; none is bundled.
+/// False on systems (and the web) without one.
+pub fn thai_font_available() -> bool {
+    crate::cjk::thai_available()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +373,7 @@ mod tests {
             ("id", include_str!("id.tsv")),
             ("it", include_str!("it.tsv")),
             ("ko", include_str!("ko.tsv")),
+            ("th", include_str!("th.tsv")),
         ] {
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
@@ -1038,6 +1058,13 @@ mod tests {
         for tag in ["it", "IT", "it-IT", "it-CH", "it-SM", "it_IT.UTF-8", "it_IT.UTF-8@euro", "it_CH"] {
             assert_eq!(l(&[tag]), Language::It, "{tag}");
         }
+        for tag in ["th", "TH", "th-TH", "th_TH.UTF-8", "th-TH@dict"] {
+            assert_eq!(l(&[tag]), Language::Th, "{tag}");
+        }
+        assert_eq!(l(&["th-TH", "en-US"]), Language::Th);
+        for none in [&["tha"][..], &["t"], &["-th"]] {
+            assert_eq!(l(none), Language::En, "{none:?}");
+        }
         assert_eq!(l(&["it-CH", "de-CH", "fr-CH", "en"]), Language::It);
         for none in [&["ita"][..], &["i"], &["-it"]] {
             assert_eq!(l(none), Language::En, "{none:?}");
@@ -1194,6 +1221,75 @@ mod tests {
         for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
             assert_eq!(Language::from_locales(&[tag.to_string()]), Language::Ko, "{tag}");
         }
+    }
+
+    /// Thai covers the core menus (the menus-only Ukrainian catalog, the top-level menus and the
+    /// native macOS Settings menu); other interface strings fall back to English. Every entry must
+    /// have a Spanish counterpart so a renamed or removed source can't leave a dead Thai entry.
+    #[test]
+    fn thai_covers_the_menus_and_has_no_dead_entries() {
+        let (entries, errors) = catalog::parse_entries(include_str!("th.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        for (ctx, en, _) in &entries {
+            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Thai entry without a Spanish one: {ctx:?} {en:?}");
+        }
+        for en in core_menu_labels() {
+            assert!(Language::Th.has(&en), "missing Thai menu label: {en}");
+        }
+        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
+            assert!(Language::Th.has(en), "untranslated Thai menu: {en}");
+        }
+        // beyond the menus: panels, effects and their parameters, settings, status messages
+        for (en, th) in [
+            ("File", "ไฟล์"),
+            ("Edit", "แก้ไข"),
+            ("Sequence", "ซีเควนซ์"),
+            ("Settings", "การตั้งค่า"),
+            ("Gaussian Blur", "เบลอแบบเกาส์เซียน"),
+            ("Audio Track Mixer", "มิกเซอร์แทร็กเสียง"),
+            ("Playhead", "หัวอ่าน"),
+        ] {
+            assert_eq!(Language::Th.tr(en), th);
+        }
+        assert_eq!(Language::Th.name(), "ไทย");
+        assert_eq!(Language::parse("th"), Some(Language::Th));
+        for tag in ["th", "th-TH", "th_TH.UTF-8"] {
+            assert_eq!(Language::from_locales(&[tag.to_string()]), Language::Th, "{tag}");
+        }
+        set_current(Language::Th);
+        assert!(matches_query("Gaussian Blur", "เบลอ"));
+        assert!(matches_query("Gaussian Blur", "gaussian"));
+        set_current(Language::En);
+    }
+
+    /// Thai switches and persists when a Thai face is installed, and is refused (the interface
+    /// stays as it was) without one.
+    #[test]
+    fn thai_switches_and_persists_or_is_refused_without_a_font() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        let r = crate::menus::invoke(&mut app, &ctx, "app.language.thai", serde_json::json!({}));
+        if !thai_font_available() {
+            assert!(r.is_err(), "{r:?}");
+            assert_eq!(app.ui.language, Language::En);
+            assert_eq!(app.session.prefs.general.interface_language, "system");
+            // a saved Thai preference falls back to English at startup
+            app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "th"})).unwrap();
+            app.apply_prefs(&ctx);
+            assert_eq!(app.ui.language, Language::En);
+            set_current(Language::En);
+            return;
+        }
+        assert_eq!(r.unwrap(), serde_json::json!("th"));
+        assert_eq!(app.ui.language, Language::Th);
+        assert_eq!(app.session.prefs.general.interface_language, "th");
+        assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.thai" && it.checked == Some(true)));
+        let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+        let mut restarted = filmcraft_engine::Session::default();
+        restarted.prefs = serde_json::from_str(&prefs).unwrap();
+        assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Th);
+        crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+        set_current(Language::En);
     }
 
     #[test]

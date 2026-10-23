@@ -86,6 +86,7 @@ Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings
 | Indonesian | partial (whole interface; native review welcome) | ~100% |
 | Italian | partial (whole interface; native review welcome) | ~100% |
 | Korean | partial (whole interface; needs an installed Hangul font; native review welcome) | ~100% |
+| Thai | menus and main interface (needs an installed Thai font; native review welcome) | 13.6% |
 | Japanese | partial (whole interface) | 99.7% |
 | German | partial (whole interface; menus native-reviewed, the rest welcome) | ~100% |
 | Vietnamese | none | 0% |
