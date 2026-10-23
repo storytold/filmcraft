@@ -36,6 +36,7 @@ struct Group {
     high: i64,
     delta: Tick,
     snap: Option<(Tick, f32)>,
+    duplicate: bool,
     ended: bool,
 }
 
@@ -191,6 +192,7 @@ impl Interaction {
                     high,
                     delta: Tick::ZERO,
                     snap: None,
+                    duplicate: ui.input(|i| i.modifiers.alt),
                     ended: false,
                 };
                 if let Some(pos) = response.interact_pointer_pos() {
@@ -204,6 +206,12 @@ impl Interaction {
                 group.ended = true;
             }
             if group.keys.contains(&key) {
+                if group.duplicate {
+                    let color = if app.ui.keyframe_selection.contains(&key) { app.tokens.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
+                    paint(ui.painter(), rect, interp, color);
+                } else {
+                    return rect.translate(vec2((group.delta.0 as f64 * pixels_per_tick) as f32, 0.0));
+                }
                 return rect.translate(vec2((group.delta.0 as f64 * pixels_per_tick) as f32, 0.0));
             }
         }
@@ -240,7 +248,8 @@ impl Interaction {
             }
             if group.ended {
                 if group.delta != Tick::ZERO {
-                    match app.session.execute("effects.moveKeyframes", json!({"keyframes":group.keys,"delta":group.delta.0})) {
+                    let command = if group.duplicate { "effects.duplicateKeyframes" } else { "effects.moveKeyframes" };
+                    match app.session.execute(command, json!({"keyframes":group.keys,"delta":group.delta.0})) {
                         Ok(result) => {
                             if let Ok(keys) = serde_json::from_value(result["keyframes"].clone()) {
                                 app.ui.keyframe_selection = keys;
@@ -321,6 +330,7 @@ mod tests {
             high: Tick::from_seconds_f64(1.0).0,
             delta: Tick::ZERO,
             snap: None,
+            duplicate: false,
             ended: false,
         };
         update(&mut group, &points, egui::pos2(120.0, 0.0), true, Tick::from_seconds_f64(3.0), FrameRate::from_f64(100.0));

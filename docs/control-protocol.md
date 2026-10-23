@@ -71,7 +71,9 @@ These limits also apply to the MCP bridge's `ui_click`, `ui_drag` and `ui_contro
 **Timeline thumbnails.** `ui.set {timeline: {thumbnails}}` sets the Timeline wrench menu's Show Video
 Thumbnails: `off`, `head`, `headAndTail` or `continuous`.
 
-Effect Controls' visible keyframe time range is agent-drivable with `ui.set {"effectControls":{"timeZoom":[start,end]}}`, where the finite fractions satisfy `0 ≤ start < end ≤ 1`; the displayed range is at least five sequence frames, and `null` resets to the full clip. `ui.inspect` reports it as `ui.effect_controls_time_zoom`. The on-screen `effectControls.zoomBar` and `effectControls.zoomBar.track` ids expose its draggable range and track.
+Effect Controls' visible keyframe time range is agent-drivable with `ui.set {"effectControls":{"timeZoom":[start,end]}}`, where the finite fractions satisfy `0 ≤ start < end ≤ 1`; the displayed range is at least five sequence frames, and `null` resets to the full clip. Alt+wheel over the keyframe lane zooms around the pointer. The on-screen `effectControls.zoomBar` and `effectControls.zoomBar.track` ids expose the range and track at the lane bottom. `ui.inspect` reports the range as `ui.effect_controls_time_zoom`.
+
+Effect Controls effect selection is shift-toggleable and agent-drivable with `ui.set {"effectSelection":[{"clip":id,"effect":"effect-id","instance":0}]}`; `ui.inspect` reports it as `ui.selected_effects`. With the Effect Controls panel focused, Cmd/Ctrl+C copies selected keyframes when present, otherwise the selected effects; Cmd/Ctrl+V pastes the most recently copied kind. Pasted effects and keyframes are undoable engine edits.
 
 **Selection or explicit targets.** A command that acts on the selection is "not available right now" when
 nothing is selected. When `params` name the targets under a key the command documents (`clips` /
