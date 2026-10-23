@@ -11,7 +11,7 @@
 //! | `mediaBrowser.select` | the selected files (File ▸ Import from Media Browser uses them) |
 //! | `mediaBrowser.favorite` | Add to / Remove from Favorites |
 //! | `mediaBrowser.clearRecent` | Clear Recent Directories |
-//! | `mediaBrowser.settings` | file types, view (list / thumbnails), columns (Edit Columns…), Import as Image Sequence, Hover Scrub, thumbnail size |
+//! | `mediaBrowser.settings` | file types, view (list / thumbnails), columns (Edit Columns…) and their widths, Import as Image Sequence, Hover Scrub, thumbnail size |
 //! | `mediaBrowser.import` | Import (the selection or `paths`; a folder becomes a bin, its sub-folders bins inside it; Project ▸ Ingest settings apply) |
 //! | `mediaBrowser.openInSource` | Open In Source Monitor (Shift+O) |
 //! | `mediaBrowser.probe` | a file's media properties (frame rate, duration, video / audio info), cached |
@@ -93,6 +93,8 @@ pub struct MediaBrowserPrefs {
     /// `list` | `thumbnails`.
     pub view: String,
     pub columns: Vec<String>,
+    /// List view column widths (points) the user dragged; the others keep their default width.
+    pub column_widths: BTreeMap<String, f32>,
     pub import_as_image_sequence: bool,
     pub hover_scrub: bool,
     pub thumbnail_size: f32,
@@ -107,6 +109,7 @@ impl Default for MediaBrowserPrefs {
             file_types: "all".into(),
             view: "list".into(),
             columns: DEFAULT_COLUMNS.iter().map(|c| c.to_string()).collect(),
+            column_widths: BTreeMap::new(),
             import_as_image_sequence: false,
             hover_scrub: true,
             thumbnail_size: 120.0,
@@ -403,6 +406,13 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
         }
         mb.columns = cols;
     }
+    if let Some(o) = p.get("columnWidths").and_then(Value::as_object) {
+        for (c, w) in o {
+            let c = ALL_COLUMNS.iter().find(|x| x.eq_ignore_ascii_case(c)).ok_or_else(|| bad("mediaBrowser.settings", format!("unknown column `{c}`")))?;
+            let w = w.as_f64().filter(|w| w.is_finite()).ok_or_else(|| bad("mediaBrowser.settings", format!("width of `{c}` is not a number")))?;
+            mb.column_widths.insert(c.to_string(), (w as f32).clamp(30.0, 800.0));
+        }
+    }
     if let Some(v) = bool_p(p, "importAsImageSequence") {
         mb.import_as_image_sequence = v;
     }
@@ -678,7 +688,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         c(
             "mediaBrowser.settings",
             "Media Browser Settings",
-            r#"{"fileTypes":"all|video|audio|image|project|caption|<ext>"?,"view":"list|thumbnails"?,"columns":[str]?,"importAsImageSequence":bool?,"hoverScrub":bool?,"thumbnailSize":f32?}"#,
+            r#"{"fileTypes":"all|video|audio|image|project|caption|<ext>"?,"view":"list|thumbnails"?,"columns":[str]?,"columnWidths":{str:f32}?,"importAsImageSequence":bool?,"hoverScrub":bool?,"thumbnailSize":f32?}"#,
             settings,
         ),
         c("mediaBrowser.import", "Import", r#"{"paths":[str]?,"bin":binId?,"imageSequence":bool?}"#, import),
