@@ -260,6 +260,13 @@ impl FilmcraftApp {
                 DockAction::Focus(panel) => self.ui.focused = panel,
                 DockAction::BeginDrag(panel) => {
                     ctx.data_mut(|data| data.insert_temp(drag_id(), panel));
+                    ctx.data_mut(|data| data.insert_temp(drag_id().with("sequence"), false));
+                }
+                DockAction::BeginSequenceDrag => {
+                    ctx.data_mut(|data| {
+                        data.insert_temp(drag_id(), PanelKind::Timeline);
+                        data.insert_temp(drag_id().with("sequence"), true);
+                    });
                 }
                 DockAction::OpenSequence(id) => {
                     let _ = self.dock_command(&ctx, Action::Activate { panel: PanelKind::Timeline });
@@ -359,8 +366,15 @@ impl FilmcraftApp {
         }
         let Some(pos) = ctx.pointer_latest_pos() else { return };
         let force_float = ctx.input(|input| input.modifiers.command);
-        let edge = (!force_float).then(|| workspace_edge(body, pos, targets)).flatten();
-        let proposal = (!force_float && edge.is_none()).then(|| resolve_drop(&panel, pos, targets)).flatten();
+        let sequence_header = ctx.data(|data| data.get_temp::<bool>(drag_id().with("sequence"))).unwrap_or(false)
+            && targets
+                .iter()
+                .rev()
+                .find(|target| target.rect.contains(pos))
+                .is_some_and(|target| target.tabs.iter().any(|(p, _)| *p == panel) && target.tab_strip.is_some_and(|strip| strip.contains(pos)));
+        let inside = ctx.content_rect().contains(pos);
+        let edge = (!force_float && inside && !sequence_header).then(|| workspace_edge(body, pos, targets)).flatten();
+        let proposal = (!force_float && inside && !sequence_header && edge.is_none()).then(|| resolve_drop(&panel, pos, targets)).flatten();
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
         let t = self.tokens;
         if let Some((_, _, preview)) = edge {
@@ -368,6 +382,16 @@ impl FilmcraftApp {
             painter.rect_stroke(preview.shrink(2.0), t.radius, Stroke::new(2.0, t.focus), StrokeKind::Inside);
         }
         if let Some(proposal) = &proposal {
+            let placement = match proposal.placement {
+                Placement::Tab { before: Some(_) } => "before",
+                Placement::Tab { before: None } => "after",
+                Placement::Split(Zone::Center) => "tab",
+                Placement::Split(Zone::Left) => "left",
+                Placement::Split(Zone::Right) => "right",
+                Placement::Split(Zone::Top) => "top",
+                Placement::Split(Zone::Bottom) => "bottom",
+            };
+            self.auto.add(&format!("dock.drop.{}.{placement}", proposal.anchor.id()), proposal.preview, proposal.anchor.title());
             painter.rect_filled(proposal.preview.shrink(2.0), t.radius, t.focus.gamma_multiply(0.2));
             painter.rect_stroke(proposal.preview.shrink(2.0), t.radius, Stroke::new(2.0, t.focus), StrokeKind::Inside);
             if let Some(mark) = proposal.insertion {
@@ -390,7 +414,7 @@ impl FilmcraftApp {
             }
             let action = match proposal {
                 Some(proposal) => Some(Action::Move { panel, anchor: proposal.anchor, placement: proposal.placement }),
-                None if force_float || !targets.iter().any(|target| target.rect.contains(pos)) => {
+                None if force_float || (inside && !targets.iter().any(|target| target.rect.contains(pos))) => {
                     Some(Action::Float { panel, rect: [pos.x - 40.0, pos.y - 12.0, 420.0, 320.0] })
                 }
                 None => None,

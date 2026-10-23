@@ -76,8 +76,8 @@ fn dock_tab_traversal_and_enter_change_the_visible_panel_without_editing() {
     h.state_mut().ui.show_status_bar = false;
     h.state_mut().ui.dock = DockNode::Tabs { panels: vec![PanelKind::Project, PanelKind::Effects], active: 0 };
     h.run_steps(3);
-    let first = Id::new(("tab", String::new(), 0usize));
-    let second = Id::new(("tab", String::new(), 1usize));
+    let first = Id::new(("tab", String::new(), PanelKind::Project));
+    let second = Id::new(("tab", String::new(), PanelKind::Effects));
     for _ in 0..128 {
         key(&mut h, Key::Tab, Modifiers::NONE);
         if h.ctx.memory(|m| m.focused()) == Some(second) {

@@ -23,6 +23,24 @@ struct Driver {
 }
 
 impl Driver {
+    fn rect(&mut self, id: &str) -> egui::Rect {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("missing {id}"));
+        let r = e["rect"].as_array().unwrap();
+        egui::Rect::from_min_size(
+            egui::pos2(r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32),
+            egui::vec2(r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32),
+        )
+    }
+
+    fn drag_panel(&mut self, panel: &str, to: egui::Pos2) {
+        // The active sequence tab has its close button at the left of its title.
+        let inset = if panel == "Timeline" { 40.0 } else { 10.0 };
+        let from = self.rect(&format!("panel.tab.{panel}")).left_center() + egui::vec2(inset, 0.0);
+        self.ok("ui.drag", json!({"from": {"x": from.x, "y": from.y}, "to": {"x": to.x, "y": to.y}, "steps": 16}));
+        self.frames(25);
+    }
+
     /// The demo project with its preferences (and workspaces) in `data`.
     fn launch(data: &Path) -> Self {
         let mut session = Session::default();
@@ -143,6 +161,123 @@ fn data_dir(name: &str) -> PathBuf {
 
 fn saved_file(data: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(data.join("workspaces.json")).expect("workspaces.json written")).unwrap()
+}
+
+#[test]
+fn dragging_effects_to_top_right_then_splitting_and_saving_survives_restart() {
+    let data = data_dir("panel-drag");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    let project = d.app().session.project.clone();
+    let top_right = d.rect("panel.Properties");
+    d.drag_panel("Effects", top_right.center());
+    let moved = d.rect("panel.Effects");
+    assert!(moved.min.x > 1000.0 && moved.min.y < 100.0, "Effects moved to top right: {moved:?}");
+    assert!(d.app().ui.dock.is_visible(PanelKind::Effects));
+    d.snapshot("effects-docked-top-right");
+
+    let program = d.rect("panel.Program");
+    d.drag_panel("Effects", egui::pos2(program.max.x - 8.0, program.center().y));
+    let effects = d.rect("panel.Effects");
+    let program = d.rect("panel.Program");
+    assert!(effects.min.x > program.max.x, "edge drop creates a separate region");
+    assert!(
+        [PanelKind::Properties, PanelKind::EssentialGraphics, PanelKind::Text].into_iter().any(|p| d.app().ui.dock.is_visible(p)),
+        "the old group restores a remaining panel"
+    );
+    let mut all = Vec::new();
+    d.app().ui.dock.panels(&mut all);
+    assert_eq!(all.iter().filter(|p| **p == PanelKind::Effects).count(), 1);
+    assert!(std::sync::Arc::ptr_eq(&project, &d.app().session.project), "layout moves do not edit the project");
+    d.snapshot("effects-split-right");
+    let saved = d.app().ui.dock.clone();
+    d.menu("window.workspace.saveChanges", json!({}));
+    d.menu("window.workspace.audio", json!({}));
+    d.menu("window.workspace.editing", json!({}));
+    assert_eq!(d.app().ui.dock, saved);
+    drop(d);
+    let mut restarted = Driver::launch(&data);
+    assert_eq!(restarted.app().ui.dock, saved);
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn panel_drag_cancel_and_outside_drop_leave_the_layout_unchanged() {
+    let data = data_dir("panel-cancel");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    let original = d.app().ui.dock.clone();
+    let from = d.rect("panel.tab.Effects").left_center() + egui::vec2(10.0, 0.0);
+    let to = d.rect("panel.Properties").center();
+    d.harness.input_mut().events.extend([
+        egui::Event::PointerMoved(from),
+        egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+    ]);
+    d.frames(2);
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(to));
+    d.frames(3);
+    assert!(d.has("dock.drop.Properties.tab"), "dragging highlights the destination");
+    d.snapshot("panel-drop-preview");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    d.frames(3);
+    assert_eq!(d.app().ui.dock, original);
+    d.drag_panel("Effects", egui::pos2(-50.0, -50.0));
+    assert_eq!(d.app().ui.dock, original);
+
+    for params in [
+        json!({}),
+        json!({"panel": "Effects", "anchor": "unknown"}),
+        json!({"panel": "Effects", "anchor": "Program", "zone": "bad"}),
+        json!({"panel": 1, "anchor": "Program"}),
+    ] {
+        d.menu_err("window.dockPanel", params);
+        assert_eq!(d.app().ui.dock, original);
+    }
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn panel_headers_reorder_tabs_and_compact_grips_and_timeline_can_move() {
+    let data = data_dir("panel-headers");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.menu("window.dockPanel", json!({"panel": "Effects", "anchor": "Properties"}));
+    d.frames(3);
+    let properties = d.rect("panel.tab.Properties");
+    d.drag_panel("Effects", properties.left_center() + egui::vec2(2.0, 0.0));
+    let mut panels = Vec::new();
+    d.app().ui.dock.panels(&mut panels);
+    assert_eq!(panels.iter().position(|p| *p == PanelKind::Effects).unwrap() + 1, panels.iter().position(|p| *p == PanelKind::Properties).unwrap());
+
+    let program = d.rect("panel.Program");
+    d.drag_panel("Tools", program.center());
+    assert!(d.app().ui.dock.is_visible(PanelKind::Tools), "the compact Tools grip is draggable");
+    let open = d.app().session.state.open_sequences.clone();
+    let effects = d.rect("panel.Effects");
+    d.drag_panel("Timeline", effects.center());
+    assert!(d.app().ui.dock.is_visible(PanelKind::Timeline));
+    assert_eq!(d.app().session.state.open_sequences, open, "moving Timeline keeps sequence tabs open and ordered");
+    assert!(d.rect("panel.Timeline").min.x > 1000.0);
+    let before = d.app().ui.dock.clone();
+    let first = open[0].0;
+    let second = d.ok("engine.execute", json!({"command": "file.newSequence", "params": {"name": "B"}}))["sequence"].as_u64().unwrap();
+    d.frames(3);
+    d.ok(
+        "ui.drag",
+        json!({"from": {"id": format!("timeline.tab.{second}"), "fx": 0.4}, "to": {"id": format!("timeline.tab.{first}"), "fx": 0.2}, "steps": 12}),
+    );
+    d.frames(25);
+    assert_eq!(d.app().session.state.open_sequences.iter().map(|s| s.0).collect::<Vec<_>>(), [second, first]);
+    assert_eq!(d.app().ui.dock, before, "sequence reordering in a mixed group must not move the Timeline panel");
+    let _ = std::fs::remove_dir_all(data);
 }
 
 #[test]
