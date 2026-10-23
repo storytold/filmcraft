@@ -130,7 +130,7 @@ fn naming_nothing_usable_does_not_enable_a_command() {
     assert!(why.starts_with("-1 is not a clip id"), "{why}");
     assert_eq!(disabled(s.execute("clip.replaceFromBin", json!({"clips": [v1(&s)[0].id.0], "item": 987_654_321u64}))), "select a clip in the Project panel");
     // `edit.cut` takes no `clips`: it works on the selection only
-    assert_eq!(disabled(s.execute("edit.cut", json!({"clips": [v1(&s)[0].id.0]}))), "no clips selected");
+    assert_eq!(disabled(s.execute("edit.cut", json!({"clips": [v1(&s)[0].id.0]}))), "no clips or captions selected");
     assert!(std::sync::Arc::ptr_eq(&before, &s.project), "nothing was edited");
 }
 

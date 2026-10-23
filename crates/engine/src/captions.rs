@@ -164,6 +164,58 @@ pub fn delete(s: &mut Session, ids: &[ClipId], ripple: bool) -> Result<Value> {
     Ok(json!({"deleted": n}))
 }
 
+/// Copy the selected captions to the caption clipboard (Edit ▸ Copy / Cut with captions selected).
+/// Returns how many were copied.
+pub fn copy(s: &mut Session) -> usize {
+    let Some(q) = s.active_sequence() else { return 0 };
+    let sel = &s.state.caption_selection;
+    let picked: Vec<(usize, filmcraft_project::Caption)> =
+        q.caption_tracks.iter().enumerate().flat_map(|(ti, t)| t.captions.iter().filter(|c| sel.contains(&c.id)).map(move |c| (ti, c.clone()))).collect();
+    let min = picked.iter().map(|(_, c)| c.start).min().unwrap_or_default();
+    s.state.caption_clipboard = picked.into_iter().map(|(ti, c)| (ti, filmcraft_project::Caption { start: c.start - min, ..c })).collect();
+    s.state.clipboard.clear();
+    s.state.clipboard_markers.clear();
+    s.state.caption_clipboard.len()
+}
+
+/// Paste the caption clipboard at the playhead, each caption on the caption track it was copied
+/// from (the last one when that track is gone), overwriting what is there. Paste Insert first opens
+/// a gap the copied span long on those tracks. The pasted captions are selected and the playhead
+/// moves to their end.
+pub fn paste(s: &mut Session, insert: bool) -> Result<Value> {
+    let at = s.playhead();
+    let clip = s.state.caption_clipboard.clone();
+    let span = clip.iter().map(|(_, c)| c.end()).max().unwrap_or_default();
+    let mut by_track: Vec<(TrackId, Vec<filmcraft_project::Caption>)> = Vec::new();
+    {
+        let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        for (ti, c) in clip {
+            let Some(t) = q.caption_tracks.get(ti).or(q.caption_tracks.last()) else {
+                return Err(bad("edit.paste", "the sequence has no caption track to paste into"));
+            };
+            let c = filmcraft_project::Caption { start: c.start + at, ..c };
+            match by_track.iter_mut().find(|(id, _)| *id == t.id) {
+                Some((_, v)) => v.push(c),
+                None => by_track.push((t.id, vec![c])),
+            }
+        }
+    }
+    let ids = s.edit_sequence(if insert { "Paste Insert Captions" } else { "Paste Captions" }, |q, ctx, st| {
+        let mut ids = Vec::new();
+        for (tid, caps) in &by_track {
+            if insert && let Some(tr) = q.caption_track_mut(*tid).filter(|t| !t.locked) {
+                edit::captions::insert_gap(tr, at, span, ctx);
+            }
+            ids.extend(edit::captions::overwrite_captions(q, *tid, caps, ctx)?);
+        }
+        st.caption_selection = ids.clone();
+        st.selection.clear();
+        Ok(ids)
+    })?;
+    s.set_playhead(at + span);
+    Ok(json!({"captions": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
+}
+
 fn caption_json(s: &Session, c: &filmcraft_project::Caption) -> Value {
     let q = s.active_sequence();
     let (rate, df) = q.map(|q| (q.settings.frame_rate, q.settings.drop_frame)).unwrap_or_default();

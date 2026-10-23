@@ -48,6 +48,7 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | `captions.move` | drag a caption in the timeline | `captions`, `delta` or `deltaFrames` |
 | `captions.duplicate` | ⌥-drag a caption in the timeline | `captions`, `delta` or `deltaFrames` — copies on the same tracks, overwriting what is there |
 | `captions.delete` | Edit ▸ Clear / Ripple Delete with captions selected | `captions`, `ripple` |
+| `edit.copy` / `edit.cut` / `edit.paste` / `edit.pasteInsert` | ⌘C / ⌘X / ⌘V / ⇧⌘V with only captions selected | captions paste at the playhead on the tracks they came from, overwriting (Paste Insert pushes later captions on); Paste places whichever of clips or captions was copied last |
 | `captions.select`, `captions.goTo` | click / number button | `captions`, `add` / `caption` |
 | `captions.setTrack` | caption track header (eye, lock) | `track`, `name`, `format`, `language`, `enabled`, `locked`, `syncLock` |
 | `captions.setStyle` | Text panel style strip | `track`, `size`, `color`, `background`, `backgroundColor`, `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |

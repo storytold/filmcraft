@@ -191,3 +191,36 @@ fn captions_duplicate_copies_and_overwrites() {
     assert_eq!(s.active_sequence().unwrap().caption_tracks[0].captions.len(), before + 1, "a caption named twice is copied once");
     s.active_sequence().unwrap().check().unwrap();
 }
+
+#[test]
+fn captions_copy_cut_and_paste() {
+    let mut s = demo();
+    // Copy / Paste with only captions selected copies captions, pasted at the playhead
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    s.execute("captions.add", json!({"text": "hi", "durationSeconds": 1.0})).unwrap();
+    assert!(s.state.selection.is_empty());
+    assert_eq!(s.execute("edit.copy", json!({})).unwrap()["copied"], 1);
+    s.execute("playhead.set", json!({"seconds": 10.0})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(caption_spans(&s), vec![(1.0, 2.0, "hi".into()), (10.0, 11.0, "hi".into())]);
+    assert!((s.playhead().seconds() - 11.0).abs() < 0.05, "the playhead moves past the paste");
+    // Cut takes it away and Paste puts it back
+    s.execute("edit.cut", json!({})).unwrap();
+    assert_eq!(caption_spans(&s), vec![(1.0, 2.0, "hi".into())]);
+    s.execute("playhead.set", json!({"seconds": 4.0})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(caption_spans(&s)[1], (4.0, 5.0, "hi".into()));
+    // copying clips afterwards makes Paste place clips again, not captions
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    s.execute("timeline.select", json!({"clips": [clip.0]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert!(s.state.caption_clipboard.is_empty() && !s.state.clipboard.is_empty());
+    // undo takes back a caption paste as one step
+    let mut s = demo();
+    s.execute("captions.add", json!({"text": "x", "durationSeconds": 1.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 5.0})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(caption_spans(&s).len(), 1);
+}
