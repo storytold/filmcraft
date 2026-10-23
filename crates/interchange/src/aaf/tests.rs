@@ -469,4 +469,9 @@ fn audio_tracks_keep_their_names() {
     // No name: written numbered (`A1`), as before, and read back with the reader's own name.
     p.sequence_mut(s).unwrap().audio_tracks[0].name.clear();
     assert_eq!(names(&p, &AafOptions::default()), ["Audio 1"], "the reader's own name");
+    // Names that start with a character of more than one byte come back as they are.
+    for name in ["é", "音声", "🎤 Dialogue", "Ä1"] {
+        p.sequence_mut(s).unwrap().audio_tracks[0].name = name.into();
+        assert_eq!(names(&p, &AafOptions::default()), [name]);
+    }
 }

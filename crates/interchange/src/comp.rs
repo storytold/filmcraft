@@ -818,9 +818,11 @@ fn build_sequence(
         let mut track = b.track(kind, idx);
         // A name of its own (not the numbered `A1` / `V1` a writer gives an unnamed track) is
         // kept: a sound editor's tracks are named after what they hold.
-        let numbered = t.name.len() > 1 && t.name[1..].chars().all(|c| c.is_ascii_digit()) && t.name.starts_with(['A', 'V']);
-        if !t.name.trim().is_empty() && !numbered {
-            track.name = t.name.trim().to_string();
+        let name = t.name.trim();
+        let mut chars = name.chars();
+        let numbered = matches!(chars.next(), Some('A' | 'V')) && !chars.as_str().is_empty() && chars.all(|c| c.is_ascii_digit());
+        if !name.is_empty() && !numbered {
+            track.name = name.to_string();
         }
         if kind == TrackKind::Audio {
             track.channels = match t.channels {
