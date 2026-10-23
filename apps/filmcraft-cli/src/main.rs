@@ -96,6 +96,8 @@ SUBCOMMANDS
   probe <media> [--image-sequence]
                                 media info as JSON, with MXF / Ogg / BWF details; with
                                 --image-sequence <media> is the first numbered still of a sequence
+                                Top-level duration is integer FilmCraft ticks (254016000000 per second).
+                                Convert to seconds: duration / 254016000000.0.
   bench-decode <media> [--frames N]
   mcp                           MCP server on stdio (headless, or --bridge to the live app)
   help                          this text
@@ -116,6 +118,8 @@ VALUES
   key=value parses value as JSON when it can (3.5, true, [1,2], {\"a\":1}), else as a string:
   `exec timeline.razor seconds=3.5`, `exec file.newBin name=Selects`.
   Times: 254016000000 ticks per second; most commands also take seconds=, frame= or timecode=.
+  file.newSequenceFromClip uses the current Project selection when items is omitted.
+  In scripts, pass items=[id,...] or call project.select first to set that selection.
 
 EXIT STATUS
   0 success · 1 a command failed, or export/render drew offline media without --allow-offline
