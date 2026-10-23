@@ -24,7 +24,8 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         "reset" => {
             let n = app.ui.workspace.clone();
             app.set_workspace(&n);
-            Ok(json!({"workspace": n}))
+            // the saved layout is the one to come back to now, not the one remembered at the last close
+            app.forget_remembered_layout(&n).map(|()| json!({"workspace": n}))
         }
         "saveChanges" => {
             let n = app.ui.workspace.clone();
@@ -57,18 +58,21 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 /// Save the current layout as the saved layout of `name`.
 fn save(app: &mut FilmcraftApp, name: &str) -> Result<(), String> {
     crate::dock::Layout { root: app.ui.dock.clone(), floating: app.ui.floating.clone() }.validate()?;
-    let layout = serde_json::to_value(&app.ui.dock).map_err(|e| e.to_string())?;
-    let floating = if app.ui.floating.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&app.ui.floating).map_err(|e| e.to_string())? };
+    let snapshot = dock::snapshot(name, &app.ui.dock, &app.ui.floating).ok_or_else(|| "the layout cannot be saved".to_string())?;
     let mut next = app.workspaces.clone();
     let saved = &mut next.saved;
     match saved.iter_mut().find(|s| s.name == name) {
         Some(s) => {
-            s.layout = layout;
-            s.floating = floating;
+            s.layout = snapshot.layout;
+            s.floating = snapshot.floating;
         }
-        None => saved.push(dock::SavedWorkspace { name: name.to_string(), layout, floating }),
+        None => saved.push(snapshot),
     }
     next.current = name.to_string();
+    // the saved layout is the layout in use: nothing older remembered may win over it at launch
+    if next.last.as_ref().is_some_and(|l| l.name == name) {
+        next.last = None;
+    }
     app.set_workspaces(next)
 }
 
@@ -106,6 +110,9 @@ fn rename(app: &mut FilmcraftApp, from: &str, to: &str) -> Result<Value, String>
     for s in next.saved.iter_mut().filter(|s| s.name == from) {
         s.name = to.clone();
     }
+    if let Some(l) = next.last.as_mut().filter(|l| l.name == from) {
+        l.name = to.clone();
+    }
     if next.current == from {
         next.current = to.clone();
     }
@@ -121,6 +128,10 @@ fn delete(app: &mut FilmcraftApp, name: &str) -> Result<Value, String> {
     let mut next = app.workspaces.clone();
     let before = next.saved.len();
     next.saved.retain(|s| s.name != name);
+    // a deleted workspace, or a built-in back to its original, has no remembered layout either
+    if next.last.as_ref().is_some_and(|l| l.name == name) {
+        next.last = None;
+    }
     if next.saved.len() == before {
         return Err(if is_builtin(name) { format!("`{name}` is a built-in workspace and can't be deleted") } else { format!("unknown workspace `{name}`") });
     }

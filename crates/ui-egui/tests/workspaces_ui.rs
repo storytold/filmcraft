@@ -234,6 +234,86 @@ fn save_switch_reset_rename_delete_and_restart() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
+/// #2421: panel changes made without Save Changes to this Workspace come back after a restart
+/// (the layout in use when the app closed is remembered per workspace); Reset to Saved Layout
+/// still returns to the saved layout, and another workspace's remembered layout is not applied.
+#[test]
+fn the_layout_in_use_at_close_comes_back_without_saving() {
+    let data = data_dir("remember");
+    let mut d = Driver::launch(&data);
+    assert_eq!(d.workspace(), "Editing");
+    assert!(d.shows(PanelKind::Metadata));
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+    // the exit path is what remembers it
+    eframe::App::on_exit(d.app());
+    assert_eq!(saved_file(&data)["last"]["name"], "Editing");
+    assert_eq!(saved_file(&data)["saved"], json!([]), "nothing was saved as a workspace");
+    drop(d);
+
+    let mut d = Driver::launch(&data);
+    assert_eq!(d.workspace(), "Editing");
+    assert!(!d.shows(PanelKind::Metadata), "the layout in use at close comes back");
+    d.menu("window.workspace.reset", json!({}));
+    assert!(d.shows(PanelKind::Metadata), "Reset to Saved Layout returns to the saved layout");
+
+    // closed in Color: Color comes back as it was, Editing opens its saved layout
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    assert!(d.shows(PanelKind::LumetriScopes));
+    d.ok("ui.panel.close", json!({"panel": "LumetriScopes"}));
+    d.app().remember_layout();
+    drop(d);
+    let mut d = Driver::launch(&data);
+    assert_eq!(d.workspace(), "Color");
+    assert!(!d.shows(PanelKind::LumetriScopes));
+    d.ok("ui.set", json!({"workspace": "Editing"}));
+    assert!(d.shows(PanelKind::Metadata), "another workspace's remembered layout does not apply");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// A layout saved on purpose is never beaten by an older remembered one: Save Changes to this
+/// Workspace, Reset to Saved Layout and deleting a built-in's changes drop the remembered layout
+/// (so a session that ends without `on_exit` still reopens the saved layout), and a rename keeps
+/// the remembered layout with its workspace.
+#[test]
+fn a_saved_layout_wins_over_an_older_remembered_one() {
+    let data = data_dir("remember-saved");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+    d.app().remember_layout();
+    assert!(saved_file(&data)["last"].is_object());
+    drop(d);
+
+    // save a different layout, then end without remembering (a crash): the saved layout comes back
+    let mut d = Driver::launch(&data);
+    assert!(!d.shows(PanelKind::Metadata));
+    d.ok("ui.panel.close", json!({"panel": "Info"}));
+    d.ok("ui.panel.show", json!({"panel": "Metadata"}));
+    d.menu("window.workspace.saveChanges", json!({}));
+    assert!(saved_file(&data)["last"].is_null(), "Save Changes drops the remembered layout");
+    drop(d);
+    let mut d = Driver::launch(&data);
+    assert!(d.shows(PanelKind::Metadata) && !d.shows(PanelKind::Info), "the saved layout, not the remembered one");
+
+    // Reset to Saved Layout drops it too
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+    d.app().remember_layout();
+    assert!(saved_file(&data)["last"].is_object());
+    d.menu("window.workspace.reset", json!({}));
+    assert!(d.shows(PanelKind::Metadata));
+    assert!(saved_file(&data)["last"].is_null(), "Reset to Saved Layout drops the remembered layout");
+
+    // a rename keeps the remembered layout with its workspace; deleting the workspace drops it
+    d.menu("window.workspace.saveAs", json!({"name": "Mine"}));
+    d.ok("ui.panel.close", json!({"panel": "Metadata"}));
+    d.app().remember_layout();
+    assert_eq!(saved_file(&data)["last"]["name"], "Mine");
+    d.menu("window.workspace.rename", json!({"from": "Mine", "to": "Ours"}));
+    assert_eq!(saved_file(&data)["last"]["name"], "Ours");
+    d.menu("window.workspace.delete", json!({"name": "Ours"}));
+    assert!(saved_file(&data)["last"].is_null(), "deleting the workspace drops its remembered layout");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 #[test]
 fn save_rename_and_delete_through_the_dialogs() {
     let data = data_dir("dialogs");
