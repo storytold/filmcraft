@@ -546,9 +546,30 @@ fn layout_inner(
             let axis = if *vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal };
             let Some(split) = split_rect(rect, axis, size.shared(), t.gap, 20.0) else { return };
             let id = egui::Id::new(("dock-gutter", path.to_string()));
-            let handle_style = ResizeHandleStyle { hovered: t.focus.gamma_multiply(0.4), dragged: t.focus.gamma_multiply(0.9), focused: t.focus };
+            // A pointer drag gives the divider keyboard focus so the arrows can nudge it afterwards,
+            // but the focus fill is for keyboard users: after a drag it would stay lit until a click
+            // elsewhere (#1769). Focus taken by the pointer shows only the hover and drag fills.
+            let pointer_focus_id = id.with("pointer-focus");
+            let pointer_focus = ui.data(|d| d.get_temp::<bool>(pointer_focus_id)).unwrap_or(false);
+            let hovered = t.focus.gamma_multiply(0.4);
+            let focused = if pointer_focus { egui::Color32::TRANSPARENT } else { t.focus };
+            let handle_style = ResizeHandleStyle { hovered, dragged: t.focus.gamma_multiply(0.9), focused };
             let label = if *vertical { tl!("Height:") } else { tl!("Width:") };
             let response = ResizeHandle::new(id, axis, split.divider, label, handle_style).value(split.first_size(), 0.0..=split.available()).show(ui);
+            if response.response.drag_started() {
+                ui.data_mut(|d| d.insert_temp(pointer_focus_id, true));
+            } else if !response.response.has_focus() {
+                ui.data_mut(|d| d.remove::<bool>(pointer_focus_id));
+            } else if pointer_focus && response.delta != 0.0 && !response.response.dragged() {
+                // an arrow key moved it: from here on the keyboard is driving, so show the focus fill
+                ui.data_mut(|d| d.remove::<bool>(pointer_focus_id));
+                ui.ctx().request_repaint();
+            } else if pointer_focus && response.response.hovered() && !response.response.dragged() {
+                // the handle paints its (transparent) focused fill, not the hover one, for a focused
+                // divider under the pointer; if a craft-ui bump paints the hover fill there too, this
+                // would draw it twice and darken it
+                ui.painter().rect_filled(split.divider, 0.0, hovered);
+            }
             reg.add_response(&format!("dock.gutter.{path}"), &response.response, "gutter");
             if response.delta != 0.0
                 && let Some(resized) = split.resized(size.shared(), response.delta, 40.0)

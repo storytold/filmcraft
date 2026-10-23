@@ -137,3 +137,115 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     press(&mut h, Key::Space);
     assert!(!h.state().playback.playing);
 }
+
+/// The fill painted on the divider this frame, if any.
+fn divider_fill(h: &Harness<'_, FilmcraftApp>, hit: Rect) -> Option<egui::Color32> {
+    h.output().shapes.iter().find_map(|clipped| match &clipped.shape {
+        egui::Shape::Rect(rect) if hit.contains_rect(rect.rect) && rect.rect.width() < 10.0 && rect.fill != egui::Color32::TRANSPARENT => Some(rect.fill),
+        _ => None,
+    })
+}
+
+#[test]
+fn divider_highlight_ends_with_the_hover_after_a_pointer_resize() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(session);
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
+    frames(&mut h, 4);
+    h.state_mut().ui.dock = DockNode::Split {
+        vertical: false,
+        size: SplitSize::FixedA(400.0),
+        a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+        b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    };
+    frames(&mut h, 3);
+    let focus = h.state().tokens.focus;
+    let element = h.state().auto.find("dock.gutter.").unwrap();
+    let hit = Rect::from_min_size(pos2(element.rect[0], element.rect[1]), vec2(element.rect[2], element.rect[3]));
+    let from = hit.center();
+    h.event(Event::PointerMoved(from));
+    frames(&mut h, 2);
+    assert_eq!(divider_fill(&h, hit), Some(focus.gamma_multiply(0.4)), "hovering shows the divider");
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    step(&mut h);
+    for offset in [5.0, 10.0, 15.0, 20.0] {
+        h.event(Event::PointerMoved(from + vec2(offset, 0.0)));
+        step(&mut h);
+    }
+    // The layout applies the drag after painting, so the divider may still be drawn a step behind.
+    let hit = hit.union(hit.translate(vec2(20.0, 0.0)));
+    assert_eq!(divider_fill(&h, hit), Some(focus.gamma_multiply(0.9)), "dragging shows the divider");
+    h.event(Event::PointerButton { pos: from + vec2(20.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    step(&mut h);
+    h.event(Event::PointerMoved(from + vec2(300.0, 200.0)));
+    frames(&mut h, 3);
+    assert_eq!(first_size(&h), 420.0);
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(Id::new(("dock-gutter", String::new()))), "arrows can still nudge it");
+    assert_eq!(divider_fill(&h, hit), None, "the divider stays lit after the pointer leaves it (#1769)");
+    h.event(Event::PointerMoved(from + vec2(20.0, 0.0)));
+    frames(&mut h, 2);
+    assert_eq!(divider_fill(&h, hit), Some(focus.gamma_multiply(0.4)), "hovering it again shows it again");
+}
+
+fn project_beside_timeline() -> (Harness<'static, FilmcraftApp>, Rect) {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(session);
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
+    frames(&mut h, 4);
+    h.state_mut().ui.dock = DockNode::Split {
+        vertical: false,
+        size: SplitSize::FixedA(400.0),
+        a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+        b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    };
+    frames(&mut h, 3);
+    let element = h.state().auto.find("dock.gutter.").unwrap();
+    let hit = Rect::from_min_size(pos2(element.rect[0], element.rect[1]), vec2(element.rect[2], element.rect[3]));
+    (h, hit)
+}
+
+#[test]
+fn divider_highlight_ends_with_the_hover_after_a_click() {
+    let (mut h, hit) = project_beside_timeline();
+    let from = hit.center();
+    h.event(Event::PointerMoved(from));
+    frames(&mut h, 2);
+    // ResizeHandle senses drag only, and egui starts a drag-only widget's drag on the press: a click
+    // takes focus through the same drag_started() as a drag
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    step(&mut h);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    step(&mut h);
+    h.event(Event::PointerMoved(from + vec2(300.0, 200.0)));
+    frames(&mut h, 3);
+    assert_eq!(first_size(&h), 400.0);
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(Id::new(("dock-gutter", String::new()))), "the click focused it");
+    assert_eq!(divider_fill(&h, hit), None, "the divider stays lit after a click");
+}
+
+#[test]
+fn an_arrow_after_a_pointer_resize_shows_the_focus_again() {
+    let (mut h, hit) = project_beside_timeline();
+    let focus = h.state().tokens.focus;
+    let from = hit.center();
+    h.event(Event::PointerMoved(from));
+    step(&mut h);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    step(&mut h);
+    for offset in [5.0, 10.0, 15.0, 20.0] {
+        h.event(Event::PointerMoved(from + vec2(offset, 0.0)));
+        step(&mut h);
+    }
+    h.event(Event::PointerButton { pos: from + vec2(20.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    step(&mut h);
+    h.event(Event::PointerMoved(from + vec2(300.0, 200.0)));
+    frames(&mut h, 3);
+    let hit = hit.translate(vec2(20.0, 0.0));
+    assert_eq!(divider_fill(&h, hit), None);
+    // nudging it with the keyboard makes it a keyboard user's divider: the focus fill is back
+    press(&mut h, Key::ArrowRight);
+    assert_eq!(first_size(&h), 428.0);
+    assert_eq!(divider_fill(&h, hit.translate(vec2(8.0, 0.0))), Some(focus), "the arrow shows where the focus is");
+}
