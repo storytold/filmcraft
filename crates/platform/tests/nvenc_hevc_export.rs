@@ -117,7 +117,11 @@ fn delta(before: filmcraft_export::HwEncodeStats) -> (u64, u64, u64) {
 fn hevc_exports_play_everywhere() {
     let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     filmcraft_platform::register();
-    assert_eq!(filmcraft_export::available(Format::Hevc), hevc_available(), "the format is available iff NVENC can encode HEVC");
+    // The format is offered wherever *any* registered HEVC encoder can open a session: NVENC, and on
+    // Windows Media Foundation as well. The rest of this file drives NVENC's factory directly, so it
+    // says nothing about which of the two a real export reaches.
+    let mf_hevc = filmcraft_platform::media_foundation::encode::hevc_available();
+    assert_eq!(filmcraft_export::available(Format::Hevc), hevc_available() || mf_hevc, "the format is available iff a registered HEVC encoder can take it");
     if !hevc_available() {
         eprintln!("SKIPPED: no NVENC HEVC here");
         return;
@@ -276,11 +280,18 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
     assert!(export(&p, seq, &s, &m, &Progress::default()).is_err());
     assert_eq!(delta(before), (0, 0, 0));
 
-    if !hevc_available() {
-        // no HEVC encoder: the export's own "encoder not available" error, nothing written, no panic
+    if !filmcraft_export::available(Format::Hevc) {
+        // no HEVC encoder at all: the export's own "encoder not available" error, nothing written, no panic
         let err = export(&p, seq, &hevc(tmp("none.mp4")), &m, &Progress::default()).expect_err("no encoder").to_string();
         assert!(err.contains("encoder not available"), "{err}");
-        eprintln!("SKIPPED the NVENC-limit cases: no NVENC HEVC here");
+        eprintln!("SKIPPED the NVENC-limit cases: no HEVC encoder here");
+        return;
+    }
+    if !hevc_available() {
+        // NVENC has no HEVC encoder here, so a real export reaches Media Foundation instead. What
+        // NVENC would accept is therefore not what this machine does, and the limits below have
+        // nothing to say about it.
+        eprintln!("SKIPPED the NVENC-limit cases: Media Foundation can encode HEVC here");
         return;
     }
     // sizes outside what the GPU's HEVC encoder takes, through the real export

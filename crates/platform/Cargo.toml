@@ -49,6 +49,9 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
+    # `ICodecAPI` and the `VARIANT` it takes, for telling a vendor encoder its rate control mode.
+    "Win32_System_Ole",
+    "Win32_System_Variant",
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ] }

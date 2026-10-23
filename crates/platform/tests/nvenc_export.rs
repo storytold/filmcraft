@@ -92,7 +92,10 @@ fn hardware_export_matches_the_software_export() {
     let report = export(&p, seq, &settings(hw_path.clone(), HardwareEncoding::Auto), &m, &Progress::default()).unwrap();
     let after = hw_encode_stats();
     if after.sessions == before.sessions {
-        assert_eq!(after.declined - before.declined, 1, "Auto attempted hardware and reported the fallback");
+        // No encoder took it, so every registered hardware factory was asked and declined: NVENC,
+        // and Media Foundation on Windows.
+        let factories = if cfg!(target_os = "windows") { 2u64 } else { 1 };
+        assert_eq!(after.declined - before.declined, factories, "Auto attempted hardware and reported the fallback");
         assert_eq!(after.frames, before.frames);
         assert_eq!(std::fs::read(&soft_path).unwrap(), std::fs::read(&hw_path).unwrap(), "fallback preserves software determinism");
         eprintln!("no NVENC here: byte-identical software fallback verified");
@@ -128,20 +131,38 @@ fn what_nvenc_does_not_take_goes_to_the_software_encoder() {
         let after = hw_encode_stats();
         (after.frames - before.frames, after.declined - before.declined)
     };
-    // two-pass VBR is a software feature (both passes ask, both are declined)
-    assert_eq!(run("two_pass.mp4", &|s| s.bitrate_mode = BitrateMode::Vbr2Pass), (0, 2));
+    // How many hardware encoder factories are registered on this platform: NVENC everywhere, and
+    // on Windows Media Foundation as well. Each is asked once per pass and declines, so every
+    // decline count below scales with it.
+    let factories: u64 = if cfg!(target_os = "windows") { 2 } else { 1 };
+    // two-pass VBR is a software feature (both passes ask, every factory is declined)
+    assert_eq!(run("two_pass.mp4", &|s| s.bitrate_mode = BitrateMode::Vbr2Pass), (0, 2 * factories));
     // MXF H.264 is an Annex B stream with in-band parameter sets: the software encoder's
     assert_eq!(
         run("mxf.mxf", &|s| {
             s.format = Format::MxfOp1a;
             s.mxf_video_codec = filmcraft_export::MxfVideoCodec::H264;
         }),
-        (0, 1)
+        (0, factories)
     );
-    // an odd frame size is rounded to even by the pipeline, so NVENC still takes it
+    // an odd frame size is rounded to even by the pipeline, so a hardware encoder still takes it.
+    // The factories are tried in registration order, so which one takes it — and how many declined
+    // before it — depends on what this machine has: NVENC everywhere, Media Foundation too on Windows.
     let hardware_available = filmcraft_platform::nvenc::available();
+    // Media Foundation is Windows-only; elsewhere NVENC is the only hardware factory here.
+    #[cfg(target_os = "windows")]
+    let mf_available = filmcraft_platform::media_foundation::encode::h264_available();
+    #[cfg(not(target_os = "windows"))]
+    let mf_available = false;
     let odd = run("odd.mp4", &|s| s.frame_size = Some((641, 359)));
-    assert_eq!(odd, if hardware_available { (24, 0) } else { (0, 1) });
+    match (hardware_available, mf_available) {
+        (true, _) => assert_eq!(odd, (24, 0), "NVENC takes it"),
+        // NVENC declines. Whether Media Foundation then takes it is its own business: its limits
+        // are not NVENC's, and `h264_available` probes 640x360 at 30 fps while this export resolves
+        // to 640x358 at 24, so a driver that takes one need not take the other. Either it encodes
+        // (NVENC's one decline) or every factory declines.
+        (false, _) => assert!(odd == (24, 1) || odd == (0, factories), "{odd:?}: NVENC declined, then either an encoder took it or none did"),
+    }
     // Off never touches the hardware encoder
     assert_eq!(run("off.mp4", &|s| s.hardware_encoding = HardwareEncoding::Off), (0, 0));
     // the decoded file of a declined export is fine
