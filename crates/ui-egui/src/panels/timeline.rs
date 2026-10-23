@@ -2877,7 +2877,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         let sel = app.session.state.selection.clone();
         let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
         let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
-        let linked = picked.iter().any(|it| it.link.is_some());
+        // the command unlinks only when every selected clip is already linked; show the matching label
+        let linked = !picked.is_empty() && picked.iter().all(|it| it.link.is_some());
         let mut first = true;
         for group in CLIP_MENU {
             if !std::mem::take(&mut first) {

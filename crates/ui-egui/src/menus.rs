@@ -755,10 +755,14 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
         if c.menu.is_empty() {
             continue;
         }
-        // Edit ▸ Label items carry the names from Settings ▸ Labels
-        let label = match c.id.strip_prefix("edit.label.").and_then(filmcraft_project::Label::from_name) {
-            Some(l) => session.prefs.labels.name(l),
-            None => c.label.into(),
+        let label = match c.id {
+            // Clip ▸ Link says what Cmd+L will do: Unlink when every selected clip is linked
+            "clip.link" if filmcraft_engine::commands::all_linked(session, &session.state.selection) => "Unlink".into(),
+            // Edit ▸ Label items carry the names from Settings ▸ Labels
+            _ => match c.id.strip_prefix("edit.label.").and_then(filmcraft_project::Label::from_name) {
+                Some(l) => session.prefs.labels.name(l),
+                None => c.label.into(),
+            },
         };
         out.push(MenuItem {
             id: c.id.into(),
@@ -1036,7 +1040,27 @@ fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Re
 
 #[cfg(test)]
 mod parse_shortcut_tests {
-    use super::{label_menu_swatch, parse_shortcut};
+    use super::{label_menu_swatch, menu_items_for, parse_shortcut};
+
+    /// Clip ▸ Link shows "Unlink" while every selected clip is linked, so the label says what
+    /// Cmd+L will do; a mixed or unlinked selection shows "Link" again.
+    #[test]
+    fn clip_link_menu_label_follows_the_selection() {
+        use filmcraft_engine::Session;
+        use serde_json::json;
+
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let label = |s: &Session| menu_items_for(s).iter().find(|it| it.id == "clip.link").map(|it| it.label.clone()).unwrap_or_default();
+        assert_eq!(label(&s), "Link", "nothing selected yet");
+        let q = s.active_sequence().unwrap().clone();
+        let linked = q.all_tracks().flat_map(|t| &t.items).find(|i| i.link.is_some()).unwrap().id;
+        let unlinked = q.all_tracks().flat_map(|t| &t.items).find(|i| i.link.is_none()).unwrap().id;
+        s.execute("timeline.select", json!({"clips": [linked.0]})).unwrap();
+        assert_eq!(label(&s), "Unlink", "a fully linked selection unlinks");
+        s.execute("timeline.select", json!({"clips": [unlinked.0], "add": true})).unwrap();
+        assert_eq!(label(&s), "Link", "one unlinked clip sends Link back");
+    }
 
     #[test]
     fn edit_label_menu_swatch_uses_current_custom_palette() {
