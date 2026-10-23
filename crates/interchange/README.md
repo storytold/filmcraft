@@ -25,6 +25,22 @@ read off files it exports, never from the application itself.
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
 
+## FCP7 audio source selection
+
+For xmeml v4/v5 files that declare several sibling `file/media/audio` elements, each element is
+retained as a separate source stream. An audio clip's one-based `sourcetrack/trackindex` selects
+that stream without splitting or automatically panning its channels. Single-stream split-channel
+mapping and explicit Premiere exploded tracks keep their existing channel semantics. Authored Audio
+Pan values and keyframes take precedence. Import reads declared XML metadata without opening media.
+
+Export retains all stream descriptions and the selected stream. A simultaneous channel subset of a
+multi-stream source is not encoded by this mapping: export returns an unsupported-mapping error
+instead of selecting different audio. Invalid source-stream selectors are reported and their audio
+clip is skipped; malformed stream descriptions return a parse error. Descriptions are bounded to
+64 streams, 64 channels per stream, 384 kHz and 64-bit samples. `tests/fcp7_audio_streams.rs` covers
+the issue #2872 reporter's XML, authored pan, source references, project/XML round trips and malformed
+metadata; the existing `tests/fcp7.rs` covers single-stream split channels and their pan.
+
 **Invariant — Unicode media URLs:** file URL prefix probes must not panic when their byte boundary
 falls inside a UTF-8 character. Timeline importers use the shared converter; `tests/it/file_urls.rs`
 checks expected Unicode paths through the public converter, resolver and EDL importer.
