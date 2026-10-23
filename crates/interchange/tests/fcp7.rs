@@ -663,3 +663,45 @@ fn centred_mono_breakout_round_trips_centred() {
     let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
     assert_eq!(balances(&imp), vec![0.0, 0.0], "{xml}");
 }
+
+/// A `timebase` near `i64::MAX` made a rate of ~9e18 per second: with `ntsc` the importer multiplied it by
+/// 1000 (overflow), without it the export overflowed adding 1 to a clamped frame index. The timebase is
+/// limited instead, and the document imports and exports.
+#[test]
+fn absurd_timebase_is_bounded() {
+    for (tb, ntsc) in [("9223372036854775807", "TRUE"), ("9223372036854775807", "FALSE"), ("4294967296", "FALSE"), ("-5", "TRUE")] {
+        let doc = format!(
+            r#"<?xml version="1.0"?><xmeml version="4"><sequence id="s"><name>S</name><rate><timebase>{tb}</timebase><ntsc>{ntsc}</ntsc></rate>
+<timecode><rate><timebase>{tb}</timebase><ntsc>{ntsc}</ntsc></rate><string>01:00:00:00</string><frame>90000</frame></timecode>
+<media><video><track><clipitem id="c"><name>A</name><start>0</start><end>100</end><in>0</in><out>100</out>
+<file id="f"><name>a.mov</name><pathurl>file:///tmp/a.mov</pathurl><rate><timebase>{tb}</timebase><ntsc>{ntsc}</ntsc></rate><media><video/></media></file>
+<marker><name>m</name><in>5</in><out>-1</out></marker></clipitem></track></video></media></sequence></xmeml>"#
+        );
+        let (imported, _) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap_or_else(|e| panic!("{tb} {ntsc}: {e}"));
+        for seq in &imported.sequences {
+            for format in [Format::Fcp7Xml, Format::Fcpxml, Format::Edl, Format::Otio] {
+                export(&imported.project, *seq, format, &ExportOptions::default()).unwrap_or_else(|e| panic!("{tb} {ntsc} {format:?}: {e}"));
+            }
+        }
+    }
+}
+
+/// A start timecode of 18446744073709551615 frames saturates to `i64::MAX`; the EDL export then
+/// overflowed adding frame numbers to it. Out-of-range start timecodes are reset with a warning.
+#[test]
+fn absurd_start_timecode_is_bounded() {
+    let doc = r#"<?xml version="1.0"?><xmeml version="4"><sequence id="s"><name>S</name><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate>
+<timecode><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate><string>00:00:00:00</string><frame>18446744073709551615</frame></timecode>
+<media><video><track><clipitem id="c"><name>A</name><start>0</start><end>100</end><in>0</in><out>100</out>
+<file id="f"><name>a.mov</name><pathurl>file:///tmp/a.mov</pathurl><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate>
+<timecode><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate><string>00:00:00:00</string><frame>18446744073709551615</frame></timecode><media><video/></media></file>
+</clipitem></track></video></media></sequence></xmeml>"#;
+    let (imported, report) = import(doc.as_bytes(), Format::Fcp7Xml, None).expect("import succeeds");
+    for seq in &imported.sequences {
+        for format in [Format::Edl, Format::Fcpxml, Format::Fcp7Xml, Format::Otio] {
+            export(&imported.project, *seq, format, &ExportOptions::default()).unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        }
+        assert_eq!(imported.project.sequence(*seq).map(|s| s.start_timecode), Some(0));
+    }
+    assert!(report.mentions("out-of-range start timecode"), "{report}");
+}

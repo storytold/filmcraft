@@ -199,15 +199,25 @@ pub(crate) fn timebase(rate: FrameRate) -> (i64, bool) {
     (rate.timecode_base(), rate.is_ntsc())
 }
 
-/// Rate from FCP7-style `(timebase, ntsc)`.
+/// Highest rate (per second) an importer accepts. OTIO audio uses sample rates (192000 and more) as
+/// time bases, so this is far above any video rate and still far below where frame arithmetic
+/// overflows: a rate near `i64::MAX` made `frame_at` clamp to `i64::MAX`, and the `+ 1` after it overflowed.
+pub(crate) const MAX_RATE: i64 = 1_000_000;
+
+/// Whether `rate` is positive and at most [`MAX_RATE`] per second.
+pub(crate) fn plausible_rate(rate: FrameRate) -> bool {
+    rate.num > 0 && rate.den > 0 && i128::from(rate.num) <= i128::from(rate.den) * i128::from(MAX_RATE)
+}
+
+/// Rate from FCP7-style `(timebase, ntsc)`; the timebase is limited to `1..=MAX_RATE`.
 pub(crate) fn rate_from_timebase(timebase: i64, ntsc: bool) -> FrameRate {
-    let tb = timebase.max(1);
+    let tb = timebase.clamp(1, MAX_RATE);
     if ntsc { FrameRate::new(tb * 1000, 1001) } else { FrameRate::new(tb, 1) }
 }
 
 /// Snap a floating rate (OTIO) to an exact rate.
 pub(crate) fn rate_from_f64(r: f64) -> FrameRate {
-    if r <= 0.0 || !r.is_finite() {
+    if r <= 0.0 || !r.is_finite() || r > MAX_RATE as f64 {
         return FrameRate::FPS_24;
     }
     for c in FrameRate::COMMON {
@@ -721,6 +731,19 @@ mod tests {
         assert_eq!(rate_from_f64(24000.0 / 1001.0), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(23.976), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(48000.0), FrameRate::new(48000, 1));
+        assert_eq!(rate_from_f64(192_000.0), FrameRate::new(192_000, 1));
+        // absurd rates from a hostile file: bounded instead of overflowing frame arithmetic later
+        for ntsc in [false, true] {
+            let r = rate_from_timebase(i64::MAX, ntsc);
+            assert!(plausible_rate(r), "{r}");
+            assert_eq!(rate_from_timebase(-5, ntsc), rate_from_timebase(1, ntsc));
+        }
+        for r in [1e300, 9.3e18, 2_000_000.0, f64::INFINITY, f64::NAN, -1.0] {
+            assert_eq!(rate_from_f64(r), FrameRate::FPS_24, "{r}");
+        }
+        assert!(!plausible_rate(FrameRate::new(i64::MAX, 1)));
+        assert!(!plausible_rate(FrameRate { num: 0, den: 1 }));
+        assert!(plausible_rate(FrameRate::FPS_23_976));
         assert_eq!(frames_round(FrameRate::FPS_24, FrameRate::FPS_24.tick_of(5) + Tick(10)), 5);
     }
 }

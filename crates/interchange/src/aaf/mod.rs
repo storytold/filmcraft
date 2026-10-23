@@ -71,6 +71,8 @@ pub fn import(bytes: &[u8], opts: &ImportOptions) -> Result<(Imported, Vec<Extra
     let mut report = Report::default();
     let doc = read::read(bytes, &mut report)?;
     let (imported, extracted) = comp::to_project(doc, opts, &mut report)?;
+    let mut imported = imported;
+    crate::bound_start_timecodes(&mut imported, &mut report);
     Ok((imported, extracted, report))
 }
 

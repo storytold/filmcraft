@@ -28,6 +28,17 @@ The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxm
 falls inside a UTF-8 character. Timeline importers use the shared converter; `tests/file_urls.rs`
 checks expected Unicode paths through the public converter, resolver and EDL importer.
 
+## Absurd frame rates and start timecodes
+
+Importers accept frame rates up to 1 000 000 per second (above video rates and PCM audio sample
+rates such as 192 000 Hz, which OTIO uses as a rate). An FCP7 `timebase` is clamped to it and an OTIO rate beyond it
+uses the default, each with a warning (DSD audio at 2.8 or 5.6 MHz is beyond it, so an OTIO DSD clip is retimed at
+the default rate and reported). Also, a sequence
+or media rate beyond it (an FCPXML `frameDuration` of `1/9223372036854775807s`) is reset to the
+default with a warning: such a rate overflowed the frame arithmetic of every export. Sequence and
+media start timecodes beyond 360 000 000 000 frames are reset the same way. Covered by
+`tests/rates.rs` (including the warnings), `src/common.rs` (`rates`) and `tests/fcp7.rs` (`absurd_start_timecode_is_bounded`).
+
 ## AAF and OMF
 
 `comp` holds a format-neutral mob-style model (compositions of slots whose sequences of fillers,
