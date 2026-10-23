@@ -94,9 +94,12 @@ impl FilmcraftApp {
         self.source_playback.range_start = start;
         self.source_playback.item = Some(item);
         self.source_playback.shown = time;
+        // a late decode failure from the previous stream must not stop this one
+        self.source_playback.failure = Arc::new(Mutex::new(None));
         self.source_playback.clock = Playback { playing: true, speed, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, ..Default::default() };
         self.source_playback.clock.meter.start(speed);
-        self.start_source_audio(0.0);
+        // The output opens on the first advance, which stamps `anchor_time` with the real
+        // egui time: opening here with a fake `now` would schedule the retry wrongly.
         Ok(())
     }
 
@@ -235,11 +238,12 @@ impl FilmcraftApp {
         {
             audio.recover();
         }
-        let clock = &mut self.source_playback.clock;
-        if clock.anchor_time < 0.0 {
-            clock.anchor_time = now;
-            clock.audio_seen = (0, now);
+        if self.source_playback.clock.anchor_time < 0.0 {
+            self.source_playback.clock.anchor_time = now;
+            self.source_playback.clock.audio_seen = (0, now);
+            self.start_source_audio(now);
         }
+        let clock = &mut self.source_playback.clock;
         let reading = if clock.audio_clock { self.audio.as_ref().and_then(|a| a.played_frames().map(|n| (n, a.sample_rate()))) } else { None };
         if let Some((frames, _)) = reading
             && frames != clock.audio_seen.0
@@ -313,5 +317,31 @@ impl FilmcraftApp {
             self.stop_source();
         }
         ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_engine::Session;
+
+    #[test]
+    fn a_stale_stream_failure_does_not_stop_new_playback() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.execute("source.open", json!({"item": 5})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        // a failure the running stream reported still stops playback
+        app.play_source().unwrap();
+        *app.source_playback.failure.lock().unwrap() = Some("decode blew up".into());
+        app.advance_source_playback(&ctx);
+        assert!(!app.source_playback.clock.playing && app.ui.status.contains("decode blew up"));
+        // the same error landing between stop and play belongs to the dead stream
+        *app.source_playback.failure.lock().unwrap() = Some("decode blew up".into());
+        app.play_source().unwrap();
+        app.advance_source_playback(&ctx);
+        assert!(app.source_playback.clock.playing, "a new stream keeps its own failure slot");
+        app.stop_source();
     }
 }
