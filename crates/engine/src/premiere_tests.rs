@@ -31,6 +31,103 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn premiere_non_media_references_are_never_hashed_or_copied() {
+    struct ReadCounter(AtomicU64);
+    impl crate::Services for ReadCounter {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            std::fs::read(path)
+        }
+        fn write_file(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+            std::fs::write(path, bytes)
+        }
+    }
+    for name in ["secret.txt", "disguised.png"] {
+        let fixture = Fixture::new();
+        let source = fixture.0.join(name);
+        std::fs::write(&source, b"private non-media contents").unwrap();
+        let before = hash_file(&source).unwrap();
+        let doc = fixture.0.join("source.prproj");
+        let xml = std::fs::read_to_string(&doc).unwrap().replace("source.png", name).replace("FilePath>", "ActualMediaFilePath>");
+        std::fs::write(&doc, xml).unwrap();
+        for mode in ["link", "copy"] {
+            let mut s = Session::default();
+            let reads = std::sync::Arc::new(ReadCounter(AtomicU64::new(0)));
+            s.services = reads.clone();
+            let dest = fixture.0.join(mode);
+            let result = s.execute("premiere.import", json!({"path":doc,"destination":dest,"mediaMode":mode})).unwrap();
+            assert_eq!(result["offlineMedia"], json!([name]));
+            assert_eq!(reads.0.load(Ordering::Relaxed), u64::from(name == "disguised.png"), "only recognized extensions may be probed");
+            let workflow = s.project.workflow.as_ref().unwrap();
+            let media = &workflow.imports[0].media[0];
+            assert!(media.sha256.is_none() && media.bytes.is_none(), "rejected reference must not be hashed: {name}");
+            assert_eq!(media.original_path, source.to_str().unwrap());
+            assert_eq!(media.imported_path, media.original_path);
+            assert!(result["report"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("offline placeholder")));
+            if mode == "copy" {
+                assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
+            }
+            let provenance = std::fs::read_to_string(dest.join("provenance.json")).unwrap();
+            assert!(!provenance.contains(&before.0));
+            assert_eq!(hash_file(&source).unwrap(), before);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn premiere_media_symlink_cannot_bypass_target_extension_check() {
+    let fixture = Fixture::new();
+    let source = fixture.0.join("source.png");
+    let target = fixture.0.join("secret.txt");
+    // Valid image bytes under a disallowed name prove that a successful probe alone is insufficient.
+    std::fs::rename(&source, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &source).unwrap();
+    let before = hash_file(&target).unwrap();
+    for mode in ["link", "copy"] {
+        let mut s = Session::default();
+        let dest = fixture.0.join(mode);
+        let result = s.execute("premiere.import", json!({"path":fixture.0.join("source.prproj"),"destination":dest,"mediaMode":mode})).unwrap();
+        assert_eq!(result["offlineMedia"], json!(["source.png"]));
+        assert!(s.project.workflow.as_ref().unwrap().imports[0].media[0].sha256.is_none());
+        if mode == "copy" {
+            assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
+        }
+        assert_eq!(hash_file(&target).unwrap(), before);
+    }
+}
+
+#[test]
+fn premiere_default_sequence_prefers_content_over_english_name() {
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    let original = std::fs::read_to_string(&doc).unwrap().replace("Sequence 01", "Edición");
+    for (index, other_group) in ["", "<TrackGroups><TrackGroup><Second ObjectRef=\"1\"/></TrackGroup></TrackGroups>"].iter().enumerate() {
+        let xml =
+            original.replace("</PremiereData>", &format!("<Sequence ObjectUID=\"empty\"><Name>Sequence 01</Name>{other_group}</Sequence></PremiereData>"));
+        std::fs::write(&doc, xml).unwrap();
+        let mut s = Session::default();
+        s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join(index.to_string())})).unwrap();
+        let id = s.state.active_sequence.unwrap();
+        assert_eq!(s.project.item(id).unwrap().name, if index == 0 { "Edición" } else { "Sequence 01" });
+        assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 1);
+    }
+}
+
+#[test]
+fn premiere_document_network_paths_are_refused_before_filesystem_access() {
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    let xml = std::fs::read_to_string(&doc).unwrap().replace(fixture.0.join("source.png").to_str().unwrap(), "file://192.0.2.1/share/source.png");
+    std::fs::write(&doc, xml).unwrap();
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("refused")})).unwrap();
+    assert_eq!(result["offlineMedia"], json!(["source.png"]));
+    assert!(result["report"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("document path refused")));
+    assert!(s.project.workflow.as_ref().unwrap().imports[0].media[0].sha256.is_none());
+}
+
+#[test]
 fn premiere_duplicate_sequence_names_import_and_select_by_uid() {
     let fixture = Fixture::new();
     let doc = fixture.0.join("source.prproj");
@@ -121,7 +218,7 @@ fn premiere_unreadable_media_stays_offline_in_link_and_copy_modes() {
         eprintln!("permission regression requires an unprivileged user; root bypasses mode bits");
         return;
     }
-    let read_error = hash_file(&source).unwrap_err().to_string();
+    let read_error = std::fs::File::open(&source).unwrap_err().to_string();
     for mode in ["link", "copy"] {
         let mut s = Session::default();
         let dest = fixture.0.join(mode);
