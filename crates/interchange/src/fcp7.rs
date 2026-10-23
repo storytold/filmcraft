@@ -535,8 +535,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         ti.markers = read_markers(c, rate, &mut self.b);
         let src_frame = self.source_frame(item).unwrap_or(frame);
+        let nest = matches!(self.b.p.item(item).map(|i| &i.kind), Some(ItemKind::Sequence(_)));
         for f in c.children().filter(|x| x.has_tag_name("filter")) {
-            self.filter(&mut ti, f, rate, frame, src_frame);
+            self.filter(&mut ti, f, rate, frame, src_frame, nest);
         }
         let refs: Vec<String> = children(c, "link").filter_map(|l| child_text(l, "linkclipref")).map(str::to_string).collect();
         Some((ti, refs))
@@ -550,7 +551,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
     }
 
-    fn filter(&mut self, ti: &mut TrackItem, f: Node, rate: FrameRate, frame: (u32, u32), src: (u32, u32)) {
+    fn filter(&mut self, ti: &mut TrackItem, f: Node, rate: FrameRate, frame: (u32, u32), src: (u32, u32), nest: bool) {
         let Some(e) = child(f, "effect") else { return };
         let enabled = child_bool(f, "enabled").unwrap_or(true);
         let id = child_text(e, "effectid").unwrap_or("");
@@ -571,7 +572,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                     set_param(ti, "motion", "rotation", read_param(p, rate, |v| v));
                 }
                 if let Some(p) = find("center") {
-                    let pr = read_point_param(p, rate, |x, y| Vec2::new(fw / 2.0 + x * fw, fh / 2.0 + y * fh));
+                    // Premiere writes a nested sequence's centre half a frame up and left of a media clip's
+                    // (-0.5 -0.5 where the nest sits centred) and reads it back the same way (#1562).
+                    let bias = if nest && p.attribute("authoringApp") == Some("PremierePro") { 0.5 } else { 0.0 };
+                    let pr = read_point_param(p, rate, |x, y| Vec2::new(fw / 2.0 + (x + bias) * fw, fh / 2.0 + (y + bias) * fh));
                     if pr.is_animated() || pr.value.as_vec2().is_some_and(|v| (v.x - fw / 2.0).abs() > 1e-9 || (v.y - fh / 2.0).abs() > 1e-9) {
                         set_param(ti, "motion", "position", pr);
                     }
