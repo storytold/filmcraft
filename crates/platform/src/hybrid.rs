@@ -21,11 +21,15 @@ const LOG_MAX_SAMPLES: usize = 600;
 const LOG_MAX_BYTES: usize = 256 << 20;
 /// Presentation times remembered as returned (older ones are forgotten first).
 const EMITTED_MAX: usize = 4096;
+/// Initialization consists only of bounded accepted sequence configuration, never media samples.
+const INITIALIZATION_MAX_BYTES: usize = 65_536;
 
 /// A hardware decoder with a transparent software fallback.
 pub struct HybridDecoder {
     hw: Option<Box<dyn VideoDecoder>>,
     sw: Option<Box<dyn VideoDecoder>>,
+    software_initialization: Option<Vec<u8>>,
+    needs_software_initialization: bool,
     entry: SampleEntry,
     info: StreamInfo,
     draft: bool,
@@ -48,6 +52,8 @@ impl HybridDecoder {
         Self {
             hw: Some(hw),
             sw: None,
+            software_initialization: None,
+            needs_software_initialization: false,
             entry,
             info,
             draft: false,
@@ -128,12 +134,47 @@ impl HybridDecoder {
         out
     }
 
+    fn initialize_software(&mut self) -> Result<()> {
+        if !self.needs_software_initialization {
+            return Ok(());
+        }
+        let Some(initialization) = self.software_initialization.as_deref() else {
+            return Err(CodecError::Decode("software replay initialization is missing".into()));
+        };
+        let Some(sw) = self.sw.as_mut() else {
+            return Err(CodecError::Decode("no software decoder to initialize for replay".into()));
+        };
+        let frames = sw.decode(initialization, 0).map_err(|e| CodecError::Decode(format!("cannot initialize software replay: {e}")))?;
+        if !frames.is_empty() {
+            return Err(CodecError::Decode("software replay initialization unexpectedly produced pictures".into()));
+        }
+        self.needs_software_initialization = false;
+        Ok(())
+    }
+
     /// Switch to the software decoder after `err`, replaying the log (which ends with the sample
     /// that failed). The replay goes on past samples the software decoder rejects, as decoding in
     /// software from the restart point would: one that the hardware had already decoded is logged
     /// (its call returned long ago), and if the failed sample itself is rejected its error is this
     /// call's, while the pictures replayed before it are kept for the next output.
     fn fall_back(&mut self, err: CodecError) -> Result<Vec<DecodedFrame>> {
+        // Keep the native owner available if preserving its accepted configuration fails. The
+        // original entry/info remain unchanged; one bounded copy also survives software reset.
+        let initialization = self
+            .hw
+            .as_ref()
+            .and_then(|hw| hw.software_replay_initialization())
+            .map(|bytes| {
+                if bytes.is_empty() || bytes.len() > INITIALIZATION_MAX_BYTES {
+                    return Err(CodecError::Decode("software replay initialization must contain 1..=64 KiB".into()));
+                }
+                let mut copy = Vec::new();
+                copy.try_reserve_exact(bytes.len()).map_err(|e| CodecError::Decode(format!("cannot retain software replay initialization: {e}")))?;
+                copy.extend_from_slice(bytes);
+                Ok(copy)
+            })
+            .transpose()
+            .map_err(|e| CodecError::Decode(format!("{err}; {e}")))?;
         let Some(mut hw) = self.hw.take() else { return Err(err) };
         log::warn!("{} failed ({err}); continuing with the software decoder", hw.name());
         filmcraft_codecs::hw::note_hw_fallback();
@@ -142,10 +183,13 @@ impl HybridDecoder {
                 self.carry.insert(f.pts, f);
             }
         }
-        drop(hw);
         let mut sw = filmcraft_codecs::software_video_decoder(&self.entry).map_err(|e| CodecError::Decode(format!("{err}; no software decoder: {e}")))?;
         sw.set_draft(self.draft);
         self.sw = Some(sw);
+        self.software_initialization = initialization;
+        self.needs_software_initialization = self.software_initialization.is_some();
+        self.initialize_software()?;
+        drop(hw);
         let Some(log) = self.log.take() else {
             // Too far from a restart point to replay: the next seek restarts in software.
             self.carry.clear();
@@ -179,13 +223,22 @@ impl HybridDecoder {
 
 impl VideoDecoder for HybridDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        if let Some(sw) = self.sw.as_mut() {
+        if self.sw.is_some() {
+            self.initialize_software()?;
+            let Some(sw) = self.sw.as_mut() else { return Err(CodecError::Decode("no software decoder".into())) };
             let frames = sw.decode(sample, pts)?;
             return Ok(self.merge(frames));
         }
         self.remember(sample, pts);
         if self.parameter_sets_changed(sample) {
-            return self.fall_back(CodecError::Decode("in-band parameter sets differ from the sample entry".into()));
+            // The native owner may prepare a compatible change. Keep the original entry/info
+            // and logged sample untouched so a later failure replays the software stream.
+            let adoption = self.hw.as_mut().map_or(Ok(false), |hw| hw.try_adopt_parameter_change(sample));
+            match adoption {
+                Ok(true) => {}
+                Ok(false) => return self.fall_back(CodecError::Decode("in-band parameter sets differ from the sample entry".into())),
+                Err(e) => return self.fall_back(e),
+            }
         }
         let Some(hw) = self.hw.as_mut() else {
             return Err(CodecError::Decode("no decoder".into()));
@@ -219,6 +272,7 @@ impl VideoDecoder for HybridDecoder {
         }
         if let Some(sw) = self.sw.as_mut() {
             sw.reset();
+            self.needs_software_initialization = self.software_initialization.is_some();
         }
         self.log = Some(Vec::new());
         self.log_bytes = 0;
@@ -248,5 +302,86 @@ impl VideoDecoder for HybridDecoder {
         if let Some(sw) = self.sw.as_mut() {
             sw.set_draft(on);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_codecs::hw::{FrameCodec, FrameStreamInfo};
+
+    enum PrimerOutcome {
+        Error,
+        Picture,
+    }
+
+    struct ReplayProbe {
+        initialization: Vec<u8>,
+        outcome: PrimerOutcome,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl VideoDecoder for ReplayProbe {
+        fn software_replay_initialization(&self) -> Option<&[u8]> {
+            Some(&self.initialization)
+        }
+        fn decode(&mut self, _: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match self.outcome {
+                PrimerOutcome::Error => Err(CodecError::Decode("initialization rejected (test)".into())),
+                PrimerOutcome::Picture => Ok(vec![DecodedFrame { pts, frame: filmcraft_frame::VideoFrame::rgba8(1, 1, vec![0, 0, 0, 255]), draft: false }]),
+            }
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+        fn reset(&mut self) {}
+        fn name(&self) -> &str {
+            "replay initialization probe"
+        }
+    }
+
+    fn with_probe(initialization: Vec<u8>, outcome: PrimerOutcome) -> HybridDecoder {
+        HybridDecoder::new(
+            Box::new(ReplayProbe { initialization, outcome, calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)) }),
+            SampleEntry::av1(filmcraft_isobmff::Av1Config::default(), 2, 2),
+            FrameStreamInfo::for_tests(FrameCodec::Av1, 0, 8, (1, 1), (2, 2)),
+        )
+    }
+
+    #[test]
+    fn software_replay_initialization_cap_rejects_before_releasing_native_owner() {
+        for bytes in [Vec::new(), vec![0; 65_537]] {
+            let mut hybrid = with_probe(bytes, PrimerOutcome::Error);
+            assert!(hybrid.fall_back(CodecError::Decode("native failure".into())).is_err());
+            assert!(hybrid.is_hardware(), "invalid initialization must not discard native owner");
+        }
+    }
+
+    #[test]
+    fn software_replay_initialization_errors_and_pictures_cannot_be_silently_discarded() {
+        for outcome in [PrimerOutcome::Error, PrimerOutcome::Picture] {
+            let mut hybrid = with_probe(Vec::new(), PrimerOutcome::Error);
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            hybrid.sw = Some(Box::new(ReplayProbe { initialization: Vec::new(), outcome, calls: calls.clone() }));
+            hybrid.software_initialization = Some(vec![0x0a, 0]);
+            hybrid.needs_software_initialization = true;
+            assert!(hybrid.initialize_software().is_err());
+            assert!(hybrid.needs_software_initialization, "failed initialization cannot authorize sample replay");
+            let before_reset = calls.load(std::sync::atomic::Ordering::Relaxed);
+            hybrid.reset();
+            assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), before_reset, "reset must defer fallible priming until decode");
+            assert!(hybrid.needs_software_initialization);
+            assert!(hybrid.decode(&[0x12, 0], 1).is_err(), "first decode after reset reports initialization failure");
+        }
+    }
+
+    #[test]
+    fn software_replay_malformed_av1_initialization_returns_error_without_output() {
+        let mut hybrid = with_probe(vec![0x0a, 0xff], PrimerOutcome::Error); // Truncated OBU length.
+        let error = hybrid.fall_back(CodecError::Decode("native failure".into()));
+        assert!(error.is_err());
+        assert!(hybrid.needs_software_initialization, "malformed initialization cannot authorize replay");
+        assert!(hybrid.flush().is_empty());
     }
 }

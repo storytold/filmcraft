@@ -190,12 +190,14 @@ pub enum Poll {
 }
 
 /// An attribute of the decoder's input media type.
+#[derive(PartialEq, Eq)]
 pub enum Attr {
     U32(u32),
     Blob(Vec<u8>),
 }
 
 /// What the decoder MFT is asked to decode.
+#[derive(PartialEq, Eq)]
 pub struct Spec {
     /// The input subtype (`MFVideoFormat_H264`, `_HEVC`, `_VP90`, `_AV1`).
     pub subtype: GUID,

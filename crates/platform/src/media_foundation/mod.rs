@@ -26,10 +26,14 @@
 //! The modules that call into Windows (`gpu`, `mft`) are the FFI modules of this backend
 //! (docs/adr/0001-platform-ffi.md); this one is safe code.
 
+mod av1_container;
+mod av1_run;
 #[allow(unsafe_code)]
 mod gpu;
 #[allow(unsafe_code)]
 mod mft;
+mod pending;
+mod reset;
 mod stream;
 
 use std::sync::Arc;
@@ -38,13 +42,13 @@ use std::time::{Duration, Instant};
 use filmcraft_codecs::hw::{NalCodec, StreamInfo};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
 
+use self::av1_container::Av1ContainerPolicy;
 use self::gpu::{Gpu, Readback, SurfaceFormat};
 use self::mft::{MfApi, Mft, Poll};
+use self::pending::PendingPictures;
 use self::stream::Stream;
 use crate::biplanar::{self, Geometry};
 
-/// Pictures the decoder may hold back (a DPB is at most 16 frames; more means it lost track).
-const MAX_IN_FLIGHT: usize = 64;
 /// Upper bound on the outputs taken per call: a misbehaving MFT cannot make a decode call loop.
 const MAX_OUTPUTS_PER_CALL: usize = 4096;
 
@@ -111,8 +115,8 @@ pub struct Timings {
 /// The Media Foundation decoder for one `avcC` / `hvcC` stream.
 pub struct MfDecoder {
     stream: Stream,
-    /// The stream as the hybrid decoder's tests (random access, disposable) see it.
-    info: StreamInfo,
+    /// Original entry interpretation; reset/recreation cannot erase these restrictions.
+    av1_container: Av1ContainerPolicy,
     format: SurfaceFormat,
     geometry: Geometry,
     api: &'static MfApi,
@@ -120,8 +124,8 @@ pub struct MfDecoder {
     /// `None` only after a failed reset: made again on the next sample.
     mft: Option<Mft>,
     readback: Readback,
-    /// Presentation times of submitted access units whose picture has not come out yet.
-    in_flight: Vec<i64>,
+    /// Interpretation of submitted access units whose picture has not come out yet.
+    in_flight: PendingPictures,
     /// The next sample must carry the parameter sets (first of a run, after a reset or flush).
     need_headers: bool,
     /// The run started at a CRA / BLA picture: its RASL pictures are not decodable and are left
@@ -144,8 +148,23 @@ pub struct MfDecoder {
 impl MfDecoder {
     /// A decoder for the stream, or why Media Foundation does not take it (unsupported format, no
     /// DXVA decoder for it on the GPU, no Direct3D-aware decoder MFT).
+    /// Initial AV1 metadata adoption is disabled without original container context. Use
+    /// [`Self::from_entry`] for an entry-aware decoder; matching active headers still decode.
     pub fn new(stream: impl Into<Stream>) -> std::result::Result<Self, String> {
-        let stream = stream.into();
+        Self::with_container_policy(stream.into(), Av1ContainerPolicy::default())
+    }
+
+    /// A decoder preserving the original entry's compact colour/HDR/crop context. AV1 initial
+    /// colour accommodation must agree with the same resolved override used by the MP4 source.
+    pub fn from_entry(entry: &filmcraft_isobmff::SampleEntry) -> std::result::Result<Self, String> {
+        let stream = Stream::from(stream_info(entry).ok_or("unsupported or unreadable native sample entry")?);
+        let size = stream.plan()?.size;
+        let container = Av1ContainerPolicy::from_entry(entry, size);
+        Self::with_container_policy(stream, container)
+    }
+
+    fn with_container_policy(stream: Stream, av1_container: Av1ContainerPolicy) -> std::result::Result<Self, String> {
+        let stream = stream.into_guarded();
         let plan = stream.plan()?;
         let api = mft::api()?;
         let gpu = Gpu::shared(api)?;
@@ -156,7 +175,7 @@ impl MfDecoder {
         let geometry = stream.first_geometry(format);
         Ok(Self {
             name: stream.name(),
-            info: stream.info(),
+            av1_container,
             geometry,
             stream,
             format,
@@ -164,7 +183,7 @@ impl MfDecoder {
             gpu,
             mft: Some(mft),
             readback: Readback::default(),
-            in_flight: Vec::new(),
+            in_flight: PendingPictures::default(),
             need_headers: true,
             skip_rasl: false,
             first: true,
@@ -191,27 +210,26 @@ impl MfDecoder {
         self.mft.as_ref().map_or("", Mft::name)
     }
 
-    /// The submitted presentation time an output stamped `t` belongs to.
-    fn take_pts(&mut self, t: i64) -> i64 {
-        if let Some(i) = self.in_flight.iter().position(|&p| p == t) {
-            return self.in_flight.swap_remove(i);
+    fn prepare_av1_input(&mut self, sample: &[u8]) -> Result<bool> {
+        let allowed = self.stream.prepare_av1(sample, self.in_flight.len(), self.format, &self.av1_container)?;
+        if allowed {
+            self.geometry = self.stream.first_geometry(self.format);
         }
-        // the MFT restamped it: pictures come out in presentation order, so the earliest
-        match self.in_flight.iter().enumerate().min_by_key(|(_, p)| **p).map(|(i, _)| i) {
-            Some(i) => self.in_flight.swap_remove(i),
-            None => t,
-        }
+        Ok(allowed)
     }
 
     /// A VP9 / AV1 decoder must output the picture size the bitstream declares (H.264 / HEVC
     /// decoders report coded or cropped sizes, which the cropping handles).
-    fn check_size(&mut self) -> std::result::Result<(), String> {
-        self.size_checked = true;
-        let (_, _, w, h) = self.geometry.crop;
-        match (&self.stream, self.mft.as_ref().and_then(Mft::output_size)) {
-            (Stream::Frame(_), Some(got)) if got != (w, h) => Err(format!("the decoder outputs {}x{} pictures, the stream says {w}x{h}", got.0, got.1)),
-            _ => Ok(()),
+    fn check_size(&mut self, geometry: &Geometry) -> std::result::Result<(), String> {
+        let (_, _, w, h) = geometry.crop;
+        if self.stream.frame_info().is_some()
+            && let Some(got) = self.mft.as_ref().and_then(Mft::output_size)
+            && got != (w, h)
+        {
+            return Err(format!("the decoder outputs {}x{} pictures, the stream says {w}x{h}", got.0, got.1));
         }
+        self.size_checked = true;
+        Ok(())
     }
 
     /// Take every picture the decoder has ready (presentation order).
@@ -222,21 +240,23 @@ impl MfDecoder {
                 Poll::NeedInput => return Ok(()),
                 Poll::FormatChanged => self.size_checked = false,
                 Poll::Frame(sample, t) => {
+                    let pending = self.in_flight.picture_for_output(t)?;
                     if !self.size_checked {
-                        self.check_size()?;
+                        self.check_size(&pending.geometry)?;
                     }
-                    let geometry = self.geometry;
                     let (t0, mut convert) = (Instant::now(), Duration::ZERO);
-                    let frame = self.readback.read(&self.gpu, &sample, self.format, |b| {
-                        let c0 = Instant::now();
-                        let f = biplanar::to_frame(b, &geometry);
-                        convert = c0.elapsed();
-                        f
+                    let readback = &mut self.readback;
+                    let (pts, frame) = self.in_flight.convert_output(t, |geometry| {
+                        readback.read(&self.gpu, &sample, self.format, |b| {
+                            let c0 = Instant::now();
+                            let f = biplanar::to_frame(b, geometry);
+                            convert = c0.elapsed();
+                            f
+                        })
                     })?;
                     self.timings.frames += 1;
                     self.timings.convert += convert;
                     self.timings.readback += t0.elapsed().saturating_sub(convert);
-                    let pts = self.take_pts(t);
                     out.push(DecodedFrame { pts, frame, draft: false });
                 }
             }
@@ -248,14 +268,9 @@ impl MfDecoder {
         let mut out = Vec::new();
         for attempt in 0..2 {
             let Some(mft) = self.mft.as_ref() else { return Err("no decoder".into()) };
-            if mft.input(self.api, annex_b, pts)? {
-                self.in_flight.push(pts);
+            if self.in_flight.submit(pts, self.geometry, || mft.input(self.api, annex_b, pts))? {
                 self.need_headers = false;
                 self.collect(&mut out)?;
-                // a decoder holds back a DPB's worth of pictures at most
-                if self.in_flight.len() > MAX_IN_FLIGHT {
-                    return Err(format!("the decoder holds {} pictures back", self.in_flight.len()));
-                }
                 return Ok(out);
             }
             // full: take what it has ready, then offer the sample again
@@ -269,8 +284,22 @@ impl MfDecoder {
 }
 
 impl VideoDecoder for MfDecoder {
+    fn try_adopt_parameter_change(&mut self, sample: &[u8]) -> Result<bool> {
+        self.prepare_av1_input(sample)
+    }
+
+    fn software_replay_initialization(&self) -> Option<&[u8]> {
+        self.stream.software_replay_initialization()
+    }
+
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        self.fed += 1;
+        if matches!(self.stream, Stream::Av1(_)) {
+            if !self.prepare_av1_input(sample)? {
+                return Err(CodecError::Decode("in-band AV1 sequence differs from active hardware metadata".into()));
+            }
+            self.stream.close_av1_adoption();
+        }
+        self.fed = self.fed.saturating_add(1);
         if self.fail_after.is_some_and(|n| self.fed > n) {
             return Err(CodecError::Decode("Media Foundation decoder failed (test hook)".into()));
         }
@@ -320,6 +349,7 @@ impl VideoDecoder for MfDecoder {
     }
 
     fn flush(&mut self) -> Vec<DecodedFrame> {
+        self.stream.close_av1_adoption();
         let mut out = Vec::new();
         if gpu::ensure_com().is_err() {
             return out;
@@ -337,10 +367,13 @@ impl VideoDecoder for MfDecoder {
 
     fn reset(&mut self) {
         // after a seek no reference picture survives
-        if gpu::ensure_com().is_ok() && self.mft.as_ref().map(Mft::flush).transpose().is_err() {
-            self.mft = None;
+        if let Err(e) = reset::reset_session(&mut self.mft, gpu::ensure_com, Mft::flush) {
+            log::warn!("{}: {e} while resetting; recreating the native session", self.name);
         }
         self.in_flight.clear();
+        // A successful flush discarded native references; otherwise the failed session was
+        // dropped and a fresh MFT will be created before the next input. Drain alone never reopens.
+        self.stream.restart_av1_empty();
         self.need_headers = true;
         self.skip_rasl = false;
         self.first = true;
@@ -353,11 +386,11 @@ impl VideoDecoder for MfDecoder {
     }
 
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
-        self.info.is_random_access(sample)
+        self.stream.is_random_access(sample)
     }
 
     fn is_disposable(&self, sample: &[u8]) -> bool {
-        self.info.is_disposable(sample)
+        self.stream.is_disposable(sample)
     }
 }
 
