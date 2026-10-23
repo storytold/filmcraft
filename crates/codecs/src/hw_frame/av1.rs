@@ -98,20 +98,11 @@ fn description(h: &SequenceHeader) -> (u8, u8, u8) {
     (h.color.color_primaries, h.color.transfer_characteristics, h.color.matrix_coefficients)
 }
 fn difference(before: &SequenceHeader, after: &SequenceHeader) -> Av1ParameterDifference {
-    let a = &before.color;
-    let b = &after.color;
-    if before.profile != after.profile
-        || before.max_frame_width != after.max_frame_width
-        || before.max_frame_height != after.max_frame_height
-        || a.bit_depth != b.bit_depth
-        || a.mono_chrome != b.mono_chrome
-        || a.num_planes != b.num_planes
-        || a.subsampling_x != b.subsampling_x
-        || a.subsampling_y != b.subsampling_y
-        || a.color_range != b.color_range
-        || a.chroma_sample_position != b.chroma_sample_position
-        || a.separate_uv_delta_q != b.separate_uv_delta_q
-    {
+    let mut normalized_after = after.clone();
+    normalized_after.color.color_primaries = before.color.color_primaries;
+    normalized_after.color.transfer_characteristics = before.color.transfer_characteristics;
+    normalized_after.color.matrix_coefficients = before.color.matrix_coefficients;
+    if before != &normalized_after {
         Av1ParameterDifference::Structural
     } else if description(before) != description(after) {
         Av1ParameterDifference::ColorDescription { before: description(before), after: description(after) }
@@ -274,7 +265,12 @@ impl FrameStreamInfo {
                         return Err(invalid("nonempty AV1 temporal delimiter"));
                     }
                 }
-                4 | 15 => {} // tile payload / padding: framing checked, entropy not inspected
+                4 => {
+                    if frame.is_none() {
+                        decline = true;
+                    }
+                } // tile payload: framing checked, entropy not inspected
+                15 => {} // padding
                 _ => decline = true,
             }
         }
@@ -342,6 +338,112 @@ impl FrameStreamInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn non_color_sequence_changes(base: &SequenceHeader) -> Vec<(String, SequenceHeader)> {
+        let mut changes = Vec::new();
+        macro_rules! changed {
+            ($field:ident $(.$nested:ident)?, $value:expr) => {{
+                let mut header = base.clone();
+                header.$field $(.$nested)? = $value;
+                changes.push((stringify!($field $(.$nested)?).to_owned(), header));
+            }};
+        }
+        changed!(profile, 1);
+        changed!(still_picture, true);
+        changed!(reduced_still_picture_header, true);
+        changed!(timing_info_present, true);
+        changed!(decoder_model_info_present, true);
+        changed!(equal_picture_interval, true);
+        changed!(buffer_removal_time_length_minus_1, 1);
+        changed!(frame_presentation_time_length_minus_1, 1);
+        changed!(operating_points_cnt_minus_1, 1);
+        for index in 0..32 {
+            let mut header = base.clone();
+            header.operating_point_idc[index] = 1;
+            changes.push((format!("operating_point_idc[{index}]"), header));
+            let mut header = base.clone();
+            header.seq_level_idx[index] = 1;
+            changes.push((format!("seq_level_idx[{index}]"), header));
+            let mut header = base.clone();
+            header.decoder_model_present_for_this_op[index] = true;
+            changes.push((format!("decoder_model_present_for_this_op[{index}]"), header));
+        }
+        changed!(op_idc, 1);
+        changed!(frame_width_bits, 1);
+        changed!(frame_height_bits, 1);
+        changed!(max_frame_width, 1);
+        changed!(max_frame_height, 1);
+        changed!(frame_id_numbers_present, true);
+        changed!(delta_frame_id_length_minus_2, 1);
+        changed!(additional_frame_id_length_minus_1, 1);
+        changed!(use_128x128_superblock, true);
+        changed!(enable_filter_intra, true);
+        changed!(enable_intra_edge_filter, true);
+        changed!(enable_interintra_compound, true);
+        changed!(enable_masked_compound, true);
+        changed!(enable_warped_motion, true);
+        changed!(enable_dual_filter, true);
+        changed!(enable_order_hint, true);
+        changed!(enable_jnt_comp, true);
+        changed!(enable_ref_frame_mvs, true);
+        changed!(seq_force_screen_content_tools, 1);
+        changed!(seq_force_integer_mv, 1);
+        changed!(order_hint_bits, 1);
+        changed!(enable_superres, true);
+        changed!(enable_cdef, true);
+        changed!(enable_restoration, true);
+        changed!(color.bit_depth, 8);
+        changed!(color.mono_chrome, true);
+        changed!(color.num_planes, 3);
+        changed!(color.color_range, true);
+        changed!(color.subsampling_x, 1);
+        changed!(color.subsampling_y, 1);
+        changed!(color.chroma_sample_position, 1);
+        changed!(color.separate_uv_delta_q, true);
+        changed!(film_grain_params_present, true);
+        changes
+    }
+
+    #[test]
+    fn av1_format_comparison_checks_every_stored_non_color_sequence_field() {
+        let base = SequenceHeader::default();
+        let missed: Vec<_> = non_color_sequence_changes(&base)
+            .into_iter()
+            .filter_map(|(field, changed)| (difference(&base, &changed) != Av1ParameterDifference::Structural).then_some(field))
+            .collect();
+        assert!(missed.is_empty(), "non-colour sequence changes were not structural: {missed:?}");
+    }
+
+    #[test]
+    fn av1_format_comparison_gives_structural_changes_precedence_over_color() {
+        let base = SequenceHeader::default();
+        let missed: Vec<_> = non_color_sequence_changes(&base)
+            .into_iter()
+            .filter_map(|(field, mut changed)| {
+                changed.color.color_primaries = 9;
+                changed.color.transfer_characteristics = 16;
+                changed.color.matrix_coefficients = 9;
+                (difference(&base, &changed) != Av1ParameterDifference::Structural).then_some(field)
+            })
+            .collect();
+        assert!(missed.is_empty(), "structural changes were hidden by colour changes: {missed:?}");
+    }
+
+    #[test]
+    fn av1_format_comparison_exempts_only_the_three_color_description_codes() {
+        let mut base = SequenceHeader::default();
+        base.color.color_primaries = 1;
+        base.color.transfer_characteristics = 1;
+        base.color.matrix_coefficients = 1;
+        assert_eq!(difference(&base, &base), Av1ParameterDifference::Unchanged);
+        for after in [(9, 1, 1), (1, 16, 1), (1, 1, 9), (9, 16, 9)] {
+            let mut changed = base.clone();
+            changed.color.color_primaries = after.0;
+            changed.color.transfer_characteristics = after.1;
+            changed.color.matrix_coefficients = after.2;
+            assert_eq!(difference(&base, &changed), Av1ParameterDifference::ColorDescription { before: (1, 1, 1), after });
+        }
+    }
 
     #[test]
     fn bounded_configuration_copy_errors_before_oversized_allocation() {

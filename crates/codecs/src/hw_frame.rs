@@ -306,7 +306,8 @@ mod tests {
         assert!(!i.parameters_changed(&AV1C), "the same header");
         // used to send every SVT-AV1 MP4 to the software decoder from its first frame
         assert!(!i.parameters_changed(&IN_BAND), "only coding tool flags differ");
-        assert_eq!(i.av1_parameter_difference(&IN_BAND).unwrap(), Av1ParameterDifference::Unchanged);
+        // Candidate adoption is stricter than the existing picture-format decoder check.
+        assert_eq!(i.av1_parameter_difference(&IN_BAND).unwrap(), Av1ParameterDifference::Structural);
         // a header that does not parse is a change
         assert!(i.parameters_changed(&[0x0a, 0x02, 0xe0, 0x00]));
         // no sequence header in the sample: nothing changed

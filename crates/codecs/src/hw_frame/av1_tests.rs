@@ -125,6 +125,41 @@ fn sample(s: &Sequence) -> Vec<u8> {
 }
 
 #[test]
+fn av1_checked_color_candidate_declines_tile_groups_before_the_first_frame() {
+    let info = stream(&Sequence::default());
+    let changed = Sequence { color: (9, 16, 9), ..Default::default() };
+    for before_sequence in [true, false] {
+        let mut bytes = Vec::new();
+        if before_sequence {
+            bytes.extend(obu(4, &[0]));
+        }
+        bytes.extend(obu(1, &payload(&changed)));
+        if !before_sequence {
+            bytes.extend(obu(4, &[0]));
+        }
+        bytes.extend(obu(6, &[0x19, 0, 0]));
+        assert!(info.initial_av1_color_candidate(&bytes).unwrap().is_none(), "orphan tile group before_sequence={before_sequence}");
+    }
+}
+
+#[test]
+fn av1_checked_color_candidate_preserves_padding_and_postframe_tile_handling() {
+    let info = stream(&Sequence::default());
+    let changed = Sequence { color: (9, 16, 9), ..Default::default() };
+    for (kind, frame) in [(3, [0x19, 0, 2]), (6, [0x19, 0, 0])] {
+        let mut bytes = obu(15, &[0]);
+        bytes.extend(obu(1, &payload(&changed)));
+        bytes.extend(obu(15, &[0]));
+        bytes.extend(obu(kind, &frame));
+        bytes.extend(obu(4, &[0]));
+        bytes.extend(obu(15, &[0]));
+        let candidate = info.initial_av1_color_candidate(&bytes).unwrap().unwrap();
+        assert_eq!(candidate.config_obus, obu(1, &payload(&changed)));
+        assert_eq!(candidate.color, Some(av1_color(64, 64, 9, 16, 9, false)));
+    }
+}
+
+#[test]
 fn av1_checked_color_candidate_classifies_each_description_field_and_preserves_original() {
     let original = Sequence::default();
     let info = stream(&original);
