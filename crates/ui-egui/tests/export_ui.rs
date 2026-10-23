@@ -510,3 +510,88 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+/// Preferences ▸ General ▸ "Show a progress window while exporting or rendering" (#1192): a window
+/// with the running job's bar and a Cancel, closed for that job by its close button.
+#[test]
+fn a_progress_window_shows_the_running_job_when_the_preference_is_on() {
+    use std::sync::atomic::Ordering;
+
+    use filmcraft_engine::Job;
+    let mut d = Driver::new("progress-window");
+    let job = Job { id: 901, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    job.progress.done.store(250, Ordering::Relaxed);
+    d.app().session.jobs.push(job);
+    d.frames(4);
+    assert!(!d.has("progress.window"), "off by default: only the status bar shows the job");
+    d.app().session.prefs.general.show_progress_window = true;
+    d.frames(4);
+    assert!(d.has("progress.window"), "the window shows the running job");
+    assert!(d.has("progress.window.bar") && d.has("progress.window.cancel"));
+    // Cancel asks the job to stop and closes the window for it
+    d.click("progress.window.cancel");
+    assert!(d.app().session.jobs[0].progress.cancel.load(Ordering::Relaxed));
+    d.frames(3);
+    assert!(!d.has("progress.window"));
+}
+
+/// The progress window is offered where the export starts and next to the status bar's bar, not
+/// only in Preferences (#1192).
+#[test]
+fn the_export_window_and_the_status_bar_offer_the_progress_window() {
+    use std::sync::atomic::Ordering;
+
+    use filmcraft_engine::Job;
+    let mut d = Driver::new("progress-offer");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    assert!(d.has("export.progressWindow"), "the Export window has the switch");
+    let rect = |d: &mut Driver, id: &str| {
+        let v = d.ok("ui.elements", json!({"prefix": id}));
+        let r = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap()["rect"].clone();
+        let n = |i: usize| r[i].as_f64().unwrap() as f32;
+        egui::Rect::from_min_size(egui::pos2(n(0), n(1)), egui::vec2(n(2), n(3)))
+    };
+    // in English and in French, one of the longest translations of its label
+    for language in ["french", "english"] {
+        let (switch, queue, export) = (rect(&mut d, "export.progressWindow"), rect(&mut d, "export.sendToQueue"), rect(&mut d, "export.button"));
+        assert!(!switch.intersects(queue) && !switch.intersects(export), "the switch {switch:?} clears the buttons {queue:?} {export:?}");
+        d.ok("ui.menu.invoke", json!({"id": format!("app.language.{language}")}));
+        d.frames(4);
+    }
+    assert!(!d.app().session.prefs.general.show_progress_window);
+    d.click("export.progressWindow");
+    assert!(d.app().session.prefs.general.show_progress_window, "it turns the preference on");
+    d.click("export.progressWindow");
+    assert!(!d.app().session.prefs.general.show_progress_window, "and off");
+    // with the preference off, the status bar's own button opens the window for the running job
+    let job = Job { id: 902, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    job.progress.done.store(100, Ordering::Relaxed);
+    d.app().session.jobs.push(job);
+    d.frames(4);
+    assert!(d.has("status.job.window"), "the status bar offers it");
+    assert!(!d.has("progress.window"));
+    d.click("status.job.window");
+    d.frames(2);
+    assert!(d.has("progress.window"), "one click opens it");
+}
+
+/// The progress window does not depend on the status bar: with the bar hidden the preference
+/// still shows it (#1192).
+#[test]
+fn the_progress_window_also_shows_when_the_status_bar_is_hidden() {
+    use std::sync::atomic::Ordering;
+
+    use filmcraft_engine::Job;
+    let mut d = Driver::new("progress-window-no-status-bar");
+    d.app().ui.show_status_bar = false;
+    d.app().session.prefs.general.show_progress_window = true;
+    let job = Job { id: 903, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(1000, Ordering::Relaxed);
+    job.progress.done.store(250, Ordering::Relaxed);
+    d.app().session.jobs.push(job);
+    d.frames(4);
+    assert!(d.has("progress.window"), "the window shows the running job without a status bar");
+}

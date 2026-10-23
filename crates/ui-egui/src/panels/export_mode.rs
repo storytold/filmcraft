@@ -1092,7 +1092,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     // range + scaling
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(Rect::from_min_max(pos2(rect.min.x + 14.0, pv_area.max.y + 8.0), pos2(rect.max.x - 14.0, rect.max.y - 50.0)))
+            .max_rect(Rect::from_min_max(pos2(rect.min.x + 14.0, pv_area.max.y + 8.0), pos2(rect.max.x - 14.0, rect.max.y - 84.0)))
             .id_salt("export-right"),
     );
     let ex = &mut app.ui.export;
@@ -1176,11 +1176,25 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
     ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), t.text);
     reg.add("export.sendToQueue", queue, "Send to Queue");
+    // the progress window is a preference, and the status bar's bar is what it does without it: say
+    // so here, where the export starts, with the switch (#1192)
+    let mut windowed = app.session.prefs.general.show_progress_window;
+    // on its own row above the buttons, wrapping in a narrow column or a long language
+    let check = Rect::from_min_max(pos2(rect.min.x + 16.0, rect.max.y - 82.0), pos2(rect.max.x - 16.0, go.min.y - 4.0));
+    let mut check_ui = ui.new_child(egui::UiBuilder::new().max_rect(check).layout(egui::Layout::top_down(egui::Align::Min)));
+    check_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    let cresp = check_ui.checkbox(&mut windowed, tl!("Show a progress window while exporting or rendering"));
+    reg.add("export.progressWindow", cresp.rect, "Show a progress window");
     let resp = ui.interact(go, egui::Id::new("export-go"), Sense::click());
     ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
     ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
     reg.add("export.button", go, "Export");
     reg.flush(app);
+    if cresp.changed()
+        && let Err(e) = app.session.execute("prefs.set", json!({"key": "general.showProgressWindow", "value": windowed}))
+    {
+        app.ui.status = e.to_string();
+    }
     if resp.clicked() {
         let r = app.session.execute("file.exportMedia", export_params(app));
         match r {

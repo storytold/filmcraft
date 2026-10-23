@@ -584,6 +584,13 @@ fn hardware_decoding_setting_drives_the_decoder_switch() {
     assert!(settings::field("playback.hardwareDecoding").is_some_and(|f| f.wired && matches!(f.kind, Kind::Choice(_))));
 }
 
+/// Settings ▸ General ▸ "Show a progress window while exporting or rendering" is acted on, so the
+/// dialog does not list it as remembered only.
+#[test]
+fn the_progress_window_preference_is_wired() {
+    assert!(settings::field("general.showProgressWindow").is_some_and(|f| f.wired && matches!(f.kind, Kind::Bool)));
+}
+
 /// Settings ▸ Timeline ▸ "Place files dropped onto the Timeline directly on the Timeline": on by default.
 #[test]
 fn drop_import_to_timeline_defaults_to_on() {

@@ -3616,3 +3616,4 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Show a progress window while exporting or rendering	書き出しまたはレンダリング中に進行状況ウィンドウを表示
