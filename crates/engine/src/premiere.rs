@@ -126,8 +126,7 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
     }
     let fps: Option<FrameRate> =
         p.get("frameRate").map(|v| serde_json::from_value(v.clone())).transpose().map_err(|e| bad(COMMAND, format!("frameRate: {e}")))?;
-    let mut bytes = Vec::new();
-    std::fs::File::open(&source).map_err(io)?.take(filmcraft_interchange::premiere::MAX_DOCUMENT_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(io)?;
+    let bytes = filmcraft_interchange::premiere::read_input(std::fs::File::open(&source).map_err(io)?).map_err(|e| bad(COMMAND, e.to_string()))?;
     let opts =
         ImportOptions { base_dir: source.parent().map(stored_path), name: source.file_stem().map(|p| p.to_string_lossy().into_owned()), ..Default::default() };
     let (mut fragment, tree, mut report) = filmcraft_interchange::premiere::import(&bytes, &opts, fps).map_err(|e| bad(COMMAND, e.to_string()))?;

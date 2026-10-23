@@ -378,3 +378,24 @@ fn premiere_link_never_calls_media_hasher_but_copy_still_does() {
         }
     }
 }
+
+#[test]
+fn premiere_plain_xml_larger_than_64_mib_reaches_parser_and_snapshot() {
+    let fixture = Fixture::new();
+    let source = fixture.0.join("source.prproj");
+    let xml = std::fs::read_to_string(&source).unwrap();
+    let mut padded = String::from("<!--");
+    padded.extend(std::iter::repeat_n(' ', 65 * 1024 * 1024));
+    padded.push_str("-->");
+    padded.push_str(&xml);
+    std::fs::write(&source, padded.as_bytes()).unwrap();
+    let before = hash_file(&source).unwrap();
+    let destination = fixture.0.join("large-plain-import");
+    let mut session = Session::default();
+    session.execute("premiere.import", json!({"path":source,"destination":destination,"mediaMode":"link"})).unwrap();
+    assert_eq!(hash_file(&source).unwrap(), before);
+    let imports = &session.project.workflow.as_ref().unwrap().imports;
+    assert_eq!(imports.len(), 1);
+    assert_eq!(imports[0].source_sha256, before.0);
+    assert_eq!(hash_file(std::path::Path::new(&imports[0].snapshot_path)).unwrap(), before);
+}
