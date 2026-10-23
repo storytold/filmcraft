@@ -1,0 +1,101 @@
+# The CLAUDE.md quality gate (`cargo xtask ci`: fmt, clippy -D warnings, tests, layers, assets,
+# wasm) on every pull request and every push to main. Today only path-filtered workflows run on
+# pull requests, so most PRs land with no test run at all.
+#
+# Ported from wordcraft#800. Linux only; standard GitHub-hosted runner, no secrets.
+#
+# The runner has no GPU. wgpu offers a software adapter when there is no GPU, and Mesa's lavapipe
+# (mesa-vulkan-drivers) is one, so the GPU-vs-CPU parity tests run on it instead of skipping. They
+# print a skip note when no adapter is found, which `cargo test` hides for passing tests: the GPU
+# step runs them again with --nocapture and fails on a skip, so a broken Vulkan install cannot
+# pass as green (as lightcraft#1148 does).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Same craft-fonts commit as release.yml, so the font tests see what a release build embeds.
+  CRAFT_FONTS_REF: abb83316d96aa59c1cf64784289e378fe9fa5695
+
+jobs:
+  gate:
+    name: cargo xtask ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      RUST_BACKTRACE: "1"
+      # `xtask ci` builds clippy and the tests with --release. The release profile (thin LTO, one
+      # codegen unit) is for shipped binaries: on a 4-core runner it makes linking the ~220 test
+      # binaries take over an hour. CI keeps the optimisation level but builds in parallel units.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out craft-fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+          persist-credentials: false
+
+      # libasound2-dev is for cpal (audio playback); mesa-vulkan-drivers (lavapipe) and libvulkan1 are
+      # the software Vulkan adapter the GPU tests run on.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libfontconfig1-dev libfreetype-dev mesa-vulkan-drivers \
+            libvulkan1 libasound2-dev
+
+      - name: Install Rust (stable + clippy, rustfmt, wasm32)
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt \
+            --target wasm32-unknown-unknown
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Quality gate
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        run: cargo xtask ci
+
+      # The GPU test targets again, with their output: fails when one skipped for want of an adapter
+      # (`no GPU adapter`, `SKIPPED (gpu ...)`) or none printed the adapter it ran on. Release, as
+      # the gate builds the tests, so most of the build is reused. Runs after a failed gate too.
+      - name: GPU tests on lavapipe
+        if: ${{ !cancelled() }}
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        shell: bash
+        run: |
+          cargo test --release -p filmcraft-gpu -p filmcraft-golden -- --nocapture 2>&1 | tee gpu-tests.log
+          grep -oE 'GPU test adapter: .*' gpu-tests.log | sort | uniq -c
+          if grep -E 'no GPU adapter|SKIPPED \(gpu' gpu-tests.log; then
+            echo "::error::GPU tests skipped: no usable adapter (is mesa-vulkan-drivers installed?)"
+            exit 1
+          fi
+          if ! grep -q 'GPU test adapter: ' gpu-tests.log; then
+            echo "::error::no GPU test printed its adapter"
+            exit 1
+          fi

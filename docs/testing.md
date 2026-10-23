@@ -129,6 +129,10 @@ Each codec README has the full fixture matrix and the measured results.
 - `crates/gpu/src/tests.rs` composites the same frame plan (a YUV layer plus a transformed,
   semi-transparent RGBA layer) on the GPU and on the CPU. It requires a 99th-percentile channel
   difference of ≤ 6 and a mean of < 1.5 (8-bit levels). It skips when no GPU adapter is available.
+  A software adapter counts: wgpu offers one when there is no GPU, so on a machine without a GPU
+  installing Mesa's lavapipe (`mesa-vulkan-drivers` on Debian / Ubuntu) runs these tests. CI does
+  that, runs `filmcraft-gpu` and `filmcraft-golden` with `--nocapture`, and fails when a GPU test
+  skipped; the tests print the adapter they ran on (`GPU test adapter: ...`).
 - Effects implemented only on the CPU need no GPU test: the plan pre-renders those layers on the
   CPU.
 - **Golden images** (`crates/golden`, a test-only crate): `tests/golden.rs` builds small procedural

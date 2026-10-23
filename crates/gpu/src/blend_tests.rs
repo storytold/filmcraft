@@ -10,9 +10,14 @@ use super::*;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
+/// The device for the GPU tests of this crate, or `None` without an adapter. wgpu offers a software
+/// adapter (lavapipe, llvmpipe, WARP) too, after any GPU: CI's tests run on lavapipe. The adapter is
+/// printed so that a log shows what the tests ran on.
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    let info = adapter.get_info();
+    eprintln!("GPU test adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
 

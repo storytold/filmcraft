@@ -747,7 +747,9 @@ fn device(context: &str, require_float_target: bool) -> Option<(wgpu::Device, wg
         eprintln!("SKIPPED ({context}): no GPU adapter");
         return None;
     };
-    let name = adapter.get_info().name;
+    let info = adapter.get_info();
+    eprintln!("GPU test adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+    let name = info.name;
     let renderable = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba32Float).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
     if require_float_target && !renderable {
         eprintln!("SKIPPED ({context}): adapter {name} cannot render to Rgba32Float");
