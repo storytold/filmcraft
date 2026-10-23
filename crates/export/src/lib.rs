@@ -369,6 +369,18 @@ pub struct ExportSettings {
     /// 18 is visually near-lossless.
     #[serde(default = "default_crf")]
     pub crf: f32,
+    /// Constant QP parameter of [`BitrateMode::Cqp`], 0 (best) to 51 (smallest); None = default (23).
+    #[serde(default)]
+    pub qp: Option<u32>,
+    /// Lookahead frames for rate control (hardware encoders).
+    #[serde(default)]
+    pub lookahead: Option<u32>,
+    /// Multipass rate control for hardware encoders (e.g. NVENC two-pass quarter/full res, AMF two-pass).
+    #[serde(default)]
+    pub multipass: bool,
+    /// Spatial Adaptive Quantization for hardware encoders.
+    #[serde(default)]
+    pub spatial_aq: bool,
     /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
     /// Windows)? Off unless asked for: hardware output depends on the machine, so it is not
     /// byte-reproducible like the built-in encoder's (`determinism_tests`).
@@ -587,6 +599,10 @@ impl Default for ExportSettings {
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             crf: DEFAULT_CRF,
+            qp: default_qp(),
+            lookahead: None,
+            multipass: false,
+            spatial_aq: false,
             hardware_encoding: HardwareEncoding::default(),
             gpu_rendering: GpuRendering::Off,
             max_bitrate_kbps: None,
@@ -612,6 +628,10 @@ pub const DEFAULT_CRF: f32 = 23.0;
 
 fn default_crf() -> f32 {
     DEFAULT_CRF
+}
+
+fn default_qp() -> Option<u32> {
+    Some(23)
 }
 
 impl ExportSettings {
@@ -653,11 +673,8 @@ impl ExportSettings {
         if self.effects.image_overlay.enabled && self.effects.image_overlay.path.trim().is_empty() {
             return Err(ExportError::Unsupported("image overlay: no image file chosen".into()));
         }
-        if self.format == Format::Hevc && self.bitrate_mode == BitrateMode::Vbr2Pass {
-            return Err(ExportError::Unsupported("H.265 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
-        }
-        if self.format == Format::Av1 && self.bitrate_mode == BitrateMode::Vbr2Pass {
-            return Err(ExportError::Unsupported("AV1 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
+        if (self.format == Format::Hevc || self.format == Format::Av1) && self.bitrate_mode == BitrateMode::Vbr2Pass {
+            return Err(ExportError::Unsupported(format!("{} export has no two-pass mode: choose CBR or VBR, 1 pass", self.format.label())));
         }
         if self.bitrate_mode == BitrateMode::Crf {
             if self.format == Format::Hevc {
@@ -668,6 +685,17 @@ impl ExportSettings {
             }
             if !self.crf.is_finite() || !(0.0..=51.0).contains(&self.crf) {
                 return Err(ExportError::Unsupported("CRF must be between 0 and 51".into()));
+            }
+        }
+        if self.bitrate_mode == BitrateMode::Cqp {
+            if self.hardware_encoding == HardwareEncoding::Off || !crate::cqp_available(self.format) {
+                return Err(ExportError::Unsupported(format!(
+                    "{} export does not support CQP (constant quantizer) without an active hardware encoder: choose CBR or VBR",
+                    self.format.label()
+                )));
+            }
+            if let Some(qp) = self.qp && qp > 51 {
+                return Err(ExportError::Unsupported("QP must be between 0 and 51".into()));
             }
         }
         Ok(())
@@ -1054,6 +1082,25 @@ pub fn register_hdr_probe(format: Format, probe: fn() -> bool) {
 pub fn hdr_available(format: Format) -> bool {
     // the probes run outside the lock: one may take a while
     let probes: Vec<fn() -> bool> = hdr_probes().read().unwrap_or_else(|e| e.into_inner()).iter().filter(|(f, _)| *f == format).map(|(_, p)| *p).collect();
+    probes.into_iter().any(|p| p())
+}
+
+fn cqp_probes() -> &'static RwLock<Vec<FormatProbe>> {
+    static P: OnceLock<RwLock<Vec<FormatProbe>>> = OnceLock::new();
+    P.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a probe indicating whether the encoder of `format` supports CQP (constant quantizer) mode.
+pub fn register_cqp_probe(format: Format, probe: fn() -> bool) {
+    let mut g = cqp_probes().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|(f, p)| *f == format && std::ptr::fn_addr_eq(*p, probe)) {
+        g.push((format, probe));
+    }
+}
+
+/// Whether a registered probe says the encoder of `format` supports CQP mode on this machine.
+pub fn cqp_available(format: Format) -> bool {
+    let probes: Vec<fn() -> bool> = cqp_probes().read().unwrap_or_else(|e| e.into_inner()).iter().filter(|(f, _)| *f == format).map(|(_, p)| *p).collect();
     probes.into_iter().any(|p| p())
 }
 
@@ -1702,6 +1749,7 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
         BitrateMode::Cbr => filmcraft_h264enc::RateControl::Cbr { kbps },
         // the encoder clamps to 0..=51; a NaN from a hand-edited preset becomes the default
         BitrateMode::Crf => filmcraft_h264enc::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
+        BitrateMode::Cqp => return Some(Err(ExportError::Unsupported("the software H.264 encoder does not support CQP: choose CBR, VBR or CRF".into()))),
         _ => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
     };
     cfg.pass = match &s.h264_pass {

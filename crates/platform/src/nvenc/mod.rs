@@ -79,6 +79,11 @@ pub struct Config {
     pub bitrate_kbps: u32,
     pub max_bitrate_kbps: u32,
     pub cbr: bool,
+    pub cqp: bool,
+    pub qp: u32,
+    pub multipass: bool,
+    pub spatial_aq: bool,
+    pub lookahead: Option<u32>,
     /// Frames between IDR pictures.
     pub keyint: u32,
     pub profile: Profile,
@@ -88,6 +93,29 @@ pub struct Config {
     pub sar: Option<(u32, u32)>,
     /// Allow one B-frame between references when the encoder and the profile support it.
     pub bframes: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            fps: (30, 1),
+            bitrate_kbps: 8000,
+            max_bitrate_kbps: 12000,
+            cbr: false,
+            cqp: false,
+            qp: 23,
+            multipass: false,
+            spatial_aq: false,
+            lookahead: None,
+            keyint: 30,
+            profile: Profile::High,
+            level: None,
+            sar: None,
+            bframes: false,
+        }
+    }
 }
 
 /// One encoded picture in decoding order.
@@ -151,6 +179,11 @@ pub fn hevc_available() -> bool {
             level: None,
             sar: None,
             bframes: false,
+            cqp: false,
+            qp: 23,
+            multipass: false,
+            spatial_aq: false,
+            lookahead: None,
         };
         let result = Nvenc::new(&probe);
         if let Err(why) = &result {
@@ -204,6 +237,11 @@ pub fn hevc_hdr_available() -> bool {
             level: None,
             sar: None,
             bframes: false,
+            cqp: false,
+            qp: 23,
+            multipass: false,
+            spatial_aq: false,
+            lookahead: None,
         };
         let result = Nvenc::with_signal(&probe, &Signal::default());
         if let Err(why) = &result {
@@ -289,6 +327,11 @@ impl Nvenc {
             bitrate: cfg.bitrate_kbps.max(1),
             max_bitrate: cfg.max_bitrate_kbps,
             cbr: cfg.cbr,
+            cqp: cfg.cqp,
+            qp: cfg.qp,
+            multipass: cfg.multipass,
+            spatial_aq: cfg.spatial_aq,
+            lookahead: cfg.lookahead,
             gop: cfg.keyint.max(1),
             profile: match cfg.profile {
                 Profile::Baseline => 0,
@@ -302,7 +345,8 @@ impl Nvenc {
             sar: cfg.sar,
             bframes,
         };
-        session.initialize(&params, RING)?;
+        let ring = if let Some(la) = cfg.lookahead && la > 0 { (la.min(64) as usize + 8).max(RING) } else { RING };
+        session.initialize(&params, ring)?;
         let params = session.sequence_params()?;
         let (vps, sps, pps, hvcc) = match codec {
             Codec::H264 => {
@@ -739,6 +783,7 @@ mod tests {
             level: None,
             sar: None,
             bframes: false,
+            ..Default::default()
         };
         let caps = |ten_bit| Caps { ten_bit, max_bframes: 2, min_size: (130, 128), max_size: (8192, 8192) };
         assert!(check_caps(&caps(true), &cfg(Profile::HevcMain10)).is_ok());

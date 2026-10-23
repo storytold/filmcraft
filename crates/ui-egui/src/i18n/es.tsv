@@ -3617,3 +3617,11 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	CQP (constant quantizer)	CQP (cuantizador constante)
+	Lookahead	Preanálisis
+	Multipass	Pasadas múltiples
+	Quantizer (QP)	Cuantizador (QP)
+	Spatial AQ	AQ espacial
+	Enable hardware two-pass / multipass rate control	Activar control de velocidad de dos pasos / pasadas múltiples por hardware
+	Enable spatial adaptive quantization	Activar cuantización adaptativa espacial
+	Enable lookahead frame analysis	Activar análisis de fotogramas por preanálisis

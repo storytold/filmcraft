@@ -3608,3 +3608,11 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+	CQP (constant quantizer)	CQP (quantizzatore costante)
+	Quantizer (QP)	Quantizzatore (QP)
+	Multipass	Multipass
+	Spatial AQ	AQ spaziale
+	Lookahead	Lookahead
+	Enable hardware two-pass / multipass rate control	Abilita controllo velocità hardware a due passaggi / multipassaggio
+	Enable spatial adaptive quantization	Abilita quantizzazione adattiva spaziale
+	Enable lookahead frame analysis	Abilita analisi fotogrammi con lookahead

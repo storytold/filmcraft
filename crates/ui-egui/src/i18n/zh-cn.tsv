@@ -3592,3 +3592,11 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	CQP (constant quantizer)	CQP（恒定画质量化）
+	Lookahead	预分析
+	Multipass	多遍处理
+	Quantizer (QP)	量化参数 (QP)
+	Spatial AQ	空间自适应量化 (AQ)
+	Enable hardware two-pass / multipass rate control	启用硬件双遍/多遍码率控制
+	Enable spatial adaptive quantization	启用空间自适应量化
+	Enable lookahead frame analysis	启用前向预测帧分析

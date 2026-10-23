@@ -3582,3 +3582,11 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	CQP (constant quantizer)	CQP (kuantisasi konstan)
+	Quantizer (QP)	Kuantiser (QP)
+	Multipass	Multipass
+	Spatial AQ	AQ Spasial
+	Lookahead	Lookahead
+	Enable hardware two-pass / multipass rate control	Aktifkan kontrol bitrate dua lintasan / multilintasan perangkat keras
+	Enable spatial adaptive quantization	Aktifkan kuantisasi adaptif spasial
+	Enable lookahead frame analysis	Aktifkan analisis frame lookahead

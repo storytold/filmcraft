@@ -36,6 +36,9 @@ pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result
     if s.bitrate_mode == BitrateMode::Crf {
         return Err("CRF (constant quality)".into());
     }
+    if s.bitrate_mode == BitrateMode::Cqp {
+        return Err("CQP (constant quantizer)".into());
+    }
     if s.signal.is_hdr() {
         return Err("HDR".into());
     }

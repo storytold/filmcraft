@@ -44,6 +44,7 @@ fn config(w: u32, h: u32, profile: Profile) -> Config {
         level: None,
         sar: None,
         bframes: true,
+        ..Config::default()
     }
 }
 

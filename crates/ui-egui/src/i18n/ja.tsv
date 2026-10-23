@@ -3616,3 +3616,11 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	CQP (constant quantizer)	CQP (固定量子化)
+	Lookahead	先読み
+	Multipass	マルチパス
+	Quantizer (QP)	量子化パラメーター (QP)
+	Spatial AQ	空間適応量子化 (AQ)
+	Enable hardware two-pass / multipass rate control	ハードウェア 2 パス / マルチパス レート制御を有効にする
+	Enable spatial adaptive quantization	空間適応量子化を有効にする
+	Enable lookahead frame analysis	先読みフレーム分析を有効にする

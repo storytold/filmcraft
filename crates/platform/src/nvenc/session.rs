@@ -145,6 +145,11 @@ pub struct Params {
     pub bitrate: u32,
     pub max_bitrate: u32,
     pub cbr: bool,
+    pub cqp: bool,
+    pub qp: u32,
+    pub multipass: bool,
+    pub spatial_aq: bool,
+    pub lookahead: Option<u32>,
     pub gop: u32,
     /// H.264 only: 0 baseline, 1 main, 2 high (HEVC is Main, or Main 10 with `ten_bit`).
     pub profile: u8,
@@ -360,12 +365,30 @@ impl Session {
             cfg.frameIntervalP = 1 + p.bframes as i32;
             let rc = &mut cfg.rcParams;
             rc.version = NV_ENC_RC_PARAMS_VER;
-            rc.rateControlMode = if p.cbr { NV_ENC_PARAMS_RC_CBR } else { NV_ENC_PARAMS_RC_VBR };
-            rc.averageBitRate = p.bitrate.saturating_mul(1000);
-            rc.maxBitRate = if p.cbr { rc.averageBitRate } else { p.max_bitrate.max(p.bitrate).saturating_mul(1000) };
-            // a one-second buffer, the usual for streaming-style rate control
-            rc.vbvBufferSize = rc.maxBitRate;
-            rc.vbvInitialDelay = rc.vbvBufferSize;
+            if p.cqp {
+                rc.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+                let qp = p.qp.min(51);
+                rc.constQP = NV_ENC_QP { qpInterP: qp, qpInterB: qp, qpIntra: qp };
+            } else {
+                rc.rateControlMode = if p.cbr { NV_ENC_PARAMS_RC_CBR } else { NV_ENC_PARAMS_RC_VBR };
+                rc.averageBitRate = p.bitrate.saturating_mul(1000);
+                rc.maxBitRate = if p.cbr { rc.averageBitRate } else { p.max_bitrate.max(p.bitrate).saturating_mul(1000) };
+                // a one-second buffer, the usual for streaming-style rate control
+                rc.vbvBufferSize = rc.maxBitRate;
+                rc.vbvInitialDelay = rc.vbvBufferSize;
+            }
+            if !p.cqp {
+                if p.spatial_aq {
+                    rc.flags |= RC_ENABLE_AQ;
+                }
+                if let Some(la) = p.lookahead {
+                    rc.flags |= RC_ENABLE_LOOKAHEAD;
+                    rc.lookaheadDepth = la.clamp(1, 64) as u16;
+                }
+                if p.multipass {
+                    rc.multiPass = 2;
+                }
+            }
             match p.codec {
                 Codec::H264 => {
                     let h = &mut cfg.encodeCodecConfig.h264Config;
