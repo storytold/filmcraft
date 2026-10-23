@@ -419,6 +419,10 @@ impl Exporter<'_> {
             }
         };
         let path = match &m.media {
+            MediaRef::Components { .. } => {
+                self.report.warn("multi-file audio reference is not exported (left as a gap)");
+                return None;
+            }
             MediaRef::File { path } => path.clone(),
             MediaRef::Generator(_) => {
                 self.report.warn("synthetic media (bars, colour mattes, …) is not exported (left as gaps)");

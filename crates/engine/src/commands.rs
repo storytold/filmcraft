@@ -1489,6 +1489,74 @@ fn build() -> Vec<CommandSpec> {
             has_seq,
             |s, p| crate::aaf_omf::export_omf(s, p)
         ),
+        cmd!(
+            "media.relinkComponents",
+            "Relink Media Components",
+            [],
+            None,
+            r#"{"bindings":[{"item":id,"component":{"kind":"audio","channel":uint}|{"kind":"picture"},"path":str}]}"#,
+            always,
+            crate::component_relink::relink
+        ),
+        query!(
+            "media.searchComponents",
+            "Find MXF Components",
+            r#"{"folder":str,"targets":[{item,component}]?,"wait":bool?}"#,
+            crate::component_relink::search
+        ),
+        query!("media.componentSearchResult", "MXF Search Result", r#"{"job":id}"#, crate::component_relink::search_result),
+        cmd!(
+            "media.applyComponentSearch",
+            "Relink Found Components",
+            [],
+            None,
+            r#"{"job":id,"choice":{item,component,path}?,"relinkOthers":bool?}"#,
+            always,
+            crate::component_relink::apply_search
+        ),
+        cmd!("media.relinkPictureComponent", "Relink Picture Component", [], None, r#"{"item":id,"path":str}"#, always, crate::avid_audio::relink_picture),
+        cmd!("media.bindAvidMedia", "Bind Avid Media", [], None, r#"{"items":[id]}"#, always, crate::avid_audio::bind_media),
+        cmd!("media.bindAvidAudio", "Bind Avid Audio", [], None, r#"{"items":[id]}"#, always, crate::avid_audio::bind),
+        cmd!(
+            "media.relinkAudioComponent",
+            "Relink Audio Component",
+            [],
+            None,
+            r#"{"item":id,"channel":uint,"path":str}"#,
+            always,
+            crate::avid_audio::relink_component
+        ),
+        cmd!(
+            "file.prepareAvidBin",
+            "Prepare Avid Bin",
+            [],
+            None,
+            r#"{"path":str,"parent":binId?,"mode":"metadata"|"media"|"sequences"?,"mediaFolders":[str]?,"mediaFolder":str?,"wait":bool?} (mode defaults to sequences; nonempty media folders require media or sequences; per-item conversion problems are reported)"#,
+            always,
+            crate::avid_bin_import::prepare
+        ),
+        query!("file.avidBinPreparation", "Review Avid Bin", r#"{"job":id}"#, |s, p| crate::avid_bin_import::preview(s, p)),
+        cmd!("file.importAvidBin", "Import Avid Bin…", [], None, r#"{"job":id} (commit reviewed native bin snapshot)"#, always, crate::avid_bin_import::import),
+        query!("file.inspectAvidBin", "Inspect Avid Bin", r#"{"path":str}  (native container/membership inspection; does not import)"#, |s, p| {
+            crate::avid_bin::inspect(s, p)
+        }),
+        query!(
+            "file.previewAvidCatalog",
+            "Preview Avid Catalog",
+            r#"{"path":str,"parent":binId?,"mode":"metadata"|"media"|"sequences"?,"missingMedia":"offline"|"error"?}"#,
+            |s, p| { crate::avid_catalog::preview(s, p) }
+        ),
+        cmd!(
+            "file.importAvidCatalog",
+            "Import Avid Catalog",
+            [],
+            None,
+            r#"{"path":str,"parent":binId?,"mode":"metadata"|"media"|"sequences"?,"missingMedia":"offline"|"error"?}"#,
+            always,
+            crate::avid_catalog::import
+        ),
+        query!("file.previewAvidSequences", "Preview Avid Sequences", r#"{"path":str,"bin":binId}"#, |s, p| crate::avid_sequence::preview(s, p)),
+        cmd!("file.importAvidSequences", "Import Avid Sequences", [], None, r#"{"path":str,"bin":binId}"#, always, crate::avid_sequence::import),
         cmd!("file.importAaf", "Import AAF…", [], None, r#"{"path":str}"#, always, |s, p| crate::aaf_omf::import_document(s, p, "file.importAaf")),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;

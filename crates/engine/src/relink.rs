@@ -70,6 +70,9 @@ pub fn identity_of(services: &dyn Services, path: &str) -> std::io::Result<Media
 pub struct OfflineState {
     /// Missing or offline items found by the last scan (by item id).
     pub missing: Vec<ItemId>,
+    /// Per-component rows from the last scan, for frontends. Not project state.
+    #[serde(skip)]
+    pub rows: Vec<Missing>,
     /// The frontend should show the Link Media dialog (set when a project opens with missing
     /// media; cleared by relinking everything, Offline All or Cancel).
     pub prompt: bool,
@@ -80,6 +83,8 @@ pub struct OfflineState {
 #[serde(rename_all = "camelCase")]
 pub struct Missing {
     pub item: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub component: Option<crate::component_relink::ComponentKey>,
     pub name: String,
     pub file_name: String,
     pub path: String,
@@ -107,6 +112,31 @@ pub fn scan(p: &Project, pool: &MediaPool, services: &dyn Services) -> Vec<Missi
     let mut out = Vec::new();
     for it in p.items.values() {
         let ItemKind::Media(m) = &it.kind else { continue };
+        if let MediaRef::Components { channels, picture } = &m.media {
+            let paths = channels
+                .iter()
+                .enumerate()
+                .map(|(channel, c)| (format!("A{}", c.track), &c.path, crate::component_relink::ComponentKey::Audio { channel }))
+                .chain(picture.iter().map(|c| (format!("V{}", c.track), &c.path, crate::component_relink::ComponentKey::Picture)));
+            for (label, component_path, component) in paths {
+                let pending = component == crate::component_relink::ComponentKey::Picture && picture.as_ref().is_some_and(|c| c.format_pending);
+                if !m.offline && !pending && component_path.as_ref().is_some_and(|p| exists(p)) {
+                    continue;
+                }
+                let path = component_path.clone().unwrap_or_default();
+                out.push(Missing {
+                    item: it.id.0,
+                    component: Some(component),
+                    name: format!("{} {label}", it.name),
+                    file_name: file_name(&path).into(),
+                    path,
+                    status: if m.offline { "offline" } else { "missing" },
+                    duration: m.info.duration.0,
+                    start_timecode: m.info.start_timecode,
+                });
+            }
+            continue;
+        }
         let MediaRef::File { path } = &m.media else { continue };
         let status = if m.offline {
             "offline"
@@ -121,6 +151,7 @@ pub fn scan(p: &Project, pool: &MediaPool, services: &dyn Services) -> Vec<Missi
         };
         out.push(Missing {
             item: it.id.0,
+            component: None,
             name: it.name.clone(),
             file_name: file_name(path).to_string(),
             path: path.clone(),
@@ -135,7 +166,9 @@ pub fn scan(p: &Project, pool: &MediaPool, services: &dyn Services) -> Vec<Missi
 /// Rescan and remember the result. Returns the list.
 pub fn refresh(s: &mut Session) -> Vec<Missing> {
     let list = scan(&s.project, &s.media, &*s.services);
-    s.offline.missing = list.iter().filter(|m| m.status != "proxyMissing").map(|m| ItemId(m.item)).collect();
+    s.offline.missing =
+        list.iter().filter(|m| m.status != "proxyMissing").map(|m| ItemId(m.item)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    s.offline.rows = list.clone();
     list
 }
 
@@ -204,6 +237,7 @@ pub fn check_candidate(s: &Session, item: ItemId, path: &str, o: &MatchOptions) 
     let m = it.as_media().ok_or_else(|| bad("media.relink", format!("item {} is not media", item.0)))?;
     let old = match &m.media {
         MediaRef::File { path } => path.clone(),
+        MediaRef::Components { .. } => return Err(bad("media.relink", "use media.relinkAudioComponent or media.relinkPictureComponent for component media")),
         MediaRef::Generator(_) => return Err(bad("media.relink", "generated media has no file to link")),
     };
     let mut c = Candidate { path: path.to_string(), ..Default::default() };
@@ -542,6 +576,9 @@ pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
         Some(a) => a.iter().filter_map(Value::as_u64).map(ItemId).collect(),
         None => u64_p(p, "item").map(|i| vec![ItemId(i)]).unwrap_or_else(|| s.state.project_selection.clone()),
     };
+    if items.iter().any(|id| s.project.item(*id).and_then(|i| i.as_media()).is_some_and(|m| matches!(m.media, MediaRef::Components { .. }))) {
+        return Err(bad("media.makeOffline", "Make Offline for component audio is not supported yet; source files were not changed"));
+    }
     let files: Vec<(ItemId, String)> = items
         .iter()
         .filter_map(|i| match s.project.item(*i).and_then(|it| it.as_media()).map(|m| &m.media) {
@@ -576,21 +613,38 @@ pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
 fn status_json(s: &Session, id: ItemId) -> Option<Value> {
     let it = s.project.item(id)?;
     let m = it.as_media()?;
+    if let MediaRef::Components { channels, picture } = &m.media {
+        let mut components: Vec<Value> = channels
+            .iter()
+            .map(|c| {
+                let result = s.media.followed_audio(c).and_then(|c| crate::component_audio::open_component(&c, &*s.services));
+                json!({"track":c.track,"path":c.path,"present":result.is_ok(),"error":result.err().map(|e|e.to_string())})
+            })
+            .collect();
+        if let Some(c) = picture {
+            let result = s.media.followed_picture(c).and_then(|c| crate::component_media::open_bound_picture(&c, &m.info, &*s.services));
+            components.push(json!({"kind":"picture","track":c.track,"path":c.path,"present":result.is_ok(),"formatPending":c.format_pending,"error":result.err().map(|e|e.to_string())}));
+        }
+        let present = components.iter().filter(|c| c["present"] == true).count();
+        return Some(
+            json!({"item":id,"name":it.name,"status":if m.offline {"offline"} else if present == components.len() {"online"} else if present == 0 {"missing_or_unreadable"} else {"partial"},"components":components}),
+        );
+    }
     let path = match &m.media {
         MediaRef::File { path } => Some(path.clone()),
-        MediaRef::Generator(_) => None,
+        MediaRef::Generator(_) | MediaRef::Components { .. } => None,
     };
     let status = match &path {
         None => "generated",
         Some(_) if m.offline => "offline",
-        Some(p) if s.services.file_size(p).is_err() => "missing",
+        Some(p) if !s.media.follow(p).is_ok_and(|path| s.services.file_size(&path).is_ok()) => "missing",
         Some(_) => match s.media.offline_status(id) {
             Some(o) if o.reason == filmcraft_render::offline::OfflineReason::Unreadable => "unreadable",
             _ => "online",
         },
     };
     let proxy = match &m.proxy {
-        Some(MediaRef::File { path }) => json!({"path": path, "online": s.services.file_size(path).is_ok()}),
+        Some(MediaRef::File { path }) => json!({"path": path, "online": s.media.follow(path).is_ok_and(|file| s.services.file_size(&file).is_ok())}),
         _ => Value::Null,
     };
     Some(json!({

@@ -2,8 +2,8 @@
 //!
 //! A dialog is asked for with [`FilmcraftApp::pick`]: what to show ([`FileDialog`]) and what to do
 //! with the chosen paths. A host that can show dialogs without blocking ([`HostHooks::run_dialog`]:
-//! the desktop app on Linux, where the XDG portal call would otherwise hold the UI thread until the
-//! user chooses, and GNOME offers to force-quit the window after about five seconds) gets the
+//! the desktop app on Linux, where XDG portal blocks the UI thread, and on macOS, where a modal
+//! picker inside a winit event callback can cause event-handler reentry) gets the
 //! dialog and answers on a channel; the frame loop keeps running, and the continuation runs on the
 //! frame the answer arrives ([`FilmcraftApp::poll_native_dialog`]). Without it the host's
 //! synchronous pickers (`pick_files`, `pick_save_as`, …) are called and the continuation runs at

@@ -3604,6 +3604,58 @@
 	Export the labels to a preset file…	ラベルをプリセットファイルに書き出し…
 	Show the presets folder	プリセットフォルダーを表示
 	Delete this preset	このプリセットを削除
+	 Search incomplete: automatic linking is disabled. Choose a verified file explicitly or search a smaller folder.	 検索が完了していないため、自動リンクは無効です。確認済みのファイルを選択するか、検索するフォルダーを絞り込んでください。
+	+ Add folder	+ フォルダーを追加
+	1 sequence	1 シーケンス
+	Also link other unique component matches	ほかの一意に一致するコンポーネントもリンク
+	Cannot link	リンクできません
+	Choose a copy	使用するコピーを選択
+	Choose a folder, or leave empty for offline import	フォルダーを選択するか、オフラインで読み込む場合は空欄のままにしてください
+	Choose an .avb file	.avb ファイルを選択
+	Click 'Import' to transfer this snapshot. The original Avid bin will not be changed.	「読み込み」をクリックすると、このスナップショットが取り込まれます。元の Avid ビンは変更されません。
+	Click '{button}' to apply the matches. Media is still offline until then.	「{button}」をクリックして一致したファイルをリンクしてください。それまではメディアはオフラインのままです。
+	Conversion notes	変換に関する注意事項
+	Conversion notes ({n})	変換に関する注意事項 ({n})
+	Copy selected	コピーを選択済み
+	Identity found, but the file cannot satisfy this component. Hover over the candidate for details.	識別情報は一致しましたが、このコンポーネントに使用できないファイルです。候補にポインターを合わせると詳細が表示されます。
+	Import Avid Bin	Avid ビンを読み込み
+	Avid bin	Avid ビン
+	Import Avid Bin…	Avid ビンを読み込み…
+	Import completed with {n} conversion problems. Review the messages above.	読み込みが完了しましたが、変換に {n} 件の問題がありました。上のメッセージを確認してください。
+	Imported {clips} Avid clips and {sequences} sequences.	Avid のクリップ {clips} 個とシーケンス {sequences} 個を読み込みました。
+	Imported. Review the conversion problems, then close this report.	読み込みが完了しました。変換の問題を確認してから、このレポートを閉じてください。
+	Link 1 file	1 ファイルをリンク
+	Link {n} files	{n} ファイルをリンク
+	Linked {n} media component(s)	{n} 個のメディアコンポーネントをリンクしました
+	Match by Avid media identity. Picture and audio channels keep their original slots.	Avid メディアの識別情報で照合します。映像と音声チャンネルは元の位置を維持します。
+	Match found	一致するファイルが見つかりました
+	Match selected. Click Link to reconnect the media.	一致するファイルを選択しました。「リンク」をクリックしてメディアを再接続してください。
+	Media folders (optional) · Includes subfolders	メディアフォルダー (任意) · サブフォルダーを含む
+	Media matches	メディアの照合結果
+	Media remains offline until you link its components.	コンポーネントをリンクするまで、メディアはオフラインのままです。
+	Multiple files carry this media identity. Choose the copy to use.	同じメディア識別情報を持つファイルが複数あります。使用するコピーを選択してください。
+	No matching media identity found in this search.	この検索では、一致するメディア識別情報が見つかりませんでした。
+	Not found	見つかりません
+	Read bin	ビンを解析
+	Reader details for troubleshooting; these messages do not by themselves mean an import failed.	トラブルシューティング用の解析情報です。これらのメッセージだけでは、読み込みに失敗したことを意味しません。
+	Reading bin… You can cancel without changing the project.	ビンを解析中… プロジェクトを変更せずにキャンセルできます。
+	Search diagnostics	検索の診断情報
+	Search finds matching files. Click Link to reconnect them, or leave them offline.	検索で一致するファイルを見つけます。「リンク」をクリックして再接続するか、オフラインのままにしてください。
+	Search incomplete	検索が未完了
+	Search was incomplete. No automatic matches were applied.	検索が完了していません。一致したファイルの自動リンクは適用されていません。
+	Searching MXF identities…	MXF の識別情報を検索中…
+	Searching MXF identities… {n} entries checked	MXF の識別情報を検索中… {n} 件を確認済み
+	Showing {shown} of {total} matches.	{total} 件の照合結果のうち {shown} 件を表示しています。
+	Stop search	検索を停止
+	Technical diagnostics	技術的な診断情報
+	Technical diagnostics ({n})	技術的な診断情報 ({n})
+	Transfer the bin contents into a new FilmCraft bin.	ビンの内容を新しい FilmCraft ビンに取り込みます。
+	{name} — {n} clips	{name} — {n} クリップ
+	{n} additional diagnostics omitted	ほか {n} 件の診断情報を省略
+	{n} conversion problems — partial results will still be imported	変換に {n} 件の問題があります — 変換できた部分は読み込まれます
+	{n} media file(s) need reconnecting.	{n} 個のメディアファイルを再接続する必要があります。
+	{n} sequences	{n} シーケンス
+	✔ verified identity	✔ 識別情報を確認済み
 	Opens in your web browser: {url}	ウェブブラウザーで開きます：{url}
 	Saves this session's log and shows it in your file manager.	このセッションのログを保存し、ファイルマネージャーで表示します。
 	Shows a report on this computer.	このコンピューターのレポートを表示します。

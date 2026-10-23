@@ -3579,6 +3579,7 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+	Import Avid Bin…	Importar bin do Avid…
 # View ▸ Reset Interface Zoom (#2253).
 	Reset Interface Zoom	Redefinir zoom da interface
 	Track Color	Cor da trilha

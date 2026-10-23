@@ -412,3 +412,35 @@ fn new_track_moves_respect_the_track_limit() {
     assert_eq!(*s.project, *before);
     assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
 }
+
+/// Alt-marquee bypasses linked selection without changing the global preference.
+#[test]
+fn individual_selection_clear_preserves_linked_audio_and_undo() {
+    let mut s = demo();
+    let (_, v, _, a) = last_pair(&s);
+    s.execute("timeline.select", json!({"clips": [v.id.0], "linked": false})).unwrap();
+    assert_eq!(s.state.selection, vec![v.id]);
+    assert!(s.state.linked_selection);
+    let before = s.project.clone();
+    s.execute("edit.clear", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(v.id).is_none());
+    assert!(s.active_sequence().unwrap().find_item(a.id).is_some());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(v.id).is_none());
+    assert!(s.active_sequence().unwrap().find_item(a.id).is_some());
+}
+
+#[test]
+fn normal_selection_and_explicit_clear_still_follow_links() {
+    for explicit in [false, true] {
+        let mut s = demo();
+        let (_, v, _, a) = last_pair(&s);
+        s.execute("timeline.select", json!({"clips": [v.id.0]})).unwrap();
+        assert!(s.state.selection.contains(&v.id) && s.state.selection.contains(&a.id));
+        s.execute("edit.clear", if explicit { json!({"clips": [v.id.0]}) } else { json!({}) }).unwrap();
+        assert!(s.active_sequence().unwrap().find_item(v.id).is_none());
+        assert!(s.active_sequence().unwrap().find_item(a.id).is_none());
+    }
+}

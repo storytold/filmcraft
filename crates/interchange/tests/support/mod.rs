@@ -163,6 +163,7 @@ pub fn media_key(p: &Project, item: ItemId) -> String {
         ItemKind::Media(m) => match &m.media {
             MediaRef::File { path } => path.clone(),
             MediaRef::Generator(g) => format!("gen:{}", g.label()),
+            MediaRef::Components { channels, picture } => format!("components:{channels:?}:{picture:?}"),
         },
         ItemKind::Sequence(_) => format!("seq:{}", p.item(item).unwrap().name),
         _ => "other".into(),
