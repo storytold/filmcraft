@@ -44,7 +44,7 @@ let bytes = mp4.read_sample(&file, v, key)?;    // raw sample (AVCC/HVCC length-
 ### Parsed boxes
 `ftyp`, `moov/mvhd`, `trak/tkhd`, `edts/elst` (v0/v1), `tref`, `mdia/mdhd` (v0/v1, ISO and Mac language
 codes), `hdlr` (ISO and Pascal names), `minf/stbl`: `stsd`, `stts`, `ctts` (v0/v1, read as signed), `stss`,
-`stsc`, `stsz`/`stz2` (4/8/16-bit), `stco`/`co64`, `sdtp`, `sbgp`/`sgpd`. Also `mvex/trex`, `moof/traf/tfhd/tfdt/trun`
+`stsc`, `stsz`/`stz2` (4/8/16-bit), `stco`/`co64`, `sdtp`, `sbgp`/`sgpd`, `udta/chpl`. Also `mvex/trex`, `moof/traf/tfhd/tfdt/trun`
 (every `tfhd` base-offset mode and multiple `moof`s), and `udta` metadata (QuickTime `©xxx` atoms,
 `meta/ilst`, and `meta/keys` (mdta)). `uuid`, `free`, `skip`, `wide`, `sidx` and `mfra` are skipped.
 Boxes with 64-bit sizes and with size 0 (runs to the end of the file) are supported.
@@ -111,6 +111,14 @@ let bytes = w.finish_faststart()?.into_inner(); // or finish() for moov-at-end
 - Timecode: `add_timecode_track(video, TimecodeConfig, start_frame)` adds a `tmcd` track (with `gmhd`)
   and a `tref/tmcd` link from the video track.
 - `WriterOptions::metadata` writes `©xxx` text atoms to `udta`.
+- `WriterOptions::chapters` (`Chapter { start, title }`, starts in the movie timescale) writes a chapter
+  list in both forms players read (#2747): a QuickTime chapter track (a disabled `text` track with `gmhd`,
+  one length-prefixed UTF-8 sample plus `encd` atom per chapter, referenced by `tref/chap` from the first
+  video or audio track; QuickTime File Format, "Chapter lists" / "Text media") for Apple players, and a
+  Nero `udta/chpl` list (version 1, 100 ns units) for VLC and ffprobe. Chapters are sorted, one per start
+  time, cut to the movie duration, at most 255 with titles of at most 255 bytes. A first chapter after the
+  start is placed with an empty edit. The fragmented writer writes only `chpl`. Reading:
+  `Mp4File::chpl_chapters`, and `Mp4File::read_chapters(src)` (chapter track first, else `chpl`).
 - `FragmentedWriter<W: Write>` writes fMP4. The init segment is `ftyp` + `moov` with `mvex/trex`. Each
   `flush_fragment()` then writes `moof` (`mfhd`, `traf` with default-base-is-moof `tfhd`, `tfdt` v1,
   `trun` with per-sample duration, size, flags and composition offset) followed by `mdat`.
@@ -128,7 +136,8 @@ let bytes = w.finish_faststart()?.into_inner(); // or finish() for moov-at-end
   with a message when ffmpeg or an encoder is missing.
 - Muxer oracle tests (`tests/oracle_mux.rs`) remux fixtures with our writers. They check that
   `ffmpeg -v error -f null` reports nothing, that ffprobe packets and stream parameters match the source,
-  and that timecode, the AAC priming edit, ipcm and fMP4 output are correct.
+  and that timecode, the AAC priming edit, ipcm and fMP4 output are correct, and that
+  `ffprobe -show_chapters` lists the chapters we write (count, starts, ends, UTF-8 titles) in MP4 and MOV.
 - Mutation fuzzing (`tests/fuzz.rs`) uses a deterministic seed to mutate and truncate synthetic and
   ffmpeg files, and checks that nothing panics.
 

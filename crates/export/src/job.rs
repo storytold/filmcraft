@@ -181,6 +181,8 @@ pub struct Exporter {
     project: Arc<Project>,
     vt: usize,
     at: Option<usize>,
+    /// Chapter markers to write (#2747), in milliseconds from the first exported frame.
+    chapters: Vec<filmcraft_isobmff::Chapter>,
     t0: web_time::Instant,
 }
 
@@ -247,6 +249,7 @@ impl Exporter {
         let pipe = Arc::new(Pipeline::new(project.clone(), seq, &settings, hdr_out)?);
         let (f0, f1) = frame_span(pipe.rate, range);
         let nframes = (f1 - f0) as u64;
+        let chapters = crate::export_chapters(&project, seq, &settings, range, pipe.rate.tick_of(f0), crate::CHAPTER_TIMESCALE);
         if !settings.part_of_batch {
             progress.total.store(nframes * if two_pass { 2 } else { 1 }, Ordering::Relaxed);
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
@@ -287,6 +290,7 @@ impl Exporter {
             project: project.clone(),
             vt: 0,
             at: None,
+            chapters,
             t0: web_time::Instant::now(),
             settings,
         })
@@ -409,6 +413,8 @@ impl Exporter {
         let file = Out::create(&self.settings)?;
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
+        opts.movie_timescale = crate::CHAPTER_TIMESCALE;
+        opts.chapters = self.chapters.clone();
         let mut mux = Mp4Writer::new(file, opts).map_err(|e| ExportError::Io(e.to_string()))?;
         let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
         vcfg.media_start = self.venc.media_start();

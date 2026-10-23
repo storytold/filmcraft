@@ -277,6 +277,10 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = bool_p(p, "burnCaptions") {
         settings.burn_captions = v;
     }
+    // Premiere's "Include chapter markers": MP4 / MOV / M4A get the sequence's chapter markers (#2747)
+    if let Some(v) = bool_p(p, "chapters").or_else(|| bool_p(p, "includeChapters")) {
+        settings.include_chapters = v;
+    }
     if let Some(v) = str_p(p, "proresProfile") {
         settings.prores_profile = v.to_string();
     }

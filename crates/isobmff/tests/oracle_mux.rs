@@ -267,3 +267,62 @@ fn fragmented_writer_ffmpeg() {
         }
     }
 }
+
+/// #2747: chapters written by [`Mp4Writer`] (QuickTime chapter track + Nero `chpl`) are what ffprobe
+/// lists with `-show_chapters`: the right count, starts, ends and titles, in MP4 and MOV, and the
+/// audio/video packets are unchanged.
+#[test]
+fn chapters_are_listed_by_ffprobe() {
+    let (Some(src), Some(probe)) = (fixture("h264_bframes.mp4"), ffprobe()) else { return };
+    let data = std::fs::read(&src).unwrap();
+    let f = open(data.as_slice()).unwrap();
+    let av: Vec<usize> = (0..f.tracks.len()).filter(|&i| matches!(f.tracks[i].kind, TrackKind::Video | TrackKind::Audio)).collect();
+    for (name, brand, late_first) in [("chapters.mp4", Brand::Mp4, false), ("chapters.mov", Brand::Mov, false), ("chapters_late.mp4", Brand::Mp4, true)] {
+        let mut opts = WriterOptions::new(brand);
+        // the copied edit lists are in the source's movie timescale
+        opts.movie_timescale = f.timescale;
+        let ms = |v: u64| v * u64::from(f.timescale) / 1000;
+        let first = if late_first { 250 } else { 0 };
+        opts.chapters = vec![
+            Chapter { start: ms(first), title: "Opening".into() },
+            Chapter { start: ms(500), title: "Mitte — ü 日本".into() },
+            Chapter { start: ms(800), title: "End".into() },
+        ];
+        let mut w = Mp4Writer::new(Cursor::new(Vec::new()), opts).unwrap();
+        let mut map = vec![usize::MAX; f.tracks.len()];
+        for &i in &av {
+            map[i] = w.add_track(track_config(&f, &f.tracks[i], true)).unwrap();
+        }
+        for (t, i) in interleave(&f, &av) {
+            let s = f.tracks[t].samples[i];
+            let bytes = f.read_sample(data.as_slice(), t, i).unwrap();
+            w.write_sample(map[t], WriteSample { data: &bytes, duration: s.duration, composition_offset: (s.pts - s.dts) as i32, is_sync: s.is_sync }).unwrap();
+        }
+        let out = w.finish_faststart().unwrap().into_inner();
+        let path = out_dir().join(name);
+        std::fs::write(&path, &out).unwrap();
+        let o = std::process::Command::new(&probe).args(["-v", "error", "-of", "json", "-show_chapters", "-show_format"]).arg(&path).output().unwrap();
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        let ch = v["chapters"].as_array().cloned().unwrap_or_default();
+        let got: Vec<(f64, String)> = ch
+            .iter()
+            .map(|c| (c["start_time"].as_str().and_then(|s| s.parse().ok()).unwrap_or(-1.0), c["tags"]["title"].as_str().unwrap_or("").to_string()))
+            .collect();
+        eprintln!("{name}: {got:?}");
+        let want = [(first as f64 / 1000.0, "Opening"), (0.5, "Mitte — ü 日本"), (0.8, "End")];
+        assert_eq!(got.len(), want.len(), "{name}: {}", String::from_utf8_lossy(&o.stdout));
+        for ((s, t), (ws, wt)) in got.iter().zip(want) {
+            assert!((s - ws).abs() < 0.002, "{name}: start {s} vs {ws}");
+            assert_eq!(t, wt, "{name}");
+        }
+        // the last chapter runs to the end of the movie. With a late first chapter ffprobe ends it
+        // early by the empty edit (it takes the end from the chapter track's media duration,
+        // without the edit); the starts, which players use, are exact.
+        let end: f64 = ch.last().and_then(|c| c["end_time"].as_str()).and_then(|s| s.parse().ok()).unwrap_or(-1.0);
+        let dur: f64 = v["format"]["duration"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let early = if late_first { 0.25 } else { 0.0 };
+        assert!((end + early - dur).abs() < 0.05, "{name}: last chapter ends at {end}, movie lasts {dur}");
+        assert_same_packets(&src, &path);
+        decode_clean(&path);
+    }
+}

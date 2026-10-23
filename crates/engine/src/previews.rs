@@ -677,6 +677,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                 bitrate_kbps: 0,
                 // Captions stay live over previews and are not part of the preview hash.
                 burn_captions: false,
+                // render previews are not deliverables
+                include_chapters: false,
                 part_of_batch: true,
                 // previews stand in for the monitor picture: display-referred SDR
                 sdr: true,
