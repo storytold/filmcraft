@@ -59,6 +59,6 @@ Frame has no default key; the Premiere preset moves Shift+E to Export Frame and 
 | Media Browser: Select Directory List / Select Media List (⇧← / ⇧→) | The directory tree and media list take no separate keyboard focus. |
 | Project panel: Delete Selection with Options (⌘Delete) | Needs the "delete instances in sequences" dialog; plain Clear (Backspace) deletes. |
 | Project panel: Next/Previous Column Field, Next/Previous Row Field (Tab, ⇧Tab, Return, ⇧Return) | The list view has no inline-editable metadata cells. |
-| Text panel: Edit Segment (Return) | No inline transcript text editing (corrections go through `transcript.set`). |
-| Text panel: Follow Active Monitor (⇧C), Show Source Transcript (⇧Z) | Only sequence transcripts exist; source clips have no transcript view. |
+| Text panel: Edit Segment (Return) | Return does not open segment editing; double-click a word for a spelling correction (`transcript.correctWord`). |
+| Text panel: Follow Active Monitor (⇧C), Show Source Transcript (⇧Z) | The Transcript tab has Sequence / Source view buttons; these shortcuts and automatic monitor following are not yet mapped. |
 | Timeline: Set Work Area Bar In/Out Point (⌥[ / ⌥]) | FilmCraft has no work area bar (Premiere hides it by default; renders use In/Out). |

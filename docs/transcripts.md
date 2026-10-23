@@ -1,6 +1,6 @@
 # Transcripts and text-based editing
 
-FilmCraft's Text panel ▸ **Transcript** tab shows the dialogue of the open sequence as text. Select
+FilmCraft's Text panel ▸ **Transcript** tab shows the dialogue of the open sequence or Source clip as text. Use **Sequence** / **Source** to switch views. Double-click a word to correct its spelling; corrections preserve timing and speaker labels, support undo/redo, and are saved in the project. Source view also works for subclips, using the parent media's transcript. Select
 words to mark In/Out, then extract or lift them; remove filler words and long pauses in one step;
 turn the transcript into captions. Every action is an engine command (`transcript.*`), so the CLI,
 the control channel and MCP agents can do the same.
@@ -22,18 +22,22 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`, `wait` (default true; false starts a background job). One undo step. |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
+| `transcript.source` | Words for the open Source clip in media time, restricted to its subclip range. |
+| `transcript.correctWord` | Correct one word by root `item`, original transcript `index`, and `text`; optional `expected` prevents stale corrections. One nonempty word, up to 1024 bytes. |
 | `transcript.search` | Word-index ranges matching a phrase (case and punctuation ignored; the last word may be a prefix). |
 | `transcript.select` | Mark In/Out around words `from..=to` (frame-snapped outward) and move the playhead there. |
 | `transcript.extract` / `transcript.lift` | Extract (ripple) or lift the words' frames on the targeted tracks. |
-| `transcript.renameSpeaker` | Rename a speaker by name (every transcript) or by index in one `item`. |
+| `transcript.renameSpeaker` | Rename a speaker by name (every transcript) or by index in one `item`; optional `expected` checks the old name. Invalid item IDs never widen the operation to other clips. |
+| `transcript.identifySpeakers` | Identify speakers in existing transcripts without rerunning Whisper. Same item targeting as generate; `maxSpeakers` (1–32, default 6), `wait` (default true). Replaces names/assignments in one undo step. No model download required. |
+| `transcript.assignSpeaker` | Assign specific original media word `indices` in one `item` to an existing `speaker` index, `null` (no speaker), or a `name` (create/reuse). Optional `expected` word snapshots reject stale edits. |
 | `transcript.removeFillers` | Ripple-delete filler words (`fillers`, default um/uh/erm/…; phrases such as "you know" allowed). |
 | `transcript.removePauses` | Ripple-delete pauses longer than `minSeconds`, keeping `keepSeconds` of air on both sides. |
 | `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `minSeconds`, `maxSeconds`, `gapFrames`). |
-| `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one. |
+| `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one (`wait` defaults true; false returns a job). |
 
 ## Speech recognition
 
@@ -43,7 +47,7 @@ with timestamp decoding, language detection and word times from cross-attention 
 `filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
 
-Both are **optional features**, off by default and never built for the web:
+Whisper inference and model downloads are **optional features**, off by default and never built for the web. Classical speaker analysis is always available for an existing transcript (synchronous on the web):
 
 - `whisper` (on `filmcraft-speech`, `filmcraft-engine`, and the `filmcraft` / `filmcraft-cli`
   apps, where it also enables downloads): candle inference.
@@ -70,6 +74,22 @@ revision of OpenAI's Hugging Face repositories and checked against its SHA-256:
 | `whisper-base` (default) | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
 | `whisper-small` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
 
+### Desktop workflow
+
+Open **Text ▸ Transcript ▸ Speech models** to explicitly download a model, then choose **Use model**. Model downloads and transcription run in background jobs in the desktop UI, including **Transcribe Sequence** and automatic transcription on import. The panel displays progress and a Cancel button; the Progress panel also lists these jobs. No audio is sent to a service.
+
+For automation, `wait: true` keeps the synchronous command behavior. With `wait: false`, commands return a `job` ID; use `jobs.list` / `jobs.cancel`. Hosts must call `Session::poll_persistence` on their update loop to apply completed transcripts. Cancelled, failed, or stale results do not change the project. Opening another project cancels pending transcription. Multi-item transcription applies atomically as one undo step.
+
+### Speaker workflow
+
+Open **Text ▸ Transcript ▸ Speakers** to set a maximum number of speakers and choose **Identify Speakers**. This analyses each source's existing word-timed transcript and local audio, leaving recognized text, word timing, language and recognition confidence unchanged. It runs in a background job on desktop, with progress and cancellation. Results replace existing speaker names and assignments; undo restores them. Cancelled or stale results cannot overwrite manual changes.
+
+Click a paragraph's speaker/timecode header to assign that visible passage to an existing speaker, clear its assignment, or enter a name to create a speaker or rename its current speaker. Renaming affects that speaker throughout its source transcript; assignment affects only the words in the passage. Names and assignments persist in project files and feed captions created afterwards; existing caption tracks are independent and do not update automatically. Speaker numbers are local to each source: this does not recognize a person's real identity or link voices across different source files. A passage spanning multiple sources must be corrected in Source view instead.
+
+Speaker names are limited to 256 bytes without control characters; manual creation supports up to 64 speakers per transcript. Assignment accepts up to 10,000 explicit word indices, so sequence edits never cause hidden words between disjoint visible indices to be reassigned. For automation, `expected` is the sorted list of `{index, word}` snapshots from the original media transcript.
+
+The detector uses the existing MFCC clustering method, not a neural speaker embedding model. Its maximum is an upper bound rather than an exact speaker count. Similar voices, short turns, music and overlap can confuse it; review the labels and correct them as needed. Analysis rejects more than 512 speech chunks to bound clustering cost. Cancellation is observed between feature and clustering operations, not during an individual spectral transform.
+
 ### Testing
 
 Unit and engine tests use a fake `Transcriber` (`FixedTranscriber`), so CI needs no model. The
@@ -82,6 +102,8 @@ Apple-silicon laptop CPU).
 
 ## Limits
 
-- Transcription runs synchronously inside the command (no background job or progress bar yet).
-- Track items that refer to a subclip are looked up by the subclip's id, so a transcript made for
-  the parent media is not shown through subclip clips yet.
+- One transcription or speaker-identification job and one model download can run at a time.
+- Audio is decoded in cancellable chunks, but inference retains the full mono source in memory; each media item is limited to one hour until streaming inference is available.
+- Model loading and an individual decode/inference operation may finish before cancellation is observed.
+- Source view supports navigation and spelling correction; extract, lift and caption creation use Sequence view.
+- Correcting a word does not re-align it; inserting or removing transcript words is outside this workflow.

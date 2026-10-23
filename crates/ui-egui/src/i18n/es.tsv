@@ -583,6 +583,24 @@
 	Speech-to-text turns the dialogue into editable text.	La conversión de voz a texto convierte el diálogo en texto editable.
 	This build has no speech-to-text; import a transcript with transcript.set.	Esta compilación no incluye conversión de voz a texto; importa una transcripción con transcript.set.
 	Transcribe	Transcribir
+	Speech models	Modelos de voz
+	Installed	Instalado
+	Download model	Descargar modelo
+	Open a sequence or Source clip to see its transcript	Abre una secuencia o un clip de origen para ver su transcripción
+	Correct transcript word	Corregir palabra de la transcripción
+	Correct Transcript Word	Corregir palabra de la transcripción
+	Inspect Source Transcript	Inspeccionar transcripción de origen
+	Use model	Usar modelo
+	Assign passage to speaker	Asignar pasaje a un hablante
+	Assign to new speaker	Asignar a un nuevo hablante
+	Choose a passage from one source clip.	Elige un pasaje de un solo clip de origen.
+	Identify Speakers	Identificar hablantes
+	Maximum speakers	Máximo de hablantes
+	No speaker	Sin hablante
+	Rename speaker	Cambiar nombre del hablante
+	Replaces speaker names and assignments. Undo is available.	Reemplaza los nombres y las asignaciones de hablantes. Se puede deshacer.
+	Speaker name	Nombre del hablante
+	Speakers	Hablantes
 	Extract selected text	Extraer texto seleccionado
 	Lift selected text	Levantar texto seleccionado
 	Remove filler words	Quitar muletillas

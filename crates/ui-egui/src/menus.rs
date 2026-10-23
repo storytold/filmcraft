@@ -182,6 +182,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
+    if id == "file.import" {
+        params.as_object_mut().ok_or("command parameters must be an object")?.entry("transcriptionWait").or_insert(json!(false));
+    }
+
+    // UI operations must not block while speech models load or run. Headless callers retain
+    // their synchronous default and can explicitly opt into the same background jobs.
+    if matches!(id, "transcript.generate" | "transcript.downloadModel" | "transcript.identifySpeakers" | "sequence.transcribe") {
+        params.as_object_mut().ok_or("command parameters must be an object")?.entry("wait").or_insert(json!(false));
+    }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));

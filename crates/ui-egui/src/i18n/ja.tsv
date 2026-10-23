@@ -580,6 +580,24 @@
 	Speech-to-text turns the dialogue into editable text.	音声認識で、セリフを編集できるテキストに変換します。
 	This build has no speech-to-text; import a transcript with transcript.set.	このビルドには音声認識機能がありません。transcript.set で文字起こしを読み込んでください。
 	Transcribe	文字起こし
+	Speech models	音声モデル
+	Installed	インストール済み
+	Download model	モデルをダウンロード
+	Open a sequence or Source clip to see its transcript	文字起こしを表示するにはシーケンスまたはソースクリップを開いてください
+	Correct transcript word	文字起こしの単語を修正
+	Correct Transcript Word	文字起こしの単語を修正
+	Inspect Source Transcript	ソースの文字起こしを確認
+	Use model	モデルを使用
+	Assign passage to speaker	区間に話者を割り当て
+	Assign to new speaker	新しい話者に割り当て
+	Choose a passage from one source clip.	1つのソースクリップから区間を選んでください。
+	Identify Speakers	話者を識別
+	Maximum speakers	話者数の上限
+	No speaker	話者なし
+	Rename speaker	話者名を変更
+	Replaces speaker names and assignments. Undo is available.	話者名と割り当てを置き換えます。取り消せます。
+	Speaker name	話者名
+	Speakers	話者
 	Extract selected text	選択したテキストを抽出
 	Lift selected text	選択したテキストをリフト
 	Remove filler words	フィラーワードを削除

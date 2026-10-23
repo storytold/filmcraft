@@ -574,6 +574,24 @@
 	Speech-to-text turns the dialogue into editable text.	语音转文字可将对白转换为可编辑文本。
 	This build has no speech-to-text; import a transcript with transcript.set.	此版本不含语音转文字；请使用 transcript.set 导入转录文稿。
 	Transcribe	转录
+	Speech models	语音模型
+	Installed	已安装
+	Download model	下载模型
+	Open a sequence or Source clip to see its transcript	打开序列或源素材以查看转录
+	Correct transcript word	更正转录词语
+	Correct Transcript Word	更正转录词语
+	Inspect Source Transcript	查看源素材转录
+	Use model	使用模型
+	Assign passage to speaker	为段落分配说话人
+	Assign to new speaker	分配给新说话人
+	Choose a passage from one source clip.	请选择来自同一个源剪辑的段落。
+	Identify Speakers	识别说话人
+	Maximum speakers	说话人数上限
+	No speaker	无说话人
+	Rename speaker	重命名说话人
+	Replaces speaker names and assignments. Undo is available.	替换说话人名称和分配。可以撤销。
+	Speaker name	说话人名称
+	Speakers	说话人
 	Extract selected text	提取所选文本
 	Lift selected text	提升所选文本
 	Remove filler words	移除填充词
