@@ -26,6 +26,19 @@ fn clean(name: &str) -> String {
     name.trim().chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect()
 }
 
+/// `name` without a still-image extension (the chosen format adds its own).
+fn strip_still_ext(name: &str) -> String {
+    let mut stem = name.to_string();
+    let lower = stem.to_ascii_lowercase();
+    for suffix in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"] {
+        if lower.ends_with(suffix) {
+            stem.truncate(stem.len().saturating_sub(suffix.len()));
+            break;
+        }
+    }
+    stem
+}
+
 pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Value) -> Result<Value, String> {
     let target = frame_export_target(&app.session, params).map_err(|e| e.to_string())?;
     let (rate, drop_frame) = if target.source {
@@ -144,20 +157,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 elems.push(("exportFrame.depth".into(), combo.response.rect, format!("{} Bit", d.depth)));
                 ui.end_row();
                 ui.label("Path:");
-                let r = ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width(300.0));
+                let t = app.tokens;
+                let r = ui.allocate_ui(egui::vec2(300.0, 22.0), |ui| crate::panels::export_mode::location_link(ui, &t, &d.folder)).inner;
+                browse = r.clicked();
                 elems.push(("exportFrame.path".into(), r.rect, d.folder.clone()));
+                elems.push(("exportFrame.browse".into(), r.rect, "Browse".into()));
                 ui.end_row();
             });
             ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let r = ui.checkbox(&mut d.import, "Import into project");
-                elems.push(("exportFrame.import".into(), r.rect, d.import.to_string()));
-                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 26.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.add_enabled(FileDialog::Folder { at: Some(String::new()) }.available(&app.hooks), egui::Button::new("Browse…"));
-                    browse = r.clicked();
-                    elems.push(("exportFrame.browse".into(), r.rect, "Browse".into()));
-                });
-            });
+            let r = ui.checkbox(&mut d.import, "Import into project");
+            elems.push(("exportFrame.import".into(), r.rect, d.import.to_string()));
             ui.add_space(12.0);
             if let Some(path) = d.replace.clone() {
                 ui.label(format!("This file already exists: {path}"));
@@ -211,27 +220,31 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     close |= crate::widgets::escape_closes(ctx);
     if browse && !close {
-        let folder = filmcraft_engine::export_tools::expand_home(d.folder.trim());
+        // the save dialog opens in the current folder with the current name; the choice sets both
+        let ext = d.format.extension();
+        let seed = std::path::Path::new(&filmcraft_engine::export_tools::expand_home(d.folder.trim()))
+            .join(format!("{}.{ext}", strip_still_ext(&clean(&d.name))))
+            .to_string_lossy()
+            .into_owned();
         let ctx = ctx.clone();
-        // into the dialog's stored draft, if it is still open when the folder comes back
-        app.pick_ui(FileDialog::Folder { at: Some(folder) }, move |_, paths| {
+        // into the dialog's stored draft, if it is still open when the choice comes back
+        app.pick_ui(FileDialog::save_as(d.format.label(), &[ext], &seed), move |_, paths| {
             let Some(path) = paths.into_iter().next() else { return };
             if let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) {
-                d.folder = path;
+                let p = std::path::Path::new(&path);
+                if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    d.folder = dir.to_string_lossy().into_owned();
+                }
+                if let Some(name) = p.file_name().map(|n| strip_still_ext(&n.to_string_lossy())).filter(|n| !n.trim().is_empty()) {
+                    d.name = name;
+                }
                 d.replace = None;
                 ctx.data_mut(|m| m.insert_temp(draft_id(), Some(d)));
             }
         });
     }
     if (apply || replace) && !close {
-        let mut stem = clean(&d.name);
-        let lower = stem.to_ascii_lowercase();
-        for suffix in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"] {
-            if lower.ends_with(suffix) {
-                stem.truncate(stem.len().saturating_sub(suffix.len()));
-                break;
-            }
-        }
+        let stem = strip_still_ext(&clean(&d.name));
         let ext = d.format.extension();
         let suffix = format!(".{ext}");
         let name = if stem.to_ascii_lowercase().ends_with(&suffix) { stem } else { format!("{stem}{suffix}") };

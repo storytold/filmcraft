@@ -510,3 +510,68 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+/// The rect `[x, y, w, h]` of the automation element `id`.
+fn rect_of(d: &mut Driver, id: &str) -> [f32; 4] {
+    let v = d.ok("ui.elements", json!({"prefix": id}));
+    let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("missing {id}")).clone();
+    serde_json::from_value(e["rect"].clone()).unwrap()
+}
+
+#[test]
+fn export_mode_controls_are_tall_click_targets_and_audio_has_a_header_switch() {
+    let mut d = Driver::new("roomy");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    for id in ["export.fileName", "export.preset", "export.format", "export.video.bitrateMode", "export.video.matchSize", "export.range", "export.scaling"] {
+        let h = rect_of(&mut d, id)[3];
+        assert!(h >= 27.5, "{id} is {h} pt tall");
+    }
+    // Export is the larger, primary button next to Send to Queue
+    let (go, queue) = (rect_of(&mut d, "export.button"), rect_of(&mut d, "export.sendToQueue"));
+    assert!(go[3] >= 36.0 && (go[1] - queue[1]).abs() < 0.5 && queue[0] + queue[2] < go[0], "{go:?} {queue:?}");
+    // Export Audio is the Audio header's switch: it works with the section collapsed
+    d.click("export.section.audio");
+    assert!(!d.app().ui.export.open_sections.iter().any(|k| k == "audio"));
+    let (sw, header) = (rect_of(&mut d, "export.audio.include"), rect_of(&mut d, "export.section.audio"));
+    assert!(sw[1] >= header[1] && sw[1] + sw[3] <= header[1] + header[3], "{sw:?} in {header:?}");
+    d.click("export.audio.include");
+    assert!(!d.app().ui.export.settings.include_audio);
+    assert!(!d.app().ui.export.open_sections.iter().any(|k| k == "audio"), "the switch does not expand the section");
+    d.click("export.audio.include");
+    assert!(d.app().ui.export.settings.include_audio);
+    d.snapshot("export-mode-roomy");
+}
+
+#[test]
+fn export_mode_location_link_opens_the_save_dialog_and_export_writes_there() {
+    use std::sync::{Arc, Mutex};
+    let mut d = Driver::new("location");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 16-bit", "range": "custom", "customStart": 0.0, "customEnd": 0.25}}));
+    d.frames(3);
+    let asked: Arc<Mutex<Vec<(Vec<String>, String)>>> = Arc::default();
+    let answer: Arc<Mutex<Option<String>>> = Arc::default();
+    let (log, reply) = (asked.clone(), answer.clone());
+    d.app().hooks.pick_save_as = Some(Box::new(move |_, exts, suggested| {
+        log.lock().unwrap().push((exts.iter().map(|e| e.to_string()).collect(), suggested.to_string()));
+        reply.lock().unwrap().clone()
+    }));
+    // seeded with the whole output path; cancelling changes nothing
+    let before = (d.app().ui.export.location.clone(), d.app().ui.export.file_name.clone());
+    let seed = filmcraft_ui_egui::panels::export_mode::output_path(&d.app().ui.export);
+    d.click("export.location");
+    assert_eq!(asked.lock().unwrap().clone(), [(vec!["wav".to_string()], seed)]);
+    assert_eq!((d.app().ui.export.location.clone(), d.app().ui.export.file_name.clone()), before);
+    // a chosen path sets the folder and the name; the format adds its own extension
+    *answer.lock().unwrap() = Some(d.path("chosen.wav"));
+    d.click("export.location");
+    let dir = d.dir.to_string_lossy().to_string();
+    assert_eq!(d.app().ui.export.location, dir);
+    assert_eq!(d.app().ui.export.file_name, "chosen");
+    let shown = rect_of(&mut d, "export.location");
+    assert!(shown[3] >= 27.5);
+    d.click("export.button");
+    let out = d.path("chosen.wav");
+    d.wait_until("the export", |_| std::fs::metadata(&out).map(|m| m.len() > 44).unwrap_or(false));
+}
