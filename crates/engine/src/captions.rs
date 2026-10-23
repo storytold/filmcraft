@@ -467,6 +467,38 @@ pub fn commands() -> Vec<CommandSpec> {
             let applied = s.edit_sequence("Move Captions", |q, _, _| Ok(edit::captions::move_captions(q, &ids, d)?))?;
             Ok(json!({"applied": applied.0}))
         }),
+        spec("captions.duplicate", "Duplicate Captions", &[], None, r#"{"captions":[id]?,"delta":ticks|"deltaFrames":i64}"#, has_captions, |s, p| {
+            // Option-drag in the Timeline: copies `delta` later (or earlier) on their own
+            // tracks, overwriting what is there; the originals stay
+            let ids = caption_ids(s, p);
+            let d = delta_p(s, p).ok_or_else(|| bad("captions.duplicate", "need `delta` or `deltaFrames`"))?;
+            let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+            let mut by_track: Vec<(TrackId, Vec<filmcraft_project::Caption>)> = Vec::new();
+            for id in &ids {
+                let (tid, c) = q.find_caption(*id).ok_or(EngineError::Edit(edit::EditError::NoItem(*id)))?;
+                match by_track.iter_mut().find(|(t, _)| *t == tid) {
+                    Some((_, v)) => v.push(c.clone()),
+                    None => by_track.push((tid, vec![c.clone()])),
+                }
+            }
+            // never before the start of the sequence
+            let earliest = by_track.iter().flat_map(|(_, v)| v.iter().map(|c| c.start)).min().unwrap_or_default();
+            let d = d.max(-earliest);
+            if d == Tick::ZERO {
+                return Err(EngineError::Edit(edit::EditError::Nothing));
+            }
+            let new = s.edit_sequence("Duplicate Captions", |q, ctx, st| {
+                let mut new = Vec::new();
+                for (tid, caps) in &by_track {
+                    let moved: Vec<_> = caps.iter().map(|c| filmcraft_project::Caption { start: c.start + d, ..c.clone() }).collect();
+                    new.extend(edit::captions::overwrite_captions(q, *tid, &moved, ctx)?);
+                }
+                st.caption_selection = new.clone();
+                st.selection.clear();
+                Ok(new)
+            })?;
+            Ok(json!({"captions": new.iter().map(|c| c.0).collect::<Vec<_>>(), "delta": d.0}))
+        }),
         spec("captions.delete", "Delete Captions", &[], None, r#"{"captions":[id]?,"ripple":bool=false}"#, has_captions, |s, p| {
             let ids = caption_ids(s, p);
             delete(s, &ids, bool_p(p, "ripple").unwrap_or(false))

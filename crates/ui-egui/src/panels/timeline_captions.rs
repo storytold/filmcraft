@@ -1,9 +1,9 @@
 //! Caption track rows of the Timeline: drawn in their own area above the video tracks (Premiere's
 //! layout). Each row has a header (C1…, name, format, output eye, lock) and caption blocks in a
-//! distinct colour showing their text. Click selects (Cmd/Shift adds), dragging the body moves,
-//! dragging an edge trims, double-click opens the Text panel's Captions tab. Every gesture ends in
-//! one `captions.*` command; every element registers an automation id (`timeline.caption.*`,
-//! `timeline.captionTrack.C1.*`).
+//! distinct colour showing their text. Click selects (Cmd/Shift adds), dragging the body moves
+//! the selection (Option-drag copies it), dragging an edge trims, double-click opens the Text
+//! panel's Captions tab. Every gesture ends in one `captions.*` command; every element registers an
+//! automation id (`timeline.caption.*`, `timeline.captionTrack.C1.*`).
 
 use egui::{Align2, Color32, CursorIcon, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{CaptionTrack, ClipId, Sequence};
@@ -43,10 +43,11 @@ fn drag_state(ctx: &egui::Context) -> Option<(u64, u8, i64)> {
     ctx.data(|d| d.get_temp::<(u64, u8, i64)>(drag_id()))
 }
 
-fn block_rect(c: &filmcraft_project::Caption, row: Rect, layout: &Layout, drag: Option<(u64, u8, i64)>) -> Rect {
+/// Where a caption is drawn while a drag is live: a move carries the whole selection along with
+/// the grabbed caption, a trim only the grabbed one.
+fn block_rect(c: &filmcraft_project::Caption, row: Rect, layout: &Layout, drag: Option<(u64, u8, i64)>, sel: &[ClipId]) -> Rect {
     let (mut s, mut e) = (c.start, c.end());
-    if let Some((id, g, d)) = drag.filter(|d| d.0 == c.id.0) {
-        let _ = id;
+    if let Some((_, g, d)) = drag.filter(|d| moves_with(c.id, *d, sel)) {
         match g {
             0 => {
                 s += Tick(d);
@@ -57,6 +58,11 @@ fn block_rect(c: &filmcraft_project::Caption, row: Rect, layout: &Layout, drag: 
         }
     }
     Rect::from_min_max(pos2(layout.x_of(s), row.min.y + 2.0), pos2(layout.x_of(e).max(layout.x_of(s) + 1.0), row.max.y - 2.0))
+}
+
+/// Whether caption `id` follows the live drag `(grabbed, gesture, delta)`.
+fn moves_with(id: ClipId, (grabbed, g, d): (u64, u8, i64), sel: &[ClipId]) -> bool {
+    d != 0 && (id.0 == grabbed || (g == 0 && sel.contains(&ClipId(grabbed)) && sel.contains(&id)))
 }
 
 /// Paint headers and caption blocks.
@@ -139,8 +145,13 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
         // caption blocks
         let p = painter.with_clip_rect(lane);
         let (v0, v1) = (layout.tick_at(content.min.x - 2.0), layout.tick_at(content.max.x + 2.0));
+        let copying = drag.is_some_and(|d| d.1 == 0) && ui.input(|i| i.modifiers.alt);
         for c in tr.captions.iter().filter(|c| c.end() >= v0 && c.start <= v1) {
-            let r = block_rect(c, row, layout, drag);
+            let r = block_rect(c, row, layout, drag, &sel);
+            // Option-drag copies: the original stays where it is under the copy being placed
+            if copying && drag.is_some_and(|d| moves_with(c.id, d, &sel)) {
+                p.rect_filled(block_rect(c, row, layout, None, &sel), 3.0, FILL);
+            }
             let selected = sel.contains(&c.id);
             p.rect_filled(r, 3.0, if selected { FILL_SEL } else { FILL });
             if selected {
@@ -174,11 +185,12 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area:
     let ctx = ui.ctx().clone();
     let rate = seq.settings.frame_rate;
     let drag = drag_state(&ctx);
+    let sel = app.session.state.caption_selection.clone();
     let mut actions: Vec<(String, Value)> = Vec::new();
     for (tr, row) in seq.caption_tracks.iter().zip(rows(area, seq.caption_tracks.len())) {
         let lane = Rect::from_min_max(pos2(layout.content.min.x, row.min.y), pos2(layout.content.max.x, row.max.y));
         for c in &tr.captions {
-            let r = block_rect(c, row, layout, drag).intersect(lane);
+            let r = block_rect(c, row, layout, drag, &sel).intersect(lane);
             if r.width() <= 0.0 {
                 continue;
             }
@@ -250,6 +262,9 @@ fn interact_block(
         && let (Some((id, g, _)), Some(p)) = (drag_state(&ctx), resp.interact_pointer_pos())
         && id == c.id.0
     {
+        if g == 0 && ctx.input(|i| i.modifiers.alt) {
+            ctx.set_cursor_icon(CursorIcon::Copy);
+        }
         let x0 = ctx.data(|d| d.get_temp::<f32>(egui::Id::new("caption-drag-origin"))).unwrap_or(p.x);
         let pps = app.ui.timeline.pps;
         let d = rate.snap_nearest(Tick::from_seconds_f64((p.x - x0) as f64 / pps));
@@ -269,7 +284,9 @@ fn interact_block(
                     } else {
                         vec![id]
                     };
-                    actions.push(("captions.move".into(), json!({"captions": sel, "delta": d})));
+                    // Option held on the drop copies (Premiere: Option-drag duplicates)
+                    let cmd = if ctx.input(|i| i.modifiers.alt) { "captions.duplicate" } else { "captions.move" };
+                    actions.push((cmd.into(), json!({"captions": sel, "delta": d})));
                 }
                 1 => actions.push(("captions.trim".into(), json!({"caption": id, "edge": "in", "delta": d}))),
                 _ => actions.push(("captions.trim".into(), json!({"caption": id, "edge": "out", "delta": d}))),

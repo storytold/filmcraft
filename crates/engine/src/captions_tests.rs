@@ -158,3 +158,32 @@ fn caption_list_track_filter_never_falls_back_to_every_track() {
         assert!(s.execute("captions.list", json!({"track": sel})).is_err(), "{sel} names no caption track");
     }
 }
+
+fn caption_spans(s: &Session) -> Vec<(f64, f64, String)> {
+    let secs = |t: Tick| (t.seconds() * 10.0).round() / 10.0; // the demo sequence snaps to 23.976 fps frames
+    s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (secs(c.start), secs(c.end()), c.text.clone())).collect()
+}
+
+#[test]
+fn captions_duplicate_copies_and_overwrites() {
+    let mut s = demo();
+    for (sec, text) in [(1.0, "one"), (3.0, "two")] {
+        s.execute("playhead.set", json!({"seconds": sec})).unwrap();
+        s.execute("captions.add", json!({"text": text, "durationSeconds": 1.0})).unwrap();
+    }
+    let one = s.active_sequence().unwrap().caption_tracks[0].captions[0].id;
+    // Option-drag: a copy 5 s later, the original stays; the copy is selected
+    let r = s.execute("captions.duplicate", json!({"captions": [one.0], "delta": 5 * TICKS_PER_SECOND})).unwrap();
+    assert_eq!(caption_spans(&s), vec![(1.0, 2.0, "one".into()), (3.0, 4.0, "two".into()), (6.0, 7.0, "one".into())]);
+    assert_eq!(s.state.caption_selection.len(), 1);
+    assert_eq!(r["captions"][0].as_u64(), Some(s.state.caption_selection[0].0));
+    // a copy dropped half over `two` overwrites that half
+    s.execute("captions.duplicate", json!({"captions": [one.0], "delta": TICKS_PER_SECOND * 3 / 2})).unwrap();
+    assert_eq!(caption_spans(&s)[1..3], [(2.5, 3.5, "one".into()), (3.5, 4.0, "two".into())]);
+    // never before zero; zero delta is nothing
+    s.execute("captions.duplicate", json!({"captions": [one.0], "delta": -100 * TICKS_PER_SECOND})).unwrap();
+    assert_eq!(caption_spans(&s)[0], (0.0, 1.0, "one".into()));
+    assert!(s.execute("captions.duplicate", json!({"captions": [one.0], "delta": 0})).is_err());
+    assert!(s.execute("captions.duplicate", json!({"captions": [one.0]})).is_err(), "needs a delta");
+    s.active_sequence().unwrap().check().unwrap();
+}
