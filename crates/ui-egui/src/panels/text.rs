@@ -178,6 +178,9 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let q = app.ui.caption_search.to_lowercase();
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(list.shrink(4.0)).id_salt("caption-list"));
     let current = track.caption_at(ph).map(|c| c.id);
+    if current.is_none() {
+        ui.data_mut(|d| d.remove::<u64>(egui::Id::new("caption-follow")));
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("caption-scroll").show(&mut child, |ui| {
         ui.set_width(list.width() - 12.0);
         let mut shown = 0;
@@ -266,6 +269,13 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let row = fr.response.rect;
             if current == Some(c.id) {
                 ui.painter().rect_stroke(row, 3.0, Stroke::new(1.0, t.accent), StrokeKind::Inside);
+                // the list follows the playhead: each caption it reaches is brought to the middle
+                // once, but never while a field is being edited
+                let follow = egui::Id::new("caption-follow");
+                if ui.data(|d| d.get_temp::<u64>(follow)) != Some(c.id.0) && ui.memory(|m| m.focused().is_none()) {
+                    ui.scroll_to_rect(row, Some(egui::Align::Center));
+                    ui.data_mut(|d| d.insert_temp(follow, c.id.0));
+                }
             }
             app.auto.add(&format!("text.captions.{}.row", c.id.0), row, &c.text);
             ui.add_space(2.0);
