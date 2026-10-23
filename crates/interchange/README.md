@@ -83,6 +83,12 @@ none of the exports brings one back. Each such clip is named in the export `Repo
 
 OMF carries no video at all.
 
+## Track limits
+
+A sequence has at most 999 tracks of a kind in the engine, so the FCP7 XML importer stops at the 999th `<track>`
+of a kind and warns about the rest, instead of building a sequence the engine would not let a user make.
+An overlapping clip that finds no room before the 999th track is skipped with a warning, too. Covered by `tests/fcp7_tracks.rs`.
+
 ## Tests
 
 - `tests/aaf_omf.rs`: AAF round trips at 25, 29.97 DF, 23.976 and 59.94 DF (clips, gaps,
