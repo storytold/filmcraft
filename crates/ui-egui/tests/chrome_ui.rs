@@ -66,3 +66,36 @@ fn saved_ui_state_without_the_flags_shows_the_chrome() {
     assert!(ui.show_header);
     assert!(ui.show_status_bar);
 }
+
+#[test]
+fn header_controls_have_space_and_fit_the_window() {
+    for width in [750.0, 900.0, 1200.0, 1600.0] {
+        for workspace in ["Editing", "Captions and Graphics", "A custom workspace with a very long name"] {
+            let mut app = FilmcraftApp::new(Session::default());
+            app.ui.workspace = workspace.into();
+            let mut h = Harness::builder().with_size(egui::vec2(width, H)).with_max_steps(10_000).build_eframe(move |_cc| app);
+            for _ in 0..4 {
+                h.step();
+            }
+            let elements = h.state().auto.query("");
+            let left_end =
+                elements.iter().filter(|e| e.id.starts_with("menu.") || e.id.starts_with("header.mode.")).map(|e| e.rect[0] + e.rect[2]).fold(0.0, f32::max);
+            let mut controls: Vec<_> =
+                elements.iter().filter(|e| e.id.starts_with("header.") && !e.id.starts_with("header.mode.") && e.id != "header.home").collect();
+            controls.sort_by(|a, b| a.rect[0].total_cmp(&b.rect[0]));
+            for control in &controls {
+                assert!(control.rect[0] >= left_end + 6.0, "{width}/{workspace}: {} overlaps menus or modes", control.id);
+                assert!(control.rect[0] + control.rect[2] <= width - 10.0, "{width}/{workspace}: {} outside header", control.id);
+                assert_eq!(control.rect[1] + control.rect[3] / 2.0, 19.0, "{} not vertically centred", control.id);
+            }
+            for pair in controls.windows(2) {
+                let gap = pair[1].rect[0] - pair[0].rect[0] - pair[0].rect[2];
+                assert!(gap >= 9.5, "{width}/{workspace}: {} and {} have only {gap}pt between them", pair[0].id, pair[1].id);
+            }
+            if width == 1600.0 {
+                assert!(controls.iter().any(|e| e.id == "header.discord"));
+                assert!(controls.iter().any(|e| e.id == "header.workspaceName"));
+            }
+        }
+    }
+}
