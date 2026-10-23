@@ -7,6 +7,7 @@
 //! [python-parser]: https://github.com/willluecke/llm-video-editor/blob/1539ae2be12c0a783df86182dffb08dabef25ba1/src/video_pipeline/premiere.py
 //! [python-license]: https://github.com/willluecke/llm-video-editor/blob/1539ae2be12c0a783df86182dffb08dabef25ba1/LICENSE
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
@@ -23,14 +24,19 @@ use crate::common::{Builder, MediaSpec, empty_sequence, set_param, settings_for}
 use crate::xml::{child, child_text};
 use crate::{Error, ImportOptions, Imported, Report, Result};
 
-pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
-const MAX_NODES: u32 = 500_000;
+pub const MAX_DOCUMENT_BYTES: usize = 512 * 1024 * 1024;
+const MAX_COMPRESSED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_NODES: u32 = 16_000_000;
 const MAX_TRACKS: usize = 256;
 const MAX_SEQUENCES: usize = 256;
 
 #[cfg(test)]
 #[path = "premiere_reference_tests.rs"]
 mod reference_tests;
+
+#[cfg(test)]
+#[path = "premiere_limits_tests.rs"]
+mod limits_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
@@ -93,7 +99,7 @@ fn limited_report(report: &mut Report, level: crate::Level, message: String) {
 }
 fn spend(work_left: &mut usize, node: Node<'_, '_>) -> Result<()> {
     *work_left = work_left
-        .checked_sub(node.descendants().count().saturating_add(node.range().len() / 64))
+        .checked_sub(node.descendants().len().saturating_add(node.range().len() / 64))
         .ok_or_else(|| error("object graph traversal exceeds import work limit"))?;
     Ok(())
 }
@@ -221,20 +227,43 @@ fn caption_text(encoded: &str) -> Option<String> {
     found
 }
 
+fn input_limit(header: &[u8]) -> (usize, &'static str) {
+    if header.starts_with(&[0x1f, 0x8b]) {
+        (MAX_COMPRESSED_BYTES, "compressed project exceeds 64 MiB input limit")
+    } else {
+        (MAX_DOCUMENT_BYTES, "project exceeds 512 MiB input limit")
+    }
+}
+
+/// Read caller-supplied input with the same gzip/plain caps as the slice API. Reads at most
+/// the applicable limit plus one byte, even when metadata is unavailable or the input grows.
+pub fn read_input(mut reader: impl Read) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.by_ref().take(2).read_to_end(&mut bytes).map_err(|e| error(format!("project input: {e}")))?;
+    let (limit, message) = input_limit(&bytes);
+    reader.take((limit + 1 - bytes.len()) as u64).read_to_end(&mut bytes).map_err(|e| error(format!("project input: {e}")))?;
+    if bytes.len() > limit {
+        return Err(error(message));
+    }
+    Ok(bytes)
+}
+
 /// Decode bounded gzip/plain XML without any filesystem or network access.
 pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result<Document> {
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(error("project exceeds 64 MiB input limit"));
+    let (limit, message) = input_limit(bytes);
+    if bytes.len() > limit {
+        return Err(error(message));
     }
-    let mut expanded = Vec::new();
-    if bytes.starts_with(&[0x1f, 0x8b]) {
+    let expanded = if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut expanded = Vec::new();
         flate2::read::MultiGzDecoder::new(bytes).take(MAX_DOCUMENT_BYTES as u64 + 1).read_to_end(&mut expanded).map_err(|e| error(format!("gzip: {e}")))?;
+        if expanded.len() > MAX_DOCUMENT_BYTES {
+            return Err(error("expanded project exceeds 512 MiB limit"));
+        }
+        Cow::Owned(expanded)
     } else {
-        expanded.extend_from_slice(bytes);
-    }
-    if expanded.len() > MAX_DOCUMENT_BYTES {
-        return Err(error("expanded project exceeds 64 MiB limit"));
-    }
+        Cow::Borrowed(bytes)
+    };
     let xml = std::str::from_utf8(&expanded).map_err(|e| error(e.to_string()))?;
     let doc = roxmltree::Document::parse_with_options(xml, roxmltree::ParsingOptions { nodes_limit: MAX_NODES, ..Default::default() })
         .map_err(|e| error(e.to_string()))?;
@@ -282,7 +311,9 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     for title in &ambiguous {
         media.remove(title);
     }
-    let mut work_left = 5_000_000usize;
+    // Scale with real document structure, not repeated references. Every visit still spends
+    // subtree nodes and bytes, so a small document cannot request unbounded repeated decoding.
+    let mut work_left = doc.descendants().len().saturating_mul(64).max(5_000_000);
     let mut sequences = Vec::new();
     let mut item_count = 0usize;
     let mut skipped_items = BTreeSet::new();
@@ -962,10 +993,10 @@ mod tests {
         assert_eq!(caption_text(&base64::engine::general_purpose::STANDARD.encode(bytes)).as_deref(), Some("Maybe it fits\nIt’s a 2 + 2."));
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         let chunk = [b' '; 65536];
-        for _ in 0..1025 {
+        for _ in 0..=MAX_DOCUMENT_BYTES / chunk.len() {
             gz.write_all(&chunk).unwrap();
         }
-        assert!(import(&gz.finish().unwrap(), &ImportOptions::default(), None).unwrap_err().to_string().contains("64 MiB"));
+        assert!(import(&gz.finish().unwrap(), &ImportOptions::default(), None).unwrap_err().to_string().contains("expanded project exceeds 512 MiB"));
     }
     #[test]
     fn caption_payload_truncation_bit_flips_and_size_limits_never_panic() {
