@@ -8,6 +8,12 @@ use std::collections::HashMap;
 
 /// Hard cap on per-track sample count (after PCM chunk merging).
 const MAX_SAMPLES: usize = 1 << 26;
+/// Hard cap on all expanded sample tables and their derived indexes for one file.
+///
+/// Every retained sample also gets a PTS-order entry and may get a sync-index
+/// entry in [`Track::finish_indexes`], so charge all three before allocating.
+const MAX_SAMPLE_TABLE_BYTES: usize = 128 << 20;
+const SAMPLE_TABLE_BYTES_PER_SAMPLE: usize = std::mem::size_of::<Sample>() + 2 * std::mem::size_of::<u32>();
 /// Hard cap on the size of an in-memory `moov`/`moof` box.
 const MAX_HEADER_BOX: u64 = 1 << 30;
 
@@ -25,6 +31,27 @@ pub struct Sample {
     pub is_sync: bool,
     /// 1-based index into [`Track::entries`].
     pub description_index: u32,
+}
+
+struct SampleBudget {
+    remaining: usize,
+}
+
+impl SampleBudget {
+    fn new() -> Self {
+        Self { remaining: MAX_SAMPLE_TABLE_BYTES }
+    }
+
+    /// Reserve file-wide table space before materialising samples. The paired
+    /// indexes are built after all fragments have been parsed.
+    fn charge(&mut self, count: usize) -> Result<()> {
+        let bytes = count.checked_mul(SAMPLE_TABLE_BYTES_PER_SAMPLE).ok_or(Error::TooLarge("sample table budget"))?;
+        if bytes > self.remaining {
+            return Err(Error::TooLarge("sample table budget"));
+        }
+        self.remaining -= bytes;
+        Ok(())
+    }
 }
 
 /// One edit list entry (`elst`).
@@ -321,14 +348,15 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
             _ => {}
         }
     }
+    let mut sample_budget = SampleBudget::new();
     for p in trak_payloads {
-        let t = parse_trak(p, &file, len)?;
+        let t = parse_trak(p, &file, len, &mut sample_budget)?;
         file.tracks.push(t);
     }
     // Movie fragments.
     let mut next_dts: Vec<i64> = file.tracks.iter().map(|t| t.samples.last().map(|s| s.dts + s.duration as i64).unwrap_or(0)).collect();
     for (moof_off, moof) in &moofs {
-        parse_moof(*moof_off, moof, &mut file.tracks, &trex, &mut next_dts, len)?;
+        parse_moof(*moof_off, moof, &mut file.tracks, &trex, &mut next_dts, len, &mut sample_budget)?;
     }
     for t in &mut file.tracks {
         if file.fragmented && !moofs.is_empty() {
@@ -379,7 +407,7 @@ fn rescale(v: i128, from: u32, to: u32) -> i64 {
     (v * to as i128 / from as i128).clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
-fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64) -> Result<Track> {
+fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64, sample_budget: &mut SampleBudget) -> Result<Track> {
     let mut t = Track {
         id: 0,
         kind: TrackKind::Other,
@@ -513,7 +541,7 @@ fn parse_trak(p: &[u8], file: &Mp4File, file_len: u64) -> Result<Track> {
         }
     }
     if let Some(stbl) = minf.and_then(|m| find(m, b"stbl")) {
-        parse_stbl(stbl, &mut t, file.is_quicktime, file_len)?;
+        parse_stbl(stbl, &mut t, file.is_quicktime, file_len, sample_budget)?;
     }
     Ok(t)
 }
@@ -552,7 +580,7 @@ impl SttsCursor<'_> {
     }
 }
 
-fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<()> {
+fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64, sample_budget: &mut SampleBudget) -> Result<()> {
     let mut stts: Vec<(u32, u32)> = Vec::new();
     let mut ctts: Vec<(u32, u32)> = Vec::new();
     let mut stss: Option<Vec<u32>> = None;
@@ -710,6 +738,7 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<
         if chunks.len() > MAX_SAMPLES {
             return Err(Error::TooLarge("chunk count"));
         }
+        sample_budget.charge(chunks.len())?;
         samples.reserve(chunks.len());
         for (ci, &off) in chunks.iter().enumerate() {
             while stsc_i + 1 < stsc.len() && stsc[stsc_i + 1].0 as usize <= ci + 1 {
@@ -740,6 +769,7 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<
         if sample_count > MAX_SAMPLES {
             return Err(Error::TooLarge("sample count"));
         }
+        sample_budget.charge(sample_count)?;
         samples.reserve(sample_count);
         let mut stss_i = 0usize;
         'chunks: for (ci, &off) in chunks.iter().enumerate() {
@@ -775,7 +805,15 @@ fn parse_stbl(stbl: &[u8], t: &mut Track, is_qt: bool, file_len: u64) -> Result<
     Ok(())
 }
 
-fn parse_moof(moof_off: u64, moof: &[u8], tracks: &mut [Track], trex: &HashMap<u32, Trex>, next_dts: &mut [i64], file_len: u64) -> Result<()> {
+fn parse_moof(
+    moof_off: u64,
+    moof: &[u8],
+    tracks: &mut [Track],
+    trex: &HashMap<u32, Trex>,
+    next_dts: &mut [i64],
+    file_len: u64,
+    sample_budget: &mut SampleBudget,
+) -> Result<()> {
     // End of data of the previous traf, for the base-offset default of subsequent trafs.
     let mut prev_end: Option<u64> = None;
     for b in boxes(moof) {
@@ -832,6 +870,7 @@ fn parse_moof(moof_off: u64, moof: &[u8], tracks: &mut [Track], trex: &HashMap<u
             if tracks[ti].samples.len() + n > MAX_SAMPLES {
                 return Err(Error::TooLarge("sample count"));
             }
+            sample_budget.charge(n)?;
             if tf & 1 != 0 {
                 data_pos = base.wrapping_add_signed(c.i32()? as i64);
             }
@@ -1201,5 +1240,22 @@ mod tests {
         let p = d.windows(4).position(|w| w == b"stsc").unwrap();
         d[p - 4..p].copy_from_slice(&0x7FFF_FFFFu32.to_be_bytes());
         assert!(open(d.as_slice()).is_err());
+    }
+
+    #[test]
+    fn sample_table_budget_is_shared_by_all_tracks_and_fragments() {
+        let count = MAX_SAMPLE_TABLE_BYTES / SAMPLE_TABLE_BYTES_PER_SAMPLE;
+        let mut budget = SampleBudget::new();
+        budget.charge(count / 2).unwrap();
+        budget.charge(count - count / 2).unwrap();
+        assert!(matches!(budget.charge(1), Err(Error::TooLarge("sample table budget"))));
+    }
+
+    #[test]
+    fn expanded_sample_table_over_budget_is_rejected_before_reserve() {
+        let count = MAX_SAMPLE_TABLE_BYTES / SAMPLE_TABLE_BYTES_PER_SAMPLE + 1;
+        let mut d = handmade(Some((1, count as u32)));
+        d.resize(count + 1024, 0);
+        assert!(matches!(open(d.as_slice()), Err(Error::TooLarge("sample table budget"))));
     }
 }
