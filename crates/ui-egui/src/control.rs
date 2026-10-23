@@ -155,7 +155,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             if let Some(th) = s("theme") {
                 match crate::theme::ThemeKind::from_name(th) {
                     Some(k) => crate::panels::settings::set_theme(app, ctx, k),
-                    None => return err("unknown theme (dark, medium, light)"),
+                    None => return err("unknown theme (dark, medium, oled, light)"),
                 }
             }
             // the open Settings dialog: page and draft values (`{"page": id, "values": {key: value}}`)

@@ -161,7 +161,7 @@ impl Driver {
 fn audio_chrome_switches_between_themes() {
     let mut d = Driver::demo();
     d.ok("ui.set", json!({"workspace": "Audio"}));
-    for theme in ["light", "dark", "medium"] {
+    for theme in ["light", "dark", "medium", "oled"] {
         d.ok("ui.set", json!({"theme": theme}));
         d.frames(3);
         assert!(d.element("mixer.A1.fader").is_some());

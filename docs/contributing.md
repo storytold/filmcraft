@@ -99,7 +99,7 @@ native builds look up an installed Chinese face (for example Microsoft YaHei or 
 once and reuse it across theme changes. No system font files are bundled or copied into the app.
 Web builds depend on the font faces selected by `crates/text/build.rs`; they cannot scan system fonts.
 `theme::tests::chinese_names_render_in_every_theme_and_font_family` verifies Chinese glyphs in the
-timeline's proportional, monospace, medium and semibold families under all three themes.
+timeline's proportional, monospace, medium and semibold families under all four themes.
 
 Arabic and Hebrew work the same way (`crates/ui-egui/src/rtl.rs`): the `Arab` / `Hebr` craft-fonts
 faces, else one installed face per script (for example Noto Sans Arabic, SF Arabic or Segoe UI),

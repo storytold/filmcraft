@@ -14,7 +14,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().clone();
     p.rect_filled(rect, 0.0, t.header_bg);
-    p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, Color32::BLACK));
+    let edge = if t.kind == crate::theme::ThemeKind::Oled { t.separator } else { Color32::BLACK };
+    p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, edge));
     let drag = ui.interact(rect, egui::Id::new("header-drag"), Sense::click_and_drag());
     if drag.drag_started() {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
