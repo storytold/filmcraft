@@ -42,7 +42,7 @@ use std::sync::{Arc, RwLock};
 pub use apv::ApvSource;
 pub use audio::AudioFileSource;
 pub use avi::AviSource;
-pub use gop::{FRAME_BUDGET, GopStats, cached_bytes, gop_stats, live_decoders};
+pub use gop::{FRAME_BUDGET, GopStats, active_frame_budget, cached_bytes, clamp_frame_budgets, gop_stats, live_decoders, set_frame_budget};
 pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
 pub use mpeg::MpegSource;
