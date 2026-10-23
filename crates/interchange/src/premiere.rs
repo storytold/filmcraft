@@ -389,7 +389,21 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                             let match_name = child_text(c, "MatchName").or_else(|| child_text(c, "FilterMatchName"));
                             let is_text = matches!(match_name, Some("AE.ADBE Text" | "ADBE Text"));
                             if is_text {
-                                text = value(c, "InstanceName").map(|s| s.replace('\r', "\n"));
+                                // User-owned XML stores Source Text in parameter 1. InstanceName
+                                // is the renameable layer label, not the displayed text.
+                                for ptr in c.descendants().filter(|n| n.has_tag_name("Param")) {
+                                    let Some(p) = referred(Some(ptr), &ids, "ObjectRef") else { continue };
+                                    spend(&mut work_left, p)?;
+                                    if child_text(p, "ParameterID") == Some("1")
+                                        && !child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                                        && let Some(v) = child(p, "StartKeyframeValue").filter(|v| v.attribute("Encoding") == Some("base64"))
+                                    {
+                                        text = v.text().and_then(caption_text);
+                                    }
+                                }
+                                if text.is_none() {
+                                    warning(report, format!("{label}: static Source Text unavailable; layer name not used as visible text"));
+                                }
                             }
                             if matches!(match_name, Some("AE.ADBE Motion" | "ADBE Motion")) {
                                 for ptr in c.descendants().filter(|n| n.has_tag_name("Param")) {
@@ -424,11 +438,13 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
                     let mut transitions = Vec::new();
                     for key in ["HeadTransition", "TailTransition"] {
                         if let Some(t) = referred(descendant(item, key), &ids, "ObjectRef") {
+                            spend(&mut work_left, t)?;
                             let name = value(t, "DisplayName").unwrap_or("Transition").to_string();
                             let start = signed_ticks(value(t, "Start"), Tick::ZERO)?;
                             let end = signed_ticks(value(t, "End"), start)?;
                             if end < start {
-                                return Err(error("transition end precedes start"));
+                                warning(report, format!("{label}: {name} end precedes start; transition skipped"));
+                                continue;
                             }
                             transitions.push(SourceTransition { head: key == "HeadTransition", name, duration: end - start });
                         }
@@ -948,6 +964,53 @@ mod tests {
         assert!(import(&gz.finish().unwrap(), &ImportOptions::default(), None).unwrap_err().to_string().contains("64 MiB"));
     }
     #[test]
+    fn caption_payload_truncation_bit_flips_and_size_limits_never_panic() {
+        let mut bytes = b"synthetic-envelope".to_vec();
+        let text = "Caption\rUnicode: é 日本";
+        bytes.extend((text.len() as u32).to_le_bytes());
+        bytes.extend(text.as_bytes());
+        bytes.push(0);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        assert_eq!(caption_text(&encoded).as_deref(), Some("Caption\nUnicode: é 日本"));
+        for end in 0..=encoded.len() {
+            assert!(std::panic::catch_unwind(|| caption_text(&encoded[..end])).is_ok());
+        }
+        for index in 0..bytes.len() {
+            for bit in 0..8 {
+                let mut mutated = bytes.clone();
+                mutated[index] ^= 1 << bit;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(mutated);
+                assert!(std::panic::catch_unwind(|| caption_text(&encoded)).is_ok());
+            }
+        }
+        for index in 0..encoded.len() {
+            let mut mutated = encoded.as_bytes().to_vec();
+            mutated[index] ^= 1;
+            let mutated = String::from_utf8(mutated).unwrap();
+            assert!(std::panic::catch_unwind(|| caption_text(&mutated)).is_ok());
+        }
+        for payload in ["A".repeat(1024 * 1024 + 1), " ".repeat(1024 * 1024 + 1)] {
+            assert_eq!(std::panic::catch_unwind(|| caption_text(&payload)).unwrap(), None);
+        }
+    }
+    #[test]
+    fn inverted_transition_is_skipped_without_losing_clip_or_valid_transition() {
+        let xml = fixture()
+            .replace("<SubClip ObjectRef=\"21\"/>", "<SubClip ObjectRef=\"21\"/><HeadTransition ObjectRef=\"bad\"/><TailTransition ObjectRef=\"good\"/>")
+            .replace(
+                "</PremiereData>",
+                r#"<Transition ObjectID="bad"><DisplayName>Bad fade</DisplayName><Start>2</Start><End>1</End></Transition>
+<Transition ObjectID="good"><DisplayName>Cross Dissolve</DisplayName><Start>0</Start><End>25401600000</End></Transition></PremiereData>"#,
+            );
+        let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(tree.sequences[0].tracks[0].items.len(), 1);
+        let transitions = &tree.sequences[0].tracks[0].items[0].transitions;
+        assert_eq!(transitions.len(), 1);
+        assert!(!transitions[0].head);
+        assert_eq!(fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].transitions.len(), 1);
+        assert!(report.entries.iter().any(|e| e.message.contains("camera.mov") && e.message.contains("Bad fade") && e.message.contains("transition skipped")));
+    }
+    #[test]
     fn native_nested_sequences_mute_and_edge_fades_are_preserved() {
         let xml=fixture().replace("<IsMuted>false", "<IsMuted>true").replace("<SubClip ObjectRef=\"21\"/>","<SubClip ObjectRef=\"21\"/><HeadTransition ObjectRef=\"30\"/>")
             .replace("</PremiereData>",&format!(r#"<Transition ObjectID="30"><DisplayName>Cross Dissolve</DisplayName><Start>-63504000000</Start><End>{}</End></Transition>
@@ -1023,7 +1086,14 @@ mod tests {
             "<SubClip ObjectRef=\"21\"/>",
             "<SubClip ObjectRef=\"21\"/><ComponentOwner><Components ObjectRef=\"text-chain\"/></ComponentOwner>",
         ).replace("</PremiereData>", r#"<VideoComponentChain ObjectID="text-chain"><Components><Component ObjectRef="text-component"/></Components></VideoComponentChain>
-<VideoFilterComponent ObjectID="text-component"><Component><DisplayName>Texto</DisplayName><InstanceName>Hola mundo</InstanceName></Component><MatchName>AE.ADBE Text</MatchName></VideoFilterComponent></PremiereData>"#);
+<VideoFilterComponent ObjectID="text-component"><Component><DisplayName>Texto</DisplayName><InstanceName>Renamed layer</InstanceName><Params><Param ObjectRef="source-text"/></Params></Component><MatchName>AE.ADBE Text</MatchName></VideoFilterComponent>
+<ArbVideoComponentParam ObjectID="source-text"><IsTimeVarying>false</IsTimeVarying><ParameterID>1</ParameterID><Name>Texto de origen</Name><StartKeyframeValue Encoding="base64">SOURCE_TEXT</StartKeyframeValue></ArbVideoComponentParam></PremiereData>"#);
+        // Hand-written envelope: length-prefixed UTF-8, independent of the layer's name.
+        let mut bytes = b"synthetic-envelope".to_vec();
+        bytes.extend(10u32.to_le_bytes());
+        bytes.extend(b"Hola mundo\0");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let xml = xml.replace("SOURCE_TEXT", &encoded);
         let (fragment, tree, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
         assert_eq!(tree.sequences[0].tracks[0].items[0].text.as_deref(), Some("Hola mundo"));
         assert!(fragment.project.items.values().any(|i| matches!(i.kind, ItemKind::Graphic { .. })));
@@ -1037,6 +1107,13 @@ mod tests {
         let unknown = xml.replace("AE.ADBE Text", "custom.not-text").replace("Texto", "Text");
         let (_, tree, _) = import(unknown.as_bytes(), &ImportOptions::default(), None).unwrap();
         assert!(tree.sequences[0].tracks[0].items[0].text.is_none());
+        for xml in
+            [xml.replace(&encoded, "invalid!"), xml.replace("<IsTimeVarying>false", "<IsTimeVarying>true"), xml.replace("<ParameterID>1", "<ParameterID>99")]
+        {
+            let (_, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+            assert!(tree.sequences[0].tracks[0].items[0].text.is_none());
+            assert!(report.mentions("Source Text") && report.mentions("layer name"));
+        }
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
