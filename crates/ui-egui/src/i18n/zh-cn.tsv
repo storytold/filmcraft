@@ -3592,3 +3592,14 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+
+# Self-update: Help ▸ Check for Updates…, the status line and the restart badge.
+	Check for Updates…	检查更新…
+	Checking for FilmCraft updates…	正在检查 FilmCraft 更新…
+	Downloading and verifying the FilmCraft update…	正在下载并验证 FilmCraft 更新…
+	FilmCraft is up to date.	FilmCraft 已是最新版本。
+	FilmCraft was checked recently.	最近已检查过 FilmCraft 更新。
+	Update check failed: {error}	检查更新失败：{error}
+	FilmCraft {version} ready	FilmCraft {version} 已就绪
+	Restart to apply	重启以应用
+	Restart to apply update	重启以应用更新

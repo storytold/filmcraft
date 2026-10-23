@@ -38,7 +38,7 @@ mod logging;
 mod native_menu;
 mod window_raise;
 
-use args::{Cli, Launch};
+use args::{Cli, Launch, UpdateApply};
 use chrono::TimeZone;
 use filmcraft_engine::Session;
 use filmcraft_engine::autosave::{AutosaveConfig, default_data_dir};
@@ -77,6 +77,20 @@ fn tell(text: &str, error: bool) {
     }
 }
 
+/// The deliberately small helper mode used after the editor has flushed its recovery journal and
+/// exited. It performs no GUI, project or media initialisation. It restarts the editor with the
+/// arguments it was given after `--` (see `filmcraft_ui_egui::updates::helper_args`).
+fn apply_staged_update(args: UpdateApply) -> filmcraft_updater::Result<()> {
+    if !filmcraft_updater::swap::wait_for_exit(args.pid, std::time::Duration::from_secs(10)) {
+        log::warn!("FilmCraft process {} is still running after 10 s; applying anyway", args.pid);
+    }
+    let applied = filmcraft_updater::Staged::load(&args.staged).and_then(|staged| filmcraft_updater::swap::apply(&staged, &args.target));
+    // Whatever happened, the user asked for a restart: start the (new or restored) build, with the
+    // command line the editor was started with (`--data-dir`, `--empty`, project and media paths).
+    filmcraft_updater::swap::relaunch(&args.target, &args.launch_args)?;
+    applied
+}
+
 fn main() -> eframe::Result {
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
@@ -84,6 +98,13 @@ fn main() -> eframe::Result {
     let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned());
     let launch = match args::parse(env_port, std::env::args_os().skip(1)) {
         Ok(Cli::Run(l)) => l,
+        Ok(Cli::UpdateApply(apply)) => {
+            if let Err(e) = apply_staged_update(apply) {
+                tell(&format!("filmcraft: could not apply update: {e}\n"), true);
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         Ok(Cli::Help) => {
             tell(args::USAGE, false);
             return Ok(());
@@ -112,6 +133,31 @@ fn main() -> eframe::Result {
             }
         }
     }
+    // Do this before graphics, audio, project recovery or any GUI work. A build that repeatedly
+    // dies during startup is restored before it can touch the user's current session.
+    let update_exe = match std::env::current_exe() {
+        Ok(path) => Some(path),
+        Err(e) => {
+            log::warn!("automatic updates are unavailable: cannot find this executable: {e}");
+            None
+        }
+    };
+    if let Some(exe) = update_exe.as_deref() {
+        match filmcraft_updater::on_boot(exe) {
+            Ok(filmcraft_updater::BootOutcome::RolledBack { failed, restored }) => {
+                log::warn!("Update to {failed} failed to start and was rolled back to {restored}.");
+                // This process is still the failed build: hand over to the restored one.
+                let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+                match filmcraft_updater::swap::relaunch(exe, &args) {
+                    Ok(()) => std::process::exit(0),
+                    Err(e) => log::warn!("could not start the restored build: {e}"),
+                }
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("could not check update rollback state: {e}"),
+        }
+        filmcraft_updater::swap::cleanup_old_backups(exe);
+    }
     app_nap::disable();
     #[cfg(target_os = "linux")]
     dev_icon::ensure_dev_desktop_entry();
@@ -136,7 +182,11 @@ fn main() -> eframe::Result {
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result = eframe::run_native(
+            "FilmCraft",
+            options,
+            app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), update_exe.clone(), data_root.clone()),
+        );
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -187,7 +237,13 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+fn app_creator(
+    launch: Launch,
+    graphics: graphics::GraphicsStart,
+    created: Arc<AtomicBool>,
+    update_exe: Option<std::path::PathBuf>,
+    update_data_dir: Option<std::path::PathBuf>,
+) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         created.store(true, Ordering::Relaxed);
@@ -248,11 +304,33 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }
         }
         let mut app = FilmcraftApp::new(session);
+        if let (Some(exe), Some(data_dir)) = (update_exe.clone(), update_data_dir.clone()) {
+            match semver::Version::parse(env!("CARGO_PKG_VERSION")) {
+                Ok(current) => {
+                    app.updates.configure(filmcraft_updater::Updater { current, exe, cache_dir: data_dir.join("updates") }, data_dir.join("update_state.json"))
+                }
+                Err(e) => log::warn!("automatic updates are unavailable: invalid build version: {e}"),
+            }
+        }
         app.graphics_notice = notice;
         if recover == Some(false) {
             app.dialog = None;
         }
         app.integrated_titlebar = cfg!(target_os = "macos");
+        if let Some(exe) = update_exe.clone() {
+            let confirmed = Arc::new(AtomicBool::new(false));
+            cc.egui_ctx.on_end_pass(
+                "update-health",
+                Arc::new(move |ui| {
+                    if ui.ctx().cumulative_frame_nr() >= 2
+                        && !confirmed.swap(true, Ordering::Relaxed)
+                        && let Err(e) = filmcraft_updater::confirm(&exe)
+                    {
+                        log::warn!("could not confirm healthy updated build: {e}");
+                    }
+                }),
+            );
+        }
         if let Some(rs) = cc.wgpu_render_state.clone()
             && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
         {
@@ -515,6 +593,39 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Restarting after an update must reopen the editor the way it was started. A launch with a
+    /// custom `--data-dir` used to come back on the default folder and miss the journal it had just
+    /// flushed; `--empty` and the project / media paths were dropped as well. The swap itself fails
+    /// here (nothing is staged), and the editor must still come back with the same arguments.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_restart_keeps_the_launch_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("filmcraft-restart-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (target, out) = (dir.join("filmcraft"), dir.join("argv.txt"));
+        // a stand-in for the new build that records the arguments it was started with
+        let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{0}.tmp' && mv '{0}.tmp' '{0}'\n", out.display());
+        std::fs::write(&target, script).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let launch: Vec<std::ffi::OsString> = ["--data-dir", "/custom/path", "--empty", "cut.fcproj"].map(Into::into).to_vec();
+        // exactly what the editor hands its helper, parsed exactly as the helper parses it
+        let line = filmcraft_ui_egui::updates::helper_args(u32::MAX, &dir.join("no-staged-update"), &target, &launch);
+        let Ok(super::Cli::UpdateApply(apply)) = super::args::parse(None, line) else { panic!("the helper line should parse") };
+        assert_eq!(apply.launch_args, launch);
+        assert!(super::apply_staged_update(apply).is_err(), "there is nothing staged to apply");
+
+        let started = std::time::Instant::now();
+        while !out.exists() && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let argv = std::fs::read_to_string(&out).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(argv, "--data-dir\n/custom/path\n--empty\ncut.fcproj\n", "the restarted build got the original command line");
+    }
+
     /// Start-up registers the hardware decoders whether or not anything is logged (no logger is
     /// installed here, as in a normal run).
     #[test]

@@ -3582,3 +3582,14 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+
+# Self-update: Help ▸ Check for Updates…, the status line and the restart badge.
+	Check for Updates…	Periksa Pembaruan…
+	Checking for FilmCraft updates…	Memeriksa pembaruan FilmCraft…
+	Downloading and verifying the FilmCraft update…	Mengunduh dan memverifikasi pembaruan FilmCraft…
+	FilmCraft is up to date.	FilmCraft sudah versi terbaru.
+	FilmCraft was checked recently.	FilmCraft baru saja diperiksa.
+	Update check failed: {error}	Pemeriksaan pembaruan gagal: {error}
+	FilmCraft {version} ready	FilmCraft {version} siap
+	Restart to apply	Mulai ulang untuk menerapkan
+	Restart to apply update	Mulai ulang untuk menerapkan pembaruan

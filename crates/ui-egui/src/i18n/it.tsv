@@ -3608,3 +3608,14 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+
+# Self-update: Help ▸ Check for Updates…, the status line and the restart badge.
+	Check for Updates…	Controlla aggiornamenti…
+	Checking for FilmCraft updates…	Controllo degli aggiornamenti di FilmCraft…
+	Downloading and verifying the FilmCraft update…	Download e verifica dell'aggiornamento di FilmCraft…
+	FilmCraft is up to date.	FilmCraft è aggiornato.
+	FilmCraft was checked recently.	FilmCraft è stato controllato di recente.
+	Update check failed: {error}	Controllo degli aggiornamenti non riuscito: {error}
+	FilmCraft {version} ready	FilmCraft {version} è pronto
+	Restart to apply	Riavvia per applicare
+	Restart to apply update	Riavvia per applicare l'aggiornamento

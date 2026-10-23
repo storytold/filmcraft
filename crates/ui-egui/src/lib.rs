@@ -61,6 +61,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod updates;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -294,6 +295,8 @@ pub struct FilmcraftApp {
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
+    /// Native self-update check/staging state. No project data is ever sent to the updater.
+    pub updates: updates::UpdateState,
     pub dialog: Option<Dialog>,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
@@ -562,6 +565,7 @@ impl FilmcraftApp {
             audio: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
+            updates: Default::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
             file_dialogs: Default::default(),
@@ -1908,7 +1912,53 @@ impl FilmcraftApp {
         if resp.clicked() {
             self.ui.status.clear();
         }
+        self.update_badge(ui, sb, &t);
         self.job_status(ui, sb, &t);
+    }
+
+    /// A quiet, persistent restart affordance once a verified build is staged.
+    fn update_badge(&mut self, ui: &mut egui::Ui, status_bar: egui::Rect, t: &Tokens) {
+        use std::sync::atomic::Ordering;
+        if self.session.jobs.iter().any(|j| !j.progress.finished.load(Ordering::Relaxed)) {
+            return;
+        }
+        let Some(version) = self.updates.ready_version().map(str::to_string) else { return };
+        let badge = egui::Rect::from_min_size(
+            egui::pos2((status_bar.right() - 310.0).max(status_bar.left() + 120.0), status_bar.top() + 1.0),
+            egui::vec2(300.0, (status_bar.height() - 2.0).max(1.0)),
+        );
+        let mut restart = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(badge), |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.label(egui::RichText::new(tlf!("FilmCraft {version} ready", version)).color(t.text_dim).size(11.0));
+                let response = ui.small_button(tl!("Restart to apply"));
+                self.auto.add("status.update.apply", response.rect, tl!("Restart to apply update"));
+                restart = response.clicked();
+            });
+        });
+        if restart && let Err(error) = self.apply_staged_update(ui.ctx()) {
+            self.ui.status = error;
+        }
+    }
+
+    /// Make recovery durable before handing control to the tiny process that swaps binaries.
+    fn apply_staged_update(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = ctx;
+            return Err("automatic updates are only available in the desktop app".into());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.session.sync_persistence();
+            if let Some(persistence) = self.session.persistence.as_ref() {
+                persistence.flush();
+            }
+            self.updates.spawn_apply_helper()?;
+            self.quit_confirmed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            Ok(())
+        }
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
@@ -2133,6 +2183,20 @@ impl eframe::App for FilmcraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
+        if self.updates.poll() {
+            self.ui.status = match &self.updates.phase {
+                updates::Phase::Checking => tl!("Checking for FilmCraft updates…").into(),
+                updates::Phase::Staging => tl!("Downloading and verifying the FilmCraft update…").into(),
+                updates::Phase::UpToDate => tl!("FilmCraft is up to date.").into(),
+                updates::Phase::Throttled => tl!("FilmCraft was checked recently.").into(),
+                updates::Phase::Error(error) => tlf!("Update check failed: {error}", error),
+                updates::Phase::Ready { .. } | updates::Phase::Idle => String::new(),
+            };
+            ctx.request_repaint();
+        }
+        if self.updates.working() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if !self.styled {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to

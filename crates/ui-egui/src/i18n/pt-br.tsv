@@ -3585,3 +3585,14 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+
+# Self-update: Help ▸ Check for Updates…, the status line and the restart badge.
+	Check for Updates…	Verificar atualizações…
+	Checking for FilmCraft updates…	Verificando atualizações do FilmCraft…
+	Downloading and verifying the FilmCraft update…	Baixando e verificando a atualização do FilmCraft…
+	FilmCraft is up to date.	O FilmCraft está atualizado.
+	FilmCraft was checked recently.	O FilmCraft foi verificado recentemente.
+	Update check failed: {error}	Falha ao verificar atualizações: {error}
+	FilmCraft {version} ready	O FilmCraft {version} está pronto
+	Restart to apply	Reiniciar para aplicar
+	Restart to apply update	Reiniciar para aplicar a atualização

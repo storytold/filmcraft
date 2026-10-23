@@ -3603,3 +3603,14 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+
+# Self-update: Help ▸ Check for Updates…, the status line and the restart badge.
+	Check for Updates…	업데이트 확인…
+	Checking for FilmCraft updates…	FilmCraft 업데이트를 확인하는 중…
+	Downloading and verifying the FilmCraft update…	FilmCraft 업데이트를 다운로드하고 확인하는 중…
+	FilmCraft is up to date.	FilmCraft가 최신 버전입니다.
+	FilmCraft was checked recently.	FilmCraft를 최근에 확인했습니다.
+	Update check failed: {error}	업데이트 확인 실패: {error}
+	FilmCraft {version} ready	FilmCraft {version} 준비됨
+	Restart to apply	재시작하여 적용
+	Restart to apply update	재시작하여 업데이트 적용
