@@ -30,15 +30,9 @@ fn premiere_private_corpus_preserves_sources_and_offline_counts() {
         let offline = result["offlineMedia"].as_array().unwrap().len();
         assert!(offline as u64 <= case["maxOffline"].as_u64().unwrap(), "case {index}: {result}");
         let workflow = session.project.workflow.clone().unwrap();
-        let mut media_count = 0;
-        for import in &workflow.imports {
-            for media in &import.media {
-                if let Some(expected) = &media.sha256 {
-                    assert_eq!(&hash_file(&PathBuf::from(&media.original_path)).unwrap().0, expected);
-                    media_count += 1;
-                }
-            }
-        }
+        assert!(workflow.imports.iter().flat_map(|i| &i.media).all(|m| m.sha256.is_none()), "linked import must defer full media hashes");
+        let observations = session.execute("premiere.hashMedia", json!({"import":0})).unwrap();
+        let media_count = observations["media"].as_array().unwrap().iter().filter(|m| m["sha256"].is_string()).count();
         assert_eq!(result["sourceSha256"], before.0);
         assert_eq!(hash_file(&destination.join("source.prproj")).unwrap(), before);
         let project = folder.join("project.fcproj");
@@ -48,6 +42,7 @@ fn premiere_private_corpus_preserves_sources_and_offline_counts() {
         let expected: filmcraft_project::workflow::Workflow = serde_json::from_slice(&serde_json::to_vec(workflow.as_ref()).unwrap()).unwrap();
         session.execute("file.open", json!({"path":project})).unwrap();
         assert_eq!(session.project.workflow.as_deref(), Some(&expected));
+        assert_eq!(session.execute("premiere.hashMedia", json!({"import":0})).unwrap(), observations);
         let rates: Vec<_> = session.project.items.values().filter_map(|i| i.as_sequence().map(|s| s.frame_rate())).collect();
         if let Some(expected) = case.get("frameRate") {
             let expected: filmcraft_time::FrameRate = serde_json::from_value(expected.clone()).expect("manifest frameRate must be a valid rational rate");
@@ -61,7 +56,7 @@ fn premiere_private_corpus_preserves_sources_and_offline_counts() {
         assert_eq!(after, before);
         assert_eq!(hash_file(&input).unwrap(), before);
         rows.push(json!({"case":index,"sourceBefore":before.0,"sourceAfter":after.0,"offline":offline,
-            "warnings":result["report"].as_array().unwrap().len(),"rates":rates,"hashedMediaUnchanged":media_count,"hardwareSessions":0}));
+            "warnings":result["report"].as_array().unwrap().len(),"rates":rates,"observedMediaUnchanged":media_count,"hardwareSessions":0}));
         std::fs::write(root.join("results.json"), serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
     }
     println!("Corpus results: {}", root.join("results.json").display());
