@@ -239,9 +239,11 @@ pub fn plain_text(s: &str) -> String {
     while let Some(c) = chars.next() {
         match c {
             '<' => {
-                // a tag runs to the next '>' (if none, keep the '<' literally)
+                // a tag starts only before a letter, '/' or '!' and runs to the next '>'
+                // (otherwise keep the '<' literally)
                 let rest: String = chars.clone().collect();
-                if let Some(end) = rest.find('>') {
+                let opens_tag = chars.peek().is_some_and(|n| n.is_alphabetic() || *n == '/' || *n == '!');
+                if let Some(end) = rest.find('>').filter(|_| opens_tag) {
                     for _ in 0..rest[..=end].chars().count() {
                         chars.next();
                     }
@@ -298,6 +300,14 @@ mod tests {
         assert_eq!(plain_text("{\\an8}Top"), "Top");
         assert_eq!(plain_text("a < b"), "a < b");
         assert_eq!(plain_text("<v Bob>Hi</v>"), "Hi");
+    }
+
+    #[test]
+    fn plain_stray_lt_keeps_prose() {
+        assert_eq!(plain_text("if x < 3 and y > 2"), "if x < 3 and y > 2");
+        assert_eq!(plain_text("1<2>3"), "1<2>3");
+        assert_eq!(plain_text("x <= y and y >= z"), "x <= y and y >= z");
+        assert_eq!(plain_text("<i>hi</i>"), "hi");
     }
 
     #[test]
