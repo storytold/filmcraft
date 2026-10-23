@@ -3610,6 +3610,8 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
+	Choose an output file name.	出力ファイル名を指定してください。
+	File name cannot contain < > : " / \\ | ? * or control characters.	ファイル名に < > : " / \\ | ? * や制御文字は使えません。
 # View ▸ Reset Interface Zoom (#2253).
 	Reset Interface Zoom	インターフェイスのズームをリセット
 	Track Color	トラックカラー

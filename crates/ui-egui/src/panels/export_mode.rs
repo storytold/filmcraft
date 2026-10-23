@@ -24,7 +24,7 @@ use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
     AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec,
-    Placement, SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes,
+    Placement, SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes, validate_output_filename, validate_output_path,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -96,16 +96,36 @@ pub const CUSTOM: &str = "Custom";
 
 /// Collected automation ids (registered after drawing, so widgets can borrow the app freely).
 #[derive(Default)]
-struct Reg(Vec<(String, Rect, String)>);
+struct Reg(Vec<(String, Rect, String, Option<egui::Response>)>);
 
 impl Reg {
     fn add(&mut self, id: impl Into<String>, r: Rect, label: impl Into<String>) {
-        self.0.push((id.into(), r, label.into()));
+        self.0.push((id.into(), r, label.into(), None));
+    }
+    fn add_response(&mut self, id: impl Into<String>, response: &egui::Response, label: impl Into<String>) {
+        self.0.push((id.into(), response.rect, label.into(), Some(response.clone())));
     }
     fn flush(self, app: &mut FilmcraftApp) {
-        for (id, r, l) in self.0 {
-            app.auto.add(&id, r, &l);
+        for (id, r, l, response) in self.0 {
+            if let Some(response) = response {
+                app.auto.add_response(&id, &response, &l);
+            } else {
+                app.auto.add(&id, r, &l);
+            }
         }
+    }
+}
+
+fn filename_warning(ui: &mut egui::Ui, reg: &mut Reg, id: &str, error: Option<&str>) {
+    if let Some(error) = error {
+        let text = if error == "Choose an output file name." {
+            tl!("Choose an output file name.")
+        } else {
+            tl!("File name cannot contain < > : \" / \\ | ? * or control characters.")
+        };
+        let color = if ui.visuals().dark_mode { Color32::from_rgb(0xff, 0x80, 0x80) } else { Color32::from_rgb(0xb0, 0x20, 0x20) };
+        let response = ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).wrap());
+        reg.add(id, response.rect, text);
     }
 }
 
@@ -472,6 +492,12 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ex.file_name = v;
             }
         });
+        if let Err(error) = validate_output_filename(&ex.file_name) {
+            ui.horizontal(|ui| {
+                ui.add_space(LABEL_W + 8.0);
+                filename_warning(ui, &mut reg, "export.fileName.error", Some(error));
+            });
+        }
         row(ui, &t, tl!("Location"), |ui| {
             let r = ui.small_button("…");
             reg.add("export.location.browse", r.rect, "Choose folder");
@@ -1139,14 +1165,42 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
-    let qresp = ui.interact(queue, egui::Id::new("export-queue-send"), Sense::click());
-    ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
-    ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), t.text);
-    reg.add("export.sendToQueue", queue, "Send to Queue");
-    let resp = ui.interact(go, egui::Id::new("export-go"), Sense::click());
-    ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
-    reg.add("export.button", go, "Export");
+    let can_export = validate_output_filename(&ex.file_name).is_ok();
+    let (qresp, resp) = ui
+        .add_enabled_ui(can_export, |ui| {
+            (ui.interact(queue, egui::Id::new("export-queue-send"), Sense::click()), ui.interact(go, egui::Id::new("export-go"), Sense::click()))
+        })
+        .inner;
+    ui.painter().rect_stroke(
+        queue,
+        15.0,
+        egui::Stroke::new(
+            1.0,
+            if !can_export {
+                t.text_faint
+            } else if qresp.hovered() {
+                t.text
+            } else {
+                t.text_dim
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), if can_export { t.text } else { t.text_faint });
+    reg.add_response("export.sendToQueue", &qresp, "Send to Queue");
+    ui.painter().rect_filled(
+        go,
+        15.0,
+        if !can_export {
+            t.field_bg
+        } else if resp.hovered() {
+            t.accent_hover
+        } else {
+            t.accent
+        },
+    );
+    ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), if can_export { Color32::WHITE } else { t.text_dim });
+    reg.add_response("export.button", &resp, "Export");
     reg.flush(app);
     if resp.clicked() {
         let r = app.session.execute("file.exportMedia", export_params(app));
@@ -1373,7 +1427,7 @@ fn quick_presets(app: &FilmcraftApp) -> Vec<String> {
 /// swapped and any other kept, so a typed or chosen name survives a preset change.
 fn quick_file(app: &FilmcraftApp, path: &str, seq_name: &str, ext: &str) -> Option<String> {
     let p = std::path::Path::new(path);
-    let folder = path.ends_with(['/', '\\']);
+    let folder = path.ends_with('/') || (cfg!(windows) && path.ends_with('\\'));
     let dir = if folder { Some(p) } else { p.parent() }.filter(|d| !d.as_os_str().is_empty());
     let name = if folder { None } else { p.file_name().and_then(|n| n.to_str()) }.filter(|n| !n.trim().is_empty());
     let cur = name.and_then(|n| std::path::Path::new(n).extension()).and_then(|e| e.to_str()).unwrap_or("");
@@ -1441,6 +1495,9 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
             });
             ui.label(egui::RichText::new(tl!("File Name & Location")).color(t.text_dim).size(11.5));
             typed = draft_text(ui, &mut reg, "quickExport.path", &file_name, tl!("File Name"));
+            // Check a changed draft in this frame, before it replaces the stored path below.
+            let path_error = validate_output_path(typed.as_deref().unwrap_or(&q.quick_path)).err();
+            filename_warning(ui, &mut reg, "quickExport.path.error", path_error);
             let r = location_link(ui, &t, &folder);
             reg.add("quickExport.location", r.rect, folder.clone());
             browse = r.clicked();
@@ -1458,10 +1515,11 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
             ui.add_space(4.0);
             ui.label(egui::RichText::new(tlf!("Estimated file size: {size}", size = est.as_deref().unwrap_or("–"))).color(t.text_dim).size(11.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.add(
+                let r = ui.add_enabled(
+                    path_error.is_none(),
                     egui::Button::new(egui::RichText::new(tl!("Export")).color(Color32::WHITE)).fill(t.accent).corner_radius(12.0).min_size(vec2(90.0, 26.0)),
                 );
-                reg.add("quickExport.go", r.rect, "Export");
+                reg.add_response("quickExport.go", &r, "Export");
                 go = r.clicked();
             });
         });
@@ -1472,7 +1530,8 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     reg.flush(app);
     if let Some(v) = typed {
         // a file name goes in the shown folder; a typed or pasted path replaces both
-        app.ui.export.quick_path = if v.contains(['/', '\\']) { v } else { std::path::Path::new(&folder).join(v.trim()).to_string_lossy().to_string() };
+        app.ui.export.quick_path =
+            if v.contains('/') || (cfg!(windows) && v.contains('\\')) { v } else { std::path::Path::new(&folder).join(v.trim()).to_string_lossy().to_string() };
     }
     if browse && let Some(p) = app.hooks.pick_save_as.as_mut().and_then(|f| f(format, &[ext], &app.ui.export.quick_path)) {
         app.ui.export.quick_path = p;

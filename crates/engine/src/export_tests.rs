@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::Session;
+use crate::{EngineError, Session};
 
 #[test]
 fn hostile_export_ranges_are_rejected_without_panicking() {
@@ -638,13 +638,18 @@ fn queue_exports_several_sequences_and_ranges() {
 }
 
 #[test]
-fn queue_folder_paths_expand_home_and_take_either_separator() {
+fn queue_folder_paths_expand_home_and_take_native_separators() {
     let mut s = demo();
     let first = s.state.active_sequence.unwrap();
     let second = s.execute("file.newSequence", json!({"name": "Second Cut", "width": 640, "height": 360, "fps": 25})).unwrap()["sequence"].as_u64().unwrap();
     let preset = "Waveform Audio 48 kHz 16-bit";
-    // a folder that does not exist yet, named by a trailing `\`: each sequence keeps its own name
-    s.execute("export.queue.add", json!({"preset": preset, "path": "not-yet-made\\", "sequences": [first.0, second]})).unwrap();
+    // A new folder named by a native trailing separator: each sequence keeps its own name.
+    let dir = Scratch::new("queue-native-folder");
+    let folder = dir.path("not-yet-made");
+    assert!(!Path::new(&folder).exists());
+    let separator = if cfg!(windows) { '\\' } else { '/' };
+    s.execute("export.queue.add", json!({"preset": preset, "path": format!("{folder}{separator}"), "sequences": [first.0, second]})).unwrap();
+    assert!(!Path::new(&folder).exists(), "adding to the queue does not create its output folder");
     let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
     assert!(paths.iter().any(|p| p.ends_with("Second Cut.wav")), "{paths:?}");
     if let Some(home) = crate::media_browser::std_home_dir() {
@@ -845,5 +850,94 @@ fn caption_sidecars_keep_only_the_exported_interval() {
     for format in [Format::Srt, Format::WebVtt] {
         let doc = sidecar(&mut edge, &edge_files, format, json!({"range":"inOut"}), ticks(30));
         assert!(doc.cues.is_empty(), "half-open export excludes cues touching either boundary: {doc:?}");
+    }
+}
+
+#[test]
+fn invalid_movie_output_names_are_rejected_before_jobs_or_queue_entries() {
+    let dir = Scratch::new("invalid-filenames");
+    let mut s = demo();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    for character in ['<', '>', ':', '"', '|', '?', '*', '\0', '\u{1f}'] {
+        let path = dir.path(&format!("uncreated/output{character}draft.wav"));
+        for command in ["export.resolve", "file.exportMedia", "export.quick", "export.queue.add"] {
+            let params = json!({"format":"wav","path":path,"wait":true,"captionSidecar":"vtt"});
+            let result = s.execute(command, params);
+            assert!(result.is_err(), "{command} accepted unsupported filename {path:?}");
+            let error = result.unwrap_err();
+            assert!(matches!(&error, EngineError::BadParams { cmd, .. } if cmd == command), "{command} reported {error:?}, not BadParams");
+            assert!(error.to_string().to_ascii_lowercase().contains("file name"));
+            assert!(s.jobs.is_empty());
+            assert!(s.export_queue.items.is_empty());
+            assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+            assert_eq!(s.history.undo.len(), undo);
+            assert!(!dir.0.join("uncreated").exists(), "rejection precedes folder and output creation");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn rejecting_an_invalid_movie_filename_does_not_truncate_existing_output() {
+    let dir = Scratch::new("invalid-existing-filename");
+    let path = dir.path("movie<draft.wav");
+    std::fs::write(&path, b"existing output").unwrap();
+    let mut s = demo();
+    assert!(s.execute("file.exportMedia", json!({"format":"wav","path":path,"wait":true})).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"existing output");
+    assert!(s.jobs.is_empty());
+}
+
+#[test]
+fn export_validates_names_before_changing_format_extensions() {
+    let dir = Scratch::new("invalid-extension-filenames");
+    let mut s = demo();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    for (format, ext) in [("aiff", "aif"), ("png", "png"), ("tiff", "tif"), ("tga", "tga"), ("exr", "exr"), ("jpg", "jpg")] {
+        let valid = dir.path(&format!("movie.{ext}"));
+        let existing = if format == "aiff" { valid.clone() } else { filmcraft_export::image_sequence_path(&valid, 0, 3) };
+        std::fs::write(&existing, b"existing output").unwrap();
+        for character in ['<', '>', ':', '"', '|', '?', '*', '\0', '\u{1f}'] {
+            let invalid = format!("{valid}{character}");
+            for command in ["export.resolve", "file.exportMedia", "export.quick", "export.queue.add"] {
+                let result = s.execute(command, json!({"format":format,"path":invalid,"wait":true}));
+                assert!(result.is_err(), "{command} accepted {format} filename {invalid:?} before extension correction");
+                assert!(result.unwrap_err().to_string().to_ascii_lowercase().contains("file name"));
+                assert_eq!(std::fs::read(&existing).unwrap(), b"existing output");
+                assert!(s.jobs.is_empty());
+                assert!(s.export_queue.items.is_empty());
+                assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+                assert_eq!(s.history.undo.len(), undo);
+            }
+        }
+        let converted = s.execute("export.resolve", json!({"format":format,"path":dir.path("format-change.wav")})).unwrap();
+        assert_eq!(converted["settings"]["path"], dir.path(&format!("format-change.{ext}")), "valid extension changes still work");
+        for path in [None, Some(dir.path("")), Some(format!("{}/", dir.0.to_string_lossy()))] {
+            let mut params = json!({"format":format});
+            if let Some(path) = path {
+                params["path"] = json!(path);
+            }
+            let resolved = s.execute("export.resolve", params).unwrap();
+            assert!(filmcraft_export::validate_output_path(resolved["settings"]["path"].as_str().unwrap()).is_ok());
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_trailing_backslash_in_an_output_filename_is_not_a_folder() {
+    let dir = Scratch::new("invalid-trailing-backslash");
+    let mut s = demo();
+    let path = dir.path(r"movie\");
+    for format in ["aiff", "png", "wav"] {
+        for command in ["export.resolve", "file.exportMedia", "export.quick", "export.queue.add"] {
+            let result = s.execute(command, json!({"format":format,"path":path,"wait":true}));
+            assert!(result.is_err(), "{command} treated a backslash as a native folder separator");
+            assert!(s.jobs.is_empty());
+            assert!(s.export_queue.items.is_empty());
+            assert!(!Path::new(&path).exists(), "rejection precedes folder creation");
+        }
     }
 }

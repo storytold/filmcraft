@@ -3586,6 +3586,8 @@
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+	Choose an output file name.	请指定输出文件名。
+	File name cannot contain < > : " / \\ | ? * or control characters.	文件名不能包含 < > : " / \\ | ? * 或控制字符。
 # View ▸ Reset Interface Zoom (#2253).
 	Reset Interface Zoom	重置界面缩放
 	Track Color	轨道颜色
