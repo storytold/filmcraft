@@ -220,6 +220,57 @@ fn project() -> (Project, filmcraft_project::ItemId) {
     (p, s)
 }
 
+/// #2063: the `media_items` memo was only filled once the nested `sequence()` call *returned*,
+/// so a `<media id="b">` whose spine references itself looped `media → sequence → storyline →
+/// element → media` until the stack overflowed. `media()` now memoises the reserved item before
+/// filling it, and the reserved item is filled in place, so the self-reference lands on the
+/// finished sequence. This document is exactly that shape; it must import, not crash.
+#[test]
+fn a_self_referential_media_imports_instead_of_overflowing_the_stack() {
+    let d = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.10">
+  <resources>
+    <format id="r1" frameDuration="1001/24000s" width="1920" height="1080"/>
+    <asset id="r2" name="Pier" start="0s" duration="60s" hasVideo="1" hasAudio="1" format="r1" audioChannels="2" audioRate="48000">
+      <media-rep kind="original-media" src="file:///Media/pier.mov"/>
+    </asset>
+    <media id="b" name="Loop">
+      <sequence format="r1" tcStart="0s">
+        <spine>
+          <asset-clip ref="r2" name="Pier" offset="0s" start="0s" duration="48s"/>
+          <ref-clip ref="b" name="Loop" offset="48s" start="0s" duration="48s"/>
+        </spine>
+      </sequence>
+    </media>
+  </resources>
+  <library>
+    <event name="Self">
+      <project name="Self">
+        <sequence format="r1" duration="96s">
+          <spine>
+            <ref-clip ref="b" name="Loop" offset="0s" start="0s" duration="96s"/>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>
+"#;
+    // Before, this overflowed the stack rather than returning.
+    let (imp, _rep) = import(d.as_bytes(), Format::Fcpxml, Some("/proj")).unwrap();
+    let p = &imp.project;
+    let loop_seq = p
+        .items
+        .values()
+        .find(|i| i.name == "Loop" && matches!(i.kind, ItemKind::Sequence(_)))
+        .expect("the <media> became a sequence");
+    let s = p.sequence(loop_seq.id).unwrap();
+    // The self-referencing ref-clip resolved to the same sequence item, not a fresh recursion.
+    assert_eq!(s.video_tracks[0].items.len(), 2, "the spine's two elements are both there");
+    assert_eq!(s.video_tracks[0].items[1].item, loop_seq.id, "the second clip points back at its own media");
+}
+
 #[test]
 fn roundtrip_all_versions() {
     for v in [FcpxmlVersion::V1_9, FcpxmlVersion::V1_10, FcpxmlVersion::V1_11] {

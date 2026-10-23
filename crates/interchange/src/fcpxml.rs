@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use filmcraft_geom::Vec2;
 use filmcraft_media::MediaKind;
 use filmcraft_project::{
-    BinId, ItemId, ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, Param, ParamValue, Project, Sequence, TrackItem, TrackKind, Transition,
-    TransitionAlign, TransitionId, effect::find_effect_by_name,
+    BinId, ItemId, ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, Param, ParamValue, Project, Sequence, SequenceSettings, TrackItem,
+    TrackKind, Transition, TransitionAlign, TransitionId, effect::find_effect_by_name,
 };
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use roxmltree::Node;
@@ -281,21 +281,42 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let n = *self.media_nodes.get(id)?;
         let s = child(n, "sequence")?;
-        // Reserve first so recursion terminates.
         let name = n.attribute("name").unwrap_or("Compound Clip").to_string();
-        let item = self.sequence(s, &name, None);
+        // #2063: memoise the reserved id *before* filling it, so a `<media id="b">` whose spine
+        // references `b` resolves to the (still empty) reserved item instead of looping
+        // media → sequence → storyline → element → media until the stack overflows. The old
+        // comment here said "reserve first" but the insert only ran once `sequence()` returned,
+        // which is exactly too late to break the cycle. The reserved item is filled in place by
+        // `fill_sequence`, so a self-reference lands on the finished sequence either way.
+        let settings = self.sequence_settings(s);
+        let item = self.b.reserve_sequence(&name, settings.clone(), None);
         self.media_items.insert(id.into(), item);
+        self.fill_sequence(s, item, settings);
         Some(item)
     }
 
-    fn sequence(&mut self, s: Node<'a, 'i>, name: &str, bin: Option<BinId>) -> ItemId {
+    /// The settings a `<sequence>` element declares: its format, timecode format and audio rate.
+    fn sequence_settings(&mut self, s: Node<'a, 'i>) -> SequenceSettings {
         let (rate, w, h) = s.attribute("format").and_then(|f| self.formats.get(f)).copied().unwrap_or((FrameRate::default(), 1920, 1080));
         let df = s.attribute("tcFormat") == Some("DF");
         let mut settings = settings_for(rate, w, h, df);
         if let Some(sr) = s.attribute("audioRate").and_then(parse_audio_rate) {
             settings.sample_rate = sr;
         }
+        settings
+    }
+
+    fn sequence(&mut self, s: Node<'a, 'i>, name: &str, bin: Option<BinId>) -> ItemId {
+        let settings = self.sequence_settings(s);
         let id = self.b.reserve_sequence(name, settings.clone(), bin);
+        self.fill_sequence(s, id, settings);
+        id
+    }
+
+    /// Build a sequence's tracks and storyline into an item already reserved by
+    /// [`Builder::reserve_sequence`].
+    fn fill_sequence(&mut self, s: Node<'a, 'i>, id: ItemId, settings: SequenceSettings) {
+        let (rate, w, h) = s.attribute("format").and_then(|f| self.formats.get(f)).copied().unwrap_or((FrameRate::default(), 1920, 1080));
         let mut seq = empty_sequence(settings);
         let tc_start = attr_time(s, "tcStart").unwrap_or(Tick::ZERO);
         seq.start_timecode = rate.frame_at(tc_start);
@@ -308,7 +329,6 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         seq.markers.sort_by_key(|m| m.start);
         self.b.put_sequence(id, seq);
-        id
     }
 
     /// Lay out a storyline. `origin` maps the storyline's offsets to timeline time
