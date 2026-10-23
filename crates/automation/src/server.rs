@@ -562,9 +562,17 @@ impl FilmcraftMcp {
     }
 }
 
+/// A temp path no other screenshot in this process shares: tool calls run concurrently, and a shared
+/// name let one call delete or read another's half-written file.
+fn screenshot_path() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("filmcraft-mcp-{}-{n}.png", std::process::id()))
+}
+
 impl FilmcraftMcp {
     async fn screenshot(&self, b: &BridgeClient, panel: Option<String>, max: u32) -> Result<CallToolResult, McpError> {
-        let path = std::env::temp_dir().join(format!("filmcraft-mcp-{}.png", std::process::id()));
+        let path = screenshot_path();
         if let Err(e) = b.call("ui.screenshot", json!({"path": path.to_string_lossy(), "panel": panel})).await {
             return Ok(fail(e));
         }
@@ -695,6 +703,13 @@ fn render_scale(max_side: u32, w: u32, h: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Concurrent screenshots must not share a temp file.
+    #[test]
+    fn screenshot_paths_are_unique() {
+        let paths: std::collections::HashSet<_> = (0..100).map(|_| screenshot_path()).collect();
+        assert_eq!(paths.len(), 100);
+    }
 
     #[test]
     fn render_scale_zero_means_no_limit() {
