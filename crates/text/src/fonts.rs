@@ -257,6 +257,26 @@ impl Face {
         }
         text.chars().all(|c| self.has_char(c))
     }
+    /// Runs `f` on the parsed font without keeping its file in memory: like
+    /// [`Face::covers_text`], a face whose file is not loaded yet is read into a temporary buffer
+    /// that is dropped afterwards. None if the file is missing or unreadable.
+    pub(crate) fn with_font_transient<R>(&self, f: impl FnOnce(FontRef<'_>) -> R) -> Option<R> {
+        if let (FaceData::File(p), None) = (&self.info.data, self.bytes.get()) {
+            let data = std::fs::read(p).ok()?;
+            return FontRef::from_index(&data, self.info.index).ok().map(f);
+        }
+        self.font().map(f)
+    }
+    /// A face outside the database, so no other test can load it. Its id is 0: keep it away from
+    /// the caches keyed by face id.
+    #[cfg(test)]
+    pub(crate) fn unregistered(info: FaceInfo) -> Self {
+        Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() }
+    }
+    #[cfg(test)]
+    pub(crate) fn is_loaded(&self) -> bool {
+        self.bytes.get().is_some()
+    }
     /// Height of the glyph's vertical origin above its baseline, in pixels.
     /// OpenType VORG takes precedence; TrueType uses the ink top plus vmtx's top bearing.
     pub(crate) fn vertical_origin(&self, gid: u32, px: f32) -> Option<f32> {
@@ -410,6 +430,12 @@ pub fn families() -> Vec<(String, Vec<String>)> {
             (k, v.into_iter().map(|(_, _, s)| s).collect())
         })
         .collect()
+}
+
+/// The face `family`'s Regular style resolves to, without falling back to another family or
+/// scanning the system folders (None for a family that is not registered).
+pub fn regular_face(family: &str) -> Option<Arc<Face>> {
+    resolve_in(family, "Regular").map(|r| face(r.face))
 }
 
 /// The face chosen for a family/style request, plus synthetic emboldening / slant when the family

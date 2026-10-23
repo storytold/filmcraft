@@ -191,6 +191,35 @@ fn a_property_drag_is_one_undo_step() {
     assert_eq!(opacity(&mut d), before, "one undo restores the original value");
 }
 
+/// #1536: the Font menu of a text layer shows each family's name in its own face.
+#[test]
+fn the_font_menu_previews_each_family() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let r = d.exec("graphics.newText", json!({"text": "Title"}));
+    d.exec("graphics.selectLayer", json!({"clip": r["clip"].as_u64().unwrap(), "layers": [0]}));
+    d.frames(4);
+    let font = d.rect("graphics.prop.font");
+    d.ok("ui.click", json!({"id": "graphics.prop.font"}));
+    d.frames(20);
+    let samples = |d: &Driver| -> Vec<String> {
+        d.harness.ctx.tex_manager().read().allocated().map(|(_, m)| m.name.clone()).filter(|n| n.starts_with("font-preview:")).collect()
+    };
+    let first = samples(&d);
+    assert!(!first.is_empty(), "the open menu draws font samples");
+    d.shot("font-menu");
+    if filmcraft_text::families().len() > 60 {
+        // the menu opens above the field: scroll it, and the rows coming into view get samples
+        let (x, y) = (font[0] + font[2] / 2.0, font[1] - 150.0);
+        for _ in 0..6 {
+            d.ok("ui.scroll", json!({"x": x, "y": y, "dy": -400.0}));
+        }
+        d.frames(20);
+        assert!(samples(&d).len() > first.len(), "scrolled rows get samples too");
+        d.shot("font-menu-scrolled");
+    }
+}
+
 /// The shadow color picker popup: a drag in the 2D picker is one undo step, so one Cmd+Z
 /// restores the original color (a drag was committing one undo step per frame, so undo only
 /// stepped back one frame's worth — the reported "sometimes undo works, sometimes not").

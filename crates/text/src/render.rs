@@ -285,6 +285,79 @@ pub fn rasterize(l: &Layout, m: &Xform) -> (Mask, i32, i32) {
     (mask, x0, y0)
 }
 
+/// A one-line sample of `text` set in `family`'s regular face at `px` pixels, vertically centred
+/// in a `w`×`h` mask and clipped at its right edge, for font menus that show each family in its
+/// own face. None when the family is not registered or its file is unreadable, when the face
+/// lacks a glyph for one of the characters, or when it draws no ink. The face's file is read for
+/// the sample alone and dropped, so browsing a long font list does not keep every installed font
+/// in memory.
+pub fn preview(family: &str, text: &str, px: f32, w: usize, h: usize) -> Option<Mask> {
+    if !(px > 0.0 && px < 1000.0) || w == 0 || h == 0 || w > 4096 || h > 1024 {
+        return None;
+    }
+    let face = fonts::regular_face(family)?;
+    sample(&face, text, px, w, h)
+}
+
+fn sample(face: &fonts::Face, text: &str, px: f32, w: usize, h: usize) -> Option<Mask> {
+    let path = face
+        .with_font_transient(|font| {
+            let size = Size::new(px);
+            let loc = LocationRef::default();
+            let charmap = font.charmap();
+            let advances = font.glyph_metrics(size, loc);
+            let outlines = font.outline_glyphs();
+            let m = font.metrics(size, loc);
+            // ascent up, descent (negative) down: centre the line box in the mask
+            let mut pen = Pen { path: Path::new(), x: 0.0, baseline: (h as f32 + m.ascent + m.descent) / 2.0 };
+            for c in text.chars() {
+                if pen.x > w as f32 {
+                    break;
+                }
+                let gid = charmap.map(c).filter(|g| g.to_u32() != 0);
+                if c.is_whitespace() {
+                    pen.x += gid.and_then(|g| advances.advance_width(g)).unwrap_or(px * 0.25);
+                    continue;
+                }
+                let gid = gid?;
+                if let Some(g) = outlines.get(gid) {
+                    // a glyph that fails to draw leaves a gap rather than dropping the sample
+                    let _ = g.draw(DrawSettings::unhinted(size, loc), &mut pen);
+                }
+                pen.x += advances.advance_width(gid).unwrap_or(0.0);
+            }
+            Some(pen.path)
+        })
+        .flatten()?;
+    let mask = fill(&path, w, h, 0.0, 0.0);
+    mask.a.iter().any(|a| *a > 0.0).then_some(mask)
+}
+
+/// Draws outlines at their pixel size (y up) into a path (y down) at the pen position.
+struct Pen {
+    path: Path,
+    x: f32,
+    baseline: f32,
+}
+
+impl OutlinePen for Pen {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.path.move_to(self.x + x, self.baseline - y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.path.line_to(self.x + x, self.baseline - y);
+    }
+    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+        self.path.quad_to(self.x + cx0, self.baseline - cy0, self.x + x, self.baseline - y);
+    }
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+        self.path.cubic_to(self.x + cx0, self.baseline - cy0, self.x + cx1, self.baseline - cy1, self.x + x, self.baseline - y);
+    }
+    fn close(&mut self) {
+        self.path.close();
+    }
+}
+
 /// Translate-only transform helper.
 pub fn at(x: f32, y: f32) -> Xform {
     let mut t = IDENTITY;
@@ -346,6 +419,41 @@ mod tests {
         };
         let rows: Vec<usize> = (0..mi.h).filter(|&y| (0..mi.w).any(|x| mi.get(x, y) > 0.5)).collect();
         assert!(row_centre(rows[2]) > row_centre(rows[rows.len() - 3]) + 3.0);
+    }
+
+    /// #1536: font menus show each family's name in its own face.
+    #[test]
+    fn previews_set_the_text_in_the_family_face() {
+        let sans = preview("Inter", "Inter Sample", 16.0, 160, 22).expect("bundled sans");
+        let mono = preview("JetBrains Mono", "Inter Sample", 16.0, 160, 22).expect("bundled mono");
+        assert_eq!((sans.w, sans.h), (160, 22));
+        assert!(ink(&sans) > 20.0, "{}", ink(&sans));
+        assert_ne!(sans.a, mono.a, "each sample uses its own family's outlines");
+        assert!(preview("No Such Family 1536", "No Such Family 1536", 16.0, 160, 22).is_none(), "an unknown family has no sample, not Inter's");
+        assert!(preview("Inter", "日本語", 16.0, 160, 22).is_none(), "a face without the glyphs has no sample");
+    }
+
+    /// Browsing the font menu reads each installed face for its sample and drops it.
+    #[test]
+    fn previews_leave_installed_faces_unloaded() {
+        // A face of its own: the installed ones are shared with tests that load every system face
+        // while probing for a Japanese font.
+        let path = std::env::temp_dir().join(format!("filmcraft-preview-{}.ttf", std::process::id()));
+        std::fs::write(&path, fonts::INTER_REGULAR).expect("write temp font");
+        let info = fonts::FaceInfo {
+            family: "Inter".into(),
+            style: "Regular".into(),
+            weight: 400,
+            italic: false,
+            index: 0,
+            data: fonts::FaceData::File(path.clone()),
+            origin: "system",
+        };
+        let f = fonts::Face::unregistered(info);
+        let drawn = sample(&f, "Aa", 16.0, 60, 22);
+        let _ = std::fs::remove_file(&path);
+        assert!(drawn.is_some_and(|m| ink(&m) > 5.0), "the sample is drawn from the file");
+        assert!(!f.is_loaded(), "the file is not kept after the sample");
     }
 
     #[test]

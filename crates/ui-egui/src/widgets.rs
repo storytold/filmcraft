@@ -354,6 +354,104 @@ pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> egui::DragValu
     egui::DragValue::new(value).custom_parser(move |s| crate::calc::eval(s, current))
 }
 
+/// Size of a font-menu sample's name, its box, and how many samples may be rendered per frame:
+/// each reads a font file, so a list scrolled into view fills in over a few frames instead of
+/// stalling one. The cache keeps the most recently shown samples.
+const FONT_SAMPLE_PX: f32 = 14.0;
+const FONT_SAMPLE_BOX: [f32; 2] = [200.0, 18.0];
+const FONT_SAMPLES_PER_FRAME: usize = 6;
+const FONT_SAMPLE_CACHE: usize = 256;
+
+/// Rendered font-menu samples by (family, pixels per point × 100), with the use that last showed
+/// each one; None for a family whose face can't draw its own name.
+#[derive(Clone, Default)]
+struct FontSamples {
+    map: std::collections::HashMap<(String, u32), (u64, Option<egui::TextureHandle>)>,
+    uses: u64,
+    pass: u64,
+    rendered: usize,
+}
+
+/// A font-menu entry: the family's name in its own face (#1536), or in the interface font while
+/// its sample is pending or when the face lacks the glyphs of its own name. Rows scrolled out of
+/// view render nothing.
+pub fn font_row(ui: &mut Ui, family: &str, selected: bool) -> Response {
+    let row = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), ui.spacing().interact_size.y));
+    let sample = if ui.is_rect_visible(row) { font_sample(ui.ctx(), family) } else { None };
+    match sample {
+        Some(tex) => {
+            let size = tex.size_vec2() / ui.ctx().pixels_per_point();
+            let image = egui::Image::new(&tex).fit_to_exact_size(size).tint(ui.visuals().text_color()).alt_text(family);
+            ui.add(egui::Button::selectable(selected, image))
+        }
+        None => ui.selectable_label(selected, family),
+    }
+}
+
+fn font_sample(ctx: &egui::Context, family: &str) -> Option<egui::TextureHandle> {
+    enum Look {
+        Cached(Option<egui::TextureHandle>),
+        Render,
+        Later,
+    }
+    let ppp = ctx.pixels_per_point();
+    let key = (family.to_owned(), (ppp * 100.0).round() as u32);
+    let pass = ctx.cumulative_pass_nr();
+    let id = egui::Id::new("font-samples");
+    // Context accessors share a lock: nothing inside `data_mut` calls back into the context.
+    let look = ctx.data_mut(|d| {
+        let c = d.get_temp_mut_or_default::<FontSamples>(id);
+        c.uses += 1;
+        let uses = c.uses;
+        if let Some(e) = c.map.get_mut(&key) {
+            e.0 = uses;
+            return Look::Cached(e.1.clone());
+        }
+        if c.pass != pass {
+            c.pass = pass;
+            c.rendered = 0;
+        }
+        if c.rendered >= FONT_SAMPLES_PER_FRAME {
+            return Look::Later;
+        }
+        c.rendered += 1;
+        Look::Render
+    });
+    match look {
+        Look::Cached(tex) => tex,
+        Look::Later => {
+            ctx.request_repaint();
+            None
+        }
+        Look::Render => {
+            let tex = render_font_sample(ctx, family, ppp);
+            ctx.data_mut(|d| {
+                let c = d.get_temp_mut_or_default::<FontSamples>(id);
+                if c.map.len() >= FONT_SAMPLE_CACHE
+                    && let Some(oldest) = c.map.iter().min_by_key(|(_, e)| e.0).map(|(k, _)| k.clone())
+                {
+                    c.map.remove(&oldest);
+                }
+                c.map.insert(key, (c.uses, tex.clone()));
+            });
+            tex
+        }
+    }
+}
+
+/// `family`'s name in its own face, white with the coverage as alpha (tinted when painted), cropped
+/// after the ink.
+fn render_font_sample(ctx: &egui::Context, family: &str, ppp: f32) -> Option<egui::TextureHandle> {
+    let [w, h] = FONT_SAMPLE_BOX.map(|v| (v * ppp).round().max(1.0) as usize);
+    let mask = filmcraft_text::render::preview(family, family, FONT_SAMPLE_PX * ppp, w, h)?;
+    let at = |x: usize, y: usize| mask.a.get(y * mask.w + x).copied().unwrap_or(0.0);
+    let ink_end = (0..mask.w).rev().find(|&x| (0..mask.h).any(|y| at(x, y) > 0.0))?;
+    let cw = (ink_end + 2).min(mask.w);
+    let pixels =
+        (0..mask.h).flat_map(|y| (0..cw).map(move |x| (y, x))).map(|(y, x)| egui::Color32::from_white_alpha((at(x, y) * 255.0).round() as u8)).collect();
+    Some(ctx.load_texture(format!("font-preview:{family}"), egui::ColorImage::new([cw, mask.h], pixels), egui::TextureOptions::LINEAR))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +483,41 @@ mod tests {
         let st = egui::text_edit::TextEditState::load(&ctx, id.with("edit")).unwrap_or_default();
         let range = st.cursor.char_range().map(|c| c.sorted_cursors());
         assert_eq!(range, Some([egui::text::CCursor::new(0), egui::text::CCursor::new(5)]));
+    }
+
+    /// #1536: a font list renders its samples lazily: only rows in view, and at most
+    /// [`FONT_SAMPLES_PER_FRAME`] new ones per frame (each reads a font file), asking for another
+    /// frame while some are pending.
+    #[test]
+    fn font_rows_render_visible_samples_a_few_per_frame() {
+        let ctx = egui::Context::default();
+        let families: Vec<String> =
+            ["Inter", "JetBrains Mono", "Noto Serif"].into_iter().map(String::from).chain((0..200).map(|i| format!("No Such Family {i}"))).collect();
+        let frame = || {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 300.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                    for f in &families {
+                        font_row(ui, f, false);
+                    }
+                });
+            });
+            out.textures_delta.clear();
+            out.viewport_output.values().any(|v| v.repaint_delay.is_zero())
+        };
+        let cached = || ctx.data_mut(|d| d.get_temp_mut_or_default::<FontSamples>(egui::Id::new("font-samples")).map.len());
+        assert!(frame(), "samples still pending ask for another frame");
+        assert_eq!(cached(), FONT_SAMPLES_PER_FRAME, "one frame renders only its share");
+        for _ in 0..10 {
+            frame();
+        }
+        let visible = cached();
+        assert!(visible > FONT_SAMPLES_PER_FRAME && visible < 30, "the rows in view, not all {}: {visible}", families.len());
+        let samples: Vec<String> = ctx.tex_manager().read().allocated().map(|(_, m)| m.name.clone()).filter(|n| n.starts_with("font-preview:")).collect();
+        for f in ["Inter", "JetBrains Mono", "Noto Serif"] {
+            assert!(samples.contains(&format!("font-preview:{f}")), "{f} in {samples:?}");
+        }
+        assert_eq!(samples.len(), 3, "unknown families show their name as a plain label: {samples:?}");
     }
 
     /// Dialogs open centred and can be dragged by their title bar (anchored ones could not).

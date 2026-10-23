@@ -1695,7 +1695,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     filmcraft_text::fonts::scan_system();
                 }
                 for (f, _) in &fams {
-                    if ui.selectable_label(*f == family, f).clicked() {
+                    if crate::widgets::font_row(ui, f, *f == family).clicked() {
                         cx.set("font", json!(f));
                     }
                 }
