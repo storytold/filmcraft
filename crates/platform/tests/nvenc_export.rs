@@ -118,6 +118,10 @@ fn hardware_export_matches_the_software_export() {
 #[test]
 fn what_nvenc_does_not_take_goes_to_the_software_encoder() {
     let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !filmcraft_platform::nvenc::available() {
+        eprintln!("SKIPPED: NVENC is unavailable; VA-API fallback cases are covered by vaapi_export");
+        return;
+    }
     filmcraft_platform::register();
     let (p, seq, m) = project(640, 360, 24);
     let run = |name: &str, f: &dyn Fn(&mut ExportSettings)| {

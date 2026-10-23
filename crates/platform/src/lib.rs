@@ -109,6 +109,12 @@ pub fn register() -> Availability {
             Ok(driver) => {
                 ONCE.call_once(|| log::info!("hardware decoding through VA-API: {driver}"));
                 filmcraft_codecs::register_video_decoder(vaapi_factory);
+                static VA_ENCODERS: std::sync::Once = std::sync::Once::new();
+                VA_ENCODERS.call_once(|| {
+                    filmcraft_export::register_encoder(vaapi::h264enc::factory);
+                    filmcraft_export::register_encoder(vaapi::hevcenc::factory);
+                    filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, vaapi::hevcenc::available);
+                });
                 filmcraft_codecs::hw::set_hw_backend("VA-API");
                 Availability::Available("VA-API")
             }

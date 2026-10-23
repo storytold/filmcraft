@@ -163,23 +163,36 @@ pub fn hevc_available() -> bool {
 /// The answer of [`hevc_available`], once asked.
 static HEVC_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// Ask [`hevc_available`] on a thread of its own (once, however often this is called), so the
-/// first draw of Export's format list does not wait for the probe session. Whoever asks while it
-/// runs waits for the same answer; if the thread cannot start, or the probe panics (caught), the
-/// first caller asks, as before.
+/// Warm the HEVC probes once. Windows uses a background thread so the first draw does not wait;
+/// Linux probes synchronously to avoid racing CUDA driver teardown at process exit. If a probe
+/// panics (caught), the first later caller asks again.
 pub fn warm_hevc_probe() {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
-        let spawned = std::thread::Builder::new().name("nvenc-hevc-probe".into()).spawn(|| {
+        // On Linux, process exit while CUDA is still initialising on a detached thread can
+        // deadlock inside driver teardown. Complete both probes before returning instead.
+        #[cfg(target_os = "linux")]
+        {
             if std::panic::catch_unwind(hevc_available).is_err() {
                 log::warn!("the hardware HEVC probe panicked; the format list will ask again");
             }
             if std::panic::catch_unwind(hevc_hdr_available).is_err() {
                 log::warn!("the hardware HEVC Main 10 probe panicked; the export will ask again");
             }
-        });
-        if let Err(e) = spawned {
-            log::info!("hardware HEVC probe thread not started: {e}");
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let spawned = std::thread::Builder::new().name("nvenc-hevc-probe".into()).spawn(|| {
+                if std::panic::catch_unwind(hevc_available).is_err() {
+                    log::warn!("the hardware HEVC probe panicked; the format list will ask again");
+                }
+                if std::panic::catch_unwind(hevc_hdr_available).is_err() {
+                    log::warn!("the hardware HEVC Main 10 probe panicked; the export will ask again");
+                }
+            });
+            if let Err(e) = spawned {
+                log::info!("hardware HEVC probe thread not started: {e}");
+            }
         }
     });
 }

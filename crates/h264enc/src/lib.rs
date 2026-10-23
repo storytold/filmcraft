@@ -27,7 +27,7 @@ mod dsp;
 mod intra;
 mod lookahead;
 mod mbinfo;
-mod nal;
+pub mod nal;
 mod picture;
 mod ratecontrol;
 mod slice;
