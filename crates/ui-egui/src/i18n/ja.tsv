@@ -3616,3 +3616,8 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	再起動
+	Later	後で
+	Restart FilmCraft to use {language}	FilmCraft を再起動して {language} を使用
+	The interface language changes after a restart.	インターフェースの言語は再起動後に変更されます。

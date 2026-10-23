@@ -3582,3 +3582,8 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	Mulai ulang
+	Later	Nanti
+	Restart FilmCraft to use {language}	Mulai ulang FilmCraft untuk menggunakan {language}
+	The interface language changes after a restart.	Bahasa antarmuka berubah setelah memulai ulang.

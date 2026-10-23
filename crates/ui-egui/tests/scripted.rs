@@ -29,7 +29,13 @@ impl Driver {
 
     /// `render`: with a wgpu renderer so `Harness::render` can take screenshots (needs a GPU).
     fn demo_with(render: bool) -> Self {
+        Self::with_session(render, |_| {})
+    }
+
+    /// `setup` adjusts the session before the app is built (e.g. a saved interface language).
+    fn with_session(render: bool, setup: impl FnOnce(&mut Session)) -> Self {
         let mut session = Session::default();
+        setup(&mut session);
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
@@ -188,8 +194,8 @@ fn apply_effect_appears_in_effect_controls() {
 
 #[test]
 fn spanish_search_finds_effects_and_presets_with_stable_automation_ids() {
-    let mut d = Driver::demo();
-    d.ok("ui.menu.invoke", json!({"id": "app.language.spanish"}));
+    // a language choice takes effect at the next start, so the app starts in Spanish
+    let mut d = Driver::with_session(false, |s| s.prefs.general.interface_language = "es".into());
     d.ok("ui.panel.show", json!({"panel": "Effects"}));
     d.ok("ui.set", json!({"effectsSearch": "DESENFOQUE"}));
     d.frames(3);
@@ -203,7 +209,7 @@ fn spanish_search_finds_effects_and_presets_with_stable_automation_ids() {
     d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
     d.frames(3);
     assert!(d.element_ids("effectControls.effect.").contains(&"effectControls.effect.gaussian_blur".to_string()));
-    d.ok("ui.menu.invoke", json!({"id": "app.language.english"}));
+    filmcraft_ui_egui::i18n::set_current(filmcraft_ui_egui::i18n::Language::En);
 }
 
 #[test]

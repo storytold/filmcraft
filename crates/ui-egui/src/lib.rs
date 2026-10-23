@@ -54,6 +54,7 @@ pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
+pub mod restart_notice;
 mod rtl;
 pub mod scrub;
 mod shuttle;
@@ -173,6 +174,11 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Relaunch the app: called from `on_exit` after a restart was asked for (the language-change
+    /// notice's Restart button), once auto-save and the recovery journal are flushed. Without it
+    /// Restart only closes the window. The session is passed so the host can persist it first
+    /// (the web writes its OPFS recovery snapshot before reloading).
+    pub restart: Option<Box<dyn FnMut(&Session) -> Result<(), String>>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -352,6 +358,11 @@ pub struct FilmcraftApp {
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a
     /// button back to the default mode (see [`graphics_notice`]).
     pub graphics_notice: Option<graphics_notice::GraphicsNotice>,
+    /// A language change waiting for a restart (see [`restart_notice`]).
+    pub restart_notice: Option<restart_notice::RestartNotice>,
+    /// Relaunch the app when the close in progress finishes (`on_exit` calls `hooks.restart`);
+    /// the language-change notice's Restart button sets it.
+    pub restart_after_quit: bool,
     /// Fault injection for robustness tests: the next UI pass panics.
     #[doc(hidden)]
     pub panic_next_frame: bool,
@@ -394,6 +405,9 @@ pub struct FilmcraftApp {
     watched_render: Option<(u64, Tick)>,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
+    /// The saved interface language has been applied once, at the first `apply_prefs`: later
+    /// changes wait for a restart (`applied_prefs` can't say this, `sync_pool` resets it).
+    language_applied: bool,
     /// Settings ▸ Appearance ▸ UI Scale last applied, with the system scale it was applied for.
     applied_ui_scale: Option<(Option<f32>, f32)>,
     workspace_restored: bool,
@@ -593,6 +607,9 @@ impl FilmcraftApp {
             ui_error: None,
             panic_next_frame: false,
             quit_confirmed: false,
+            restart_notice: None,
+            restart_after_quit: false,
+            language_applied: false,
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
@@ -746,19 +763,40 @@ impl FilmcraftApp {
                 }
                 None => i18n::Language::default(),
             };
-            if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
-                self.ui.language = i18n::Language::En;
-                self.ui.status = tl!("no Japanese font is installed on this system; the interface stays in English").into();
+            // A language whose script has no font falls back to English (the choice is kept and
+            // retried at every start).
+            let missing_font = if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
+                Some(tl!("no Japanese font is installed on this system; the interface stays in English"))
             } else if language == i18n::Language::ZhCn && !i18n::chinese_font_available() {
-                self.ui.language = i18n::Language::En;
-                self.ui.status = tl!("no Chinese font is installed on this system; the interface stays in English").into();
+                Some(tl!("no Chinese font is installed on this system; the interface stays in English"))
             } else if language == i18n::Language::Ko && !i18n::korean_font_available() {
-                self.ui.language = i18n::Language::En;
-                self.ui.status = tl!("no Korean font is installed on this system; the interface stays in English").into();
+                Some(tl!("no Korean font is installed on this system; the interface stays in English"))
             } else {
-                self.ui.language = language;
+                None
+            };
+            if !self.language_applied {
+                // the saved choice takes effect at startup
+                if let Some(msg) = missing_font {
+                    self.ui.language = i18n::Language::En;
+                    self.ui.status = msg.into();
+                } else {
+                    self.ui.language = language;
+                }
+                i18n::set_current(self.ui.language);
+                self.language_applied = true;
+            } else if language == self.ui.language || missing_font.is_some() {
+                // a mid-session change takes effect on a restart (Premiere defers it the same
+                // way); switching back needs nothing, and a script the system can't show reports
+                // instead of asking
+                if let Some(msg) = missing_font {
+                    self.ui.status = msg.into();
+                }
+                self.restart_notice = None;
+            } else if !self.restart_notice.as_ref().is_some_and(|n| n.language == language) {
+                // a notice dismissed for this language stays dismissed (`applied_prefs` is
+                // reset when the media pool is, so this block runs again on project open)
+                self.restart_notice = Some(restart_notice::RestartNotice::new(language));
             }
-            i18n::set_current(self.ui.language);
         }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
         self.ui.play_after_render = p.timeline.play_after_rendering;
@@ -792,6 +830,51 @@ impl FilmcraftApp {
             }
         }
         self.applied_prefs = Some(p);
+    }
+
+    /// The restart notice's Restart button: close the window (unsaved changes ask to save first,
+    /// as with Quit); `on_exit` relaunches the app through `hooks.restart` so the pending
+    /// interface language takes effect.
+    pub fn begin_restart(&mut self, ctx: &egui::Context) {
+        self.restart_after_quit = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        #[cfg(target_arch = "wasm32")]
+        {
+            // a browser page has no window to close: the unsaved-changes prompt is asked here
+            // and, once confirmed, the hook reloads the page
+            self.quit_confirmed = false;
+            if !panels::clip_dialogs::intercept_quit(self) {
+                self.finish_restart();
+            }
+        }
+    }
+
+    /// The unsaved-changes prompt dismissed a pending restart without closing: cancel it and
+    /// offer the notice's buttons again. An ordinary quit cancelled leaves a Later-dismissed
+    /// notice dismissed.
+    pub fn cancel_restart(&mut self) {
+        if std::mem::take(&mut self.restart_after_quit)
+            && let Some(n) = self.restart_notice.as_mut()
+        {
+            n.closed = false;
+        }
+    }
+
+    /// On the web the relaunch is the page reload itself: run it once the unsaved-changes prompt
+    /// confirmed (or there was nothing to save), after the session's recovery state is written.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn finish_restart(&mut self) {
+        self.session.shutdown();
+        self.relaunch();
+    }
+
+    /// Launch a fresh copy of the app (the host's `restart` hook).
+    fn relaunch(&mut self) {
+        if let Some(restart) = self.hooks.restart.as_mut()
+            && let Err(e) = restart(&self.session)
+        {
+            self.ui.status = e;
+        }
     }
 
     /// Every sequence has its own Timeline view (zoom, scroll, track heights), as Premiere's
@@ -2188,6 +2271,10 @@ impl eframe::App for FilmcraftApp {
         // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
         // removes its journal, one with unsaved changes keeps it for the next launch.
         self.session.shutdown();
+        // a restart asked for relaunches the app once the state is safe on disk
+        if self.restart_after_quit {
+            self.relaunch();
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2208,6 +2295,9 @@ impl eframe::App for FilmcraftApp {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| restart_notice::show(self, ui.ctx()))).is_err() {
+            self.restart_notice = None;
         }
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);

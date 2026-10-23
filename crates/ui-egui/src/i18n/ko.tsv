@@ -3603,3 +3603,8 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	다시 시작
+	Later	나중에
+	Restart FilmCraft to use {language}	FilmCraft를 다시 시작하여 {language} 사용
+	The interface language changes after a restart.	인터페이스 언어는 다시 시작하면 변경됩니다.

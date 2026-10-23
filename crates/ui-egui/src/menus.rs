@@ -227,16 +227,14 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             "app.language.korean" => crate::i18n::Language::Ko,
             _ => crate::i18n::Language::En,
         };
-        // The preference is updated in memory before it is written, so a failed write (read-only
-        // or full disk) still switches the interface; it only can't be remembered for next time.
+        // The choice takes effect at the next start (like Premiere): save it and `apply_prefs`
+        // arms the restart notice on the next frame.
         let saved = app.session.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": language.code()}));
-        app.ui.language = language;
-        crate::i18n::set_current(language);
         if let Err(e) = saved {
             app.ui.status = tlf!("The language changed but could not be saved: {e}", e);
         }
         ctx.request_repaint();
-        return Ok(json!(app.ui.language));
+        return Ok(json!(language));
     }
     if id == "file.exportFrame" {
         if params.get("target").is_none() {
