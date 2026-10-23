@@ -241,6 +241,16 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("sequence.open".into(), json!({"item": id.0})));
         ui.close();
     }
+    if matches!(kind, ItemKind::Sequence(_)) {
+        let b = ui.button(tl!("Sequence Settings…"));
+        app.auto.add("project.itemMenu.sequenceSettings", b.rect, "Sequence Settings…");
+        if b.clicked() {
+            // the dialog edits the active sequence: open the clicked one first, as Premiere does
+            actions.push(("sequence.open".into(), json!({"item": id.0})));
+            actions.push(("sequence.settings".into(), json!({})));
+            ui.close();
+        }
+    }
     if ui.button(tl!("New Sequence From Clip")).clicked() {
         actions.push(("file.newSequence".into(), json!({"fromItem": id.0})));
         ui.close();
