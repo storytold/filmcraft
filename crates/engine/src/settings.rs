@@ -41,6 +41,9 @@ pub struct GeneralPrefs {
     pub at_startup: String,
     /// "When Opening a Project": `showOpenDialog` | `showHome`.
     pub when_opening_project: String,
+    /// Preferred default frame rate for new sequences: `10`, `12`, `12.5`, `15`, `23.976`, `24`,
+    /// `25`, `29.97`, `30`, `48`, `50`, `59.94`, `60`, `119.88`, `120`.
+    pub preferred_sequence_fps: String,
     /// Bins ▸ Double-click / + Cmd / + Opt: `openInPlace` | `openNewTab` | `openNewWindow`.
     pub bins_double_click: String,
     pub bins_cmd_double_click: String,
@@ -66,6 +69,7 @@ impl Default for GeneralPrefs {
             interface_language: "system".into(),
             at_startup: "showHome".into(),
             when_opening_project: "showOpenDialog".into(),
+            preferred_sequence_fps: "23.976".into(),
             bins_double_click: "openInPlace".into(),
             bins_cmd_double_click: "openNewTab".into(),
             bins_opt_double_click: "openNewWindow".into(),
@@ -804,6 +808,30 @@ pub fn timebase_rate(v: &str) -> FrameRate {
     }
 }
 
+/// Preferred Sequence Frame Rate choices → rational frame rate.
+/// Narrows strictly to the fixed advertised choices in [`PREFERRED_SEQUENCE_FPS`],
+/// falling back safely to the standard 23.976 fps default.
+pub fn preferred_sequence_frame_rate(v: &str) -> FrameRate {
+    match v {
+        "10" => FrameRate::new(10, 1),
+        "12" => FrameRate::new(12, 1),
+        "12.5" => FrameRate::new(25, 2),
+        "15" => FrameRate::new(15, 1),
+        "23.976" => FrameRate::FPS_23_976,
+        "24" => FrameRate::FPS_24,
+        "25" => FrameRate::FPS_25,
+        "29.97" => FrameRate::FPS_29_97,
+        "30" => FrameRate::FPS_30,
+        "48" => FrameRate::FPS_48,
+        "50" => FrameRate::FPS_50,
+        "59.94" => FrameRate::FPS_59_94,
+        "60" => FrameRate::FPS_60,
+        "119.88" => FrameRate::FPS_119_88,
+        "120" => FrameRate::FPS_120,
+        _ => FrameRate::FPS_23_976,
+    }
+}
+
 // ------------------------------------------------------------------ schema
 
 /// What kind of control a field is.
@@ -947,6 +975,23 @@ const TIMEBASE: &[(&str, &str)] = &[
     ("59.94", "59.94 fps Non Drop-Frame"),
     ("60", "60 fps"),
 ];
+pub const PREFERRED_SEQUENCE_FPS: &[(&str, &str)] = &[
+    ("10", "10 fps"),
+    ("12", "12 fps"),
+    ("12.5", "12.5 fps"),
+    ("15", "15 fps"),
+    ("23.976", "23.976 fps"),
+    ("24", "24 fps"),
+    ("25", "25 fps"),
+    ("29.97", "29.97 fps"),
+    ("30", "30 fps"),
+    ("48", "48 fps"),
+    ("50", "50 fps"),
+    ("59.94", "59.94 fps"),
+    ("60", "60 fps"),
+    ("119.88", "119.88 fps"),
+    ("120", "120 fps"),
+];
 const TIMECODE: &[(&str, &str)] = &[("useMediaSource", "Use Media Source"), ("generate", "Generate Timecode")];
 const FRAME_COUNT: &[(&str, &str)] = &[("startAt0", "Start at 0"), ("startAt1", "Start at 1"), ("timecodeConversion", "Timecode Conversion")];
 const SCALING: &[(&str, &str)] = &[("none", "None"), ("scaleToFrameSize", "Scale to frame size"), ("setToFrameSize", "Set to frame size")];
@@ -1018,6 +1063,7 @@ static CATEGORIES: &[Category] = &[
             ),
             f("general.atStartup", "At Startup", Kind::Choice(STARTUP), true),
             f("general.whenOpeningProject", "When Opening a Project", Kind::Choice(OPENING), false),
+            f("general.preferredSequenceFps", "Preferred Sequence Frame Rate", Kind::Choice(PREFERRED_SEQUENCE_FPS), true),
             Row::Group(
                 "Bins",
                 &[

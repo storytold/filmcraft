@@ -152,6 +152,7 @@ fn every_category_opens_from_its_command_and_menu() {
     // the first field of a few pages, by automation id
     for (c, field) in [
         ("general", "settings.general.atStartup"),
+        ("general", "settings.general.preferredSequenceFps"),
         ("timeline", "settings.timeline.stillImageDuration"),
         ("timeline", "settings.timeline.stillImageUnit"),
         ("trim", "settings.trim.largeTrimOffset"),
@@ -722,4 +723,14 @@ fn label_color_presets() {
     assert!(folder.join("keep.json").exists(), "the built-in preset can't be deleted, and nothing else goes");
     d.click("settings.cancel");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn general_preferred_sequence_fps_is_automation_drivable() {
+    let mut d = Driver::demo();
+    d.menu("app.settings.general");
+    assert!(d.has("settings.general.preferredSequenceFps"), "automation element settings.general.preferredSequenceFps present");
+    assert_eq!(d.draft()["values"]["general"]["preferredSequenceFps"], "23.976");
+    d.shot("general-preferred-sequence-fps");
+    d.click("settings.cancel");
 }

@@ -97,20 +97,22 @@ pub fn open(app: &mut FilmcraftApp) {
 
 /// File ▸ New ▸ Sequence…: the dialog as New Sequence, from the default settings, named like
 /// `file.newSequence` would name it, with three video and three audio tracks.
+/// The default timebase reflects Settings ▸ General ▸ Preferred Sequence Frame Rate.
 pub fn open_new(app: &mut FilmcraftApp) {
     let st = SequenceSettings::default();
     let n = app.session.project.sequences().count() + 1;
+    let rate = filmcraft_engine::settings::preferred_sequence_frame_rate(&app.session.prefs.general.preferred_sequence_fps);
     app.ui.sequence_settings = SequenceSettingsDraft {
         tab: "general".into(),
         new_sequence: true,
         video_tracks: 3,
         audio_tracks: 3,
-        fps_num: st.frame_rate.num,
-        fps_den: st.frame_rate.den,
+        fps_num: rate.num,
+        fps_den: rate.den,
         width: st.width,
         height: st.height,
         scale_motion: true,
-        drop_frame: st.drop_frame && st.frame_rate.supports_drop_frame(),
+        drop_frame: st.drop_frame && rate.supports_drop_frame(),
         mix: mix_name(st.audio_master).into(),
         sample_rate: st.sample_rate,
         max_render_quality: st.max_render_quality,
@@ -645,5 +647,60 @@ mod tests {
         assert!(changes(&d, &cur, "Rough Cut").is_empty());
         let d = SequenceSettingsDraft { name: "   ".into(), ..Default::default() };
         assert!(changes(&d, &cur, "Sequence 01").is_empty());
+    }
+
+    #[test]
+    fn open_new_sequence_honours_preferred_fps_preference() {
+        let session = filmcraft_engine::Session::default();
+        let mut app = FilmcraftApp::new(session);
+
+        // 1. Default preference (23.976 fps)
+        open_new(&mut app);
+        assert_eq!((app.ui.sequence_settings.fps_num, app.ui.sequence_settings.fps_den), (24_000, 1001));
+        assert!(!app.ui.sequence_settings.drop_frame);
+
+        // 2. Change preference to 29.97
+        app.session.execute("prefs.set", json!({"key": "general.preferredSequenceFps", "value": "29.97"})).unwrap();
+        open_new(&mut app);
+        assert_eq!((app.ui.sequence_settings.fps_num, app.ui.sequence_settings.fps_den), (30_000, 1001));
+        assert!(!app.ui.sequence_settings.drop_frame, "timecode mode preserves default false");
+
+        // 3. Change preference to 60 fps integer rate
+        app.session.execute("prefs.set", json!({"key": "general.preferredSequenceFps", "value": "60"})).unwrap();
+        open_new(&mut app);
+        assert_eq!((app.ui.sequence_settings.fps_num, app.ui.sequence_settings.fps_den), (60, 1));
+        assert!(!app.ui.sequence_settings.drop_frame);
+
+        // 4. Change preference to 25 fps
+        app.session.execute("prefs.set", json!({"key": "general.preferredSequenceFps", "value": "25"})).unwrap();
+        open_new(&mut app);
+        assert_eq!((app.ui.sequence_settings.fps_num, app.ui.sequence_settings.fps_den), (25, 1));
+
+        // 5. Explicit dialog override does NOT silently mutate preference; reopening honours preference
+        // User overrides to 48 fps in dialog and creates a sequence
+        app.ui.sequence_settings.fps_num = 48;
+        app.ui.sequence_settings.fps_den = 1;
+        let (p, _) = new_sequence_params(&app.ui.sequence_settings);
+        app.session.execute("file.newSequence", Value::Object(p)).unwrap();
+        assert_eq!(app.session.prefs.general.preferred_sequence_fps, "25", "preference remains 25");
+
+        // Reopening new dialog opens with preference 25 fps, not the overridden 48 fps
+        open_new(&mut app);
+        assert_eq!((app.ui.sequence_settings.fps_num, app.ui.sequence_settings.fps_den), (25, 1), "reopening respects preference");
+
+        // 6. Source-matching workflow safety (file.newSequenceFromClip / fromItem)
+        let matte_id = app.session.execute("file.newColorMatte", json!({"color": "#336699"})).unwrap()["item"].as_u64().unwrap();
+        let clip_seq = app.session.execute("file.newSequenceFromClip", json!({"items": [matte_id]})).unwrap()["sequence"].as_u64().unwrap();
+        let q = app.session.project.sequence(filmcraft_project::ItemId(clip_seq)).unwrap();
+        assert_eq!(q.settings.frame_rate, FrameRate::new(48, 1), "source matching uses media/active project properties, not preference");
+
+        // 7. Existing sequence retains its own frame rate when opened via open()
+        let seq_50 = app.session.execute("file.newSequence", json!({"name": "Existing 50fps", "fps": 50})).unwrap()["sequence"].as_u64().unwrap();
+        app.session.state.active_sequence = Some(filmcraft_project::ItemId(seq_50));
+        open(&mut app);
+        assert_eq!((app.ui.sequence_settings.fps_num, app.ui.sequence_settings.fps_den), (50, 1), "existing sequence preserves its own 50 fps rate");
+
+        // Preference remains unchanged
+        assert_eq!(app.session.prefs.general.preferred_sequence_fps, "25");
     }
 }

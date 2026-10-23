@@ -851,3 +851,118 @@ fn builtin_label_presets_are_complete_and_distinct() {
     }
     assert!(!settings::is_builtin_label_preset("Team"));
 }
+
+#[test]
+fn preferred_sequence_fps_schema_choices_and_persistence() {
+    let dir = tmp_dir("preferred-seq-fps");
+    let path = dir.join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+
+    // Schema discovery
+    let schema = s.execute("prefs.schema", json!({"category": "general"})).unwrap();
+    let fields = schema["categories"][0]["fields"].as_array().unwrap();
+    let f = fields.iter().find(|f| f["key"] == "general.preferredSequenceFps").expect("preferredSequenceFps schema field");
+    assert_eq!(f["label"], "Preferred Sequence Frame Rate");
+    assert_eq!(f["wired"], true);
+    assert_eq!(f["value"], "23.976");
+    let choices = f["kind"]["choices"].as_array().unwrap();
+    let choice_vals: Vec<&str> = choices.iter().map(|c| c["value"].as_str().unwrap()).collect();
+    assert!(choice_vals.contains(&"23.976"));
+    assert!(choice_vals.contains(&"24"));
+    assert!(choice_vals.contains(&"25"));
+    assert!(choice_vals.contains(&"29.97"));
+    assert!(choice_vals.contains(&"30"));
+    assert!(choice_vals.contains(&"50"));
+    assert!(choice_vals.contains(&"59.94"));
+    assert!(choice_vals.contains(&"60"));
+    assert!(choice_vals.contains(&"119.88"));
+    assert!(choice_vals.contains(&"120"));
+
+    // Default value
+    assert_eq!(s.prefs.general.preferred_sequence_fps, "23.976");
+    assert_eq!(s.execute("prefs.get", json!({"key": "general.preferredSequenceFps"})).unwrap(), json!("23.976"));
+
+    // Persisting a standard rate
+    set(&mut s, "general.preferredSequenceFps", json!("24"));
+    assert_eq!(s.prefs.general.preferred_sequence_fps, "24");
+    assert_eq!(Preferences::load(&path).general.preferred_sequence_fps, "24");
+    assert_eq!(settings::preferred_sequence_frame_rate(&s.prefs.general.preferred_sequence_fps), FrameRate::FPS_24);
+
+    // Persisting fractional rates (e.g. 29.97, 59.94)
+    set(&mut s, "general.preferredSequenceFps", json!("29.97"));
+    assert_eq!(s.prefs.general.preferred_sequence_fps, "29.97");
+    assert_eq!(Preferences::load(&path).general.preferred_sequence_fps, "29.97");
+    assert_eq!(settings::preferred_sequence_frame_rate(&s.prefs.general.preferred_sequence_fps), FrameRate::FPS_29_97);
+
+    set(&mut s, "general.preferredSequenceFps", json!("59.94"));
+    assert_eq!(s.prefs.general.preferred_sequence_fps, "59.94");
+    assert_eq!(Preferences::load(&path).general.preferred_sequence_fps, "59.94");
+    assert_eq!(settings::preferred_sequence_frame_rate(&s.prefs.general.preferred_sequence_fps), FrameRate::FPS_59_94);
+
+    set(&mut s, "general.preferredSequenceFps", json!("60"));
+    assert_eq!(s.prefs.general.preferred_sequence_fps, "60");
+    assert_eq!(Preferences::load(&path).general.preferred_sequence_fps, "60");
+    assert_eq!(settings::preferred_sequence_frame_rate(&s.prefs.general.preferred_sequence_fps), FrameRate::FPS_60);
+
+    // Invalid choices are rejected
+    for invalid in [json!("999"), json!(""), json!("24fps"), json!("none"), json!(null), json!(-24), json!({}), json!(60)] {
+        assert!(s.execute("prefs.set", json!({"key": "general.preferredSequenceFps", "value": invalid})).is_err());
+        assert_eq!(s.prefs.general.preferred_sequence_fps, "60");
+    }
+
+    // Category reset restores default 23.976 fps
+    s.prefs.reset_category("general").unwrap();
+    assert_eq!(s.prefs.general.preferred_sequence_fps, "23.976");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn preferred_sequence_fps_migration_and_repair() {
+    // Older preferences file without preferredSequenceFps acquires default
+    let v_old = json!({
+        "version": 2,
+        "general": {
+            "interfaceLanguage": "en"
+        }
+    });
+    let p_old = Preferences::from_value(v_old);
+    assert_eq!(p_old.general.preferred_sequence_fps, "23.976");
+
+    // Damaged preferences file with invalid preferredSequenceFps is repaired to default
+    let v_damaged = json!({
+        "version": 2,
+        "general": {
+            "preferredSequenceFps": "bogus-rate-999"
+        }
+    });
+    let p_repaired = Preferences::from_value(v_damaged);
+    assert_eq!(p_repaired.general.preferred_sequence_fps, "23.976");
+
+    // parser behavior across valid, fractional, rational, and hostile strings
+    assert_eq!(settings::preferred_sequence_frame_rate("10"), FrameRate::new(10, 1));
+    assert_eq!(settings::preferred_sequence_frame_rate("12"), FrameRate::new(12, 1));
+    assert_eq!(settings::preferred_sequence_frame_rate("12.5"), FrameRate::new(25, 2));
+    assert_eq!(settings::preferred_sequence_frame_rate("15"), FrameRate::new(15, 1));
+    assert_eq!(settings::preferred_sequence_frame_rate("23.976"), FrameRate::FPS_23_976);
+    assert_eq!(settings::preferred_sequence_frame_rate("24"), FrameRate::FPS_24);
+    assert_eq!(settings::preferred_sequence_frame_rate("25"), FrameRate::FPS_25);
+    assert_eq!(settings::preferred_sequence_frame_rate("29.97"), FrameRate::FPS_29_97);
+    assert_eq!(settings::preferred_sequence_frame_rate("30"), FrameRate::FPS_30);
+    assert_eq!(settings::preferred_sequence_frame_rate("48"), FrameRate::FPS_48);
+    assert_eq!(settings::preferred_sequence_frame_rate("50"), FrameRate::FPS_50);
+    assert_eq!(settings::preferred_sequence_frame_rate("59.94"), FrameRate::FPS_59_94);
+    assert_eq!(settings::preferred_sequence_frame_rate("60"), FrameRate::FPS_60);
+    assert_eq!(settings::preferred_sequence_frame_rate("119.88"), FrameRate::FPS_119_88);
+    assert_eq!(settings::preferred_sequence_frame_rate("120"), FrameRate::FPS_120);
+
+    // Unadvertised or hostile inputs safely fall back to 23.976 fps
+    assert_eq!(settings::preferred_sequence_frame_rate("24000/1001"), FrameRate::FPS_23_976);
+    assert_eq!(settings::preferred_sequence_frame_rate("24/1"), FrameRate::FPS_23_976);
+    assert_eq!(settings::preferred_sequence_frame_rate("29.97df"), FrameRate::FPS_23_976);
+    assert_eq!(settings::preferred_sequence_frame_rate(""), FrameRate::FPS_23_976);
+    assert_eq!(settings::preferred_sequence_frame_rate("0"), FrameRate::FPS_23_976);
+    assert_eq!(settings::preferred_sequence_frame_rate("-24"), FrameRate::FPS_23_976);
+    assert_eq!(settings::preferred_sequence_frame_rate("invalid"), FrameRate::FPS_23_976);
+    assert_eq!(settings::preferred_sequence_frame_rate("1/0"), FrameRate::FPS_23_976);
+}
