@@ -127,3 +127,14 @@ fn old_provenance_defaults_and_new_audio_controls_round_trip() {
     assert_eq!(old.sequences[0].sample_rate, None);
     assert!(old.sequences[0].tracks[1].items[0].audio.is_empty());
 }
+
+#[test]
+fn oversized_link_identifiers_are_rejected_before_per_clip_copying() {
+    let xml = fixture().replace("ObjectID=\"link\"", &format!("ObjectID=\"{}\"", "x".repeat(4097)));
+    let result = std::panic::catch_unwind(|| import(xml.as_bytes(), &ImportOptions::default(), None));
+    assert!(result.is_ok());
+    match result.unwrap() {
+        Err(error) => assert!(error.to_string().contains("link group identifier is too long")),
+        Ok(_) => panic!("an oversized shared link identifier was accepted"),
+    }
+}
