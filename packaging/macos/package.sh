@@ -2,7 +2,13 @@
 # Build, sign and (optionally) notarize the macOS release artifacts:
 #
 #   $DIST/filmcraft-<version>-macos-<arch>.dmg          FilmCraft.app on a drag-to-Applications DMG
-#   $DIST/filmcraft-cli-<version>-macos-<arch>.zip      the headless CLI
+#   $DIST/filmcraft-cli-<version>-macos-<arch>.zip      the headless CLI (see NOTE below)
+#
+# The app bundle also carries filmcraft-cli at FilmCraft.app/Contents/MacOS/filmcraft-cli, so an
+# agent always has the CLI matching this app. It does NOT auto-launch the app: `filmcraft-cli mcp
+# --bridge 127.0.0.1:9876` talks to a FilmCraft already running with `filmcraft --control 9876`.
+# Auto-launch is not implemented. The CLI-in-bundle change and the FILMCRAFT_FEATURES build option
+# below are independent and could be split into separate changes.
 #
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build]
 #
@@ -58,6 +64,14 @@ echo "==> FilmCraft $VERSION for macOS ($ARCH), identity: $IDENTITY, notarize: $
 if [ "$SKIP_BUILD" = 0 ]; then
   args=()
   for t in "${TARGETS[@]}"; do args+=(--target "$t"); done
+  # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
+  # FILMCRAFT_FEATURES="" (the default) builds without it; set it to enable it, e.g.
+  #   FILMCRAFT_FEATURES=whisper
+  # The CLI and the app are separate crates with separate feature sets; this variable is passed
+  # to both, so set only features that exist in both (whisper). filmcraft and filmcraft-cli are
+  # independent: enabling whisper here does not imply any other feature, and vice versa.
+  features="${FILMCRAFT_FEATURES-}"
+  [ -n "$features" ] && args+=(--features "$features")
   (cd "$ROOT" && cargo build --release --locked -p filmcraft -p filmcraft-cli "${args[@]}")
 fi
 
@@ -102,6 +116,10 @@ echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
 cp "$WORK/bin/filmcraft" "$APP/Contents/MacOS/FilmCraft"
+# The CLI rides along so an agent always has the one matching this app. It does NOT start the
+# app: `filmcraft-cli mcp --bridge 127.0.0.1:9876` talks to a FilmCraft already running with
+# `filmcraft --control 9876`. Auto-launch is not implemented; start the app separately first.
+cp "$WORK/bin/filmcraft-cli" "$APP/Contents/MacOS/filmcraft-cli"
 cp "$ROOT/assets/app-icon/filmcraft.icns" "$APP/Contents/Resources/FilmCraft.icns"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   -e "s/@BUILD_SHA@/${FILMCRAFT_BUILD_SHA:-unknown}/g" \
@@ -112,7 +130,11 @@ printf 'APPL????' >"$APP/Contents/PkgInfo"
 copy_font_licences "$APP/Contents/Resources"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
-# Today the only nested code is the main executable; frameworks/helpers would be signed here too.
+# The nested code is the main executable and the CLI; frameworks/helpers would be signed here too.
+# The CLI is signed with the hardened runtime but NO entitlements: it records nothing (no
+# microphone, no camera). If it ever opens the microphone in this location the hardened runtime
+# kills it silently, so entitlements.plist is deliberately not applied here.
+sign --options runtime "$APP/Contents/MacOS/filmcraft-cli"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/FilmCraft"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
@@ -163,7 +185,12 @@ rm -f "$CLI_ZIP"
 ditto -c -k --keepParent "$CLI_DIR" "$CLI_ZIP"
 # A bare Mach-O can't carry a stapled ticket; Gatekeeper looks the notarization up online.
 if [ "$NOTARIZE" = 1 ]; then notarize "$CLI_ZIP"; fi
+# NOTE: the CLI ships twice — once bundled inside FilmCraft.app/Contents/MacOS/filmcraft-cli
+# (for agents that already have the app) and again here as a standalone zip. Whether both are
+# intended is a judgment call; this script produces both until someone decides otherwise.
 
-"$WORK/bin/filmcraft-cli" --version
+# Smoke-test both copies: the bundled one (signed inside the app) and the standalone one.
+"$APP/Contents/MacOS/filmcraft-cli" --version
+"$CLI_DIR/filmcraft-cli" --version
 echo "==> done"
 ls -lh "$DMG" "$CLI_ZIP"
