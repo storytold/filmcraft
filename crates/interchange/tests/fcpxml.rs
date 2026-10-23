@@ -99,6 +99,24 @@ fn doc() -> String {
 }
 
 #[test]
+fn self_referencing_compound_media_is_ignored_without_recursing() {
+    let xml = r#"<fcpxml version="1.10">
+      <resources>
+        <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>
+        <media id="r2" name="Loop"><sequence format="r1"><spine>
+          <ref-clip ref="r2" offset="0s" start="0s" duration="1s"/>
+        </spine></sequence></media>
+      </resources>
+      <library><event><project name="P"><sequence format="r1"><spine>
+        <ref-clip ref="r2" offset="0s" start="0s" duration="1s"/>
+      </spine></sequence></project></event></library>
+    </fcpxml>"#;
+    let (imported, report) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(!imported.sequences.is_empty());
+    assert!(report.mentions("recursive FCPXML media"), "{report:?}");
+}
+
+#[test]
 fn golden_connected_clips() {
     let d = doc();
     assert_eq!(detect(d.as_bytes(), Some("fcpxml")), Some(Format::Fcpxml));
