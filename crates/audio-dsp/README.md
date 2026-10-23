@@ -143,3 +143,10 @@ sub-sample estimate, and two trust figures (`confidence` = peak / RMS of the cor
 - DeNoise adapts continuously; a perfectly stationary tone is (by design) treated as noise after
   ~1.5 s. There is no explicit "learn noise print" mode yet.
 - Filter type / choice changes switch immediately (continuous parameters are smoothed).
+
+## Phrase-aware remix planning
+
+Remix analysis retains beat RMS and ordered pitch-register similarities. A bounded beam search
+compares melodic phrases, local context and four-beat phase while preserving source tempo.
+A protected closing phrase is used only by the final piece. Strict matching can suggest
+other lengths without modifying the clip. These are heuristics; listening remains necessary.

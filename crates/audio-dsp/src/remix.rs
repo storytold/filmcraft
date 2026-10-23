@@ -8,7 +8,9 @@
 //!             from the period, squared log ratio), backtracked from the strongest end
 //!          ─► per beat: 12-bin chroma and 12 mel cepstra (26 mel bands, DCT-II, c0 dropped)
 //!          ─► beat self-similarity S(i, j) = 0.6 · cos(chroma) + 0.4 · (1 + cos(z-scored cepstra)) / 2
-//! plan:  output = piece₀ ⧺ piece₁ ⧺ … ⧺ piece_k; each joint leaves the source at a beat boundary
+//! plan:  bounded beam search keeps alternative beat-aligned arrangements, prefers matching
+//!        four-beat phase, then balances context similarity against target error.
+//!        output = piece₀ ⧺ piece₁ ⧺ … ⧺ piece_k; each joint leaves the source at a beat boundary
 //!        b_i and continues at another beat boundary b_j, chosen where the context of the jump
 //!        (the beats before and after) is most similar: J(i, j) = mean of S along the diagonals
 //!        through (i, j) over `CONTEXT` beats on both sides.
@@ -30,6 +32,13 @@
 //! Positions are in samples of the analysed signal (`i64`).
 
 use crate::fft::Fft;
+
+#[path = "remix_arrange.rs"]
+mod arrange;
+#[path = "remix_melody.rs"]
+mod melody;
+#[path = "remix_options.rs"]
+mod options;
 
 /// Beats of context on each side of a joint that the similarity looks at.
 pub const CONTEXT: usize = 4;
@@ -108,6 +117,12 @@ pub struct Analysis {
     /// Beat self-similarity, `beats.len()²`, row-major; beat `i` is `[beats[i], beats[i + 1])`
     /// (the last runs to the end).
     pub sim: Vec<f32>,
+    /// RMS of each beat, preserving dynamics lost by normalized spectral descriptors.
+    pub levels: Vec<f32>,
+    /// Ordered quarter-beat pitch-register similarity, row-major (not folded to chroma).
+    pub melody_sim: Vec<f32>,
+    /// Whether a beat has enough pitched content for melodic comparison.
+    pub melody_present: Vec<bool>,
 }
 
 impl Analysis {
@@ -119,6 +134,52 @@ impl Analysis {
     /// How well a jump from beat boundary `i` (the source is left there) to beat boundary `j`
     /// (playback continues there) fits: mean similarity of the beats after `i` and after `j`, and
     /// of the beats before them, over [`CONTEXT`] beats. 0 … 1.
+    pub fn melody_score(&self, i: usize, j: usize) -> Option<f32> {
+        let m = self.beats.len();
+        let mut score = 0f32;
+        let mut count = 0;
+        let mut informative = 0;
+        for offset in -4isize..4 {
+            let Some(a) = i.checked_add_signed(offset).filter(|&x| x < m) else { continue };
+            let Some(b) = j.checked_add_signed(offset).filter(|&x| x < m) else { continue };
+            let value = *self.melody_sim.get(a.checked_mul(m)?.checked_add(b)?)?;
+            score += value;
+            count += 1;
+            if self.melody_present.get(a) == Some(&true) || self.melody_present.get(b) == Some(&true) {
+                informative += 1;
+            }
+        }
+        (informative >= 2 && count > 0).then(|| score / count as f32)
+    }
+
+    /// Similarity immediately around a seam, retaining ordered pitches on both beats.
+    pub fn local_melody_score(&self, i: usize, j: usize) -> Option<f32> {
+        let m = self.beats.len();
+        let (before_i, before_j) = (i.checked_sub(1)?, j.checked_sub(1)?);
+        if i >= m || j >= m || !self.melody_present.get(i).copied().unwrap_or(false) || !self.melody_present.get(j).copied().unwrap_or(false) {
+            return None;
+        }
+        let before = *self.melody_sim.get(before_i.checked_mul(m)?.checked_add(before_j)?)?;
+        let after = *self.melody_sim.get(i.checked_mul(m)?.checked_add(j)?)?;
+        Some((before + after) * 0.5)
+    }
+
+    /// A strong immediate match can bridge variations in surrounding orchestration,
+    /// but only on matching four-beat phase with independent harmonic/timbral support.
+    pub fn melody_compatible(&self, i: usize, j: usize, floor: f32) -> bool {
+        let Some(context) = self.melody_score(i, j) else { return false };
+        if context >= floor {
+            return true;
+        }
+        if !i.abs_diff(j).is_multiple_of(4) || context < floor * 0.70 || self.local_melody_score(i, j).is_none_or(|s| s < floor) {
+            return false;
+        }
+        let Some((bi, bj)) = i.checked_sub(1).zip(j.checked_sub(1)) else { return false };
+        let m = self.beats.len();
+        let harmonic = self.sim.get(i * m + j).zip(self.sim.get(bi * m + bj)).map_or(0.0, |(a, b)| (a + b) * 0.5);
+        harmonic >= 0.65
+    }
+
     pub fn jump_score(&self, i: usize, j: usize) -> f32 {
         let m = self.beats.len();
         let (mut s, mut n) = (0f32, 0f32);
@@ -132,13 +193,31 @@ impl Analysis {
                 n += 1.0;
             }
         }
-        if n > 0.0 { s / n } else { 0.0 }
+        let level = |start: usize, end: usize| {
+            let values = self.levels.get(start..end.min(self.levels.len())).unwrap_or(&[]);
+            values.iter().copied().sum::<f32>() / values.len().max(1) as f32
+        };
+        let outgoing = level(i.saturating_sub(2), i).max(1e-6);
+        let incoming = level(j, j.saturating_add(2)).max(1e-6);
+        let difference_db = (20.0 * (incoming / outgoing).log10()).abs();
+        let dynamics_penalty = 0.18 * (difference_db / 6.0).min(2.0);
+        if n > 0.0 {
+            let harmonic = s / n;
+            let matching = self
+                .melody_score(i, j)
+                .map_or(harmonic, |melodic| 0.30 * harmonic + 0.70 * self.local_melody_score(i, j).map_or(melodic, |local| 0.65 * local + 0.35 * melodic));
+            (matching - dynamics_penalty).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     }
 }
 
 /// Why music cannot be remixed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemixError {
+    /// Invalid or unbounded planner input.
+    InvalidInput,
     /// Not enough rhythmic content to find a beat (silence, noise, speech).
     NoBeat,
     /// The source has fewer beats than a remix needs.
@@ -150,6 +229,7 @@ pub enum RemixError {
 impl std::fmt::Display for RemixError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            RemixError::InvalidInput => "invalid remix analysis or parameters",
             RemixError::NoBeat => "no beat found in the audio",
             RemixError::TooShort => "the music is too short to remix",
             RemixError::TargetTooShort => "the target duration is too short for this music",
@@ -293,9 +373,16 @@ fn mel_to_hz(m: f64) -> f64 {
 }
 
 /// Per-beat chroma (12) and cepstra (12) from a 4× larger STFT.
-fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32; 12]>) {
-    let n = (onset_frame(sr) * 2).max(1024);
-    let hop = n / 2;
+struct BeatFeatures {
+    chroma: Vec<[f32; 12]>,
+    cepstra: Vec<[f32; 12]>,
+    melody_sim: Vec<f32>,
+    melody_present: Vec<bool>,
+}
+
+fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> BeatFeatures {
+    let n = (onset_frame(sr) * 4).max(2048);
+    let hop = n / 4;
     let mags = stft_mag(x, n, hop);
     let bins = n / 2 + 1;
     let hz = |k: usize| k as f64 * sr as f64 / n as f64;
@@ -377,7 +464,8 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
         let sd = (cep.iter().map(|c| (c[k] - mean).powi(2)).sum::<f32>() / m).sqrt().max(1e-6);
         cep.iter_mut().for_each(|c| c[k] = (c[k] - mean) / sd);
     }
-    (chroma, cep)
+    let (melody_sim, melody_present) = melody::similarities(&mags, sr, n, hop, beats, x.len());
+    BeatFeatures { chroma, cepstra: cep, melody_sim, melody_present }
 }
 
 fn cos(a: &[f32; 12], b: &[f32; 12]) -> f32 {
@@ -432,7 +520,7 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
     if beats.len() < 2 * MIN_PIECE_BEATS + 2 {
         return Err(if beats.len() < 4 { RemixError::NoBeat } else { RemixError::TooShort });
     }
-    let (chroma, cep) = beat_features(&mono, sample_rate, &beats);
+    let BeatFeatures { chroma, cepstra: cep, melody_sim, melody_present } = beat_features(&mono, sample_rate, &beats);
     let m = beats.len();
     let mut sim = vec![0f32; m * m];
     for i in 0..m {
@@ -440,8 +528,17 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
             sim[i * m + j] = 0.6 * cos(&chroma[i], &chroma[j]) + 0.4 * (1.0 + cos(&cep[i], &cep[j])) * 0.5;
         }
     }
+    let levels = beats
+        .iter()
+        .enumerate()
+        .map(|(i, &start)| {
+            let end = beats.get(i + 1).copied().unwrap_or(len as i64) as usize;
+            let values = mono.get(start as usize..end).unwrap_or(&[]);
+            (values.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / values.len().max(1) as f64).sqrt() as f32
+        })
+        .collect();
     let period_s = period * hop as f64;
-    Ok(Analysis { sample_rate, len: len as i64, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, sim })
+    Ok(Analysis { sample_rate, len: len as i64, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, sim, levels, melody_sim, melody_present })
 }
 
 // ------------------------------------------------------------------------------------- planning
@@ -452,103 +549,26 @@ pub fn joints_for(segments: f64) -> usize {
 }
 
 /// Plan a remix of the analysed music to `target` samples.
+/// Experimental strict search; threshold is a fingerprint similarity, not a
+/// perceptual guarantee. Existing callers keep the duration-constrained search.
+pub fn melodic_alternatives(a: &Analysis, target: i64) -> Vec<Plan> {
+    options::alternatives(a, target)
+}
+
+pub fn plan_with_melody_floor(a: &Analysis, target: i64, params: Params, floor: f32) -> Result<Plan, RemixError> {
+    if !floor.is_finite() || !(0.0..=1.0).contains(&floor) {
+        return Err(RemixError::InvalidInput);
+    }
+    match arrange::arrange_with_threshold(a, target, params, Some(floor)) {
+        Err(RemixError::TargetTooShort) => {
+            options::with_floor(a, target, floor).into_iter().find(|p| p.len().abs_diff(target) as f64 <= a.period).ok_or(RemixError::TargetTooShort)
+        }
+        result => result,
+    }
+}
+
 pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixError> {
-    let xfade = (XFADE_S * a.sample_rate as f64).round() as i64;
-    let len = a.len;
-    let half = (a.period / 2.0) as i64;
-    if (target - len).abs() <= half {
-        return Ok(Plan::identity(len, xfade));
-    }
-    let b = &a.beats;
-    let m = b.len();
-    let min_piece = (MIN_PIECE_BEATS as f64 * a.period) as i64;
-    if target < 2 * min_piece {
-        return Err(RemixError::TargetTooShort);
-    }
-    let window = 1 + (7.0 * params.variations.clamp(0.0, 100.0) / 100.0).round() as usize;
-    let mut k = joints_for(params.segments).min(((target - len).abs() as f64 / a.period).round().max(1.0) as usize);
-    // pieces may not get shorter than the minimum
-    while k > 1 && target / (k as i64 + 1) < min_piece {
-        k -= 1;
-    }
-    // a backwards jump can span at most the music between the intro and outro pieces
-    if target > len {
-        let max_span = (len - 2 * min_piece).max(a.period as i64);
-        while ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece {
-            k += 1;
-        }
-    }
-    let nearest = |x: i64| -> usize { b.partition_point(|&v| v < x).min(m - 1) };
-    let closest = |x: i64| -> usize {
-        let i = nearest(x);
-        if i > 0 && (x - b[i - 1]).abs() <= (b[i] - x).abs() { i - 1 } else { i }
-    };
-    let mut pieces = Vec::new();
-    let mut src = 0i64; // start of the current piece in the source
-    let mut out = 0i64; // output length so far
-    for jn in 0..k {
-        let left = (k - jn) as i64; // joints still to place (this one included)
-        let out_left = target - out; // output still to make
-        let piece = out_left / (left + 1); // even split of what is left
-        let src_left = len - src;
-        let span = (src_left - out_left) / left; // source skipped (+) or replayed (−) per joint
-        let ni = closest(src + piece);
-        let last = jn + 1 == k;
-        let mut best: Option<(f32, i64, usize, usize)> = None;
-        let lo_i = ni.saturating_sub(window);
-        for i in lo_i..=(ni + window).min(m - 1) {
-            if b[i] - src < min_piece {
-                continue;
-            }
-            let nj = closest(b[i] + span);
-            for j in nj.saturating_sub(window)..=(nj + window).min(m - 1) {
-                if j == i || len - b[j] < min_piece || (b[j] > b[i]) != (target < len) {
-                    continue;
-                }
-                let new_out = out + (b[i] - src);
-                let rest_src = len - b[j];
-                // what the remaining joints still have to absorb
-                let err = (target - new_out) - rest_src;
-                if last {
-                    if err.abs() > half.max(1) * 2 {
-                        continue;
-                    }
-                } else {
-                    // remaining joints must still be able to fit pieces of the minimum length
-                    let rem_out = target - new_out;
-                    if rem_out < (left) * min_piece {
-                        continue;
-                    }
-                    // the joints after this one must still each skip (or replay) a beat or more
-                    let rem = rest_src - rem_out;
-                    if rem.signum() != (len - target).signum() || (rem.abs() as f64) < (left - 1) as f64 * a.period * 0.75 {
-                        continue;
-                    }
-                }
-                let score = a.jump_score(i, j);
-                // final joint: land as close to the target as possible, then by similarity
-                let key_err = if last { err.abs() / half.max(1) } else { 0 };
-                let better = match best {
-                    None => true,
-                    Some((s, e, bi, bj)) => {
-                        let bad = key_err.cmp(&e);
-                        bad.is_lt() || (bad.is_eq() && (score > s || (score == s && (i, j) < (bi, bj))))
-                    }
-                };
-                if better {
-                    best = Some((score, key_err, i, j));
-                }
-            }
-        }
-        let Some((_, _, i, j)) = best else {
-            return Err(RemixError::TargetTooShort);
-        };
-        pieces.push(Piece { src, len: b[i] - src });
-        out += b[i] - src;
-        src = b[j];
-    }
-    pieces.push(Piece { src, len: len - src });
-    Ok(Plan { pieces, xfade })
+    arrange::arrange(a, target, params)
 }
 
 // ------------------------------------------------------------------------------------- render
