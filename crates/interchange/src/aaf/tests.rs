@@ -395,3 +395,28 @@ fn premiere_style_layers_and_nested_compositions_are_read() {
     assert_eq!(nest.link, q.audio_tracks[0].items[0].link);
     assert!(nest.link.is_some());
 }
+
+#[test]
+fn audio_tracks_keep_their_names() {
+    // A track named as a role (what a sound editor's DAW should show), whole and broken out.
+    let (mut p, s) = project();
+    p.sequence_mut(s).unwrap().audio_tracks[0].name = "Dialogue.Dialogue-1".into();
+    let names = |p: &Project, opts: &AafOptions| {
+        let (bytes, _) = export(p, s, opts).unwrap();
+        let (imported, _, _) = import(&bytes, &ImportOptions::default()).unwrap();
+        let seq = imported.project.sequence(imported.sequences[0]).unwrap();
+        seq.audio_tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(names(&p, &AafOptions::default()), ["Dialogue.Dialogue-1"]);
+    let mut broken = AafOptions::default();
+    broken.media.breakout_to_mono = true;
+    assert_eq!(names(&p, &broken), ["Dialogue.Dialogue-1 L", "Dialogue.Dialogue-1 R"]);
+    // No name: written numbered (`A1`), as before, and read back with the reader's own name.
+    p.sequence_mut(s).unwrap().audio_tracks[0].name.clear();
+    assert_eq!(names(&p, &AafOptions::default()), ["Audio 1"], "the reader's own name");
+    // Names that start with a character of more than one byte come back as they are.
+    for name in ["é", "音声", "🎤 Dialogue", "Ä1"] {
+        p.sequence_mut(s).unwrap().audio_tracks[0].name = name.into();
+        assert_eq!(names(&p, &AafOptions::default()), [name]);
+    }
+}

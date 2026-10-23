@@ -287,12 +287,12 @@ impl Exporter<'_> {
                 for c in 0..ch {
                     n += 1;
                     let items = self.track(t, TrackKind::Audio, Some(c));
-                    comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: 1, items });
+                    comp.tracks.push(CTrack { kind: CKind::Sound, name: audio_track_name(&t.name, n, ch, Some(c)), number: n, channels: 1, items });
                 }
             } else {
                 n += 1;
                 let items = self.track(t, TrackKind::Audio, None);
-                comp.tracks.push(CTrack { kind: CKind::Sound, name: format!("A{n}"), number: n, channels: ch, items });
+                comp.tracks.push(CTrack { kind: CKind::Sound, name: audio_track_name(&t.name, n, ch, None), number: n, channels: ch, items });
             }
         }
         self.seq_rate = outer_rate;
@@ -803,6 +803,14 @@ fn build_sequence(
         let kind = if t.kind == CKind::Picture { TrackKind::Video } else { TrackKind::Audio };
         let idx = seq.tracks(kind).len();
         let mut track = b.track(kind, idx);
+        // A name of its own (not the numbered `A1` / `V1` a writer gives an unnamed track) is
+        // kept: a sound editor's tracks are named after what they hold.
+        let name = t.name.trim();
+        let mut chars = name.chars();
+        let numbered = matches!(chars.next(), Some('A' | 'V')) && !chars.as_str().is_empty() && chars.all(|c| c.is_ascii_digit());
+        if !name.is_empty() && !numbered {
+            track.name = name.to_string();
+        }
         if kind == TrackKind::Audio {
             track.channels = match t.channels {
                 1 => AudioChannels::Mono,
@@ -1003,4 +1011,19 @@ pub(crate) fn ticks_to_units(t: Tick, num: i64, den: i64) -> (i64, bool) {
     let r = x.rem_euclid(d);
     let n = q + if r * 2 >= d { 1 } else { 0 };
     (n.clamp(i64::MIN as i128, i64::MAX as i128) as i64, r == 0)
+}
+
+/// The name an exported audio track gets: the track's own name (what an editor called it, e.g.
+/// a role such as `Dialogue.Dialogue-1`, which is what a sound editor's DAW shows), else `A<n>`;
+/// a track broken out to mono gets its channel after it (`L` / `R`, the 5.1 names, or a number).
+fn audio_track_name(name: &str, n: u32, channels: u32, channel: Option<u32>) -> String {
+    let base = if name.trim().is_empty() { format!("A{n}") } else { name.trim().to_string() };
+    let Some(c) = channel.filter(|_| channels > 1 && !name.trim().is_empty()) else { return base };
+    let label = match (channels, c) {
+        (2, 0) => "L".to_string(),
+        (2, 1) => "R".to_string(),
+        (6, k) => ["L", "R", "C", "LFE", "Ls", "Rs"].get(k as usize).map_or_else(|| (k + 1).to_string(), |s| (*s).to_string()),
+        (_, k) => (k + 1).to_string(),
+    };
+    format!("{base} {label}")
 }
