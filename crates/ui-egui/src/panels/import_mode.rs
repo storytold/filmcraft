@@ -32,7 +32,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add(&format!("import.{cmd}"), r, title);
         ui.painter().rect_filled(r, 8.0, if resp.hovered() { t.hover } else { t.tl_header_bg });
         ui.painter().text(r.min + vec2(16.0, 110.0), Align2::LEFT_CENTER, *title, Tokens::semibold(14.0), t.text);
-        ui.painter().text(r.min + vec2(16.0, 132.0), Align2::LEFT_CENTER, *sub, Tokens::ui(11.5), t.text_dim);
+        // Long translations end with an ellipsis inside the card instead of being cut at its edge.
+        let mut job = egui::text::LayoutJob::simple_singleline((*sub).to_string(), Tokens::ui(11.5), t.text_dim);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(cw - 32.0);
+        let g = ui.painter().layout_job(job);
+        ui.painter().galley(pos2(r.min.x + 16.0, r.min.y + 132.0 - g.size().y / 2.0), g, t.text_dim);
         crate::icons::paint(
             ui.painter(),
             Rect::from_min_size(r.min + vec2(16.0, 18.0), vec2(56.0, 56.0)),

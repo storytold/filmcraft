@@ -1196,21 +1196,47 @@ mod tests {
         }
     }
 
+    /// Russian covers the whole interface: every entry of the reference (Spanish) catalog, so the
+    /// menus, panels, dialogs, settings, effects and status messages are all translated. Every
+    /// entry must still have a Spanish counterpart, so a renamed or removed source can't leave a
+    /// dead Russian entry.
     #[test]
-    fn russian_entries_cover_the_original_menu_catalog() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
-        for (_, en, _) in entries {
-            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
+    fn russian_covers_the_whole_interface() {
+        let (entries, errors) = catalog::parse_entries(include_str!("ru.tsv"));
+        assert!(errors.is_empty(), "{errors:?}");
+        for (ctx, en, _) in &entries {
+            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Russian entry without a Spanish one: {ctx:?} {en:?}");
         }
+        let (es, _) = catalog::parse_entries(include_str!("es.tsv"));
+        let mut missing: Vec<&str> = es.iter().map(|(_, en, _)| en.as_str()).filter(|en| !Language::Ru.has(en)).collect();
+        missing.sort_unstable();
+        assert!(missing.is_empty(), "untranslated Russian strings ({}): {:?}", missing.len(), &missing[..missing.len().min(20)]);
         for en in core_menu_labels() {
             assert!(Language::Ru.has(&en), "missing Russian menu label: {en}");
         }
         for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert_ne!(Language::Ru.tr(en), en, "untranslated Russian menu: {en}");
+            assert!(Language::Ru.has(en), "untranslated Russian menu: {en}");
         }
+        // beyond the menus: panels, effects and their parameters, settings, status messages
+        for (en, ru) in [
+            ("Settings", "Настройки"),
+            ("Gaussian Blur", "Размытие по Гауссу"),
+            ("Audio Track Mixer", "Микшер аудиодорожек"),
+            ("Sequence", "Последовательность"),
+            ("Playhead", "Курсор воспроизведения"),
+            ("Lumetri Scopes", "Осциллограммы Lumetri"),
+        ] {
+            assert_eq!(Language::Ru.tr(en), ru);
+        }
+        assert_eq!(Language::Ru.name(), "Русский");
+        assert_eq!(Language::parse("ru"), Some(Language::Ru));
+        for tag in ["ru", "ru-RU", "ru_RU.UTF-8"] {
+            assert_eq!(Language::from_locales(&[tag.to_string()]), Language::Ru, "{tag}");
+        }
+        set_current(Language::Ru);
+        assert!(matches_query("Gaussian Blur", "размытие"));
+        assert!(matches_query("Gaussian Blur", "gaussian"));
+        set_current(Language::En);
     }
 
     /// Indonesian covers the whole interface (the Spanish catalog's entries and the native macOS
@@ -1313,6 +1339,16 @@ mod tests {
         // Include the entire alphabet, even letters not yet used by a translated menu label.
         let alphabet = "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюя";
         assert_bundled_fonts_cover(alphabet.chars().chain(Language::Uk.name().chars()).chain(entries.iter().flat_map(|(_, _, uk)| uk.chars())));
+    }
+
+    #[test]
+    fn russian_renders_with_bundled_fonts() {
+        let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
+        // every Russian letter, including «ё», even ones no entry uses yet, and every letter the
+        // entries use
+        let alphabet = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя";
+        let letters = entries.iter().flat_map(|(_, _, ru)| ru.chars()).filter(|ch| ch.is_alphabetic());
+        assert_bundled_fonts_cover(alphabet.chars().chain(Language::Ru.name().chars()).chain(letters));
     }
 
     #[test]

@@ -28,6 +28,7 @@
 	Align to Video Frame	与视频帧对齐
 	Align to Video Frame as Group	作为组与视频帧对齐
 	All Panels	所有面板
+	All Supported Files	所有支持的文件
 	Alpha	Alpha
 	Appearance	外观
 	Appearance…	外观…
@@ -246,6 +247,7 @@
 	Project	项目
 	Project Manager…	项目管理器…
 	Project Settings	项目设置
+	Projects and Interchange	项目与交换格式
 	Project…	项目…
 	Properties	属性
 	Purple	紫
@@ -1307,6 +1309,7 @@
 	Audio Codec	音频编解码器
 	Audio Duration	音频持续时间
 	Audio Effects	音频效果
+	Audio Files	音频文件
 	Audio Hardware	音频硬件
 	Audio In Point	音频入点
 	Audio Info	音频信息
@@ -1820,6 +1823,7 @@
 	Hard Mix	硬混合
 	Hardware decoding	硬件解码
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	硬件解码：自动模式对支持的流使用系统视频解码器（macOS 上为 VideoToolbox，Windows 上为 Media Foundation，Linux 上对 H.264 和 HEVC 使用 VA-API），其余情况或硬件失败时回退到 FilmCraft 自带的解码器。已打开的媒体会保留其解码器，直到重新打开。
+	Hardware Encoding	硬件编码
 	Head Size	头部大小
 	Heart	心形
 	Height	高度
@@ -2460,6 +2464,7 @@
 	Stereoscopic - Side by Side	立体 - 左右
 	Still	静止
 	Still Image Default Duration	静帧默认时长
+	Still Images	静帧
 	Stone Church	石质教堂
 	Stopband Attenuation	阻带衰减
 	Straight Color	直色
@@ -2583,6 +2588,7 @@
 	Use Glow Color	使用辉光颜色
 	Use Media Source	使用媒体源
 	Use Tint Color	使用色调颜色
+	Use the hardware encoder when available	可用时使用硬件编码器
 	Utility	实用工具
 	VHS Damage	VHS 损坏
 	VR Blur	VR 模糊
@@ -2630,6 +2636,7 @@
 	Video Codec	视频编解码器
 	Video Duration	视频时长
 	Video Effects	视频效果
+	Video Files	视频文件
 	Video In Point	视频入点
 	Video Info	视频信息
 	Video Limiter	视频限制器

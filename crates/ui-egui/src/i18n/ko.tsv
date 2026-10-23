@@ -158,6 +158,7 @@
 	All markers are hidden by the colour filter.	색상 필터로 모든 마커가 숨겨졌습니다.
 	All media is online.	모든 미디어가 온라인입니다.
 	All Panels	모든 패널
+	All Supported Files	지원되는 모든 파일
 	Allow current tool to change trim type of previously selected edit point	현재 도구로 이전 선택 편집점의 트림 유형 변경 허용
 	Allow Duplicate Media During Project Import	프로젝트 가져오기 시 중복 미디어 허용
 	Allow duplicate media during project import	프로젝트 가져오기 시 중복 미디어 허용
@@ -255,6 +256,7 @@
 	Audio Codec	오디오 코덱
 	Audio Duration	오디오 길이
 	Audio Effects	오디오 효과
+	Audio Files	오디오 파일
 	Audio effects	오디오 효과
 	Audio File Format:	오디오 파일 형식:
 	Audio Format	오디오 형식
@@ -1400,6 +1402,7 @@
 	Hardware (H.265 has no software encoder)	하드웨어 (H.265는 소프트웨어 인코더 없음)
 	Hardware decoding	하드웨어 디코딩
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	하드웨어 디코딩: 자동은 지원 스트림에 시스템 비디오 디코더(macOS는 VideoToolbox, Windows는 Media Foundation, Linux는 H.264·HEVC용 VA-API 또는 NVDEC)를 쓰고, 그 외나 하드웨어 실패 시 FilmCraft 자체 디코더를 씁니다. 이미 열린 미디어는 다시 열 때까지 기존 디코더를 유지합니다.
+	Hardware Encoding	하드웨어 인코딩
 	HD Anamorphic 1080 (1.333)	HD 아나모픽 1080(1.333)
 	HDR	HDR
 	HDR Graphics White (Nits)	HDR 그래픽 흰색(Nits)
@@ -2369,6 +2372,7 @@
 	Project Metadata	프로젝트 메타데이터
 	Project Notes	프로젝트 메모
 	Project Settings	프로젝트 설정
+	Projects and Interchange	프로젝트 및 교환
 	Project View Preset {n}	프로젝트 보기 사전 설정 {n}
 	Project: {name}	프로젝트: {name}
 	Projecting cap	돌출 끝
@@ -3024,6 +3028,7 @@
 	Stereoscopic - Side by Side	입체 - 좌우
 	Still	정지
 	Still Image Default Duration	스틸 이미지 기본 길이
+	Still Images	스틸 이미지
 	Stone Church	석조 교회
 	Stop	중지
 	Stop Export Queue	내보내기 대기열 중지
@@ -3335,6 +3340,7 @@
 	Use Media Source	미디어 소스 사용
 	Use the file's timecode	파일 타임코드 사용
 	Use Tint Color	색조 색상 사용
+	Use the hardware encoder when available	사용 가능한 경우 하드웨어 인코더 사용
 	User	사용자
 	User Order	사용자 순서
 	Username	사용자 이름
@@ -3384,6 +3390,7 @@
 	Video Codec	비디오 코덱
 	Video Duration	비디오 길이
 	Video Effects	비디오 효과
+	Video Files	비디오 파일
 	Video effects	비디오 효과
 	Video Frame	비디오 프레임
 	Video In	비디오 입력

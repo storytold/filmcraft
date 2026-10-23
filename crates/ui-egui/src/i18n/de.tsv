@@ -39,6 +39,7 @@
 	Align to Video Frame	Am Videobild ausrichten
 	Align to Video Frame as Group	Als Gruppe am Videobild ausrichten
 	All Panels	Alle Bedienfelder
+	All Supported Files	Alle unterstützten Dateien
 	Alpha	Alpha
 	Appearance	Erscheinungsbild
 	Appearance…	Darstellung…
@@ -275,6 +276,7 @@
 	Project	Projekt
 	Project Manager…	Projektmanager…
 	Project Settings	Projekteinstellungen
+	Projects and Interchange	Projekte und Austauschformate
 	Project…	Projekt…
 	Properties	Eigenschaften
 	Proxy	Proxy
@@ -1352,6 +1354,7 @@
 	Audio Codec	Audiocodec
 	Audio Duration	Audiodauer
 	Audio Effects	Audioeffekte
+	Audio Files	Audiodateien
 	Audio Hardware	Audiohardware
 	Audio In Point	Audio-In-Punkt
 	Audio Info	Audioinformationen
@@ -1863,6 +1866,7 @@
 	Hard Mix	Hart mischen
 	Hardware decoding	Hardwaredekodierung
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardwaredekodierung: „Automatisch“ verwendet den Videodecoder des Systems (VideoToolbox unter macOS, Media Foundation unter Windows, VA-API oder NVDEC für H.264 und HEVC unter Linux) für die Streams, die er unterstützt, und den eigenen Decoder von FilmCraft für alles andere oder wenn die Hardware versagt. Bereits geöffnete Medien behalten ihren Decoder, bis sie erneut geöffnet werden.
+	Hardware Encoding	Hardwarekodierung
 	Head Size	Kopfgröße
 	Heart	Herz
 	Height	Höhe
@@ -2505,6 +2509,7 @@
 	Stereoscopic - Side by Side	Stereoskopisch – nebeneinander
 	Still	Standbild
 	Still Image Default Duration	Standarddauer für Standbilder
+	Still Images	Standbilder
 	Stone Church	Steinkirche
 	Stopband Attenuation	Sperrbereichsdämpfung
 	Straight Color	Direkte Farbe
@@ -2628,6 +2633,7 @@
 	Use Glow Color	Glühfarbe verwenden
 	Use Media Source	Medienquelle verwenden
 	Use Tint Color	Tönungsfarbe verwenden
+	Use the hardware encoder when available	Hardware-Encoder verwenden, wenn verfügbar
 	Utility	Hilfsmittel
 	VHS Damage	VHS-Schaden
 	VR Blur	VR-Weichzeichner
@@ -2675,6 +2681,7 @@
 	Video Codec	Videocodec
 	Video Duration	Videodauer
 	Video Effects	Videoeffekte
+	Video Files	Videodateien
 	Video In Point	Video-In-Punkt
 	Video Info	Videoinformationen
 	Video Limiter	Videobegrenzer

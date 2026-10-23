@@ -234,12 +234,12 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G14. Localization: 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese)
 
 - **Have:** Spanish, Japanese, Simplified Chinese, French (#498) and Portuguese (Brazil) (#859)
-  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; Ukrainian ~10% (menus).
+  catalogs cover ~99.6–100% of the ~3,590 cataloged strings; Ukrainian ~10% (menus).
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
   Korean (#508; needs Hangul fonts in craft-fonts),
-  Vietnamese; Premiere also ships Russian. Engine errors,
+  Vietnamese. Engine errors,
   CLI and MCP stay English. Apart from the German menus (#630), no language has a recorded
   native-speaker review.
 - **Done:** Indonesian (#867): `id.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸
@@ -251,6 +251,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Done:** German: `de.tsv` has every entry of the Spanish catalog (~100%), beyond the menus of
   #630 (panels, dialogs, effects and their parameters, settings, status messages). The menus are
   native-reviewed; review of the rest welcome.
+- **Done:** Russian: `ru.tsv` has every entry of the Spanish catalog (100% of the reference
+  catalog), translated from the English sources with Premiere-style Russian vocabulary
+  (последовательность, корзина, дорожка, визуализация); Edit ▸ Language, Settings ▸ General and
+  System Language (`ru-*`) reach it, the i18n test requires full coverage and a font test covers
+  the Russian alphabet including «ё». Native-speaker review welcome.
 - **Estimate:** 150–230 h. Doc: [localization-parity.md](localization-parity.md).
 
 ## G15. Interchange never validated in Avid / Pro Tools; slow XML import

@@ -40,6 +40,7 @@
 	Align to Video Frame	Ratakan ke Bingkai Video
 	Align to Video Frame as Group	Ratakan ke Bingkai Video sebagai Grup
 	All Panels	Semua Panel
+	All Supported Files	Semua Berkas yang Didukung
 	Alpha	Alfa
 	Appearance	Penampilan
 	Appearance…	Penampilan…
@@ -258,6 +259,7 @@
 	Project	Proyek
 	Project Manager…	Manajer Proyek…
 	Project Settings	Pengaturan Proyek
+	Projects and Interchange	Proyek dan Pertukaran
 	Project…	Proyek…
 	Properties	Properti
 	Purple	Ungu
@@ -1324,6 +1326,7 @@
 	Audio Codec	Codec Audio
 	Audio Duration	Durasi Audio
 	Audio Effects	Efek Audio
+	Audio Files	Berkas Audio
 	Audio Hardware	Perangkat Keras Audio
 	Audio In Point	Titik Masuk Audio
 	Audio Info	Info Audio
@@ -1837,6 +1840,7 @@
 	Hard Mix	Campuran Keras
 	Hardware decoding	Dekode perangkat keras
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Dekode perangkat keras: Otomatis menggunakan dekoder video sistem (VideoToolbox di macOS, Media Foundation di Windows, VA-API atau NVDEC untuk H.264 dan HEVC di Linux) untuk stream yang didukungnya, dan dekoder FilmCraft sendiri untuk yang lainnya atau jika perangkat keras gagal. Media yang sudah terbuka tetap memakai dekodernya sampai dibuka ulang.
+	Hardware Encoding	Enkode perangkat keras
 	Head Size	Ukuran Kepala
 	Heart	Hati
 	Height	Tinggi
@@ -2482,6 +2486,7 @@
 	Stereoscopic - Side by Side	Stereoskopik - Berdampingan
 	Still	Diam
 	Still Image Default Duration	Durasi Bawaan Gambar Diam
+	Still Images	Gambar Diam
 	Stone Church	Gereja Batu
 	Stopband Attenuation	Atenuasi Stopband
 	Straight Color	Warna Lurus
@@ -2605,6 +2610,7 @@
 	Use Glow Color	Gunakan Warna Pendar
 	Use Media Source	Gunakan Sumber Media
 	Use Tint Color	Gunakan Warna Rona
+	Use the hardware encoder when available	Gunakan enkoder perangkat keras jika tersedia
 	Utility	Utilitas
 	VHS Damage	Kerusakan VHS
 	VR Blur	Buram VR
@@ -2652,6 +2658,7 @@
 	Video Codec	Codec Video
 	Video Duration	Durasi Video
 	Video Effects	Efek Video
+	Video Files	Berkas Video
 	Video In Point	Titik Masuk Video
 	Video Info	Info Video
 	Video Limiter	Limiter Video

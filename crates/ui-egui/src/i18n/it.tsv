@@ -33,6 +33,7 @@
 	Align to Video Frame	Allinea al fotogramma video
 	Align to Video Frame as Group	Allinea al fotogramma video come gruppo
 	All Panels	Tutti i pannelli
+	All Supported Files	Tutti i file supportati
 	Alpha	Alfa
 	Appearance	Aspetto
 	Appearance…	Aspetto…
@@ -248,6 +249,7 @@
 	Project	Progetto
 	Project Manager…	Gestione progetti…
 	Project Settings	Impostazioni progetto
+	Projects and Interchange	Progetti e interscambio
 	Project…	Progetto…
 	Properties	Proprietà
 	Purple	Viola
@@ -1316,6 +1318,7 @@
 	Audio Codec	Codec audio
 	Audio Duration	Durata audio
 	Audio Effects	Effetti audio
+	Audio Files	File audio
 	Audio Hardware	Hardware audio
 	Audio In Point	Punto di attacco audio
 	Audio Info	Info audio
@@ -1829,6 +1832,7 @@
 	Hard Mix	Miscela dura
 	Hardware decoding	Decodifica hardware
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Decodifica hardware: Auto usa il decodificatore video del sistema (VideoToolbox su macOS, Media Foundation su Windows, VA-API o NVDEC per H.264 e HEVC su Linux) per i flussi che supporta, e il decodificatore di FilmCraft per tutto il resto o se l'hardware non riesce. I media già aperti mantengono il loro decodificatore finché non vengono riaperti.
+	Hardware Encoding	Codifica hardware
 	Head Size	Dimensione testa
 	Heart	Cuore
 	Height	Altezza
@@ -2474,6 +2478,7 @@
 	Stereoscopic - Side by Side	Stereoscopico - affiancato
 	Still	Immagine fissa
 	Still Image Default Duration	Durata predefinita delle immagini fisse
+	Still Images	Immagini fisse
 	Stone Church	Chiesa di pietra
 	Stopband Attenuation	Attenuazione banda di arresto
 	Straight Color	Colore diretto
@@ -2597,6 +2602,7 @@
 	Use Glow Color	Usa colore bagliore
 	Use Media Source	Usa sorgente media
 	Use Tint Color	Usa colore tinta
+	Use the hardware encoder when available	Usa il codificatore hardware quando disponibile
 	Utility	Utilità
 	VHS Damage	Danni VHS
 	VR Blur	Sfocatura VR
@@ -2644,6 +2650,7 @@
 	Video Codec	Codec video
 	Video Duration	Durata video
 	Video Effects	Effetti video
+	Video Files	File video
 	Video In Point	Punto di attacco video
 	Video Info	Info video
 	Video Limiter	Limitatore video

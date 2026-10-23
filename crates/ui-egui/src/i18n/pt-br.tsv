@@ -37,6 +37,7 @@
 	Align to Video Frame	Alinhar ao quadro de vídeo
 	Align to Video Frame as Group	Alinhar ao quadro de vídeo como grupo
 	All Panels	Todos os painéis
+	All Supported Files	Todos os arquivos compatíveis
 	Alpha	Alfa
 	Appearance	Aparência
 	Appearance…	Aparência…
@@ -255,6 +256,7 @@
 	Project	Projeto
 	Project Manager…	Gerenciador de projetos…
 	Project Settings	Configurações do projeto
+	Projects and Interchange	Projetos e intercâmbio
 	Project…	Projeto…
 	Properties	Propriedades
 	Purple	Roxo
@@ -1321,6 +1323,7 @@
 	Audio Codec	Codec de áudio
 	Audio Duration	Duração do áudio
 	Audio Effects	Efeitos de áudio
+	Audio Files	Arquivos de áudio
 	Audio Hardware	Hardware de áudio
 	Audio In Point	Ponto de entrada do áudio
 	Audio Info	Informações de áudio
@@ -1834,6 +1837,7 @@
 	Hard Mix	Mistura sólida
 	Hardware decoding	Decodificação por hardware
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Decodificação por hardware: Automático usa o decodificador de vídeo do sistema (VideoToolbox no macOS, Media Foundation no Windows, VA-API ou NVDEC para H.264 e HEVC no Linux) para os fluxos que ele suporta, e o decodificador próprio do FilmCraft para todo o resto ou se o hardware falhar. A mídia que já está aberta mantém seu decodificador até ser reaberta.
+	Hardware Encoding	Codificação por hardware
 	Head Size	Tamanho da cabeça
 	Heart	Coração
 	Height	Altura
@@ -2479,6 +2483,7 @@
 	Stereoscopic - Side by Side	Estereoscópico - lado a lado
 	Still	Imagem estática
 	Still Image Default Duration	Duração padrão de imagens estáticas
+	Still Images	Imagens estáticas
 	Stone Church	Igreja de pedra
 	Stopband Attenuation	Atenuação da banda de rejeição
 	Straight Color	Cor direta
@@ -2602,6 +2607,7 @@
 	Use Glow Color	Usar cor do brilho difuso
 	Use Media Source	Usar a origem da mídia
 	Use Tint Color	Usar cor da tonalidade
+	Use the hardware encoder when available	Usar o codificador de hardware quando disponível
 	Utility	Utilitário
 	VHS Damage	Dano de VHS
 	VR Blur	Desfoque VR
@@ -2649,6 +2655,7 @@
 	Video Codec	Codec de vídeo
 	Video Duration	Duração do vídeo
 	Video Effects	Efeitos de vídeo
+	Video Files	Arquivos de vídeo
 	Video In Point	Ponto de entrada do vídeo
 	Video Info	Informações de vídeo
 	Video Limiter	Limitador de vídeo

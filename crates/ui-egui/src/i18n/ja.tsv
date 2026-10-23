@@ -35,6 +35,7 @@
 	Align to Video Frame	ビデオフレームに整列
 	Align to Video Frame as Group	グループとしてビデオフレームに整列
 	All Panels	すべてのパネル
+	All Supported Files	対応するすべてのファイル
 	Alpha	アルファ
 	Appearance	外観
 	Appearance…	外観…
@@ -252,6 +253,7 @@
 	Project	プロジェクト
 	Project Manager…	プロジェクトマネージャー…
 	Project Settings	プロジェクト設定
+	Projects and Interchange	プロジェクトと交換形式
 	Project…	プロジェクト…
 	Properties	プロパティ
 	Purple	パープル
@@ -1313,6 +1315,7 @@
 	Audio Codec	オーディオコーデック
 	Audio Duration	オーディオの長さ
 	Audio Effects	オーディオエフェクト
+	Audio Files	オーディオファイル
 	Audio Hardware	オーディオハードウェア
 	Audio In Point	オーディオのイン点
 	Audio Info	オーディオ情報
@@ -1826,6 +1829,7 @@
 	Hard Mix	ハードミックス
 	Hardware decoding	ハードウェアデコード
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	ハードウェアデコード: 「自動」では、対応しているストリームにはシステムのビデオデコーダー (macOS では VideoToolbox、Windows では Media Foundation、Linux では H.264・HEVC 用の VA-API または NVDEC) を使用し、それ以外のストリームや、ハードウェアで失敗した場合は FilmCraft 独自のデコーダーを使用します。すでに開いているメディアは、開き直すまで現在のデコーダーを使い続けます。
+	Hardware Encoding	ハードウェアエンコード
 	Head Size	頭部サイズ
 	Heart	ハート
 	Height	高さ
@@ -2466,6 +2470,7 @@
 	Stereoscopic - Side by Side	ステレオスコピック - 左右
 	Still	静止画
 	Still Image Default Duration	静止画の既定の長さ
+	Still Images	静止画
 	Stone Church	石造りの教会
 	Stopband Attenuation	阻止帯域減衰量
 	Straight Color	カラーのみ
@@ -2589,6 +2594,7 @@
 	Use Glow Color	グローの色を使用
 	Use Media Source	メディアソースを使用
 	Use Tint Color	色合いを使用
+	Use the hardware encoder when available	利用可能な場合はハードウェアエンコーダーを使用する
 	Utility	ユーティリティ
 	VHS Damage	VHS ダメージ
 	VR Blur	VR ぼかし
@@ -2636,6 +2642,7 @@
 	Video Codec	ビデオコーデック
 	Video Duration	ビデオの長さ
 	Video Effects	ビデオエフェクト
+	Video Files	ビデオファイル
 	Video In Point	ビデオのイン点
 	Video Info	ビデオ情報
 	Video Limiter	ビデオリミッター

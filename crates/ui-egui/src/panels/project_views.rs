@@ -525,12 +525,17 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
             if resp.hovered() {
                 hp.rect_filled(cr, 0.0, t.hover);
             }
-            let g = hp.layout_no_wrap(crate::i18n::t(&c.name).to_string(), Tokens::ui(f - 0.5), t.text_dim);
             // The sort arrow sits in the right of the header. Leave it a gap so it does not cover the name (#1295).
             let arrow = if sort.column == c.name { 14.0 } else { 0.0 };
             let label = cr.shrink2(vec2(4.0, 0.0));
             let label = egui::Rect::from_min_max(label.min, pos2((label.max.x - arrow).max(label.min.x), label.max.y)).intersect(hr);
-            hp.with_clip_rect(label).galley(pos2(cr.min.x + 6.0, cr.center().y - g.size().y / 2.0), g, t.text_dim);
+            // A heading wider than its column (French, Russian…) ends with an ellipsis; the whole
+            // name is in the hover text above, instead of the text being cut mid-word.
+            let mut job = egui::text::LayoutJob::simple_singleline(crate::i18n::t(&c.name).to_string(), Tokens::ui(f - 0.5), t.text_dim);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(label.width());
+            let g = hp.layout_job(job);
+            let gy = cr.center().y - g.size().y / 2.0;
+            hp.with_clip_rect(label).galley(pos2(cr.min.x + 6.0, gy), g, t.text_dim);
             if sort.column == c.name {
                 let ax = cr.max.x - 8.0;
                 let (a, b) = if sort.descending { (cr.center().y + 4.0, cr.center().y - 4.0) } else { (cr.center().y - 4.0, cr.center().y + 4.0) };
