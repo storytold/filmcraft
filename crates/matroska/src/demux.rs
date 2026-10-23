@@ -10,6 +10,7 @@ use crate::source::{ByteSource, ReadSeekSource};
 use crate::track::{Sample, Track, TrackKind, gcd};
 
 const WIN: usize = 64 * 1024;
+const MAX_RESYNC_BYTES: usize = 64 << 20;
 /// Upper bound for level-1 metadata elements read into memory (Info, Tracks, Cues, Tags…).
 const MAX_META: u64 = 256 << 20;
 
@@ -136,6 +137,7 @@ struct Io<'a, S: ByteSource + ?Sized> {
     src: &'a S,
     len: u64,
     cache: &'a mut Cache,
+    recovery_budget: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -165,7 +167,7 @@ impl Hdr {
 impl<'a, S: ByteSource + ?Sized> Io<'a, S> {
     fn new(src: &'a S, cache: &'a mut Cache) -> Self {
         let len = src.len();
-        Self { src, len, cache }
+        Self { src, len, cache, recovery_budget: MAX_RESYNC_BYTES }
     }
 
     /// Up to `n` (≤ WIN) bytes at `pos` (fewer at EOF).
@@ -219,8 +221,9 @@ impl<'a, S: ByteSource + ?Sized> Io<'a, S> {
     /// Scan forward from `from` for a plausible level-1 element (Cluster preferred), up to `limit`.
     fn resync(&mut self, from: u64, limit: u64) -> Result<Option<u64>> {
         let mut pos = from;
-        while pos + 4 <= limit {
+        while pos + 4 <= limit && self.recovery_budget > 0 {
             let chunk = self.peek(pos, WIN)?.to_vec();
+            self.recovery_budget = self.recovery_budget.saturating_sub(chunk.len());
             if chunk.len() < 4 {
                 return Ok(None);
             }
