@@ -124,6 +124,60 @@ fn apply_video_transition_goes_to_the_selection_not_the_playhead() {
     assert!(q.audio_tracks[0].transitions.len() > before_a);
 }
 
+/// `cmd` is refused by a locked track and leaves the project, the history and the selection as
+/// they were: the unlocked part of the selection gets nothing either (#1124).
+fn refused_by_lock(s: &mut Session, cmd: &str) {
+    let (project, undo, redo, selection) = (Arc::clone(&s.project), s.history.undo.len(), s.history.redo.len(), s.state.selection.clone());
+    let err = s.execute(cmd, json!({})).expect_err(cmd);
+    assert!(err.to_string().contains("locked"), "{cmd}: {err}");
+    assert!(Arc::ptr_eq(&project, &s.project), "{cmd} edited the unlocked part of the selection");
+    assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo), "{cmd} left an undo step");
+    assert_eq!(s.state.selection, selection, "{cmd}");
+}
+
+/// ⌘D / ⇧⌘D with clips selected on V1 and on `locked`, a locked track, change nothing;
+/// unlocked, the same selection gets its transitions as one undo step, undone and redone exactly.
+fn locked_track_in_the_selection(cmd: &str, locked: &str) {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    // shot 3 (and its linked sound) has a free In edge; the V2 overlay and the A2 score have none
+    let shot = q.video_tracks[0].items[2].id;
+    let other = if locked == "V2" { q.video_tracks[1].items[0].id } else { q.audio_tracks[1].items[0].id };
+    s.execute("timeline.setTrack", json!({"track": locked, "locked": true})).unwrap();
+    s.execute("timeline.select", json!({"clips": [shot.0, other.0]})).unwrap();
+    refused_by_lock(&mut s, cmd);
+    s.execute("timeline.setTrack", json!({"track": locked, "locked": false})).unwrap();
+    let (before, undo) = (Arc::clone(&s.project), s.history.undo.len());
+    s.execute(cmd, json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert!(q.find_item(other).and_then(|(t, _)| q.track(t)).is_some_and(|t| !t.transitions.is_empty()), "{cmd}: unlocked {locked} gets its transitions");
+    assert_eq!(s.history.undo.len(), undo + 1, "{cmd}: one undo step");
+    let after = Arc::clone(&s.project);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(*s.project == *before, "{cmd}: undo restores the project");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!(*s.project == *after, "{cmd}: redo");
+}
+
+#[test]
+fn apply_video_transition_refuses_a_locked_track_in_the_selection() {
+    // selected edit points: one on V1, one on the locked V2
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let (shot, overlay) = (q.video_tracks[0].items[2].id, q.video_tracks[1].items[0].id);
+    s.execute("timeline.setTrack", json!({"track": "V2", "locked": true})).unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": shot.0, "edge": "in"})).unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": overlay.0, "edge": "in", "add": true})).unwrap();
+    refused_by_lock(&mut s, "sequence.applyVideoTransition");
+    // selected clips
+    locked_track_in_the_selection("sequence.applyVideoTransition", "V2");
+}
+
+#[test]
+fn apply_audio_transition_refuses_a_locked_track_in_the_selection() {
+    locked_track_in_the_selection("sequence.applyAudioTransition", "A2");
+}
+
 #[test]
 fn normalize_mix_track_hits_the_target_peak() {
     let mut s = demo();

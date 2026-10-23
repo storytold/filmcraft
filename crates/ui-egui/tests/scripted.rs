@@ -270,6 +270,31 @@ fn cmd_d_applies_the_default_transition_to_the_selected_clip() {
 }
 
 #[test]
+fn cmd_d_refuses_a_locked_track_in_the_selection() {
+    // #1124: nothing changes, not even the unlocked clip, and the status line says why
+    let mut d = Driver::demo();
+    let seq = d.sequence();
+    let shot = track_clips(&seq, 0)[2]["clip"].clone();
+    let overlay = track_clips(&seq, 1)[0]["clip"].clone();
+    d.exec("timeline.setTrack", json!({"track": "V2", "locked": true}));
+    d.exec("timeline.select", json!({"clips": [shot, overlay]}));
+    let project = |d: &Driver| serde_json::to_value(&*d.harness.state().session.project).unwrap();
+    let (before, undo) = (project(&d), d.harness.state().session.history.undo.len());
+    d.ok("ui.key", json!({"key": "Cmd+D"}));
+    d.frames(2);
+    assert!(project(&d) == before, "Cmd+D edited the unlocked part of the selection");
+    assert_eq!(d.harness.state().session.history.undo.len(), undo);
+    let status = d.inspect()["ui"]["status"].as_str().unwrap_or_default().to_string();
+    assert!(status.contains("locked"), "the refusal left no visible reason: {status:?}");
+    // unlocked, the same selection takes the keystroke
+    d.exec("timeline.setTrack", json!({"track": "V2", "locked": false}));
+    d.ok("ui.key", json!({"key": "Cmd+D"}));
+    d.frames(2);
+    let seq = d.sequence();
+    assert!(!seq["video"][1]["transitions"].as_array().unwrap().is_empty(), "{seq}");
+}
+
+#[test]
 fn playback_toggle_and_stop() {
     let mut d = Driver::demo();
     assert_eq!(d.inspect()["playback"]["playing"], json!(false));
