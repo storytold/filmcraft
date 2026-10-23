@@ -20,6 +20,8 @@ impl Write for LimitedBytes {
     }
 }
 
+/// Validate and serialize a snapshot, returning an error if JSON exceeds 8 MiB.
+/// The output writer uses checked lengths and fallible buffer reservation.
 pub fn encode_snapshot(snapshot: &CapabilitySnapshot) -> Result<Vec<u8>> {
     snapshot.validate()?;
     let mut bytes = LimitedBytes::default();
@@ -27,6 +29,9 @@ pub fn encode_snapshot(snapshot: &CapabilitySnapshot) -> Result<Vec<u8>> {
     Ok(bytes.0)
 }
 
+/// Decode untrusted JSON after enforcing the 8 MiB wire limit, then validate the snapshot.
+/// Record-count limits are checked after deserialization; the wire limit is not a total
+/// memory-allocation bound. Use this entry point instead of unbounded deserialization.
 pub fn decode_snapshot(bytes: &[u8]) -> Result<CapabilitySnapshot> {
     if bytes.len() > MAX_SNAPSHOT_BYTES {
         return Err(MediaError::Unsupported("capability JSON exceeds 8 MiB".into()));

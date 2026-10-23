@@ -7,6 +7,8 @@ use filmcraft_media::capabilities::{
     VideoCodec, VideoProfile,
 };
 
+/// Return validated software encoder coverage independently of hardware factories.
+/// H.264 is a configuration-dependent candidate; HEVC and AV1 are not implemented.
 pub fn software_encoder_capabilities() -> Result<Vec<CodecCapability>> {
     // A compile-time connection to the actual built-in encoder factory.
     let _: crate::EncoderFactory = crate::h264_factory;

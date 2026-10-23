@@ -42,6 +42,8 @@ fn unique<T: Ord>(values: &[T], max: usize, field: &'static str) -> Result<()> {
 }
 
 impl CapabilityLimits {
+    /// Reject invalid dimension ranges and zero frame-rate numerators or denominators.
+    /// Unknown limits remain valid and do not establish configuration support.
     pub fn validate(&self) -> Result<()> {
         for range in [self.width, self.height].into_iter().flatten() {
             if range.min == 0 || range.max < range.min || range.step == 0 {
@@ -56,6 +58,8 @@ impl CapabilityLimits {
 }
 
 impl CodecCapability {
+    /// Check identifiers, availability evidence, adapter rules and the V1 format subset.
+    /// This validates the description, not whether a particular codec session can run.
     pub fn validate(&self) -> Result<()> {
         identifier(&self.backend_id, "backend_id")?;
         if let Some(id) = &self.adapter_id {
@@ -117,6 +121,8 @@ impl CodecCapability {
 }
 
 impl CapabilitySnapshot {
+    /// Check the schema, record bounds, discovery consistency and adapter associations.
+    /// This validates structure and relationships, not the authenticity of reported support.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(invalid("schema_version"));

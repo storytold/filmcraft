@@ -56,6 +56,7 @@ pub enum VideoProfile {
 }
 
 impl VideoProfile {
+    /// Return the codec family that owns this profile.
     pub fn codec(self) -> VideoCodec {
         match self {
             Self::H264ConstrainedBaseline | Self::H264Main | Self::H264High => VideoCodec::H264,
@@ -165,6 +166,8 @@ pub struct FormatCapability {
 }
 
 impl FormatCapability {
+    /// Describe a 4:2:0 format with unknown limits, HDR modes and encoder controls.
+    /// The profile/depth pair is checked when its containing capability is validated.
     pub fn new(profile: VideoProfile, bit_depth: u8) -> Self {
         Self { profile, bit_depth, chroma: ChromaSampling::C420, limits: CapabilityLimits::default(), hdr_modes: None, encoder_controls: None }
     }
@@ -186,6 +189,9 @@ pub struct CodecCapability {
 }
 
 impl CodecCapability {
+    /// Describe an available software candidate using implementation-coverage evidence.
+    /// The record still requires exact configuration validation. This constructor does
+    /// not validate the backend identifier or formats; call `validate` before use.
     pub fn software(codec: VideoCodec, operation: Operation, backend_id: &str, formats: Vec<FormatCapability>) -> Self {
         Self {
             codec,
@@ -244,6 +250,8 @@ pub struct CapabilitySnapshot {
 }
 
 impl CapabilitySnapshot {
+    /// Create an empty current-schema snapshot before discovery starts.
+    /// `generation` is supplied by the caller; this function performs no discovery.
     pub fn new(generation: u64) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,

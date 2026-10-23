@@ -3,6 +3,8 @@
 use crate::{BuiltinVideoDecoder, CodecError, Result};
 use filmcraft_media::capabilities::{CapabilityStatus, CodecCapability, FormatCapability, Operation, VideoCodec, VideoProfile};
 
+/// Return validated H.264, HEVC and AV1 built-in software coverage records.
+/// Hardware registrations are ignored; listed formats still require stream validation.
 pub fn software_decoder_capabilities() -> Result<Vec<CodecCapability>> {
     let definitions: [(VideoCodec, &str, BuiltinVideoDecoder, Vec<FormatCapability>, &str); 3] = [
         (
