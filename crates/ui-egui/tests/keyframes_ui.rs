@@ -456,10 +456,24 @@ fn center(rect: [f64; 4]) -> egui::Pos2 {
     egui::pos2((rect[0] + rect[2] / 2.0) as f32, (rect[1] + rect[3] / 2.0) as f32)
 }
 
+/// Scroll Effect Controls until `id` is inside its keyframe lane: a row lower in the panel can
+/// start below the visible part.
+fn reveal(d: &mut Driver, id: &str) {
+    for _ in 0..20 {
+        let (r, lane) = (d.rect(id), d.rect("effectControls.lane"));
+        if r[1] >= lane[1] && r[1] + r[3] <= lane[1] + lane[3] {
+            return;
+        }
+        let dy = if r[1] < lane[1] { 60.0 } else { -60.0 };
+        d.ok("ui.scroll", json!({"id": "effectControls.lane", "dy": dy}));
+        d.frames(2);
+    }
+}
+
 fn select_keys(d: &mut Driver, keys: &[filmcraft_ui_egui::state::KeyframeRef]) {
     for (i, key) in keys.iter().enumerate() {
         let id = key_id(d, key);
-        d.rect(&id);
+        reveal(d, &id);
         d.ok("ui.click", json!({"id":id,"modifiers":{"shift":i>0}}));
         d.frames(3);
     }

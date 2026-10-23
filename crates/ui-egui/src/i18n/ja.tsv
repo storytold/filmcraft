@@ -1305,6 +1305,8 @@
 	Animation	アニメーション
 	Anti-aliasing Quality	アンチエイリアスの品質
 	Anti-flicker Filter	ちらつき防止フィルター
+	Bilinear	バイリニア
+	Nearest Neighbor	ニアレストネイバー
 	Antialiasing for Best Quality	最高画質時のアンチエイリアス
 	Asymmetry	非対称
 	At Startup	起動時

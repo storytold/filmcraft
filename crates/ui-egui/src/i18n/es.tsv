@@ -1311,6 +1311,8 @@
 	Animation	Animación
 	Anti-aliasing Quality	Calidad del suavizado
 	Anti-flicker Filter	Filtro antiparpadeo
+	Bilinear	Bilineal
+	Nearest Neighbor	Vecino más cercano
 	Antialiasing for Best Quality	Suavizado para la mejor calidad
 	Asymmetry	Asimetría
 	At Startup	Al iniciar

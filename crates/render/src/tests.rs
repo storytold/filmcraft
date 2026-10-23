@@ -521,3 +521,58 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let all: Vec<i64> = (0..20).flat_map(|f| shown(&p, f, false)).collect();
     assert_eq!(all, (10..=29).rev().collect::<Vec<_>>());
 }
+
+#[test]
+fn nearest_neighbor_motion_keeps_hard_pixel_edges() {
+    // #2667: a small picture scaled up 10× keeps only its own colours with Nearest Neighbor;
+    // bilinear blends them at every edge. The GPU plan draws such a clip as a CPU layer, so it
+    // matches the CPU render.
+    let (mut p, _red, _ocean, seq, mut map) = setup();
+    let g = GeneratorSource::new(Generator::BarsAndTone, 32, 18, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+    let info = g.info().clone();
+    let bars = p.add_item(
+        &info.name.clone(),
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    map.0.insert(bars, Arc::new(g) as SharedSource);
+    let clip = place(&mut p, seq, 0, bars, 0, 48);
+    let set = |p: &mut Project, id: &str, v: ParamValue| {
+        let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap();
+        it.scale_to_frame = false;
+        it.effect_mut("motion").unwrap().param_mut(id).unwrap().value = v;
+    };
+    set(&mut p, "scale", ParamValue::Float(1000.0));
+    let colours = |img: &Image| {
+        let mut seen: Vec<[u32; 3]> = Vec::new();
+        for x in 0..img.w {
+            let c = img.get(x, 90);
+            let c = [c[0].to_bits(), c[1].to_bits(), c[2].to_bits()];
+            if !seen.contains(&c) {
+                seen.push(c);
+            }
+        }
+        seen.len()
+    };
+    let opts = RenderOptions::default();
+    let bilinear = render_sequence(&p, seq, Tick(1000), opts, &map);
+    set(&mut p, "interpolation", ParamValue::Choice(1));
+    let nearest = render_sequence(&p, seq, Tick(1000), opts, &map);
+    assert!(colours(&nearest) <= 8, "only the bars' own colours: {}", colours(&nearest));
+    assert!(colours(&bilinear) > 8, "bilinear blends at the edges: {}", colours(&bilinear));
+
+    let got = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick(1000), opts, &map));
+    let max = got.px.iter().zip(&nearest.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(max < 1e-4, "the GPU plan draws it as the CPU does: max diff {max}");
+}

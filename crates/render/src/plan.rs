@@ -407,7 +407,10 @@ fn push_item(
         }
         return;
     }
-    if let Some(chain) = gpu_chain(project, item, opts) {
+    // Nearest Neighbor placement (#2667) has no shader yet: the CPU layer below draws it.
+    if let Some(chain) = gpu_chain(project, item, opts)
+        && !crate::motion_nearest(item)
+    {
         let Some(src) = sources.source(item.item) else { return };
         let Some(size) = crate::source_size(project, item.item) else { return };
         let motion = motion_matrix(seq, item, size, crate::source_par(project, item.item), mt);

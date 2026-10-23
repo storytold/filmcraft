@@ -274,6 +274,8 @@ fn build_effects() -> Vec<EffectDef> {
                 ang("rotation", "Rotation", 0.0),
                 pt("anchor", "Anchor Point", f64::NAN, f64::NAN),
                 fs("anti_flicker", "Anti-flicker Filter", 0.0, (0.0, 1.0), (0.0, 1.0), "", 2),
+                // How the picture is resampled when placed: Nearest Neighbor keeps pixel art hard-edged (#2667).
+                ch("interpolation", "Interpolation", &["Bilinear", "Nearest Neighbor"], 0),
             ],
             intrinsic: true,
             accelerated: true,
