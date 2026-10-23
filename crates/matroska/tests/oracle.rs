@@ -58,8 +58,13 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             assert!((pts - p.pts).abs() <= p.lace as i64, "{ctx}: pts ffprobe {pts} vs {}", p.pts);
             pts_checked += 1;
         }
+        // FFmpeg before 8.1 overwrites audio durations with the parser's whole-frame duration, so
+        // a track's last frame, trimmed by BlockDuration, reads as a full frame there (FFmpeg
+        // 1dd8547193: "don't overwrite already set packet durations with parser ones").
+        let last_of_track = packets[i + 1..].iter().all(|q| q.track != p.track);
         if let Some(dur) = int(&f["duration"])
             && p.duration != 0
+            && !(last_of_track && (p.duration as i64) < dur)
         {
             assert!((dur - p.duration as i64).abs() <= 1, "{ctx}: duration ffprobe {dur} vs {}", p.duration);
             dur_checked += 1;
