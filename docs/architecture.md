@@ -684,7 +684,12 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,
   maximum render quality), Audio (codec, sample rate, channels, AAC bitrate, PCM / FLAC sample size: `bits` 16, 24 or 32
   and `float` for 32-bit float PCM in WAV, AIFF and QuickTime — `supports_sample_format` says
-  which a codec and container store, and Export mode greys out the rest),
+  which a codec and container store, and Export mode greys out the rest; `audio.match_source`,
+  Audio ▸ Match Source, takes the sample rate and channel layout from the sequence (its sample
+  rate and master track: mono, stereo, 5.1, Adaptive as stereo) through `SourceAudio` in
+  `resolve()`, ignoring the chosen ones, and the greyed controls show the result; the AAC bitrate
+  is never matched because the sequence mix has none; the Match Source presets turn it on, and
+  settings and presets saved without the field read it as off),
   Multiplexer (audio channels: mono, stereo or 5.1, §5.1.1), Captions (burn-in or SRT / WebVTT sidecar), Effects (image / name / timecode
   overlays, video limiter, loudness normalization), Metadata (`udta` `©nam`, `©ART`, `©cpy`, `©des`,
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.

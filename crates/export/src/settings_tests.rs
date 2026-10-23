@@ -1334,3 +1334,101 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         }
     }
 }
+
+/// Audio ▸ Match Source (#2700): on, the sample rate and channels are the sequence's (whatever
+/// was chosen); off, the chosen ones (an unset sample rate is still the sequence's). The AAC
+/// bitrate is never matched.
+#[test]
+fn audio_match_source_follows_the_sequence() {
+    let seq = SequenceSettings { sample_rate: 44_100, audio_master: filmcraft_project::AudioChannels::Surround51, ..Default::default() };
+    let mut s =
+        ExportSettings { audio: AudioSettings { sample_rate: Some(48_000), channels: 2, bitrate_kbps: 192, ..Default::default() }, ..Default::default() };
+    // off: explicit 48 kHz stereo
+    let r = s.resolve(1920, 1080, FrameRate::FPS_24, &seq);
+    assert_eq!((r.sample_rate, r.channels), (48_000, 2));
+    // on: the sequence's 44.1 kHz 5.1
+    s.audio.match_source = true;
+    let r = s.resolve(1920, 1080, FrameRate::FPS_24, &seq);
+    assert_eq!((r.sample_rate, r.channels), (44_100, 6));
+    let sum = s.summary(1920, 1080, FrameRate::FPS_24, &seq, Tick(TICKS_PER_SECOND));
+    assert_eq!(sum.audio, "AAC, 192 kbps, 44100 Hz, 5.1", "the bitrate stays as chosen");
+    // mono and adaptive masters
+    for (master, ch) in
+        [(filmcraft_project::AudioChannels::Mono, 1), (filmcraft_project::AudioChannels::Adaptive, 2), (filmcraft_project::AudioChannels::Stereo, 2)]
+    {
+        let q = SequenceSettings { audio_master: master, ..seq.clone() };
+        assert_eq!(s.resolve(64, 36, FrameRate::FPS_24, &q).channels, ch, "{master:?}");
+    }
+    // a bare sample rate is a stereo source
+    assert_eq!(s.audio.resolve(SourceAudio::from(32_000)), (32_000, 2));
+    // hostile values from a project file still give a layout the exporters write
+    assert_eq!(s.audio.resolve(SourceAudio { sample_rate: 48_000, channels: 0 }), (48_000, 1));
+    assert_eq!(s.audio.resolve(SourceAudio { sample_rate: 48_000, channels: u32::MAX }), (48_000, 6));
+    // off with no sample rate chosen: still the sequence's rate, but the chosen channels
+    s.audio = AudioSettings { sample_rate: None, channels: 2, ..Default::default() };
+    assert_eq!(s.audio.resolve((&seq).into()), (44_100, 2));
+}
+
+/// Match Source round-trips through presets; a preset or settings saved before the field existed
+/// reads it as off, so it exports exactly as before. The built-in Match Source presets match the
+/// sequence's audio too; the presets that name a sample rate do not.
+#[test]
+fn audio_match_source_serializes_and_old_presets_load_without_it() {
+    let mut s = ExportSettings::default();
+    s.audio.match_source = true;
+    let v = serde_json::to_value(&s).unwrap();
+    assert_eq!(v["audio"]["match_source"], true);
+    let back: ExportSettings = serde_json::from_value(v.clone()).unwrap();
+    assert!(back.audio.match_source);
+    // an old preset: every audio field but match_source
+    let mut old = v;
+    old["audio"].as_object_mut().unwrap().remove("match_source");
+    old["audio"]["sample_rate"] = serde_json::json!(48_000);
+    let back: ExportSettings = serde_json::from_value(old.clone()).unwrap();
+    assert!(!back.audio.match_source);
+    assert_eq!(back.resolve(64, 36, FrameRate::FPS_24, 44_100).sample_rate, 48_000, "an old 48 kHz preset stays 48 kHz");
+    let preset = presets::ExportPreset { name: "Old".into(), category: "Custom".into(), description: String::new(), settings: back, builtin: false };
+    let json = serde_json::to_string(&preset).unwrap();
+    let again: presets::ExportPreset = serde_json::from_str(&json).unwrap();
+    assert!(!again.settings.audio.match_source);
+    // an old preset without any audio object keeps the defaults (off)
+    let bare: ExportSettings = serde_json::from_value(serde_json::json!({"includeAudio": true})).unwrap();
+    assert!(!bare.audio.match_source);
+    // built-ins
+    assert!(presets::find_builtin(presets::DEFAULT_PRESET).unwrap().settings.audio.match_source);
+    assert!(presets::find_builtin("Match Source – Adaptive Low Bitrate").unwrap().settings.audio.match_source);
+    for name in ["YouTube 1080p Full HD", "Waveform Audio 48 kHz 16-bit", "AAC Audio 48 kHz 320 kbps"] {
+        assert!(!presets::find_builtin(name).unwrap().settings.audio.match_source, "{name}");
+    }
+}
+
+/// A WAV export with Match Source on writes the 44.1 kHz mono of a 44.1 kHz mono sequence even
+/// though 48 kHz stereo is chosen.
+#[test]
+fn wav_export_with_audio_match_source_writes_the_sequence_rate() {
+    let (project, sequence, sources) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let mut project = Arc::unwrap_or_clone(project);
+    let q = project.sequence_mut(sequence).unwrap();
+    q.settings.sample_rate = 44_100;
+    q.settings.audio_master = filmcraft_project::AudioChannels::Mono;
+    let project = Arc::new(project);
+    let dir = Scratch::new("wav-match-source");
+    let mut settings = ExportSettings {
+        format: Format::Wav,
+        path: dir.path("match.wav"),
+        audio: AudioSettings { sample_rate: Some(48_000), channels: 2, match_source: true, ..Default::default() },
+        range: Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4))),
+        ..Default::default()
+    };
+    export(&project, sequence, &settings, &sources, &Progress::default()).unwrap();
+    let bytes = std::fs::read(&settings.path).unwrap();
+    assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 1, "mono");
+    assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 44_100);
+    // off: the chosen 48 kHz stereo
+    settings.audio.match_source = false;
+    settings.path = dir.path("explicit.wav");
+    export(&project, sequence, &settings, &sources, &Progress::default()).unwrap();
+    let bytes = std::fs::read(&settings.path).unwrap();
+    assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 2, "stereo");
+    assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 48_000);
+}

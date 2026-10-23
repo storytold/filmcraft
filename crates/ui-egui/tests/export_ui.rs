@@ -510,3 +510,54 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+/// Audio ▸ Match Source (#2700): the checkbox, the greyed Sample Rate and Channels showing what
+/// the export will use (a 44.1 kHz mono sequence), and turning it off starting from those values.
+#[test]
+fn audio_match_source_checkbox_shows_and_takes_the_sequence_audio() {
+    use filmcraft_engine::export::{ExportSettings, Format};
+    let mut d = Driver::new("audio-match");
+    d.exec("file.newSequence", json!({"sampleRate": 44_100, "mix": "Mono", "video": 1, "audio": 1}));
+    // the new sequence's timeline zooms to fit first (in Edit mode, where it is drawn); the
+    // automation tree waits for it
+    d.wait_until("the new sequence's timeline to settle", |d| d.call("ui.elements", json!({"prefix": "timeline."}))["ok"] == json!(true));
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    // collapse Video so the Audio section is on screen
+    d.click("export.section.video");
+    let label = |d: &mut Driver, id: &str| {
+        let e = d.ok("ui.elements", json!({"prefix": id}));
+        e.as_array().and_then(|a| a.iter().find(|e| e["id"] == json!(id))).map(|e| e["label"].as_str().unwrap_or_default().to_string()).unwrap_or_default()
+    };
+    // the default preset matches the source: the greyed controls show the sequence's audio
+    assert!(d.has("export.audio.matchSource"));
+    assert!(d.app().ui.export.settings.audio.match_source);
+    assert_eq!(label(&mut d, "export.audio.sampleRate"), "44100 Hz");
+    assert_eq!(label(&mut d, "export.audio.channels"), "Mono");
+    // greyed out: clicking does not open the list
+    d.click("export.audio.sampleRate");
+    assert!(!d.has("export.audio.sampleRate.option.0"), "Sample Rate is disabled under Match Source");
+    d.snapshot("export-audio-match-source");
+    // off: explicit values, starting from what was matched
+    d.click("export.audio.matchSource");
+    let a = d.app().ui.export.settings.audio.clone();
+    assert!(!a.match_source);
+    assert_eq!((a.sample_rate, a.channels), (Some(44_100), 1));
+    // pick 48 kHz
+    d.click("export.audio.sampleRate");
+    d.click("export.audio.sampleRate.option.3");
+    assert_eq!(d.app().ui.export.settings.audio.sample_rate, Some(48_000));
+    assert_eq!(label(&mut d, "export.audio.sampleRate"), "48000 Hz");
+    // on again: back to the sequence's rate whatever was picked
+    d.click("export.audio.matchSource");
+    assert_eq!(label(&mut d, "export.audio.sampleRate"), "44100 Hz");
+    // WAV under Match Source: the greyed controls show the sequence's audio there too
+    d.app().ui.export.settings = ExportSettings { format: Format::Wav, ..Default::default() };
+    d.app().ui.export.settings.audio.match_source = true;
+    d.frames(4);
+    assert_eq!(label(&mut d, "export.audio.sampleRate"), "44100 Hz");
+    assert_eq!(label(&mut d, "export.audio.channels"), "Mono");
+    d.snapshot("export-audio-match-source-wav");
+    // plain new settings (code, old UI state) leave it off
+    assert!(!ExportSettings::default().audio.match_source);
+}

@@ -45,7 +45,7 @@ pub(crate) struct AudioOut {
 impl AudioOut {
     pub fn new(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, range: TimeRange) -> Result<Self> {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
-        let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
+        let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, &q.settings);
         let mut seq = q.clone();
         seq.settings.sample_rate = r.sample_rate;
         let sr = r.sample_rate;

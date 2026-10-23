@@ -166,7 +166,7 @@ impl Pipeline {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         q.settings.validate().map_err(ExportError::Unsupported)?;
         settings.validate()?;
-        let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
+        let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, &q.settings);
         filmcraft_project::validate_frame_size(r.width, r.height).map_err(ExportError::Unsupported)?;
         let geom = Geometry::new(settings, q.settings.width, q.settings.height, r.width, r.height);
         if let Some((w, h)) = geom.content {
