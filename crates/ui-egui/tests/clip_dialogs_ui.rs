@@ -289,6 +289,31 @@ fn speed_duration_from_the_clip_menu_opens_the_dialog() {
     assert_eq!(got.time_interpolation, filmcraft_project::TimeInterpolation::FrameBlending);
 }
 
+/// #2019: the Speed/Duration dialog reopens with the Ripple Edit choice last applied (Premiere
+/// keeps it between openings; it is not a clip property), and Cancel does not change it.
+#[test]
+fn speed_duration_remembers_the_ripple_edit_choice() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.params["ripple"].clone()), Some(json!(false)), "starts off");
+    d.click("speedDuration.ripple");
+    d.click("speedDuration.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "applied");
+
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.params["ripple"].clone()), Some(json!(true)), "reopens checked");
+    d.click("speedDuration.ripple");
+    d.click("speedDuration.cancel");
+
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.params["ripple"].clone()), Some(json!(true)), "Cancel keeps the applied choice");
+    d.click("speedDuration.cancel");
+}
+
 /// #786: the clip's right-click Label menu lists the labels by the user's names (with their
 /// colours, as Edit ▸ Label does) and each choice labels the clip.
 #[test]

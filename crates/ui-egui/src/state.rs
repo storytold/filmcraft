@@ -520,6 +520,10 @@ pub struct UiState {
     /// Audio Track Mixer ▸ Meter Input(s) Only: record-armed track meters show the recording input.
     #[serde(default)]
     pub mixer_meter_input_only: bool,
+    /// Clip Speed / Duration: the last applied "Ripple Edit, Shifting Trailing Clips" choice, which
+    /// the dialog offers again next time (it is not a clip property; #2019).
+    #[serde(default)]
+    pub speed_ripple: bool,
     /// Audio Gain dialog draft (mode, dB values).
     #[serde(default)]
     pub audio_gain: AudioGainDraft,
@@ -997,6 +1001,7 @@ impl Default for UiState {
             mixer_fx_open: false,
             mixer_hidden: Vec::new(),
             mixer_meter_input_only: false,
+            speed_ripple: false,
             settings: None,
             audio_gain: AudioGainDraft::default(),
             add_tracks: AddTracksDraft::default(),
