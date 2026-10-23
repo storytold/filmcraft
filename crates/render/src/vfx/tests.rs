@@ -103,6 +103,7 @@ const NEW_IDS: &[&str] = &[
     "brush_strokes",
     "color_emboss",
     "roughen_edges",
+    "vhs_look",
     "posterize_time",
     "rotate_3d",
     "auto_reframe",
@@ -1181,5 +1182,519 @@ fn transform_shutter_uses_the_sequence_frame_rate_without_env() {
     }
     for frame in [60, 90, 120] {
         assert!(delta(frame) > 1e-3, "frame {frame} moves but is sharp");
+    }
+}
+
+// ------------------------------------------------------------------ VHS Look
+
+mod vhs_look {
+    use std::f32::consts::TAU;
+
+    use filmcraft_color::{Matrix, rgb_to_ycbcr, ycbcr_to_rgb};
+
+    use super::*;
+
+    /// A picture from display-encoded colours (`dec` turns them into the linear values the compositor holds).
+    fn paint(w: usize, h: usize, f: impl Fn(usize, usize) -> [f32; 3]) -> Image {
+        let mut img = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let l = dec(f(x, y));
+                img.px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[l[0], l[1], l[2], 1.0]);
+            }
+        }
+        img
+    }
+    /// Y'CbCr (BT.601) of a pixel as the eye gets it: display-encoded, straight alpha.
+    fn ycc(img: &Image, x: usize, y: usize) -> [f32; 3] {
+        let c = enc(Image::unpremul(img.get(x, y)));
+        rgb_to_ycbcr(c[0], c[1], c[2], Matrix::Bt601)
+    }
+    /// One row of one plane: 0 = Y', 1 = Cb, 2 = Cr.
+    fn plane(img: &Image, y: usize, p: usize) -> Vec<f32> {
+        (0..img.w).map(|x| ycc(img, x, y)[p]).collect()
+    }
+
+    /// The effect with every damage control at zero (only the two low-pass filters act), then `settings`.
+    fn vhs(settings: &[(&str, f64)]) -> EffectInstance {
+        let mut e = inst("vhs_look");
+        for id in ["chroma_shift", "jitter", "noise", "head_switch", "dropouts"] {
+            setf(&mut e, id, 0.0);
+        }
+        for (id, v) in settings {
+            setf(&mut e, id, *v);
+        }
+        e
+    }
+    fn frame_cx(frame: i64) -> FxCtx<'static> {
+        let t = Tick::from_seconds_f64(frame as f64 / 24.0);
+        FxCtx { t, seconds: t.seconds(), ..cx() }
+    }
+    /// `e` applied to `img` at frame `frame` of a 24 fps clip, with the working image at `px_scale` of full size.
+    fn at_scaled(img: &Image, e: &EffectInstance, frame: i64, px_scale: f32) -> Image {
+        let mut out = img.clone();
+        crate::effects::apply(&mut out, e, &FxCtx { px_scale, ..frame_cx(frame) });
+        out
+    }
+    fn at(img: &Image, e: &EffectInstance, frame: i64) -> Image {
+        at_scaled(img, e, frame, 1.0)
+    }
+
+    /// Where a profile first crosses `level`, in pixels (linear interpolation).
+    fn crossing(profile: &[f32], level: f32) -> f32 {
+        for (i, pair) in profile.windows(2).enumerate() {
+            let (a, b) = (pair[0] - level, pair[1] - level);
+            if a == 0.0 {
+                return i as f32;
+            }
+            if a * b < 0.0 {
+                return i as f32 + a / (a - b);
+            }
+        }
+        f32::NAN
+    }
+    /// How soft an edge is: the distance from 10 % to 30 % of the way between the first and the last
+    /// value. Only the side the profile starts on is read: past the edge a colour that bleeds onto black
+    /// is clipped by the display's gamut, which says nothing about the filter.
+    fn softness(profile: &[f32]) -> f32 {
+        let (a, b) = (profile[0], profile[profile.len() - 1]);
+        (crossing(profile, a + 0.3 * (b - a)) - crossing(profile, a + 0.1 * (b - a))).abs()
+    }
+    fn red_to_black(w: usize) -> Image {
+        paint(w, 4, |x, _| if x < w / 2 { [1.0, 0.0, 0.0] } else { [0.0; 3] })
+    }
+    /// A step in brightness and colour at once, the two in opposite directions so that no mix of the
+    /// brightness of one side with the colour of the other leaves the gamut.
+    fn two_tone(w: usize) -> Image {
+        let (left, right) = (ycbcr_to_rgb(0.7, 0.0, 0.2, Matrix::Bt601), ycbcr_to_rgb(0.3, 0.0, -0.2, Matrix::Bt601));
+        paint(w, 4, |x, _| if x < w / 2 { left } else { right })
+    }
+
+    /// Amplitude of the sinusoid of `cycles` per picture width in the middle half of a row.
+    fn amplitude(row: &[f32], cycles: f32) -> f32 {
+        let w = row.len();
+        let mid = &row[w / 4..3 * w / 4];
+        let mean = mid.iter().sum::<f32>() / mid.len() as f32;
+        let (mut s, mut c) = (0.0, 0.0);
+        for (i, v) in mid.iter().enumerate() {
+            let phase = TAU * cycles * ((w / 4 + i) as f32 + 0.5) / w as f32;
+            s += (v - mean) * phase.sin();
+            c += (v - mean) * phase.cos();
+        }
+        2.0 * s.hypot(c) / mid.len() as f32
+    }
+    /// How much of a grating of `cycles` per picture width the effect lets through (output over input amplitude).
+    fn gain(w: usize, cycles: f32, e: &EffectInstance, chroma: bool) -> f32 {
+        let src = paint(w, 3, |x, _| {
+            let s = 0.2 * (TAU * cycles * (x as f32 + 0.5) / w as f32).sin();
+            if chroma { ycbcr_to_rgb(0.5, s, 0.0, Matrix::Bt601) } else { [0.5 + s; 3] }
+        });
+        let p = usize::from(chroma);
+        amplitude(&plane(&at(&src, e, 0), 1, p), cycles) / amplitude(&plane(&src, 1, p), cycles)
+    }
+
+    #[test]
+    fn chroma_edge_is_wider_than_luma_edge() {
+        // VHS keeps colour in a far narrower band than brightness, so on a red/black step the colour
+        // edge is much softer than the brightness edge.
+        let out = at(&red_to_black(480), &vhs(&[]), 0);
+        let (luma, chroma) = (softness(&plane(&out, 2, 0)), softness(&plane(&out, 2, 2)));
+        assert!(luma > 0.05, "luma edge {luma}");
+        assert!(chroma > 4.0 * luma, "luma edge {luma} px, chroma edge {chroma} px");
+    }
+
+    #[test]
+    fn colour_bleeds_and_shifts_right_of_an_edge() {
+        // Chroma Shift delays the colour: its edge moves right of the brightness edge for a positive
+        // value, left for a negative one, and stays put at 0.
+        let src = two_tone(480);
+        for shift in [0.0, 6.0, -6.0] {
+            let out = at(&src, &vhs(&[("chroma_shift", shift)]), 0);
+            let offset = crossing(&plane(&out, 2, 2), 0.0) - crossing(&plane(&out, 2, 0), 0.5);
+            assert!((offset - shift as f32).abs() < 1.0, "shift {shift}: the colour edge is {offset} px from the brightness edge");
+        }
+        // on red against black, eight pixels past the edge the picture is dark, yet the colour is still red
+        let out = at(&red_to_black(480), &vhs(&[("chroma_shift", 6.0)]), 0);
+        let p = enc(Image::unpremul(out.get(248, 2)));
+        assert!(p[0] > 0.1 && p[1] < 0.02, "past the edge: {p:?}");
+    }
+
+    #[test]
+    fn gratings_below_the_cutoff_pass_and_above_it_fade_at_any_resolution() {
+        // The cutoff is a number of cycles per picture width, so the same grating keeps its contrast
+        // at 256 and at 512 pixels: the look does not depend on the resolution.
+        let e = vhs(&[("luma_bw", 0.5)]);
+        let mut low = Vec::new();
+        let mut high = Vec::new();
+        for w in [256, 512] {
+            low.push(gain(w, 6.0, &e, false));
+            high.push(gain(w, 64.0, &e, false));
+        }
+        assert!(low.iter().all(|g| *g > 0.85), "a grating below the cutoff is kept: {low:?}");
+        assert!(high.iter().all(|g| *g < 0.3), "a grating well above the cutoff fades: {high:?}");
+        assert!((low[0] - low[1]).abs() < 0.1 && (high[0] - high[1]).abs() < 0.1, "256 vs 512 px: {low:?} {high:?}");
+    }
+
+    #[test]
+    fn the_cutoff_sits_where_the_megahertz_setting_says() {
+        // 0.8 MHz across the 52.6 µs active line is 42 cycles per picture width, where a low-pass
+        // is 3 dB down; 1.6 MHz moves that point out of the way.
+        let g = gain(512, 42.0, &vhs(&[("luma_bw", 0.8)]), false);
+        assert!((0.6..0.8).contains(&g), "gain at the cutoff {g}");
+        assert!(gain(512, 42.0, &vhs(&[("luma_bw", 1.6)]), false) > 0.85);
+        // and chroma has a band of its own: 0.2 MHz is 10.5 cycles per width, so 22 is twice that
+        let c = gain(512, 22.0, &vhs(&[("chroma_bw", 0.2)]), true);
+        assert!(c < 0.45, "a chroma grating at twice its cutoff: {c}");
+        assert!(gain(512, 22.0, &vhs(&[("luma_bw", 5.0)]), false) > 0.9, "the same luma grating passes");
+    }
+
+    #[test]
+    fn same_frame_same_noise_new_frame_new_noise() {
+        // Renders repeat bit for bit, but each frame gets its own noise, jitter and dropouts, and
+        // each clip and each Seed its own pattern (#906 and #956 for Noise).
+        let src = picture(480, 8);
+        let damaged = vhs(&[("noise", 60.0), ("jitter", 4.0), ("dropouts", 60.0), ("head_switch", 6.0)]);
+        let a = at(&src, &damaged, 10);
+        assert_eq!(a.px, at(&src, &damaged, 10).px, "the same frame twice");
+        assert!(max_diff(&a, &at(&src, &damaged, 11)) > 0.02, "the next frame is a copy");
+        let grain = vhs(&[("noise", 60.0)]);
+        assert!(max_diff(&at(&src, &grain, 10), &at(&src, &grain, 11)) > 0.02, "noise repeats from frame to frame");
+        // Seed
+        let mut reseeded = grain.clone();
+        setf(&mut reseeded, "seed", 7.0);
+        assert!(max_diff(&at(&src, &grain, 10), &at(&src, &reseeded, 10)) > 0.02, "Seed does nothing");
+        // another clip, same picture and time
+        let clip = |key: u64| {
+            let env = ClipEnv { w: 480, h: 8, fps: 24.0, secs: 10.0, now: 0.0, key, seq: (480, 8), pic: |_, _, _| [0.2; 3] };
+            let mut out = src.clone();
+            crate::effects::apply(&mut out, &grain, &FxCtx { env: Some(&env), ..frame_cx(10) });
+            out
+        };
+        assert_eq!(clip(1).px, clip(1).px);
+        assert!(max_diff(&clip(1), &clip(2)) > 0.02, "two clips share their noise");
+        // nothing time-varying switched on: every frame is the same
+        let calm = vhs(&[("chroma_shift", 3.0)]);
+        assert_eq!(at(&src, &calm, 10).px, at(&src, &calm, 11).px);
+    }
+
+    #[test]
+    fn head_switching_stays_in_the_bottom_band() {
+        // Head Switching damages the last N lines of the 480-line raster and nothing above them,
+        // however much other damage is on.
+        let (w, h) = (240, 240);
+        let src = picture(w, h);
+        let base = vhs(&[("noise", 30.0), ("jitter", 2.0), ("dropouts", 30.0)]);
+        let clean = at(&src, &base, 3);
+        let changed = |lines: f64| -> Vec<usize> {
+            let mut e = base.clone();
+            setf(&mut e, "head_switch", lines);
+            let out = at(&src, &e, 3);
+            (0..h).filter(|y| out.px[y * w * 4..(y + 1) * w * 4] != clean.px[y * w * 4..(y + 1) * w * 4]).collect()
+        };
+        // 240 rows: two lines of the raster per row
+        let wide = changed(24.0);
+        let narrow = changed(8.0);
+        assert_eq!(wide.last(), Some(&(h - 1)));
+        assert_eq!(narrow.last(), Some(&(h - 1)));
+        assert!(wide.first().is_some_and(|y| (h - 12 - 2..=h - 12 + 1).contains(y)), "24 lines start at row {:?}", wide.first());
+        assert!(narrow.first().is_some_and(|y| (h - 4 - 2..=h - 4 + 1).contains(y)), "8 lines start at row {:?}", narrow.first());
+        // the damage is real at the bottom of the band
+        let mut e = base.clone();
+        setf(&mut e, "head_switch", 24.0);
+        let out = at(&src, &e, 3);
+        let last = (h - 1) * w * 4..h * w * 4;
+        let d = out.px[last.clone()].iter().zip(&clean.px[last]).map(|(a, b)| (a - b).abs()).sum::<f32>() / (w * 4) as f32;
+        assert!(d > 0.02, "last row changed by {d} on average");
+        // on a flat picture a sideways shear changes nothing, so what shows is the noise of the band
+        let flat = paint(w, h, |_, _| [0.4; 3]);
+        let out = at(&flat, &vhs(&[("head_switch", 24.0)]), 3);
+        let spread = |y: usize| {
+            let row = plane(&out, y, 0);
+            let mean = row.iter().sum::<f32>() / row.len() as f32;
+            (row.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / row.len() as f32).sqrt()
+        };
+        assert!(spread(h - 1) > 0.05, "no noise in the last row of the band: {}", spread(h - 1));
+        assert!(max_diff(&out, &flat) > 0.05 && (0..h - 14).all(|y| spread(y) < 1e-4), "the picture above the band must stay flat");
+        // the lines of the band are also torn sideways, by up to about 5 % of the width at 24 lines. The
+        // colour edge shows it cleanly: the band's noise is in the brightness only
+        let (left, right) = (ycbcr_to_rgb(0.5, 0.0, 0.2, Matrix::Bt601), ycbcr_to_rgb(0.5, 0.0, -0.2, Matrix::Bt601));
+        let wide = paint(480, h, |x, _| if x < 240 { left } else { right });
+        let out = at(&wide, &vhs(&[("head_switch", 24.0)]), 3);
+        let edge = |y: usize| crossing(&plane(&out, y, 2), 0.0) - 239.5;
+        assert!((0..h - 14).all(|y| edge(y).abs() < 0.05), "the picture above the band moved");
+        assert!((12.0..36.0).contains(&edge(h - 1)), "the last line moved {} px of 480", edge(h - 1));
+    }
+
+    #[test]
+    fn line_jitter_moves_whole_lines_within_the_set_amount() {
+        // Every line is displaced sideways by up to Line Jitter pixels, and by none at 0.
+        let (w, h) = (480, 960);
+        let src = paint(w, h, |x, _| if x < w / 2 { [0.1; 3] } else { [0.9; 3] });
+        let edges = |jitter: f64, px_scale: f32| -> Vec<f32> {
+            let out = at_scaled(&src, &vhs(&[("jitter", jitter)]), 4, px_scale);
+            (0..h).map(|y| crossing(&plane(&out, y, 0), 0.5)).collect()
+        };
+        const EDGE: f32 = 239.5; // between pixels 239 and 240
+        assert!(edges(0.0, 1.0).iter().all(|x| (x - EDGE).abs() < 0.01), "at 0 the edge must not move");
+        let moved = edges(6.0, 1.0);
+        let spread = moved.iter().map(|x| (x - EDGE).abs()).fold(0.0, f32::max);
+        assert!(spread > 3.0, "the lines barely move: {spread}");
+        assert!(spread < 6.5, "a line moved {spread} px, more than the 6 asked for");
+        // not every line goes the same way
+        assert!(moved.iter().any(|x| *x < EDGE - 1.0) && moved.iter().any(|x| *x > EDGE + 1.0));
+        // on a half-size working image the same setting is half as many pixels
+        let spread_half = edges(6.0, 0.5).iter().map(|x| (x - EDGE).abs()).fold(0.0, f32::max);
+        assert!(spread_half < 3.5, "a proxy render moved a line {spread_half} px");
+    }
+
+    #[test]
+    fn dropouts_are_short_bright_streaks_scaled_by_the_setting() {
+        // Dropouts add short bright streaks to some lines: none at 0 %, more at 100 % than at 10 %,
+        // and never a whole line.
+        let src = paint(480, 480, |_, _| [0.55, 0.25, 0.25]);
+        let hit = |pct: f64| -> (usize, usize) {
+            let out = at(&src, &vhs(&[("dropouts", pct)]), 5);
+            let widest = |y: usize| (0..480).filter(|x| ycc(&out, *x, y)[0] > 0.7).count();
+            let rows: Vec<usize> = (0..480).map(widest).filter(|n| *n > 0).collect();
+            (rows.len(), rows.into_iter().max().unwrap_or(0))
+        };
+        assert_eq!(hit(0.0).0, 0);
+        let (few, _) = hit(10.0);
+        let (many, widest) = hit(100.0);
+        assert!(many >= 5, "{many} lines hit at 100 %");
+        assert!(few < many, "{few} lines at 10 %, {many} at 100 %");
+        assert!(widest > 8 && widest < 480 * 2 / 5, "the widest streak is {widest} px of 480");
+        // the streak is bright snow, not a brighter shade of the picture's red
+        let out = at(&src, &vhs(&[("dropouts", 100.0)]), 5);
+        let snow: Vec<[f32; 3]> = (0..480 * 480).map(|i| ycc(&out, i % 480, i / 480)).filter(|p| p[0] > 0.8).collect();
+        assert!(
+            !snow.is_empty() && snow.iter().all(|p| p[2].abs() < 0.05),
+            "snow keeps the picture's colour: {:?}",
+            snow.iter().map(|p| p[2]).fold(0.0, f32::max)
+        );
+        assert!(ycc(&src, 0, 0)[2] > 0.1, "the picture itself must be red enough to tell");
+    }
+
+    #[test]
+    fn noise_grain_follows_the_bandwidth_not_the_pixel_count() {
+        // Tape noise passes through the same narrow band as the picture: a lower luma bandwidth
+        // gives coarser grain, and the grain is the same fraction of the picture width at any
+        // resolution.
+        let grain = |w: usize, h: usize, bw: f64| -> f32 {
+            let flat = paint(w, h, |_, _| [0.4; 3]);
+            let out = at_scaled(&flat, &vhs(&[("noise", 50.0), ("luma_bw", bw)]), 2, w as f32 / 960.0);
+            let rows: Vec<Vec<f32>> = (0..h).map(|y| plane(&out, y, 0)).collect();
+            let mean = rows.iter().flatten().sum::<f32>() / (w * h) as f32;
+            let var: f32 = rows.iter().flatten().map(|v| (v - mean) * (v - mean)).sum();
+            let mut before = 1.0;
+            for lag in 1..w / 2 {
+                let r: f32 = rows.iter().map(|row| (0..w - lag).map(|x| (row[x] - mean) * (row[x + lag] - mean)).sum::<f32>()).sum::<f32>() / var;
+                if r < 0.5 {
+                    return (lag as f32 - 1.0 + (before - 0.5) / (before - r)) / w as f32;
+                }
+                before = r;
+            }
+            f32::NAN
+        };
+        let (full, half) = (grain(960, 64, 1.0), grain(480, 32, 1.0));
+        assert!((full / half - 1.0).abs() < 0.3, "grain {full} of the width at 960 px, {half} at 480 px");
+        let (coarse, fine) = (grain(960, 64, 0.5), grain(960, 64, 5.0));
+        assert!(coarse > 3.0 * fine, "grain at 0.5 MHz {coarse}, at 5 MHz {fine}");
+        // and the level follows the setting: none at 0, more at 80 % than at 20 %
+        let flat = paint(480, 32, |_, _| [0.4; 3]);
+        let spread = |pct: f64| {
+            let out = at(&flat, &vhs(&[("noise", pct)]), 2);
+            let v: Vec<f32> = out.px.chunks(4).map(|p| p[0]).collect();
+            let mean = v.iter().sum::<f32>() / v.len() as f32;
+            (v.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / v.len() as f32).sqrt()
+        };
+        assert!(spread(0.0) < 1e-4);
+        assert!(spread(80.0) > 2.0 * spread(20.0), "noise 20 % {} vs 80 % {}", spread(20.0), spread(80.0));
+    }
+
+    #[test]
+    fn half_resolution_looks_like_full_resolution_scaled_down() {
+        // Shift, jitter and the head-switching band are lengths: on a proxy render (px_scale 0.5)
+        // they must come out half as many pixels, so the picture matches the full-size one shrunk.
+        fn scene(x: f64, y: f64, _t: f64) -> [f32; 3] {
+            let (u, v) = (x / 960.0, y / 540.0);
+            let tone = (0.8 + 0.2 * (v * 6.0).sin()) as f32;
+            let c = if (0.3..0.5).contains(&u) {
+                [0.9, 0.15, 0.1]
+            } else if (0.62..0.8).contains(&u) {
+                [0.1, 0.3, 0.9]
+            } else {
+                [0.3 + 0.4 * u as f32; 3]
+            };
+            dec([c[0] * tone, c[1] * tone, c[2] * tone])
+        }
+        let env = ClipEnv { w: 960, h: 540, fps: 24.0, secs: 2.0, now: 0.0, key: 5, seq: (960, 540), pic: scene };
+        let e = vhs(&[("chroma_shift", 12.0), ("jitter", 8.0), ("head_switch", 20.0)]);
+        let (full, half) = (env.render(0.0, 1.0), env.render(0.0, 0.5));
+        let want = at(&full, &e, 6).downsample2();
+        let mean_error = |a: &Image, b: &Image| a.px.iter().zip(&b.px).map(|(x, y)| (x - y).abs()).sum::<f32>() / a.px.len() as f32;
+        let right = mean_error(&want, &at_scaled(&half, &e, 6, 0.5));
+        let wrong = mean_error(&want, &at_scaled(&half, &e, 6, 1.0));
+        assert!(right < 0.03, "half resolution is off by {right}");
+        assert!(right < 0.5 * wrong, "scaling the lengths changed nothing: {right} vs {wrong} without it");
+    }
+
+    #[test]
+    fn neutral_settings_keep_the_picture() {
+        // Bandwidths opened above what this small picture can hold and every damage control at 0:
+        // what is left is the Y'CbCr round trip, which must lose nothing.
+        let src = picture(64, 24);
+        let out = at(&src, &vhs(&[("luma_bw", 5.0), ("chroma_bw", 1.5)]), 0);
+        let d = max_diff(&out, &src);
+        assert!(d < 1e-4, "round trip changed the picture by {d}");
+    }
+
+    #[test]
+    fn alpha_is_untouched_and_transparent_pixels_stay_out_of_the_picture() {
+        // Alpha is never changed, a transparent pixel keeps whatever it held, and the colour hidden
+        // under it does not bleed into the pixels beside it.
+        let (w, h) = (96, 6);
+        let flat = [0.2, 0.5, 0.8];
+        let build = |hidden: [f32; 3]| {
+            let mut img = Image::new(w, h);
+            for (i, p) in img.px.chunks_mut(4).enumerate() {
+                // the transparent part holds a colour anyway: premultiplied data may carry one
+                let (c, a) = match i % w {
+                    0..32 => (hidden, 0.0),
+                    32..48 => (flat, 0.5),
+                    _ => (flat, 1.0),
+                };
+                let k = if a == 0.0 { 1.0 } else { a };
+                p.copy_from_slice(&[c[0] * k, c[1] * k, c[2] * k, a]);
+            }
+            img
+        };
+        let e = vhs(&[("luma_bw", 0.5), ("chroma_bw", 0.05), ("chroma_shift", 4.0), ("jitter", 3.0)]);
+        let (a, b) = (build([5.0, 0.0, 0.9]), build([0.0, 0.7, 0.0]));
+        let (oa, ob) = (at(&a, &e, 8), at(&b, &e, 8));
+        for (out, src) in [(&oa, &a), (&ob, &b)] {
+            for i in 0..w * h {
+                assert_eq!(out.px[i * 4 + 3].to_bits(), src.px[i * 4 + 3].to_bits(), "alpha changed at {i}");
+                if i % w < 32 {
+                    assert!(
+                        out.px[i * 4..i * 4 + 3].iter().zip(&src.px[i * 4..i * 4 + 3]).all(|(p, q)| p.to_bits() == q.to_bits()),
+                        "transparent pixel {i} changed"
+                    );
+                } else {
+                    let (o, s) = (Image::unpremul(out.get(i % w, i / w)), Image::unpremul(src.get(i % w, i / w)));
+                    assert!((0..3).all(|k| (o[k] - s[k]).abs() < 2e-3), "pixel {i}: {o:?} for {s:?}");
+                }
+            }
+        }
+        for i in 32 * 4..w * 4 {
+            assert_eq!(oa.px[i].to_bits(), ob.px[i].to_bits(), "the colour under the transparent area reached the picture");
+        }
+        // half transparent all over, with no clear pixel in sight: the colours must not fade with the alpha
+        let veil = Image::filled(w, h, [flat[0] * 0.5, flat[1] * 0.5, flat[2] * 0.5, 0.5]);
+        let out = at(&veil, &e, 8);
+        for i in 0..w * h {
+            let o = Image::unpremul(out.get(i % w, i / w));
+            assert!((0..3).all(|k| (o[k] - flat[k]).abs() < 2e-3), "pixel {i} of the veil: {o:?} for {flat:?}");
+            assert_eq!(out.px[i * 4 + 3], 0.5, "alpha of the veil at {i}");
+        }
+    }
+
+    #[test]
+    fn a_value_beyond_the_range_acts_as_the_end_of_the_range() {
+        // A project file or script can hold any number. Line Jitter 1e6 must not shear the picture a
+        // million pixels and Noise -40 % must not turn the grain upside down: each control stops at
+        // the ends of the range it is declared with.
+        let src = picture(96, 40);
+        let def = find_effect("vhs_look").unwrap();
+        let damaged = |id: &str, v: f64| {
+            let mut e = vhs(&[("noise", 40.0), ("jitter", 3.0), ("head_switch", 6.0), ("dropouts", 40.0), ("chroma_shift", 2.0)]);
+            setf(&mut e, id, v);
+            at(&src, &e, 3)
+        };
+        for p in &def.params {
+            let ParamKind::Float { min, max, .. } = p.kind else { continue };
+            let reach = 1000.0 * (max - min);
+            assert_eq!(damaged(p.id, max + reach).px, damaged(p.id, max).px, "{} above its range", p.id);
+            assert_eq!(damaged(p.id, min - reach).px, damaged(p.id, min).px, "{} below its range", p.id);
+        }
+    }
+
+    #[test]
+    fn hostile_input_neither_panics_nor_returns_garbage() {
+        let src = picture(48, 20);
+        let sane = |img: &Image, src: &Image, what: &str| {
+            assert_eq!((img.w, img.h, img.px.len()), (src.w, src.h, src.px.len()), "{what}: size");
+            for (o, i) in img.px.as_chunks::<4>().0.iter().zip(src.px.as_chunks::<4>().0) {
+                assert!(o.iter().all(|v| v.is_finite()), "{what}: {o:?}");
+                assert_eq!(o[3], i[3], "{what}: alpha");
+                assert!(o[..3].iter().all(|v| (0.0..=1.0 + 1e-4).contains(v)), "{what}: {o:?}");
+            }
+        };
+        // every control: NaN, infinities, negative and absurd values, with all the damage on
+        for id in ["luma_bw", "chroma_bw", "chroma_shift", "jitter", "noise", "head_switch", "dropouts", "seed"] {
+            for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -50.0, 0.0, 1e30, 1e300] {
+                let mut e = vhs(&[("noise", 40.0), ("jitter", 3.0), ("head_switch", 6.0), ("dropouts", 40.0), ("chroma_shift", 2.0)]);
+                setf(&mut e, id, v);
+                sane(&at(&src, &e, 3), &src, &format!("{id} = {v}"));
+            }
+        }
+        // a working scale and a time that are not sane
+        let e = vhs(&[("noise", 40.0), ("jitter", 3.0), ("head_switch", 6.0), ("dropouts", 40.0), ("chroma_shift", 2.0)]);
+        for px_scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0, 1e9] {
+            sane(&at_scaled(&src, &e, 3, px_scale), &src, &format!("px_scale {px_scale}"));
+        }
+        // a working scale that is not a positive number is taken as full size, not as "no shift at all"
+        let full = at_scaled(&src, &e, 3, 1.0);
+        for px_scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0] {
+            assert_eq!(at_scaled(&src, &e, 3, px_scale).px, full.px, "px_scale {px_scale}");
+        }
+        for t in [i64::MIN, -1, i64::MAX] {
+            let mut out = src.clone();
+            crate::effects::apply(&mut out, &e, &FxCtx { t: Tick(t), ..cx() });
+            sane(&out, &src, &format!("time {t}"));
+        }
+        // tiny, transparent, half-transparent and odd-sized images
+        let sizes = [(1, 1), (1, 9), (9, 1), (2, 2), (3, 7), (479, 3), (4, 481)];
+        let mut images: Vec<Image> = sizes.iter().map(|(w, h)| Image::filled(*w, *h, [0.2, 0.4, 0.6, 1.0])).collect();
+        images.push(Image::filled(5, 5, [0.1, 0.2, 0.3, 0.2]));
+        images.push(Image::filled(9, 9, [0.7, f32::NAN, 5.0, 0.0])); // transparent, garbage colour
+        images.push(Image::filled(9, 9, [0.0; 4]));
+        for img in &images {
+            let mut out = img.clone();
+            crate::effects::apply(&mut out, &e, &frame_cx(3));
+            if img.px.iter().all(|v| v.is_finite()) {
+                sane(&out, img, &format!("{}x{}", img.w, img.h));
+            }
+            if img.px.as_chunks::<4>().0.iter().all(|p| p[3] == 0.0) {
+                assert!(out.px.iter().zip(&img.px).all(|(a, b)| a.to_bits() == b.to_bits()), "transparent pixels must stay as they were");
+            }
+        }
+        // a pixel that is not a number (or whose colour overflows when divided by its tiny alpha) is left
+        // as it was and is not used as a sample: the rest of its row is processed as if it were not there
+        let mut clean = Image::new(64, 4);
+        for (i, p) in clean.px.chunks_mut(4).enumerate() {
+            p.copy_from_slice(&if i % 64 < 40 { [0.2, 0.4, 0.6, 1.0] } else { [0.6, 0.4, 0.2, 1.0] });
+        }
+        let mut poisoned = clean.clone();
+        poisoned.px[..3].fill(f32::NAN);
+        poisoned.px[10 * 4..11 * 4].copy_from_slice(&[0.2, 0.4, 0.6, f32::INFINITY]);
+        poisoned.px[20 * 4..21 * 4].copy_from_slice(&[1e34, 1e34, 1e34, 1e-5]);
+        let shifted = vhs(&[("luma_bw", 0.5), ("chroma_bw", 0.05), ("chroma_shift", 4.0)]);
+        let (good, bad) = (at(&clean, &shifted, 3), at(&poisoned, &shifted, 3));
+        assert!(max_diff(&good, &clean) > 0.02, "the effect must show on this picture for the check to mean anything");
+        for x in 0..64 {
+            let (got, want_good, own) = (&bad.px[x * 4..x * 4 + 4], &good.px[x * 4..x * 4 + 4], &poisoned.px[x * 4..x * 4 + 4]);
+            if [0, 10, 20].contains(&x) {
+                assert!(got.iter().zip(own).all(|(a, b)| a.to_bits() == b.to_bits()), "broken pixel {x} was changed: {got:?}");
+            } else {
+                assert!(got.iter().zip(want_good).all(|(a, b)| (a - b).abs() < 2e-3), "pixel {x} of a row with broken ones: {got:?} for {want_good:?}");
+            }
+        }
+        // empty images and buffers that do not match their size are refused, not indexed
+        let mut empty = Image { w: 0, h: 0, px: Vec::new() };
+        crate::effects::apply(&mut empty, &e, &frame_cx(3));
+        let mut broken = Image { w: 4, h: 4, px: vec![0.5; 10] };
+        crate::effects::apply(&mut broken, &e, &frame_cx(3));
+        assert_eq!(broken.px, vec![0.5; 10]);
     }
 }

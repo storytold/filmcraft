@@ -3616,3 +3616,10 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	VHS Look	VHS ルック
+	Luma Bandwidth	輝度帯域幅
+	Chroma Bandwidth	クロマ帯域幅
+	Chroma Shift	クロマシフト
+	Line Jitter	ラインジッター
+	Head Switching	ヘッド切り替え
+	Dropouts	ドロップアウト

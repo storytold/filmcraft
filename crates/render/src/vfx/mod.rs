@@ -20,6 +20,7 @@ mod lights;
 mod stylize;
 mod temporal;
 mod text;
+mod vhs;
 
 #[cfg(test)]
 mod tests;
@@ -506,6 +507,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "brush_strokes" => stylize::brush_strokes(img, e, cx),
         "color_emboss" => stylize::color_emboss(img, e, cx),
         "roughen_edges" => stylize::roughen_edges(img, e, cx),
+        "vhs_look" => vhs::vhs_look(img, e, cx),
         "long_shadow" => stylize::long_shadow(img, e, cx),
         "stroke" => stylize::stroke(img, e, cx),
         "gradient" => stylize::gradient(img, e, cx),
