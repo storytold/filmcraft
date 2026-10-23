@@ -44,7 +44,7 @@ def body_after(title_regex, stop_regex=r"^\s*(Table \d+-\d+ - |\d+\s+Rec\. ITU|R
 def init_values(table):
     vals = []
     for l in body_after(r"Table %s - Values of initValue" % re.escape(table)):
-        m = re.match(r"^\s*initValue\s+(.*)$", l)
+        m = re.match(r"^\s*initValue\s+(\S.*)$", l)
         if m:
             vals += [int(v) for v in m.group(1).split()]
     return vals
@@ -118,7 +118,7 @@ w("")
 # Table 7-6: default 8x8 scaling lists (intra matrixId 0..2, inter 3..5)
 intra, inter = [], []
 for l in body_after(r"Table 7-6 - Specification of default values of ScalingList"):
-    m = re.match(r"^\s*ScalingList\[ 1\.\.3 \]\[ (0\.\.2|3\.\.5) \]\[ i \]\s+(.*)$", l)
+    m = re.match(r"^\s*ScalingList\[ 1\.\.3 \]\[ (0\.\.2|3\.\.5) \]\[ i \]\s+(\S.*)$", l)
     if m:
         (intra if m.group(1) == "0..2" else inter).extend(int(v) for v in m.group(2).split())
 assert len(intra) == 64 and len(inter) == 64
