@@ -292,6 +292,18 @@ fn list_searches_labels_and_keys() {
 }
 
 #[test]
+fn nest_is_bindable_without_a_default_key() {
+    // #2024: Nest… asks for the name when run without one, so it can be bound like Premiere's,
+    // which ships it without a key (Final Cut's New Compound Clip has one)
+    let mut s = Session::default();
+    assert!(s.shortcuts.command("clip.nest").is_some(), "Nest… is listed in the Keyboard Shortcuts editor");
+    for (name, keys) in [(crate::shortcuts::DEFAULT_PRESET, None), (crate::shortcuts::PREMIERE_PRESET, None), (crate::shortcuts::FCP_PRESET, Some("Alt+G"))] {
+        s.shortcuts.load_preset(name).unwrap();
+        assert_eq!(s.shortcuts.primary("clip.nest").as_deref(), keys, "{name}");
+    }
+}
+
+#[test]
 fn default_keymaps_have_no_conflicts_on_any_platform() {
     // The Premiere audit used to check keys on macOS only, so off macOS `⌃9`/`⌘9`, `⌃⇧M`/`⌘⇧M` and
     // `⌃T`/`⌘T` ended up on the same Ctrl key; CI only ran on macOS, so nobody saw it.
