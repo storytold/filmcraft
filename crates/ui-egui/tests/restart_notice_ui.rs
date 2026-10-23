@@ -174,3 +174,24 @@ fn restarting_with_unsaved_changes_asks_to_save_and_cancel_forgets_the_restart()
     // and the notice offers Restart again
     assert!(d.ids().iter().any(|i| i == "language.restart.restart"));
 }
+
+#[test]
+fn an_ordinary_quit_cancel_keeps_a_dismissed_notice_dismissed() {
+    let mut d = Driver::with_session(|s| {
+        s.execute("file.openDemoProject", json!({})).expect("demo project");
+    });
+    d.ok("ui.menu.invoke", json!({"id": "app.language.spanish"}));
+    d.frames(3);
+    d.click("language.restart.later");
+    assert!(d.ids().is_empty());
+    let clip = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("edit.label.yellow", json!({}));
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    d.frames(1);
+    assert!(d.app().ui.clip_dialog.as_ref().is_some_and(|c| c.command == "app.quit"));
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    assert!(!d.app().restart_after_quit);
+    assert!(d.ids().is_empty(), "the dismissed notice stays dismissed");
+}

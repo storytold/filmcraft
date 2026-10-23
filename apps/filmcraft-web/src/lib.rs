@@ -195,18 +195,24 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 app.hooks.restart = Some(Box::new(|session: &Session| {
                     let meta = json!({"dirty": session.is_dirty(), "name": session.project.name, "revision": session.revision, "time": js_sys::Date::now()});
                     let left = std::rc::Rc::new(std::cell::Cell::new(2u8));
-                    let reload = |left: std::rc::Rc<std::cell::Cell<u8>>| -> opfs::Done {
-                        Box::new(move |_| {
+                    let failed = std::rc::Rc::new(std::cell::Cell::new(false));
+                    let done = |left: std::rc::Rc<std::cell::Cell<u8>>, failed: std::rc::Rc<std::cell::Cell<bool>>| -> opfs::Done {
+                        Box::new(move |ok| {
+                            failed.set(failed.get() || !ok);
                             left.set(left.get().saturating_sub(1));
-                            if left.get() == 0
-                                && let Some(w) = web_sys::window()
-                            {
+                            if left.get() != 0 {
+                                return;
+                            }
+                            if failed.get() {
+                                // the restart stays put; the unsaved state is still on screen
+                                post(|app, _| app.app.status("couldn't write the recovery snapshot; the restart was cancelled"));
+                            } else if let Some(w) = web_sys::window() {
                                 let _ = w.location().reload();
                             }
                         })
                     };
-                    opfs::write_then(recovery::SNAPSHOT.into(), filmcraft_format::encode(&session.project, false), Some(reload(left.clone())));
-                    opfs::write_then(recovery::META.into(), meta.to_string().into_bytes(), Some(reload(left)));
+                    opfs::write_then(recovery::SNAPSHOT.into(), filmcraft_format::encode(&session.project, false), Some(done(left.clone(), failed.clone())));
+                    opfs::write_then(recovery::META.into(), meta.to_string().into_bytes(), Some(done(left, failed)));
                     Ok(())
                 }));
                 let (tx, rx) = std::sync::mpsc::channel();

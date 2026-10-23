@@ -849,11 +849,13 @@ impl FilmcraftApp {
         }
     }
 
-    /// The unsaved-changes prompt dismissed without closing: cancel a pending restart and offer
-    /// the notice's buttons again.
+    /// The unsaved-changes prompt dismissed a pending restart without closing: cancel it and
+    /// offer the notice's buttons again. An ordinary quit cancelled leaves a Later-dismissed
+    /// notice dismissed.
     pub fn cancel_restart(&mut self) {
-        self.restart_after_quit = false;
-        if let Some(n) = self.restart_notice.as_mut() {
+        if std::mem::take(&mut self.restart_after_quit)
+            && let Some(n) = self.restart_notice.as_mut()
+        {
             n.closed = false;
         }
     }
