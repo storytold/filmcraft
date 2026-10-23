@@ -10,9 +10,15 @@
 //! the playhead while the drag goes on, as dragging them in Effect Controls does, so a property
 //! with its stopwatch on gets a keyframe there, and one drag is one undo step.
 //!
+//! Corner Pin gets a handle on each of its four corners while it is the selected effect (#776):
+//! dragging one moves that corner, and dragging inside the outline through them moves all four,
+//! through `effects.setParam` in the same way.
+//!
 //! Automation ids: `program.transform.box`, `program.transform.handle.<n>` (0–3 the corners TL,
 //! TR, BR, BL, 4–7 the middles of the top, right, bottom and left edges, as for graphic layers),
-//! `program.transform.rotate.<n>` (just outside corner `n`), `program.transform.anchor`.
+//! `program.transform.rotate.<n>` (just outside corner `n`), `program.transform.anchor`;
+//! `program.cornerPin.box`, `program.cornerPin.handle.<n>` (0–3 Upper Left, Upper Right, Lower
+//! Right, Lower Left).
 
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_geom::{Affine, Vec2};
@@ -43,6 +49,10 @@ const BADGE_ARM: f32 = 5.0;
 const ROTATE_REACH: f32 = 24.0;
 /// The `merge` key of a drag's changes: one undo step, whichever parameters the drag changes.
 const MERGE: &str = "programTransform";
+/// The same for a Corner Pin corner.
+const PIN_MERGE: &str = "programCornerPin";
+/// Corner Pin's corners, in the order of the box's (TL, TR, BR, BL).
+const PIN_CORNERS: [&str; 4] = ["upper_left", "upper_right", "lower_right", "lower_left"];
 /// How far inside the monitor's clip (which reaches 12 points past the picture area) a handle
 /// that would be off the monitor stops, so that all of it shows and can be grabbed.
 const REACH_INSET: f32 = 12.0 + CORNER;
@@ -126,7 +136,7 @@ fn inside(quad: &[Pos2; 4], p: Pos2) -> bool {
 /// The handles at `points` pulled into `view`, the part of the monitor on screen: a picture moved
 /// past the monitor's edge keeps every handle in reach (#1393). The picture stays where it is;
 /// only the squares stop at the edge. A `view` with no room leaves them where they are.
-fn within(points: [Pos2; 8], view: Rect) -> [Pos2; 8] {
+fn within<const N: usize>(points: [Pos2; N], view: Rect) -> [Pos2; N] {
     if !(view.is_finite() && view.is_positive()) {
         return points;
     }
@@ -183,24 +193,147 @@ fn placement(app: &FilmcraftApp, it: &TrackItem, e: &EffectInstance, mt: Tick, p
     })
 }
 
-/// The selected effect (its clip and index) and its box, while it is Motion or Transform of a
-/// selected clip under the playhead.
-fn selected_placement(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, &'static EffectDef, Placement)> {
+/// The selected effect (its clip and index), its clip and its definition, while it is an enabled
+/// effect of a selected clip under the playhead.
+fn selected_effect(app: &FilmcraftApp) -> Option<(Target, &TrackItem, &EffectInstance, &'static EffectDef)> {
     let sel = app.session.state.selected_effect.as_ref()?;
     if !app.session.state.selection.contains(&sel.clip) {
         return None;
     }
     let seq = app.session.active_sequence()?;
-    let ph = app.session.playhead();
     let (_, it) = seq.find_item(sel.clip)?;
-    if !it.range().contains(ph) {
+    if !it.range().contains(app.session.playhead()) {
         return None;
     }
     let index = sel.index(&it.effects)?;
     let e = it.effects.get(index).filter(|e| e.enabled)?;
-    let def = e.def().filter(|d| d.id == "motion" || d.id == "transform")?;
-    let pl = placement(app, it, e, it.source_time_at(ph), pic, reach, frame)?;
-    Some(((sel.clip, index), def, pl))
+    Some(((sel.clip, index), it, e, e.def()?))
+}
+
+/// The selected effect (its clip and index) and its box, while it is Motion or Transform of a
+/// selected clip under the playhead.
+fn selected_placement(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, &'static EffectDef, Placement)> {
+    let (sel, it, e, def) = selected_effect(app).filter(|s| s.3.id == "motion" || s.3.id == "transform")?;
+    let pl = placement(app, it, e, it.source_time_at(app.session.playhead()), pic, reach, frame)?;
+    Some((sel, def, pl))
+}
+
+/// Corner Pin's four corners on the monitor and the values they are drawn from.
+#[derive(Clone, Copy, Debug)]
+struct Pins {
+    /// Clip pixels (where Corner Pin's points are measured) → screen.
+    to_screen: Affine,
+    /// The corners in clip pixels, in the order of [`PIN_CORNERS`].
+    points: [Vec2; 4],
+    /// Where they are on screen, and where their handles are drawn and grabbed (kept in reach).
+    at: [Pos2; 4],
+    handles: [Pos2; 4],
+}
+
+/// The selected effect (its clip and index) and its corners, while it is Corner Pin of a selected
+/// clip under the playhead.
+fn selected_pins(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, Pins)> {
+    let (sel, it, e, _) = selected_effect(app).filter(|s| s.3.id == "corner_pin")?;
+    let seq = app.session.active_sequence()?;
+    let project = &app.session.project;
+    let mt = it.source_time_at(app.session.playhead());
+    let size = filmcraft_render::source_size(project, it.item).unwrap_or(frame);
+    // Corner Pin warps the clip's own pixels before Motion places them (`filmcraft_render::vfx::corner_pin`)
+    let to_screen = frame_to_screen(pic, frame).then_apply(&filmcraft_render::motion_matrix(seq, it, size, filmcraft_render::source_par(project, it.item), mt));
+    let (w, h) = (f64::from(size.0), f64::from(size.1));
+    let points = PIN_CORNERS.map(|id| {
+        let v = e.param(id).map_or(Vec2::new(f64::NAN, f64::NAN), |p| p.vec2_at(mt));
+        // "auto" points (NaN) are the clip's corners, where the render puts them
+        let (fx, fy) = filmcraft_project::effect::auto_point("corner_pin", id).unwrap_or((0.5, 0.5));
+        Vec2::new(if v.x.is_nan() { w * fx } else { v.x }, if v.y.is_nan() { h * fy } else { v.y })
+    });
+    let at = points.map(|p| sp(&to_screen, p));
+    at.iter().all(|p| p.x.is_finite() && p.y.is_finite()).then_some((sel, Pins { to_screen, points, at, handles: within(at, reach) }))
+}
+
+/// A drag of Corner Pin's corner `n`, or of all four (`None`, a drag inside the outline).
+#[derive(Clone, Copy, Debug)]
+struct PinDrag {
+    sel: Target,
+    n: Option<usize>,
+    start: Pos2,
+    from: Pins,
+}
+
+/// Corner Pin's corners on the Program monitor: the outline through them and a handle on each.
+/// Dragging a handle moves its corner; dragging inside the outline moves all four together.
+fn pin_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, sel: Target, pins: &Pins, actions: &mut Vec<(String, Value)>) {
+    let accent = app.tokens.accent;
+    let id = egui::Id::new("program-corner-pin");
+    let grab = vec2(GRAB, GRAB) * 2.0;
+    ui.painter().add(egui::Shape::closed_line(pins.at.to_vec(), Stroke::new(1.0, accent)));
+    // the outline first, so the handles (on top) take a press on them
+    let outline = Rect::from_points(&pins.at);
+    app.auto.add("program.cornerPin.box", outline, "Corner Pin");
+    let body = ui.interact(outline, id.with("box"), Sense::drag());
+    let inside_at = |p: Option<Pos2>| p.is_some_and(|p| inside(&pins.at, p));
+    pin_drag(ui, &body, sel, None, pins, inside_at(ui.input(|i| i.pointer.press_origin())), CursorIcon::Move, actions);
+    if body.hovered() && inside_at(body.hover_pos()) {
+        ui.ctx().set_cursor_icon(CursorIcon::Move);
+    }
+    // each corner resizes outward from the middle of the outline, as the Motion box's corners do
+    let mid = pins.at.iter().fold(Pos2::ZERO, |m, p| m + p.to_vec2() / 4.0);
+    for (n, c) in pins.handles.iter().enumerate() {
+        let hr = Rect::from_center_size(*c, vec2(CORNER, CORNER) * 1.4);
+        ui.painter().rect_filled(hr, 0.0, Color32::WHITE);
+        ui.painter().rect_stroke(hr, 0.0, Stroke::new(1.0, accent), StrokeKind::Middle);
+        let name = PIN_CORNERS.get(n).copied().unwrap_or_default();
+        app.auto.add(&format!("program.cornerPin.handle.{n}"), Rect::from_center_size(*c, grab), name);
+        let resp = ui.interact(Rect::from_center_size(*c, grab), id.with(n), Sense::drag());
+        let cursor = pins.at.get(n).map_or(CursorIcon::Move, |p| resize_cursor(*p - mid));
+        pin_drag(ui, &resp, sel, Some(n), pins, true, cursor, actions);
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(cursor);
+        }
+    }
+}
+
+/// The left-button drag of `resp` on corner `n` (all four for `None`): the corners it moves, as
+/// `effects.setParam` actions merged into one undo step, with `cursor` shown while it lasts. A
+/// drag starts only when `grabbed`.
+#[allow(clippy::too_many_arguments)]
+fn pin_drag(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    sel: Target,
+    n: Option<usize>,
+    pins: &Pins,
+    grabbed: bool,
+    cursor: CursorIcon,
+    actions: &mut Vec<(String, Value)>,
+) {
+    let drag_id = egui::Id::new("program-corner-pin").with("drag");
+    let left = egui::PointerButton::Primary;
+    if resp.drag_started_by(left) && grabbed {
+        let start = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).unwrap_or_default();
+        ui.data_mut(|d| d.insert_temp(drag_id, PinDrag { sel, n, start, from: *pins }));
+    }
+    let drag: Option<PinDrag> = ui.data(|d| d.get_temp(drag_id)).filter(|d: &PinDrag| d.sel == sel && d.n == n);
+    if let Some(d) = drag
+        && resp.dragged_by(left)
+    {
+        if resp.drag_started_by(left) || resp.drag_delta() != egui::Vec2::ZERO {
+            let cur = resp.interact_pointer_pos().unwrap_or(d.start);
+            let off = unscale(&d.from.to_screen, cur - d.start);
+            for (k, (name, from)) in PIN_CORNERS.iter().zip(d.from.points).enumerate() {
+                let v = from + off;
+                // the range Effect Controls' fields take
+                if n.is_none_or(|n| n == k) && v.x.is_finite() && v.y.is_finite() {
+                    let value = json!([v.x.clamp(-100_000.0, 100_000.0), v.y.clamp(-100_000.0, 100_000.0)]);
+                    actions.push(("effects.setParam".into(), json!({"clip": sel.0.0, "effect": sel.1, "param": name, "value": value, "merge": PIN_MERGE})));
+                }
+            }
+        }
+        ui.ctx().set_cursor_icon(cursor);
+    }
+    if resp.drag_stopped() && drag.is_some() {
+        ui.data_mut(|d| d.remove::<PinDrag>(drag_id));
+    }
 }
 
 fn grab_at(pl: &Placement, p: Pos2) -> Option<Grab> {
@@ -391,8 +524,8 @@ fn clip_under(app: &FilmcraftApp, pic: Rect, frame: (u32, u32), p: Pos2) -> Opti
     })
 }
 
-/// The selected effect's box on the Program monitor picture `pic`, and double-clicking a clip's
-/// picture to select its Motion.
+/// The selected effect's box (or Corner Pin's corners) on the Program monitor picture `pic`, and
+/// double-clicking a clip's picture to select its Motion.
 pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32, u32)) {
     if app.ui.tool != Tool::Selection || app.ui.mask_pen.is_some() {
         return;
@@ -452,6 +585,9 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         if resp.clicked() && !double && resp.interact_pointer_pos().is_some_and(|p| grab_at(&pl, p).is_none()) {
             actions.push(("effects.select".into(), json!({"none": true})));
         }
+    }
+    if let Some((sel, pins)) = selected_pins(app, pic, reach, frame) {
+        pin_overlay(app, ui, sel, &pins, &mut actions);
     }
     if double
         && app.ui.gfx_edit.is_none()
