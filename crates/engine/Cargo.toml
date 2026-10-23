@@ -42,6 +42,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+roxmltree = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
 

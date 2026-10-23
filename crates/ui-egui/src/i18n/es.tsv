@@ -3617,3 +3617,16 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	From preset file:	Desde el archivo de ajustes:
+	Scan Presets Folder	Escanear la carpeta de ajustes
+	Preset library: {n} preset(s) loaded	Biblioteca de ajustes: {n} ajustes cargados
+	Imported {n} preset(s); not imported: {error}	Se importaron {n} ajustes; no importados: {error}
+	Imported {n} preset(s); {skipped} skipped	Se importaron {n} ajustes; {skipped} omitidos
+	Imported {n} preset(s)	Se importaron {n} ajustes
+	Preset library updated: {imported} loaded, {removed} removed	Biblioteca de ajustes actualizada: {imported} cargados, {removed} eliminados
+	Preset library updated	Biblioteca de ajustes actualizada
+	Preset library is up to date	La biblioteca de ajustes está al día
+	Open Presets Folder	Abrir la carpeta de ajustes
+	No presets folder: the app has no data directory	No hay carpeta de ajustes: la aplicación no tiene un directorio de datos
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	Se importaron {n} ajustes; {skipped} omitidos, {warnings} con parámetros no compatibles
+	Imported {n} preset(s); {warnings} with unsupported parameters	Se importaron {n} ajustes; {warnings} con parámetros no compatibles

@@ -275,6 +275,31 @@ pub(crate) fn sequence_time_p(s: &Session, p: &Value, prefix: &str, cmd: &str) -
 pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
+fn resolve_effect_alias(name: &str) -> Option<&'static str> {
+    let lower = name.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "ae.adbe drop shadow" | "sombra paralela" | "drop shadow" | "drop_shadow" | "dropshadow" => Some("drop_shadow"),
+        "pr.adbe lens distortion" | "distorsión de lente" | "distorsion de lente" | "lens distortion" | "lens_distortion" => Some("lens_distortion"),
+        "ae.mettle skybox chromatic aberrations" | "aberraciones cromáticas vr" | "aberraciones cromaticas vr" | "vr chromatic aberrations" | "vr_chromatic_aberrations" => Some("vr_chromatic_aberrations"),
+        "ae.mettle skybox glow" | "resplandor vr" | "vr glow" | "vr_glow" => Some("vr_glow"),
+        "ae.mettle skybox digital glitch" | "vr digital glitch" | "vr_digital_glitch" => Some("vr_digital_glitch"),
+        "ae.adbe gaussian blur 2" | "ae.adbe gaussian blur" | "desenfoque gaussiano" | "gaussian blur" | "gaussian_blur" => Some("gaussian_blur"),
+        "ae.adbe directional blur" | "desenfoque direccional" | "directional blur" | "directional_blur" => Some("directional_blur"),
+        "ae.adbe geometry2" | "ae.adbe geometry" | "transformar" | "transform" => Some("transform"),
+        "ae.adbe basic 3d" | "3d básico" | "3d basico" | "basic 3d" | "basic_3d" => Some("basic_3d"),
+        "ae.adbe mirror" | "reflejar" | "mirror" => Some("mirror"),
+        "ae.adbe wave warp" | "deformación de onda" | "deformacion de onda" | "wave warp" | "wave_warp" => Some("wave_warp"),
+        "ae.adbe turbulent displace" | "desplazamiento turbulento" | "turbulent displace" | "turbulent_displace" => Some("turbulent_displace"),
+        "ae.adbe tint" | "teñir" | "tenir" | "tint" => Some("tint"),
+        "ae.adbe mosaic" | "mosaico" | "mosaic" => Some("mosaic"),
+        "ae.adbe roughen edges" | "bordes rugosos" | "roughen edges" | "roughen_edges" => Some("roughen_edges"),
+        "ae.adbe linear wipe" | "barrido lineal" | "linear wipe" | "linear_wipe" | "linear_wipe_legacy" => Some("linear_wipe_legacy"),
+        "ae.adbe circle" | "círculo" | "circulo" | "circle" => Some("circle"),
+        "ae.adbe ultra key" | "incrustación ultra" | "incrustacion ultra" | "ultra key" | "ultra_key" => Some("ultra_key"),
+        _ => None,
+    }
+}
+
 /// Effect by id or display name. Names shared by several definitions ("Invert", "Volume",
 /// "Channel Volume") resolve to an applicable (non-intrinsic) effect whose kind matches the
 /// target clips' tracks.
@@ -282,6 +307,10 @@ fn resolve_effect_name(s: &Session, p: &Value, name: &str) -> Option<&'static fi
     if let Some(d) = filmcraft_project::find_effect(name) {
         return Some(d);
     }
+    if let Some(alias_id) = resolve_effect_alias(name)
+        && let Some(d) = filmcraft_project::find_effect(alias_id) {
+            return Some(d);
+        }
     let n = name.to_ascii_lowercase();
     let cands: Vec<_> = filmcraft_project::effect_defs().iter().filter(|e| e.name.to_ascii_lowercase() == n).collect();
     if cands.len() <= 1 {
@@ -1347,6 +1376,7 @@ fn build() -> Vec<CommandSpec> {
             let mut sequences = Vec::new();
             let mut reports = Vec::new();
             let mut image_sequences = Vec::new();
+            let mut preset_names = Vec::new();
             // Image Sequence: each path is the first frame of a numbered still sequence. With
             // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
@@ -1383,6 +1413,16 @@ fn build() -> Vec<CommandSpec> {
                                     reports.push(r);
                                 }
                                 Err(e) => errors.push(format!("{path}: {e}")),
+                            }
+                        } else if crate::presets::is_preset_file(std::path::Path::new(&path), &b) {
+                            match crate::presets::import_bytes(s, &path, &b) {
+                                Ok(r) => {
+                                    if let Some(imported) = r["imported"].as_array() {
+                                        preset_names.extend(imported.iter().filter_map(Value::as_str).map(str::to_string));
+                                    }
+                                    reports.push(r);
+                                }
+                                Err(e) => errors.push(e),
                             }
                         } else {
                             match import_bytes(s, &path, b.into(), bin) {
@@ -1431,6 +1471,9 @@ fn build() -> Vec<CommandSpec> {
             };
             if !image_sequences.is_empty() {
                 out["imageSequences"] = json!(image_sequences);
+            }
+            if !preset_names.is_empty() {
+                out["presets"] = json!(preset_names);
             }
             // Newly imported files may resolve paths the project already listed as offline
             // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop

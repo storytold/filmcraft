@@ -36,6 +36,7 @@ pub mod narration;
 pub mod panels;
 pub mod paste_media;
 pub mod perf;
+pub mod prfpset;
 pub mod presets;
 pub mod previews;
 pub mod project_manager;

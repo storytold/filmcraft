@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** major (new file: every file type Premiere Pro 26.5.2 reads or writes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** minor (native `.prfpset` library detection) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -26,7 +26,7 @@ only). "Tested" names the evidence.
 | Selection as project | Premiere project | — | `.fcproj` only | — | 50% |
 | Templates (`.prproj` templates) | yes | — | our templates | — | 70% |
 | Motion Graphics templates `.mogrt` | read + write | **refused by design** (clean-room, AGENTS.md §1); our `.fcgt` instead | `.fcgt` | — | n/a |
-| Effect presets `.prfpset` | read + write | no | our JSON presets | — | 40% |
+| Effect presets `.prfpset` | read + write | yes (native library scan) | our JSON presets | real 22 MB pack (1452 presets), BCC Black & White, Sapphire fixtures | 70% |
 | Keyboard shortcuts `.kys` | read + write | no | our presets incl. a Premiere layout | — | 60% |
 | Export presets `.epr` | read + write | no | our presets (import / export) | — | 50% |
 | LUTs `.cube`, `.3dl` | read | yes (1D / 3D / shaper) | — | tetrahedral CPU = WGSL | 95% |
@@ -93,3 +93,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
+| 2026-10-21 | minor | `.prfpset` read: native preset-library scan and Premiere XML import (40% → 70%) |

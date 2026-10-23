@@ -3616,3 +3616,16 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Scan Presets Folder	プリセットフォルダーをスキャン
+	Preset library: {n} preset(s) loaded	プリセットライブラリ: {n} 個のプリセットを読み込みました
+	From preset file:	プリセットファイルから:
+	No presets folder: the app has no data directory	プリセットフォルダーがありません: アプリにデータディレクトリがありません
+	Imported {n} preset(s); not imported: {error}	{n} 個のプリセットを読み込みました。読み込めなかったもの: {error}
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	{n} 個のプリセットを読み込みました。{skipped} 個をスキップ、{warnings} 個に未対応のパラメーターがあります
+	Imported {n} preset(s); {skipped} skipped	{n} 個のプリセットを読み込みました。{skipped} 個をスキップ
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} 個のプリセットを読み込みました。{warnings} 個に未対応のパラメーターがあります
+	Imported {n} preset(s)	{n} 個のプリセットを読み込みました
+	Preset library updated: {imported} loaded, {removed} removed	プリセットライブラリを更新しました: {imported} 個を読み込み、{removed} 個を削除
+	Preset library updated	プリセットライブラリを更新しました
+	Preset library is up to date	プリセットライブラリは最新です
+	Open Presets Folder	プリセットフォルダーを開く

@@ -257,3 +257,160 @@ fn export_and_import_go_through_host_services() {
     assert_eq!(s2.presets.user.len(), 1);
     assert!(s2.execute("presets.import", json!({"path": "/exports/missing.prfpset"})).is_err());
 }
+
+const SAMPLE_PRFPSET_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<PremiereData Version="3">
+	<Tree ObjectID="1">
+		<RootBin ObjectRef="2"/>
+	</Tree>
+	<BinTreeItem ObjectID="2">
+		<Items Version="1">
+			<Item Index="0" ObjectRef="3"/>
+		</Items>
+		<TreeItemBase Version="4">
+			<Name>Root</Name>
+		</TreeItemBase>
+	</BinTreeItem>
+	<TreeItem ObjectID="3">
+		<TreeItemBase Version="4">
+			<Name>Sample Black and White</Name>
+			<Data ObjectRef="4"/>
+		</TreeItemBase>
+	</TreeItem>
+	<FilterPresetItem ObjectID="4">
+		<FilterPresets Version="1">
+			<FilterPreset ObjectRef="5"/>
+		</FilterPresets>
+	</FilterPresetItem>
+	<FilterPreset ObjectID="5">
+		<FilterMatchName>ae.adbe black and white</FilterMatchName>
+		<Component ObjectRef="6"/>
+	</FilterPreset>
+	<VideoFilterComponent ObjectID="6">
+		<Component Version="6">
+		</Component>
+	</VideoFilterComponent>
+</PremiereData>"#;
+
+#[test]
+fn file_import_detects_and_integrates_prfpset() {
+    let fs = Arc::new(MemFs::default());
+    let mut s = Session::new(fs.clone());
+    s.execute("file.openDemoProject", json!({})).unwrap();
+
+    let path = "/presets/sample.prfpset";
+    fs.write_file(path, SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+
+    let r = s.execute("file.import", json!({"paths": [path]})).unwrap();
+    assert!(r["presets"].as_array().is_some(), "presets array in file.import output");
+    let imported = r["presets"].as_array().unwrap();
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0], "Sample Black and White");
+
+    let clips: Vec<ClipId> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| i.id).collect();
+    let app_res = s.execute("presets.apply", json!({"preset": "Sample Black and White", "clips": [clips[0].0]})).unwrap();
+    assert_eq!(app_res["applied"], 1);
+
+    let it = item(&s, clips[0]);
+    assert!(it.effect("black_white").is_some());
+
+    let img = s.render_program(0.25).expect("render program with preset applied");
+    assert!(!img.px.is_empty());
+}
+
+#[test]
+fn parse_prfpset_extracts_presets_cleanly() {
+    let parsed = crate::presets::parse_file_detailed(SAMPLE_PRFPSET_XML.as_bytes()).expect("parse sample prfpset");
+    assert_eq!(parsed.presets.len(), 1);
+    assert_eq!(parsed.presets[0].name, "Sample Black and White");
+    assert_eq!(parsed.presets[0].effects.len(), 1);
+    assert_eq!(parsed.presets[0].effects[0].effect, "black_white");
+}
+
+#[test]
+fn unreadable_user_presets_are_backed_up_with_unique_names() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-presets-backup-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let main_file = dir.join("effect-presets.json");
+    let unreadable_0 = dir.join("effect-presets.json.unreadable");
+    let unreadable_1 = dir.join("effect-presets.json.unreadable.1");
+
+    // Existing first backup
+    std::fs::write(&unreadable_0, b"original-backup").unwrap();
+    // A broken main file
+    std::fs::write(&main_file, b"corrupt-data-1").unwrap();
+
+    let mut lib = crate::presets::PresetLibrary::default();
+    lib.set_dir(&dir);
+
+    // Original backup was not overwritten
+    assert_eq!(std::fs::read(&unreadable_0).unwrap(), b"original-backup");
+    // New backup was stored at .1
+    assert_eq!(std::fs::read(&unreadable_1).unwrap(), b"corrupt-data-1");
+    assert!(!main_file.exists());
+
+    // Another failure should roll to .2
+    std::fs::write(&main_file, b"corrupt-data-2").unwrap();
+    let mut lib2 = crate::presets::PresetLibrary::default();
+    lib2.set_dir(&dir);
+
+    let unreadable_2 = dir.join("effect-presets.json.unreadable.2");
+    assert_eq!(std::fs::read(&unreadable_2).unwrap(), b"corrupt-data-2");
+    assert_eq!(std::fs::read(&unreadable_0).unwrap(), b"original-backup");
+    assert_eq!(std::fs::read(&unreadable_1).unwrap(), b"corrupt-data-1");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bypassed_parameterless_effect_remains_disabled_on_import() {
+    let xml = SAMPLE_PRFPSET_XML.replace(
+        "<Component Version=\"6\">",
+        "<Component Version=\"6\"><Bypass>true</Bypass>",
+    );
+    let parsed = crate::presets::parse_file_detailed(xml.as_bytes()).expect("parse sample prfpset");
+    assert_eq!(parsed.presets.len(), 1);
+    assert_eq!(parsed.presets[0].effects.len(), 1);
+    assert_eq!(parsed.presets[0].effects[0].effect, "black_white");
+    assert!(!parsed.presets[0].effects[0].enabled, "bypassed parameterless effect should be disabled");
+}
+
+#[test]
+fn import_collision_picks_suffixed_filename() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-import-collision-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let mut s = Session::default();
+    s.presets.set_dir(&dir);
+
+    let lib_dir = s.presets.library_dir().unwrap();
+    let existing_dest = lib_dir.join("Sample.prfpset");
+    std::fs::write(&existing_dest, b"existing-pack-bytes").unwrap();
+
+    let src = dir.parent().unwrap().join(format!("sample-src-{}.prfpset", std::process::id()));
+    std::fs::write(&src, SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+
+    // Rename src to Sample.prfpset in its temp location so its fname is Sample.prfpset
+    let src_named = dir.parent().unwrap().join(format!("test-src-dir-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&src_named);
+    let src_file = src_named.join("Sample.prfpset");
+    std::fs::write(&src_file, SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+
+    let res = s.execute("presets.import", json!({"path": src_file.to_str().unwrap()})).unwrap();
+    assert!(res["imported"].as_array().is_some());
+
+    // The original file was NOT overwritten
+    assert_eq!(std::fs::read(&existing_dest).unwrap(), b"existing-pack-bytes");
+
+    // The new file was created with suffix (2)
+    let suffixed = lib_dir.join("Sample (2).prfpset");
+    assert!(suffixed.exists(), "Sample (2).prfpset should have been created");
+
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_dir_all(&src_named);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+

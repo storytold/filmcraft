@@ -1364,7 +1364,7 @@ impl FilmcraftApp {
                     .iter()
                     .chain(filmcraft_media::AUDIO_EXTENSIONS)
                     .chain(filmcraft_media::STILL_EXTENSIONS)
-                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf"])
+                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "prfpset"])
                     .copied()
                     .collect();
                 let bin = params.get("bin").cloned();
@@ -1374,11 +1374,12 @@ impl FilmcraftApp {
                     }
                     let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
                     let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
-                    if let Ok(v) = &r
-                        && let Some(errs) = v.get("errors").and_then(Value::as_array)
-                        && !errs.is_empty()
-                    {
-                        app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                    if let Ok(v) = &r {
+                        if let Some(errs) = v.get("errors").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+                            app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                        } else if let Some(presets) = v.get("presets").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+                            app.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
+                        }
                     }
                     r
                 })
@@ -1490,6 +1491,13 @@ impl FilmcraftApp {
         if !paths.is_empty() {
             let pointer = self.drop_pointer(ctx);
             let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            if let Ok(v) = &imported {
+                if let Some(errs) = v.get("errors").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+                    self.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                } else if let Some(presets) = v.get("presets").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+                    self.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
+                }
+            }
             if let Ok(v) = imported
                 && let Some(pos) = pointer
                 && self.session.prefs.timeline.drop_import_to_timeline

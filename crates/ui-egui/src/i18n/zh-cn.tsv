@@ -3592,3 +3592,16 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Scan Presets Folder	扫描预设文件夹
+	Preset library: {n} preset(s) loaded	预设库：已加载 {n} 个预设
+	From preset file:	来自预设文件：
+	No presets folder: the app has no data directory	没有预设文件夹：应用没有数据目录
+	Imported {n} preset(s); not imported: {error}	已导入 {n} 个预设；未导入：{error}
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	已导入 {n} 个预设；跳过 {skipped} 个，{warnings} 个包含不支持的参数
+	Imported {n} preset(s); {skipped} skipped	已导入 {n} 个预设；跳过 {skipped} 个
+	Imported {n} preset(s); {warnings} with unsupported parameters	已导入 {n} 个预设；{warnings} 个包含不支持的参数
+	Imported {n} preset(s)	已导入 {n} 个预设
+	Preset library updated: {imported} loaded, {removed} removed	预设库已更新：已加载 {imported} 个，已移除 {removed} 个
+	Preset library updated	预设库已更新
+	Preset library is up to date	预设库已是最新
+	Open Presets Folder	打开预设文件夹

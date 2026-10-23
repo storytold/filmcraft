@@ -432,3 +432,23 @@ frame-size ratio. Intrinsic effects (Motion, Opacity…) replace the clip's own 
 effects are added. Applying is one undo step; saving, renaming, deleting and importing change the
 library, not the project, and are not undoable. Files with another `format`, a newer `version` or
 unknown effect ids are refused.
+
+Preset files dropped into `<data dir>/Effect Presets` are detected natively: the folder is scanned
+recursively on start-up and when the Presets bin is opened (`presets.scan`), for Premiere
+`.prfpset` files and FilmCraft JSON. The scan is indexed in
+`<data dir>/effect-preset-library.json` (modification time + size), so unchanged files are not
+re-read; a changed file replaces exactly the presets it contributed and a deleted file removes
+them. The Effects panel shows the file's bin hierarchy as nested folders (`" ▸ "` in the preset
+name); rename and delete are refused for file-backed presets because the file is the source of
+truth (`presets.list` reports its `source`). `presets.import {path}` accepts both formats, and
+the Effects panel's Import Presets… selects several files at once.
+
+`.prfpset` is Premiere's XML object graph (`<PremiereData>` → bin tree → `FilterPresetItem` →
+`FilterPreset` → component parameters/keyframes). FilmCraft maps effects that have a direct
+built-in counterpart (Transform/Geometry, Opacity, Tint, Drop Shadow, Gaussian and Directional
+Blur, Crop, Basic 3D, Lighting Effects, Ultra Key, Track Matte, Linear Wipe, Lens Flare, Ramp,
+4-Color Gradient, the Immersive Video effects, the standard audio filters, and BCC/Sapphire Black
+& White, Glow, Blur and Sharpen). Third-party effects without a counterpart and title/graphic
+presets are reported as skipped; parameters the built-in effect does not expose are reported as
+warnings. A file with no supported preset fails with the list of missing effects instead of
+importing an empty preset.

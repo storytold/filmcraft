@@ -42,8 +42,29 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     egui::ScrollArea::vertical().id_salt("fx-scroll").auto_shrink([false, false]).show(&mut bui, |ui| {
         for &top in tops {
             if top == "Presets" {
+                let was_open = !filter.is_empty() || app.ui.expanded_fx.iter().any(|k| k == top);
                 let any = app.session.presets.all().iter().any(|p| crate::i18n::matches_query(&p.name, &filter));
-                if any && folder_row(app, ui, top, 0, &filter) {
+                if any && presets_folder_row(app, ui, top, 0, &filter, &mut preset_action) {
+                    // Opening the bin detects files dropped into `<data dir>/Effect Presets`
+                    // while the app was running. Unchanged files are skipped by the scan.
+                    if !was_open {
+                        match app.session.execute("presets.scan", json!({})) {
+                            Ok(v) => {
+                                let imported = v["imported"].as_u64().unwrap_or(0);
+                                let removed = v["removed"].as_u64().unwrap_or(0);
+                                if imported > 0 || removed > 0 {
+                                    app.ui.status = tlf!(
+                                        "Preset library updated: {imported} loaded, {removed} removed",
+                                        imported = imported,
+                                        removed = removed
+                                    );
+                                } else if let Some(e) = v["errors"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
+                                    app.ui.status = e.to_string();
+                                }
+                            }
+                            Err(e) => app.ui.status = e.to_string(),
+                        }
+                    }
                     preset_action = crate::panels::presets::folder_rows(app, ui, &filter).or(preset_action.take());
                 }
                 continue;
@@ -130,7 +151,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.ui.status = e.to_string();
     }
     if let Some((cmd, name)) = preset_action {
-        crate::panels::presets::run(app, &cmd, &name);
+        crate::panels::presets::run(app, ui.ctx(), &cmd, &name);
     }
     if let Some(id) = apply {
         let r = app.session.execute("effects.apply", json!({"effect": id}));
@@ -145,6 +166,57 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 /// or left of, the folder it is in. A row's icon is centred 18 points in, its label 30.
 pub(crate) fn tree_x(depth: usize) -> f32 {
     8.0 + depth as f32 * 16.0
+}
+
+fn presets_folder_row(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    key: &str,
+    depth: usize,
+    filter: &str,
+    action: &mut Option<(String, String)>,
+) -> bool {
+    let t = app.tokens;
+    let open = !filter.is_empty() || app.ui.expanded_fx.iter().any(|k| k == key);
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(r, 0.0, t.hover);
+    }
+    let x = r.min.x + tree_x(depth);
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(pos2(x + 4.0, r.center().y), vec2(10.0, 10.0)),
+        if open { Icon::ChevronDown } else { Icon::ChevronRight },
+        t.text_dim,
+    );
+    icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 18.0, r.center().y), vec2(13.0, 13.0)), Icon::Folder, t.text_dim);
+    let name = if depth == 0 { key } else { key.split_once('/').map_or(key, |(_, folder)| folder) };
+    ui.painter().text(pos2(x + 30.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(name), Tokens::ui(12.0), t.text);
+    app.auto.add(&format!("effects.folder.{key}"), r, name);
+
+    resp.context_menu(|ui| {
+        if ui.button(tl!("Import Presets…")).clicked() {
+            *action = Some(("presets.import".to_string(), String::new()));
+            ui.close();
+        }
+        if ui.button(tl!("Open Presets Folder")).clicked() {
+            *action = Some(("presets.revealFolder".to_string(), String::new()));
+            ui.close();
+        }
+        if ui.button(tl!("Scan Presets Folder")).clicked() {
+            *action = Some(("presets.scan".to_string(), String::new()));
+            ui.close();
+        }
+    });
+
+    if resp.clicked() {
+        if open {
+            app.ui.expanded_fx.retain(|k| k != key);
+        } else {
+            app.ui.expanded_fx.push(key.to_string());
+        }
+    }
+    open
 }
 
 fn folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize, filter: &str) -> bool {
