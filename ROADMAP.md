@@ -175,6 +175,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | Distinguish registered encoders and bounded GPU polling from pending #2488 / #2490 proposals; retain hardware acceptance limits |
 | 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |
 | 2026-10-19 | minor | Language table: Czech (#1156, 100%) |
 | 2026-10-20 | trivial | Progress log: checkmarks on the Sequence and Markers menu toggles (#2623) |
