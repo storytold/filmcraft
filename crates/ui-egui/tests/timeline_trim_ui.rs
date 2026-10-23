@@ -563,3 +563,66 @@ fn linked_video_drag_adds_video_and_audio_tracks() {
 fn linked_audio_drag_adds_audio_and_video_tracks() {
     move_existing_clip_to_a_new_track(true, true);
 }
+
+impl Driver {
+    /// Press at `from` and move to `to` over `steps` frames, the button still down.
+    fn press_and_move(&mut self, from: Pos2, to: Pos2, steps: usize) {
+        let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
+        push(self, egui::Event::PointerMoved(from));
+        self.frames(1);
+        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        self.frames(1);
+        for i in 1..=steps {
+            push(self, egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
+            self.frames(1);
+        }
+    }
+
+    fn release(&mut self, at: Pos2) {
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        self.frames(2);
+    }
+}
+
+/// #1780: the trim cursor stays while an edge is dragged, after the pointer has left the 7 px edge
+/// zone, and goes back to the arrow on release. It used to show only on hover, so it turned back
+/// into the arrow as soon as the drag began. The edge is dragged past the end of the media, where
+/// it stops (#653), so the release leaves the pointer over empty track, away from any edge.
+#[test]
+fn the_trim_cursor_stays_while_an_edge_is_dragged() {
+    use filmcraft_ui_egui::panels::timeline::Drag;
+    let mut d = Driver::demo();
+    let last = d.app().session.active_sequence().expect("sequence").video_tracks[0].items.last().expect("a clip on V1").id.0;
+    let (_, x1, y) = d.edges(last);
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 + 300.0, y));
+    d.press_and_move(from, to, 60);
+    assert!(matches!(d.app().tl.drag, Some(Drag::Trim { .. })), "trimming: {:?}", d.app().tl.drag);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor while dragging, 300 px past the edge");
+    d.release(to);
+    assert_eq!(d.cursor(), CursorIcon::Default, "the arrow after the release");
+}
+
+/// #1780: as for a clip, the trim cursor stays while a transition's end is dragged.
+#[test]
+fn the_trim_cursor_stays_while_a_transition_end_is_dragged() {
+    use filmcraft_ui_egui::panels::timeline::Drag;
+    let mut d = Driver::demo();
+    let id = d.app().session.active_sequence().expect("sequence").video_tracks[0].transitions.first().expect("the demo's transition on V1").id.0;
+    let name = format!("timeline.transition.{id}.out");
+    let els = d.ok("ui.elements", json!({"prefix": name}));
+    let el = els.as_array().expect("elements").iter().find(|e| e["id"] == name.as_str()).unwrap_or_else(|| panic!("no {name}: {els}")).clone();
+    let r: Vec<f32> = el["rect"].as_array().expect("rect").iter().map(|v| v.as_f64().expect("number") as f32).collect();
+    let from = pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let to = from + egui::vec2(40.0, 0.0);
+    d.hover(from);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor over the transition's end");
+    d.press_and_move(from, to, 40);
+    assert!(matches!(d.app().tl.drag, Some(Drag::Transition { edge: Some(_), .. })), "dragging the end: {:?}", d.app().tl.drag);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor while dragging, 40 px on");
+    d.release(to);
+}
