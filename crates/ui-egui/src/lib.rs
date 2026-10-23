@@ -291,6 +291,9 @@ pub struct FilmcraftApp {
     pub playback: Playback,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
+    /// Audio during scrubbing (#211), on its own output so opening it never waits for the device
+    /// (#2633). Falls back to `audio` when the platform layer installs none (headless tests).
+    pub scrub_out: Option<Box<dyn scrub::ScrubOut>>,
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
@@ -560,6 +563,7 @@ impl FilmcraftApp {
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,
+            scrub_out: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
@@ -773,6 +777,11 @@ impl FilmcraftApp {
                 a.stop();
                 a.configure(&p.audio_hardware, rate);
             }
+            if let Some(out) = self.scrub_out.as_mut() {
+                out.stop();
+                out.configure(&p.audio_hardware, rate);
+            }
+            self.scrub.device_stopped();
         }
         if (hardware_changed || pitch_changed) && self.playback.playing && self.playback.preroll.is_none() {
             self.playback.anchor_tick = self.session.playhead();
@@ -1060,6 +1069,19 @@ impl FilmcraftApp {
         Ok(seconds)
     }
 
+    /// Whether [`FilmcraftApp::stop`] has a transport to stop: Program or Source playback, a
+    /// preroll, or a recording that runs one. A press that only moves the playhead uses this so it
+    /// does not close an audio stream that is already open (#2633): dropping the output stream
+    /// makes the next scrub grain open the device again, and on WASAPI that open is slow.
+    pub fn transport_running(&self) -> bool {
+        self.playback.playing
+            || self.source_playback.clock.playing
+            || self.playback.preroll.is_some()
+            || self.session.mixrec.active()
+            || self.session.mcrec.active()
+            || self.session.voiceover.recording()
+    }
+
     pub fn stop(&mut self) {
         self.playback.playing = false;
         self.playback.stop_at = None;
@@ -1069,6 +1091,9 @@ impl FilmcraftApp {
         self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {
             a.stop();
+        }
+        if let Some(out) = self.scrub_out.as_mut() {
+            out.stop();
         }
         self.scrub.device_stopped();
         self.playback.audio_clock = false;
@@ -2550,6 +2575,26 @@ mod audio_recovery_tests {
         assert_eq!(starts.load(Ordering::Relaxed), 1, "2x playback must start audio output");
         assert!(app.playback.audio_clock, "the device is still the master clock");
         app.stop();
+    }
+
+    /// #2633: a press that only moves the playhead has nothing to stop, so it must not close the
+    /// audio stream (closing it makes the next scrub grain open the device again).
+    #[test]
+    fn only_a_running_transport_has_something_to_stop() {
+        let mut session = Session::default();
+        session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        assert!(!app.transport_running(), "nothing runs in a new project");
+        app.playback.playing = true;
+        assert!(app.transport_running(), "Program playback runs a transport");
+        app.playback.playing = false;
+        app.source_playback.clock.playing = true;
+        assert!(app.transport_running(), "Source playback runs one");
+        app.source_playback.clock.playing = false;
+        app.playback.preroll = Some(0.0);
+        assert!(app.transport_running(), "a preroll runs one");
+        app.playback.preroll = None;
+        assert!(!app.transport_running());
     }
 
     /// Capture the block primed by the real shuttle playback path, without relying on a
