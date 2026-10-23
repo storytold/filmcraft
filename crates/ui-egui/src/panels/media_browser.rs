@@ -35,6 +35,8 @@ pub struct MediaBrowserUi {
     pub tree_width: f32,
     /// The thumbnail under the pointer and the hovered fraction of its duration.
     pub hover: Option<(String, f32)>,
+    /// Browse CollabCraft cloud media in the content pane (not the Import modal).
+    pub cloud: bool,
 }
 
 /// Cached directory listings (refreshed every few seconds or on Refresh).
@@ -94,16 +96,30 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
     finish_drag(app, ui);
+    let cloud = app.ui.media_browser.cloud && crate::cloud::available(app);
+    if app.ui.media_browser.cloud && !crate::cloud::available(app) {
+        app.ui.media_browser.cloud = false;
+    }
     let dir = mb::current_dir(&app.session);
+    let cloud_path = app.cloud.mine.path.clone();
     let prefs = app.session.prefs.media_browser.clone();
     // ---- toolbar: back, forward, up, path, file types, view, Ingest, Import as Image Sequence
     let bar = Rect::from_min_size(rect.min + vec2(6.0, 4.0), vec2(rect.width() - 12.0, 24.0));
     let mut x = bar.min.x;
-    let nav = [
-        (Icon::ChevronLeft, "back", tl!("Go Back"), !app.session.browser.back.is_empty()),
-        (Icon::ChevronRight, "forward", tl!("Go Forward"), !app.session.browser.forward.is_empty()),
-        (Icon::ArrowUp, "up", tl!("Up One Level"), mb::parent(&dir).is_some()),
-    ];
+    let cloud_parent = crate::cloud::parent_of(&cloud_path);
+    let nav = if cloud {
+        [
+            (Icon::ChevronLeft, "back", tl!("Go Back"), false),
+            (Icon::ChevronRight, "forward", tl!("Go Forward"), false),
+            (Icon::ArrowUp, "up", tl!("Up One Level"), cloud_parent.is_some()),
+        ]
+    } else {
+        [
+            (Icon::ChevronLeft, "back", tl!("Go Back"), !app.session.browser.back.is_empty()),
+            (Icon::ChevronRight, "forward", tl!("Go Forward"), !app.session.browser.forward.is_empty()),
+            (Icon::ArrowUp, "up", tl!("Up One Level"), mb::parent(&dir).is_some()),
+        ]
+    };
     for (icon, id, tip, enabled) in nav {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
         let resp = ui.interact(r, egui::Id::new(("mb-nav", id)), Sense::click()).on_hover_text(tip);
@@ -113,26 +129,39 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         icons::paint(ui.painter(), r.shrink(5.0), icon, if enabled { t.icon } else { t.text_faint });
         if resp.clicked() && enabled {
-            exec(app, &ctx, "mediaBrowser.navigate", json!({id: true}));
-            refresh(&ctx);
+            if cloud && id == "up" {
+                if let Some(parent) = cloud_parent.clone() {
+                    crate::cloud::browse(app, &parent);
+                }
+            } else {
+                exec(app, &ctx, "mediaBrowser.navigate", json!({id: true}));
+                refresh(&ctx);
+            }
         }
         x += 26.0;
     }
-    // path field: type a directory and press Enter
+    // path field: local directory, or CollabCraft breadcrumb when browsing cloud
     let pw = (bar.max.x - x - 290.0).max(80.0);
     let pr = Rect::from_min_size(pos2(x + 4.0, bar.min.y + 1.0), vec2(pw, 22.0));
-    let mut path = app.ui.media_browser.path_edit.clone().unwrap_or_else(|| dir.clone());
-    let resp = ui.put(pr, egui::TextEdit::singleline(&mut path).id(egui::Id::new("mb-path")).font(egui::FontId::proportional(11.5)));
-    app.auto.add("mediaBrowser.path", pr, "Path");
-    if resp.changed() {
-        app.ui.media_browser.path_edit = Some(path.clone());
-    }
-    if resp.lost_focus() {
-        if ui.input(|i| i.key_pressed(egui::Key::Enter)) && path != dir {
-            exec(app, &ctx, "mediaBrowser.navigate", json!({"path": path}));
-            refresh(&ctx);
+    let shown = if cloud {
+        if cloud_path.is_empty() { format!("{} / {}", tl!("CollabCraft"), tl!("Cloud storage")) } else { format!("{} / {cloud_path}", tl!("CollabCraft")) }
+    } else {
+        app.ui.media_browser.path_edit.clone().unwrap_or_else(|| dir.clone())
+    };
+    let mut path = shown;
+    let resp = ui.put(pr, egui::TextEdit::singleline(&mut path).id(egui::Id::new("mb-path")).font(egui::FontId::proportional(11.5)).interactive(!cloud));
+    app.auto.add("mediaBrowser.path", pr, if cloud { "Cloud path" } else { "Path" });
+    if !cloud {
+        if resp.changed() {
+            app.ui.media_browser.path_edit = Some(path.clone());
         }
-        app.ui.media_browser.path_edit = None;
+        if resp.lost_focus() {
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && path != dir {
+                exec(app, &ctx, "mediaBrowser.navigate", json!({"path": path}));
+                refresh(&ctx);
+            }
+            app.ui.media_browser.path_edit = None;
+        }
     }
     x = pr.max.x + 6.0;
     // file types
@@ -209,22 +238,39 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     ui.painter().line_segment([split.center_top(), split.center_bottom()], Stroke::new(1.0, t.separator));
     tree(app, ui, tree_r, &dir);
-    let entries = listing(app, &ctx, &dir, &prefs.file_types);
-    match entries {
-        Ok(entries) => {
-            if prefs.view == "thumbnails" {
-                thumbnails(app, ui, list_r, &entries);
-            } else {
-                list(app, ui, list_r, &entries, &prefs.columns);
+    if cloud {
+        // In-panel CollabCraft browse (same open page as Import, without the modal chrome).
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(list_r.shrink2(vec2(6.0, 4.0))).id_salt("mb-cloud"));
+        child.set_clip_rect(list_r.intersect(ui.clip_rect()));
+        egui::ScrollArea::vertical().id_salt("mb-cloud-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
+            crate::cloud::open_page(app, ui);
+        });
+        let status = if app.cloud.mine.loading {
+            tl!("Loading…").to_string()
+        } else {
+            let n = app.cloud.mine.entries.iter().filter(|e| e.kind != crate::cloud::EntryKind::Folder).count();
+            tlf!("{total} items", total = n)
+        };
+        ui.painter().text(pos2(list_r.min.x + 6.0, rect.max.y - 12.0), Align2::LEFT_CENTER, &status, Tokens::ui(11.0), t.text_dim);
+        app.auto.add("mediaBrowser.count", Rect::from_min_size(pos2(list_r.min.x, rect.max.y - 22.0), vec2(160.0, 20.0)), &status);
+    } else {
+        let entries = listing(app, &ctx, &dir, &prefs.file_types);
+        match entries {
+            Ok(entries) => {
+                if prefs.view == "thumbnails" {
+                    thumbnails(app, ui, list_r, &entries);
+                } else {
+                    list(app, ui, list_r, &entries, &prefs.columns);
+                }
+                let n = entries.iter().filter(|e| !e.is_dir).count();
+                let sel = app.session.browser.selection.len();
+                let status = if sel > 0 { tlf!("{sel} of {total} items selected", sel, total = n) } else { tlf!("{total} items", total = n) };
+                ui.painter().text(pos2(list_r.min.x + 6.0, rect.max.y - 12.0), Align2::LEFT_CENTER, &status, Tokens::ui(11.0), t.text_dim);
+                app.auto.add("mediaBrowser.count", Rect::from_min_size(pos2(list_r.min.x, rect.max.y - 22.0), vec2(160.0, 20.0)), &status);
             }
-            let n = entries.iter().filter(|e| !e.is_dir).count();
-            let sel = app.session.browser.selection.len();
-            let status = if sel > 0 { tlf!("{sel} of {total} items selected", sel, total = n) } else { tlf!("{total} items", total = n) };
-            ui.painter().text(pos2(list_r.min.x + 6.0, rect.max.y - 12.0), Align2::LEFT_CENTER, &status, Tokens::ui(11.0), t.text_dim);
-            app.auto.add("mediaBrowser.count", Rect::from_min_size(pos2(list_r.min.x, rect.max.y - 22.0), vec2(160.0, 20.0)), &status);
-        }
-        Err(e) => {
-            ui.painter().text(list_r.center(), Align2::CENTER_CENTER, tlf!("Cannot open {dir}: {e}", dir, e), Tokens::ui(11.5), t.text_dim);
+            Err(e) => {
+                ui.painter().text(list_r.center(), Align2::CENTER_CENTER, tlf!("Cannot open {dir}: {e}", dir, e), Tokens::ui(11.5), t.text_dim);
+            }
         }
     }
     if prefs.view == "thumbnails" {
@@ -262,6 +308,34 @@ fn tree(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, dir: &str) {
     child.set_clip_rect(r.intersect(ui.clip_rect()));
     let mut go: Option<String> = None;
     egui::ScrollArea::vertical().id_salt("mb-tree-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
+        // CollabCraft: browse cloud media in the Media Browser content pane (Local Drives sibling).
+        if crate::cloud::available(app) {
+            let title = tl!("CollabCraft");
+            let hr = ui.label(egui::RichText::new(title).size(11.0).color(app.tokens.text_dim).strong());
+            app.auto.add("mediaBrowser.tree.collabcraft", hr.rect, title);
+            let selected = app.ui.media_browser.cloud;
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+            if selected {
+                ui.painter().rect_filled(r, 2.0, app.tokens.row_selected);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, app.tokens.hover);
+            }
+            icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 19.0, r.center().y), vec2(13.0, 13.0)), Icon::Globe, app.tokens.icon);
+            ui.painter().with_clip_rect(r).text(
+                pos2(r.min.x + 30.0, r.center().y),
+                Align2::LEFT_CENTER,
+                tl!("Cloud storage"),
+                Tokens::ui(11.5),
+                app.tokens.text,
+            );
+            app.auto.add("mediaBrowser.tree.collabcraft.cloud", r, tl!("Cloud storage"));
+            if resp.clicked() {
+                app.ui.media_browser.cloud = true;
+                crate::cloud::start(app);
+                crate::cloud::browse(app, "");
+            }
+            ui.add_space(6.0);
+        }
         let sections: [(&str, &str, Icon); 4] = [
             ("favorites", tl!("Favorites"), Icon::Star),
             ("localDrives", tl!("Local Drives"), Icon::Drive),
@@ -286,6 +360,7 @@ fn tree(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, dir: &str) {
         }
     });
     if let Some(p) = go {
+        app.ui.media_browser.cloud = false;
         exec(app, &ctx, "mediaBrowser.navigate", json!({"path": p}));
         refresh(&ctx);
     }

@@ -20,6 +20,7 @@
 
 pub mod api;
 pub mod audio;
+pub mod cloud;
 pub mod download_pacing;
 pub mod fs;
 pub mod import;
@@ -87,6 +88,8 @@ pub struct WebApp {
     pub app: FilmcraftApp,
     pub audio: Option<audio::Handle>,
     pub autosave: recovery::Autosave,
+    /// Invited sessions must not overwrite the user's recovery snapshot.
+    autosave_enabled: bool,
 }
 
 impl eframe::App for WebApp {
@@ -108,7 +111,9 @@ impl eframe::App for WebApp {
         if let Some(a) = &self.audio {
             a.pump();
         }
-        self.autosave.tick(&self.app.session, ctx);
+        if self.autosave_enabled {
+            self.autosave.tick(&self.app.session, ctx);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -128,6 +133,15 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
     let canvas: web_sys::HtmlCanvasElement = doc.get_element_by_id(&canvas_id).ok_or("no canvas")?.dyn_into()?;
 
+    let mut invite = match craft_cloud_client::invite::arrive().await {
+        craft_cloud_client::invite::Arrival::Ordinary => None,
+        craft_cloud_client::invite::Arrival::Refused(reason) => {
+            craft_cloud_client::invite::refuse(&reason);
+            return Ok(());
+        }
+        craft_cloud_client::invite::Arrival::Invited(invitation) => Some(invitation),
+    };
+
     let isolated = js_sys::Reflect::get(&js_sys::global(), &"crossOriginIsolated".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false);
     // Frame rendering runs cooperatively on this thread. wasm threads need a cross-origin
     // isolated page *and* a build with atomics (nightly `build-std`); this build has none.
@@ -138,13 +152,13 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
 
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
     let restored = if opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
-    let recovered = if query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
+    let recovered = if invite.is_some() || query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
     webcodecs::probe().await;
 
     api::install()?;
     import::install_drop_handlers()?;
 
-    let demo = !query_flag("empty");
+    let demo = !query_flag("empty") && invite.is_none();
     let mut web_options = eframe::WebOptions::default();
     // `?webgl`: WebGL2 only. The page reloads with it when starting on WebGPU fails (an adapter
     // whose device can't be created, a driver the browser rejects…); see `index.html`.
@@ -189,11 +203,20 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
+                // Cloud: same-origin cookie transport — no device flow, no token file.
+                app.cloud.connect(cloud::Service::new(cc.egui_ctx.clone()));
+                if let Some(share) = collabcraft_share::CollabCraft::from_env() {
+                    app.share.connect(share.for_app("filmcraft"));
+                }
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);
                 app = app.with_control(rx);
                 if let Some(t) = toast {
                     app.status(t);
+                }
+                let invited = invite.is_some();
+                if let Some(invitation) = invite.take() {
+                    open_invite(&mut app, invitation);
                 }
                 let backend = cc.wgpu_render_state.as_ref().map(|rs| rs.adapter.get_info().backend);
                 set_info("backend", json!(backend.map(|b| format!("{b:?}"))));
@@ -214,7 +237,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 set_info("audio", json!(audio.is_some()));
                 set_info("restoredMedia", json!(restored));
-                Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default() }))
+                Ok(Box::new(WebApp { app, audio, autosave: recovery::Autosave::default(), autosave_enabled: !invited }))
             }),
         )
         .await?;
@@ -225,4 +248,24 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
         el.remove();
     }
     Ok(())
+}
+
+fn open_invite(app: &mut FilmcraftApp, invitation: craft_cloud_client::invite::Invitation) {
+    let name = invitation.name.clone();
+    match filmcraft_ui_egui::cloud::CloudApp::open_bytes(app, &name, invitation.document.clone()) {
+        Ok(Some(_)) => {
+            app.cloud.as_guest(invitation.recipient.clone(), invitation.read_only());
+            let mode = if invitation.read_only() { " (view only)" } else { "" };
+            let who = if invitation.recipient.is_empty() { String::new() } else { format!(" (shared with {})", invitation.recipient) };
+            app.status(format!("Opened \"{name}\"{mode}{who}"));
+            if let Err(e) = invitation.join() {
+                log::warn!("invite relay join failed: {e}");
+            }
+        }
+        Ok(None) => app.status(format!("Imported shared media \"{name}\"")),
+        Err(e) => {
+            log::error!("invite open failed: {e}");
+            craft_cloud_client::invite::refuse(&format!("The shared project could not be opened. {e}"));
+        }
+    }
 }

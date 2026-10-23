@@ -26,6 +26,15 @@ filmcraft-time = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
+# How this app reaches CollabCraft. No provider credential, no provider URL and no provider
+# protocol live in here. The credential comes from the environment; the protocol stays in
+# craft-cloud-client.
+craft-cloud-client = { workspace = true }
+# The share dialog's backend. The dialog is drawn by filmcraft-ui-egui, which opens no socket;
+# this is the half that reaches CollabCraft. Lives here because the session token lives here.
+# One revision of craft-ui in the dependency graph, always: two would be two backend traits.
+craft-ui = { workspace = true, features = ["cloud"] }
+collabcraft-share = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 serde_json = { workspace = true }
