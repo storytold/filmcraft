@@ -254,6 +254,12 @@ pub fn timeline_extent(sequence_seconds: f64) -> f64 {
     sequence_seconds.max(0.0) + 600.0
 }
 
+/// The least `pps` (points a second) the Timeline zooms out to: its whole extent fits a view
+/// `width` points wide, and no farther, so the clips of a short sequence stay in sight.
+pub fn min_pps(sequence_seconds: f64, width: f32) -> f64 {
+    (f64::from(width.max(0.0)) / timeline_extent(sequence_seconds)).clamp(0.05, 24_000.0)
+}
+
 /// The latest time the left edge of a view `width` points wide can show at `pps` points a second.
 pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
     if pps <= 0.0 || !pps.is_finite() {
@@ -344,6 +350,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             v.fit_pending = false;
             v.fit_empty = empty.then_some(v.target_pps);
         }
+        // however the zoom was set (wheel, keys, the bar, a script), zooming out stops at the extent
+        let floor = min_pps(seq.duration().seconds(), content.width());
+        v.target_pps = v.target_pps.max(floor);
+        v.pps = v.pps.max(floor);
         // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
         let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
         let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
