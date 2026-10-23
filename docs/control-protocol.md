@@ -139,6 +139,14 @@ panel's drag passes `linked: false`, because it already lists exactly the clips 
 destinations instead (linked partners are copied too, unless `linked: false`); the result lists
 the new clips as `copied`, they are selected, and copies of linked clips are linked to each other.
 
+**Selected regular edge trims:** `timeline.trim {clip, edge:"in"|"out", delta,
+selection:true}` applies the same delta to the timeline selection when the grabbed
+clip belongs to it, plus linked partners. `deltaFrames` can replace `delta`.
+Selection is opt-in for agent callers; omitted/false retains the single-clip
+command. One common clamped delta is returned in ticks as `{delta}` and one Undo
+restores all changes. Locked secondary tracks are skipped; a locked primary clip
+is refused. Selection does not expand Ripple edits.
+
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
 it shows. Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle

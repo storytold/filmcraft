@@ -282,3 +282,105 @@ fn trim_delta_stops_at_the_end_of_the_media() {
     let back = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, -small).unwrap();
     assert_eq!(back, -small, "a trim within the media is not clamped");
 }
+
+fn selected_trim_fixture() -> (Session, [ClipId; 2]) {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Group trim"})).unwrap();
+    s.execute("file.newSequence", json!({"fps": 25, "video": 3, "audio": 0})).unwrap();
+    s.execute("file.newOfflineFile", json!({"name": "Media", "seconds": 10, "fps": 25, "video": true, "audio": false, "width": 16, "height": 16})).unwrap();
+    let item = s.project.items.values().find(|i| i.as_media().is_some()).unwrap().id.0;
+    for (track, start, duration, source) in [("V1", 2.0, 3.0, 1.0), ("V2", 4.0, 5.0, 4.0)] {
+        s.execute("timeline.place", json!({"item": item, "track": track, "time": Tick::from_seconds_f64(start).0, "duration": Tick::from_seconds_f64(duration).0, "sourceIn": Tick::from_seconds_f64(source).0})).unwrap();
+    }
+    let q = s.active_sequence().unwrap();
+    let clips = [q.video_tracks[0].items[0].id, q.video_tracks[1].items[0].id];
+    s.execute("timeline.select", json!({"clips": clips.iter().map(|c| c.0).collect::<Vec<_>>()})).unwrap();
+    (s, clips)
+}
+
+#[test]
+fn selected_regular_trim_both_edges_same_delta_one_undo() {
+    use filmcraft_edit::{Edge, TrimMode};
+    for edge in [Edge::In, Edge::Out] {
+        for frames in [-10, 10] {
+            let (mut s, clips) = selected_trim_fixture();
+            let before = s.project.clone();
+            let undo = s.history.undo.len();
+            let delta = s.sequence_rate().tick_of(frames);
+            assert_eq!(commands::trim_selection_delta(&s, clips[0], edge, TrimMode::Regular, delta, true).unwrap(), delta);
+            let r = s
+                .execute("timeline.trim", json!({"clip": clips[0].0, "edge": if edge == Edge::In {"in"} else {"out"}, "delta": delta.0, "selection": true}))
+                .unwrap();
+            assert_eq!(r["delta"], json!(delta.0));
+            for c in clips {
+                let old = before.sequence(s.state.active_sequence.unwrap()).unwrap().find_item(c).unwrap().1;
+                let new = s.active_sequence().unwrap().find_item(c).unwrap().1;
+                match edge {
+                    Edge::In => {
+                        assert_eq!(new.start, old.start + delta);
+                        assert_eq!(new.end(), old.end());
+                        assert_eq!(new.source_in, old.source_in + delta);
+                    }
+                    Edge::Out => {
+                        assert_eq!(new.start, old.start);
+                        assert_eq!(new.end(), old.end() + delta);
+                        assert_eq!(new.source_in, old.source_in);
+                    }
+                }
+            }
+            assert_eq!(s.state.selection, clips);
+            assert_eq!(s.history.undo.len(), undo + 1);
+            let after = s.project.clone();
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(*s.project, *before);
+            s.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(*s.project, *after);
+        }
+    }
+}
+
+#[test]
+fn selected_regular_trim_common_limits_and_locked_tracks() {
+    use filmcraft_edit::{Edge, TrimMode};
+    let (mut s, clips) = selected_trim_fixture();
+    let far = Tick::from_seconds_f64(100.0);
+    let shown = commands::trim_selection_delta(&s, clips[0], Edge::Out, TrimMode::Regular, far, true).unwrap();
+    assert_eq!(shown, Tick::from_seconds_f64(1.0), "second clip has only one second of source left");
+    let r = s.execute("timeline.trim", json!({"clip": clips[0].0, "edge": "out", "delta": far.0, "selection": true})).unwrap();
+    assert_eq!(r["delta"], json!(shown.0));
+    s.execute("edit.undo", json!({})).unwrap();
+    let min = s.sequence_rate().frame_duration();
+    let shown = commands::trim_selection_delta(&s, clips[0], Edge::Out, TrimMode::Regular, -far, true).unwrap();
+    assert_eq!(shown, -(Tick::from_seconds_f64(3.0) - min));
+    s.execute("timeline.setTrack", json!({"track": "V2", "locked": true})).unwrap();
+    let old = s.active_sequence().unwrap().find_item(clips[1]).unwrap().1.clone();
+    let shown = commands::trim_selection_delta(&s, clips[0], Edge::Out, TrimMode::Regular, far, true).unwrap();
+    assert_eq!(shown, Tick::from_seconds_f64(6.0));
+    s.execute("timeline.trim", json!({"clip": clips[0].0, "edge": "out", "deltaFrames": 10, "selection": true})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().find_item(clips[1]).unwrap().1, &old);
+    let before = s.project.clone();
+    assert!(s.execute("timeline.trim", json!({"clip": clips[1].0, "deltaFrames": -10, "selection": true})).is_err());
+    assert_eq!(*s.project, *before);
+}
+
+#[test]
+fn selected_regular_trim_deduplicates_and_preserves_default_command() {
+    let (mut s, clips) = selected_trim_fixture();
+    let old = s.active_sequence().unwrap().find_item(clips[1]).unwrap().1.clone();
+    s.execute("timeline.trim", json!({"clip": clips[0].0, "edge": "out", "deltaFrames": -10})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().find_item(clips[1]).unwrap().1, &old);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.state.selection.push(clips[0]);
+    let before = s.project.clone();
+    let duration = s.active_sequence().unwrap().find_item(clips[0]).unwrap().1.duration;
+    s.execute("timeline.trim", json!({"clip": clips[0].0, "edge": "out", "deltaFrames": -10, "selection": true})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().find_item(clips[0]).unwrap().1.duration, duration - s.sequence_rate().tick_of(10));
+    s.execute("edit.undo", json!({})).unwrap();
+    for selection in [json!("yes"), json!(1)] {
+        assert!(s.execute("timeline.trim", json!({"clip": clips[0].0, "deltaFrames": -10, "selection": selection})).is_err());
+        assert_eq!(*s.project, *before);
+    }
+    s.state.selection.push(ClipId(u64::MAX));
+    assert!(s.execute("timeline.trim", json!({"clip": clips[0].0, "deltaFrames": -10, "selection": true})).is_err());
+    assert_eq!(*s.project, *before);
+}

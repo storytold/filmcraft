@@ -84,3 +84,18 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Multi-clip edge trimming
+
+With the Selection tool, dragging either edge of a selected timeline clip trims
+all selected clips and their linked partners by one common delta across tracks.
+Selected edges preview together, selection is retained and release creates one
+Undo step. The tightest source/neighbor/minimum-duration constraint stops the
+whole group. Locked secondary tracks stay unchanged. Ripple, Roll and Rate Stretch
+keep their existing behavior; dragging an unselected edge still trims that clip.
+`tests/timeline_trim_ui.rs` covers both edges and extension/shortening on adjustment
+layers; engine `trim_tests` covers common bounds, locks, atomic errors and Undo/Redo.
+
+Focused contribution validation: formatting and affected-crate Clippy passed;
+19 engine trim tests and 17 timeline UI tests passed (two screenshot tests remain
+ignored). Full workspace CI/WASM gates are pending for this draft contribution.

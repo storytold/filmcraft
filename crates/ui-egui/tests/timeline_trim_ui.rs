@@ -563,3 +563,38 @@ fn linked_video_drag_adds_video_and_audio_tracks() {
 fn linked_audio_drag_adds_audio_and_video_tracks() {
     move_existing_clip_to_a_new_track(true, true);
 }
+
+#[test]
+fn selected_layers_trim_together_by_dragging_either_edge() {
+    let mut d = Driver::demo();
+    d.exec("file.newProject", json!({"name": "Selected adjustment layers"}));
+    d.exec("file.newSequence", json!({"fps": 25, "video": 3, "audio": 0}));
+    let item = d.exec("file.newAdjustmentLayer", json!({"seconds": 20}))["item"].as_u64().unwrap();
+    let tick = |s| filmcraft_time::Tick::from_seconds_f64(s).0;
+    for (track, start, duration) in [("V1", 2.0, 3.0), ("V2", 4.0, 5.0)] {
+        d.exec("timeline.place", json!({"item": item, "track": track, "time": tick(start), "duration": tick(duration), "sourceIn": tick(1.0)}));
+    }
+    d.exec("sequence.snap", json!({"on": false}));
+    let q = d.app().session.active_sequence().unwrap();
+    let clips = [q.video_tracks[0].items[0].id.0, q.video_tracks[1].items[0].id.0];
+    d.exec("timeline.select", json!({"clips": clips}));
+    d.ok("ui.set", json!({"timeline": {"fit": true}}));
+    d.frames(90); // let the fit animation settle before querying edge coordinates
+    for (edge, by) in [("out", -40.0), ("out", 40.0), ("in", 40.0), ("in", -40.0)] {
+        let before = clips.map(|c| d.span(c));
+        let undo = d.undo_steps();
+        let (x0, x1, y) = d.edges(clips[0]);
+        let x = if edge == "in" { x0 + 3.0 } else { x1 - 3.0 };
+        let hit = d.ok("ui.timeline.hit", json!({"x": x, "y": y}));
+        d.drag(pos2(x, y), pos2(x + by, y), 20);
+        let after = clips.map(|c| d.span(c));
+        let index = usize::from(edge == "out");
+        let change = |i: usize| if index == 0 { after[i].0 - before[i].0 } else { after[i].1 - before[i].1 };
+        assert_ne!(change(0), 0, "{edge} {by}: the drag trims; hit={hit}, status={}, before={before:?}, after={after:?}", d.app().ui.status);
+        assert_eq!(change(0), change(1), "both selected tracks get the same delta");
+        assert_eq!(d.app().session.state.selection, clips.map(ClipId));
+        assert_eq!(d.undo_steps(), undo + 1);
+        d.exec("edit.undo", json!({}));
+        assert_eq!(clips.map(|c| d.span(c)), before);
+    }
+}
