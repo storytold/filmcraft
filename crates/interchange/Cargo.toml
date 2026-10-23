@@ -22,4 +22,5 @@ thiserror = { workspace = true }
 roxmltree = { workspace = true }
 
 [dev-dependencies]
+filmcraft-bitstream = { workspace = true }
 proptest = { workspace = true }

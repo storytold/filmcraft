@@ -122,7 +122,7 @@ pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = Os
 /// Whether a launch file is a FilmCraft project. The extension's case does not matter: Windows file
 /// associations and the Linux MIME glob start the app for `CUT.FCPROJ` too (#850).
 pub fn is_project(path: &str) -> bool {
-    Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"))
+    Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj") || e.eq_ignore_ascii_case("prproj"))
 }
 
 /// `path` made absolute against the working directory, so a project or media file named relative

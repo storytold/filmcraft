@@ -348,12 +348,13 @@ pub(crate) struct Builder {
     pub p: Project,
     media: HashMap<String, ItemId>,
     pub top: Vec<ItemId>,
+    pub alternates: Vec<(ItemId, String)>,
     next_link: u64,
 }
 
 impl Builder {
     pub fn new(name: &str) -> Self {
-        Self { p: Project::new(name), media: HashMap::new(), top: Vec::new(), next_link: 1 }
+        Self { p: Project::new(name), media: HashMap::new(), top: Vec::new(), alternates: Vec::new(), next_link: 1 }
     }
 
     pub fn bin(&mut self, name: &str, parent: Option<BinId>) -> BinId {
@@ -427,6 +428,14 @@ impl Builder {
             seq.tracks_mut(kind).push(t);
         }
         true
+    }
+
+    pub fn source_size(&self, item: ItemId) -> Option<(u32, u32)> {
+        match &self.p.item(item)?.kind {
+            ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
+            ItemKind::Sequence(s) => Some((s.settings.width, s.settings.height)),
+            _ => None,
+        }
     }
 
     pub fn link_id(&mut self) -> u64 {
@@ -512,7 +521,7 @@ impl Builder {
                 m.info.duration = end;
             }
         }
-        Imported { project: self.p, sequences: self.top }
+        Imported { project: self.p, sequences: self.top, alternates: self.alternates }
     }
 }
 

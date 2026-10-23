@@ -115,3 +115,46 @@ fn open_demo_project_clears_saved_path_so_save_does_not_overwrite() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+fn gzip(data: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 1];
+    let len = data.len() as u16;
+    out.extend(len.to_le_bytes());
+    out.extend((!len).to_le_bytes());
+    out.extend(data);
+    out.extend(filmcraft_bitstream::crc32(data).to_le_bytes());
+    out.extend((data.len() as u32).to_le_bytes());
+    out
+}
+
+const PRPROJ: &str = concat!(
+    r#"<PremiereData Version="3"><RootProjectItem ObjectUID="root"><ProjectItemContainer><Items><Item ObjectURef="i"/></Items></ProjectItemContainer></RootProjectItem>"#,
+    r#"<ClipProjectItem ObjectUID="i"><ProjectItem><Name>a.mp4</Name></ProjectItem><MasterClip ObjectURef="m"/></ClipProjectItem>"#,
+    r#"<MasterClip ObjectUID="m"><Clips><Clip ObjectRef="1"/></Clips></MasterClip><VideoClip ObjectID="1"><Clip><Source ObjectRef="2"/></Clip></VideoClip>"#,
+    r#"<VideoMediaSource ObjectID="2"><MediaSource><Media ObjectURef="md"/></MediaSource></VideoMediaSource><Media ObjectUID="md"><FilePath>/nowhere/a.mp4</FilePath></Media></PremiereData>"#,
+);
+
+#[test]
+fn prproj_opens_as_an_unsaved_project() {
+    let d = temp_dir("prproj-open");
+    let path = d.join("edit.prproj").to_string_lossy().to_string();
+    let bytes = gzip(PRPROJ.as_bytes());
+    std::fs::write(&path, &bytes).unwrap();
+    let mut s = demo();
+    s.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(s.project.name, "edit");
+    assert!(s.path.is_none() && s.is_dirty() && !s.history.can_undo());
+    assert!(s.project.items.values().any(|i| i.name == "a.mp4"));
+}
+
+#[test]
+fn broken_prproj_leaves_the_open_project_alone() {
+    let d = temp_dir("prproj-broken");
+    let path = d.join("broken.prproj").to_string_lossy().to_string();
+    std::fs::write(&path, [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 9, 9, 9]).unwrap();
+    let mut s = demo();
+    let (before, name) = (s.project.clone(), s.path.clone());
+    assert!(s.execute("file.open", json!({"path": path})).is_err());
+    assert_eq!(*s.project, *before);
+    assert_eq!(s.path, name);
+}
