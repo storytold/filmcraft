@@ -183,7 +183,7 @@ fn every_panel_opens_from_the_window_menu() {
 /// and closing every panel still leaves a dock that Window ▸ can reopen panels into.
 #[test]
 fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
-    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    use filmcraft_ui_egui::dock::PanelKind;
     let mut d = Driver::demo();
     let layout = d.app().ui.dock.clone();
     d.click("panel.menu.Program");
@@ -198,12 +198,10 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
     assert_eq!(d.app().ui.dock, layout, "the layout survives maximize / restore");
     assert!(d.has("panel.Timeline"));
 
-    let mut all = Vec::new();
-    layout.panels(&mut all);
-    for p in all {
+    for p in layout.panels() {
         d.ok("ui.panel.close", json!({"panel": p.id()}));
     }
-    assert_eq!(d.app().ui.dock, DockNode::Tabs { panels: vec![], active: 0 });
+    assert_eq!(d.app().ui.dock.root, None);
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Program"}));
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Timeline"}));
     d.frames(3);
@@ -215,16 +213,17 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
 /// content the wheel leaves the tabs alone.
 #[test]
 fn wheel_over_a_tab_strip_switches_tabs() {
-    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    use craft_ui::docking::Node;
+    use filmcraft_ui_egui::dock::PanelKind;
     fn shown(d: &mut Driver) -> PanelKind {
-        fn find(n: &DockNode) -> Option<PanelKind> {
+        fn find(n: &Node<PanelKind>) -> Option<PanelKind> {
             match n {
-                DockNode::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
-                DockNode::Tabs { .. } => None,
-                DockNode::Split { a, b, .. } => find(a).or_else(|| find(b)),
+                Node::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
+                Node::Split { first, second, .. } => find(first).or_else(|| find(second)),
+                _ => None,
             }
         }
-        find(&d.app().ui.dock).unwrap()
+        d.app().ui.dock.root.as_ref().and_then(find).unwrap()
     }
     fn wheel(d: &mut Driver, dy: f64) {
         let id = format!("panel.tab.{}", shown(d).id());
