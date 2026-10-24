@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{ClipId, ItemId, MarkerId, Sequence, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, format_time};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, TimeRange, format_time};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -22,7 +22,7 @@ use crate::icons::{self, Icon};
 use crate::state::{ThumbnailMode, TimelineView, Tool};
 use crate::theme::Tokens;
 
-use super::timeline_hit::{EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer};
+use super::timeline_hit::{EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect};
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 
 const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
@@ -156,6 +156,15 @@ pub enum Drag {
         from: Tick,
         start: Tick,
         duration: Tick,
+    },
+    /// The work area bar dragged by an end (`edge`: that end moves) or its middle (the bar moves);
+    /// `start` / `end` are where it is shown now, committed on release.
+    WorkArea {
+        edge: Option<filmcraft_edit::Edge>,
+        /// As in [`Drag::Trim`].
+        from: Tick,
+        start: Tick,
+        end: Tick,
     },
     Pan {
         last: Pos2,
@@ -1620,6 +1629,27 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
             });
         }
     }
+    // work area bar: between the markers row and the time labels, as dragged while a drag of it runs
+    let shown = match app.tl.drag {
+        Some(Drag::WorkArea { start, end, .. }) => Some(TimeRange::from_bounds(start, end)),
+        _ => seq.work_area,
+    };
+    if let Some(area) = shown {
+        let r = work_area_rect(layout, area);
+        clip.rect_filled(r, 1.0, t.text_dim);
+        for x in [r.min.x, r.max.x] {
+            clip.rect_filled(Rect::from_center_size(pos2(x, r.center().y), vec2(3.0, r.height() + 2.0)), 1.0, t.text);
+        }
+        app.auto.add("timeline.workArea", r.intersect(ruler), "Work Area Bar");
+        let fmt = |tick: Tick| format_time(tick, rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
+        if ui.rect_contains_pointer(r.expand2(vec2(EDGE_PX, 1.0)).intersect(ruler)) {
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new("work-area-tip"), egui::PopupAnchor::Pointer).show(|ui| {
+                ui.label(tlf!("Start: {tc}", tc = fmt(area.start)));
+                ui.label(tlf!("End: {tc}", tc = fmt(area.end())));
+                ui.label(tlf!("Duration: {tc}", tc = fmt(area.duration)));
+            });
+        }
+    }
     // markers: 8 × 12 pt pentagons in the marker colour, on the top row
     for m in &seq.markers {
         let x = layout.x_of(m.start);
@@ -1775,7 +1805,7 @@ fn vertical_scrollbar(ui: &mut egui::Ui, bar: Rect, value: &mut f32, max: f32, i
 }
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
-fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
+pub(super) fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
     snap_to(app, seq, layout, t, exclude, true)
 }
 
@@ -1835,6 +1865,7 @@ pub fn hit_json(app: &FilmcraftApp, pos: Pos2, mods: egui::Modifiers) -> Value {
     };
     match grab.hit() {
         Hit::Ruler => json!({"hit": "ruler", "time": t.0}),
+        Hit::WorkArea { edge } => json!({"hit": "workArea", "edge": edge.map(|e| format!("{e:?}")), "time": t.0}),
         Hit::Clip { track, clip, edge } => {
             json!({"hit": "clip", "track": track.0, "clip": clip.0, "edge": edge.map(|e| format!("{e:?}")), "kind": kind, "time": t.0})
         }
@@ -2348,6 +2379,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 (_, Grab::Edge { .. }) => CursorIcon::ResizeColumn,
                 (Tool::Selection, Grab::Other(Hit::Transition { edge: Some(_), .. })) => CursorIcon::ResizeColumn,
                 (Tool::Selection, Grab::Other(Hit::Transition { edge: None, .. })) => CursorIcon::Grab,
+                (_, Grab::Other(Hit::WorkArea { edge: Some(_) })) => CursorIcon::ResizeColumn,
+                (_, Grab::Other(Hit::WorkArea { edge: None })) => CursorIcon::Grab,
                 (_, Grab::Volume { .. }) if tool == Tool::Pen || mods.command => CursorIcon::Crosshair,
                 (_, Grab::Volume { .. }) => CursorIcon::ResizeVertical,
                 (Tool::Razor, Grab::Other(Hit::Clip { .. })) => CursorIcon::Crosshair,
@@ -2399,6 +2432,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 Some(Drag::Pan { last, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll })
             }
             (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
+            (_, Grab::Other(Hit::WorkArea { edge })) => {
+                seq.work_area.filter(|_| resp.drag_started()).map(|w| Drag::WorkArea { edge, from: t, start: w.start, end: w.end() })
+            }
             (Tool::Hand, _) => Some(Drag::Pan { last: p, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll }),
             (Tool::Zoom, _) => {
                 if resp.clicked() {
@@ -2674,6 +2710,21 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let (start, duration) = span.unwrap_or((start, duration));
                 Some(Drag::Transition { id, edge, from, start, duration })
             }
+            Drag::WorkArea { edge, from, start, end } => {
+                // the bar as it was at the press: the sequence keeps it until the release
+                let (s0, e0) = seq.work_area.map(|w| (w.start, w.end())).unwrap_or((start, end));
+                let fd = rate.frame_duration();
+                let delta = rate.snap_nearest(t_here - from);
+                let (start, end) = match edge {
+                    Some(filmcraft_edit::Edge::In) => (snap(app, seq, layout, rate.snap_nearest(s0 + delta), &[]).min(e0 - fd).max(Tick::ZERO), e0),
+                    Some(filmcraft_edit::Edge::Out) => (s0, snap(app, seq, layout, rate.snap_nearest(e0 + delta), &[]).max(s0 + fd)),
+                    None => {
+                        let d = delta.max(Tick::ZERO - s0);
+                        (s0 + d, e0 + d)
+                    }
+                };
+                Some(Drag::WorkArea { edge, from, start, end })
+            }
             Drag::Volume(v) => Some(Drag::Volume(super::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
             Drag::Marquee { start, before, add, individual } => {
                 let r = Rect::from_two_pos(start, p);
@@ -2746,6 +2797,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     let moved = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
                     moved.then(|| app.session.execute("sequence.setTransition", json!({"transition": id.0, "start": start.0, "duration": duration.0})))
                 }
+                Drag::WorkArea { start, end, .. } => {
+                    let moved = seq.work_area.is_some_and(|w| (w.start, w.end()) != (start, end));
+                    moved.then(|| app.session.execute("sequence.setWorkArea", json!({"start": start.0, "end": end.0})))
+                }
                 Drag::Marquee { start, before, add, individual } => {
                     app.session.state.selection = before;
                     // egui ends a drag on Escape: that cancels the box, as in the Project panel
@@ -2764,6 +2819,21 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
         } else {
             app.tl.drag = None;
+        }
+    }
+
+    // ---- double-click the work area bar: it spans the part of the sequence the ruler shows
+    if resp.double_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::WorkArea { .. } = hit(seq, layout, p)
+    {
+        let start = rate.snap_nearest(layout.tick_at(layout.content.min.x).max(Tick::ZERO));
+        let end = rate.snap_nearest(layout.tick_at(layout.content.max.x)).min(seq.duration());
+        // a ruler scrolled past the end of the sequence leaves the bar as it is
+        if end > start
+            && let Err(e) = app.session.execute("sequence.setWorkArea", json!({"start": start.0, "end": end.0}))
+        {
+            app.ui.status = e.to_string();
         }
     }
 

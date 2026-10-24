@@ -3,6 +3,16 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Control input limits
+
+The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).
+The MCP bridge sends null for omitted counts/steps, so the validator treats null like an absent
+field: one click or 12 drag steps. Negative, fractional, non-numeric and over-limit values still
+return errors before queuing any input. Zero clicks emit no button events; 0–1 drag steps use 2.
+`control::input_bounds_tests` covers defaults, rejection, unchanged pending input and valid
+gestures; `keyboard_ui` verifies that rejected requests leave the UI usable. See the
+[control protocol](../../docs/control-protocol.md).
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the
