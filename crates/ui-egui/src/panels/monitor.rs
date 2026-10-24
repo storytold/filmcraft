@@ -1026,6 +1026,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
                 let Some((_, command, label)) = buttons.get(*index) else { continue };
                 let selected = match *command {
                     "media.toggleProxies" => Some(app.session.media.use_proxies()),
+                    "playback.loop" => Some(app.playback.looping),
                     "playback.toggle" => Some(app.playback.playing),
                     "source.playback.toggle" => Some(app.source_playback.clock.playing),
                     _ => None,
@@ -1041,6 +1042,14 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     }
 }
 
+fn transport_is_lit(command: &str, proxies_enabled: bool, loop_enabled: bool) -> bool {
+    match command {
+        "media.toggleProxies" => proxies_enabled,
+        "playback.loop" => loop_enabled,
+        _ => false,
+    }
+}
+
 fn transport_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, prefix: &str, icon: Icon, command: &str, label: &str) -> bool {
     let t = app.tokens;
     let response = ui.interact(rect, egui::Id::new((prefix, command)), Sense::click()).on_hover_text(label);
@@ -1049,7 +1058,7 @@ fn transport_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, prefi
         ui.painter().rect_filled(rect, 4.0, t.hover);
     }
     let size = if matches!(command, "playback.toggle" | "source.playback.toggle") { 20.0 } else { 18.0 };
-    let color = if command == "media.toggleProxies" && app.session.media.use_proxies() {
+    let color = if transport_is_lit(command, app.session.media.use_proxies(), app.playback.looping) {
         t.accent
     } else if response.hovered() {
         t.tab_text_active
@@ -1148,6 +1157,17 @@ mod tests {
         set_transport_visible(&mut program, "playhead.stepForward", false);
         assert_eq!(program, vec!["playhead.stepForward"]);
         assert!(transport_visible(&source, "playhead.stepForward"));
+    }
+
+    #[test]
+    fn loop_transport_is_lit_only_while_looping() {
+        assert!(!transport_is_lit("playback.loop", false, false));
+        assert!(transport_is_lit("playback.loop", false, true));
+
+        assert!(!transport_is_lit("media.toggleProxies", false, true));
+        assert!(transport_is_lit("media.toggleProxies", true, false));
+
+        assert!(!transport_is_lit("playback.toggle", true, true));
     }
 
     #[test]
