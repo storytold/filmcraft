@@ -451,6 +451,11 @@ impl FrameServer {
         }
     }
 
+    /// Whether finished jobs wake the UI ([`Self::set_context`] has run).
+    pub fn wakes_ui(&self) -> bool {
+        self.repaint.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
     /// Collect a [`JobRecord`] per finished job (benchmarks); `take_records` drains them.
     pub fn set_profiling(&self, on: bool) {
         self.shared.profiling.store(on, Ordering::Relaxed);

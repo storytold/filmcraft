@@ -191,6 +191,42 @@ fn a_newer_revision_keeps_the_frame_being_rendered() {
     d.ready(key(9001));
 }
 
+/// #1142, #1606: a backlog of frames to render does not make the UI repaint at 60 Hz on native
+/// builds (the workers wake it when a frame is done; only the web pumps frames in the UI pass).
+#[test]
+fn queued_frames_do_not_poll_the_ui() {
+    let mut d = Driver::demo();
+    // a frame server with no workers keeps its queue: what a slow backlog looks like to the UI
+    let (pool, services, previews) = {
+        let s = &d.harness.state().session;
+        (s.media.clone(), s.services.clone(), s.previews.clone())
+    };
+    d.harness.state_mut().frames = std::sync::Arc::new(filmcraft_ui_egui::frames::FrameServer::new(pool, services, previews, 0));
+    d.exec("playhead.set", json!({"frame": 7}));
+    d.frames(3);
+    assert!(d.harness.state().frames.queue_len() > 0, "frames are queued");
+    // with nothing else going on the UI goes idle (no repaint asked for) instead of polling
+    let idle = (0..5).any(|_| {
+        d.frames(1);
+        d.harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay > std::time::Duration::from_secs(1)
+    });
+    assert!(idle, "the UI kept repainting while frames were queued");
+}
+
+/// #2438 review: when another project's media pool replaces the session's, the frame server is
+/// rebuilt in the middle of a frame; it must be able to wake the UI at once, since nothing polls
+/// for its queued frames any more.
+#[test]
+fn a_rebuilt_frame_server_wakes_the_ui_from_its_first_frame() {
+    let mut d = Driver::demo();
+    let before = d.harness.state().frames.clone();
+    d.harness.state_mut().session.media = std::sync::Arc::new(filmcraft_engine::media_pool::MediaPool::default());
+    d.harness.step();
+    let after = d.harness.state().frames.clone();
+    assert!(!std::sync::Arc::ptr_eq(&before, &after), "the frame server was rebuilt");
+    assert!(after.wakes_ui(), "its finished frames wake the UI");
+}
+
 /// #1682: thumbnail textures (timeline tiles, hover scrubs) are capped instead of one being kept
 /// for every frame ever shown.
 #[test]
