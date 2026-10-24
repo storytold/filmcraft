@@ -1603,6 +1603,26 @@ pub fn apply_media_scaling(ti: &mut filmcraft_project::TrackItem, scaling: &str,
     }
 }
 
+/// A picture conformed to the frame's pixel aspect that misses the frame size by less than a
+/// pixel each way (a 6048-pixel clip with an exact 1.33x squeeze shows 8043.84 wide in an 8044
+/// sequence) is scaled to fill the frame exactly: Motion's Scale becomes the larger of the two
+/// ratios (unrounded), so neither edge leaves a hairline and at most a fraction of a pixel is
+/// cropped. True when it did; false (nothing changed) for a picture that already fits or misses
+/// by a pixel or more, or a size that makes no sense.
+pub fn fill_subpixel_conform(ti: &mut filmcraft_project::TrackItem, frame: (u32, u32), shown: (f64, f64)) -> bool {
+    let (fw, fh) = (f64::from(frame.0), f64::from(frame.1));
+    if !(shown.0 >= 1.0 && shown.1 >= 1.0 && shown.0.is_finite() && shown.1.is_finite()) || shown == (fw, fh) {
+        return false;
+    }
+    if (shown.0 - fw).abs() >= 1.0 || (shown.1 - fh).abs() >= 1.0 {
+        return false;
+    }
+    let fill = (fw / shown.0).max(fh / shown.1);
+    let Some(m) = ti.effects.iter_mut().find(|e| e.effect == "motion") else { return false };
+    m.params.insert("scale".into(), filmcraft_project::Param::new(filmcraft_project::ParamValue::Float(fill * 100.0)));
+    true
+}
+
 // ------------------------------------------------------------------ media cache
 
 /// The media cache folder: the configured location, else `<data dir>/Media Cache`.

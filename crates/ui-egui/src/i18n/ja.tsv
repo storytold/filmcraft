@@ -3623,5 +3623,35 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Pixel Aspect Ratio · {n} item	ピクセル縦横比 · {n} 項目
+	Pixel Aspect Ratio · {n} items	ピクセル縦横比 · {n} 項目
+	Use Pixel Aspect Ratio from File: {par}	ファイルのピクセル縦横比を使用: {par}
+	Conform to:	次に合わせる:
+	Available Presets:	使用可能なプリセット:
+	Preset Description	プリセットの説明
+	{w} x {h}, {rate} fps, square pixels	{w} x {h}、{rate} fps、正方形ピクセル
+	{w} x {h}, {rate} fps, {par}; shown {dw} x {h} ({aspect})	{w} x {h}、{rate} fps、{par}。表示サイズ {dw} x {h}（{aspect}）
+	Custom settings (see the General tab)	カスタム設定（「一般」タブを参照）
+	Match Source ({par})	ソースに合わせる（{par}）
+	Sequence Presets	シーケンスプリセット
+	Choose a preset on the Sequence Presets tab	「シーケンスプリセット」タブでプリセットを選択してください
+	Set by the preset (Sequence Presets tab) or by New Sequence From Clip	プリセット（「シーケンスプリセット」タブ）または「クリップから新規シーケンス」で設定されます
+	Anamorphic 1.33x, exact (1.33)	アナモルフィック 1.33x、厳密 (1.33)
+	4:3 / HD Anamorphic 1080 (1.3333)	4:3 / HD アナモルフィック 1080 (1.3333)
+	Anamorphic 1.5x / DVCPRO HD (1.5)	アナモルフィック 1.5x / DVCPRO HD (1.5)
+	Anamorphic 2x (2.0)	アナモルフィック 2x (2.0)
+	Custom…	カスタム…
+	Desqueezed Sequence From Clip	クリップからデスクイーズしたシーケンスを作成
+	New Desqueezed Sequence From Clip	クリップからデスクイーズした新規シーケンス
+	Delete this preset?	このプリセットを削除しますか？
+	Preset name:	プリセット名:
+	A preset called {name} exists.	{name} という名前のプリセットは既にあります。
+	Replace	置き換え
+	Saved sequence preset {name}	シーケンスプリセット {name} を保存しました
+	{w} x {h}, {rate} fps, {par}; {hz} Hz {mix}; {v} video and {a} audio tracks	{w} x {h}、{rate} fps、{par}、{hz} Hz {mix}、ビデオトラック {v}、オーディオトラック {a}
+	New Project	新規プロジェクト
+	Sequence:	シーケンス:
+	None (an empty project)	なし（空のプロジェクト）
+	The project starts with a sequence made from this preset (Custom or built-in), or with none.	プロジェクトは、このプリセット（カスタムまたは組み込み）から作成したシーケンスで始まります。なしを選ぶと空のプロジェクトになります。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。

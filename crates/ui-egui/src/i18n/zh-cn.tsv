@@ -3599,5 +3599,35 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Pixel Aspect Ratio · {n} item	像素长宽比 · {n} 个项目
+	Pixel Aspect Ratio · {n} items	像素长宽比 · {n} 个项目
+	Use Pixel Aspect Ratio from File: {par}	使用文件的像素长宽比：{par}
+	Conform to:	匹配为：
+	Available Presets:	可用预设：
+	Preset Description	预设说明
+	{w} x {h}, {rate} fps, square pixels	{w} x {h}，{rate} fps，方形像素
+	{w} x {h}, {rate} fps, {par}; shown {dw} x {h} ({aspect})	{w} x {h}，{rate} fps，{par}；显示为 {dw} x {h}（{aspect}）
+	Custom settings (see the General tab)	自定义设置（见“常规”选项卡）
+	Match Source ({par})	匹配源（{par}）
+	Sequence Presets	序列预设
+	Choose a preset on the Sequence Presets tab	在“序列预设”选项卡中选择一个预设
+	Set by the preset (Sequence Presets tab) or by New Sequence From Clip	由预设（“序列预设”选项卡）或“从剪辑新建序列”设定
+	Anamorphic 1.33x, exact (1.33)	变形宽银幕 1.33x，精确（1.33）
+	4:3 / HD Anamorphic 1080 (1.3333)	4:3 / HD 变形宽银幕 1080（1.3333）
+	Anamorphic 1.5x / DVCPRO HD (1.5)	变形宽银幕 1.5x / DVCPRO HD（1.5）
+	Anamorphic 2x (2.0)	变形宽银幕 2x（2.0）
+	Custom…	自定义…
+	Desqueezed Sequence From Clip	从剪辑创建去压缩序列
+	New Desqueezed Sequence From Clip	从剪辑新建去压缩序列
+	Delete this preset?	删除此预设？
+	Preset name:	预设名称：
+	A preset called {name} exists.	已存在名为 {name} 的预设。
+	Replace	替换
+	Saved sequence preset {name}	已保存序列预设 {name}
+	{w} x {h}, {rate} fps, {par}; {hz} Hz {mix}; {v} video and {a} audio tracks	{w} x {h}，{rate} fps，{par}；{hz} Hz {mix}；{v} 条视频轨道和 {a} 条音频轨道
+	New Project	新建项目
+	Sequence:	序列：
+	None (an empty project)	无（空项目）
+	The project starts with a sequence made from this preset (Custom or built-in), or with none.	项目以根据此预设（自定义或内置）创建的序列开始，或不含序列。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。

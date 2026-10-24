@@ -3624,5 +3624,35 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	Pixel Aspect Ratio · {n} item	Proporción de píxeles · {n} elemento
+	Pixel Aspect Ratio · {n} items	Proporción de píxeles · {n} elementos
+	Use Pixel Aspect Ratio from File: {par}	Usar la proporción de píxeles del archivo: {par}
+	Conform to:	Conformar a:
+	Available Presets:	Ajustes preestablecidos disponibles:
+	Preset Description	Descripción del ajuste preestablecido
+	{w} x {h}, {rate} fps, square pixels	{w} x {h}, {rate} fps, píxeles cuadrados
+	{w} x {h}, {rate} fps, {par}; shown {dw} x {h} ({aspect})	{w} x {h}, {rate} fps, {par}; se muestra a {dw} x {h} ({aspect})
+	Custom settings (see the General tab)	Ajustes personalizados (ver la pestaña General)
+	Match Source ({par})	Igual que el origen ({par})
+	Sequence Presets	Ajustes preestablecidos de secuencia
+	Choose a preset on the Sequence Presets tab	Elija un ajuste preestablecido en la pestaña Ajustes preestablecidos de secuencia
+	Set by the preset (Sequence Presets tab) or by New Sequence From Clip	Lo define el ajuste preestablecido (pestaña Ajustes preestablecidos de secuencia) o Nueva secuencia desde clip
+	Anamorphic 1.33x, exact (1.33)	Anamórfico 1.33x, exacto (1.33)
+	4:3 / HD Anamorphic 1080 (1.3333)	4:3 / HD anamórfico 1080 (1.3333)
+	Anamorphic 1.5x / DVCPRO HD (1.5)	Anamórfico 1.5x / DVCPRO HD (1.5)
+	Anamorphic 2x (2.0)	Anamórfico 2x (2.0)
+	Custom…	Personalizado…
+	Desqueezed Sequence From Clip	Secuencia desanamorfizada a partir de clip
+	New Desqueezed Sequence From Clip	Nueva secuencia desanamorfizada a partir del clip
+	Delete this preset?	¿Eliminar este ajuste preestablecido?
+	Preset name:	Nombre del ajuste preestablecido:
+	A preset called {name} exists.	Ya existe un ajuste preestablecido llamado {name}.
+	Replace	Reemplazar
+	Saved sequence preset {name}	Ajuste preestablecido de secuencia {name} guardado
+	{w} x {h}, {rate} fps, {par}; {hz} Hz {mix}; {v} video and {a} audio tracks	{w} x {h}, {rate} fps, {par}; {hz} Hz {mix}; {v} pistas de vídeo y {a} de audio
+	New Project	Nuevo proyecto
+	Sequence:	Secuencia:
+	None (an empty project)	Ninguna (un proyecto vacío)
+	The project starts with a sequence made from this preset (Custom or built-in), or with none.	El proyecto empieza con una secuencia creada a partir de este ajuste preestablecido (personalizado o integrado), o sin ninguna.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
