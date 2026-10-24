@@ -246,7 +246,8 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             });
         }
         if small_button(app, ui, "shortcuts.import", tl!("Import…"), true) {
-            app.pick_ui(FileDialog::open_file(tl!("Keyboard Shortcuts"), &["json"]), |app, paths| match paths.into_iter().next() {
+            // .kys (Premiere's) too, so choosing one says why it can't be read (#2489)
+            app.pick_ui(FileDialog::open_file(tl!("Keyboard Shortcuts"), &["json", "kys"]), |app, paths| match paths.into_iter().next() {
                 Some(path) => {
                     if let Some(r) = exec(app, "shortcuts.import", json!({"path": path})) {
                         app.shortcut_editor.message = tlf!("Imported “{name}”", name = r["name"].as_str().unwrap_or(""));

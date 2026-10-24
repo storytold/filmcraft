@@ -5,6 +5,11 @@ Premiere's default keyboard (macOS). The table lives in `crates/engine/src/short
 `PREMIERE` (application-wide keys and a few panel keys) and `PREMIERE_PANEL` (panel-scoped keys
 that FilmCraft Default uses as well). `presets::premiere()` is the whole preset.
 
+Keyboard Shortcuts ▸ Export… / Import… write and read FilmCraft's own JSON preset files. An imported
+file becomes a custom preset named after the set in it (or the file), with " (Imported)" added when
+that is a built-in preset's name, so an exported built-in set comes back as its own entry (#2489).
+Premiere's `.kys` files can't be imported yet: choosing one says so.
+
 Every entry names a FilmCraft command id. Engine commands run through `Session::execute`; UI
 commands (frames, panels, monitor zoom, Project and Text panel navigation) run through
 `menus::invoke`. Both are reachable by id from the CLI (`filmcraft-cli exec <id>`), the control
