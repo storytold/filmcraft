@@ -367,7 +367,6 @@ pub fn simplify_sequence(proj: &filmcraft_project::Project, q: &mut Sequence, o:
                 it.link = None;
             }
         }
-        edit::remove_orphan_transitions(t);
     }
     if o.remove_text {
         q.caption_tracks.clear();
