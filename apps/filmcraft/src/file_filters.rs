@@ -6,7 +6,9 @@
 //! as `shot.MP4` or `shot.Mp4` would be hidden. The helper appends one bracket pattern per
 //! extension (`mp4` -> `[mM][pP]4`) after the literal extensions, which stay first so save
 //! dialogs keep their normal default suffix. macOS and Windows dialogs already ignore case
-//! and receive the plain list.
+//! and receive the plain list. The Open Project dialog also offers [`all_files`] beside the
+//! project filter, so a project stays openable where the system MIME database does not
+//! know `.fcproj` and the project filter matches nothing (#1644).
 
 pub fn extensions(exts: &[&str]) -> Vec<String> {
     let extensions: Vec<_> = exts.iter().map(|ext| (*ext).to_owned()).collect();
@@ -37,6 +39,15 @@ pub fn extensions(exts: &[&str]) -> Vec<String> {
     extensions
 }
 
+/// Extensions for an "All files" filter: a single `*` and nothing else. rfd's XDG portal
+/// backend special-cases `*` into the glob `*` (its GTK and Zenity backends build `*.*`),
+/// so every file shows — including a saved project on a system whose shared-mime-info
+/// package never registered `.fcproj`, where the "FilmCraft Project" filter hides them
+/// all and the dialog offers no other way to reach the file (#1644).
+pub fn all_files() -> Vec<String> {
+    extensions(&["*"])
+}
+
 #[cfg(test)]
 mod tests {
     use super::extensions;
@@ -52,6 +63,20 @@ mod tests {
         }
         for name in ["camera.mp4.bak", "camera.mp44", "camera.xmp4", "notes.txt", "mp4"] {
             assert!(!filters.iter().any(|f| f.matches(name)), "the picker admits {name}");
+        }
+    }
+
+    #[test]
+    fn all_files_filter_admits_every_file() {
+        // One entry only: the `*` the backends turn into a match-everything glob (the XDG
+        // portal backend sends `*` itself; GTK/Zenity send `*.*`). Build the globs the way
+        // the portal backend does and check the files the project filter hid in #1644 —
+        // and everything else — are admitted.
+        assert_eq!(super::all_files(), ["*"]);
+        let filters: Vec<_> =
+            super::all_files().iter().map(|ext| if ext == "*" { ext.clone() } else { format!("*.{ext}") }).map(|g| glob::Pattern::new(&g).unwrap()).collect();
+        for name in ["project.fcproj", "Project.FCPROJ", "my film.filmcraft", "clip.mp4", "notes.txt", "noextension"] {
+            assert!(filters.iter().any(|f| f.matches(name)), "All files hides {name}");
         }
     }
 
