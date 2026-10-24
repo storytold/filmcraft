@@ -92,6 +92,7 @@
 	Composite Video	Vidéo composite
 	Consolidate Duplicates	Regrouper les doublons
 	Copy	Copier
+	Copy Transition	Copier la transition
 	Copy Paste Includes Sequence Markers	Copier-coller inclut les marqueurs de séquence
 	Create Captions from Transcript…	Créer des sous-titres à partir de la transcription…
 	Create Multi-Camera Source Sequence…	Créer une séquence source multicaméra…
@@ -238,6 +239,7 @@
 	Optical Flow	Flux optique
 	Overwrite	Écraser
 	Paste	Coller
+	Paste Transition	Coller la transition
 	Paste Attributes…	Coller les attributs…
 	Paste Insert	Coller en insertion
 	Paused Resolution	Résolution en pause

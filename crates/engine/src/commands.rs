@@ -122,6 +122,20 @@ fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
 }
+fn has_copy_selection(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if !s.state.selection.is_empty() || s.state.transition_selection.len() == 1 {
+        Ok(())
+    } else if s.state.transition_selection.len() > 1 {
+        Err("select one transition to copy".into())
+    } else {
+        Err("nothing selected".into())
+    }
+}
+fn has_paste_clipboard(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if s.state.clipboard_transition.is_some() || !s.state.clipboard.is_empty() { Ok(()) } else { Err("clipboard is empty".into()) }
+}
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
 /// that key as ids (`"clips":[id]`, `"item":id`); `None` when it named none.
@@ -1625,11 +1639,26 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{}", has_selection, |s, _| {
+        cmd!("sequence.copyTransition", "Copy Transition", [], None, r#"{"transition":id}"#, has_seq, crate::transition_clipboard::copy),
+        cmd!(
+            "sequence.pasteTransition",
+            "Paste Transition",
+            [],
+            None,
+            r#"{"transition":id?,"cuts":[{"clip":id,"edge":"in|out"}]?}"#,
+            has_seq,
+            crate::transition_clipboard::paste
+        ),
+        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{}", has_copy_selection, |s, _| {
+            if let Some(id) = s.state.transition_selection.first().copied() {
+                return crate::transition_clipboard::copy(s, &json!({"transition": id.0}));
+            }
             copy_selection(s);
             Ok(json!({"copied": s.state.clipboard.len()}))
         }),
-        cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{}", has_clipboard, |s, _| paste(s, false)),
+        cmd!("edit.paste", "Paste", ["Edit"], Some("Cmd+V"), "{}", has_paste_clipboard, |s, _| {
+            if s.state.clipboard_transition.is_some() { crate::transition_clipboard::paste(s, &json!({})) } else { paste(s, false) }
+        }),
         cmd!("edit.pasteInsert", "Paste Insert", ["Edit"], Some("Cmd+Shift+V"), "{}", has_clipboard, |s, _| paste(s, true)),
         cmd!("edit.clear", "Clear", ["Edit"], Some("Backspace"), r#"{"clips":[id]?}"#, has_any_selection, |s, p| {
             if p.get("clips").is_none() && p.get("clip").is_none() && s.state.selection.is_empty() {
@@ -3661,6 +3690,7 @@ fn copy_selection(s: &mut Session) {
     }
     s.state.clipboard = clip;
     s.state.clipboard_markers = markers;
+    s.state.clipboard_transition = None;
 }
 
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {

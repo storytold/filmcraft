@@ -136,6 +136,52 @@ impl Driver {
     }
 }
 
+#[test]
+fn transition_clipboard_menu_bulk_paste_and_undo() {
+    let mut driver = Driver::demo();
+    let before = driver.exec("sequence.inspect", json!({}));
+    let clips = before["video"][0]["items"].as_array().unwrap();
+    let source = driver.crossing();
+    driver.click(&format!("timeline.transition.{}", source.id));
+    assert_eq!(driver.exec("sequence.inspect", json!({}))["transitionSelection"], json!([source.id]));
+    driver.ok("ui.menu.invoke", json!({"id": "edit.copy"}));
+
+    let destinations: Vec<u64> = [3, 4].into_iter().map(|index| clips[index]["clip"].as_u64().unwrap()).collect();
+    driver.exec("trim.selectEditPoint", json!({"clip": destinations[0], "edge": "in"}));
+    driver.exec("trim.selectEditPoint", json!({"clip": destinations[1], "edge": "in", "add": true}));
+    driver.ok("ui.set", json!({"focused": "Timeline"}));
+    let pasted = driver.ok("ui.menu.invoke", json!({"id": "edit.paste"}));
+    assert_eq!(pasted["pasted"], json!(2));
+    let after = driver.exec("sequence.inspect", json!({}));
+    assert_eq!(after["video"][0]["items"], before["video"][0]["items"]);
+    for (destination, id) in destinations.iter().zip(pasted["transitions"].as_array().unwrap()) {
+        assert!(after["video"][0]["transitions"].as_array().unwrap().iter().any(|transition| transition["id"] == *id && transition["to"] == *destination));
+    }
+    driver.ok("ui.menu.invoke", json!({"id": "edit.undo"}));
+    assert_eq!(driver.exec("sequence.inspect", json!({}))["video"][0]["transitions"], before["video"][0]["transitions"]);
+    driver.ok("ui.menu.invoke", json!({"id": "edit.redo"}));
+    assert_eq!(driver.exec("sequence.inspect", json!({}))["video"][0]["transitions"], after["video"][0]["transitions"]);
+}
+
+#[test]
+fn transition_clipboard_shortcuts_replace_selected_cut() {
+    let mut driver = Driver::demo();
+    let before = driver.exec("sequence.inspect", json!({}));
+    let source = driver.crossing();
+    let destination = before["video"][0]["items"][3]["clip"].as_u64().unwrap();
+    driver.ok("ui.set", json!({"focused": "Timeline"}));
+    driver.click(&format!("timeline.transition.{}", source.id));
+    driver.ok("ui.key", json!({"key": "Cmd+C"}));
+    driver.exec("trim.selectEditPoint", json!({"clip": destination, "edge": "in"}));
+    driver.ok("ui.key", json!({"key": "Cmd+V"}));
+    let after = driver.exec("sequence.inspect", json!({}));
+    assert_eq!(after["video"][0]["items"], before["video"][0]["items"]);
+    let pasted = after["video"][0]["transitions"].as_array().unwrap().iter().find(|transition| transition["to"] == destination).unwrap();
+    assert_ne!(pasted["id"], json!(source.id));
+    let original = before["video"][0]["transitions"].as_array().unwrap().iter().find(|transition| transition["id"] == source.id).unwrap();
+    assert_eq!(pasted["effect"], original["effect"]);
+}
+
 /// Ticks in one frame of `rate`.
 fn frame_ticks((num, den): (i64, i64)) -> i64 {
     254_016_000_000 * den / num

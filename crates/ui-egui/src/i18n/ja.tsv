@@ -92,6 +92,7 @@
 	Composite Video	コンポジットビデオ
 	Consolidate Duplicates	重複を統合
 	Copy	コピー
+	Copy Transition	トランジションをコピー
 	Copy Paste Includes Sequence Markers	コピーと貼り付けにシーケンスマーカーを含める
 	Create Captions from Transcript…	文字起こしからキャプションを作成…
 	Create Multi-Camera Source Sequence…	マルチカメラソースシーケンスを作成…
@@ -237,6 +238,7 @@
 	Optical Flow	オプティカルフロー
 	Overwrite	上書き
 	Paste	貼り付け
+	Paste Transition	トランジションを貼り付け
 	Paste Attributes…	属性を貼り付け…
 	Paste Insert	挿入して貼り付け
 	Paused Resolution	一時停止時の解像度

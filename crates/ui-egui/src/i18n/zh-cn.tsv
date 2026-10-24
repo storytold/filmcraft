@@ -85,6 +85,7 @@
 	Composite Video	合成视频
 	Consolidate Duplicates	合并重复项
 	Copy	复制
+	Copy Transition	复制转场
 	Copy Paste Includes Sequence Markers	复制粘贴包含序列标记
 	Create Captions from Transcript…	根据转录文稿创建字幕…
 	Create Multi-Camera Source Sequence…	创建多机位源序列…
@@ -231,6 +232,7 @@
 	Optical Flow	光流
 	Overwrite	覆盖
 	Paste	粘贴
+	Paste Transition	粘贴转场
 	Paste Attributes…	粘贴属性…
 	Paste Insert	粘贴插入
 	Paused Resolution	暂停时分辨率

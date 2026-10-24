@@ -90,6 +90,7 @@
 	Composite Video	Video composito
 	Consolidate Duplicates	Consolida duplicati
 	Copy	Copia
+	Copy Transition	Copia transizione
 	Copy Paste Includes Sequence Markers	Copia e incolla include i marcatori della sequenza
 	Create Captions from Transcript…	Crea sottotitoli dalla trascrizione…
 	Create Multi-Camera Source Sequence…	Crea sequenza sorgente multicamera…
@@ -233,6 +234,7 @@
 	Optical Flow	Flusso ottico
 	Overwrite	Sovrascrivi
 	Paste	Incolla
+	Paste Transition	Incolla transizione
 	Paste Attributes…	Incolla attributi…
 	Paste Insert	Incolla con inserimento
 	Paused Resolution	Risoluzione in pausa

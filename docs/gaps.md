@@ -17,7 +17,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 40–70 h |
 | G2 | Premiere's `.prproj` cannot be opened | file format | **yes** | 60–120 h |
 | G3 | 10-bit and 4:2:2 camera media needs hardware | codec | yes | 30–50 h |
-| G4 | Crashes at start-up, and no test CI on pull requests | stability | yes | 40–80 h |
+| G4 | Launch crashes and cross-platform PR CI | stability | yes | 40–80 h |
 | G5 | Hardware acceleration is partial | hardware | partly | 120–200 h |
 | G6 | No real-world media corpus or workflow acceptance tests | measurement | yes | 40–70 h |
 | G7 | No measured parity tool in CI | measurement | no | 10–20 h |
@@ -77,7 +77,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Estimate:** H.264 High 10 + High 4:2:2 (chroma geometry, deblocking, transforms) 15–25 h;
   HEVC Main 4:2:2 10 (RExt subset) 15–25 h. Doc: [codec-parity.md](codec-parity.md).
 
-## G4. Crashes at start-up, and no test CI on pull requests
+## G4. Launch crashes and cross-platform PR CI
 
 - **Have:** a graphics start-up fallback (#820): after two starts in a row that died within 15 s
   of launch without painting (a driver crash in wgpu instance / device creation; hangs, later
@@ -87,14 +87,16 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   shows a notice with Use Default Graphics; `--graphics default|dx12|software` picks a mode by
   hand. An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
   installed versions of one driver (GPUs on different driver packages) draws with the newer one
-  instead of dying inside the stale one (`filmcraft_gpu::adapter`).
-- **Missing:** a launch that never fails, and CI that runs the gates.
+  instead of dying inside the stale one (`filmcraft_gpu::adapter`). The PR workflow runs the full
+  `cargo xtask ci` gate on Ubuntu, macOS Intel and Windows with Nextest process isolation and at
+  most two concurrent tests per runner.
+- **Missing:** a launch that never fails; confirm the macOS and Windows jobs on a live pull request.
 - **Evidence:** open issues: macOS 12 Monterey aborts on a missing VideoToolbox symbol (#468,
   #661, #655), Intel UHD graphics (`igvk64.dll`, #512), Windows 11 does not run or fails after setup
   (#380, #582, #413, #477), crash on new project + import (#439), "it just keeps crashing" (#687).
-  `.github/workflows/` holds release, packaging lint, FreeBSD and Windows ARM64 builds; **none runs
-  `cargo test` or `cargo xtask ci` on a pull request**, so 243 PRs merged since 10-05 were gated by
-  contributors' local runs (main needed "green again after the batch merges" on 10-10).
+  Earlier pull requests lacked the full gate; `.github/workflows/ci.yml` now defines the same gate
+  for all three desktop operating systems. Runner results are needed before treating a platform
+  as verified.
 - **Impact:** a user who cannot start the app gets zero value; regressions land unnoticed.
 - **Done when:** weak-linked or runtime-loaded OS symbols on old macOS, ~~a software / safe-mode
   start when the GPU adapter fails~~ (done, #820), a PR workflow running `cargo xtask ci`

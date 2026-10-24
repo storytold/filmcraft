@@ -54,6 +54,7 @@ pub mod shortcuts;
 pub mod source_monitor;
 pub mod sync;
 pub mod transcript;
+pub mod transition_clipboard;
 pub mod trim;
 pub mod voiceover;
 
@@ -318,6 +319,9 @@ pub struct EditorState {
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
+    /// Copied transition with frame-based timing, independent of the clip clipboard.
+    #[serde(skip)]
+    pub clipboard_transition: Option<transition_clipboard::TransitionClipboard>,
     pub default_video_transition: String,
     pub default_audio_transition: String,
     /// Selected edit points (trim mode).

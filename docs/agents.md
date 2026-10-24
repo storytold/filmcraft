@@ -80,6 +80,16 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
+To copy a timeline transition, run `sequence.copyTransition {"transition": id}`. Paste it at one or
+more cuts with `sequence.pasteTransition {"cuts": [{"clip": id, "edge": "in"}]}`; an `out` edge
+also works. Without explicit cuts, paste uses selected transitions, selected edit points, or exact
+playhead cuts on targeted tracks. The effect, parameters, reverse direction and frame-based timing
+travel together. A bulk paste is one undo step and leaves clips in place. Locked tracks, mismatched
+audio/video cuts, insufficient clip span or missing source-media handles reject the entire paste
+without editing the sequence. Shorten the transition or move a clip's In/Out point to leave enough
+source frames around the cut. The transition clipboard is session state and is not saved in a
+project file.
+
 ### Conventions
 
 The server follows a few conventions that make it predictable for agents. They are not

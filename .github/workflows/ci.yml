@@ -1,7 +1,7 @@
 name: CI
 
-# Quality gates for every push to main and every pull request (`cargo xtask ci`), through the
-# suite's shared gate workflow in craft-common-actions.
+# Quality gates for every push to main and every pull request (`cargo xtask ci`) on Linux,
+# macOS Intel and Windows through the suite's shared gate workflow in craft-common-actions.
 on:
   push:
     branches: [main]
@@ -21,6 +21,11 @@ jobs:
     # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
     uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
     with:
+      os: '["ubuntu-24.04","macos-15-intel","windows-2022"]'
+      env: |
+        CARGO_BUILD_JOBS=2
+        NEXTEST_TEST_THREADS=2
+        RUST_TEST_THREADS=2
       # Same craft-fonts commit as release.yml.
       craft-fonts-ref: abb83316d96aa59c1cf64784289e378fe9fa5695
       timeout-minutes: 120

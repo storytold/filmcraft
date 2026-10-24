@@ -2127,6 +2127,15 @@ fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::U
         }
         ui.close();
     }
+    let label = tl!("Paste Transition");
+    let r = ui.add_enabled(app.session.state.clipboard_transition.is_some(), egui::Button::new(label));
+    app.auto.add("timeline.editPointMenu.pasteTransition", r.rect, label);
+    if r.clicked() {
+        if let Err(error) = crate::menus::invoke(app, ctx, "edit.paste", json!({})) {
+            app.ui.status = error;
+        }
+        ui.close();
+    }
     // only this cut (and its linked partners), and only when it is a through edit
     let through = filmcraft_edit::through::through_edits(seq).iter().any(|e| Some(e.left) == target.left && Some(e.right) == target.right);
     let label = tl!("Join Through Edits");
@@ -2139,6 +2148,20 @@ fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::U
             app.ui.status = e.to_string();
         }
         ui.close();
+    }
+}
+
+/// A right-clicked transition is a cut destination as well as a copy source.
+fn transition_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
+    for (label, id) in [(tl!("Copy Transition"), "edit.copy"), (tl!("Paste Transition"), "edit.paste")] {
+        let r = ui.add_enabled(app.session.is_enabled(id), egui::Button::new(label));
+        app.auto.add(&format!("timeline.transitionMenu.{id}"), r.rect, label);
+        if r.clicked() {
+            if let Err(error) = crate::menus::invoke(app, ctx, id, json!({})) {
+                app.ui.status = error;
+            }
+            ui.close();
+        }
     }
 }
 
@@ -2835,6 +2858,22 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
         ctx.data_mut(|d| d.insert_temp(marker_menu_id, marker.map(|m| m.id)));
     }
+    let transition_menu_id = egui::Id::new("timeline.transitionMenu.target");
+    if resp.secondary_clicked()
+        && let Some(pointer) = resp.interact_pointer_pos()
+    {
+        let selected = match hit(seq, layout, pointer) {
+            Hit::Transition { id, .. } => Some(id),
+            _ => None,
+        };
+        ctx.data_mut(|data| data.insert_temp(transition_menu_id, selected));
+        if let Some(id) = selected {
+            if let Err(error) = app.session.execute("timeline.select", json!({"transitions": [id.0]})) {
+                app.ui.status = error.to_string();
+            }
+            ctx.data_mut(|data| data.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+        }
+    }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
         && let Hit::Clip { clip, edge, track } = hit(seq, layout, p)
@@ -2867,6 +2906,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             ui.set_min_width(220.0);
             if let Some(marker) = ctx.data(|d| d.get_temp::<Option<MarkerId>>(marker_menu_id)).flatten() {
                 marker_menu(app, &ctx, ui, marker);
+                return;
+            }
+            if ctx.data(|d| d.get_temp::<Option<filmcraft_project::TransitionId>>(transition_menu_id)).flatten().is_some() {
+                transition_menu(app, &ctx, ui);
                 return;
             }
             if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {

@@ -97,6 +97,7 @@
 	Composite Video	Video Komposit
 	Consolidate Duplicates	Gabungkan Duplikat
 	Copy	Salin
+	Copy Transition	Salin Transisi
 	Copy Paste Includes Sequence Markers	Salin Tempel Menyertakan Penanda Sekuens
 	Create Captions from Transcript…	Buat Takarir dari Transkrip…
 	Create Multi-Camera Source Sequence…	Buat Sekuens Sumber Multi-Kamera…
@@ -243,6 +244,7 @@
 	Optical Flow	Aliran Optik
 	Overwrite	Timpa
 	Paste	Tempel
+	Paste Transition	Tempel Transisi
 	Paste Attributes…	Tempel Atribut…
 	Paste Insert	Tempel Sisip
 	Paused Resolution	Resolusi Saat Jeda

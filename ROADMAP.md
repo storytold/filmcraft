@@ -48,7 +48,7 @@ Method and calibration: [docs/target-app-parity.md](docs/target-app-parity.md#th
 | Hardware acceleration | ~45% | 120–200 | [hardware-parity.md](docs/hardware-parity.md) |
 | Localization | ~35% | 150–230 | [localization-parity.md](docs/localization-parity.md) |
 | Performance | ~55% | 60–120 | [performance.md](docs/performance.md) |
-| Stability | ~45% | 60–120 | [gaps.md G4](docs/gaps.md#g4-crashes-at-start-up-and-no-test-ci-on-pull-requests) |
+| Stability | ~45% | 60–120 | [gaps.md G4](docs/gaps.md#g4-launch-crashes-and-cross-platform-pr-ci) |
 | Platforms (macOS, Windows, Linux, FreeBSD, web) | ~60% | 50–90 | [gaps.md G9](docs/gaps.md#g9-windows-and-linux-at-run-time) |
 | Plugins and ecosystem | ~5% | 200–400 | [gaps.md G11](docs/gaps.md#g11-no-plugin-hosting) |
 | AI features | ~25% | 150–300 | [gaps.md G12](docs/gaps.md#g12-ai-features) |
@@ -96,7 +96,7 @@ Also shipped: Ukrainian (menus only, 10%). Detail: [docs/localization-parity.md]
 
 Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/gaps.md](docs/gaps.md).
 
-1. **No launch crashes, and CI on pull requests** (macOS 12, Intel UHD, Windows 11 reports; no workflow runs the tests today). 40–80 h.
+1. **No launch crashes, and verified CI on pull requests** (macOS 12, Intel UHD, Windows 11 reports; the three-platform gate needs live runner results). 40–80 h.
 2. **Open Premiere's `.prproj`**, the beta blocker. 60–120 h.
 3. **10-bit / 4:2:2 camera media without hardware** (H.264 High 10 / 4:2:2, HEVC 4:2:2; #626). 30–50 h.
 4. **Measure fidelity against Premiere** and add `cargo xtask parity`. 50–90 h.

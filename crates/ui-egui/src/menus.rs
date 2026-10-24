@@ -542,7 +542,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         // *after* them still wins; media that was already there when Copy/Cut ran is ignored so
         // Paste of cut/copied clips still works (#697).
         "edit.paste" | "edit.pasteInsert"
-            if params.as_object().is_none_or(|m| m.is_empty()) && matches!(app.ui.focused, PanelKind::Timeline | PanelKind::Project) =>
+            if params.as_object().is_none_or(|m| m.is_empty())
+                && matches!(app.ui.focused, PanelKind::Timeline | PanelKind::Project)
+                && !(id == "edit.paste" && app.ui.focused == PanelKind::Timeline && app.session.state.clipboard_transition.is_some()) =>
         {
             if let Some(r) = paste_clipboard_media(app, id == "edit.pasteInsert") {
                 return r;
@@ -600,7 +602,9 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     }
     if r.is_ok() && matches!(id, "edit.copy" | "edit.cut") {
         remember_stale_clipboard_media(app);
-        put_clip_names_on_system_clipboard(app, ctx);
+        if app.session.state.clipboard_transition.is_none() {
+            put_clip_names_on_system_clipboard(app, ctx);
+        }
     }
     r
 }

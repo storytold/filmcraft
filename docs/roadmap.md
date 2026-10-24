@@ -11,7 +11,7 @@ There is no `cargo xtask scorecard` or `cargo xtask parity` yet ([G7](gaps.md#g7
 
 In order. Each item links to its gap entry, which says what "done" means.
 
-1. **Stop launch crashes and add pull-request CI** ([G4](gaps.md#g4-crashes-at-start-up-and-no-test-ci-on-pull-requests)): `cargo xtask ci` on macOS, Windows and Linux for every PR; old-macOS and Intel-GPU start-up. 40–80 h.
+1. **Stop launch crashes and verify pull-request CI** ([G4](gaps.md#g4-launch-crashes-and-cross-platform-pr-ci)): confirm `cargo xtask ci` on macOS, Windows and Linux for every PR; old-macOS and Intel-GPU start-up. 40–80 h.
 2. **Open `.prproj`** ([G2](gaps.md#g2-premieres-prproj-cannot-be-opened)): the beta blocker. 60–120 h.
 3. **10-bit / 4:2:2 camera media in software** ([G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)). 30–50 h.
 4. **Fidelity harness against Premiere** ([G1](gaps.md#g1-nothing-compares-our-output-with-premieres)) and **`cargo xtask parity`** ([G7](gaps.md#g7-no-measured-parity-tool-in-ci)): turns estimates into measurements. 50–90 h.

@@ -104,6 +104,7 @@ pub fn select(s: &mut Session, p: &Value) -> Result<Value> {
         s.state.edit_points = vec![ep];
     }
     s.state.selection.clear();
+    s.state.transition_selection.clear();
     s.state.gap_selection = None;
     reset_shift(s);
     Ok(json!({"editPoints": s.state.edit_points}))
@@ -156,6 +157,7 @@ pub fn select_nearest(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.state.edit_points = points;
     s.state.selection.clear();
+    s.state.transition_selection.clear();
     s.state.gap_selection = None;
     reset_shift(s);
     Ok(json!({"editPoints": s.state.edit_points}))
