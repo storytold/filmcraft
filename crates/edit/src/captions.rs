@@ -215,6 +215,67 @@ pub fn move_captions(seq: &mut Sequence, ids: &[ClipId], delta: Tick) -> Result<
     Ok(d)
 }
 
+/// Place copies of `captions` on `track`, overwriting what lies under them (captions there are cut
+/// back, split or removed), as Paste and Option-drag do. The copies keep their text, speaker and
+/// settings at their own `start`/`duration`, and get new ids (returned in time order).
+pub fn overwrite_captions(seq: &mut Sequence, track: TrackId, captions: &[Caption], ctx: &mut EditCtx) -> Result<Vec<ClipId>> {
+    let min = ctx.min_duration;
+    let mut placed: Vec<Caption> = captions.iter().filter(|c| c.duration >= min).cloned().collect();
+    if placed.is_empty() {
+        return Err(EditError::Nothing);
+    }
+    placed.sort_by_key(|c| c.start);
+    if placed.first().is_some_and(|c| c.start < Tick::ZERO) {
+        return Err(EditError::Other("captions cannot start before the sequence".into()));
+    }
+    if placed.windows(2).any(|w| w[0].end() > w[1].start) {
+        return Err(EditError::Other("captions overlap".into()));
+    }
+    let tr = track_mut(seq, track)?;
+    for c in &mut placed {
+        c.id = ClipId(ctx.alloc());
+        c.cue_id = None;
+    }
+    for c in &placed {
+        clear_range(tr, c.start, c.end(), min, ctx);
+    }
+    let ids = placed.iter().map(|c| c.id).collect();
+    tr.captions.extend(placed);
+    tr.sort();
+    Ok(ids)
+}
+
+/// Clear `a..b` on a caption track without closing the gap: captions inside go, captions across an
+/// edge are cut back, a caption across the whole range is split. Pieces shorter than `min` go.
+fn clear_range(tr: &mut CaptionTrack, a: Tick, b: Tick, min: Tick, ctx: &mut EditCtx) {
+    let mut out = Vec::with_capacity(tr.captions.len() + 1);
+    for c in tr.captions.drain(..) {
+        let (s, e) = (c.start, c.end());
+        if e <= a || s >= b {
+            out.push(c);
+            continue;
+        }
+        let mut kept_left = false;
+        if s < a && a - s >= min {
+            let mut l = c.clone();
+            l.duration = a - s;
+            out.push(l);
+            kept_left = true;
+        }
+        if e > b && e - b >= min {
+            let mut r = c;
+            if kept_left {
+                r.id = ClipId(ctx.alloc());
+                r.cue_id = None;
+            }
+            r.start = b;
+            r.duration = e - b;
+            out.push(r);
+        }
+    }
+    tr.captions = out;
+}
+
 /// Delete captions. With `ripple`, later captions on the same track move left to close each gap.
 pub fn delete_captions(seq: &mut Sequence, ids: &[ClipId], ripple: bool) -> Result<usize> {
     let mut n = 0;
@@ -383,6 +444,40 @@ mod tests {
         let tr = seq.caption_track_mut(tid).unwrap();
         extract_range(tr, TimeRange::new(Tick(40), Tick(150)));
         assert_eq!(spans(&seq, tid), vec![(0, 40, "a".into()), (40, 80, "c".into())]);
+    }
+
+    #[test]
+    fn overwrite_cuts_splits_and_removes_what_is_under() {
+        let (mut seq, tid) = seq_with(&[(0, 100, "a"), (100, 50, "b"), (200, 100, "c")]);
+        let mut n = 1;
+        let copy = |s: i64, d: i64, t: &str| Caption {
+            id: ClipId(1),
+            start: Tick(s),
+            duration: Tick(d),
+            text: t.into(),
+            speaker: None,
+            cue_id: Some("x".into()),
+            settings: String::new(),
+        };
+        // across a's tail and all of b; then inside c (c is split around it)
+        let ids = overwrite_captions(&mut seq, tid, &[copy(60, 95, "x"), copy(230, 40, "y")], &mut ctx(&mut n)).unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(spans(&seq, tid), vec![(0, 60, "a".into()), (60, 155, "x".into()), (200, 230, "c".into()), (230, 270, "y".into()), (270, 300, "c".into())]);
+        let tr = seq.caption_track(tid).unwrap();
+        assert!(tr.captions.iter().all(|c| c.cue_id.is_none()));
+        let seen: std::collections::HashSet<u64> = tr.captions.iter().map(|c| c.id.0).collect();
+        assert_eq!(seen.len(), 5, "every piece has its own id");
+        assert!(seq.check().is_ok());
+        // a sliver under one frame is dropped, not kept
+        let (mut seq, tid) = seq_with(&[(0, 100, "a")]);
+        overwrite_captions(&mut seq, tid, &[copy(5, 90, "x")], &mut ctx(&mut n)).unwrap();
+        assert_eq!(spans(&seq, tid), vec![(5, 95, "x".into())]);
+        // hostile input: before zero, overlapping copies, nothing
+        assert!(overwrite_captions(&mut seq, tid, &[copy(-5, 50, "x")], &mut ctx(&mut n)).is_err());
+        assert!(overwrite_captions(&mut seq, tid, &[copy(0, 50, "x"), copy(40, 50, "y")], &mut ctx(&mut n)).is_err());
+        assert_eq!(overwrite_captions(&mut seq, tid, &[], &mut ctx(&mut n)), Err(EditError::Nothing));
+        seq.caption_track_mut(tid).unwrap().locked = true;
+        assert_eq!(overwrite_captions(&mut seq, tid, &[copy(0, 50, "x")], &mut ctx(&mut n)), Err(EditError::Locked));
     }
 
     #[test]

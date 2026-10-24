@@ -287,6 +287,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
         return r;
     }
+    if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
+        return r;
+    }
     if let Some(r) = crate::panels::settings::route(app, id) {
         return r;
     }
