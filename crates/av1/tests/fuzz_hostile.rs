@@ -20,8 +20,52 @@ impl Rng {
     }
 }
 
-/// (name, encoder args, pix_fmt)
-const SEEDS: &[(&str, &str, &str)] = &[("av1_fz_default", "-c:v libsvtav1 -g 4", "yuv420p"), ("av1_fz_10bit", "-c:v libsvtav1 -g 6", "yuv420p10le")];
+struct Seed {
+    name: &'static str,
+    encoder: &'static str,
+    /// Encoder arguments after `-c:v <encoder>`.
+    args: &'static str,
+    lavfi: &'static str,
+    frames: u32,
+    pix: &'static str,
+}
+
+const SMALL: &str = "testsrc2=size=64x48:rate=25";
+const AOM: &str = "-cpu-used 8 -g 3";
+
+const SEEDS: &[Seed] = &[
+    Seed { name: "av1_fz_default", encoder: "libsvtav1", args: "-g 4", lavfi: SMALL, frames: 6, pix: "yuv420p" },
+    Seed { name: "av1_fz_10bit", encoder: "libsvtav1", args: "-g 6", lavfi: SMALL, frames: 6, pix: "yuv420p10le" },
+    Seed { name: "av1_fz_444", encoder: "libaom-av1", args: AOM, lavfi: SMALL, frames: 3, pix: "yuv444p" },
+    Seed { name: "av1_fz_422_10bit", encoder: "libaom-av1", args: AOM, lavfi: SMALL, frames: 3, pix: "yuv422p10le" },
+    Seed { name: "av1_fz_12bit", encoder: "libaom-av1", args: AOM, lavfi: SMALL, frames: 3, pix: "yuv420p12le" },
+    Seed { name: "av1_fz_mono", encoder: "libaom-av1", args: AOM, lavfi: SMALL, frames: 3, pix: "gray" },
+    Seed { name: "av1_fz_screen", encoder: "libaom-av1", args: "-cpu-used 8 -g 3 -aom-params tune-content=screen", lavfi: SMALL, frames: 3, pix: "yuv420p" },
+    Seed {
+        name: "av1_fz_tiles",
+        encoder: "libaom-av1",
+        args: "-cpu-used 8 -g 3 -tile-columns 2 -tile-rows 1 -aom-params sb-size=64",
+        lavfi: "testsrc2=size=256x128:rate=25",
+        frames: 3,
+        pix: "yuv420p",
+    },
+    Seed {
+        name: "av1_fz_superres",
+        encoder: "libsvtav1",
+        args: "-g 3 -svtav1-params superres-mode=1:superres-denom=12:superres-kf-denom=13",
+        lavfi: "testsrc2=size=128x64:rate=25",
+        frames: 3,
+        pix: "yuv420p",
+    },
+    Seed {
+        name: "av1_fz_grain",
+        encoder: "libsvtav1",
+        args: "-g 3 -svtav1-params film-grain=10",
+        lavfi: "testsrc2=size=64x48:rate=25,noise=alls=20:allf=t",
+        frames: 3,
+        pix: "yuv420p",
+    },
+];
 
 fn ivf_frames(data: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
@@ -37,14 +81,14 @@ fn ivf_frames(data: &[u8]) -> Vec<Vec<u8>> {
     out
 }
 
-fn make(ff: &std::path::Path, name: &str, args: &str, pix: &str) -> Option<Vec<Vec<u8>>> {
-    let out = filmcraft_testkit::fixtures_dir("av1").join(format!("{name}.ivf"));
+fn make(ff: &std::path::Path, seed: &Seed) -> Option<Vec<Vec<u8>>> {
+    let out = filmcraft_testkit::fixtures_dir("av1").join(format!("{}.ivf", seed.name));
     let p = filmcraft_testkit::fixtures::generate(&out, |tmp| {
-        let a: Vec<&str> = args.split_whitespace().collect();
+        let frames = seed.frames.to_string();
         matches!(
             Command::new(ff)
-                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=25", "-frames:v", "6", "-pix_fmt", pix])
-                .args(a)
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", seed.lavfi, "-frames:v", &frames, "-pix_fmt", seed.pix, "-c:v", seed.encoder])
+                .args(seed.args.split_whitespace())
                 .args(["-f", "ivf"])
                 .arg(tmp)
                 .stdin(Stdio::null())
@@ -57,7 +101,7 @@ fn make(ff: &std::path::Path, name: &str, args: &str, pix: &str) -> Option<Vec<V
 
 static PANICS: AtomicUsize = AtomicUsize::new(0);
 
-/// Decoder worker threads may catch panics and turn them into errors; count them so they still fail the test.
+/// Frame workers catch panics and turn them into decoding errors; count them so they still fail the test.
 fn count_panics() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -84,6 +128,19 @@ fn run_all(frames: &[Vec<u8>], label: &str) {
     assert!(res.is_ok() && PANICS.load(Ordering::SeqCst) == before, "panic: {label}");
 }
 
+/// The unmutated seed decodes without error, so the sweep starts from a stream that reaches every stage.
+fn decodes_cleanly(frames: &[Vec<u8>], name: &str) {
+    for threads in [1, 3] {
+        let mut dec = Decoder::with_threads(threads);
+        let mut shown = 0;
+        for (i, f) in frames.iter().enumerate() {
+            shown += dec.decode_pts(f, i as i64).unwrap_or_else(|e| panic!("{name} frame {i} ({threads} threads): {e}")).len();
+        }
+        shown += dec.flush_result().unwrap_or_else(|e| panic!("{name} flush ({threads} threads): {e}")).len();
+        assert!(shown > 0, "{name} shows no frame");
+    }
+}
+
 /// Random-mutation rounds per seed (raise with FILMCRAFT_FUZZ_ITERS for a long hunt).
 fn iters() -> usize {
     std::env::var("FILMCRAFT_FUZZ_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(300)
@@ -99,18 +156,20 @@ fn hostile_streams_never_panic() {
 
 fn sweep() {
     let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("AV1 fuzz") else { return };
-    for &(name, args, pix) in SEEDS {
-        if !filmcraft_testkit::ffmpeg_has_encoder(&ff, "libsvtav1") {
-            filmcraft_testkit::skip("AV1 fuzz", &format!("this ffmpeg has no libsvtav1 encoder (seed {name})"));
+    for s in SEEDS {
+        let name = s.name;
+        if !filmcraft_testkit::ffmpeg_has_encoder(&ff, s.encoder) {
+            filmcraft_testkit::skip("AV1 fuzz", &format!("this ffmpeg has no {} encoder (seed {name})", s.encoder));
             continue;
         }
-        let Some(seed) = make(&ff, name, args, pix) else {
-            panic!("ffmpeg has libsvtav1 but could not encode the {name} seed");
+        let Some(seed) = make(&ff, s) else {
+            panic!("ffmpeg has {} but could not encode the {name} seed", s.encoder);
         };
         if seed.is_empty() {
             filmcraft_testkit::skip("AV1 fuzz", &format!("the {name} seed has no frames"));
             continue;
         }
+        decodes_cleanly(&seed, name);
         // truncate each of the first frames at every length
         for fi in 0..seed.len().min(3) {
             let len = seed[fi].len();
