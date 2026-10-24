@@ -658,3 +658,33 @@ fn finish(d: &ClipDialogDraft) -> Value {
     }
     p
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// Asserts that every undoable engine command that `opens` says opens a dialog of `table` (run
+    /// with no parameters) can be bound to a key, unless `except` names it with a reason (#2024).
+    /// The registry is walked instead of listing ids, so a command added to the table later is
+    /// checked as well. Non-undoable commands (views such as Properties) stay out of the shortcut
+    /// editor by design, so they are not checked.
+    pub(crate) fn assert_dialog_commands_bindable(table: &str, opens: impl Fn(&str) -> bool, except: &[&str]) {
+        let bindable = filmcraft_engine::Session::default().shortcuts.commands();
+        let checked: Vec<&str> =
+            filmcraft_engine::command_specs().iter().filter(|c| c.journal && opens(c.id) && !except.contains(&c.id)).map(|c| c.id).collect();
+        assert!(!checked.is_empty(), "{table}: no command was checked");
+        let missing: Vec<&str> = checked.into_iter().filter(|id| !bindable.iter().any(|b| b.id == *id)).collect();
+        assert!(
+            missing.is_empty(),
+            "{table}: {missing:?} open their dialog when run without parameters, so they must be bindable (mark the parameters the engine defaults as optional)"
+        );
+        for id in except {
+            assert!(opens(id), "{table}: {id} is excepted but no longer opens a dialog here");
+        }
+    }
+
+    #[test]
+    fn every_command_with_a_clip_dialog_can_be_bound() {
+        assert_dialog_commands_bindable("clip_dialogs::meta", |id| meta(id).is_some(), &[]);
+    }
+}
