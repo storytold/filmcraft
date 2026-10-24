@@ -349,7 +349,8 @@ fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     let e = ten.sample_entry();
     let v = e.video.as_ref().unwrap();
     assert!(v.color.is_some() && v.mastering_display.is_some() && v.content_light == Some((0, 0)));
-    assert!(eight.sample_entry().video.as_ref().unwrap().color.is_none());
+    assert!(eight.sample_entry().video.as_ref().unwrap().mastering_display.is_none());
+    assert!(eight.sample_entry().video.as_ref().unwrap().content_light.is_none());
     // HLG: colr only
     let Some(Ok(hlg)) = factory(Format::Hevc, w, h, rate, &ExportSettings { signal: ColorSignal::HLG, ..sdr_settings.clone() }) else {
         panic!("an HLG encoder")
