@@ -3587,7 +3587,7 @@
 	No matching text.	Nenhum texto corresponde.
 # Parakeet speech model and word-by-word captions.
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (máxima precisão, tempo por palavra)
-	0 = no limit. 1 makes word-by-word captions that keep each word's own timing.	0 = sem limite. 1 cria legendas palavra por palavra que mantêm o tempo de cada palavra.
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = sem limite. 1 cria legendas palavra por palavra; com duração mínima de 0, cada palavra mantém o próprio tempo.
 	A shorter caption is held into the silence after it, never over the next caption.	Uma legenda mais curta é estendida no silêncio seguinte, nunca sobre a próxima legenda.
 	Caption preset	Predefinição de legendas
 	Captioning Preferences (format, max/min length, lines)	Preferências de legendagem (formato, comprimento máx./mín., linhas)

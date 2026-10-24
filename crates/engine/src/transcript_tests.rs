@@ -208,4 +208,11 @@ fn create_captions_with_dialog_settings() {
     let old: crate::autosave::Preferences = serde_json::from_value(json!({"version": 2})).unwrap();
     assert_eq!(old.captions.last, CaptionSettings::default(), "older prefs files open with the defaults");
     assert_eq!(builtin_caption_presets()[0].settings, CaptionSettings::default());
+
+    // the dialog always sends its minimum: the Word by Word preset's 0 keeps each word's own
+    // timing, and a word-by-word setup with a minimum keeps that minimum
+    let words = builtin_caption_presets().into_iter().find(|p| p.name == "Word by Word").unwrap().settings;
+    assert_eq!((words.params()["wordsPerCaption"].as_u64(), words.params()["minSeconds"].as_f64()), (Some(1), Some(0.0)));
+    let held = CaptionSettings { words_per_caption: 1, min_seconds: 1.2, ..words };
+    assert_eq!(held.params()["minSeconds"].as_f64(), Some(1.2));
 }

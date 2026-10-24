@@ -330,7 +330,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui,
                     "captions.wordsPerCaption",
                     tl!("Maximum words per caption"),
-                    tl!("0 = no limit. 1 makes word-by-word captions that keep each word's own timing."),
+                    tl!("0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing."),
                     &mut v,
                     0.0..=20.0,
                     0,
