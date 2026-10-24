@@ -89,6 +89,11 @@ fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
     }
 }
 /// Clips, captions or a gap selected (Ripple Delete: a transition has no length of its own to close).
+/// Delete/Ripple Delete with no explicit clips and both clips and captions selected (Select All).
+fn clips_and_captions_selected(s: &Session, p: &Value) -> bool {
+    p.get("clips").is_none() && p.get("clip").is_none() && !s.state.selection.is_empty() && !s.state.caption_selection.is_empty()
+}
+
 fn has_clip_or_caption_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.gap_selection.is_none() {
@@ -1649,9 +1654,15 @@ fn build() -> Vec<CommandSpec> {
             }
             // An Alt selection is already exact; explicit targets keep the command's linked behavior.
             let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
+            // Select All leaves clips and captions both selected: Delete takes both, one undo step (#1912)
+            let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
             s.edit_sequence("Clear", |q, _, st| {
                 edit::delete_items(q, &sel);
                 st.selection.clear();
+                if !caps.is_empty() {
+                    edit::captions::delete_captions(q, &caps, false)?;
+                    st.caption_selection.retain(|c| !caps.contains(c));
+                }
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -1667,6 +1678,7 @@ fn build() -> Vec<CommandSpec> {
                 return crate::captions::delete(s, &caps, true);
             }
             let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
+            let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
             s.edit_sequence("Ripple Delete", |q, _, st| {
                 let spans = edit::ripple_delete_items(q, &sel)?;
                 if st.ripple_sequence_markers {
@@ -1675,6 +1687,10 @@ fn build() -> Vec<CommandSpec> {
                     }
                 }
                 st.selection.clear();
+                if !caps.is_empty() {
+                    edit::captions::delete_captions(q, &caps, true)?;
+                    st.caption_selection.retain(|c| !caps.contains(c));
+                }
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -1733,7 +1749,11 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.selectAll", "Select All", ["Edit"], Some("Cmd+A"), "{}", has_seq, |s, _| {
             let all: Vec<ClipId> = s.active_sequence().map(|q| q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.id)).collect()).unwrap_or_default();
+            // captions too, so they can all be converted to graphics at once (#1912)
+            let caps: Vec<ClipId> =
+                s.active_sequence().map(|q| q.caption_tracks.iter().flat_map(|t| t.captions.iter().map(|c| c.id)).collect()).unwrap_or_default();
             s.state.selection = all;
+            s.state.caption_selection = caps;
             s.state.gap_selection = None;
             Ok(json!({"selected": s.state.selection.len()}))
         }),

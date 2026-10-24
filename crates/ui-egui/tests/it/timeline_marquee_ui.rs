@@ -184,3 +184,33 @@ fn escape_cancels_the_box_and_restores_the_selection() {
     d.frames(2);
     assert!(d.selected(a) && !d.selected(b), "Escape put back the selection the drag began with");
 }
+
+/// #1912: the box also selects the captions it touches on the caption tracks above the clips.
+#[test]
+fn the_box_selects_captions_it_touches() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let mut ids = Vec::new();
+    for (i, text) in ["One", "Two", "Three"].iter().enumerate() {
+        let r = d.exec("captions.add", json!({"text": text, "seconds": 1 + 4 * i, "durationSeconds": 2}));
+        ids.push(r["caption"].as_u64().unwrap());
+    }
+    d.exec("edit.deselectAll", json!({}));
+    d.frames(3);
+    let rects: Vec<egui::Rect> = ids.iter().map(|id| d.rect(&format!("timeline.caption.{id}"))).collect();
+    let y = rects[0].center().y;
+    // from empty lane space left of the first caption to the middle of the second
+    let start = egui::pos2(rects[0].min.x - 4.0, y);
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    let end = egui::pos2(rects[1].center().x, y);
+    d.move_to(start, end);
+    let sel = |d: &Driver| d.harness.state().session.state.caption_selection.clone();
+    assert_eq!(sel(&d), vec![ClipId(ids[0]), ClipId(ids[1])], "live while dragging");
+    d.button(end, false);
+    d.frames(2);
+    assert_eq!(sel(&d), vec![ClipId(ids[0]), ClipId(ids[1])], "kept on release");
+    d.exec("graphics.upgradeCaption", json!({}));
+    let left = d.exec("captions.list", json!({}))["tracks"][0]["captions"].as_array().unwrap().len();
+    assert_eq!(left, 1, "both boxed captions became graphics");
+}
