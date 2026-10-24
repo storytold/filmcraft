@@ -11,8 +11,11 @@
 //!   from it. Proxy frames are smaller; the source still reports the full-resolution size, and the
 //!   compositor derives its pixel scale from the frame it gets, so effects and Motion render the
 //!   same picture at lower resolution. Export asks for [`MediaPool::full_res_provider`].
+//! - Paths that came from a document (the project file, a template, an interchange file) are
+//!   opened through [`crate::doc_path`] ([`MediaPool::follow`]); a refused one renders as missing.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -32,14 +35,30 @@ pub struct OfflineStatus {
     pub error: String,
 }
 
+/// An offline item an export or a rendered frame drew the slate for (#1054). `status` is the
+/// word `media.status` uses: `missing`, `offline` (made offline) or `unreadable`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct OfflineMedia {
+    pub item: u64,
+    pub name: String,
+    pub path: String,
+    pub status: &'static str,
+    pub error: String,
+}
+
 pub struct MediaPool {
     /// item → (reference key, source)
     sources: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     proxies: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
     use_proxies: AtomicBool,
+    /// Per item: video frames that failed in a row in the monitors (see [`Self::monitor_source`]).
+    failures: Arc<Mutex<HashMap<ItemId, u32>>>,
     /// Openers tried before the built-in ones (MP4/MOV + codecs register here).
     pub openers: RwLock<Vec<Opener>>,
+    /// Media and proxy paths that came from a document, with that document's path (see
+    /// [`Self::follow`]).
+    stored: RwLock<HashMap<String, Option<PathBuf>>>,
 }
 
 impl Default for MediaPool {
@@ -50,13 +69,15 @@ impl Default for MediaPool {
             proxies: RwLock::new(HashMap::new()),
             offline: Arc::new(RwLock::new(HashMap::new())),
             use_proxies: AtomicBool::new(false),
+            failures: Arc::default(),
             openers: RwLock::new(filmcraft_codecs::openers()),
+            stored: RwLock::default(),
         }
     }
 }
 
 /// Largest file [`MediaPool::probe_file`] reads whole when no streaming reader takes it (WAV,
-/// MP3 and other byte-opened formats, or an unsupported container such as AVI).
+/// MP3 and other byte-opened formats, or an unsupported container).
 pub const PROBE_WHOLE_FILE_MAX: u64 = 64 * 1024 * 1024;
 
 /// Cache key of a media clip's full-resolution reference ("" matches anything: sources inserted
@@ -159,6 +180,54 @@ impl MediaPool {
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
     }
 
+    /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
+    /// without a file), as stored paths: they are opened only as [`crate::doc_path::resolve`]
+    /// allows. A path already recorded keeps the document it came from first.
+    pub fn add_stored(&self, p: &Project, document: Option<&str>) {
+        let paths = p.items.values().filter_map(|i| i.as_media()).flat_map(|m| [Some(&m.media), m.proxy.as_ref()]).filter_map(|r| match r {
+            Some(MediaRef::File { path }) => Some(path.clone()),
+            _ => None,
+        });
+        self.add_stored_paths(paths, document);
+    }
+
+    /// [`Self::add_stored`] for single paths.
+    pub fn add_stored_paths(&self, paths: impl IntoIterator<Item = String>, document: Option<&str>) {
+        let document = document.filter(|d| !d.is_empty()).map(PathBuf::from);
+        let mut stored = self.stored.write().unwrap_or_else(|e| e.into_inner());
+        for p in paths {
+            stored.entry(p).or_insert_with(|| document.clone());
+        }
+    }
+
+    /// Forget the stored paths (a new project).
+    pub fn clear_stored(&self) {
+        self.stored.write().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    /// The user picked `path` in this session (import, Link Media): open it as given.
+    pub fn allow(&self, path: &str) {
+        self.stored.write().unwrap_or_else(|e| e.into_inner()).remove(path);
+    }
+
+    /// The file to open for `path`, a media or proxy path of the project: a stored path as
+    /// [`crate::doc_path::resolve`] resolves it, any other path as given.
+    pub fn follow(&self, path: &str) -> Result<String, crate::doc_path::NotFollowed> {
+        // The web host reads only the files the user gave it, under its own virtual paths.
+        if cfg!(target_arch = "wasm32") {
+            return Ok(path.to_string());
+        }
+        match self.stored.read().unwrap_or_else(|e| e.into_inner()).get(path) {
+            Some(document) => crate::doc_path::resolve(path, document.as_deref()),
+            None => Ok(path.to_string()),
+        }
+    }
+
+    /// [`Self::follow`] as a media error (a refused path is a missing file).
+    fn follow_media(&self, path: &str) -> Result<String, MediaError> {
+        self.follow(path).map_err(|why| MediaError::Offline(format!("{path} is not opened: {why}")))
+    }
+
     /// Forget every opened source (files are re-read on next use).
     pub fn clear(&self) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).clear();
@@ -181,6 +250,19 @@ impl MediaPool {
 
     pub fn set_use_proxies(&self, on: bool) {
         self.use_proxies.store(on, Ordering::Relaxed);
+    }
+
+    /// `src` (item `item`) as the monitors show it: once [`DAMAGED_AFTER`] of its video frames in a
+    /// row fail to decode or read (a damaged file), its failing frames show the unreadable slate
+    /// instead of nothing, until a frame decodes again (#626, follow-up to #762). Only for preview:
+    /// exports and other renders use the pool's sources directly, so they never contain the slate.
+    pub fn monitor_source(&self, item: ItemId, src: SharedSource) -> SharedSource {
+        Arc::new(DamagedAsSlate {
+            slate: SlateSource::new(src.info().clone(), &src.info().name, OfflineReason::Unreadable),
+            inner: src,
+            item,
+            failures: self.failures.clone(),
+        })
     }
 
     /// Why an item last rendered offline (None = online or not opened yet).
@@ -252,11 +334,13 @@ impl MediaPool {
                 self.set_offline(item, OfflineReason::MadeOffline, path, "made offline");
                 Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
             }
-            MediaRef::File { path } => match if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
-                open_image_sequence(path, services, m.info.frame_rate(), &it.name)
-            } else {
-                self.open_file(path, services)
-            } {
+            MediaRef::File { path } => match self.follow_media(path).and_then(|file| {
+                if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
+                    open_image_sequence(&file, services, m.info.frame_rate(), &it.name)
+                } else {
+                    self.open_file(&file, services)
+                }
+            }) {
                 Ok(s) => {
                     self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
                     self.unsupported_as_slate(item, path, s)
@@ -288,7 +372,7 @@ impl MediaPool {
         {
             return Some(s.clone());
         }
-        match self.open_file(path, services) {
+        match self.follow_media(path).and_then(|file| self.open_file(&file, services)) {
             Ok(s) => {
                 // a proxy with fewer audio streams than the original (say one track of an OBS
                 // recording's seven) still stands in for the picture; the audio comes from the
@@ -296,7 +380,7 @@ impl MediaPool {
                 let audio_from = if s.info().audio_streams.len() < m.info.audio_streams.len() {
                     log::warn!("proxy has fewer audio streams than the original: {path}; audio from full-resolution media");
                     match &m.media {
-                        MediaRef::File { path: original } if !m.offline => self.open_file(original, services).ok(),
+                        MediaRef::File { path: original } if !m.offline => self.follow_media(original).and_then(|file| self.open_file(&file, services)).ok(),
                         _ => None,
                     }
                 } else {
@@ -316,12 +400,12 @@ impl MediaPool {
 
     /// A render-side provider bound to a project snapshot (proxies when enabled).
     pub fn provider(self: &Arc<Self>, project: Arc<Project>, services: Arc<dyn Services>) -> PoolProvider {
-        PoolProvider { pool: self.clone(), project, services, full_res: false }
+        PoolProvider { pool: self.clone(), project, services, full_res: false, used: None }
     }
 
     /// A provider that always reads full-resolution media (export).
     pub fn full_res_provider(self: &Arc<Self>, project: Arc<Project>, services: Arc<dyn Services>) -> PoolProvider {
-        PoolProvider { pool: self.clone(), project, services, full_res: true }
+        PoolProvider { pool: self.clone(), project, services, full_res: true, used: None }
     }
 }
 
@@ -332,10 +416,45 @@ pub struct PoolProvider {
     pub services: Arc<dyn Services>,
     /// Ignore proxies (export always renders full resolution).
     pub full_res: bool,
+    /// Items asked for so far, when recording ([`PoolProvider::recording`]).
+    used: Option<Mutex<BTreeSet<ItemId>>>,
+}
+
+impl PoolProvider {
+    /// This provider, remembering the items it is asked for so [`PoolProvider::offline_used`] can
+    /// tell which of them rendered offline.
+    pub fn recording(mut self) -> Self {
+        self.used = Some(Mutex::new(BTreeSet::new()));
+        self
+    }
+
+    /// The offline items among those asked for since [`PoolProvider::recording`], once each, in
+    /// item order (subclips count as their media). Empty when not recording.
+    pub fn offline_used(&self) -> Vec<OfflineMedia> {
+        let Some(used) = &self.used else { return Vec::new() };
+        let used = used.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let media: BTreeSet<ItemId> = used.into_iter().filter_map(|i| self.project.resolve_media(i).map(|(id, _, _)| id)).collect();
+        media
+            .into_iter()
+            .filter_map(|id| {
+                let st = self.pool.offline_status(id)?;
+                let status = match st.reason {
+                    OfflineReason::Missing => "missing",
+                    OfflineReason::MadeOffline => "offline",
+                    OfflineReason::Unreadable => "unreadable",
+                };
+                let name = self.project.item(id).map(|i| i.name.clone()).unwrap_or_default();
+                Some(OfflineMedia { item: id.0, name, path: st.path, status, error: st.error })
+            })
+            .collect()
+    }
 }
 
 impl filmcraft_render::SourceProvider for PoolProvider {
     fn source(&self, item: ItemId) -> Option<SharedSource> {
+        if let Some(used) = &self.used {
+            used.lock().unwrap_or_else(|e| e.into_inner()).insert(item);
+        }
         if self.full_res { self.pool.full_res_source(&self.project, item, &*self.services) } else { self.pool.source_for(&self.project, item, &*self.services) }
     }
 }
@@ -407,6 +526,54 @@ impl MediaSource for UnsupportedAsSlate {
                     OfflineStatus { reason: OfflineReason::Unreadable, path: self.path.clone(), error: why }
                 });
                 self.slate.video_frame(req)
+            }
+            r => r,
+        }
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        self.inner.audio(start, frames, sample_rate)
+    }
+    fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        self.inner.audio_stream(stream, start, frames, sample_rate)
+    }
+}
+
+/// Consecutive failed video frames after which a monitor treats a source as damaged. A single
+/// failure (one bad slice, a read hiccup) and the decoder's retry of it stay as they were; three
+/// in a row (an eighth of a second at 24 fps) mean the file itself is damaged.
+pub const DAMAGED_AFTER: u32 = 3;
+
+/// See [`MediaPool::monitor_source`]. Counts `Decode` / `Io` failures per item; a successful frame
+/// resets the count. Data still on its way (the web build's pending reads, see
+/// [`filmcraft_media::pending`]) neither counts nor resets, and cancellation, absent video and
+/// unsupported frames (already the slate, #762) pass through.
+struct DamagedAsSlate {
+    inner: SharedSource,
+    slate: SlateSource,
+    item: ItemId,
+    failures: Arc<Mutex<HashMap<ItemId, u32>>>,
+}
+
+impl MediaSource for DamagedAsSlate {
+    fn info(&self) -> &MediaInfo {
+        self.inner.info()
+    }
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        let r = self.inner.video_frame(req);
+        let mut failures = self.failures.lock().unwrap_or_else(|e| e.into_inner());
+        match r {
+            Ok(f) => {
+                failures.remove(&self.item);
+                Ok(f)
+            }
+            Err(MediaError::Decode(_) | MediaError::Io(_)) if !filmcraft_media::pending::is_set() => {
+                let n = failures.entry(self.item).or_insert(0);
+                *n = n.saturating_add(1);
+                if *n >= DAMAGED_AFTER {
+                    drop(failures);
+                    return self.slate.video_frame(req);
+                }
+                r
             }
             r => r,
         }
@@ -590,6 +757,123 @@ mod tests {
         // linking the item to another file forgets the reason
         pool.insert_file(item, "/media/cam/b.mov", src.clone());
         assert!(pool.offline_status(item).is_none());
+    }
+
+    /// A source whose video decodes (`OK`) or fails as its mode says, switchable at run time.
+    struct Flaky(MediaInfo, std::sync::atomic::AtomicU8);
+    const OK: u8 = 0;
+    const DAMAGED: u8 = 1;
+    const IO: u8 = 2;
+    const LOADING: u8 = 3;
+    const CANCELLED: u8 = 4;
+    const NO_VIDEO: u8 = 5;
+    impl Flaky {
+        fn set(&self, mode: u8) {
+            self.1.store(mode, Ordering::Relaxed);
+        }
+    }
+    impl MediaSource for Flaky {
+        fn info(&self) -> &MediaInfo {
+            &self.0
+        }
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            Err(match self.1.load(Ordering::Relaxed) {
+                OK => return Ok(Arc::new(VideoFrame::rgba8(2, 2, vec![7; 16]))),
+                DAMAGED => MediaError::Decode("damaged slice".into()),
+                IO => MediaError::Io("short read".into()),
+                LOADING => {
+                    // as the web build's WebCodecs / Blob sources do
+                    filmcraft_media::pending::mark();
+                    MediaError::Decode("still decoding".into())
+                }
+                CANCELLED => MediaError::Cancelled,
+                _ => MediaError::NoStream("video"),
+            })
+        }
+        fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+            Ok(AudioBuffer::silence(sample_rate, 1, frames))
+        }
+    }
+
+    fn flaky() -> (MediaPool, ItemId, Arc<Flaky>) {
+        let info = GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.0; 4] }, 16, 8, Default::default(), filmcraft_time::Tick(100))
+            .info()
+            .clone();
+        (MediaPool::default(), ItemId(1), Arc::new(Flaky(info, Default::default())))
+    }
+
+    fn frame(src: &SharedSource) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        src.video_frame(FrameRequest { time: filmcraft_time::Tick(0), scale: 1.0 })
+    }
+
+    fn is_slate(r: &filmcraft_media::Result<Arc<VideoFrame>>, name: &str) -> bool {
+        r.as_ref().is_ok_and(|f| f.to_rgba8() == filmcraft_render::offline::slate_rgba8(16, 8, name, OfflineReason::Unreadable))
+    }
+
+    /// #626 follow-up to #762: a damaged file (frames failing again and again) shows the
+    /// unreadable slate in the monitors; one failure does not, and a decoded frame clears it.
+    #[test]
+    fn monitors_show_the_slate_for_persistently_failing_frames_only() {
+        let (pool, item, src) = flaky();
+        let name = src.info().name.clone();
+        let mon = pool.monitor_source(item, src.clone());
+        for mode in [DAMAGED, IO] {
+            src.set(mode);
+            for _ in 1..DAMAGED_AFTER {
+                assert!(frame(&mon).is_err(), "a transient failure stays as it was");
+            }
+            assert!(is_slate(&frame(&mon), &name), "persistent failure shows the slate");
+            assert!(is_slate(&frame(&mon), &name));
+            // recovery clears it, and one failure after that is transient again
+            src.set(OK);
+            assert_eq!(frame(&mon).unwrap().to_rgba8(), vec![7; 16]);
+            src.set(DAMAGED);
+            assert!(frame(&mon).is_err());
+            src.set(OK);
+            assert!(frame(&mon).is_ok());
+        }
+        // cancellation and absent video never become the slate
+        for mode in [CANCELLED, NO_VIDEO] {
+            src.set(mode);
+            for _ in 0..DAMAGED_AFTER * 2 {
+                assert!(frame(&mon).is_err());
+            }
+        }
+    }
+
+    /// Pictures still on their way (the web build's pending reads) never count as damage.
+    #[test]
+    fn still_decoding_frames_never_show_the_slate() {
+        let (pool, item, src) = flaky();
+        let mon = pool.monitor_source(item, src.clone());
+        src.set(LOADING);
+        for _ in 0..DAMAGED_AFTER * 4 {
+            assert!(frame(&mon).is_err());
+            assert!(filmcraft_media::pending::take());
+        }
+        // and they do not interrupt a run of real failures either way: a following damaged frame
+        // is still only the first
+        src.set(DAMAGED);
+        assert!(frame(&mon).is_err());
+    }
+
+    /// Exports read the pool's own sources: a damaged file never burns the slate into them,
+    /// however often the monitors have shown it.
+    #[test]
+    fn export_sources_never_show_the_damaged_slate() {
+        let (pool, item, src) = flaky();
+        let name = src.info().name.clone();
+        pool.insert(item, src.clone());
+        let mon = pool.monitor_source(item, pool.cached(item).unwrap());
+        src.set(DAMAGED);
+        for _ in 0..DAMAGED_AFTER {
+            let _ = frame(&mon);
+        }
+        assert!(is_slate(&frame(&mon), &name));
+        let export = pool.cached(item).unwrap();
+        for _ in 0..DAMAGED_AFTER * 2 {
+            assert!(matches!(frame(&export), Err(MediaError::Decode(_))));
+        }
     }
 
     /// #626 end to end: an H.264 profile FilmCraft does not decode yet (4:4:4) imports and shows

@@ -36,7 +36,7 @@ fn same_motion(a: &MvField, b: &MvField) -> bool {
     true
 }
 
-impl<'a> SliceDecoder<'a> {
+impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
     /// Prediction block availability (6.4.2).
     fn pb_avail(&self, xc: i32, yc: i32, ncb: i32, xp: i32, yp: i32, w: i32, h: i32, part_idx: usize, xn: i32, yn: i32) -> bool {
         let same_cb = xc <= xn && yc <= yn && xc + ncb > xn && yc + ncb > yn;

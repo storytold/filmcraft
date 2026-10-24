@@ -50,11 +50,23 @@ pub struct AutoSavePrefs {
     pub recovery_journal: bool,
     /// Longest time (s) unsaved changes may stay out of the journal while edits keep coming.
     pub recovery_interval_seconds: u32,
+    /// Folders chosen in Project Settings ▸ Scratch Disks on this computer. A project file may
+    /// name these, or folders inside its own folder; see
+    /// [`crate::project_tools::trusted_scratch`].
+    pub scratch_folders: Vec<String>,
 }
 
 impl Default for AutoSavePrefs {
     fn default() -> Self {
-        Self { enabled: true, interval_minutes: 5, max_versions: 20, save_current_project: false, recovery_journal: true, recovery_interval_seconds: 5 }
+        Self {
+            enabled: true,
+            interval_minutes: 5,
+            max_versions: 20,
+            save_current_project: false,
+            recovery_journal: true,
+            recovery_interval_seconds: 5,
+            scratch_folders: Vec::new(),
+        }
     }
 }
 
@@ -572,15 +584,16 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         if !dir.is_dir() || Some(dir.as_path()) == skip || !lock_is_stale(&dir) {
             continue;
         }
-        let meta = fs::read(dir.join(META)).ok().and_then(|b| serde_json::from_slice::<JournalMeta>(&b).ok());
-        match meta {
-            Some(meta) if dir.join(SNAPSHOT).is_file() => {
-                out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
-            }
-            _ => {
-                let _ = fs::remove_dir_all(&dir);
-            }
+        let snap = dir.join(SNAPSHOT);
+        if !snap.is_file() {
+            // Empty leftover dirs (clean exit, or a crash before the first snapshot).
+            let _ = fs::remove_dir_all(&dir);
+            continue;
         }
+        // Keep the snapshot even when session.json is missing or unreadable: the project
+        // is still recoverable. Meta fields fall back to defaults.
+        let meta = fs::read(dir.join(META)).ok().and_then(|b| serde_json::from_slice::<JournalMeta>(&b).ok()).unwrap_or_default();
+        out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
     }
     out.sort_by(|a, b| b.meta.saved_unix.cmp(&a.meta.saved_unix).then(b.id.cmp(&a.id)));
     out
@@ -999,21 +1012,18 @@ impl Worker {
 
     fn auto_save(&mut self) -> Result<PathBuf, String> {
         let Some(s) = &self.latest else { return Err("nothing to save".into()) };
-        let scratch = s.project.settings.scratch.auto_save.clone().filter(|d| !d.is_empty());
-        let (dir, name) = match &s.path {
+        let scratch = crate::project_tools::trusted_scratch(s.project.settings.scratch.auto_save.as_deref(), s.path.as_deref(), &self.prefs.scratch_folders);
+        let (dir, name) = match (&s.path, scratch) {
             // Project Settings ▸ Scratch Disks ▸ Project Auto Save
-            Some(p) if scratch.is_some() => {
+            (Some(p), Some(scratch)) => {
                 let p = Path::new(p);
-                (
-                    PathBuf::from(scratch.clone().unwrap_or_default()),
-                    p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.project.name.clone()),
-                )
+                (scratch, p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.project.name.clone()))
             }
-            Some(p) => {
+            (Some(p), None) => {
                 let p = Path::new(p);
                 (names::auto_save_dir(p), p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.project.name.clone()))
             }
-            None => (self.data_dir.join(names::AUTO_SAVE_DIR), s.project.name.clone()),
+            (None, _) => (self.data_dir.join(names::AUTO_SAVE_DIR), s.project.name.clone()),
         };
         let t0 = Instant::now();
         let bytes = filmcraft_format::encode(&s.project, false);

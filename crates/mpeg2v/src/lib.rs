@@ -44,6 +44,9 @@ use headers::{EXTENSION, GROUP_START, PICTURE_START, SEQUENCE_END, SEQUENCE_HEAD
 use mc::Frame;
 use slice::{PicParams, Target, decode_slice, slice_row};
 
+/// One access unit must not retain an unbounded number of cropped decoded pictures.
+const MAX_OUTPUT_PICTURES_PER_ACCESS_UNIT: usize = 8;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid MPEG video: {0}")]
@@ -163,6 +166,9 @@ struct Seq {
 /// MPEG-1 pel_aspect_ratio (height/width of a sample) ×10000, Table 2-D.2.
 const MPEG1_PEL_ASPECT: [u32; 15] = [0, 10000, 6735, 7031, 7615, 8055, 8437, 8935, 9157, 9815, 10255, 10695, 10950, 11575, 12015];
 
+/// Largest accepted luma area (8192 x 4096; 8K UHD is 7680 x 4320).
+const MAX_PICTURE_AREA: u64 = 1 << 25;
+
 impl Seq {
     fn new(hdr: SequenceHeader, ext: Option<SequenceExtension>, display: Option<DisplayExtension>) -> Result<Seq> {
         let (w, h) = match &ext {
@@ -175,7 +181,9 @@ impl Seq {
             3 => ChromaFormat::Yuv444,
             _ => return Err(Error::Invalid("reserved chroma_format".into())),
         };
-        if w > 16383 || h > 16383 {
+        // The 14-bit sizes allow 16383 x 16383 (gigabytes per frame, several frames and a gray reference
+        // held); no real stream exceeds 8K, so cap the area there.
+        if w > 16383 || h > 16383 || u64::from(w) * u64::from(h) > MAX_PICTURE_AREA {
             return Err(Error::Unsupported(format!("{w}x{h}")));
         }
         let progressive_sequence = ext.is_none_or(|e| e.progressive_sequence);
@@ -333,11 +341,16 @@ pub fn access_units(es: &[u8]) -> Vec<std::ops::Range<usize>> {
             }
             PICTURE_START => {
                 // picture_structure from the picture coding extension that follows
-                let structure = codes[k + 1..]
+                let structure = codes
                     .iter()
-                    .take_while(|c| c.1 == EXTENSION || c.1 == headers::USER_DATA)
-                    .find_map(|&(p, c)| {
-                        let end = codes.iter().find(|x| x.0 > p).map_or(es.len(), |x| x.0);
+                    .enumerate()
+                    .skip(k + 1)
+                    .take_while(|(_, c)| c.1 == EXTENSION || c.1 == headers::USER_DATA)
+                    .find_map(|(next, &(p, c))| {
+                        // `next` is this unit's position in `codes`, so its successor gives the
+                        // payload end directly. Searching `codes` from the beginning here made a
+                        // stream of short picture/extension pairs quadratic to index.
+                        let end = codes.get(next + 1).map_or(es.len(), |x| x.0);
                         (c == EXTENSION).then(|| Extension::parse(&es[(p + 4).min(end)..end]).ok()).flatten()
                     })
                     .and_then(|e| match e {
@@ -413,6 +426,7 @@ pub struct Decoder {
     gray: Option<Arc<Frame>>,
     pending: Option<Pending>,
     out: Vec<Picture>,
+    output_overflow: bool,
     errors: usize,
     last_error: Option<&'static str>,
     threads: bool,
@@ -437,6 +451,7 @@ impl Decoder {
             gray: None,
             pending: None,
             out: Vec::new(),
+            output_overflow: false,
             errors: 0,
             last_error: None,
             threads: cfg!(feature = "threads"),
@@ -466,6 +481,7 @@ impl Decoder {
     /// Decode a chunk of the elementary stream holding whole pictures (an access unit) tagged
     /// with `pts`. Returns the pictures that became displayable, in display order.
     pub fn decode(&mut self, data: &[u8], pts: i64) -> Result<Vec<Picture>> {
+        self.output_overflow = false;
         let codes = start_codes(data);
         let mut err = None;
         for (k, &(pos, code)) in codes.iter().enumerate() {
@@ -544,6 +560,10 @@ impl Decoder {
         }
         self.apply_sequence();
         self.finish_picture(data, pts);
+        if self.output_overflow {
+            self.out.clear();
+            return Err(Error::Invalid("access unit produces too many decoded pictures".into()));
+        }
         let out = std::mem::take(&mut self.out);
         match err {
             Some(e) if out.is_empty() && self.seq.is_none() => Err(e),
@@ -561,7 +581,7 @@ impl Decoder {
         {
             a.shown = true;
             let p = to_picture(&a.frame, &a.meta);
-            self.out.push(p);
+            self.push_output(p);
         }
         std::mem::take(&mut self.out)
     }
@@ -574,6 +594,7 @@ impl Decoder {
         self.building = None;
         self.pending = None;
         self.out.clear();
+        self.output_overflow = false;
         self.closed_gop = false;
     }
 
@@ -597,6 +618,11 @@ impl Decoder {
 
     fn finish_picture(&mut self, data: &[u8], pts: i64) {
         let Some(pd) = self.pending.take() else { return };
+        if pd.slices.is_empty() {
+            self.errors += 1;
+            self.last_error = Some("picture has no slices");
+            return;
+        }
         let Some(seq) = self.seq.clone() else {
             self.errors += 1;
             return;
@@ -696,13 +722,21 @@ impl Decoder {
             if let Some(mut prev) = self.bwd.take() {
                 if !prev.shown {
                     prev.shown = true;
-                    self.out.push(to_picture(&prev.frame, &prev.meta));
+                    self.push_output(to_picture(&prev.frame, &prev.meta));
                 }
                 self.fwd = Some(prev);
             }
             self.bwd = Some(Anchor { frame: Arc::new(frame), meta, shown: false });
         } else {
-            self.out.push(to_picture(&frame, &meta));
+            self.push_output(to_picture(&frame, &meta));
+        }
+    }
+
+    fn push_output(&mut self, picture: Picture) {
+        if self.out.len() >= MAX_OUTPUT_PICTURES_PER_ACCESS_UNIT {
+            self.output_overflow = true;
+        } else {
+            self.out.push(picture);
         }
     }
 }

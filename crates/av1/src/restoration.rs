@@ -1,6 +1,8 @@
 //! Super-resolution upscaling (7.16) and loop restoration (7.17).
 
-use crate::frame::{FrameBuf, Plane};
+use crate::frame::{FrameBuf, Plane, RowBand};
+use crate::par::Pool;
+use crate::postfilter::bands;
 use crate::spec_tables::*;
 use crate::state::FrameState;
 
@@ -70,56 +72,66 @@ impl LrCtx<'_> {
 }
 
 /// Loop restoration (7.17): returns LrFrame given UpscaledCurrFrame and UpscaledCdefFrame.
-pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf) -> FrameBuf {
+/// Bands of 64 luma rows are restored in parallel: every unit reads only the two input frames
+/// and writes only its own samples.
+pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf, pool: &Pool) -> FrameBuf {
     let fh = &fs.fh;
     let mut lr = cdef.clone();
     let up_w = fh.upscaled_width as i32;
     let fr_h = fh.frame_height as i32;
     let bd = fs.bit_depth;
-    for plane in 0..fs.num_planes {
-        let rtype_frame = fh.lr.frame_restoration_type[plane];
-        if rtype_frame == RESTORE_NONE as u8 {
-            continue;
-        }
-        let (sub_x, sub_y) = if plane > 0 { (fs.ssx as i32, fs.ssy as i32) } else { (0, 0) };
-        let unit_size = fh.lr.loop_restoration_size[plane] as i32;
-        let unit_rows = fs.lr_unit_rows[plane] as i32;
-        let unit_cols = fs.lr_unit_cols[plane] as i32;
-        let plane_end_x = ((up_w + sub_x) >> sub_x) - 1;
-        let plane_end_y = ((fr_h + sub_y) >> sub_y) - 1;
-        let mut row = 0;
-        while row * 4 < fr_h {
-            let luma_y = row * 4;
-            let stripe_num = (luma_y + 8) / 64;
-            let stripe_start_y = (-8 + stripe_num * 64) >> sub_y;
-            let stripe_end_y = stripe_start_y + (64 >> sub_y) - 1;
-            let ctx = LrCtx { cur: &cur.planes[plane], cdef: &cdef.planes[plane], plane_end_x, plane_end_y, stripe_start_y, stripe_end_y };
-            let unit_row = (unit_rows - 1).min(((row * 4 + 8) >> sub_y) / unit_size);
-            let mut col = 0;
-            while col * 4 < up_w {
-                let unit_col = (unit_cols - 1).min(((col * 4) >> sub_x) / unit_size);
-                let x = (col * 4) >> sub_x;
-                let y = (row * 4) >> sub_y;
-                let w = (4 >> sub_x).min(plane_end_x - x + 1);
-                let h = (4 >> sub_y).min(plane_end_y - y + 1);
-                if w > 0 && h > 0 {
-                    let ui = (unit_row * unit_cols + unit_col) as usize;
-                    match fs.lr.lr_type[plane][ui] {
-                        t if t == RESTORE_WIENER as u8 => wiener(fs, &ctx, &mut lr.planes[plane], plane, ui, x, y, w, h, bd),
-                        t if t == RESTORE_SGRPROJ as u8 => self_guided(fs, &ctx, &mut lr.planes[plane], plane, ui, x, y, w, h, bd),
-                        _ => {}
-                    }
-                }
-                col += 1;
+    let ranges = bands(pool, fh.frame_height as usize);
+    let mut planes = lr.row_bands(&ranges);
+    pool.map_mut(&mut planes, |b, band| {
+        // Rows of 4 luma samples in this band.
+        let (start, end) = ranges[b];
+        let (row0, row1) = ((start / 4) as i32, (end / 4).min(fh.frame_height as usize) as i32);
+        for (plane, out) in band.iter_mut().enumerate().take(fs.num_planes) {
+            let rtype_frame = fh.lr.frame_restoration_type[plane];
+            if rtype_frame == RESTORE_NONE as u8 {
+                continue;
             }
-            row += 1;
+            let (sub_x, sub_y) = if plane > 0 { (fs.ssx as i32, fs.ssy as i32) } else { (0, 0) };
+            let unit_size = fh.lr.loop_restoration_size[plane] as i32;
+            let unit_rows = fs.lr_unit_rows[plane] as i32;
+            let unit_cols = fs.lr_unit_cols[plane] as i32;
+            let plane_end_x = ((up_w + sub_x) >> sub_x) - 1;
+            let plane_end_y = ((fr_h + sub_y) >> sub_y) - 1;
+            let mut row = row0;
+            while row < row1 && row * 4 < fr_h {
+                let luma_y = row * 4;
+                let stripe_num = (luma_y + 8) / 64;
+                let stripe_start_y = (-8 + stripe_num * 64) >> sub_y;
+                let stripe_end_y = stripe_start_y + (64 >> sub_y) - 1;
+                let ctx = LrCtx { cur: &cur.planes[plane], cdef: &cdef.planes[plane], plane_end_x, plane_end_y, stripe_start_y, stripe_end_y };
+                let unit_row = (unit_rows - 1).min(((row * 4 + 8) >> sub_y) / unit_size);
+                let mut col = 0;
+                while col * 4 < up_w {
+                    let unit_col = (unit_cols - 1).min(((col * 4) >> sub_x) / unit_size);
+                    let x = (col * 4) >> sub_x;
+                    let y = (row * 4) >> sub_y;
+                    let w = (4 >> sub_x).min(plane_end_x - x + 1);
+                    let h = (4 >> sub_y).min(plane_end_y - y + 1);
+                    if w > 0 && h > 0 {
+                        let ui = (unit_row * unit_cols + unit_col) as usize;
+                        match fs.lr.lr_type[plane][ui] {
+                            t if t == RESTORE_WIENER as u8 => wiener(fs, &ctx, out, plane, ui, x, y, w, h, bd),
+                            t if t == RESTORE_SGRPROJ as u8 => self_guided(fs, &ctx, out, plane, ui, x, y, w, h, bd),
+                            _ => {}
+                        }
+                    }
+                    col += 1;
+                }
+                row += 1;
+            }
         }
-    }
+    });
+    drop(planes);
     lr
 }
 
 #[allow(clippy::too_many_arguments)]
-fn wiener(fs: &FrameState, ctx: &LrCtx, out: &mut Plane, plane: usize, ui: usize, x: i32, y: i32, w: i32, h: i32, bd: u32) {
+fn wiener(fs: &FrameState, ctx: &LrCtx, out: &mut RowBand, plane: usize, ui: usize, x: i32, y: i32, w: i32, h: i32, bd: u32) {
     let round0: u32 = if bd == 12 { 5 } else { 3 };
     let round1: u32 = if bd == 12 { 9 } else { 11 };
     let coef = &fs.lr.lr_wiener[plane][ui];
@@ -163,7 +175,7 @@ fn wiener(fs: &FrameState, ctx: &LrCtx, out: &mut Plane, plane: usize, ui: usize
 }
 
 #[allow(clippy::too_many_arguments)]
-fn self_guided(fs: &FrameState, ctx: &LrCtx, out: &mut Plane, plane: usize, ui: usize, x: i32, y: i32, w: i32, h: i32, bd: u32) {
+fn self_guided(fs: &FrameState, ctx: &LrCtx, out: &mut RowBand, plane: usize, ui: usize, x: i32, y: i32, w: i32, h: i32, bd: u32) {
     let set = fs.lr.lr_sgr_set[plane][ui] as usize;
     let mut flt0 = [[0i32; 4]; 4];
     let mut flt1 = [[0i32; 4]; 4];

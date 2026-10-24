@@ -38,6 +38,18 @@ fn interface_language_persists_and_rejects_hostile_values() {
     assert_eq!(Preferences::load(&path).general.interface_language, "de");
     set(&mut s, "general.interfaceLanguage", json!("fr"));
     assert_eq!(Preferences::load(&path).general.interface_language, "fr");
+    // Indonesian is stored as `id`, not a locale tag or the legacy `in` code
+    for value in [json!("id-ID"), json!("in"), json!("ID")] {
+        assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
+    }
+    set(&mut s, "general.interfaceLanguage", json!("id"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "id");
+    // Italian is stored as `it`, not a locale tag
+    for value in [json!("it-IT"), json!("IT")] {
+        assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
+    }
+    set(&mut s, "general.interfaceLanguage", json!("it"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "it");
     // back to following the operating system (#218)
     set(&mut s, "general.interfaceLanguage", json!("system"));
     assert_eq!(Preferences::load(&path).general.interface_language, "system");
@@ -255,6 +267,10 @@ fn schema_command_describes_every_category() {
     assert_eq!(auto["value"], "pageScroll");
     assert_eq!(auto["wired"], true);
     assert!(auto["kind"]["choices"].as_array().unwrap().iter().any(|c| c["value"] == "smoothScroll"));
+
+    // `file.open` restores the saved tabs and views with this on (#928)
+    let restore = tl["fields"].as_array().unwrap().iter().find(|f| f["key"] == "timeline.restoreOpenSequences").unwrap();
+    assert_eq!((restore["wired"].clone(), restore["value"].clone()), (json!(true), json!(true)));
 
     // This option is stored, but Insert/Overwrite does not yet implement focus transfer.
     let focus = tl["fields"].as_array().unwrap().iter().find(|f| f["key"] == "timeline.focusTimelineOnEdit").unwrap();
@@ -674,4 +690,164 @@ fn appearance_choices_validate_and_legacy_theme_still_selects() {
         seen.push(a.appearance_mode.clone());
     }
     assert_eq!(seen, ["auto", "light", "dark", "auto"]);
+}
+
+#[test]
+fn favorite_themes_validate_and_persist_without_changing_other_settings() {
+    let dir = tmp_dir("theme-favorites");
+    let path = dir.join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    set(&mut s, "appearance.favoriteThemes", json!(["dark", "light"]));
+    assert_eq!(Preferences::load(&path).appearance.favorite_themes, vec!["dark", "light"]);
+    for value in [json!("light"), json!(["unknown"]), json!(["dark", "dark"]), json!([3]), json!(null)] {
+        assert!(s.execute("prefs.set", json!({"key": "appearance.favoriteThemes", "value": value})).is_err());
+        assert_eq!(s.prefs.appearance.favorite_themes, vec!["dark", "light"]);
+    }
+    let mut corrupt = s.prefs.to_value();
+    corrupt["appearance"]["favoriteThemes"] = json!(["invalid", "invalid"]);
+    let repaired = Preferences::from_value(corrupt);
+    assert!(repaired.appearance.favorite_themes.is_empty());
+    assert_eq!(repaired.appearance.dark_theme, s.prefs.appearance.dark_theme);
+}
+
+fn preset_json(name: &str, n: usize, color: &str) -> Vec<u8> {
+    let labels: Vec<Value> = (0..n).map(|i| json!({"name": format!(" Label {i} "), "color": color})).collect();
+    serde_json::to_vec(&json!({"name": name, "labels": labels})).unwrap()
+}
+
+/// Label color preset files are checked strictly: size, exactly 16 labels, names trimmed and
+/// capped, colours `#rrggbb`. A bad file is an error, never a panic or a partial preset.
+#[test]
+fn label_presets_reject_bad_files() {
+    use settings::LabelPreset;
+    let p = LabelPreset::parse(&preset_json("  Team  ", 16, "#A0B0C0")).unwrap();
+    assert_eq!(p.name, "Team");
+    assert_eq!((p.labels[0].name.as_str(), p.labels[0].color.as_str()), ("Label 0", "#a0b0c0"));
+    let builtin = LabelPreset::builtin();
+    assert_eq!(builtin.name, "Default");
+    assert_eq!(builtin.labels.len(), 16);
+    assert!(builtin.matches(&settings::LabelPrefs::default()), "the built-in preset is today's labels");
+    assert_eq!(LabelPreset::parse(&serde_json::to_vec(&builtin).unwrap()).unwrap(), builtin);
+
+    let long = "x".repeat(65);
+    let mut too_big = preset_json("Big", 16, "#000000");
+    too_big.extend(std::iter::repeat_n(b' ', 64 * 1024));
+    for (why, bytes) in [
+        ("15 labels", preset_json("A", 15, "#000000")),
+        ("17 labels", preset_json("A", 17, "#000000")),
+        ("no #", preset_json("A", 16, "000000")),
+        ("not hex", preset_json("A", 16, "#12345g")),
+        ("a colour name", preset_json("A", 16, "red")),
+        ("short", preset_json("A", 16, "#fff")),
+        ("empty name", preset_json("   ", 16, "#000000")),
+        ("long name", preset_json(&long, 16, "#000000")),
+        (
+            "long label",
+            serde_json::to_vec(&json!({"name": "A", "labels": (0..16).map(|_| json!({"name": long, "color": "#000000"})).collect::<Vec<_>>()})).unwrap(),
+        ),
+        ("no colour", serde_json::to_vec(&json!({"name": "A", "labels": (0..16).map(|_| json!({"name": "a"})).collect::<Vec<_>>()})).unwrap()),
+        ("not an object", b"[1,2,3]".to_vec()),
+        ("too big", too_big),
+        ("not utf-8", vec![0xff, 0xfe, 0x00]),
+    ] {
+        assert!(LabelPreset::parse(&bytes).is_err(), "{why} should be refused");
+    }
+    // every truncation of a good file is refused cleanly
+    let good = preset_json("Team", 16, "#102030");
+    for n in 0..good.len() {
+        assert!(LabelPreset::parse(&good[..n]).is_err());
+    }
+}
+
+/// Import copies a preset into `Label Presets` beside the preferences, export writes the current
+/// labels named after the file, and delete removes user presets only. A bad file changes nothing.
+#[test]
+fn label_presets_import_export_and_delete() {
+    let dir = tmp_dir("label-presets");
+    let mut s = Session { prefs_path: Some(dir.join("preferences.json")), ..Session::default() };
+    let names = |s: &mut Session| -> Vec<String> {
+        let v = s.execute("labels.presets", json!({})).unwrap();
+        v["presets"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(names(&mut s), ["Default", "Bright", "Roles"]);
+    let src = dir.join("from someone.json");
+    std::fs::write(&src, preset_json("Team", 16, "#102030")).unwrap();
+    let r = s.execute("labels.importPreset", json!({"path": src.to_string_lossy()})).unwrap();
+    assert_eq!(r["name"], "Team");
+    assert!(dir.join("Label Presets").join("Team.json").is_file());
+    assert_eq!(names(&mut s), ["Default", "Bright", "Roles", "Team"]);
+
+    // a bad file: an error, and the folder is as it was
+    let bad = dir.join("bad.json");
+    std::fs::write(&bad, preset_json("Bad", 3, "#102030")).unwrap();
+    assert!(s.execute("labels.importPreset", json!({"path": bad.to_string_lossy()})).is_err());
+    std::fs::write(dir.join("Label Presets").join("junk.json"), b"{not json").unwrap();
+    assert_eq!(names(&mut s), ["Default", "Bright", "Roles", "Team"], "unreadable files in the folder are skipped");
+
+    // a preset named like a built-in one keeps both
+    std::fs::write(&src, preset_json("default", 16, "#405060")).unwrap();
+    assert_eq!(s.execute("labels.importPreset", json!({"path": src.to_string_lossy()})).unwrap()["name"], "default (imported)");
+    std::fs::write(&src, preset_json("ROLES", 16, "#405060")).unwrap();
+    assert_eq!(s.execute("labels.importPreset", json!({"path": src.to_string_lossy()})).unwrap()["name"], "ROLES (imported)");
+
+    // export writes the applied labels, named after the file, and imports back
+    set(&mut s, "labels.colors.rose.color", json!("#123456"));
+    let out = dir.join("Our Labels.json");
+    assert_eq!(s.execute("labels.exportPreset", json!({"path": out.to_string_lossy()})).unwrap()["name"], "Our Labels");
+    let back = settings::LabelPreset::read(&out).unwrap();
+    assert!(back.matches(&s.prefs.labels));
+
+    for builtin in ["Default", "Bright", "Roles"] {
+        assert!(s.execute("labels.deletePreset", json!({"name": builtin})).is_err(), "{builtin} stays");
+    }
+    s.execute("labels.deletePreset", json!({"name": "Team"})).unwrap();
+    assert_eq!(names(&mut s), ["Default", "Bright", "Roles", "default (imported)", "ROLES (imported)"]);
+    assert!(s.execute("labels.deletePreset", json!({"name": "Team"})).is_err());
+}
+
+/// The built-in presets: Default (the labels as shipped), Bright and Roles, each with 16 distinct
+/// names and valid colours (Bright's and Roles' clearly different); Roles puts the label defaults
+/// on matching roles.
+#[test]
+fn builtin_label_presets_are_complete_and_distinct() {
+    use settings::LabelPreset;
+    let all = LabelPreset::builtins();
+    assert_eq!(all.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Default", "Bright", "Roles"]);
+    for p in &all {
+        assert!(settings::is_builtin_label_preset(&p.name));
+        assert_eq!(&LabelPreset::parse(&serde_json::to_vec(p).unwrap()).unwrap(), p, "{} is a valid preset file", p.name);
+        let mut names: Vec<&str> = p.labels.iter().map(|l| l.name.as_str()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 16, "{}: names are unique", p.name);
+        let rgb: Vec<[u8; 3]> = p.labels.iter().map(|l| settings::parse_hex(&l.color).unwrap()).collect();
+        if p.name == "Default" {
+            continue; // the colours labels have always had
+        }
+        for (i, a) in rgb.iter().enumerate() {
+            for b in &rgb[i + 1..] {
+                let d: f32 = a.iter().zip(b).map(|(x, y)| (f32::from(*x) - f32::from(*y)).powi(2)).sum::<f32>().sqrt();
+                assert!(d > 30.0, "{}: {a:?} and {b:?} are too close", p.name);
+            }
+        }
+    }
+    let roles = &all[2];
+    let mut labels = settings::LabelPrefs::default();
+    roles.apply(&mut labels);
+    assert!(roles.matches(&labels));
+    let d = labels.defaults.clone();
+    let named = [
+        (d.video, "B-Roll"),
+        (d.movie, "Footage"),
+        (d.audio, "Dialogue"),
+        (d.still, "Graphics"),
+        (d.sequence, "Sequence"),
+        (d.dynamic_link, "Visual Effects"),
+        (d.bin, "Bin"),
+        (d.captions, "Bin"),
+    ];
+    for (label, role) in named {
+        assert_eq!(labels.name(label), role);
+    }
+    assert!(!settings::is_builtin_label_preset("Team"));
 }

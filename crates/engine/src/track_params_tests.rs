@@ -114,3 +114,38 @@ fn place_on_an_audio_track_places_the_sound_there_and_nothing_else() {
     s.execute("timeline.place", json!({"item": with_picture.0, "seconds": 600.0})).unwrap();
     assert_eq!(counts(&s), [2, 1, 2, 2]);
 }
+
+/// Track colour labels (#1186): set, shown by `sequence.inspect`, saved with the project,
+/// cleared with "" / null, one undo step each; unknown names are refused.
+#[test]
+fn a_track_carries_a_colour_label() {
+    let mut s = demo();
+    let label = |s: &mut Session, kind: &str| s.execute("sequence.inspect", json!({})).unwrap()[kind][0]["label"].clone();
+    assert_eq!(label(&mut s, "video"), json!(null));
+    s.execute("timeline.setTrack", json!({"track": "V1", "label": "Forest"})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "A1", "label": "Mango"})).unwrap();
+    assert_eq!(label(&mut s, "video"), json!("Forest"));
+    assert_eq!(label(&mut s, "audio"), json!("Mango"));
+    // saved with the project, and a project from before the field still loads
+    let text = serde_json::to_string(&*s.project).unwrap();
+    let back: filmcraft_project::Project = serde_json::from_str(&text).unwrap();
+    let q = back.sequence(s.state.active_sequence.unwrap()).unwrap();
+    assert_eq!(q.video_tracks[0].label, Some(filmcraft_project::Label::Forest));
+    let mut old = serde_json::to_value(&q.video_tracks[0]).unwrap();
+    old.as_object_mut().unwrap().remove("label");
+    let old: filmcraft_project::Track = serde_json::from_value(old).unwrap();
+    assert_eq!(old.label, None);
+    // a plain track does not write the key at all
+    assert!(serde_json::to_value(&q.video_tracks[1]).unwrap().get("label").is_none());
+    // clear, undo, refuse
+    s.execute("timeline.setTrack", json!({"track": "V1", "label": ""})).unwrap();
+    assert_eq!(label(&mut s, "video"), json!(null));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(label(&mut s, "video"), json!("Forest"));
+    s.execute("timeline.setTrack", json!({"track": "V1", "label": null})).unwrap();
+    assert_eq!(label(&mut s, "video"), json!(null));
+    assert!(matches!(s.execute("timeline.setTrack", json!({"track": "V1", "label": "Chartreuse"})), Err(EngineError::BadParams { .. })));
+    // other settings leave the label alone
+    s.execute("timeline.setTrack", json!({"track": "A1", "muted": true})).unwrap();
+    assert_eq!(label(&mut s, "audio"), json!("Mango"));
+}

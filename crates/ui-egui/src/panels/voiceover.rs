@@ -11,6 +11,7 @@
 //! `voiceover.ok`, `voiceover.cancel`; the countdown overlay is `voiceover.countdown.overlay`.
 //! UI commands: `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`.
 
+use crate::widgets::CenteredDialog as _;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use filmcraft_engine::voiceover::VoiceOverPrefs;
 use filmcraft_project::TrackId;
@@ -231,6 +232,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 
 fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("voiceover-settings-before-drag"), &mut d);
     let mut elems: Vec<(String, Rect, String)> = Vec::new();
     let mut close = false;
     let mut apply = false;
@@ -238,7 +240,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let accent = app.tokens.accent;
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new("voiceover-settings");
-    egui::Window::new(tl!("Voice-Over Record Settings")).id(id).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    egui::Window::new(tl!("Voice-Over Record Settings")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         egui::Grid::new("voiceover-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label(tl!("Name:"));
             let r = ui.add(egui::TextEdit::singleline(&mut d.prefs.name).desired_width(220.0));
@@ -288,11 +290,11 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             elems.push(("voiceover.countdown".into(), r.rect, "Countdown Sound Cues".into()));
             ui.end_row();
             ui.label(tl!("Pre-roll:"));
-            let r = ui.add(egui::DragValue::new(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
+            let r = ui.add(crate::widgets::number_drag(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
             elems.push(("voiceover.preroll".into(), r.rect, format!("{}", d.prefs.preroll_seconds)));
             ui.end_row();
             ui.label(tl!("Post-roll:"));
-            let r = ui.add(egui::DragValue::new(&mut d.prefs.postroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
+            let r = ui.add(crate::widgets::number_drag(&mut d.prefs.postroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
             elems.push(("voiceover.postroll".into(), r.rect, format!("{}", d.prefs.postroll_seconds)));
             ui.end_row();
         });
@@ -337,7 +339,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             Err(error) => app.ui.status = error.to_string(),
         }
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         close = true;
     }
     if apply {

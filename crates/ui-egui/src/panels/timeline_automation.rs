@@ -211,9 +211,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             if resp.drag_stopped()
                 && let Some(d) = dragging
             {
-                let nt = layout.tick_at(c.x).max(Tick::ZERO);
-                let nv = denorm(tr, &key, ((b.max.y - c.y) / b.height()).clamp(0.0, 1.0));
-                acts.push(("mixer.moveKeyframe", json!({"strip": r.track.0, "lane": key, "time": d.orig.0, "newTime": nt.0, "value": nv})));
+                // egui ends a drag on Escape: that stop abandons it (#580)
+                if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    let nt = layout.tick_at(c.x).max(Tick::ZERO);
+                    let nv = denorm(tr, &key, ((b.max.y - c.y) / b.height()).clamp(0.0, 1.0));
+                    acts.push(("mixer.moveKeyframe", json!({"strip": r.track.0, "lane": key, "time": d.orig.0, "newTime": nt.0, "value": nv})));
+                }
                 ui.data_mut(|dd| dd.remove::<KfDrag>(drag_id()));
             }
             if dragging.is_some() {

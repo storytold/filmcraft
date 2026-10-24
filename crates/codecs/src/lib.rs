@@ -13,13 +13,17 @@
 //! - [`MpegSource`]: MPEG-2 transport streams (`.ts`, `.m2ts`, `.mts`), program streams (`.mpg`,
 //!   `.vob`, `.mod`) and MPEG-1/2 video elementary streams: MPEG-1/2, H.264 and HEVC video; MPEG
 //!   audio, AAC (ADTS / LATM), AC-3 and LPCM.
+//! - [`AviSource`]: AVI (OpenDML included): Motion JPEG, H.264, HEVC and uncompressed video; PCM,
+//!   MP3 / MP2 and AC-3 audio.
 //! - [`AudioFileSource`]: standalone compressed audio files (MP3, FLAC, AIFF, …).
+//! - [`Y4mSource`]: uncompressed YUV4MPEG2 (`.y4m`) video, frames read on demand.
 //! - [`openers`]: the openers to register with the engine's media pool.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod apv;
 pub mod audio;
+pub mod avi;
 pub mod gop;
 pub mod hw;
 mod hw_frame;
@@ -31,11 +35,13 @@ pub mod ogg;
 mod stream_color;
 pub mod video;
 mod webm_alpha;
+pub mod y4m;
 
 use std::sync::{Arc, RwLock};
 
 pub use apv::ApvSource;
 pub use audio::AudioFileSource;
+pub use avi::AviSource;
 pub use gop::{FRAME_BUDGET, GopStats, cached_bytes, gop_stats, live_decoders};
 pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
@@ -43,6 +49,7 @@ pub use mpeg::MpegSource;
 pub use mxf::MxfSource;
 pub use ogg::OggSource;
 pub use video::{DecodedFrame, VideoDecoder, VideoDecoderFactory};
+pub use y4m::Y4mSource;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
@@ -70,9 +77,10 @@ impl From<CodecError> for filmcraft_media::MediaError {
 }
 
 /// Our own (pure-Rust) decoders, in the order they are tried.
-const BUILTIN_FACTORIES: [VideoDecoderFactory; 9] = [
+const BUILTIN_FACTORIES: [VideoDecoderFactory; 10] = [
     video::h264_factory,
     video::hevc_factory,
+    video::vp8_factory,
     video::vp9_factory,
     video::av1_factory,
     video::apv_factory,
@@ -123,14 +131,25 @@ pub fn software_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<
 }
 
 /// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, MPEG TS/PS and
-/// MPEG-1/2 video elementary streams, APV raw bitstreams, standalone audio).
+/// MPEG-1/2 video elementary streams, APV raw bitstreams, YUV4MPEG2, standalone audio).
 pub fn openers() -> Vec<filmcraft_media::Opener> {
-    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, audio::opener]
+    vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, y4m::opener, audio::opener]
 }
 
 fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
     static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::ReaderOpener>>> = std::sync::OnceLock::new();
-    R.get_or_init(|| RwLock::new(vec![mp4::reader_opener, mkv::reader_opener, mxf::reader_opener, ogg::reader_opener, mpeg::reader_opener, apv::reader_opener]))
+    R.get_or_init(|| {
+        RwLock::new(vec![
+            mp4::reader_opener,
+            mkv::reader_opener,
+            mxf::reader_opener,
+            ogg::reader_opener,
+            mpeg::reader_opener,
+            apv::reader_opener,
+            y4m::reader_opener,
+            avi::reader_opener,
+        ])
+    })
 }
 
 /// Openers that read containers through a [`filmcraft_media::ByteReader`] (index now, samples on
@@ -161,6 +180,15 @@ impl filmcraft_isobmff::ByteSource for Src {
     }
 }
 
+impl filmcraft_avi::ByteSource for Src {
+    fn len(&self) -> u64 {
+        self.0.len()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.0.read_at(offset, buf)
+    }
+}
+
 impl filmcraft_matroska::ByteSource for Src {
     fn len(&self) -> u64 {
         self.0.len()
@@ -177,6 +205,8 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft
 
 #[cfg(test)]
 mod audio_timing_tests;
+#[cfg(test)]
+mod avi_tests;
 #[cfg(test)]
 mod rounded_pts_tests;
 #[cfg(test)]

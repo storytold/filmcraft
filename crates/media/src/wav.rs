@@ -62,6 +62,7 @@ impl WavSource {
         let mut data = None;
         let mut bext_tr = None;
         let mut ixml_tr = None;
+        let mut ds64_data = None;
         for _ in 0..MAX_CHUNKS {
             let Some(body) = pos.checked_add(8).filter(|&b| b <= len) else { break };
             let mut hdr = [0u8; 8];
@@ -69,8 +70,12 @@ impl WavSource {
             let id = &hdr[0..4];
             let mut clen = u64::from(le32(&hdr, 4));
             let rest = len - body;
-            if id == b"data" && (clen == 0xFFFF_FFFF || clen > rest) {
-                clen = rest;
+            if id == b"data" {
+                // RF64 sentinel: the real size is ds64.dataSize (EBU 3306 §3.4), else the rest of the file
+                if clen == 0xFFFF_FFFF {
+                    clen = ds64_data.unwrap_or(rest);
+                }
+                clen = clen.min(rest);
             }
             if clen > rest {
                 break;
@@ -86,6 +91,11 @@ impl WavSource {
                         tag = le16(&b, 24);
                     }
                     fmt = Some((tag, ch, rate, bits));
+                }
+                // ds64: riffSize u64, dataSize u64, sampleCount u64, ...
+                b"ds64" if clen >= 16 => {
+                    let b = read_range(&*reader, body + 8, 8).map_err(io)?;
+                    ds64_data = Some(u64::from(le32(&b, 0)) | u64::from(le32(&b, 4)) << 32);
                 }
                 b"data" => data = Some((body, clen)),
                 // bext: Description 256, Originator 32, OriginatorReference 32, OriginationDate 10,

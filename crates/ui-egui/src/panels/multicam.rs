@@ -70,8 +70,10 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if let Err(e) = filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session)) {
         return Some(Err(e));
     }
-    let items: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
-    let first = app.session.state.project_selection.first().and_then(|i| app.session.project.item(*i)).map(|i| i.name.clone()).unwrap_or_default();
+    // the Project panel's selection, or the media of the clips selected in the Timeline (#1362)
+    let selected = filmcraft_engine::multicam::selected_items(&app.session);
+    let items: Vec<u64> = selected.iter().map(|i| i.0).collect();
+    let first = selected.first().and_then(|i| app.session.project.item(*i)).map(|i| i.name.clone()).unwrap_or_default();
     let name = match kind {
         "merge" => tlf!("{first} - Merged", first),
         "multicam" => tlf!("{first} Multicam", first),
@@ -93,6 +95,7 @@ fn methods() -> [(&'static str, &'static str); 5] {
 /// Draw the open Synchronize / Merge Clips / Create Multi-Camera dialog.
 pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.sync_dialog.clone() else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("sync-dialog-before-drag"), &mut d);
     let (title, pre) = match d.kind.as_str() {
         "merge" => (tl!("Merge Clips"), "merge"),
         "multicam" => (tl!("Create Multi-Camera Source Sequence"), "mcam"),
@@ -107,7 +110,8 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         .collapsible(false)
         .resizable(false)
         .default_width(440.0)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             if pre != "sync" {
                 ui.horizontal(|ui| {
@@ -149,7 +153,7 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 ui.horizontal(|ui| {
                     ui.label(if pre == "merge" { tl!("Offset Audio by:") } else { tl!("Offset:") });
-                    let r = ui.add(egui::DragValue::new(&mut d.offset).range(-100_000..=100_000).suffix(tl!(" frames")));
+                    let r = ui.add(crate::widgets::number_drag(&mut d.offset).range(-100_000..=100_000).suffix(tl!(" frames")));
                     push(&mut elems, format!("{pre}.offset"), &r, "offset");
                 });
             });
@@ -213,7 +217,7 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
     match action {
@@ -455,7 +459,8 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
         .collapsible(false)
         .resizable(false)
         .default_width(420.0)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             ui.label(RichText::new(tl!("Cameras shown in the Multi-Camera view (uncheck to hide).")).weak().small());
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
@@ -498,7 +503,7 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
     match action {

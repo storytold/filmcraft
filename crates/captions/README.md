@@ -16,12 +16,41 @@ and writes caption files, converts them to and from caption tracks, and draws ca
 | Scenarist SCC `.scc` | yes | yes | CEA-608 at 29.97 fps, drop-frame or not. Reads pop-on, roll-up and paint-on (channel 1); writes pop-on. |
 | MacCaption MCC `.mcc` | yes | yes | One SMPTE ST 334-2 caption distribution packet (CDP) per frame in MacCaption's hex text with letter abbreviations. Writes 29.97 fps (`30DF` / `30`) with CEA-608 field 1 (the SCC schedule) **and** CEA-708 service 1 (two-window pop-on emulation). Reads CEA-608 field 1 when present, else CEA-708 service 1; time code rates 30DF, 30, 60DF, 60, 25, 24, 50. |
 | EBU STL `.stl` | yes | yes | EBU Tech 3264-E: GSI block + 128-byte TTI blocks, `STL25.01` (25 fps) or `STL30.01` (read/written as 29.97 fps, non-drop labels), ISO/IEC 6937 Latin text (accents as diacritic + letter), italics / underline codes as `<i>` / `<u>`, extension blocks for long subtitles, start-of-programme (TCP) subtracted. |
-| TTML `.ttml` (IMSC1) | yes | yes | Writes the IMSC1 Text profile (TTML2 namespaces): `<p>` per cue, `<br/>`, styled `<span>`s for `<i>` / `<b>` / `<u>`, `ttm:agent` speakers, exact frame times (`123f`) at the sequence rate. Reads any TTML (TTML1, TTML2, the 2006 `ttaf1` drafts): clock / frame / offset / tick times, `dur`, nested time containers, timed spans, referenced styles. |
+| TTML `.ttml` (IMSC1) | yes | yes | Writes the IMSC1 Text profile (TTML2 namespaces): `<p>` per cue, `<br/>`, styled `<span>`s for `<i>` / `<b>` / `<u>`, `ttm:agent` speakers, exact frame times (`123f`) at the sequence rate. Reads any TTML (TTML1, TTML2, the 2006 `ttaf1` drafts): clock / frame / offset / tick times, `dur`, nested time containers (`body` / `div` begins offset and ends clip their contents; `seq` containers are read as `par` with a warning), timed spans, referenced styles. |
 | DFXP `.dfxp` | yes | yes | TTML1 with the DFXP presentation profile; clock times in milliseconds (frame-exact after `snap_to_frames`). |
 
 All cue times are exact `Tick`s. Milliseconds convert exactly (1 ms = 254 016 000 ticks); SCC
 frames map through `FrameRate::FPS_29_97`. `Document::snap_to_frames` snaps cues to a sequence's
 frame grid (the engine does this on import) and removes overlaps.
+
+### TTML tick timing
+
+When `ttp:tickRate` is omitted and `ttp:frameRate` is present, tick offsets use the effective
+frame rate (`frameRate` times `frameRateMultiplier`) times `subFrameRate`. The rate stays
+rational, so a 30-tick offset at 30 times 1000/1001 fps is exactly 1.001 seconds. An explicit
+`tickRate` takes precedence; without `frameRate`, the default is one tick per second.
+This follows [W3C TTML1, third edition (2018), §6.2.10](https://www.w3.org/TR/2018/REC-ttml1-20181108/#parameter-attribute-tickRate).
+
+### TTML speaker metadata
+
+TTML and DFXP exports define each distinct speaker label once in the document head and refer to
+it with a stable, unique `ttm:agent` ID. Names are XML-escaped full-name text with preserved
+whitespace; punctuation, Unicode and literal underscores survive a round trip. Agent type is
+`other` because a caption's speaker label does not say whether it denotes a person or a group.
+
+On import, agent definitions directly under `head` or `head/metadata` resolve paragraph and timed
+span speakers. Speaker metadata uses the standard TTML namespace or the April and October 2006
+TTaf1 draft namespaces. Agent IDs use `xml:id`, except in the April draft, which uses unqualified
+`id`. Agent definitions from unrelated application metadata are ignored. Recognized `ttm:agent`
+attributes take precedence over the legacy local-name `agent` fallback. A full name is preferred,
+otherwise the first nonempty name (or an explicitly empty name) is used. Multiple agent references become one display label, joined with `, ` in
+reference order; the project does not retain the individual agent identities. Older FilmCraft
+files without agent definitions remain readable through the previous underscore-to-space
+fallback. Other agent metadata, including actor relationships, is not retained.
+
+This mapping follows [W3C TTML1, third edition (2018), §§12.1.5–12.2.1](https://www.w3.org/TR/2018/REC-ttml1-20181108/#metadata-vocabulary-agent).
+The [April 2006 TTaf1 draft, §§7.2.1 and 12.1.5–12.2.1](https://www.w3.org/TR/2006/WD-ttaf1-dfxp-20060427/)
+defines its earlier metadata namespace and agent ID form.
 
 ### SCC writer
 
@@ -56,7 +85,7 @@ implementation's code was consulted.
 
 - Unit tests per module (timestamps, decoding, sloppy SRT, WebVTT blocks and voices, CEA-608
   tables, PAC round trips, known SCC pop-on and roll-up streams, layout).
-- `tests/roundtrip.rs`: property tests — SRT (also with BOM + CRLF), WebVTT (ids, speakers,
+- `tests/it/roundtrip.rs`: property tests — SRT (also with BOM + CRLF), WebVTT (ids, speakers,
   settings, STYLE blocks), SCC and MCC (drop-frame and non-drop, gaps and back-to-back captions;
   MCC also through CEA-708 alone), EBU STL (25 and 29.97 fps, accents, extension blocks), TTML
   (23.976 / 25 / 29.97 / 59.94, ids, speakers) round-trip frame-exactly; DFXP round-trips after

@@ -4,6 +4,10 @@ use crate::error::{Result, ensure, unsupported};
 use crate::tables::*;
 use filmcraft_bitstream::BitReader;
 
+/// Maximum supported reconstructed luma area. 8K UHD fits comfortably while
+/// hostile SPS dimensions cannot allocate full pictures and decoder work state.
+const MAX_LUMA_SAMPLES: u64 = 1 << 25;
+
 /// Scaling matrices after applying fall-back rules, stored in raster order (weightScale).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScalingMatrices {
@@ -516,6 +520,9 @@ impl Sps {
     }
 
     pub fn check_supported(&self) -> Result<()> {
+        if u64::from(self.width()).saturating_mul(u64::from(self.height())) > MAX_LUMA_SAMPLES {
+            return unsupported("picture dimensions exceed the decoder memory limit");
+        }
         if !self.frame_mbs_only {
             return unsupported("interlaced (field / MBAFF) coding");
         }
@@ -569,8 +576,9 @@ impl Pps {
         let sps = spss.get(sps_id as usize).and_then(|s| s.as_ref()).ok_or_else(|| crate::Error::MissingParameterSet(format!("SPS {sps_id} for PPS {id}")))?;
         let entropy_coding_mode = r.read_flag()?;
         let bottom_field_pic_order_in_frame_present = r.read_flag()?;
-        let num_slice_groups = r.read_ue()? + 1;
-        ensure!(num_slice_groups <= 8, "num_slice_groups out of range");
+        let num_slice_groups_minus1 = r.read_ue()?;
+        ensure!(num_slice_groups_minus1 < 8, "num_slice_groups out of range");
+        let num_slice_groups = num_slice_groups_minus1 + 1;
         let mut slice_group_map_type = 0;
         if num_slice_groups > 1 {
             // Parsed for completeness; FMO decoding is unsupported.
@@ -592,7 +600,10 @@ impl Pps {
                     r.read_ue()?;
                 }
                 6 => {
-                    let n = r.read_ue()? + 1;
+                    let n_minus1 = r.read_ue()?;
+                    // pic_size_in_map_units_minus1: one slice_group_id per map unit of the picture.
+                    ensure!(n_minus1 < sps.pic_width_in_mbs.saturating_mul(sps.pic_height_in_map_units), "pic_size_in_map_units out of range");
+                    let n = n_minus1 + 1;
                     let bits = 32 - (num_slice_groups - 1).leading_zeros();
                     for _ in 0..n {
                         r.read_bits(bits)?;
@@ -601,13 +612,23 @@ impl Pps {
                 _ => {}
             }
         }
-        let num_ref_idx_l0_default_active = r.read_ue()? + 1;
-        let num_ref_idx_l1_default_active = r.read_ue()? + 1;
-        ensure!(num_ref_idx_l0_default_active <= 32 && num_ref_idx_l1_default_active <= 32, "num_ref_idx_default_active out of range");
+        let num_ref_idx_l0_minus1 = r.read_ue()?;
+        let num_ref_idx_l1_minus1 = r.read_ue()?;
+        ensure!(num_ref_idx_l0_minus1 < 32 && num_ref_idx_l1_minus1 < 32, "num_ref_idx_default_active out of range");
+        let num_ref_idx_l0_default_active = num_ref_idx_l0_minus1 + 1;
+        let num_ref_idx_l1_default_active = num_ref_idx_l1_minus1 + 1;
         let weighted_pred = r.read_flag()?;
-        let weighted_bipred_idc = r.read_bits(2)?;
-        let pic_init_qp = 26 + r.read_se()?;
-        let pic_init_qs = 26 + r.read_se()?;
+        // 7.4.2.2.1 fall-back: a value of 3 shall be considered equal to 2.
+        let weighted_bipred_idc = (r.read_bits(2)?).min(2);
+        // 7.4.2.2: pic_init_qp_minus26 in -(26 + QpBdOffsetY)..=25, pic_init_qs_minus26 in -26..=25.
+        let qp_bd_offset_y = 6 * (sps.bit_depth_luma.saturating_sub(8)) as i32;
+        let qp_min = -(26 + qp_bd_offset_y);
+        let pic_init_qp_minus26 = r.read_se()?;
+        ensure!((qp_min..=25).contains(&pic_init_qp_minus26), "pic_init_qp_minus26 out of range");
+        let pic_init_qs_minus26 = r.read_se()?;
+        ensure!((-26..=25).contains(&pic_init_qs_minus26), "pic_init_qs_minus26 out of range");
+        let pic_init_qp = 26 + pic_init_qp_minus26;
+        let pic_init_qs = 26 + pic_init_qs_minus26;
         let chroma_qp_index_offset = r.read_se()?;
         ensure!((-12..=12).contains(&chroma_qp_index_offset), "chroma_qp_index_offset out of range");
         let deblocking_filter_control_present = r.read_flag()?;

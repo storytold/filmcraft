@@ -57,11 +57,34 @@ pub const MARKER_FILTER: [filmcraft_project::Label; 7] = {
     [Green, Rose, Purple, Mango, Yellow, Blue, Teal]
 };
 
+/// A marker's Label menu. An explicit program target keeps panel focus and clip/project
+/// selections from routing colour changes to another item (#1143).
+pub(crate) fn marker_label_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, marker: &filmcraft_project::Marker, prefix: &str) {
+    let label = crate::i18n::t("Label");
+    let menu = ui.menu_button(label, |ui| {
+        for color in filmcraft_project::Label::ALL {
+            let name = crate::i18n::t(color.name());
+            let r = ui.selectable_label(color == marker.color, name);
+            app.auto.add_response(&format!("{prefix}.color.{}", color.name()), &r, name);
+            if r.clicked() {
+                if let Err(error) = app.session.execute("markers.edit", serde_json::json!({"target":"program","marker":marker.id.0,"color":color.name()})) {
+                    app.ui.status = error.to_string();
+                }
+                ui.close();
+            }
+        }
+    });
+    app.auto.add_response(&format!("{prefix}.label"), &menu.response, label);
+}
+
 /// Markers panel: a colour filter row (click a chip to show/hide that colour; automation ids
 /// `markers.filter.<label>`), then the sequence markers (`markers.row.<id>`; click = go to it).
 pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    let Some(seq) = app.session.active_sequence().cloned() else {
+    // Keep the immutable project snapshot alive while UI commands mutate the session.
+    // Cloning a sequence here copies every clip and effect on every redraw.
+    let project = app.session.project.clone();
+    let Some(seq) = app.session.state.active_sequence.and_then(|id| project.sequence(id)) else {
         crate::dock::placeholder(ui, rect, &t, tl!("(no sequence)"));
         return;
     };
@@ -113,6 +136,7 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if resp.clicked() {
                 go = Some(m.start);
             }
+            resp.context_menu(|ui| marker_label_menu(app, ui, m, "markers.menu"));
         }
         if seq.markers.is_empty() {
             ui.label(egui::RichText::new(tl!("No markers. Press M to add one.")).color(t.text_faint));
@@ -143,8 +167,9 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.label(v);
         });
     };
-    if let Some(item) = app.session.state.project_selection.first().and_then(|i| app.session.project.item(*i)).cloned() {
-        ui.label(egui::RichText::new(&item.name).strong());
+    if let Some(item) = super::metadata::target(app).and_then(|id| app.session.project.item(id)).cloned() {
+        let header = ui.label(egui::RichText::new(&item.name).strong());
+        app.auto.add_response("info.item", &header, &item.name);
         line(ui, tl!("Type:"), crate::i18n::t(item.type_label()).to_string());
         if let Some(m) = item.as_media() {
             if let Some(v) = &m.info.video {
@@ -160,7 +185,8 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     if let Some(seq) = app.session.active_sequence() {
         let name = app.session.state.active_sequence.and_then(|s| app.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default();
-        ui.label(egui::RichText::new(name).strong());
+        let header = ui.label(egui::RichText::new(&name).strong());
+        app.auto.add_response("info.sequence", &header, &name);
         line(
             ui,
             tl!("Settings:"),

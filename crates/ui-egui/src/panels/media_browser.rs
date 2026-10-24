@@ -232,10 +232,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let mut sz = prefs.thumbnail_size;
         let resp = ui.put(sr, egui::Slider::new(&mut sz, 60.0..=320.0).show_value(false));
         app.auto.add("mediaBrowser.thumbnailSize", sr, "Thumbnail size");
+        // a drag ended by Escape goes back to the size it started from (#580)
+        let orig_id = egui::Id::new("media-browser-thumbnail-size-before-drag");
+        if resp.drag_started() {
+            ui.data_mut(|d| d.insert_temp(orig_id, prefs.thumbnail_size));
+        }
+        let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if resp.drag_stopped()
+            && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
+            && escaped
+        {
+            sz = before;
+        }
         if sz != prefs.thumbnail_size {
             app.session.prefs.media_browser.thumbnail_size = sz;
         }
-        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+        if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
             exec(app, &ctx, "mediaBrowser.settings", json!({"thumbnailSize": sz}));
         }
     }
@@ -435,24 +447,36 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
     });
 }
 
-/// Dragging a file imports it (the selection when the file is in it) and carries the new item, so
-/// the Project panel, Timeline and monitors accept it; a drop elsewhere undoes the import.
+/// Dragging a file imports it (the selection when the file is in it) and carries its items, so
+/// the Project panel, Timeline and monitors accept them; a drop elsewhere undoes the import.
 fn start_file_drag(app: &mut FilmcraftApp, ui: &egui::Ui, e: &Entry) {
     let paths: Vec<String> = if app.session.browser.selection.contains(&e.path) { app.session.browser.selection.clone() } else { vec![e.path.clone()] };
-    // files already in the project are dragged as they are
-    if let Some(i) = mb::item_for_path(&app.session, &e.path) {
-        crate::panels::start_drag_item(ui, i);
-        return;
-    }
+    // files already in the project are dragged as they are; only the others are imported
+    let known: Vec<ItemId> = paths.iter().filter_map(|p| mb::item_for_path(&app.session, p)).collect();
+    let fresh: Vec<String> = paths.iter().filter(|p| mb::item_for_path(&app.session, p).is_none()).cloned().collect();
     let before = app.session.history.undo.len();
-    let Ok(r) = app.session.execute("mediaBrowser.import", json!({"paths": paths})) else { return };
-    let items: Vec<u64> = r["items"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
-    if let Some(first) = items.first() {
-        crate::panels::start_drag_item(ui, ItemId(*first));
+    let mut items: Vec<u64> = Vec::new();
+    if !fresh.is_empty() {
+        let Ok(r) = app.session.execute("mediaBrowser.import", json!({"paths": fresh})) else { return };
+        items = r["items"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    }
+    let all = file_drag_items(&known, &items);
+    let Some(first) = all.first().copied() else { return };
+    // the drop targets place the whole Project selection when the dragged item is one of it
+    if all.len() > 1 {
+        app.session.state.project_selection = all;
+    }
+    crate::panels::start_drag_item(ui, first);
+    if !items.is_empty() {
         let pos = ui.ctx().pointer_latest_pos().unwrap_or_default();
         let after = app.session.history.undo.len();
         with_cache(ui.ctx(), |c| c.drag = Some((items, after.max(before), pos)));
     }
+}
+
+/// Every item a Media Browser drag carries: the selected files already in the project, then the newly imported ones.
+fn file_drag_items(known: &[ItemId], imported: &[u64]) -> Vec<ItemId> {
+    known.iter().copied().chain(imported.iter().map(|i| ItemId(*i))).collect()
 }
 
 /// After a file drag ends: keep the import when it landed on a panel that takes items.
@@ -470,8 +494,9 @@ fn finish_drag(app: &mut FilmcraftApp, ui: &egui::Ui) {
     }
     let pos = with_cache(ui.ctx(), |c| c.drag.take().map(|d| d.2)).unwrap_or_default();
     let targets = ["panel.Project", "panel.Timeline", "panel.Source", "panel.Program"];
-    let landed =
-        targets.iter().any(|t| app.auto.find(t).is_some_and(|e| Rect::from_min_size(pos2(e.rect[0], e.rect[1]), vec2(e.rect[2], e.rect[3])).contains(pos)));
+    // a drag cancelled with Escape (#580) landed nowhere, wherever the pointer is
+    let landed = !crate::panels::drag_cancelled(ui)
+        && targets.iter().any(|t| app.auto.find(t).is_some_and(|e| Rect::from_min_size(pos2(e.rect[0], e.rect[1]), vec2(e.rect[2], e.rect[3])).contains(pos)));
     let used_elsewhere = app.session.history.undo.len() > hist;
     if !landed && !used_elsewhere && items.iter().all(|i| app.session.project.item(ItemId(*i)).is_some()) {
         // dropped nowhere: take the import back
@@ -793,7 +818,8 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         .id(egui::Id::new("mb-edit-columns"))
         .collapsible(false)
         .resizable(false)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             let mut mv: Option<(usize, isize)> = None;
             for c in mb::ALL_COLUMNS {
@@ -838,5 +864,18 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         close = true;
     }
-    app.ui.media_browser.edit_columns = if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) { None } else { Some(cols) };
+    app.ui.media_browser.edit_columns = if close || crate::widgets::escape_closes(ctx) { None } else { Some(cols) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragging_several_files_carries_all_of_them() {
+        let all = file_drag_items(&[ItemId(7)], &[11, 12]);
+        assert_eq!(all, vec![ItemId(7), ItemId(11), ItemId(12)]);
+        assert_eq!(file_drag_items(&[], &[3]), vec![ItemId(3)]);
+        assert!(file_drag_items(&[], &[]).is_empty());
+    }
 }

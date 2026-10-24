@@ -1,5 +1,5 @@
 //! Metadata panel: the clip and file properties of the selected item (Project panel selection, or
-//! the clip selected in the Timeline when it has focus). Name, Label and the log fields
+//! the clip selected in the Timeline, retained while an inspector has focus). Name, Label and the log fields
 //! (Description, Scene, Shot, Log Note, Comment, Tape Name, Client, Camera Angle) are editable;
 //! each committed edit is one `metadata.set` (undoable, saved in the project).
 //!
@@ -7,7 +7,7 @@
 //! `metadata.label`, `metadata.section.<Clip|File>`.
 
 use egui::{Rect, RichText, Sense, vec2};
-use filmcraft_engine::panels::{Field, metadata_fields, metadata_target};
+use filmcraft_engine::panels::{Field, metadata_fields};
 use filmcraft_project::{ItemId, Label};
 use serde_json::json;
 
@@ -15,15 +15,28 @@ use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::theme::Tokens;
 
-/// The item the panel shows.
+use super::panel_state::InspectorSource;
+
+/// Remember the selection source even when both item inspectors are hidden.
+pub(crate) fn follow_selection(app: &mut FilmcraftApp) {
+    match app.ui.focused {
+        PanelKind::Project => app.ui.panels.inspector_source = InspectorSource::Project,
+        PanelKind::Timeline => app.ui.panels.inspector_source = InspectorSource::Timeline,
+        _ => {}
+    }
+}
+
+/// The item Metadata and Info show. Keep the preferred source while entering either inspector;
+/// an empty selection falls back to the other panel, as Metadata did before source retention.
 pub fn target(app: &FilmcraftApp) -> Option<ItemId> {
     let s = &app.session;
-    if app.ui.focused == PanelKind::Timeline
-        && let Some(c) = s.state.selection.first()
-    {
-        return metadata_target(s, &json!({"clip": c.0}));
+    let exists = |id: &ItemId| s.project.item(*id).is_some();
+    let project = s.state.project_selection.first().copied().filter(exists);
+    let timeline = s.state.selection.first().and_then(|clip| s.active_sequence()?.find_item(*clip).map(|(_, item)| item.item)).filter(exists);
+    match app.ui.panels.inspector_source {
+        InspectorSource::Project => project.or(timeline),
+        InspectorSource::Timeline => timeline.or(project),
     }
-    metadata_target(s, &json!({}))
 }
 
 pub fn field_id(name: &str) -> String {

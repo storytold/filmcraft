@@ -109,8 +109,9 @@ impl std::ops::Sub for GopStats {
     }
 }
 
-/// A container's video sample table, in decode (file) order.
-pub trait VideoSamples {
+/// A container's video sample table, in decode (file) order. `Sync`: a cache decodes on its own
+/// threads ([`isolated`]).
+pub trait VideoSamples: Sync {
     fn count(&self) -> usize;
     /// Presentation timestamp of sample `i` (track units).
     fn pts(&self, i: usize) -> i64;
@@ -120,6 +121,20 @@ pub trait VideoSamples {
     fn sample_at(&self, t: i64) -> Option<usize>;
     fn read(&self, i: usize) -> crate::Result<Vec<u8>>;
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
+}
+
+/// A container's sync sample for `i` when leading pictures need the GOP before: `sync` is the
+/// index's own sync sample, `leads(i, key)` says `i` is shown before `key`. One step per GOP, so a
+/// loop: a crafted index can chain tens of thousands of GOPs (#2803). A `sync` past `i` stops the
+/// walk instead of looping on it.
+pub(crate) fn open_gop_sync(mut i: usize, sync: impl Fn(usize) -> usize, leads: impl Fn(usize, usize) -> bool) -> usize {
+    loop {
+        let key = sync(i);
+        if key == 0 || key > i || !leads(i, key) {
+            return key;
+        }
+        i = key - 1;
+    }
 }
 
 /// The sync sample to start decoding at for sample `i`: its sync sample, or an earlier one when
@@ -152,6 +167,10 @@ struct State {
     bytes: usize,
     /// When a frame was last asked of this cache.
     last_used: Instant,
+    /// Presentation pts of the frame the last request wanted: eviction keeps a window around it
+    /// (not around the newest decoded picture). Walking a long GOP dumps pictures in decode
+    /// order; a window around those would throw away the playhead frame and force another walk.
+    pin: i64,
     /// Only background requests (thumbnails, [`filmcraft_media::cancel::with_background`]) have
     /// used the decoder since it was made: it is given up as soon as another background request
     /// is done, whatever the caches' recency.
@@ -427,15 +446,68 @@ pub struct GopCache {
     budget: usize,
 }
 
-/// The cache always has room for this many frames, whatever their size: a frame-threaded decoder
-/// runs up to ~2x its thread count ahead of the frame it returns, and playback prefetches ahead
-/// of the playhead, so a byte budget alone would evict 4K frames before they are shown and force
-/// a re-decode from the keyframe.
+/// The cache reserves room for this many small frames: a frame-threaded decoder runs up to ~2x
+/// its thread count ahead of the frame it returns, and playback prefetches ahead of the playhead.
 const MIN_FRAMES: usize = 64;
+/// A source cache never retains more decoded pixels than this, regardless of frame dimensions.
+/// In particular, untrusted VP9 `show_existing_frame` samples must not turn the small-frame
+/// reserve above into an unbounded number of full-resolution copies.
+const FRAME_CACHE_CEILING: usize = 384 << 20;
 
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
 /// rather than restarting at the sync sample.
 const CONTINUE_THROUGH: usize = 48;
+
+/// Threads that run the caches' decoding (see [`isolated`]); `None` where none can be made.
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(|i| format!("decode-{i}")).build().ok()
+    })
+    .as_ref()
+}
+
+/// Run a cache's decoding, its lock held by the caller, on [`decode_pool`], the caller waiting
+/// without doing other rayon work meanwhile (#480).
+///
+/// That decoding starts rayon work (a decoder's slices, cropping and rotating the frames). On the
+/// pool of the render jobs that ask the cache for frames, a worker that took part of it could,
+/// waiting inside it, pick up another of those jobs and block on the lock: the lock holder then
+/// waits for its work on the blocked worker's stack, and that worker for the lock, for good (an
+/// export of rotated iPhone clips stopped making frames). On the decode pool that work only ever
+/// runs beside other caches' decoding, which never waits for a cache's lock. A caller that is a
+/// rayon worker would also run other jobs of its pool while it waits for the decode pool, some
+/// of them asking for a cache's lock while it holds this one: it waits on a plain thread instead.
+fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Result<T> {
+    let ctx = filmcraft_media::cancel::Context::current();
+    let job = move || ctx.run(f);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(pool) = decode_pool() {
+        if rayon::current_thread_index().is_none() {
+            return pool.install(job);
+        }
+        let slot = Mutex::new(Some(job));
+        let waited = std::thread::scope(|scope| {
+            let spawned = std::thread::Builder::new().name("decode-wait".into()).spawn_scoped(scope, || {
+                let job = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
+                job.map(|job| pool.install(job))
+            });
+            spawned.map(|h| h.join())
+        });
+        return match waited {
+            Ok(Ok(Some(r))) => r,
+            Ok(Err(_)) => Err(CodecError::Decode("internal error while decoding".into())),
+            // no thread to wait on: decode here, as before
+            Ok(Ok(None)) | Err(_) => match slot.into_inner().unwrap_or_else(PoisonError::into_inner) {
+                Some(job) => job(),
+                None => Err(CodecError::Decode("internal error while decoding".into())),
+            },
+        };
+    }
+    job()
+}
 
 impl GopCache {
     pub fn new(explicit_color: Option<ColorInfo>) -> Self {
@@ -457,12 +529,13 @@ impl GopCache {
                 drafts: Default::default(),
                 bytes: 0,
                 last_used: Instant::now(),
+                pin: i64::MIN,
                 background: false,
             }),
             pool: pool.clone(),
         });
         pool.register(&shared);
-        Self { shared, explicit_color, rotation: 0, crop: None, budget: 384 << 20 }
+        Self { shared, explicit_color, rotation: 0, crop: None, budget: FRAME_CACHE_CEILING }
     }
 
     /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
@@ -494,7 +567,17 @@ impl GopCache {
     }
 
     fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        let f = self.finish(f);
+        self.store_finished(st, pts, self.finish(f), draft);
+    }
+
+    /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
+    fn cache_budget(&self, frame_bytes: usize) -> usize {
+        let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
+        self.budget.min(FRAME_CACHE_CEILING).max(reserve)
+    }
+
+    /// Cache a frame [`Self::finish`] has been applied to.
+    fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
         st.last_used = Instant::now();
         if draft {
             st.drafts.insert(pts);
@@ -502,17 +585,26 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.budget.max(MIN_FRAMES * f.byte_size());
+        let budget = self.cache_budget(f.byte_size());
         let before = st.bytes;
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
             st.bytes -= old.byte_size();
             filmcraft_frame::pool::recycle(old);
         }
-        // evict frames far from the most recent (keep a window around the working position)
+        // Evict frames far from the request (pin), not the newest decode. A frame-threaded
+        // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
+        // wanted picture and walk the GOP again.
+        let pivot = if st.pin != i64::MIN { st.pin } else { pts };
         while st.bytes > budget && st.frames.len() > 2 {
             let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
-            let victim = if pts - first > last - pts { first } else { last };
+            let mut victim = if pivot - first > last - pivot { first } else { last };
+            if victim == pivot || victim == pts {
+                victim = if victim == first { last } else { first };
+                if victim == pivot || victim == pts {
+                    break;
+                }
+            }
             if let Some(v) = st.frames.remove(&victim) {
                 st.drafts.remove(&victim);
                 st.bytes -= v.byte_size();
@@ -583,6 +675,7 @@ impl GopCache {
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let _decoding = DecodingGuard::enter(me);
         st.last_used = Instant::now();
+        st.pin = want_pts;
         let background = filmcraft_media::cancel::background();
         if let Some(f) = st.cached(want_pts, draft).cloned() {
             HITS.fetch_add(1, Ordering::Relaxed);
@@ -616,6 +709,22 @@ impl GopCache {
         if st.intra {
             return self.intra_frame(st, s, i, want_pts);
         }
+        // with the lock held: see `isolated`
+        let st = &mut *st;
+        isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft))
+    }
+
+    /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
+    fn decode_until(
+        &self,
+        st: &mut State,
+        s: &dyn VideoSamples,
+        i: usize,
+        want_pts: i64,
+        late_before: Option<i64>,
+        draft: bool,
+    ) -> crate::Result<Arc<VideoFrame>> {
+        let n = s.count();
         let mut key = decode_start(s, i);
         // Continue the running decoder when it has passed the wanted sample's sync sample and
         // either has not reached the sample yet or has been fed it without outputting it yet
@@ -669,14 +778,14 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(&mut st, out);
+            self.store_output(st, out);
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(&mut st, out);
+            self.store_output(st, out);
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
@@ -761,14 +870,17 @@ impl GopCache {
             DECODED.fetch_add(1, Ordering::Relaxed);
             timed(|| dec.decode(&data, want_pts))
         });
+        // crop and rotate before taking the lock: that work runs on rayon (see `isolated`)
+        let res = res.map(|out| {
+            count_frames(&out);
+            out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
+        });
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }
-        let res = res?;
-        count_frames(&res);
-        for d in res {
-            self.store(&mut st, d.pts, d.frame, d.draft);
+        for (pts, frame, draft) in res? {
+            self.store_finished(&mut st, pts, frame, draft);
         }
         st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }
@@ -776,6 +888,19 @@ impl GopCache {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_gop_sync_walks_a_long_chain_of_leading_pictures_without_recursing() {
+        // Every GOP of 3 starts at a key whose leading picture is shown before it (#2803).
+        let gops = 200_000usize;
+        let sync = |i: usize| i - i % 3;
+        let leads = |i: usize, key: usize| i == key + 2;
+        assert_eq!(super::open_gop_sync(gops * 3 - 1, sync, leads), 0);
+        // A picture that is not a leading one keeps its own key.
+        assert_eq!(super::open_gop_sync(7, sync, |_, _| false), 6);
+        // An index whose sync sample lies past `i` ends the walk instead of looping.
+        assert_eq!(super::open_gop_sync(5, |_| 9, |_, _| true), 9);
+    }
+
     use super::*;
     use crate::video::DecodedFrame;
     use std::collections::VecDeque;
@@ -900,6 +1025,77 @@ mod tests {
         assert!(s.decodes.load(Ordering::Relaxed) <= 60 + 24 + 1);
     }
 
+    /// A decoder that, like a slice-threaded one, splits each picture's work over rayon.
+    struct ParDec(Box<dyn VideoDecoder>);
+
+    impl VideoDecoder for ParDec {
+        fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            use rayon::prelude::*;
+            let rows: u64 = (0..64u32)
+                .into_par_iter()
+                .with_max_len(1)
+                .map(|r| (0..20_000u64).fold(u64::from(r), |a, x| a.wrapping_mul(31).wrapping_add(x)))
+                .reduce(|| 0, u64::wrapping_add);
+            std::hint::black_box(rows);
+            self.0.decode(sample, pts)
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            self.0.flush()
+        }
+        fn reset(&mut self) {
+            self.0.reset()
+        }
+        fn name(&self) -> &str {
+            "par"
+        }
+    }
+
+    struct ParSamples(Samples);
+
+    impl VideoSamples for ParSamples {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            self.0.sync_before(i)
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            self.0.read(i)
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(ParDec(self.0.make_decoder()?)))
+        }
+    }
+
+    /// #480: render jobs on rayon asking one source for frames while its decoding (a decoder's
+    /// slices, rotating the frames) runs on rayon too. A worker that took part of that work and,
+    /// waiting inside it, picked up another frame request blocked on the cache's lock for good:
+    /// an export of rotated iPhone clips stopped making frames.
+    #[test]
+    fn rayon_frame_requests_while_decoding_on_rayon_never_deadlock() {
+        use rayon::prelude::*;
+        let s = Arc::new(ParSamples(samples(240, 30, 4, false)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for round in 0..40usize {
+                // export-like: many frame workers, frames of several GOPs of a fresh source at once
+                let c = GopCache::new(None).with_rotation(1);
+                (0..96usize).into_par_iter().with_max_len(1).for_each(|k| {
+                    let i = (k * 37 + round * 53) % 240;
+                    assert_eq!(index_of(&c.frame(&*s, i as i64 * 1000).expect("frame")), i);
+                });
+            }
+            let _ = tx.send(());
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(120)).is_ok(), "frame requests deadlocked");
+    }
+
     #[test]
     fn running_decoder_continues_through_a_nearby_sync_sample() {
         let s = samples(200, 30, 0, false);
@@ -919,19 +1115,27 @@ mod tests {
     fn intra_frames_decode_in_parallel_once_each() {
         let s = Arc::new(samples(64, 1, 0, true));
         let c = Arc::new(GopCache::new(None));
-        std::thread::scope(|scope| {
-            for t in 0..4usize {
-                let (s, c) = (s.clone(), c.clone());
-                scope.spawn(move || {
-                    for k in 0..64usize {
-                        let i = (k * 7 + t * 16) % 64;
-                        assert_eq!(index_of(&c.frame(&*s, i as i64 * 1000).expect("frame")), i);
-                    }
-                });
-            }
-        });
-        // a frame two threads miss at the same moment may decode twice; nothing more
-        assert!(s.decodes.load(Ordering::Relaxed) <= 64 + 4 * 4);
+        // First decode 64 distinct cold frames: each of the four workers owns
+        // 16 indices. Multiplication by seven permutes them without overlap.
+        // Then let every worker request all 64 cached frames in overlapping order.
+        // Concurrent misses for the same cold frame may legitimately decode twice,
+        // so they cannot support a scheduler-independent duplicate allowance.
+        for requests_per_worker in [16usize, 64] {
+            let start = Arc::new(std::sync::Barrier::new(4));
+            std::thread::scope(|scope| {
+                for t in 0..4usize {
+                    let (s, c, start) = (s.clone(), c.clone(), start.clone());
+                    scope.spawn(move || {
+                        start.wait();
+                        for k in 0..requests_per_worker {
+                            let i = (k * 7 + t * 16) % 64;
+                            assert_eq!(index_of(&c.frame(&*s, i as i64 * 1000).expect("frame")), i);
+                        }
+                    });
+                }
+            });
+            assert_eq!(s.decodes.load(Ordering::Relaxed), 64, "cold frames decode once; warm requests hit the cache");
+        }
         assert_eq!(s.resets.load(Ordering::Relaxed), 0);
     }
 
@@ -1254,6 +1458,17 @@ mod tests {
     }
 
     #[test]
+    fn large_frames_cannot_enlarge_the_gop_cache_ceiling() {
+        let mut c = GopCache::new(None);
+        c.budget = usize::MAX;
+        assert_eq!(c.cache_budget(1), FRAME_CACHE_CEILING);
+        assert_eq!(c.cache_budget(FRAME_CACHE_CEILING), FRAME_CACHE_CEILING);
+        c.budget = 0;
+        assert_eq!(c.cache_budget(4), MIN_FRAMES * 4, "small frames retain the playback reserve");
+        assert_eq!(c.cache_budget(FRAME_CACHE_CEILING), FRAME_CACHE_CEILING, "large frames are capped instead of reserving 64 copies");
+    }
+
+    #[test]
     fn evicted_frames_are_decoded_into_again() {
         let s = Big(200);
         // room for MIN_FRAMES pictures only
@@ -1363,5 +1578,91 @@ mod tests {
             assert_eq!(index_of(&c.frame(&s, d as i64 * 1000).expect("frame")), d);
         }
         assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+    }
+
+    /// Many pictures in one GOP; a decoder that emits a burst past the wanted sample (frame-
+    /// threaded H.264). Eviction used to pivot on the newest pts and drop the playhead frame.
+    struct Burst {
+        n: usize,
+        /// Pictures held before a decode dumps them all.
+        burst: usize,
+        held: VecDeque<i64>,
+        resets: Arc<AtomicUsize>,
+        decodes: Arc<AtomicUsize>,
+    }
+
+    impl VideoDecoder for Burst {
+        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            self.decodes.fetch_add(1, Ordering::Relaxed);
+            self.held.push_back(pts);
+            if self.held.len() < self.burst {
+                return Ok(Vec::new());
+            }
+            Ok(self.held.drain(..).map(|p| picture((p, false))).collect())
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            self.held.drain(..).map(|p| picture((p, false))).collect()
+        }
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::Relaxed);
+            self.held.clear();
+        }
+        fn name(&self) -> &str {
+            "burst"
+        }
+    }
+
+    impl VideoSamples for Burst {
+        fn count(&self) -> usize {
+            self.n
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64 * 1000
+        }
+        fn sync_before(&self, _i: usize) -> usize {
+            0
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            let i = (t / 1000) as usize;
+            (i < self.n).then_some(i)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            Ok(vec![i as u8])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(Burst { n: self.n, burst: self.burst, held: VecDeque::new(), resets: self.resets.clone(), decodes: self.decodes.clone() }))
+        }
+    }
+
+    #[test]
+    fn long_gop_seek_keeps_the_target_and_does_not_walk_twice() {
+        let s = Burst { n: 200, burst: 90, held: VecDeque::new(), resets: Default::default(), decodes: Default::default() };
+        let mut c = GopCache::new(None);
+        c.budget = 0;
+        // Want a picture early in the GOP; the burst dumps 90 pictures at once (past MIN_FRAMES).
+        assert_eq!(index_of(&c.frame(&s, 10_000).expect("frame")), 10);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+        let decodes = s.decodes.load(Ordering::Relaxed);
+        assert!(decodes <= 90 + 1, "walked {decodes} samples");
+        // The wanted picture is still cached: asking again must not restart or re-feed.
+        assert_eq!(index_of(&c.frame(&s, 10_000).expect("cached")), 10);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+        assert_eq!(s.decodes.load(Ordering::Relaxed), decodes);
+        // Playback continues from the same run.
+        assert_eq!(index_of(&c.frame(&s, 11_000).expect("frame")), 11);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn long_gop_continue_does_not_restart_for_the_next_frame() {
+        let s = samples(300, 250, 8, false);
+        let mut c = GopCache::new(None);
+        c.budget = 0;
+        assert_eq!(index_of(&c.frame(&s, 80_000).expect("frame")), 80);
+        let resets = s.resets.load(Ordering::Relaxed);
+        let decodes = s.decodes.load(Ordering::Relaxed);
+        assert_eq!(index_of(&c.frame(&s, 81_000).expect("frame")), 81);
+        assert_eq!(s.resets.load(Ordering::Relaxed), resets);
+        assert!(s.decodes.load(Ordering::Relaxed) - decodes <= 8 + 2);
     }
 }

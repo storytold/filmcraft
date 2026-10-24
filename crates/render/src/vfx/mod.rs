@@ -103,6 +103,7 @@ impl FxEnv for ItemEnv<'_> {
             clip_name: &self.item.name,
             project: Some(self.project),
             env: None,
+            frame_rate: self.seq.settings.frame_rate.as_f64(),
             working: self.seq.settings.color.working,
         };
         for e in &self.item.effects {

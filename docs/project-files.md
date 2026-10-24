@@ -125,11 +125,19 @@ like Premiere's:
 | Update it at least every N second(s) | `autoSave.recoveryIntervalSeconds` | 5 (1–600) |
 
 At each interval, if the project changed since the last auto-save, a copy is written to the
-`Auto-Save` folder next to the project as `<name>-YYYY-MM-DD_HH-MM-SS.fcproj` (local time). An
+`Auto-Save` folder next to the project as `<name>-YYYY-MM-DD_HH-MM-SS-<unix seconds>.fcproj` (local time, then the real time that orders
+the copies, so a clock change at the end of daylight saving time cannot reorder them). An
 unsaved project uses `<data dir>/Auto-Save/`. After each write the oldest copies beyond the limit are
-deleted. Only files named exactly `<name>-<timestamp>.fcproj` are ever deleted. An auto-save is an
+deleted. Only files named exactly `<name>-<timestamp>.fcproj` or `<name>-<timestamp>-<unix seconds>.fcproj` are ever deleted. An auto-save is an
 ordinary project file: open it with File ▸ Open Project. `file.listAutoSaves` lists them, newest
 first.
+
+Project Settings ▸ Scratch Disks can send auto-saves (Project Auto Save), render previews (Video
+Previews), captured and generated media (Captured Audio and Video, also the default for proxies)
+and audio previews to another folder. A folder named in a project file is used only when it is
+inside the project's own folder or was chosen in Scratch Disks on this computer (remembered in
+`autoSave.scratchFolders`). Otherwise FilmCraft uses the default location and says so when the
+project opens. Folders on another computer or a device are never used.
 
 Preferences are stored in `<data dir>/preferences.json`. The `prefs.*` commands read and change them.
 
@@ -223,7 +231,7 @@ opens the dialog on a page.
 | Auto Save | the auto-save ring and the crash-recovery journal |
 | Color | stored only (display colour management, EDR monitoring, HDR graphics white) |
 | Graphics | new text layers: smart quotes, ligatures, default font |
-| Labels | the 16 label names and colours (timeline, Project panel, Edit ▸ Label), label defaults for imported movies / video / audio / stills and new sequences |
+| Labels | the 16 label names and colours (timeline, Project panel, Edit ▸ Label), label defaults for imported movies / video / audio / stills and new sequences, Label Color Presets: JSON files (`{"name", "labels": [16 × {"name", "color": "#rrggbb"}]}`) in `<data dir>/Label Presets`, built in: "Default" (the labels FilmCraft ships with), "Bright" (16 saturated hues) and "Roles" (B-Roll, Footage, Dialogue… named so the label defaults land on matching roles) (`labels.presets`, `labels.importPreset {path}`, `labels.exportPreset {path}`, `labels.deletePreset {name}`; `labels.preset` is the selected one) |
 | Media | Indeterminate Media Timebase (frame rate of stills), Default Media Scaling (Scale to / Set to frame size when a clip of another size is edited in), Enable proxies |
 | Media Analysis & Transcription | auto-transcribe imported clips (scope "all imported"), speech model, default language / auto-detect, speaker labelling (defaults of `transcript.generate`) |
 | Media Cache | location (`<data dir>/Media Cache` by default; unsaved projects' render previews live there), automatic deletion (older than N days / beyond N GB), Delete… (`mediaCache.clean {all?}`, `mediaCache.info`) |
@@ -262,6 +270,12 @@ have no identity, so relinking them skips the fingerprint check.
   deleted only with `deleteFiles: true`.
 - The media pool caches sources per item **and** per reference (path, offline flag). So relinking,
   Make Offline and undoing either take effect on the next frame.
+- **Stored paths.** Media and proxy paths read from a document (the project file, a project
+  template, an interchange file) are opened only when they name a file on this computer or on
+  the network share the document itself is on (`crates/engine/src/doc_path.rs`, built on
+  `craft-docpath`); a relative path is taken from the document's folder. Other paths (another
+  computer, a device) count as missing: the item shows the offline slate, the open says why, and
+  the Link Media dialog lists it. A file imported or linked in this session is opened as given.
 
 ### Link Media
 
@@ -361,6 +375,11 @@ destination?, preset?}` (Project Settings ▸ Ingest) acts on every `file.import
   clip to the result when it is done;
 - **createProxies** makes proxies in the background and attaches them;
 - **copyAndCreateProxies** does both.
+
+Copied files keep their names when available; collisions receive a numbered suffix before the
+extension (`A001 2.mov`) and never replace an existing file. Transcodes reserve distinct output
+names for every clip in the import batch. Copies keep their source fingerprint, and each proxy
+stays attached to its corresponding take.
 
 `file.import` reports this under `ingest`.
 

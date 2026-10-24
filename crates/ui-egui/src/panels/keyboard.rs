@@ -309,9 +309,13 @@ fn play_range(app: &mut FilmcraftApp, preroll: bool) -> Result<Value, String> {
         app.session.playhead()
     };
     let stop = if preroll { end + filmcraft_time::Tick::from_seconds_f64(app.session.prefs.playback.postroll_seconds) } else { end };
+    // Plain marked playback includes Out but stops after its frame. Extended
+    // preroll/postroll playback retains its existing boundary behavior.
+    let rest_at = if preroll { None } else { Some(seq.mark_out.unwrap_or((end - fd).max(filmcraft_time::Tick::ZERO))) };
     app.session.set_playhead(start);
     app.play(1.0);
     app.playback.stop_at = Some(stop);
+    app.playback.rest_at = rest_at;
     Ok(json!({"from": start.0, "to": stop.0}))
 }
 

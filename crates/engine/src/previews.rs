@@ -535,8 +535,7 @@ impl PreviewStore {
             }
         }
         let path = self.dir()?.join(name);
-        let bytes = std::fs::read(&path).ok()?;
-        let src = pool.open_bytes(name, bytes.into()).ok()?;
+        let src = open_preview_file(pool, name, &path)?;
         let mut g = self.sources.lock().unwrap_or_else(|e| e.into_inner());
         g.push((name.to_string(), src.clone()));
         if g.len() > 6 {
@@ -544,6 +543,21 @@ impl PreviewStore {
         }
         Some(src)
     }
+}
+
+/// Open a rendered preview file. Native builds read it in place (the container's index now,
+/// frames on demand): previews are full-resolution ProRes, gigabytes a minute, and reading each
+/// one whole filled memory during render and playback (#2185).
+#[cfg(any(unix, windows))]
+pub(crate) fn open_preview_file(_pool: &MediaPool, name: &str, path: &std::path::Path) -> Option<SharedSource> {
+    let reader = filmcraft_media::reader::FileReader::open(path).ok()?;
+    filmcraft_media::reader::open_reader_within(name, std::sync::Arc::new(reader), &filmcraft_codecs::reader_openers(), &[], 0).ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn open_preview_file(pool: &MediaPool, name: &str, path: &std::path::Path) -> Option<SharedSource> {
+    let bytes = std::fs::read(path).ok()?;
+    pool.open_bytes(name, bytes.into()).ok()
 }
 
 fn need_state(seg: &Segment) -> BarState {
@@ -639,7 +653,6 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let provider = s.media.full_res_provider(project.clone(), s.services.clone());
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
-    let pool = s.media.clone();
     let run = move || {
         let t0 = web_time::Instant::now();
         let mut bytes = 0u64;
@@ -679,8 +692,6 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                         break;
                     }
                     store.add_video(&name);
-                    // open it now so the first playback doesn't wait for the file read
-                    let _ = store.open(&pool, &name);
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&part);

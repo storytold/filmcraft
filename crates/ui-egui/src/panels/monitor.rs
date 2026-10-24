@@ -31,7 +31,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let stacked_controls = rect.width() < 540.0;
     let separate_source_drag = which == Which::Source && stacked_controls && rect.width() < 310.0;
     let source_drag_h = if separate_source_drag { 26.0 } else { 0.0 };
-    let controls_h = 28.0 + 24.0 + 36.0 + if stacked_controls { 26.0 } else { 0.0 } + source_drag_h;
+    let controls_h = 28.0 + 24.0 + 15.0 + 36.0 + if stacked_controls { 26.0 } else { 0.0 } + source_drag_h;
     let video_area = Rect::from_min_max(rect.min + vec2(4.0, 4.0), pos2(rect.max.x - 4.0, rect.max.y - controls_h));
     // the Source monitor's time ruler starts at `origin` (a subclip restricted to its range)
     let mut origin = Tick::ZERO;
@@ -130,7 +130,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         (video_area, None)
     };
     if let (Some(wa), Some(item)) = (wave_area, source_item) {
-        monitor_view::waveform(app, ui, wa, item, time, duration, mark_in, mark_out);
+        let shown = ruler_shown(mv.time_zoom, origin, duration);
+        monitor_view::waveform(app, ui, wa, item, time, shown, mark_in, mark_out);
     }
     let show_picture = has_video && !wave_only && !grid_only;
     // Rulers along the top and left of the picture area.
@@ -295,9 +296,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         monitor_view::zoom_pan_input(app, ui, which, video_area, pic, display_w, ppp);
     }
     if which == Which::Program && show_picture {
-        eyedropper(app, ui, &pic_resp, pic, target, rate, time);
-        crate::panels::graphics::monitor_overlay(app, ui, pic, frame_size);
-        crate::panels::masks::monitor_overlay(app, ui, pic, frame_size);
+        // an armed eyedropper owns clicks on the picture: the overlays would sit on top and take
+        // them (the selected clip's transform handles cover it, #1023)
+        if app.ui.eyedropper.is_some() {
+            eyedropper(app, ui, &pic_resp, pic, target, rate, time);
+        } else {
+            crate::panels::graphics::monitor_overlay(app, ui, pic, frame_size);
+            crate::panels::masks::monitor_overlay(app, ui, pic, frame_size);
+            crate::panels::transform_handles::monitor_overlay(app, ui, pic, frame_size);
+        }
     }
     if show_picture {
         monitor_view::guides(app, ui, which, video_area, pic, frame_size);
@@ -430,10 +437,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     });
     // ---- mini timeline / scrub bar
     let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, settings_y + 28.0 + source_drag_h), vec2(rect.width() - 28.0, 22.0));
+    let zoom_bar = Rect::from_min_size(pos2(bar.min.x, bar.max.y + 2.0), vec2(bar.width(), 13.0));
+    follow_playhead(app, which, origin, duration, time);
+    time_zoom_bar(app, ui, zoom_bar, which, origin, duration, rate);
     mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
 
     // ---- transport buttons
-    let row3 = Rect::from_min_size(pos2(rect.min.x, bar.max.y + 4.0), vec2(rect.width(), 32.0));
+    let row3 = Rect::from_min_size(pos2(rect.min.x, zoom_bar.max.y + 4.0), vec2(rect.width(), 32.0));
     transport(app, ui, row3, which);
 }
 
@@ -600,6 +610,138 @@ pub fn fit(area: Rect, w: f32, h: f32) -> Rect {
     Rect::from_center_size(area.center(), vec2(w * s, h * s))
 }
 
+/// The narrowest the time zoom bar's thumb gets, the same as on the Timeline's zoom scroll bar:
+/// room for its two handles and a part between them to grab.
+const MIN_ZOOM_THUMB_W: f32 = 34.0;
+
+/// The fewest frames the time ruler can be zoomed in to.
+const MIN_ZOOM_FRAMES: i64 = 5;
+
+/// A monitor's time zoom range as (start, end) fractions of the clip or sequence, made usable (it
+/// can come from `ui.set`): anything empty, reversed or not a number is the whole length.
+fn time_zoom_range(zoom: Option<[f64; 2]>) -> (f64, f64) {
+    let (s, e) = zoom.map(|[s, e]| (s.clamp(0.0, 1.0), e.clamp(0.0, 1.0))).unwrap_or((0.0, 1.0));
+    if s < e { (s, e) } else { (0.0, 1.0) }
+}
+
+/// The times (start, end) of `origin..end` that the time ruler shows at the zoom range `zoom`.
+fn ruler_shown(zoom: Option<[f64; 2]>, origin: Tick, end: Tick) -> (Tick, Tick) {
+    let (s, e) = time_zoom_range(zoom);
+    let len = end.0.saturating_sub(origin.0).max(0) as f64;
+    let at = |f: f64| Tick(origin.0.saturating_add((f * len) as i64));
+    (if s > 0.0 { at(s) } else { origin }, if e < 1.0 { at(e) } else { end })
+}
+
+/// While the monitor plays, a zoomed time ruler follows the playhead `time` the way the Timeline
+/// does (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling): with page scrolling, a playhead
+/// running off the right edge or jumping before the left one brings it back near the left edge;
+/// with smooth scrolling it stays in the middle once it gets there. The range keeps its width.
+fn follow_playhead(app: &mut FilmcraftApp, which: Which, origin: Tick, end: Tick, time: Tick) {
+    let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
+    let mode = app.session.prefs.timeline.auto_scroll.as_str();
+    let zoom = monitor_view::view(app, which).time_zoom;
+    let len = end.0.saturating_sub(origin.0);
+    if !playing || mode == "noScroll" || zoom.is_none() || len <= 0 {
+        return;
+    }
+    let (s, e) = time_zoom_range(zoom);
+    let span = e - s;
+    let f = time.0.saturating_sub(origin.0) as f64 / len as f64;
+    let across = (f - s) / span;
+    let start = if mode == "smoothScroll" {
+        (!(0.0..=0.5).contains(&across)).then_some(f - span * 0.5)
+    } else {
+        (!(0.0..=0.95).contains(&across)).then_some(f - span * 0.05)
+    };
+    if let Some(ns) = start.map(|ns| ns.clamp(0.0, 1.0 - span)) {
+        monitor_view::view_mut(app, which).time_zoom = Some([ns, (ns + span).min(1.0)]);
+    }
+}
+
+/// The zoom scroll bar under the time ruler. Its thumb is the part of the clip or sequence
+/// (`origin..end`) the ruler shows: drag a handle at either end to zoom, the middle to scroll, or
+/// press beside the thumb to bring it there. A thumb filling the bar shows all of it.
+fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Which, origin: Tick, end: Tick, rate: filmcraft_time::FrameRate) {
+    let t = app.tokens;
+    let prefix = if which == Which::Program { "program" } else { "source" };
+    let len = end.0.saturating_sub(origin.0);
+    let min_span = if len > 0 { (rate.frame_duration().0.saturating_mul(MIN_ZOOM_FRAMES) as f64 / len as f64).min(1.0) } else { 1.0 };
+    let (s, e) = time_zoom_range(monitor_view::view(app, which).time_zoom);
+    let span = e - s;
+    let w = (span as f32 * bar.width()).clamp(MIN_ZOOM_THUMB_W.min(bar.width()), bar.width());
+    let travel = (bar.width() - w).max(0.0);
+    let range = (1.0 - span).max(0.0);
+    let left = bar.min.x + if range > 0.0 { (s / range).clamp(0.0, 1.0) as f32 * travel } else { 0.0 };
+    let per_point = if travel > 0.5 { range / travel as f64 } else { 0.0 };
+    let thumb = Rect::from_min_max(pos2(left, bar.min.y), pos2(left + w, bar.max.y));
+    let p = ui.painter();
+    p.rect_filled(bar, bar.height() / 2.0, t.separator);
+    let hover = ui.rect_contains_pointer(thumb);
+    p.rect_filled(thumb, thumb.height() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
+    for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
+        p.circle_filled(pos2(x, thumb.center().y), 4.5, t.panel_bg);
+        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, t.icon_active));
+    }
+    app.auto.add(&format!("{prefix}.zoomBar"), thumb, "zoom scroll bar");
+    app.auto.add(&format!("{prefix}.zoomBar.track"), bar, "zoom scroll bar track");
+    let resp = ui.interact(bar, egui::Id::new((prefix, "zoomBar")), Sense::click_and_drag());
+    // the start that brings the thumb's middle under `x`
+    let jump = |x: f32| ((x - bar.min.x - w / 2.0) as f64 * per_point).clamp(0.0, range);
+    let mut set = None;
+    if resp.clicked()
+        && per_point > 0.0
+        && let Some(ns) = resp.interact_pointer_pos().filter(|pos| !thumb.contains(*pos)).map(|pos| jump(pos.x))
+    {
+        set = Some((ns, ns + span));
+    }
+    // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
+    // under the pointer when the button went down)
+    let drag_id = egui::Id::new((prefix, "zoomBar-drag"));
+    if resp.drag_started()
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        let mut start = s;
+        let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+            if per_point > 0.0 {
+                start = jump(pos.x);
+                set = Some((start, start + span));
+            }
+            0u8
+        } else if (pos.x - thumb.min.x).abs() < 9.0 {
+            1
+        } else if (pos.x - thumb.max.x).abs() < 9.0 {
+            2
+        } else {
+            0
+        };
+        ui.data_mut(|d| d.insert_temp(drag_id, (pos.x, start, mode)));
+    }
+    if resp.dragged()
+        && let Some((grab, start, mode)) = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id))
+    {
+        match mode {
+            // the thumb's middle: scroll, the thumb staying under the pointer
+            0 => {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let ns = (start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
+                    set = Some((ns, ns + span));
+                }
+            }
+            // a handle: zoom, the other end staying where it is
+            _ => {
+                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64;
+                set = Some(if mode == 1 { ((s + dx).clamp(0.0, (e - min_span).max(0.0)), e) } else { (s, (e + dx).clamp((s + min_span).min(1.0), 1.0)) });
+            }
+        }
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove::<(f32, f64, u8)>(drag_id));
+    }
+    if let Some((s, e)) = set {
+        monitor_view::view_mut(app, which).time_zoom = (s > 0.0 || e < 1.0).then_some([s, e.min(1.0)]);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn mini_timeline(
     app: &mut FilmcraftApp,
@@ -615,23 +757,43 @@ fn mini_timeline(
 ) {
     let t = app.tokens;
     let duration = end;
-    let dur = (end - origin).0.max(1) as f64;
-    let xof = |tk: Tick| bar.min.x + (((tk - origin).0 as f64 / dur) as f32).clamp(0.0, 1.0) * bar.width();
+    // the part the zoom bar shows
+    let shown = ruler_shown(monitor_view::view(app, which).time_zoom, origin, end);
+    let dur = (shown.1 - shown.0).0.max(1) as f64;
+    let xof = |tk: Tick| bar.min.x + (((tk - shown.0).0 as f64 / dur) as f32).clamp(0.0, 1.0) * bar.width();
+    // a time off a zoomed ruler is not drawn (past either end of it all, it sits at that end)
+    let shows = |tk: Tick| (tk >= shown.0 || shown.0 <= origin) && (tk <= shown.1 || shown.1 >= end);
     let resp = ui.interact(bar, egui::Id::new((which as u8, "scrub")), Sense::click_and_drag());
     app.auto.add(if which == Which::Program { "program.scrubBar" } else { "source.scrubBar" }, bar, "scrub bar");
-    let interaction = crate::panels::source_range::interact(app, ui, bar, which);
+    let interaction = crate::panels::source_range::interact(app, ui, bar, which, shown);
     let p = ui.painter();
-    // ticks: minor 4 pt, major 10 pt, ~20 pt spacing
-    let n = ((bar.width() / 20.0) as i32).max(2);
-    for i in 0..=n {
-        let x = bar.min.x + bar.width() * i as f32 / n as f32;
-        let h = if i % 5 == 0 { 8.0 } else { 3.5 };
-        p.line_segment([pos2(x, bar.max.y - h), pos2(x, bar.max.y)], Stroke::new(1.0, t.text_faint));
+    // ticks: minor 3.5 pt high, major 8 pt, on whole frames chosen as on the Timeline's ruler (minor
+    // at least 12 pt apart, major at least 110 pt), so they spread out and fill in as the ruler zooms
+    let frame_px = rate.frame_duration().0 as f64 / dur * f64::from(bar.width());
+    let base = rate.timecode_base();
+    let steps: Vec<i64> =
+        [1, 2, 5, 10, base / 2].into_iter().chain([1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600].map(|k| base.saturating_mul(k))).collect();
+    let major = steps.iter().copied().find(|s| *s > 0 && *s as f64 * frame_px >= 110.0).unwrap_or(base.saturating_mul(3600)).max(1);
+    // a step that divides the major one, so every major tick is on a minor one
+    let minor = steps.iter().copied().find(|s| *s > 0 && major % s == 0 && *s as f64 * frame_px >= 12.0).unwrap_or(major);
+    let mut f = rate.frame_at(shown.0) / minor * minor;
+    // (bounded: a ruler too short for its ticks shows the first few hundred)
+    for _ in 0..512 {
+        let x = bar.min.x + ((rate.tick_of(f).0 as f64 - shown.0.0 as f64) / dur) as f32 * bar.width();
+        if x > bar.max.x + 0.5 {
+            break;
+        }
+        if x >= bar.min.x - 0.5 {
+            let h = if f % major == 0 { 8.0 } else { 3.5 };
+            p.line_segment([pos2(x, bar.max.y - h), pos2(x, bar.max.y)], Stroke::new(1.0, t.text_faint));
+        }
+        f = f.saturating_add(minor);
     }
-    let a = xof(interaction.range.map(|r| r.start).unwrap_or(mark_in.unwrap_or(origin)));
+    let a_t = interaction.range.map(|r| r.start).unwrap_or(mark_in.unwrap_or(origin));
     // Out includes its frame; both the shading and its bracket end at the following boundary.
-    let b = xof(interaction.range.map(|r| r.end()).unwrap_or_else(|| mark_out.map(|o| Tick(o.0.saturating_add(rate.frame_duration().0))).unwrap_or(duration)))
-        .max(a);
+    let b_t = interaction.range.map(|r| r.end()).unwrap_or_else(|| mark_out.map(|o| Tick(o.0.saturating_add(rate.frame_duration().0))).unwrap_or(duration));
+    let a = xof(a_t);
+    let b = xof(b_t).max(a);
     if mark_in.is_some() || mark_out.is_some() {
         p.rect_filled(Rect::from_min_max(pos2(a, bar.min.y + 8.0), pos2(b, bar.max.y)), 0.0, Color32::from_rgba_unmultiplied(0x5c, 0x5c, 0x5c, 128));
     }
@@ -640,8 +802,8 @@ fn mini_timeline(
         let top = bar.min.y + 8.0;
         let bottom = bar.max.y;
         let mid = (top + bottom) * 0.5;
-        for (x, direction, hot) in [(a, 1.0_f32, interaction.in_hot), (b, -1.0_f32, interaction.out_hot)] {
-            if hot || (direction > 0.0 && mark_in.is_none()) || (direction < 0.0 && mark_out.is_none()) {
+        for (x, direction, hot, edge) in [(a, 1.0_f32, interaction.in_hot, a_t), (b, -1.0_f32, interaction.out_hot, b_t)] {
+            if hot || !shows(edge) || (direction > 0.0 && mark_in.is_none()) || (direction < 0.0 && mark_out.is_none()) {
                 continue;
             }
             let point = |offset: f32, y: f32| pos2(x + direction * offset, y);
@@ -669,7 +831,7 @@ fn mini_timeline(
         Which::Source => app.session.state.source_item.and_then(|i| filmcraft_engine::clip_ops::source_view(&app.session, i)).map(|v| v.markers),
     };
     if let Some(markers) = markers {
-        for m in &markers {
+        for m in markers.iter().filter(|m| shows(m.start)) {
             let x = xof(m.start);
             let c = m.color.marker_rgb();
             let c = Color32::from_rgb(c[0], c[1], c[2]);
@@ -681,15 +843,17 @@ fn mini_timeline(
             ));
         }
     }
-    let x = xof(time);
-    // playhead: blue triangle over a line
-    let hy = bar.max.y - 11.0;
-    p.add(egui::Shape::convex_polygon(
-        vec![pos2(x - 5.5, hy), pos2(x + 5.5, hy), pos2(x + 5.5, hy + 5.0), pos2(x, hy + 9.0), pos2(x - 5.5, hy + 5.0)],
-        t.playhead,
-        Stroke::NONE,
-    ));
-    p.line_segment([pos2(x, hy + 8.0), pos2(x, bar.max.y)], Stroke::new(1.0, t.playhead));
+    if shows(time) {
+        let x = xof(time);
+        // playhead: blue triangle over a line
+        let hy = bar.max.y - 11.0;
+        p.add(egui::Shape::convex_polygon(
+            vec![pos2(x - 5.5, hy), pos2(x + 5.5, hy), pos2(x + 5.5, hy + 5.0), pos2(x, hy + 9.0), pos2(x - 5.5, hy + 5.0)],
+            t.playhead,
+            Stroke::NONE,
+        ));
+        p.line_segment([pos2(x, hy + 8.0), pos2(x, bar.max.y)], Stroke::new(1.0, t.playhead));
+    }
     if interaction.in_hot {
         crate::panels::source_range::trim_cue(p, a, bar, 4.0);
     }
@@ -700,7 +864,7 @@ fn mini_timeline(
         if !interaction.handled && (resp.dragged() || resp.clicked()) {
             resp.interact_pointer_pos().map(|pos| {
                 let f = ((pos.x - bar.min.x) / bar.width().max(1.0)).clamp(0.0, 1.0) as f64;
-                rate.snap(origin + Tick((f * dur) as i64))
+                rate.snap(shown.0 + Tick((f * dur) as i64))
             })
         } else {
             None
@@ -731,6 +895,9 @@ fn set_transport_visible(hidden: &mut Vec<String>, command: &str, visible: bool)
         hidden.push(command.to_owned());
     }
 }
+
+/// Width and height of a transport button.
+const TRANSPORT_BUTTON: f32 = 28.0;
 
 fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which) {
     let t = app.tokens;
@@ -777,7 +944,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     if row.width() >= 30.0 {
         // Keep the existing button-editor affordance only when it has its own space.
         // Customize this monitor's transport separately from the other monitor.
-        let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 4.0), vec2(22.0, 22.0));
+        let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 5.0), vec2(22.0, 22.0));
         let resp = ui.interact(r, egui::Id::new((prefix, "btn-editor")), Sense::click()).on_hover_text(tl!("Button Editor"));
         app.auto.add(&format!("{prefix}.transport.editor"), r, "Button Editor");
         icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
@@ -810,13 +977,16 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
         }
     }
     let available = (row.width() - 46.0).max(0.0);
-    let widths = vec![28.0; buttons.len()];
-    let Some(fit) = craft_ui::layout::fit_toolbar(&widths, available, 2.0, 28.0) else {
+    let widths = vec![TRANSPORT_BUTTON; buttons.len()];
+    // roomy spacing when every button fits with it, tight spacing before any goes to the overflow menu
+    let count = buttons.len() as f32;
+    let gap = if count * TRANSPORT_BUTTON + (count - 1.0).max(0.0) * 6.0 <= available { 6.0 } else { 2.0 };
+    let Some(fit) = craft_ui::layout::fit_toolbar(&widths, available, gap, TRANSPORT_BUTTON) else {
         ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_max(row.min, pos2((row.right() - 30.0).max(row.left()), row.bottom()))), |ui| {
             egui::ScrollArea::horizontal().id_salt((prefix, "transport-scroll")).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for (icon, command, label) in &buttons {
-                        let (rect, _) = ui.allocate_exact_size(vec2(28.0, 26.0), Sense::hover());
+                        let (rect, _) = ui.allocate_exact_size(vec2(TRANSPORT_BUTTON, TRANSPORT_BUTTON), Sense::hover());
                         if transport_button(app, ui, rect, prefix, *icon, command, label) {
                             invoke_transport(app, ui.ctx(), which, command);
                         }
@@ -826,25 +996,26 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
         });
         return;
     };
-    let total = fit.shown.len() as f32 * 30.0 - 2.0 + if fit.overflow.is_empty() { 0.0 } else { 30.0 };
-    let mut x = row.center().x - 15.0 - total.max(28.0) / 2.0;
+    let pitch = TRANSPORT_BUTTON + gap;
+    let total = fit.shown.len() as f32 * pitch - gap + if fit.overflow.is_empty() { 0.0 } else { pitch };
+    let mut x = row.center().x - 15.0 - total.max(TRANSPORT_BUTTON) / 2.0;
     for (index, _) in &fit.shown {
         let Some((icon, command, label)) = buttons.get(*index) else { continue };
-        let rect = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(28.0, 26.0));
+        let rect = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(TRANSPORT_BUTTON, TRANSPORT_BUTTON));
         if transport_button(app, ui, rect, prefix, *icon, command, label) {
             invoke_transport(app, ui.ctx(), which, command);
         }
-        x += 30.0;
+        x += pitch;
     }
     if !fit.overflow.is_empty() {
-        let rect = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(28.0, 26.0));
+        let rect = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(TRANSPORT_BUTTON, TRANSPORT_BUTTON));
         let response = ui.interact(rect, egui::Id::new((prefix, "transport-more")), Sense::click()).on_hover_text(tl!("More transport controls"));
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("More transport controls")));
         if response.hovered() {
             ui.painter().rect_filled(rect, 4.0, t.hover);
         }
-        for offset in [-5.0, 0.0, 5.0] {
-            ui.painter().circle_filled(rect.center() + vec2(offset, 0.0), 1.5, t.icon);
+        for offset in [-6.0, 0.0, 6.0] {
+            ui.painter().circle_filled(rect.center() + vec2(offset, 0.0), 2.0, t.icon);
         }
         if response.has_focus() {
             ui.painter().rect_stroke(rect.shrink(2.0), 2.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
@@ -877,7 +1048,7 @@ fn transport_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, prefi
     if response.hovered() {
         ui.painter().rect_filled(rect, 4.0, t.hover);
     }
-    let size = if matches!(command, "playback.toggle" | "source.playback.toggle") { 16.0 } else { 14.0 };
+    let size = if matches!(command, "playback.toggle" | "source.playback.toggle") { 20.0 } else { 18.0 };
     let color = if command == "media.toggleProxies" && app.session.media.use_proxies() {
         t.accent
     } else if response.hovered() {

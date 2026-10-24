@@ -263,7 +263,7 @@ struct JobProvider {
 
 impl filmcraft_render::SourceProvider for JobProvider {
     fn source(&self, item: ItemId) -> Option<filmcraft_media::SharedSource> {
-        let s = self.inner.source(item)?;
+        let s = self.inner.pool.monitor_source(item, self.inner.source(item)?);
         Some(Arc::new(TimedSource(s)))
     }
 }
@@ -585,7 +585,9 @@ impl FrameServer {
             // the frame due now; once the clock runs, the frames before it are late
             self.request_job(key, rate.tick_of(key.frame), scale, project, 0, false, (!preroll && dir > 0).then_some(Tick::ZERO));
         }
-        let ahead = prefetch_depth(speed);
+        // During preroll the clock has not started: only the frames that gate start, not a
+        // prefetch run that walks the rest of a LongGOP and evicts the playhead pictures.
+        let ahead = if preroll { (PREROLL_FRAMES - 1).max(0) } else { prefetch_depth(speed) };
         for i in 0..ahead {
             let f = key.frame + (lead + i * stride) * dir * step;
             if f >= 0 {
@@ -914,7 +916,7 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
         // captions (they are not part of the preview hash), so captions are layered on live.
         let (w, h) = filmcraft_render::output_size(q, job.scale);
         let matrix = filmcraft_geom::Affine::scale(w as f64 / frame.width.max(1) as f64, h as f64 / frame.height.max(1) as f64);
-        let mut layers = vec![filmcraft_render::plan::PlanLayer { frame, matrix, opacity: 1.0, blend: filmcraft_render::Blend::Normal, fx: None }];
+        let mut layers = vec![filmcraft_render::plan::PlanLayer { frame, matrix, opacity: 1.0, blend: filmcraft_render::Blend::Normal, fx: None, input: None }];
         for o in filmcraft_render::caption_overlays(q, job.time, w, h) {
             layers.push(filmcraft_render::plan::PlanLayer {
                 frame: Arc::new(filmcraft_frame::VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
@@ -922,6 +924,7 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
                 opacity: 1.0,
                 blend: filmcraft_render::Blend::Normal,
                 fx: None,
+                input: None,
             });
         }
         return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);

@@ -6,122 +6,20 @@ use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource};
 use filmcraft_project::mixer::{LANE_MUTE, LANE_PAN, LANE_VOLUME, send_lane};
 use filmcraft_project::{
-    AudioChannels, AutomationMode, ItemId, ItemKind, Keyframe, Label, MediaClip, MediaRef, ParamValue, Project, SequenceSettings, Track, TrackId, TrackKind,
-    TrackSend,
+    AudioChannels, AutomationMode, ItemId, ItemKind, Keyframe, Label, MediaClip, MediaRef, ParamValue, Project, SequenceSettings, TrackKind, TrackSend,
+    Transition, TransitionId,
 };
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
-use crate::SourceMap;
 use crate::mixer::{LiveMix, balance, graph_latency, mix_graph, pan_law_mono};
+use crate::{SourceMap, mixer};
 
-const SR: i64 = 48_000;
-
-/// A synthetic stereo source: `f(sample, channel)`.
-struct FnSource {
-    info: MediaInfo,
-    f: fn(i64, usize) -> f32,
-    ch: usize,
-}
-
-impl MediaSource for FnSource {
-    fn info(&self) -> &MediaInfo {
-        &self.info
-    }
-    fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
-        Err(MediaError::Unsupported("audio only".into()))
-    }
-    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
-        let f = self.f;
-        Ok(AudioBuffer { sample_rate, channels: (0..self.ch).map(|c| (0..frames).map(|i| f(start + i as i64, c)).collect()).collect() })
-    }
-}
-
-struct Rig {
-    p: Project,
-    seq: ItemId,
-    map: SourceMap,
-}
-
-impl Rig {
-    /// A sequence with `n` audio tracks, each holding one 10 s clip of its signal.
-    fn new(signals: &[fn(i64, usize) -> f32]) -> Rig {
-        Self::with_channels(signals, 2)
-    }
-    /// Like [`Rig::new`] with `ch`-channel sources.
-    fn with_channels(signals: &[fn(i64, usize) -> f32], ch: usize) -> Rig {
-        let mut p = Project::new("mix");
-        let seq = p.new_sequence("s", SequenceSettings::default(), 0, signals.len(), None);
-        let mut map = SourceMap::default();
-        for (k, f) in signals.iter().enumerate() {
-            let info = MediaInfo {
-                name: format!("sig{k}"),
-                kind: MediaKind::AudioOnly,
-                duration: Tick(10 * TICKS_PER_SECOND),
-                video: None,
-                audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: ch as u32, codec: "test".into(), bits_per_sample: Some(32) }],
-                container: "test".into(),
-                start_timecode: None,
-                file_size: None,
-            };
-            let id = p.add_item(
-                &info.name.clone(),
-                Label::Iris,
-                ItemKind::Media(MediaClip {
-                    media: MediaRef::File { path: format!("/sig{k}.wav") },
-                    info: info.clone(),
-                    interpret: Default::default(),
-                    mark_in: None,
-                    mark_out: None,
-                    markers: vec![],
-                    offline: false,
-                    proxy: None,
-                    identity: None,
-                }),
-                None,
-            );
-            map.0.insert(id, Arc::new(FnSource { info, f: *f, ch }));
-            let ti = p.make_track_item(id, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(10 * TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
-            p.sequence_mut(seq).unwrap().audio_tracks[k].items.push(ti);
-        }
-        Rig { p, seq, map }
-    }
-    fn track(&mut self, k: usize) -> &mut Track {
-        &mut self.p.sequence_mut(self.seq).unwrap().audio_tracks[k]
-    }
-    fn add_submix(&mut self, name: &str) -> TrackId {
-        let id = TrackId(self.p.alloc_id());
-        self.p.sequence_mut(self.seq).unwrap().submix_tracks.push(Track::new(id, TrackKind::Audio, name.into()));
-        id
-    }
-    fn submix(&mut self, id: TrackId) -> &mut Track {
-        self.p.sequence_mut(self.seq).unwrap().mix_track_mut(id).unwrap()
-    }
-    fn mix(&self, start: i64, n: usize) -> [Vec<f32>; 2] {
-        let b = mix_graph(&self.p, self.p.sequence(self.seq).unwrap(), start, n, &self.map, None);
-        [b.channels[0].clone(), b.channels[1].clone()]
-    }
-    /// Mix `[start, start + n)` in consecutive requests of the given sizes (cycled).
-    fn mix_cut(&self, start: i64, n: usize, sizes: &[usize], live: Option<&LiveMix>) -> [Vec<f32>; 2] {
-        let mut out = [Vec::new(), Vec::new()];
-        let (mut pos, mut k) = (start, 0);
-        while pos < start + n as i64 {
-            let m = sizes[k % sizes.len()].min((start + n as i64 - pos) as usize);
-            let b = mix_graph(&self.p, self.p.sequence(self.seq).unwrap(), pos, m, &self.map, live);
-            out[0].extend_from_slice(&b.channels[0]);
-            out[1].extend_from_slice(&b.channels[1]);
-            pos += m as i64;
-            k += 1;
-        }
-        out
-    }
-}
+#[path = "../tests/support/mixer.rs"]
+mod support;
+use support::{Rig, SR, busy_rig, kf, noise};
 
 fn dc(_: i64, _: usize) -> f32 {
     0.5
-}
-
-fn kf(t_samples: i64, v: f64) -> Keyframe {
-    Keyframe::new(Tick::from_units(t_samples, SR), ParamValue::Float(v))
 }
 
 fn close(a: f32, b: f32, tol: f32) -> bool {
@@ -422,35 +320,6 @@ fn latency_compensation_aligns_paths() {
     assert!(close(l[1000], 0.5, 2e-3), "A1 silenced exactly at its content sample: {}", l[1000]);
 }
 
-fn noise(i: i64, c: usize) -> f32 {
-    let x = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (c as u64 * 0x1234_5678);
-    let x = x ^ (x >> 29);
-    ((x.wrapping_mul(0xBF58_476D_1CE4_E5B9) >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.4
-}
-
-fn busy_rig(tracks: usize) -> Rig {
-    let sig: Vec<fn(i64, usize) -> f32> = vec![noise; tracks];
-    let mut r = Rig::new(&sig);
-    let bus = r.add_submix("Bus");
-    let mut comp = filmcraft_project::find_effect("dynamics").unwrap().instance();
-    comp.param_mut("threshold").unwrap().value = ParamValue::Float(-20.0);
-    r.submix(bus).effects.push(comp);
-    for k in 0..tracks {
-        let t = r.track(k);
-        for (id, post) in [("parametric_eq", false), ("dynamics", false), ("studio_reverb", true)] {
-            let mut e = filmcraft_project::find_effect(id).unwrap().instance();
-            e.post_fader = post;
-            t.effects.push(e);
-        }
-        t.pan = (k as f64 * 37.0) % 200.0 - 100.0;
-        t.lane_mut(LANE_VOLUME).unwrap().keyframes = vec![kf(0, -6.0), kf(96_000, 0.0)];
-        if k % 3 == 0 {
-            t.mixer.sends.push(TrackSend::new(bus));
-        }
-    }
-    r
-}
-
 #[test]
 fn render_and_playback_paths_are_identical() {
     // export renders in large batches; playback pulls small device blocks with live meters
@@ -466,6 +335,40 @@ fn render_and_playback_paths_are_identical() {
     let again = Rig::new(&[]);
     drop(again);
     assert_eq!(busy_rig(4).mix_cut(0, 24_000, &[8_000], None), export);
+}
+
+#[test]
+fn constant_insert_refresh_matches_grid_refresh_and_live_edits() {
+    // A constant keyframe forces the old per-grid refresh path without changing any values.
+    fn key_all(r: &mut Rig) {
+        let seq = r.p.sequence_mut(r.seq).unwrap();
+        for t in seq.audio_tracks.iter_mut().chain(seq.submix_tracks.iter_mut()) {
+            for e in &mut t.effects {
+                for p in e.params.values_mut() {
+                    p.keyframes = vec![Keyframe::new(Tick::ZERO, p.value.clone())];
+                }
+            }
+        }
+    }
+    fn render(keyed: bool) -> [Vec<f32>; 2] {
+        let mut r = busy_rig(2);
+        if keyed {
+            key_all(&mut r);
+        }
+        let mut out = r.mix_cut(0, 12_000, &[511, 1, 1024, 63], None);
+        for (slot, id, value) in [(0, "mid_gain", 8.0), (1, "threshold", -30.0), (2, "room", 80.0)] {
+            r.track(0).effects[slot].param_mut(id).unwrap().value = ParamValue::Float(value);
+        }
+        if keyed {
+            key_all(&mut r);
+        }
+        let edited = r.mix_cut(12_000, 24_000, &[17, 512, 63, 1024], None);
+        for (out, more) in out.iter_mut().zip(edited) {
+            out.extend(more);
+        }
+        out
+    }
+    assert_eq!(render(false), render(true));
 }
 
 #[test]
@@ -485,47 +388,6 @@ fn live_override_holds_and_ramps_back() {
     assert!(close(b.channels[0][0], 0.5, 1e-6));
 }
 
-/// 24 tracks × 3 inserts (EQ, Dynamics, Studio Reverb) + a compressed submix at 48 kHz, one core.
-#[test]
-// Off Unix there is no per-thread CPU clock (`thread_cpu_secs`), so the timing falls back to wall
-// time, which a loaded CI host (Windows runners run the suite in parallel) can push under the
-// threshold: genuinely timing-flaky there. On Unix it measures this thread's CPU time and stays on.
-#[cfg_attr(not(unix), ignore = "wall-clock timing without a thread CPU clock is load-dependent; run with --ignored")]
-fn perf_24_tracks_3_effects_realtime_factor() {
-    let r = busy_rig(24);
-    let secs = if cfg!(debug_assertions) { 2.0 } else { 10.0 };
-    let n = (secs * SR as f64) as usize;
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-    // warm up (fresh graph + pre-roll), then time steady-state playback-sized blocks
-    pool.install(|| r.mix_cut(0, 4_800, &[1024], None));
-    // Thread CPU time, not wall clock: the test runs alongside the whole suite (and other builds),
-    // and only the work done on this one thread matters.
-    let el = pool.install(|| {
-        let t0 = thread_cpu_secs();
-        let w0 = std::time::Instant::now();
-        r.mix_cut(4_800, n, &[1024], None);
-        t0.map(|t0| thread_cpu_secs().unwrap_or(t0) - t0).unwrap_or_else(|| w0.elapsed().as_secs_f64())
-    });
-    let rt = secs / el;
-    eprintln!("mixer perf: 24 tracks x 3 inserts + submix, {secs} s of 48 kHz stereo in {el:.3} s of CPU on one core = {rt:.1}x realtime");
-    let min = if cfg!(debug_assertions) { 1.0 } else { 4.0 };
-    assert!(rt > min, "realtime factor {rt:.2}");
-}
-
-/// CPU seconds used by the calling thread (None where there is no thread clock; callers fall back
-/// to wall time).
-fn thread_cpu_secs() -> Option<f64> {
-    #[cfg(unix)]
-    {
-        let t = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
-        Some(t.tv_sec as f64 + t.tv_nsec as f64 * 1e-9)
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
-}
-
 #[test]
 fn audio_transition_curves() {
     use crate::transitions::audio_gains;
@@ -542,6 +404,49 @@ fn audio_transition_curves() {
         assert_eq!(audio_gains(k, 0.0), (1.0, 0.0), "{k} starts on A");
         let (a, b) = audio_gains(k, 1.0);
         assert!(a.abs() < 1e-6 && close(b, 1.0, 1e-6), "{k} ends on B");
+    }
+}
+
+/// A transition centred on a cut mixes both clips across its whole length: the outgoing clip plays
+/// on past its out point and the incoming one starts before its in point (their handles), as the
+/// picture does, so the two overlap instead of each just dipping at the cut. The incoming source is
+/// a ramp, so its handle must come from the media just before its in point.
+#[test]
+fn audio_transition_on_a_cut_crossfades_through_the_handles() {
+    fn ramp(i: i64, _: usize) -> f32 {
+        i as f32 * 1e-6
+    }
+    let mut r = Rig::new(&[dc1, ramp]);
+    let (a_src, b_src) = (r.track(0).items[0].item, r.track(1).items[0].item);
+    let sec = |s: f64| Tick::from_seconds_f64(s);
+    let a = r.p.make_track_item(a_src, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, sec(1.0)), FrameRate::FPS_24).unwrap();
+    let b = r.p.make_track_item(b_src, TrackKind::Audio, sec(1.0), TimeRange::new(sec(2.0), sec(1.0)), FrameRate::FPS_24).unwrap();
+    let effect = filmcraft_project::vtransition::find_transition("constant_gain", filmcraft_project::EffectKind::AudioTransition).unwrap().instance();
+    let tr = Transition {
+        id: TransitionId(1),
+        effect,
+        start: sec(0.75),
+        duration: sec(0.5),
+        from: Some(a.id),
+        to: Some(b.id),
+        align: Default::default(),
+        reverse: false,
+    };
+    r.track(1).items.clear();
+    let t0 = r.track(0);
+    t0.items = vec![a, b];
+    t0.transitions.push(tr);
+    // the incoming clip plays media sample 96 000 at the cut (sample 48 000)
+    let b_at = |s: i64| ramp(s + 48_000, 0);
+    // constant gain at p = 0.25, 0.5 (the cut), 0.75: (1 - p)·A + p·B
+    for (s, p) in [(42_000, 0.25), (48_000, 0.5), (54_000, 0.75)] {
+        let want = (1.0 - p) * 0.1 + p * b_at(s);
+        let [l, rr] = r.mix(s, 1);
+        assert!(close(l[0], want, 1e-5) && close(rr[0], want, 1e-5), "sample {s}: {} (want {want})", l[0]);
+    }
+    // outside the transition each clip plays alone, at full level
+    for (s, want) in [(35_000, 0.1), (61_000, b_at(61_000))] {
+        assert!(close(r.mix(s, 1)[0][0], want, 1e-6), "sample {s}");
     }
 }
 
@@ -636,6 +541,25 @@ fn a_51_track_passes_through_a_51_mix_and_folds_into_stereo() {
     let meters = live.take_meters();
     assert_eq!(meters.get(&crate::mixer::MASTER).map(Vec::len), Some(6));
     assert!(close(meters[&crate::mixer::MASTER][5], 0.6, 1e-6));
+}
+
+#[test]
+fn a_51_source_on_a_stereo_track_folds_down_instead_of_dropping_centre_and_surrounds() {
+    // the default after New Sequence From Clip: a 5.1 file on a stereo track in a stereo Mix
+    let mut r = Rig::with_channels(&[chan_dc], 6);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    let (lo, ro) = (0.1 + k * 0.3 + k * 0.5, 0.2 + k * 0.3 + k * 0.6);
+    let st = mix_all(&r, 0, 256);
+    assert_eq!(st.len(), 2);
+    assert!(close(st[0][9], lo, 1e-6) && close(st[1][9], ro, 1e-6), "BS.775 fold, got {} / {}", st[0][9], st[1][9]);
+    // a six-channel pick folds the picked channels (here the source reversed: Rs, Ls, LFE, C, R, L)
+    r.track(0).items[0].source_channels = vec![5, 4, 3, 2, 1, 0];
+    let st = mix_all(&r, 0, 256);
+    assert!(close(st[0][9], 0.6 + k * 0.4 + k * 0.2, 1e-6) && close(st[1][9], 0.5 + k * 0.4 + k * 0.1, 1e-6));
+    // a stereo pick still plays exactly those two channels
+    r.track(0).items[0].source_channels = vec![2, 4];
+    let st = mix_all(&r, 0, 256);
+    assert!(close(st[0][9], 0.3, 1e-6) && close(st[1][9], 0.5, 1e-6));
 }
 
 #[test]

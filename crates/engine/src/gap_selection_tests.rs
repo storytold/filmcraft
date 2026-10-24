@@ -172,3 +172,63 @@ fn the_gap_selection_is_part_of_the_ui_state() {
     let back: crate::EditorState = serde_json::from_value(v).unwrap();
     assert_eq!(back.gap_selection, s.state.gap_selection);
 }
+
+#[test]
+fn close_gap_is_available_for_custom_shortcuts() {
+    let mut s = Session::default();
+    let rows = s.execute("shortcuts.list", json!({"query":"Close Gap"})).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["id"], "sequence.closeGap");
+    assert!(rows[0]["shortcuts"].as_array().unwrap().is_empty(), "no new default binding");
+    s.execute("shortcuts.set", json!({"command":"sequence.closeGap","keys":"Alt+Shift+F8"})).unwrap();
+    assert_eq!(s.shortcuts.primary("sequence.closeGap").as_deref(), Some("Alt+Shift+F8"));
+}
+
+#[test]
+fn close_gap_without_params_closes_selected_gap_in_one_undo_step() {
+    let mut s = Session::default();
+    let [(first, _), (second, sound)] = two_clips(&mut s, [0, 96]);
+    let frame = s.sequence_rate().tick_of(48);
+    s.execute("timeline.selectGap", json!({"track":"V1","frame":60})).unwrap();
+    let before = serde_json::to_value(&s.project).unwrap();
+    let undo = s.history.undo.len();
+    assert_eq!(s.execute("sequence.closeGap", json!({})).unwrap(), serde_json::Value::Null);
+    assert_eq!(range(&s, first).0, Tick::ZERO);
+    assert_eq!(range(&s, second).0, frame);
+    assert_eq!(range(&s, sound).0, frame);
+    assert!(s.state.gap_selection.is_none());
+    assert_eq!(s.history.undo.len(), undo + 1);
+    let after = serde_json::to_value(&s.project).unwrap();
+    s.undo();
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
+    s.redo();
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), after);
+}
+
+#[test]
+fn close_gap_rejects_invalid_context_and_explicit_parameters_without_editing() {
+    let mut s = Session::default();
+    two_clips(&mut s, [0, 96]);
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    assert!(s.execute("sequence.closeGap", json!({})).is_err(), "a shortcut needs a selected gap");
+    s.execute("timeline.selectGap", json!({"track":"V1","frame":60})).unwrap();
+    for params in [json!({"track":null}), json!({"track":false}), json!({"track":"V99","frame":60}), json!({"time":1})] {
+        assert!(s.execute("sequence.closeGap", params).is_err(), "invalid explicit requests must not fall back to the selected gap");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+        assert_eq!(s.history.undo.len(), undo);
+    }
+    let selected = s.state.gap_selection.unwrap();
+    s.state.gap_selection.as_mut().unwrap().range.duration += Tick(1);
+    assert!(s.execute("sequence.closeGap", json!({})).is_err(), "a stale span cannot close a different gap");
+    assert!(s.state.gap_selection.is_none());
+    assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+    assert_eq!(s.history.undo.len(), undo);
+    s.execute("timeline.setTrack", json!({"track":"V1","locked":true})).unwrap();
+    s.state.gap_selection = Some(selected);
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    assert!(s.execute("sequence.closeGap", json!({})).is_err(), "locking a selected gap must protect both picture and sound");
+    assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+    assert_eq!(s.history.undo.len(), undo);
+}

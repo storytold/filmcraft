@@ -132,6 +132,10 @@ impl Biquad {
     pub fn reset(&mut self) {
         *self = Biquad::new();
     }
+    /// Exact zero state, including the sign of zero, for identity-filter fast paths.
+    pub(crate) fn is_clear(&self) -> bool {
+        self.s1.to_bits() == 0 && self.s2.to_bits() == 0
+    }
     /// Filter a buffer in place.
     pub fn process(&mut self, c: &Coeffs, buf: &mut [f32]) {
         for v in buf {

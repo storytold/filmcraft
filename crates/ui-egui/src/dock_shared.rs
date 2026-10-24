@@ -1,6 +1,6 @@
 //! Convert the persisted workspace schema to shared docking transactions.
 
-use craft_ui::docking::{Action, Floating as SharedFloating, Layout as SharedLayout, Node};
+use craft_ui::docking::{Action, Floating as SharedFloating, Layout as SharedLayout, Location, Node, Placement, Zone};
 use craft_ui::layout::{SplitAxis, SplitSize as SharedSplitSize};
 
 use crate::dock::{DockNode, Floating, Layout, PanelKind, SplitSize};
@@ -94,6 +94,24 @@ pub(crate) fn apply_tree(root: &mut DockNode, action: Action<PanelKind>) -> bool
     }
     *root = layout.root;
     true
+}
+
+/// Dock a panel along one edge of the whole workspace. The shared model restores a panel beside a
+/// complete sibling subtree, so naming every remaining docked panel targets the root itself.
+pub(crate) fn dock_at_edge(layout: &mut SharedLayout<PanelKind>, panel: PanelKind, zone: Zone) -> Result<(), String> {
+    let size = match zone {
+        Zone::Left | Zone::Top => SharedSplitSize::Ratio(0.25),
+        Zone::Right | Zone::Bottom => SharedSplitSize::Ratio(0.75),
+        Zone::Center => return Err("a workspace edge needs a left, right, top or bottom zone".into()),
+    };
+    let mut proposed = layout.clone();
+    proposed.apply(Action::Close { panel }).map_err(|error| error.to_string())?;
+    let sibling: Vec<PanelKind> = SharedLayout { root: proposed.root.clone(), floating: vec![] }.panels().into_iter().copied().collect();
+    let anchor = *sibling.first().ok_or("another docked panel is required to dock beside")?;
+    let location = Location { floating: None, anchor: Some(anchor), placement: Placement::Split(zone), size: Some(size), stack: None, sibling };
+    proposed.restore(panel, &location).map_err(|error| error.to_string())?;
+    *layout = proposed;
+    Ok(())
 }
 
 /// Keep one docked destination available for dragging floating panels back into the workspace.

@@ -1715,8 +1715,8 @@ fn replace_with(s: &mut Session, p: &Value, how: Replace) -> Result<Value> {
             }
             let Some((_, it)) = q.find_item_mut(*c) else { continue };
             let src_in = match how {
-                // the Source monitor frame lines up with the sequence playhead
-                Replace::MatchFrame => src_ph - Tick(((ph - it.start).0 as f64 * it.speed.abs()).round() as i64),
+                // the Source monitor frame lines up with the sequence playhead (reverse-aware)
+                Replace::MatchFrame => src_ph - (it.moving_source_time_at(ph) - it.source_in),
                 _ if keep_in => {
                     let kept = keep_within.map(|(first, last)| it.source_in.clamp(first, last)).unwrap_or(it.source_in);
                     if kept != it.source_in {

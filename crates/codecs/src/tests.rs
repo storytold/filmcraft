@@ -7,7 +7,7 @@ use std::sync::Arc;
 use filmcraft_media::FrameRequest;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
-fn ffmpeg() -> Option<&'static str> {
+pub(crate) fn ffmpeg() -> Option<&'static str> {
     ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists())
 }
 
@@ -224,20 +224,63 @@ fn matroska_hevc_flac() {
     check_mkv("blue_hevc_flac.mkv", &["-c:v", "libx265", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p"], &["-c:a", "flac"]);
 }
 
+/// FLAC in MP4 (`fLaC` + `dfLa`): the decoder gets the STREAMINFO from `dfLa` (it was given
+/// nothing, and every FLAC track in an MP4 failed with "missing extra data").
+#[test]
+fn mp4_flac_audio() {
+    let args = ["-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:d=2", "-c:a", "flac", "-strict", "-2"];
+    let Some(b) = fixture("tone_flac.mp4", &args) else { return };
+    let src = crate::open_bytes("tone_flac.mp4", b).expect("open");
+    let a = src.audio(24_000, 4800, 48_000).expect("audio");
+    let peak = a.channels[0].iter().fold(0f32, |m, s| m.max(s.abs()));
+    assert!(peak > 0.05 && peak < 1.0, "audio peak {peak}");
+}
+
 #[test]
 fn matroska_prores_pcm() {
     check_mkv("blue_prores_pcm.mkv", &["-c:v", "prores_ks", "-profile:v", "2"], &["-c:a", "pcm_s16le"]);
 }
 
+/// `bytes` with its first `DefaultDuration` element (0x23E383) overwritten by an EBML Void of the
+/// same length, as a muxer that leaves the optional element out would write the track.
+fn without_default_duration(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    let at = out.windows(3).position(|w| w == [0x23, 0xE3, 0x83]).expect("DefaultDuration");
+    // ffmpeg writes a one-byte size (0x80 | n)
+    let total = 4 + (out[at + 3] & 0x7F) as usize;
+    out[at] = 0xEC;
+    out[at + 1] = 0x80 | (total - 2) as u8;
+    out[at + 2..at + total].fill(0);
+    out
+}
+
+#[test]
+fn matroska_reordered_video_without_default_duration_keeps_its_rate() {
+    // blocks are in decode order, so B-frames put file neighbours 2–3 frames apart (#923)
+    for (bf, name) in [(0, "rate25_bf0.mkv"), (1, "rate25_bf1.mkv"), (2, "rate25_bf2.mkv")] {
+        let params = format!("bframes={bf}:b-adapt=0:b-pyramid=0:keyint=250:scenecut=0");
+        let args =
+            ["-f", "lavfi", "-i", "testsrc2=size=64x48:rate=25", "-frames:v", "25", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-x264-params", &params, "-an"];
+        let Some(control) = fixture(name, &args) else { return };
+        let stripped = without_default_duration(&control);
+        for (label, bytes) in [("with DefaultDuration", control.to_vec()), ("without", stripped)] {
+            let src = crate::open_bytes(name, bytes.into()).expect("open");
+            let rate = src.info().video.as_ref().expect("video").frame_rate;
+            assert_eq!((rate.num, rate.den), (25, 1), "{bf} B-frames, {label}");
+            assert_eq!(src.info().duration, Tick::from_rational(1, 1, 1), "{bf} B-frames, {label}");
+        }
+    }
+}
+
 /// Path of a fixture under `target/fixtures/codecs/`, generated with ffmpeg when missing
 /// (`None` when ffmpeg or the encoder is unavailable).
-fn fixture_path(name: &str, args: &[&str]) -> Option<PathBuf> {
+pub(crate) fn fixture_path(name: &str, args: &[&str]) -> Option<PathBuf> {
     fixture(name, args)?;
     Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/codecs").join(name))
 }
 
 /// ffmpeg's decode of `src` as raw planar video (the oracle).
-fn reference_yuv(src: &std::path::Path, pix_fmt: &str) -> Option<Vec<u8>> {
+pub(crate) fn reference_yuv(src: &std::path::Path, pix_fmt: &str) -> Option<Vec<u8>> {
     let name = format!("{}.{pix_fmt}.yuv", src.file_name()?.to_str()?);
     let path = src.to_str()?;
     let b = fixture(&name, &["-i", path, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt])?;
@@ -245,7 +288,7 @@ fn reference_yuv(src: &std::path::Path, pix_fmt: &str) -> Option<Vec<u8>> {
 }
 
 /// Planes of a decoded YUV frame as little-endian bytes (ffmpeg rawvideo layout).
-fn yuv_bytes(f: &filmcraft_frame::VideoFrame) -> Vec<u8> {
+pub(crate) fn yuv_bytes(f: &filmcraft_frame::VideoFrame) -> Vec<u8> {
     match &f.data {
         filmcraft_frame::PixelData::Yuv8 { planes, .. } => planes.iter().flat_map(|p| p.iter().copied()).collect(),
         filmcraft_frame::PixelData::Yuv16 { planes, .. } => planes.iter().flat_map(|p| p.iter().flat_map(|s| s.to_le_bytes())).collect(),
@@ -444,6 +487,119 @@ fn vp9_webm_alpha_layer_matches_libvpx() {
         let r = &reference[k * frame_len..(k + 1) * frame_len];
         let filmcraft_frame::PixelData::Yuv8 { planes, alpha, .. } = &f.data else { panic!("frame {k}: not 8-bit YUV: {}", f.format_label()) };
         assert_eq!(planes[0].as_slice(), &r[..luma], "frame {k}: luma");
+        let alpha = alpha.as_ref().unwrap_or_else(|| panic!("frame {k}: no alpha plane"));
+        assert_eq!(alpha.as_slice(), &r[luma + 2 * chroma..], "frame {k}: alpha");
+    }
+}
+
+/// #432: VP8 in WebM with hidden altref frames (vpxenc, two-pass with ARNR: 11 of its 161
+/// frames are not shown). Frames requested out of order (seeks back and forth, then sequential
+/// playback across the hidden frames) are sample-exact against libvpx's decode, and the stream's
+/// colour is BT.601 (RFC 6386 9.2). Skipped without ffmpeg or vpxenc.
+#[test]
+fn vp8_webm_random_access_matches_libvpx() {
+    let frames = 150usize;
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/codecs");
+    let path = dir.join("vp8_hidden_altref.webm");
+    if !path.exists() {
+        let Some(y4m) =
+            fixture_path("mandelbrot_352x288_150.y4m", &["-f", "lavfi", "-i", "mandelbrot=s=352x288:r=25", "-frames:v", "150", "-pix_fmt", "yuv420p"])
+        else {
+            return;
+        };
+        let tmp = dir.join(format!("vp8_hidden_altref.{}.webm", std::process::id()));
+        let enc = Command::new("vpxenc")
+            .args(["--codec=vp8", "--passes=2", "--auto-alt-ref=1", "--lag-in-frames=25", "--arnr-maxframes=7", "--arnr-strength=5"])
+            .args(["--target-bitrate=300", "--kf-max-dist=150", "-q", "-o"])
+            .arg(&tmp)
+            .arg(&y4m)
+            .status();
+        if !enc.is_ok_and(|s| s.success()) {
+            eprintln!("vpxenc not available; skipping");
+            return;
+        }
+        let _ = std::fs::rename(&tmp, &path);
+    }
+    let p = path.to_string_lossy().into_owned();
+    let Some(reference) =
+        fixture("vp8_hidden_altref.webm.yuv", &["-c:v", "libvpx", "-i", &p, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuv420p"])
+    else {
+        return;
+    };
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = crate::open_bytes("vp8_hidden_altref.webm", bytes).unwrap();
+    let info = src.info().clone();
+    assert_eq!(info.container, "WebM");
+    let v = info.video.as_ref().unwrap();
+    assert_eq!(v.codec, "VP8");
+    assert_eq!((v.width, v.height), (352, 288));
+    assert_eq!(v.color.matrix, filmcraft_color::Matrix::Bt601);
+    assert_eq!(reference.len(), frames * 352 * 288 * 3 / 2);
+    let frame_len = reference.len() / frames;
+    let rate = info.frame_rate();
+    let order: Vec<usize> = [147, 3, 90, 26, 24, 149, 0, 112, 61].into_iter().chain(40..frames).collect();
+    for k in order {
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap();
+        assert_eq!((f.width, f.height), (352, 288));
+        assert_eq!(f.color.matrix, filmcraft_color::Matrix::Bt601);
+        assert!(yuv_bytes(&f) == reference[k * frame_len..(k + 1) * frame_len], "frame {k} differs from libvpx");
+    }
+}
+
+/// #432 / #402: a VP8 WebM with an alpha layer (`AlphaMode` 1, a second VP8 stream in each
+/// block's `BlockAdditional`, as browsers and GIF converters write transparent WebM) decodes
+/// with that alpha; frames requested out of order match libvpx exactly, colour and alpha.
+#[test]
+fn vp8_webm_alpha_layer_matches_libvpx() {
+    let (w, h, frames) = (176usize, 144usize, 30usize);
+    let Some(path) = fixture_path(
+        "alpha_vp8.webm",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=176x144:r=25,format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='mod(X*2+N*7\\,256)'",
+            "-frames:v",
+            "30",
+            "-c:v",
+            "libvpx",
+            "-pix_fmt",
+            "yuva420p",
+            "-g",
+            "10",
+            "-auto-alt-ref",
+            "0",
+            "-b:v",
+            "600k",
+        ],
+    ) else {
+        return;
+    };
+    let src_path = path.to_string_lossy().into_owned();
+    let Some(reference) =
+        fixture("alpha_vp8.webm.yuva420p.yuv", &["-c:v", "libvpx", "-i", &src_path, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuva420p"])
+    else {
+        return;
+    };
+    let (luma, chroma) = (w * h, (w / 2) * (h / 2));
+    let frame_len = luma * 2 + chroma * 2;
+    if reference.len() != frame_len * frames {
+        eprintln!("libvpx reference has {} bytes, not {}; skipping", reference.len(), frame_len * frames);
+        return;
+    }
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = crate::open_bytes("alpha_vp8.webm", bytes).unwrap();
+    let info = src.info().clone();
+    assert_eq!(info.container, "WebM");
+    assert!(info.video.as_ref().unwrap().has_alpha);
+    let rate = info.frame_rate();
+    let order: Vec<usize> = [29, 3, 17, 12, 0, 25, 21, 9].into_iter().chain(10..frames).collect();
+    for k in order {
+        let f = src.video_frame(FrameRequest::full(rate.tick_of(k as i64))).unwrap();
+        let r = &reference[k * frame_len..(k + 1) * frame_len];
+        let filmcraft_frame::PixelData::Yuv8 { planes, alpha, .. } = &f.data else { panic!("frame {k}: not 8-bit YUV: {}", f.format_label()) };
+        assert_eq!(planes[0].as_slice(), &r[..luma], "frame {k}: luma");
+        assert_eq!(planes[1].as_slice(), &r[luma..luma + chroma], "frame {k}: U");
         let alpha = alpha.as_ref().unwrap_or_else(|| panic!("frame {k}: no alpha plane"));
         assert_eq!(alpha.as_slice(), &r[luma + 2 * chroma..], "frame {k}: alpha");
     }

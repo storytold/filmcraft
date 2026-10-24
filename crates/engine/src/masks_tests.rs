@@ -380,3 +380,22 @@ fn rounding_an_animated_mask_rounds_every_keyframe_and_only_the_chosen_corners()
     assert_eq!(v.len(), 6);
     assert!((v[0]["p"][0].as_f64().unwrap() - 450.0).abs() < 1e-6, "{}", v[0]);
 }
+
+/// `path_to_json` → `path_from_json` keeps the Bézier tangents (they used to come back as zero, so
+/// a pen mask's dragged-out curves were committed as corners; #853).
+#[test]
+fn path_json_round_trip_keeps_tangents() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::mask::{MaskPath, MaskVertex};
+    let path = MaskPath {
+        vertices: vec![
+            MaskVertex { p: Vec2::new(10.0, 20.0), t_in: Vec2::new(-5.0, 0.0), t_out: Vec2::new(5.0, 0.0) },
+            MaskVertex::corner(Vec2::new(80.0, 20.0)),
+            MaskVertex { p: Vec2::new(40.0, 90.0), t_in: Vec2::new(3.0, -4.0), t_out: Vec2::new(-3.0, 4.0) },
+        ],
+        closed: true,
+    };
+    assert_eq!(crate::masks::path_from_json(&crate::masks::path_to_json(&path)), Some(path.clone()));
+    // the serialized project form still parses
+    assert_eq!(crate::masks::path_from_json(&serde_json::to_value(&path).unwrap()), Some(path));
+}

@@ -111,6 +111,13 @@ pub struct LineDrag {
     last: Option<f64>,
 }
 
+impl LineDrag {
+    /// Whether the drag has changed the volume yet (its first change began an undo step).
+    pub fn changed(&self) -> bool {
+        self.last.is_some()
+    }
+}
+
 fn find<'a>(seq: &'a Sequence, layout: &'a Layout, clip: ClipId) -> Option<(&'a Row, &'a TrackItem)> {
     let (tid, it) = seq.find_item(clip)?;
     Some((layout.rows.iter().find(|r| r.track == tid)?, it))
@@ -206,6 +213,15 @@ fn key_drag_id() -> egui::Id {
 /// it to delete it. Runs after the timeline's own interaction, so they are above the clip.
 pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, aclip: Rect) {
     let held: Option<KeyDrag> = ui.data(|d| d.get_temp(key_drag_id()));
+    if held.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if let Some(h) = held
+            && h.begun
+        {
+            let _ = app.session.execute("edit.undo", json!({}));
+        }
+        ui.data_mut(|d| d.remove::<KeyDrag>(key_drag_id()));
+        return;
+    }
     if held.is_none() && (app.tl.drag.is_some() || !matches!(app.ui.tool, Tool::Selection | Tool::Pen)) {
         return;
     }

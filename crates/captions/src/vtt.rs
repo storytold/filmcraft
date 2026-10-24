@@ -38,7 +38,7 @@ pub fn split_voice(text: &str) -> (Option<String>, String) {
             Some(_) => return (None, text.to_string()),
             None => body.to_string(),
         };
-        if body.contains("<v ") || body.contains("<v.") {
+        if body.contains("<v ") || body.contains("<v.") || body.contains("<v\t") {
             return (None, text.to_string());
         }
         return ((!name.is_empty()).then(|| name.to_string()), body);
@@ -79,7 +79,7 @@ pub fn parse(text: &str) -> Result<Document> {
     let mut seen_cue = false;
     for b in blocks {
         let first = b[0].trim();
-        if !first.contains("-->") && (first == "NOTE" || first.starts_with("NOTE ") || first.starts_with("NOTE\t")) {
+        if !b.iter().any(|l| l.contains("-->")) && (first == "NOTE" || first.starts_with("NOTE ") || first.starts_with("NOTE\t")) {
             doc.blocks.push(b.join("\n"));
             continue;
         }
@@ -175,6 +175,27 @@ mod tests {
         assert_eq!(split_voice("<v Bob>hi</v>"), (Some("Bob".into()), "hi".into()));
         assert_eq!(split_voice("<v Bob>hi</v> <v Ann>yo</v>"), (None, "<v Bob>hi</v> <v Ann>yo</v>".into()));
         assert_eq!(split_voice("<vx>hi"), (None, "<vx>hi".into()));
+    }
+
+    #[test]
+    fn multiple_voices_with_tab_separator() {
+        let text = "<v Ann>Hello <v\tBob>there";
+        assert_eq!(split_voice(text), (None, text.to_string()));
+        let source = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{text}\n");
+        let doc = parse(&source).unwrap();
+        assert_eq!(doc.cues[0].speaker, None);
+        assert_eq!(doc.cues[0].text, text);
+        assert_eq!(parse(&write(&doc)).unwrap().cues, doc.cues);
+        let closed = "<v Ann>Hi <v\tBob>x</v>";
+        assert_eq!(split_voice(closed), (None, closed.to_string()));
+    }
+
+    #[test]
+    fn note_prefixed_cue_id_is_a_cue() {
+        let d = parse("WEBVTT\n\nNOTE 1\n00:00:01.000 --> 00:00:02.000\nhello\n").unwrap();
+        assert_eq!(d.cues.len(), 1);
+        assert_eq!(d.cues[0].id.as_deref(), Some("NOTE 1"));
+        assert!(d.blocks.is_empty());
     }
 
     #[test]

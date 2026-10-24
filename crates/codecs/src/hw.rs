@@ -8,6 +8,7 @@
 //! decode, and a hardware decoder that fails mid-stream switches to
 //! [`crate::software_video_decoder`], so registering one never makes a file undecodable.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use filmcraft_isobmff::{CodecConfig, SampleEntry};
@@ -176,7 +177,12 @@ impl StreamInfo {
     pub fn parameters_changed(&self, sample: &[u8]) -> bool {
         match self {
             Self::Nal(i) => {
-                i.nals(sample).into_iter().any(|n| n.first().is_some_and(|&h| i.is_parameter_set(i.nal_type(h))) && !i.parameter_sets.iter().any(|p| p == n))
+                let configured: HashSet<&[u8]> = i.parameter_sets.iter().map(|p| without_trailing_zeros(p)).collect();
+                let mut checked = HashSet::new();
+                i.nals(sample).into_iter().any(|n| {
+                    let n = without_trailing_zeros(n);
+                    n.first().is_some_and(|&h| i.is_parameter_set(i.nal_type(h))) && checked.insert(n) && !configured.contains(n)
+                })
             }
             Self::Frame(i) => i.parameters_changed(sample),
         }
@@ -197,6 +203,14 @@ impl StreamInfo {
             Self::Frame(_) => false,
         }
     }
+}
+
+/// A NAL unit without the zero bytes after its last byte: a NAL unit never ends with 0x00
+/// (H.264 7.4.1, H.265 7.4.2), so they are trailing_zero_8bits some muxers keep (ffmpeg in `hvcC`), not
+/// part of the parameter set.
+fn without_trailing_zeros(nal: &[u8]) -> &[u8] {
+    let end = nal.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    nal.get(..end).unwrap_or_default()
 }
 
 /// Length-prefixed parameter-set entries (`u16` length + bytes) starting at `pos`.
@@ -258,7 +272,7 @@ impl NalStreamInfo {
             bit_depth_chroma: sps.bit_depth_chroma,
             interlaced: !sps.frame_mbs_only,
             profile_idc: sps.profile_idc,
-            color: vui_color(crop.2, crop.3, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
+            color: vui_color(crop.2, crop.3, vui.colour_primaries, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
             par: sar_par(vui.sar),
             // as the software decoder's DPB (`max_reorder`)
             reorder: sps.max_num_reorder_frames().min(sps.max_dpb_frames()),
@@ -304,7 +318,7 @@ impl NalStreamInfo {
             bit_depth_chroma: sps.bit_depth_chroma,
             interlaced: false,
             profile_idc: sps.ptl.profile_idc,
-            color: vui_color(crop.2, crop.3, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
+            color: vui_color(crop.2, crop.3, vui.colour_primaries, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
             par: sar_par(vui.sar),
             reorder: sps.max_num_reorder as usize,
         })
@@ -402,13 +416,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn nal_splitting_is_bounded() {
-        let info = NalStreamInfo {
+    fn hevc_info(parameter_sets: Vec<Vec<u8>>) -> NalStreamInfo {
+        NalStreamInfo {
             codec: NalCodec::Hevc,
             length_size: 4,
             highest_tid: None,
-            parameter_sets: Vec::new(),
+            parameter_sets,
             coded: (16, 16),
             crop: (0, 0, 16, 16),
             chroma_format_idc: 1,
@@ -419,11 +432,45 @@ mod tests {
             color: filmcraft_color::ColorInfo::REC709,
             par: (1, 1),
             reorder: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn nal_splitting_is_bounded() {
+        let info = hevc_info(Vec::new());
         // CRA (21) then a length that runs past the end
         let s = [0, 0, 0, 2, 21 << 1, 1, 0xff, 0xff, 0xff, 0xff, 1];
         assert_eq!(info.nal_types(&s), vec![21]);
         assert!(info.is_irap(&s));
         assert!(!info.is_irap(&[0, 0, 0, 2, 1 << 1, 1]));
+    }
+
+    #[test]
+    fn parameter_sets_compare_without_trailing_zero_bytes() {
+        // the hvcC PPS of an ffmpeg-muxed file and the in-band one of its first sample (#1483)
+        let hvcc_pps = vec![0x44, 0x01, 0xe0, 0xf7, 0xc0, 0x4c, 0x90, 0x00];
+        let info = StreamInfo::Nal(hevc_info(vec![hvcc_pps.clone()]));
+        let sample = |nal: &[u8]| {
+            let mut v = (nal.len() as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(nal);
+            v
+        };
+        assert!(!info.parameters_changed(&sample(&hvcc_pps)), "the same PPS");
+        assert!(!info.parameters_changed(&sample(&hvcc_pps[..7])), "a trailing zero byte is not part of the NAL unit");
+        assert!(!info.parameters_changed(&sample(&[&hvcc_pps[..], &[0, 0]].concat())), "nor are several");
+        assert!(info.parameters_changed(&sample(&hvcc_pps[..6])), "a missing byte that is not zero is a change");
+        assert!(info.parameters_changed(&sample(&[0x44, 0x01, 0xe0, 0xf7, 0xc0, 0x4c, 0x91])), "another PPS is a change");
+    }
+
+    #[test]
+    fn repeated_parameter_sets_are_checked_once_per_distinct_nal() {
+        let pps = vec![0x44, 0x01, 0xe0, 0xf7, 0xc0, 0x4c, 0x90];
+        let info = StreamInfo::Nal(hevc_info(std::iter::repeat_n(pps.clone(), 256).collect()));
+        let mut sample = Vec::new();
+        for _ in 0..256 {
+            sample.extend_from_slice(&(pps.len() as u32).to_be_bytes());
+            sample.extend_from_slice(&pps);
+        }
+        assert!(!info.parameters_changed(&sample));
     }
 }

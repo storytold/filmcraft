@@ -91,6 +91,8 @@ pub struct ProjectPanelUi {
     pub active_tab: Option<usize>,
     /// The bin selected in the panel (rename, open).
     pub selected_bin: Option<u64>,
+    /// The item a Shift-click selects a range from: the last one clicked without Shift.
+    pub anchor: Option<u64>,
     pub rename: Option<Rename>,
     pub dialog: Option<ProjectDialog>,
     pub hover: Option<Hover>,
@@ -579,13 +581,25 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     let mut sz = v.icon_size;
     let resp = ui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false));
     app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
+    // a drag ended by Escape goes back to the size it started from (#580)
+    let orig_id = egui::Id::new((pre, "icon-size-before-drag"));
+    if resp.drag_started() {
+        ui.data_mut(|d| d.insert_temp(orig_id, v.icon_size));
+    }
+    let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+    if resp.drag_stopped()
+        && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
+        && escaped
+    {
+        sz = before;
+    }
     if sz != v.icon_size {
         match v.inst {
             Inst::Main => app.session.prefs.project_panel.view.icon_size = sz,
             Inst::Tab(k) => app.ui.project_panel.tabs[k].icon_size = sz,
         }
     }
-    if v.inst == Inst::Main && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
+    if v.inst == Inst::Main && !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
         actions.push(("project.view.set".into(), json!({"iconSize": sz})));
     }
     x = sr.max.x + 6.0;
@@ -616,6 +630,17 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         }
         icons::paint(ui.painter(), r.shrink(5.0), icon, t.icon);
         if id == "new-item" {
+            // a clip dropped here makes a sequence that matches it, as in Premiere (#2855)
+            if let Some(item) = crate::panels::dragged_panel_item(ui)
+                && ui.rect_contains_pointer(r)
+            {
+                ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, app.tokens.accent), egui::StrokeKind::Inside);
+                if ui.input(|i| i.pointer.any_released()) {
+                    let items: Vec<u64> = crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect();
+                    actions.push(("file.newSequenceFromClip".into(), json!({"items": items})));
+                    crate::panels::clear_drag(ui);
+                }
+            }
             egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, actions));
         } else if resp.clicked() {
             match id {

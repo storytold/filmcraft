@@ -64,8 +64,10 @@ POC / RPS / DPB bookkeeping; the CTU layer of each picture runs as a job (rayon 
 reconstructs into private planes, deblocks CTB row r once row r+1 is decoded, applies SAO to row r
 once row r+1 is deblocked, and publishes final rows (samples + 16x16 compressed motion for TMVP)
 into the shared `Frame` (`OnceLock` per CTB row). Motion compensation of later pictures blocks per
-row on exactly the reference rows it reads. Samples are stored as `u16` internally for all bit
-depths.
+row on exactly the reference rows it reads. Samples are stored as `u8` for 8-bit pictures (half
+the memory traffic in prediction reads, in-loop filters and output) and as `u16` above 8 bits: the
+slice decoder and the filters are generic over the sample type (`picture::Sample`), monomorphised
+once per type.
 
 Draft mode (`Decoder::set_draft(true)`; FilmCraft enables it with Settings ▸ Playback ▸ Draft
 decoding while the Program monitor plays at 1/2 or 1/4): sub-layer non-reference pictures
@@ -94,7 +96,7 @@ with ffmpeg; tests print a message and skip when ffmpeg is absent).
   ffmpeg.
 - Robustness: hvcC input with pts round trip; randomly corrupted, truncated and garbage input never
   panics or deadlocks (single- and multi-threaded).
-- Conformance (`tests/conformance.rs`): every fixture is decoded with 1 thread, 3 threads and every
+- Conformance (`tests/it/conformance.rs`): every fixture is decoded with 1 thread, 3 threads and every
   core and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le`; on mismatch
   the first differing frame, plane, sample, CTB and 8x8 block are reported. Output pts/POC order is
   checked too, and that no picture is flagged draft without draft mode. `compare_detects_mismatch`
@@ -133,12 +135,12 @@ libx265 unless noted (x265 enables WPP by default, so most streams carry entry p
 | vt_main / vt_main10 | 640x360 | Apple VideoToolbox (hevc_videotoolbox), macOS only |
 | synthetic (7 streams) | 96x64 | tiles, PCM, slices, dependent segments, LTR, list modification |
 
-`cargo test -p filmcraft-hevc --test conformance coverage_report -- --ignored --nocapture` prints the
+`cargo test -p filmcraft-hevc --test it conformance::coverage_report -- --ignored --nocapture` prints the
 decoder statistics per fixture.
 
 ## Performance
 
-`cargo test --release -p filmcraft-hevc --test perf -- --ignored --nocapture` (bit-exactness is
+`cargo test --release -p filmcraft-hevc --test it perf:: -- --ignored --nocapture` (bit-exactness is
 verified first). Apple M4 Pro (14 cores), measured while the machine was heavily shared (load
 average 50-100), so these are lower bounds:
 

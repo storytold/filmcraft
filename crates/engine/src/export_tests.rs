@@ -10,6 +10,16 @@ use serde_json::{Value, json};
 use crate::Session;
 
 #[test]
+fn project_names_become_one_export_filename_component() {
+    for name in ["../../outside", "/absolute/path", r"C:\\outside", ".."] {
+        let safe = crate::export_tools::file_safe(name);
+        assert!(!safe.contains(['/', '\\']), "{name:?} became {safe:?}");
+        assert_ne!(safe, ".");
+        assert_ne!(safe, "..");
+    }
+}
+
+#[test]
 fn hostile_export_ranges_are_rejected_without_panicking() {
     let mut session = demo();
     for params in [
@@ -21,6 +31,38 @@ fn hostile_export_ranges_are_rejected_without_panicking() {
         assert!(result.is_ok(), "a hostile export range must not panic");
         assert!(result.unwrap().is_err());
     }
+}
+
+/// #1544: an export started without `wait` says where it can be followed: `jobs.list` (not
+/// `export.queue.list`, which lists the Export Queue only) and `jobs.cancel` to stop it.
+#[test]
+fn export_without_wait_says_where_to_poll() {
+    let mut s = demo();
+    let dir = Scratch::new("poll");
+    let r = s
+        .execute("file.exportMedia", json!({"path": dir.path("Demo.wav"), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25}))
+        .unwrap();
+    assert_eq!((r["poll"].as_str(), r["cancel"].as_str()), (Some("jobs.list"), Some("jobs.cancel")), "{r}");
+    let job = r["job"].as_u64().unwrap();
+    // the job is there to poll, and the Export Queue is not where it is
+    let listed = |s: &mut Session| s.execute("jobs.list", json!({})).unwrap().as_array().unwrap().iter().find(|j| j["id"] == job).cloned();
+    assert!(listed(&mut s).is_some(), "the job is in jobs.list");
+    assert_eq!(s.execute("export.queue.list", json!({})).unwrap()["items"], json!([]));
+    for _ in 0..1200 {
+        if listed(&mut s).is_some_and(|j| j["finished"] == true) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert_eq!(listed(&mut s).map(|j| j["finished"].clone()), Some(json!(true)), "the export finished");
+    // a waited export answers its result instead
+    let r = s
+        .execute(
+            "file.exportMedia",
+            json!({"path": dir.path("Demo2.wav"), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25, "wait": true}),
+        )
+        .unwrap();
+    assert!(r.get("poll").is_none() && r["result"].is_object(), "{r}");
 }
 
 /// A scratch directory under the workspace `target/`, removed when dropped.
@@ -113,11 +155,13 @@ fn files_in(dir: &Path) -> Vec<String> {
     v
 }
 
-/// Every built-in preset: a quarter second of the demo sequence (seven frames at 23.976) exported
+/// Every built-in preset: 1.0 to 1.08 s of the demo sequence (three frames at 23.976) exported
 /// with `file.exportMedia {preset}`; ffprobe checks container, codec, profile, frame size, frame
-/// rate and audio format, and the data rate where the codec fixes it.
+/// rate and audio format, and the data rate where the codec fixes it. Three frames are enough for
+/// all of these, and each extra frame costs a 4K H.264 encode in five presets.
 #[test]
 fn every_builtin_preset_exports_and_ffprobe_confirms() {
+    let (start, end) = (1.0, 1.08);
     let mut s = demo();
     let presets = s.execute("export.presets.list", json!({})).unwrap()["presets"].as_array().unwrap().clone();
     assert!(presets.len() >= 24);
@@ -127,7 +171,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
         let sub = dir.0.join(format!("p{}", filmcraft_export::presets::preset_key(name)));
         std::fs::create_dir_all(&sub).unwrap();
         let path = sub.join("Demo").to_string_lossy().to_string();
-        let params = json!({"preset": name, "path": path, "range": "custom", "startSeconds": 1.0, "endSeconds": 1.25, "wait": true});
+        let params = json!({"preset": name, "path": path, "range": "custom", "startSeconds": start, "endSeconds": end, "wait": true});
         let frames = s.execute("export.resolve", params.clone()).unwrap()["frames"].as_u64().unwrap();
         let r = s.execute("file.exportMedia", params).unwrap_or_else(|e| panic!("{name}: {e}"));
         let out = r["path"].as_str().unwrap().to_string();
@@ -140,7 +184,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
         if matches!(fmt.as_str(), "png" | "tiff" | "bmp" | "jpg" | "tga" | "dpx" | "exr") {
             let files = files_in(&sub);
             let ext = Path::new(&out).extension().unwrap().to_string_lossy().to_string();
-            assert_eq!(frames, 7, "frames 23..=29 at 23.976 fps");
+            assert_eq!(frames, 3, "frames 23..=25 at 23.976 fps");
             let want: Vec<String> = (0..frames).map(|i| format!("Demo{i:03}.{ext}")).collect();
             assert_eq!(files, want, "{name}");
             if let Some(j) = probe(&sub.join(&want[0]).to_string_lossy()) {
@@ -163,10 +207,11 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
         let Some(j) = probe(&out) else { continue };
         let fmt_name = j["format"]["format_name"].as_str().unwrap();
         match fmt.as_str() {
-            "wav" | "aiff" => {
+            "wav" | "aiff" | "flac" => {
                 let a = stream(&j, "audio").unwrap();
                 let bits = settings["audio"]["bits"].as_u64().unwrap();
                 let codec = match (fmt.as_str(), bits) {
+                    ("flac", _) => "flac",
                     ("wav", 24) => "pcm_s24le",
                     ("wav", _) => "pcm_s16le",
                     (_, 24) => "pcm_s24be",
@@ -175,7 +220,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!(a["codec_name"], codec, "{name}");
                 assert_eq!(a["sample_rate"], "48000", "{name}");
                 assert_eq!(a["channels"], 2, "{name}");
-                assert!((num(&j["format"]["duration"]) - 0.25).abs() < 0.01, "{name}: {}", j["format"]["duration"]);
+                assert!((num(&j["format"]["duration"]) - (end - start)).abs() < 0.01, "{name}: {}", j["format"]["duration"]);
                 continue;
             }
             "aac" => {
@@ -185,7 +230,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!(j["streams"].as_array().unwrap().len(), 1, "{name}");
                 let a = stream(&j, "audio").unwrap();
                 assert_eq!((a["codec_name"].as_str(), a["sample_rate"].as_str(), a["channels"].as_u64()), (Some("aac"), Some("48000"), Some(2)), "{name}");
-                assert!((num(&j["format"]["duration"]) - 0.25).abs() < 0.03, "{name}: {}", j["format"]["duration"]);
+                assert!((num(&j["format"]["duration"]) - (end - start)).abs() < 0.03, "{name}: {}", j["format"]["duration"]);
                 continue;
             }
             "gif" => {
@@ -289,9 +334,6 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
     }
 }
 
-/// H.264 bitrate control over three seconds of the demo: the adaptive Match Source preset
-/// targets width × height × fps × bpp, the 1080p delivery presets their fixed targets; ffprobe's
-/// measured video bitrate stays within the VBR maximum and close to the target.
 #[test]
 fn aac_audio_keeps_a_dot_aac_path_as_adts_and_adds_m4a_otherwise() {
     let mut s = demo();
@@ -311,6 +353,12 @@ fn aac_audio_keeps_a_dot_aac_path_as_adts_and_adds_m4a_otherwise() {
     assert_eq!(&std::fs::read(&m4a).unwrap()[4..8], b"ftyp");
 }
 
+/// H.264 bitrate control over one second of the demo: the adaptive Match Source preset targets
+/// width × height × fps × bpp, the 1080p delivery presets their fixed targets; ffprobe's measured
+/// video bitrate stays within the VBR maximum and close to the target. 0.5 to 1.5 s holds the
+/// second half of the one-second fade in from black, where every frame changes and each preset
+/// spends its whole budget; the shot after it is simple enough that both 1080p presets land at the
+/// same bitrate, far under their targets.
 #[test]
 fn h264_presets_hit_their_bitrates() {
     let mut s = demo();
@@ -323,7 +371,7 @@ fn h264_presets_hit_their_bitrates() {
         let path = dir.path(&format!("{}.mp4", filmcraft_export::presets::preset_key(preset)));
         s.execute(
             "file.exportMedia",
-            json!({"preset": preset, "path": path, "range": "custom", "startSeconds": 0.0, "endSeconds": 3.0, "audio": false, "wait": true}),
+            json!({"preset": preset, "path": path, "range": "custom", "startSeconds": 0.5, "endSeconds": 1.5, "audio": false, "wait": true}),
         )
         .unwrap();
         let Some(j) = probe(&path) else { return };
@@ -359,6 +407,13 @@ fn user_presets_persist_with_favourites_import_and_export() {
     assert_eq!(favs, 2);
     let hits = s.execute("export.presets.list", json!({"query": "prores"})).unwrap()["presets"].as_array().unwrap().len();
     assert_eq!(hits, 8, "seven QuickTime ProRes presets and MXF OP1a ProRes 422 HQ");
+    // #1371: the query also matches the format id and the normalised label
+    let h264_only = s.execute("export.presets.list", json!({"format": "h264"})).unwrap()["presets"].as_array().unwrap().len();
+    let mut count = |q: &str| s.execute("export.presets.list", json!({"query": q})).unwrap()["presets"].as_array().unwrap().len();
+    assert!(count("h264") > 0, "format id `h264` finds the H.264 presets");
+    assert!(count("h264") >= h264_only, "every h264 preset is found by its format id");
+    assert_eq!(count("h.264"), count("H.264"));
+    assert!(count("h.264") >= h264_only);
     // persisted: a fresh session with the same data directory sees both
     let mut s2 = demo();
     s2.export_presets.set_dir(&dir.0);
@@ -551,6 +606,21 @@ fn crf_param_picks_constant_quality() {
 }
 
 #[test]
+fn exr_compression_param_is_parsed_and_defaults_to_none() {
+    use filmcraft_export::ExrCompression::{None as Plain, Rle, Zip, Zips};
+    let s = demo();
+    let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st.exr_compression);
+    assert_eq!(setting(json!({"path": "x.exr", "format": "exr"})).unwrap(), Plain);
+    for (name, want) in [("none", Plain), ("rle", Rle), ("zips", Zips), ("zip", Zip)] {
+        assert_eq!(setting(json!({"path": "x.exr", "format": "exr", "exrCompression": name})).unwrap(), want);
+    }
+    let e = setting(json!({"path": "x.exr", "format": "exr", "exrCompression": "piz"})).unwrap_err().to_string();
+    assert!(e.contains("none | rle | zips | zip"), "{e}");
+    let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "exr"})).unwrap();
+    assert_eq!(old.exr_compression, Plain);
+}
+
+#[test]
 fn queue_exports_several_sequences_and_ranges() {
     let mut s = demo();
     let dir = Scratch::new("queue-many");
@@ -645,8 +715,11 @@ fn ranges_resolve_and_sidecar_captions_are_written() {
     let out = dir.path("cap.wav");
     s.execute("file.exportMedia", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "captionSidecar": "srt", "wait": true})).unwrap();
     let srt = std::fs::read_to_string(dir.path("cap.srt")).unwrap();
-    // timed from the start of the export range (In at 1 s; the caption starts on frame 35)
-    assert!(srt.contains("Hello sidecar") && srt.contains("00:00:00,460 --> 00:00:01,461"), "{srt}");
+    // Timed from In at 1 s (the caption starts on frame 35), clipped to the export duration.
+    let resolved = s.execute("export.resolve", json!({"preset": "Waveform Audio 48 kHz 16-bit"})).unwrap();
+    let duration = filmcraft_time::Tick(resolved["range"]["duration"].as_i64().unwrap());
+    let timing = format!("00:00:00,460 --> {}", filmcraft_captions::format_clock(duration, ','));
+    assert!(srt.contains("Hello sidecar") && srt.contains(&timing), "{srt}");
     s.execute("file.exportMedia", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "captionSidecar": "vtt", "wait": true})).unwrap();
     assert!(std::fs::read_to_string(dir.path("cap.vtt")).unwrap().starts_with("WEBVTT"));
     // a bad preset name is a clean error
@@ -666,4 +739,126 @@ fn default_export_dir_never_needs_a_real_filesystem() {
     // a saved project exports next to itself
     let s = Session { path: Some("/projects/show/edit.fcproj".into()), ..Default::default() };
     assert_eq!(crate::export_tools::default_export_dir(&s), std::path::PathBuf::from("/projects/show"));
+}
+
+#[test]
+fn unknown_settings_keys_are_errors_not_ignored() {
+    // A flat parameter put inside `settings` used to be dropped without a word: the export ran
+    // without loudness normalization. A misspelt nested key was dropped the same way.
+    let s = demo();
+    let err = crate::export_tools::settings_from_params(&s, &json!({"format": "h264", "settings": {"loudnessLufs": -14}}), "file.exportMedia").unwrap_err();
+    assert!(err.to_string().contains("`loudnessLufs`"), "{err}");
+    let err = crate::export_tools::settings_from_params(&s, &json!({"settings": {"effects": {"loudness": {"targetLoudness": -14}}}}), "file.exportMedia")
+        .unwrap_err();
+    assert!(err.to_string().contains("`effects.loudness.targetLoudness`"), "{err}");
+    // Both spellings of a snake_case field are known (#531), and null sets nothing.
+    for key in ["target_lufs", "targetLufs"] {
+        let (_, ok) = crate::export_tools::settings_from_params(
+            &s,
+            &json!({"settings": {"effects": {"loudness": {"enabled": true, key: -14}}, "captionSidecar": null}}),
+            "file.exportMedia",
+        )
+        .unwrap();
+        assert!(ok.effects.loudness.enabled);
+        assert_eq!(ok.effects.loudness.target_lufs, -14.0, "{key}");
+    }
+}
+
+#[test]
+fn caption_sidecars_keep_only_the_exported_interval() {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    use filmcraft_captions::{Document, Format};
+    use filmcraft_media::MediaSource;
+    use filmcraft_time::{TICKS_PER_SECOND, Tick};
+
+    #[derive(Default)]
+    struct MemoryFiles(Mutex<BTreeMap<String, Vec<u8>>>);
+    impl crate::Services for MemoryFiles {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            self.0.lock().unwrap().get(path).cloned().ok_or_else(|| std::io::ErrorKind::NotFound.into())
+        }
+        fn write_file(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+            self.0.lock().unwrap().insert(path.to_owned(), bytes.to_vec());
+            Ok(())
+        }
+        fn export_in_memory(&self) -> bool {
+            true
+        }
+    }
+
+    fn session(text: &str) -> (Session, Arc<MemoryFiles>) {
+        let files = Arc::new(MemoryFiles::default());
+        files.0.lock().unwrap().insert("input.vtt".into(), text.as_bytes().to_vec());
+        let mut s = Session::new(files.clone());
+        s.execute("file.newSequence", json!({"name":"Caption range", "fps":25, "width":16, "height":16, "video":0, "audio":0})).unwrap();
+        s.execute("captions.import", json!({"path":"input.vtt"})).unwrap();
+        s.execute("markers.markIn", json!({"time":2 * TICKS_PER_SECOND})).unwrap();
+        // The UI Out point includes that frame; the export range ends at exactly five seconds.
+        s.execute("markers.markOut", json!({"time":5 * TICKS_PER_SECOND - TICKS_PER_SECOND / 25})).unwrap();
+        (s, files)
+    }
+
+    fn sidecar(s: &mut Session, files: &MemoryFiles, format: Format, range: Value, duration: Tick) -> Document {
+        let ext = format.extension();
+        let mut params = json!({"format":"wav", "path":"output.wav", "captionSidecar":ext, "wait":true});
+        params.as_object_mut().unwrap().extend(range.as_object().unwrap().clone());
+        let result = s.execute("file.exportMedia", params).unwrap();
+        assert_eq!(result["result"]["path"], "output.wav");
+        assert!(result["result"]["bytes"].as_u64().is_some_and(|n| n > 0), "{result}");
+        let wav = files.0.lock().unwrap().get("output.wav").unwrap().clone();
+        let audio = filmcraft_media::wav::WavSource::parse("output.wav", wav.into()).unwrap();
+        assert_eq!(audio.info().duration, duration, "exported audio duration");
+        let bytes = files.0.lock().unwrap().get(&format!("output.{ext}")).unwrap().clone();
+        let doc = filmcraft_captions::parse(&bytes, format).unwrap();
+        assert!(doc.warnings.is_empty(), "{doc:?}");
+        doc
+    }
+
+    // Every time is both a millisecond and an exact frame boundary at 25 fps.
+    let fixture = "WEBVTT\n\nSTYLE\n::cue { color: yellow }\n\nREGION\nid:bottom\n\nNOTE original fixture\n\nbefore\n00:00:00.000 --> 00:00:01.000\nBefore\n\nin\n00:00:01.600 --> 00:00:02.400 line:90% align:center\n<v Ann>Crossing In\n\ninside\n00:00:03.000 --> 00:00:04.000\nInside\n\nout\n00:00:04.600 --> 00:00:05.400\nCrossing Out\n\nafter\n00:00:06.000 --> 00:00:07.000\nAfter\n";
+    let (mut s, files) = session(fixture);
+    let original = serde_json::to_value(&s.project).unwrap();
+    let history = s.execute("history.list", json!({})).unwrap();
+    let ticks = |tenths: i64| Tick(tenths * (TICKS_PER_SECOND / 10));
+    let expected = [(ticks(0), ticks(4), "Crossing In"), (ticks(10), ticks(20), "Inside"), (ticks(26), ticks(30), "Crossing Out")];
+    for format in [Format::Srt, Format::WebVtt] {
+        for range in [json!({"range":"custom", "startTime":2 * TICKS_PER_SECOND, "endTime":5 * TICKS_PER_SECOND}), json!({"range":"inOut"}), json!({})] {
+            let doc = sidecar(&mut s, &files, format, range, ticks(30));
+            let actual: Vec<_> = doc.cues.iter().map(|c| (c.start, c.end, c.text.as_str())).collect();
+            assert_eq!(actual, expected, "{format:?}: exclude later cues and clip both crossing boundaries");
+            if format == Format::WebVtt {
+                assert_eq!(doc.cues[0].id.as_deref(), Some("in"));
+                assert_eq!(doc.cues[0].speaker.as_deref(), Some("Ann"));
+                assert_eq!(doc.cues[0].settings, "line:90% align:center");
+                assert_eq!(doc.blocks, ["STYLE\n::cue { color: yellow }", "REGION\nid:bottom", "NOTE original fixture"]);
+            }
+        }
+        let all = sidecar(&mut s, &files, format, json!({"range":"entire"}), ticks(70));
+        let actual: Vec<_> = all.cues.iter().map(|c| (c.start, c.end, c.text.as_str())).collect();
+        assert_eq!(
+            actual,
+            [
+                (ticks(0), ticks(10), "Before"),
+                (ticks(16), ticks(24), "Crossing In"),
+                (ticks(30), ticks(40), "Inside"),
+                (ticks(46), ticks(54), "Crossing Out"),
+                (ticks(60), ticks(70), "After")
+            ]
+        );
+        // A standalone caption export still exports the whole track even with sequence In/Out set.
+        let path = format!("standalone.{}", format.extension());
+        s.execute("captions.export", json!({"path":path})).unwrap();
+        let standalone = filmcraft_captions::parse(files.0.lock().unwrap().get(&path).unwrap(), format).unwrap();
+        assert_eq!(standalone, all);
+    }
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), original, "export must not trim the project captions");
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+
+    let (mut edge, edge_files) = session("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nEnds at In\n\n00:00:05.000 --> 00:00:06.000\nStarts at Out\n");
+    for format in [Format::Srt, Format::WebVtt] {
+        let doc = sidecar(&mut edge, &edge_files, format, json!({"range":"inOut"}), ticks(30));
+        assert!(doc.cues.is_empty(), "half-open export excludes cues touching either boundary: {doc:?}");
+    }
 }

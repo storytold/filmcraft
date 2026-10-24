@@ -1,14 +1,14 @@
 //! The raw image data of a DNG: finding the main raw IFD, and reading its strips or tiles
 //! (uncompressed or lossless JPEG) into one array of 16-bit samples.
 
-#[cfg(feature = "threads")]
-use rayon::prelude::*;
-
 use crate::tiff::{Ifd, Tiff, tags};
 use crate::{Error, Result, ljpeg};
 
 /// Largest raw image decoded, in samples (width × height × samples per pixel).
 pub const MAX_SAMPLES: usize = 1 << 27;
+/// Decoded tiles are padded to tile boundaries, so their aggregate can exceed the useful image.
+/// Keep that temporary work within the same bound as a complete decoded raw frame.
+const MAX_DECODED_TILE_SAMPLES: usize = MAX_SAMPLES;
 
 /// Photometric interpretations of DNG raw data.
 pub const PHOTOMETRIC_CFA: u64 = 32803;
@@ -266,9 +266,11 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
     if total / per_byte > coded {
         return Err(Error::Truncated);
     }
+    let mut decoded_samples = 0usize;
     for c in &chunks {
         let n = c.w.checked_mul(c.h).and_then(|v| v.checked_mul(spp)).ok_or(Error::TooLarge)?;
-        if n > MAX_SAMPLES {
+        decoded_samples = decoded_samples.checked_add(n).ok_or(Error::TooLarge)?;
+        if n > MAX_SAMPLES || decoded_samples > MAX_DECODED_TILE_SAMPLES {
             return Err(Error::TooLarge);
         }
         if n / per_byte > c.bytes.len() {

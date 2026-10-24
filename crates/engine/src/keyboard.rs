@@ -225,6 +225,7 @@ fn nudge_time(s: &mut Session, frames: i64) -> Result<Value> {
 fn nudge_track(s: &mut Session, up: bool) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let mut moves = Vec::new();
+    let mut blocked = 0usize;
     for c in &s.state.selection {
         let Some((tid, it)) = seq.find_item(*c) else { continue };
         let Some(tr) = seq.track(tid) else { continue };
@@ -234,11 +235,17 @@ fn nudge_track(s: &mut Session, up: bool) -> Result<Value> {
             (TrackKind::Video, true) | (TrackKind::Audio, false) => 1,
             _ => -1,
         };
-        let dest = usize::try_from(idx + step).ok().and_then(|i| list.get(i)).ok_or_else(|| EngineError::Other("no track to move to".into()))?;
+        // a clip already on the outermost track stays put (a linked video+audio selection must not
+        // fail because its audio has nowhere to go)
+        let Some(dest) = usize::try_from(idx + step).ok().and_then(|i| list.get(i)) else {
+            blocked += 1;
+            continue;
+        };
         moves.push((*c, dest.id, it.start));
     }
     if moves.is_empty() {
-        return Err(EngineError::Other("no clips selected".into()));
+        let why = if blocked > 0 { "no track to move to" } else { "no clips selected" };
+        return Err(EngineError::Other(why.into()));
     }
     s.edit_sequence("Nudge", |q, ctx, _| Ok(edit::move_items(q, &moves, false, ctx)?))?;
     Ok(json!({"moved": moves.len()}))

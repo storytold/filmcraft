@@ -3,9 +3,6 @@
 /// A parsed PES header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PesHeader {
-    pub stream_id: u8,
-    /// PES_packet_length (bytes after the length field; 0 = unbounded, video in TS).
-    pub packet_length: usize,
     /// Bytes from the packet start code to the first payload byte.
     pub header_len: usize,
     /// Raw 33-bit timestamps.
@@ -28,10 +25,8 @@ pub(crate) fn parse(b: &[u8]) -> Option<PesHeader> {
     if b.len() < 6 || b[0] != 0 || b[1] != 0 || b[2] != 1 {
         return None;
     }
-    let stream_id = b[3];
-    let packet_length = u16::from_be_bytes([b[4], b[5]]) as usize;
-    if plain_stream(stream_id) {
-        return Some(PesHeader { stream_id, packet_length, header_len: 6, pts: None, dts: None });
+    if plain_stream(b[3]) {
+        return Some(PesHeader { header_len: 6, pts: None, dts: None });
     }
     if b.len() >= 9 && b[6] & 0xC0 == 0x80 {
         // ISO/IEC 13818-1 syntax
@@ -47,7 +42,7 @@ pub(crate) fn parse(b: &[u8]) -> Option<PesHeader> {
                 dts = Some(timestamp(&b[14..19]));
             }
         }
-        return Some(PesHeader { stream_id, packet_length, header_len, pts, dts });
+        return Some(PesHeader { header_len, pts, dts });
     }
     // ISO/IEC 11172-1 syntax: stuffing, STD buffer, timestamps
     let mut p = 6;
@@ -78,7 +73,7 @@ pub(crate) fn parse(b: &[u8]) -> Option<PesHeader> {
         0 if c == 0x0F => p += 1,
         _ => return None,
     }
-    Some(PesHeader { stream_id, packet_length, header_len: p, pts, dts })
+    Some(PesHeader { header_len: p, pts, dts })
 }
 
 #[cfg(test)]
@@ -98,7 +93,7 @@ mod tests {
         b.extend(ts_bytes(1, dts));
         b.push(0xAA);
         let h = parse(&b).unwrap();
-        assert_eq!((h.stream_id, h.header_len, h.pts, h.dts), (0xE0, 19, Some(pts), Some(dts)));
+        assert_eq!((h.header_len, h.pts, h.dts), (19, Some(pts), Some(dts)));
         // MPEG-1: stuffing, STD buffer, PTS only
         let mut b = vec![0, 0, 1, 0xC0, 0, 20, 0xFF, 0xFF, 0x40, 0x20];
         b.extend(ts_bytes(2, 90_000));

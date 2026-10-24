@@ -81,7 +81,7 @@ pub enum RcKind {
     Qp(u8),
     Crf(f32),
     Abr { kbps: u32 },
-    TwoPass { kbps: u32, plan: Vec<f64>, planned_bits: Vec<f64> },
+    TwoPass { kbps: u32, plan: Vec<f64>, planned_bits: Vec<f64>, planned_total: f64, remaining_bits: Vec<f64> },
 }
 
 pub struct RateControl {
@@ -153,8 +153,15 @@ impl RateControl {
             }
         }
         let plan = qs((0.5 * (lo + hi)).exp());
-        let planned_bits = stats.frames.iter().zip(&plan).map(|(f, &q)| f.bits as f64 * f.qscale / q).collect();
-        RcKind::TwoPass { kbps, plan, planned_bits }
+        let planned_bits: Vec<f64> = stats.frames.iter().zip(&plan).map(|(f, &q)| f.bits as f64 * f.qscale / q).collect();
+        let planned_total = planned_bits.iter().sum();
+        // `remaining_bits[i]` is the inclusive suffix for frame `i`; retain an
+        // empty suffix so callers can index it without a special case.
+        let mut remaining_bits = vec![0.0; planned_bits.len() + 1];
+        for i in (0..planned_bits.len()).rev() {
+            remaining_bits[i] = remaining_bits[i + 1] + planned_bits[i];
+        }
+        RcKind::TwoPass { kbps, plan, planned_bits, planned_total, remaining_bits }
     }
 
     /// Choose the frame QP (fractional) for frame `index` (display order) of `t` with lookahead complexity `cplx`.
@@ -198,17 +205,17 @@ impl RateControl {
                 let q = rf * cplx.powf(1.0 - QCOMP) * type_factor(t);
                 qscale2qp(q)
             }
-            RcKind::TwoPass { kbps, plan, planned_bits } => {
+            RcKind::TwoPass { kbps, plan, planned_bits, planned_total, remaining_bits } => {
                 // Closed-loop second pass: `m` measures how far real frame sizes deviate from the first-pass model
                 // (bits ∝ 1/qscale) at the qscales actually used; the remaining plan is rescaled so its predicted
                 // size fits the remaining budget.
                 let i = index_in_coding_order.min(plan.len().saturating_sub(1));
                 let bpf = *kbps as f64 * 1000.0 / self.fps;
-                let target_total: f64 = planned_bits.iter().sum();
+                let target_total = *planned_total;
                 let smooth = 0.5 * bpf * self.fps.max(1.0);
                 let m = ((self.total_bits + smooth) / (self.model_done + smooth)).clamp(0.3, 3.0);
                 let inflight: f64 = self.inflight.iter().sum();
-                let remaining_plan: f64 = planned_bits[i..].iter().sum();
+                let remaining_plan = remaining_bits[i];
                 let remaining_budget = (target_total - self.total_bits - m * inflight).max(0.05 * remaining_plan.max(1.0));
                 let f = (m * remaining_plan / remaining_budget).clamp(0.25, 4.0);
                 let q = plan[i] * f;
@@ -269,5 +276,33 @@ impl RateControl {
 
     pub fn record_pass1(&mut self, t: SliceType, qp: f64, cplx: f64, bits: u64) {
         self.pass1.push(FrameStat { slice_type: t, qscale: qp2qscale(qp), bits, cplx });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_pass_plan_caches_total_and_inclusive_suffixes() {
+        let stats = PassStats {
+            fps: 24.0,
+            frames: vec![
+                FrameStat { slice_type: SliceType::I, qscale: 1.0, bits: 2_000, cplx: 20.0 },
+                FrameStat { slice_type: SliceType::P, qscale: 1.5, bits: 1_000, cplx: 10.0 },
+                FrameStat { slice_type: SliceType::B, qscale: 2.0, bits: 500, cplx: 5.0 },
+            ],
+        };
+
+        let RcKind::TwoPass { planned_bits, planned_total, remaining_bits, .. } = RateControl::plan_two_pass(&stats, 1_000) else {
+            panic!("two-pass planning must return a two-pass rate-control plan");
+        };
+
+        assert_eq!(remaining_bits.len(), planned_bits.len() + 1);
+        assert!((planned_total - planned_bits.iter().sum::<f64>()).abs() < f64::EPSILON);
+        for i in 0..planned_bits.len() {
+            assert!((remaining_bits[i] - planned_bits[i..].iter().sum::<f64>()).abs() < f64::EPSILON);
+        }
+        assert_eq!(remaining_bits[planned_bits.len()], 0.0);
     }
 }

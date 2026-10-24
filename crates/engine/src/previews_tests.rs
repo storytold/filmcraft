@@ -282,3 +282,29 @@ fn float_wav_round_trip() {
 fn bar_state_serializes_lowercase() {
     assert_eq!(serde_json::to_value(BarState::Green).unwrap(), json!("green"));
 }
+
+/// #2185: preview files are read in place, never whole. Rendered previews still play from their
+/// files, and a file only a whole-file reader could open is refused rather than loaded.
+#[test]
+fn preview_files_are_streamed_not_read_whole() {
+    let (mut s, _) = session("stream");
+    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
+    job_ok(&s, &v);
+    let seq = s.state.active_sequence.unwrap();
+    assert!(s.previews.frame(&s.media, &s.project, seq, 5, 1.0).is_some(), "a rendered frame plays from its file");
+    // a still image opens only from its whole bytes: as a preview file it is not opened
+    let dir = s.previews.dir().unwrap();
+    let png = dir.join("still.png");
+    // a 1×1 PNG
+    const PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84,
+        120, 218, 99, 100, 96, 248, 95, 15, 0, 2, 135, 1, 128, 235, 71, 186, 146, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    std::fs::write(&png, PNG).unwrap();
+    assert!(s.media.open_bytes("still.png", PNG.into()).is_ok(), "the image opens from its bytes");
+    // (the web, without a file reader, still reads preview files whole)
+    if cfg!(any(unix, windows)) {
+        assert!(crate::previews::open_preview_file(&s.media, "still.png", &png).is_none());
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -136,7 +136,8 @@ impl ProgramConfig {
     }
 }
 
-/// Element layout of `channelConfiguration` 1..=7 (tags as conventionally assigned).
+/// Element layout of `channelConfiguration` 1..=7, 11 and 12 (tags as conventionally assigned; 11 and
+/// 12 from ISO/IEC 14496-3 Amd 4: 6.1 with a back centre, 7.1 with back surrounds).
 pub fn config_layout(channel_config: u8) -> Option<Vec<(ElementType, u8)>> {
     use ElementType::*;
     Some(match channel_config {
@@ -146,7 +147,8 @@ pub fn config_layout(channel_config: u8) -> Option<Vec<(ElementType, u8)>> {
         4 => vec![(Sce, 0), (Cpe, 0), (Sce, 1)],
         5 => vec![(Sce, 0), (Cpe, 0), (Cpe, 1)],
         6 => vec![(Sce, 0), (Cpe, 0), (Cpe, 1), (Lfe, 0)],
-        7 => vec![(Sce, 0), (Cpe, 0), (Cpe, 1), (Cpe, 2), (Lfe, 0)],
+        7 | 12 => vec![(Sce, 0), (Cpe, 0), (Cpe, 1), (Cpe, 2), (Lfe, 0)],
+        11 => vec![(Sce, 0), (Cpe, 0), (Cpe, 1), (Sce, 1), (Lfe, 0)],
         _ => return None,
     })
 }
@@ -386,6 +388,14 @@ mod tests {
         // 48 kHz 5.1
         let a = AudioSpecificConfig::lc(3, 6);
         assert_eq!(AudioSpecificConfig::parse(&a.to_bytes()).unwrap().channels(), 6);
+    }
+
+    #[test]
+    fn amd4_channel_configurations() {
+        // 6.1 and 7.1 back (#922); 22.2 and 7.1 with heights stay unsupported
+        let channels = |c| AudioSpecificConfig::parse(&AudioSpecificConfig::lc(3, c).to_bytes()).map(|a| a.channels()).ok();
+        assert_eq!([7, 11, 12].map(channels), [Some(8), Some(7), Some(8)]);
+        assert_eq!([13, 14].map(config_layout), [None, None]);
     }
 
     #[test]

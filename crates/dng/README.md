@@ -98,7 +98,7 @@ the raw image in a SubIFD, and arbitrary extra tags.
   single strip is used without a copy); without black-level deltas a lookup table per CFA /
   black-level site replaces the normalisation arithmetic; demosaic, crop and colour run row by
   row without intermediate pictures. Output is bit-identical to the first version
-  (`tests/equivalence.rs` compares f32 bit patterns with the kept `reference` module).
+  (`tests/it/equivalence.rs` compares f32 bit patterns with the kept `reference` module).
 - **Reduced resolution:** with `ProcessOptions::target_size`, a Bayer, LinearRaw or monochrome
   picture develops at 1/2, 1/4 or 1/8 size (the smallest that still covers the target) by
   averaging each colour over 2 × 2 (4 × 4, 8 × 8) blocks of the crop, without a demosaic: about
@@ -123,19 +123,19 @@ files). Kept for now so the faster pipeline stays bit-identical to the first one
 
 ## Tests
 
-- `tests/roundtrip.rs`: container parsing in both byte orders with and without a preview IFD;
+- `tests/it/roundtrip.rs`: container parsing in both byte orders with and without a preview IFD;
   uncompressed samples bit-exact at 8–16 bits, strips and tiles; lossless JPEG bit-exact for every
   predictor and component count, full-swing 16-bit data (every difference category, SSSS = 16),
   restarts and point transform; developed values against hand-computed ones (black / white,
   white balance, ForwardMatrix, BaselineExposure, ActiveArea, DefaultCrop, LinearRaw); CinemaDNG
   FrameRate / TimeCodes / ReelName; hostile files (every truncation, 12 000 mutations under
   `catch_unwind`, cyclic IFDs, huge sizes, bad offsets, zero denominators).
-- `tests/lossy.rs`: lossy JPEG tiles and strips with one and three components, samples equal to
+- `tests/it/lossy.rs`: lossy JPEG tiles and strips with one and three components, samples equal to
   the JPEG decoder's, a LinearizationTable expanding 8-bit codes, CFA and 12-bit lossy files
   refused, a tiny file claiming a huge picture, truncations and 3000 mutations.
-- `tests/opcodes.rs`, `tests/equivalence.rs`: opcode lists per stage; the faster pipeline
+- `tests/it/opcodes.rs`, `tests/it/equivalence.rs`: opcode lists per stage; the faster pipeline
   against the reference.
-- `tests/oracle_libraw.rs`: LibRaw's `unprocessed_raw` reads the same samples from our synthetic
+- `tests/it/oracle_libraw.rs`: LibRaw's `unprocessed_raw` reads the same samples from our synthetic
   files (uncompressed 8–16-bit in both byte orders, lossless JPEG predictors 1–7 with one and two
   components). Skipped when it is not installed.
 - Unit tests: matrix maths, the published sRGB matrix, McCamy temperatures, calibration

@@ -20,7 +20,7 @@ pub use grade::GradeSpace;
 pub use log::LogCurve;
 pub use lut::{Lut, Lut1d, Lut3d, LutFormat};
 pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, WorkingSpace};
-pub use transform::{DecodeTable, InputTransform, OutputTransform, REFERENCE_WHITE_NITS, ToneMap};
+pub use transform::{DecodeTable, GpuCurve, GpuInputParams, InputTransform, OutputTransform, REFERENCE_WHITE_NITS, ToneMap};
 
 /// YUV ↔ RGB matrix coefficients.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -296,7 +296,11 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
 
 /// Parse `#rrggbb` / `#rrggbbaa` into 0..1 floats.
 pub fn parse_hex(s: &str) -> Option<[f32; 4]> {
-    let s = s.trim().trim_start_matches('#');
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let b = |i: usize| u8::from_str_radix(s.get(i..i + 2)?, 16).ok().map(|v| v as f32 / 255.0);
     match s.len() {
         6 => Some([b(0)?, b(2)?, b(4)?, 1.0]),
@@ -317,6 +321,16 @@ pub fn to_hex(c: [f32; 4]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_hex_rejects_signs() {
+        assert_eq!(parse_hex("#+f+f+f"), None);
+        assert_eq!(parse_hex("#-f-f-f"), None);
+        assert_eq!(parse_hex("##0f0f0f"), None);
+        assert_eq!(parse_hex("#0f0f0"), None);
+        assert!(parse_hex("#0f0f0f").is_some());
+        assert!(parse_hex("0f0f0f80").is_some());
+    }
 
     #[test]
     fn ycbcr_roundtrip() {

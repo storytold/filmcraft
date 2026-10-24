@@ -124,6 +124,155 @@ fn ingest_copies_and_creates_proxies_on_import() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Import two different camera takes with the same basename into a folder that already has
+/// that name. Check the saved project with a new media pool so cached decoders cannot hide a
+/// replaced file.
+fn check_ingest_collision(action: &str) {
+    use filmcraft_media::FrameRequest;
+    use filmcraft_project::{ItemId, MediaRef};
+    use filmcraft_time::FrameRate;
+    use std::collections::BTreeSet;
+    use std::sync::atomic::Ordering;
+
+    let root = tmp_dir(&format!("ingest-collision-{action}"));
+    let paths = [root.join("Card A/A001.mov"), root.join("Card B/A001.mov")];
+    for (path, scene) in paths.iter().zip([DemoScene::Aurora, DemoScene::Plasma]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        make_movie(path, scene, 160, 96, 4);
+    }
+    let original: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    assert_ne!(original[0], original[1], "different source takes");
+    let dest = root.join("Ingest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let existing = dest.join("A001.mov");
+    let existing_bytes = b"existing destination must survive ingest";
+    std::fs::write(&existing, existing_bytes).unwrap();
+    let mut s = Session::default();
+    s.execute("project.ingestSettings", json!({"enabled": true, "action": action, "destination": dest.to_string_lossy(), "preset": "prores_proxy_half"}))
+        .unwrap();
+    let result = s.execute("file.import", json!({"paths": paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()})).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    let items: Vec<ItemId> = result["items"].as_array().unwrap().iter().map(|i| ItemId(i.as_u64().unwrap())).collect();
+    assert_eq!(items.len(), 2, "both takes imported");
+    if let Some(id) = result["ingest"]["job"]["job"].as_u64() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let job = s.jobs.iter().find(|j| j.id == id).unwrap();
+            if job.progress.finished.load(Ordering::Relaxed) && job.result.lock().unwrap().is_some() {
+                assert!(job.result.lock().unwrap().as_ref().unwrap().is_ok(), "ingest job failed");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "ingest job did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        s.poll_persistence();
+    }
+    assert_eq!(std::fs::read(&existing).unwrap(), existing_bytes, "ingest must preserve existing destination files");
+    let project_path = root.join("ingested.fcproj");
+    s.execute("file.save", json!({"path": project_path.to_string_lossy()})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": project_path.to_string_lossy()})).unwrap();
+    let request = FrameRequest { time: FrameRate::FPS_24.tick_of(2), scale: 1.0 };
+    let mut linked = BTreeSet::new();
+    let mut proxies = BTreeSet::new();
+    for (index, item) in items.iter().enumerate() {
+        let media = reopened.project.item(*item).unwrap().as_media().unwrap();
+        let MediaRef::File { path } = &media.media else { panic!("ingest must retain file media") };
+        assert!(linked.insert(path.clone()), "different takes must have different ingest paths");
+        assert_eq!(std::path::Path::new(path).parent(), Some(dest.as_path()));
+        assert_eq!(std::fs::read(&paths[index]).unwrap(), original[index], "source card is unchanged");
+        if action != "transcode" {
+            assert_eq!(std::fs::read(path).unwrap(), original[index], "each copy retains its own take");
+            assert_eq!(media.identity, Some(crate::relink::identity_of_bytes(&original[index])));
+        }
+        let source = reopened.media.open_file(&paths[index].to_string_lossy(), &*reopened.services).unwrap();
+        let expected = source.video_frame(request).unwrap();
+        let ingested = reopened.source(*item).unwrap().video_frame(request).unwrap();
+        let quality = |frame: &filmcraft_frame::VideoFrame| {
+            let rgba = image::RgbaImage::from_raw(frame.width, frame.height, frame.to_rgba8()).unwrap();
+            let expected = image::RgbaImage::from_raw(expected.width, expected.height, expected.to_rgba8()).unwrap();
+            let expected = image::imageops::resize(&expected, frame.width, frame.height, image::imageops::FilterType::Triangle);
+            psnr(rgba.as_raw(), expected.as_raw())
+        };
+        assert!(quality(&ingested) > 30.0, "saved project retains the correct picture for take {index}");
+        if action == "copyAndCreateProxies" {
+            let Some(MediaRef::File { path }) = &media.proxy else { panic!("copy should have its proxy attached") };
+            assert!(proxies.insert(path.clone()), "different takes must have different proxy paths");
+            let proxy = reopened.media.open_file(path, &*reopened.services).unwrap().video_frame(request).unwrap();
+            assert!(quality(&proxy) > 30.0, "proxy retains the correct picture for take {index}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ingest_copy_preserves_same_named_takes_and_existing_files() {
+    check_ingest_collision("copy");
+}
+
+#[test]
+fn ingest_copy_and_proxy_preserves_same_named_takes_and_existing_files() {
+    check_ingest_collision("copyAndCreateProxies");
+}
+
+#[test]
+fn ingest_transcode_preserves_same_named_takes_and_existing_files() {
+    check_ingest_collision("transcode");
+}
+
+#[test]
+fn ingest_copy_keeps_sources_already_at_destination_and_extensionless_names() {
+    use filmcraft_project::{ItemId, MediaRef};
+
+    for (name, numbered) in [("Take.wav", "Take 2.wav"), ("Take", "Take 2")] {
+        let root = tmp_dir("ingest-copy-existing-source");
+        let dest = root.join("Ingest");
+        let card = root.join("Card");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::create_dir_all(&card).unwrap();
+        let paths = [dest.join(name), card.join(name)];
+        let takes = [filmcraft_media::wav::write_wav16(&[0.25; 960], 1, 48_000), filmcraft_media::wav::write_wav16(&[-0.25; 960], 1, 48_000)];
+        for (path, bytes) in paths.iter().zip(&takes) {
+            std::fs::write(path, bytes).unwrap();
+        }
+        let mut s = Session::default();
+        s.execute("project.ingestSettings", json!({"enabled": true, "action": "copy", "destination": dest.to_string_lossy()})).unwrap();
+        let result = s.execute("file.import", json!({"paths": paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()})).unwrap();
+        assert_eq!(result["errors"], json!([]), "{result}");
+        assert_eq!(result["items"].as_array().unwrap().len(), 2);
+        assert_eq!(result["ingest"]["copied"].as_array().unwrap().len(), 1, "source already at destination is kept");
+        for (index, path) in [dest.join(name), dest.join(numbered)].iter().enumerate() {
+            let item = ItemId(result["items"][index].as_u64().unwrap());
+            let media = s.project.item(item).unwrap().as_media().unwrap();
+            assert_eq!(media.media, MediaRef::File { path: path.to_string_lossy().into_owned() });
+            assert_eq!(std::fs::read(path).unwrap(), takes[index]);
+            assert_eq!(std::fs::read(&paths[index]).unwrap(), takes[index]);
+        }
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 2, "no unnecessary copies or trailing-dot filenames");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn ingest_copy_does_not_create_a_destination_when_the_source_is_missing() {
+    use filmcraft_project::ItemId;
+
+    let root = tmp_dir("ingest-copy-missing-source");
+    let source = root.join("Take.wav");
+    std::fs::write(&source, filmcraft_media::wav::write_wav16(&[0.25; 960], 1, 48_000)).unwrap();
+    let mut s = Session::default();
+    let imported = s.execute("file.import", json!({"paths": [source.to_string_lossy()]})).unwrap();
+    let item = ItemId(imported["items"][0].as_u64().unwrap());
+    let dest = root.join("Ingest");
+    s.execute("project.ingestSettings", json!({"enabled": true, "action": "copy", "destination": dest.to_string_lossy()})).unwrap();
+    let before = s.project.clone();
+    std::fs::rename(&source, root.join("Moved.wav")).unwrap();
+    assert!(crate::proxies::ingest(&mut s, &[item]).is_err());
+    assert_eq!(s.project, before, "failed copy does not relink the item");
+    assert!(!dest.exists(), "no destination is created before the source can be opened");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Measure: Program-monitor playback cost of 4K H.264 with and without proxies (sequential frames
 /// at ½ resolution). Run with `RAYON_NUM_THREADS=1` so wall time ≈ CPU time:
 /// `cargo test --release -p filmcraft-engine proxy_playback_perf_4k -- --ignored --nocapture`.

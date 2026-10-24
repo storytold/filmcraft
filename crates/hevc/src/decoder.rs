@@ -8,10 +8,10 @@
 use crate::dpb::{Dpb, Output, OutputMeta, PocState, RefPicSet, build_ref_lists};
 use crate::error::{Error, Result, ensure, invalid};
 use crate::params::{Layout, Pps, Sps, Vps};
-use crate::picture::{Frame, FrameRef};
+use crate::picture::{Frame, FrameRef, Sample, stores_u8};
 use crate::slice::{NalHeader, SliceHeader, nal_type};
-use crate::slicedec::{F_INTRA, F_SKIP, PicState, SliceDecoder, SliceJob};
-use crate::{ColorInfo, Picture, Plane};
+use crate::slicedec::{Blk, F_INTRA, F_SKIP, PicState, SliceDecoder, SliceJob};
+use crate::{ColorInfo, Picture};
 use filmcraft_bitstream::{annexb_nals, length_prefixed_nals, unescape_rbsp};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -340,6 +340,9 @@ impl Decoder {
         )?;
         sps.check_supported()?;
         pps.check_supported()?;
+        // `start_picture` creates the frame and DPB state. Do not allocate those for a NAL that
+        // contains only a syntactically valid slice header and no CABAC payload.
+        ensure!(sh.data_offset < rbsp.len(), "empty slice segment data");
         if first {
             self.start_picture(&sh, &sps, &pps, pts)?;
         } else {
@@ -507,7 +510,7 @@ impl Decoder {
     }
 }
 
-/// Decode all slices of one picture and publish its rows.
+/// Decode all slices of one picture and publish its rows, in the picture's sample type.
 #[allow(clippy::too_many_arguments)]
 fn run_job(
     frame: FrameRef,
@@ -519,7 +522,25 @@ fn run_job(
     draft: bool,
     shared: &Shared,
 ) {
-    let mut pic = PicState::new(frame.clone(), sps, pps, layout, scaling);
+    if stores_u8(frame.bit_depth, frame.bit_depth_c) {
+        run_job_as::<u8>(frame, sps, pps, layout, scaling, slices, draft, shared)
+    } else {
+        run_job_as::<u16>(frame, sps, pps, layout, scaling, slices, draft, shared)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_job_as<S: Sample>(
+    frame: FrameRef,
+    sps: Arc<Sps>,
+    pps: Arc<Pps>,
+    layout: Arc<Layout>,
+    scaling: Option<Arc<Vec<Vec<u8>>>>,
+    slices: Vec<SliceJob>,
+    draft: bool,
+    shared: &Shared,
+) {
+    let mut pic = PicState::<S>::new(frame.clone(), sps, pps, layout, scaling);
     pic.draft = draft;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut first_err = None;
@@ -535,31 +556,32 @@ fn run_job(
         Ok(e) => e,
         Err(_) => {
             // make sure readers never block on this frame
-            let gray = Frame::gray(0, frame.poc, &frame);
-            for r in 0..frame.num_rows() {
-                if !frame.is_published(r) {
-                    let row = gray.row(r);
-                    frame.publish(r, crate::picture::FrameRow { y: row.y.clone(), cb: row.cb.clone(), cr: row.cr.clone(), col: row.col.clone() });
-                }
-            }
+            frame.publish_gray();
             Some(Error::Invalid("internal error while decoding a picture".into()))
         }
     };
     if let Ok(mut s) = shared.stats.lock() {
         s.pictures += 1;
-        for b in &pic.blk {
-            if b.flags & F_INTRA != 0 {
-                s.intra_4x4_blocks += 1;
-            } else if b.flags & F_SKIP != 0 {
-                s.skip_4x4_blocks += 1;
-            } else if b.flags != 0 {
-                s.inter_4x4_blocks += 1;
-            }
-        }
+        let [intra, skip, inter] = block_counts(&pic.blk);
+        s.intra_4x4_blocks += intra;
+        s.skip_4x4_blocks += skip;
+        s.inter_4x4_blocks += inter;
     }
     if let (Some(e), Ok(mut slot)) = (err, shared.error.lock()) {
         slot.get_or_insert(e);
     }
+}
+
+/// Intra, skipped and other inter 4x4 blocks of a picture, branch-free (one pass over every
+/// block): intra blocks have F_INTRA, skipped ones F_SKIP without it, inter ones any other flags.
+fn block_counts(blk: &[Blk]) -> [u64; 3] {
+    let (mut intra, mut skip, mut coded) = (0u64, 0u64, 0u64);
+    for b in blk {
+        intra += (b.flags & F_INTRA != 0) as u64;
+        skip += (b.flags & (F_INTRA | F_SKIP) == F_SKIP) as u64;
+        coded += (b.flags != 0) as u64;
+    }
+    [intra, skip, coded.saturating_sub(intra + skip)]
 }
 
 fn output_meta(sps: &Sps, pts: i64, key: bool, draft: bool) -> OutputMeta {
@@ -581,19 +603,18 @@ fn output_meta(sps: &Sps, pts: i64, key: bool, draft: bool) -> OutputMeta {
 fn make_picture(o: &Output<FrameRef>) -> Picture {
     let (cx, cy, cw, ch) = o.meta.crop;
     let (cx, cy, cw, ch) = (cx as usize, cy as usize, cw as usize, ch as usize);
-    let (y, u, v) = o.frame.copy_cropped((cx, cy, cw, ch));
     let (ccw, cch) = (cw.div_ceil(2), ch.div_ceil(2));
     let bd = o.meta.bit_depth;
-    let conv = |p: Vec<u16>| if bd <= 8 { Plane::U8(p.into_iter().map(|v| v as u8).collect()) } else { Plane::U16(p) };
+    let (y, u, v) = o.frame.cropped_planes((cx, cy, cw, ch), bd <= 8);
     Picture {
         width: cw as u32,
         height: ch as u32,
         chroma_width: ccw as u32,
         chroma_height: cch as u32,
         bit_depth: bd,
-        y: conv(y),
-        u: conv(u),
-        v: conv(v),
+        y,
+        u,
+        v,
         y_stride: cw,
         uv_stride: ccw,
         pts: o.meta.pts,
@@ -607,5 +628,28 @@ fn make_picture(o: &Output<FrameRef>) -> Picture {
         },
         sar: o.meta.sar,
         draft: o.meta.draft,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The branch-free block counts classify every flag combination as the if / else-if chain did.
+    #[test]
+    fn block_counts_match_the_classification_chain() {
+        let blk: Vec<Blk> = (0..=255u8).flat_map(|f| [Blk { flags: f, ..Blk::default() }; 3]).collect();
+        let mut want = [0u64; 3];
+        for b in &blk {
+            if b.flags & F_INTRA != 0 {
+                want[0] += 1;
+            } else if b.flags & F_SKIP != 0 {
+                want[1] += 1;
+            } else if b.flags != 0 {
+                want[2] += 1;
+            }
+        }
+        assert_eq!(block_counts(&blk), want);
+        assert_eq!(block_counts(&[]), [0; 3]);
     }
 }
