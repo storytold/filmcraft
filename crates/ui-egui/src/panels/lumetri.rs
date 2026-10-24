@@ -496,18 +496,13 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     let from_screen = |s: Pos2| [((s.x - area.min.x) / area.width()).clamp(0.0, 1.0), ((area.max.y - s.y) / area.height()).clamp(0.0, 1.0)];
     // curve polyline
     let draw_pts: Vec<[f32; 2]> = if hue && pts.is_empty() { vec![[0.0, 0.5], [1.0, 0.5]] } else { pts.clone() };
-    let lut = if hue && !pts.is_empty() {
-        let mut ext = Vec::new();
-        for off in [-1.0f32, 0.0, 1.0] {
-            for q in &pts {
-                ext.push([(q[0] + off + 1.0) / 3.0, q[1]]);
-            }
-        }
-        let l = filmcraft_render::effects::curve_lut(&ext, 3 * 128);
-        l[128..256].to_vec()
-    } else {
-        filmcraft_render::effects::curve_lut(&draw_pts, 128)
-    };
+    // the hue curves wrap around red; Luma vs Sat and Sat vs Sat do not (same LUTs as the render)
+    let lut = match (hue, id.starts_with("hue_vs_")) {
+        (true, true) => filmcraft_render::effects::hue_lut(&pts, 128),
+        (true, false) => filmcraft_render::effects::vs_sat_lut(&pts, 128),
+        _ => None,
+    }
+    .unwrap_or_else(|| filmcraft_render::effects::curve_lut(&draw_pts, 128));
     let line: Vec<Pos2> = lut.iter().enumerate().map(|(i, y)| to_screen([i as f32 / 127.0, y.clamp(0.0, 1.0)])).collect();
     p.add(egui::Shape::line(line, Stroke::new(1.5, col)));
     let drag_key = egui::Id::new(("curve-drag", clip.0, id));

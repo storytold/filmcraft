@@ -1000,6 +1000,23 @@ mod tests {
             assert!((a - b).abs() < 2e-3, "{a} {b}");
         }
     }
+
+    /// Luma vs Sat pulling the highlights to grey leaves a saturated dark colour alone: the
+    /// curve's axis runs from black to white and does not wrap around.
+    #[test]
+    fn luma_vs_sat_highlight_point_leaves_shadows_saturated() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("luma_vs_sat").unwrap().value = filmcraft_project::ParamValue::Curve(vec![[0.5, 0.5], [0.9, 0.0]]);
+        let dark_red = [0.02, 0.0005, 0.0005, 1.0];
+        let mut img = Image::filled(1, 1, dark_red);
+        apply(&mut img, &e, &cx());
+        let s = |p: &[f32]| {
+            let c = [p[0], p[1], p[2]].map(linear_to_srgb);
+            rgb_to_hsl(c[0], c[1], c[2])[1]
+        };
+        let (before, after) = (s(&dark_red), s(&img.px));
+        assert!((after - before).abs() < 1e-3, "shadow saturation {before} became {after}");
+    }
 }
 
 /// Monotone cubic (Fritsch–Carlson) interpolation through sorted control points, as a LUT of `n`
@@ -1054,19 +1071,30 @@ pub fn curve_lut(points: &[[f32; 2]], n: usize) -> Vec<f32> {
 }
 
 /// Periodic (hue) curve: points around the colour wheel, neutral 0.5 where there are none.
-fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+/// Entry `i` of the `n` entries is the curve at hue `i / (n - 1)`, so the first and last entries
+/// are both red and equal.
+pub fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     if points.is_empty() {
         return None;
     }
-    // wrap: repeat points one period left and right, then sample 0..1
+    // wrap: repeat points one period left and right, map -1..2 onto 0..1 and sample it with
+    // 3n - 2 entries, whose spacing is exactly one n-entry step over 0..1: entries n-1 ..= 2n-2
+    // are hues 0 ..= 1
     let mut ext = Vec::new();
     for off in [-1.0f32, 0.0, 1.0] {
         for p in points {
-            ext.push([p[0] + off, p[1]]);
+            ext.push([(p[0] + off + 1.0) / 3.0, p[1]]);
         }
     }
-    let lut = curve_lut(&ext.iter().map(|p| [(p[0] + 1.0) / 3.0, p[1]]).collect::<Vec<_>>(), n * 3);
-    Some(lut[n..2 * n].to_vec())
+    let lut = curve_lut(&ext, 3 * n - 2);
+    Some(lut[n - 1..2 * n - 1].to_vec())
+}
+
+/// Lumetri's other "vs Sat" curves (Luma vs Sat, Sat vs Sat): neutral 0.5 where there are no
+/// points, like the hue curves, but over a straight 0..1 axis. Black and white are not neighbours,
+/// so the curve does not wrap; it stays flat beyond its outermost points.
+pub fn vs_sat_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+    (!points.is_empty()).then(|| curve_lut(points, n))
 }
 
 pub(crate) fn curve_param(e: &EffectInstance, id: &str) -> Option<Vec<[f32; 2]>> {
@@ -1124,7 +1152,8 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let lut = |id: &str| curve_param(e, id).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
     let (luma_c, red_c, green_c, blue_c) = (lut("curve_luma"), lut("curve_red"), lut("curve_green"), lut("curve_blue"));
     let hue = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| hue_lut(&c, N));
-    let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), hue("luma_vs_sat"), hue("sat_vs_sat"));
+    let vs_sat = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| vs_sat_lut(&c, N));
+    let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), vs_sat("luma_vs_sat"), vs_sat("sat_vs_sat"));
     // Creative ▸ Look: a LUT ("Browse…" / built-in) takes precedence over the procedural menu
     let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
     let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
@@ -1381,6 +1410,33 @@ mod curve_tests {
         assert!(s.windows(2).all(|w| w[1] >= w[0] - 1e-6), "monotone");
         let h = hue_lut(&[[0.0, 0.8], [0.5, 0.2]], 64).unwrap();
         assert!((h[0] - h[63]).abs() < 0.05, "periodic");
+    }
+
+    /// A steep hue curve through red: the LUT's first and last entries are both exactly red, so
+    /// the curve meets itself at 0/360 degrees without a step, and entry i is hue i/(n-1).
+    #[test]
+    fn hue_curve_has_no_seam_at_red() {
+        let pts = [[0.02, 0.9], [0.5, 0.5], [0.98, 0.1]];
+        let n = 1024;
+        let h = hue_lut(&pts, n).unwrap();
+        assert!((h[0] - h[n - 1]).abs() < 1e-5, "step at red: {} vs {}", h[0], h[n - 1]);
+        assert!((h[0] - 0.5).abs() < 1e-4, "red is midway between the two points: {}", h[0]);
+        // slope on both sides of the wrap agrees (C1 across red)
+        let (s0, s1) = (h[1] - h[0], h[n - 1] - h[n - 2]);
+        assert!((s0 - s1).abs() < 1e-3 * s0.abs().max(1e-3), "slopes {s0} vs {s1}");
+        // a control point lands on its own grid entry
+        let g = hue_lut(&[[0.25, 0.8], [0.75, 0.3]], 5).unwrap();
+        assert!((g[1] - 0.8).abs() < 1e-5 && (g[3] - 0.3).abs() < 1e-5, "{g:?}");
+    }
+
+    /// Luma vs Sat and Sat vs Sat are not periodic: a point in the highlights does not reach
+    /// around into the shadows.
+    #[test]
+    fn vs_sat_curves_do_not_wrap() {
+        let l = vs_sat_lut(&[[0.5, 0.5], [0.9, 0.0]], 256).unwrap();
+        assert!((l[0] - 0.5).abs() < 1e-5, "black follows the left point: {}", l[0]);
+        assert!(l[255].abs() < 1e-5, "white follows the right point: {}", l[255]);
+        assert!(vs_sat_lut(&[], 256).is_none());
     }
 }
 
