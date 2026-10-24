@@ -30,8 +30,8 @@ fn is_file_media(item: &filmcraft_project::ProjectItem) -> bool {
 fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
     let original = Path::new(path);
     let stem = original.file_stem().ok_or_else(|| EngineError::Other(format!("{path}: missing audio file name")))?;
-    for number in 1..=1_000 {
-        let candidate = if number == 1 {
+    let candidate_path = |number| {
+        if number == 1 {
             original.to_path_buf()
         } else {
             let mut name = stem.to_os_string();
@@ -41,11 +41,41 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
                 name.push(extension);
             }
             original.with_file_name(name)
-        };
+        }
+    };
+    const MAX_LISTED_ENTRIES: usize = 10_000;
+    const MAX_LISTED_BYTES: usize = 1_000_000;
+    let dir = original.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let occupied = match s.services.list_dir_bounded(&dir.to_string_lossy(), MAX_LISTED_ENTRIES, MAX_LISTED_BYTES) {
+        Some(Ok(names)) if original.file_name().and_then(|name| name.to_str()).is_some_and(str::is_ascii) && names.iter().all(|name| name.is_ascii()) => {
+            Some(names.into_iter().map(|name| name.to_ascii_lowercase()).collect::<std::collections::HashSet<_>>())
+        }
+        Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Some(std::collections::HashSet::new()),
+        _ => None,
+    };
+    for number in 1..=1_000 {
+        let candidate = candidate_path(number);
+        if occupied
+            .as_ref()
+            .is_some_and(|names| candidate.file_name().and_then(|name| name.to_str()).is_some_and(|name| !names.contains(&name.to_ascii_lowercase())))
+        {
+            continue;
+        }
+        let candidate_text = candidate.to_string_lossy();
+        if s.services.existing_file_matches(&candidate_text, wav).unwrap_or(false) {
+            return Ok(candidate_text.into_owned());
+        }
+    }
+    for number in 1..=1_000 {
+        let candidate = candidate_path(number);
         let candidate_text = candidate.to_string_lossy();
         match s.services.write_file_new(&candidate_text, wav) {
             Ok(()) => return Ok(candidate_text.into_owned()),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if s.services.existing_file_matches(&candidate_text, wav).unwrap_or(false) {
+                    return Ok(candidate_text.into_owned());
+                }
+            }
             Err(e) => return Err(EngineError::Other(format!("{candidate_text}: {e}"))),
         }
     }
@@ -195,6 +225,7 @@ pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
 mod embedded_audio_tests {
     use std::collections::HashMap;
     use std::io;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use crate::{Services, Session};
@@ -202,26 +233,107 @@ mod embedded_audio_tests {
     use super::write_embedded_audio;
 
     #[derive(Default)]
-    struct VirtualFiles(Mutex<HashMap<String, Vec<u8>>>);
+    struct VirtualFiles(Mutex<HashMap<String, Vec<u8>>>, AtomicUsize, AtomicBool);
+
+    impl VirtualFiles {
+        fn key(&self, path: &str) -> String {
+            if self.2.load(Ordering::Relaxed) { path.replace("café", "cafe\u{301}") } else { path.to_owned() }
+        }
+    }
 
     impl Services for VirtualFiles {
         fn read_file(&self, path: &str) -> io::Result<Vec<u8>> {
-            self.0.lock().unwrap().get(path).cloned().ok_or_else(|| io::ErrorKind::NotFound.into())
+            self.0.lock().unwrap().get(&self.key(path)).cloned().ok_or_else(|| io::ErrorKind::NotFound.into())
         }
 
         fn write_file(&self, path: &str, data: &[u8]) -> io::Result<()> {
-            self.0.lock().unwrap().insert(path.to_owned(), data.to_vec());
+            self.0.lock().unwrap().insert(self.key(path), data.to_vec());
             Ok(())
         }
 
         fn write_file_new(&self, path: &str, data: &[u8]) -> io::Result<()> {
             let mut files = self.0.lock().unwrap();
-            if files.contains_key(path) {
+            let key = self.key(path);
+            if files.contains_key(&key) {
                 return Err(io::ErrorKind::AlreadyExists.into());
             }
-            files.insert(path.to_owned(), data.to_vec());
+            files.insert(key, data.to_vec());
             Ok(())
         }
+
+        fn existing_file_matches(&self, path: &str, data: &[u8]) -> io::Result<bool> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            Ok(self.0.lock().unwrap().get(&self.key(path)).is_some_and(|bytes| bytes == data))
+        }
+
+        fn list_dir_bounded(&self, dir: &str, max_entries: usize, max_bytes: usize) -> Option<io::Result<Vec<String>>> {
+            Some((|| {
+                let prefix = format!("{}/", dir.trim_end_matches('/'));
+                let mut names = Vec::new();
+                let mut bytes = 0_usize;
+                for path in self.0.lock().unwrap().keys() {
+                    let Some(name) = path.strip_prefix(&prefix).filter(|name| !name.is_empty() && !name.contains('/')) else { continue };
+                    bytes = bytes.checked_add(name.len()).ok_or_else(|| io::Error::other("directory listing byte limit exceeded"))?;
+                    if names.len() >= max_entries || bytes > max_bytes {
+                        return Err(io::Error::other("directory listing limit exceeded"));
+                    }
+                    names.push(name.to_owned());
+                }
+                Ok(names)
+            })())
+        }
+    }
+
+    #[test]
+    fn new_embedded_audio_does_not_probe_absent_candidate_files() {
+        let files = Arc::new(VirtualFiles::default());
+        let session = Session::new(files.clone());
+        let path = write_embedded_audio(&session, "/files/cut Audio.wav", b"new audio").unwrap();
+        assert_eq!(path, "/files/cut Audio.wav");
+        assert_eq!(files.1.load(Ordering::Relaxed), 0, "an empty directory needs no byte comparisons");
+    }
+
+    #[test]
+    fn listed_candidates_skip_absent_slots_and_reuse_later_match() {
+        let files = Arc::new(VirtualFiles::default());
+        let root = "/files/cut Audio";
+        files.0.lock().unwrap().insert(format!("{root}.wav"), b"different".to_vec());
+        files.0.lock().unwrap().insert(format!("{root} (9).wav"), b"matching".to_vec());
+        let session = Session::new(files.clone());
+        let path = write_embedded_audio(&session, &format!("{root}.wav"), b"matching").unwrap();
+        assert_eq!(path, format!("{root} (9).wav"));
+        assert_eq!(files.1.load(Ordering::Relaxed), 2, "only occupied candidate paths need comparison");
+        assert_eq!(files.0.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn oversized_listing_falls_back_to_candidate_probes() {
+        let files = Arc::new(VirtualFiles::default());
+        {
+            let mut stored = files.0.lock().unwrap();
+            for number in 0..10_000 {
+                stored.insert(format!("/files/unrelated-{number}.bin"), Vec::new());
+            }
+            stored.insert("/files/cut Audio (9).wav".into(), b"matching".to_vec());
+        }
+        let session = Session::new(files.clone());
+        let path = write_embedded_audio(&session, "/files/cut Audio.wav", b"matching").unwrap();
+        assert_eq!(path, "/files/cut Audio (9).wav");
+        assert_eq!(files.1.load(Ordering::Relaxed), 9, "incomplete listings must not hide a later match");
+        assert_eq!(files.0.lock().unwrap().len(), 10_001);
+    }
+
+    #[test]
+    fn unicode_normalization_alias_reuses_later_match_after_gap() {
+        let files = Arc::new(VirtualFiles::default());
+        files.2.store(true, Ordering::Relaxed);
+        let root = "/files/cafe\u{301} Audio";
+        files.0.lock().unwrap().insert(format!("{root}.wav"), b"different".to_vec());
+        files.0.lock().unwrap().insert(format!("{root} (3).wav"), b"matching".to_vec());
+        let session = Session::new(files.clone());
+        let path = write_embedded_audio(&session, "/files/café Audio.wav", b"matching").unwrap();
+        assert_eq!(path, "/files/café Audio (3).wav");
+        assert_eq!(files.0.lock().unwrap().len(), 2, "the free (2) slot must stay empty");
     }
 
     #[test]
@@ -236,5 +348,9 @@ mod embedded_audio_tests {
         assert_eq!(stored["/files/cut Audio.wav"], b"first");
         assert_eq!(stored["/files/cut Audio (2).wav"], b"second");
         assert_eq!(stored["/files/cut Audio (3).wav"], b"new audio");
+        drop(stored);
+        let again = write_embedded_audio(&session, "/files/cut Audio.wav", b"new audio").unwrap();
+        assert_eq!(again, path);
+        assert_eq!(files.0.lock().unwrap().len(), 3);
     }
 }

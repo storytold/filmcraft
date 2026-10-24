@@ -370,6 +370,13 @@ impl Services for WebServices {
         Ok(())
     }
 
+    fn existing_file_matches(&self, path: &str, data: &[u8]) -> io::Result<bool> {
+        if path.starts_with("/opfs/") {
+            return Ok(false);
+        }
+        Ok(FS.with(|fs| matches!(fs.borrow().entries.get(path), Some(Entry::Mem(bytes)) if bytes.as_ref() == data)))
+    }
+
     fn file_size(&self, path: &str) -> io::Result<u64> {
         Self::entry_reader(path).map(|r| r.len())
     }
@@ -384,6 +391,24 @@ impl Services for WebServices {
 
     fn export_in_memory(&self) -> bool {
         true
+    }
+
+    fn list_dir_bounded(&self, dir: &str, max_entries: usize, max_bytes: usize) -> Option<io::Result<Vec<String>>> {
+        let prefix = if dir.ends_with('/') { dir.to_string() } else { format!("{dir}/") };
+        Some(FS.with(|fs| {
+            let fs = fs.borrow();
+            let mut names = Vec::new();
+            let mut bytes = 0_usize;
+            for path in fs.entries.keys() {
+                let Some(name) = path.strip_prefix(&prefix).filter(|name| !name.is_empty() && !name.contains('/')) else { continue };
+                bytes = bytes.checked_add(name.len()).ok_or_else(|| io::Error::other("directory listing byte limit exceeded"))?;
+                if names.len() >= max_entries || bytes > max_bytes {
+                    return Err(io::Error::other("directory listing limit exceeded"));
+                }
+                names.push(name.to_owned());
+            }
+            Ok(names)
+        }))
     }
 
     /// The Media Browser lists the virtual file table: picked and dropped files under `/files`.
@@ -471,6 +496,9 @@ mod exclusive_write_tests {
         });
         assert_eq!(host.write_file_new(existing, b"replacement").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(host.read_file(existing).unwrap(), b"original");
+        assert!(!host.existing_file_matches(existing, b"originaX").unwrap());
+        assert!(host.existing_file_matches(existing, b"original").unwrap());
+        assert!(!host.existing_file_matches("/opfs/media/new.wav", b"new").unwrap());
         host.write_file_new(fresh, b"new").unwrap();
         assert_eq!(host.read_file(fresh).unwrap(), b"new");
         assert_eq!(host.write_file_new(fresh, b"again").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
