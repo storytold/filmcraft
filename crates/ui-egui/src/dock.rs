@@ -525,6 +525,176 @@ pub fn layout_with_actions(
     layout_inner(ui, node, rect, t, path, &[], out, reg, actions);
 }
 
+/// A child that is a strip: one compact panel (Tools, Audio Meters).
+fn is_strip(node: &DockNode) -> bool {
+    matches!(node, DockNode::Tabs { panels, .. } if panels.len() == 1 && panels[0].compact())
+}
+
+/// The narrowest a panel gets before a drag pushes past it.
+const PANEL_MIN: f32 = 40.0;
+
+fn split_axis(vertical: bool) -> SplitAxis {
+    if vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal }
+}
+
+/// The smallest extent of `node` laid out in `rect`, along the height when `vertical`, else the width.
+/// Tools needs the width of as many columns as its height takes.
+fn min_extent(node: &DockNode, rect: Rect, vertical: bool, t: &Tokens) -> f32 {
+    match node {
+        DockNode::Tabs { panels, active } => {
+            let tab_h = if matches!(panels.as_slice(), [panel] if panel.compact()) { 8.0 } else { t.tab_h };
+            match panels.get(*active) {
+                Some(PanelKind::Tools) if vertical => tab_h + crate::panels::tools::min_height(),
+                Some(PanelKind::Tools) => crate::panels::tools::width_for(rect.height() - tab_h),
+                Some(PanelKind::Timeline) if !vertical => crate::panels::timeline::min_width(),
+                _ => PANEL_MIN,
+            }
+        }
+        DockNode::Split { vertical: v, size, a, b } => {
+            let Some(split) = split_rect(rect, split_axis(*v), size.shared(), t.gap, 20.0) else { return PANEL_MIN };
+            let (a, b) = (min_extent(a, split.first, vertical, t), min_extent(b, split.second, vertical, t));
+            if *v == vertical { a + b + t.gap } else { a.max(b) }
+        }
+    }
+}
+
+/// One split of a run: its first child is the run's items `lo..mid`, its second `mid..hi`.
+#[derive(Clone, Debug, PartialEq)]
+struct RunSplit {
+    path: String,
+    tree_path: Vec<bool>,
+    size: SplitSize,
+    lo: usize,
+    mid: usize,
+    hi: usize,
+}
+
+/// A run item: a group, or a split the other way, with where the tree puts it.
+struct RunItem<'n> {
+    node: &'n mut DockNode,
+    rect: Rect,
+    path: String,
+    tree_path: Vec<bool>,
+}
+
+/// A row of panels side by side (a column when `vertical`): the splits the same way as the one at
+/// the top, flattened, so a drag treats the row as a whole however the tree nests it.
+fn collect_run<'n>(
+    node: &'n mut DockNode,
+    vertical: bool,
+    rect: Rect,
+    path: String,
+    tree_path: Vec<bool>,
+    gap: f32,
+    items: &mut Vec<RunItem<'n>>,
+    splits: &mut Vec<RunSplit>,
+) {
+    if !matches!(&*node, DockNode::Split { vertical: v, .. } if *v == vertical) {
+        items.push(RunItem { node, rect, path, tree_path });
+        return;
+    }
+    let DockNode::Split { size, a, b, .. } = node else { return };
+    let Some(split) = split_rect(rect, split_axis(vertical), size.shared(), gap, 20.0) else { return };
+    let index = splits.len();
+    let lo = items.len();
+    splits.push(RunSplit { path: path.clone(), tree_path: tree_path.clone(), size: *size, lo, mid: lo, hi: lo });
+    let child = |second: bool| {
+        let mut p = tree_path.clone();
+        p.push(second);
+        p
+    };
+    collect_run(a, vertical, split.first, format!("{path}a"), child(false), gap, items, splits);
+    let mid = items.len();
+    collect_run(b, vertical, split.second, format!("{path}b"), child(true), gap, items, splits);
+    let hi = items.len();
+    if let Some(split) = splits.get_mut(index) {
+        (split.mid, split.hi) = (mid, hi);
+    }
+}
+
+/// The extent of items `lo..hi` and the gaps between them.
+fn span(sizes: &[f32], lo: usize, hi: usize, gap: f32) -> f32 {
+    sizes.get(lo..hi).unwrap_or_default().iter().sum::<f32>() + hi.saturating_sub(lo + 1) as f32 * gap
+}
+
+/// Grow every item below its minimum (Tools made shorter needs another column) from the others'
+/// room above theirs: panels before strips, the nearest first, the next one along before the one
+/// behind.
+fn fit_minimums(sizes: &[f32], mins: &[f32], strips: &[bool]) -> Vec<f32> {
+    let mut s = sizes.to_vec();
+    let min = |j: usize| mins.get(j).copied().unwrap_or(0.0);
+    for i in 0..s.len() {
+        let need = min(i) - s.get(i).copied().unwrap_or(0.0);
+        if need.is_nan() || need <= 0.0 {
+            continue;
+        }
+        let mut order: Vec<usize> = (0..s.len()).filter(|&j| j != i).collect();
+        order.sort_by_key(|&j| (strips.get(j).copied().unwrap_or(false), j.abs_diff(i), j < i));
+        let mut got = 0.0;
+        for j in order {
+            if let Some(size) = s.get_mut(j) {
+                let take = (*size - min(j)).max(0.0).min(need - got);
+                *size -= take;
+                got += take;
+            }
+        }
+        if let Some(size) = s.get_mut(i) {
+            *size += got;
+        }
+    }
+    s
+}
+
+/// Move the divider before item `k` by `delta` (towards the end when positive): shrink-then-push.
+/// The items it moves into shrink one after another, the nearest first, each down to its minimum
+/// before the next gives way; the item on the other side grows. It stops where everything it moves
+/// into is at its minimum.
+fn push_divider(sizes: &[f32], mins: &[f32], k: usize, delta: f32) -> Option<Vec<f32>> {
+    if !delta.is_finite() || k == 0 || k >= sizes.len() {
+        return None;
+    }
+    let mut s = sizes.to_vec();
+    let mut left = delta.abs();
+    let (into, grows): (Vec<usize>, usize) = if delta > 0.0 { ((k..s.len()).collect(), k - 1) } else { ((0..k).rev().collect(), k) };
+    for j in into {
+        let (Some(size), Some(min)) = (s.get_mut(j), mins.get(j)) else { return None };
+        let take = (*size - min).max(0.0).min(left);
+        *size -= take;
+        left -= take;
+    }
+    *s.get_mut(grows)? += delta.abs() - left;
+    Some(s)
+}
+
+/// The sizes to store for the splits of a run whose items went from `shown` to `sizes`. A split
+/// whose stored side didn't change keeps its value, so a strip only widened to fit (Tools showing
+/// another column) keeps the width it was given and narrows again once it can.
+fn write_back(splits: &[RunSplit], shown: &[f32], sizes: &[f32], gap: f32) -> Vec<(Vec<bool>, SharedSplitSize)> {
+    let mut out = vec![];
+    for split in splits {
+        let (f0, s0) = (span(shown, split.lo, split.mid, gap), span(shown, split.mid, split.hi, gap));
+        let (f1, s1) = (span(sizes, split.lo, split.mid, gap), span(sizes, split.mid, split.hi, gap));
+        let size = match split.size {
+            SplitSize::Ratio(_) if f0 + s0 > 0.0 && f1 + s1 > 0.0 => {
+                let ratio = f1 / (f1 + s1);
+                ((ratio - f0 / (f0 + s0)).abs() > 1e-5).then_some(SharedSplitSize::Ratio(ratio))
+            }
+            SplitSize::FixedA(_) => ((f1 - f0).abs() > 1e-2).then_some(SharedSplitSize::FixedFirst(f1)),
+            SplitSize::FixedB(_) => ((s1 - s0).abs() > 1e-2).then_some(SharedSplitSize::FixedSecond(s1)),
+            SplitSize::Ratio(_) => None,
+        };
+        out.extend(size.map(|size| (split.tree_path.clone(), size)));
+    }
+    out
+}
+
+/// A divider drag in progress: the run's sizes when it began and how far it has gone.
+#[derive(Clone, Debug)]
+struct DragStart {
+    sizes: Vec<f32>,
+    offset: f32,
+}
+
 fn layout_inner(
     ui: &mut egui::Ui,
     node: &mut DockNode,
@@ -536,32 +706,80 @@ fn layout_inner(
     reg: &mut crate::automation::Registry,
     actions: &mut Vec<craft_ui::docking::Action<PanelKind>>,
 ) {
-    match node {
+    let vertical = match node {
         DockNode::Tabs { panels, active } => {
             let tab_h = if panels.len() == 1 && panels[0].compact() { 8.0 } else { t.tab_h };
             let content = Rect::from_min_max(pos2(rect.min.x, rect.min.y + tab_h), rect.max);
             out.push(Group { path: path.to_string(), rect, content, panels: panels.clone(), active: *active });
+            return;
         }
-        DockNode::Split { vertical, size, a, b } => {
-            let axis = if *vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal };
-            let Some(split) = split_rect(rect, axis, size.shared(), t.gap, 20.0) else { return };
-            let id = egui::Id::new(("dock-gutter", path.to_string()));
-            let handle_style = ResizeHandleStyle { hovered: t.focus.gamma_multiply(0.4), dragged: t.focus.gamma_multiply(0.9), focused: t.focus };
-            let label = if *vertical { tl!("Height:") } else { tl!("Width:") };
-            let response = ResizeHandle::new(id, axis, split.divider, label, handle_style).value(split.first_size(), 0.0..=split.available()).show(ui);
-            reg.add_response(&format!("dock.gutter.{path}"), &response.response, "gutter");
-            if response.delta != 0.0
-                && let Some(resized) = split.resized(size.shared(), response.delta, 40.0)
-            {
-                actions.push(craft_ui::docking::Action::ResizeSplit { path: tree_path.to_vec(), size: resized });
+        DockNode::Split { vertical, .. } => *vertical,
+    };
+    let mut items = vec![];
+    let mut splits = vec![];
+    collect_run(node, vertical, rect, path.to_string(), tree_path.to_vec(), t.gap, &mut items, &mut splits);
+    if items.is_empty() {
+        return;
+    }
+    let along = |r: Rect| if vertical { r.height() } else { r.width() };
+    let tree: Vec<f32> = items.iter().map(|item| along(item.rect)).collect();
+    let mins: Vec<f32> = items.iter().map(|item| min_extent(&*item.node, item.rect, vertical, t)).collect();
+    let strips: Vec<bool> = items.iter().map(|item| is_strip(&*item.node)).collect();
+    let shown = fit_minimums(&tree, &mins, &strips);
+    let mut at = if vertical { rect.min.y } else { rect.min.x };
+    let rects: Vec<Rect> = shown
+        .iter()
+        .map(|size| {
+            let r = if vertical {
+                Rect::from_min_max(pos2(rect.min.x, at), pos2(rect.max.x, at + size))
+            } else {
+                Rect::from_min_max(pos2(at, rect.min.y), pos2(at + size, rect.max.y))
+            };
+            at += size + t.gap;
+            r
+        })
+        .collect();
+    let handle_style = ResizeHandleStyle { hovered: t.focus.gamma_multiply(0.4), dragged: t.focus.gamma_multiply(0.9), focused: t.focus };
+    let label = if vertical { tl!("Height:") } else { tl!("Width:") };
+    for split in &splits {
+        let (Some(&before), Some(&after)) = (split.mid.checked_sub(1).and_then(|i| rects.get(i)), rects.get(split.mid)) else { continue };
+        let divider = if vertical {
+            Rect::from_min_max(pos2(rect.min.x, before.max.y), pos2(rect.max.x, after.min.y))
+        } else {
+            Rect::from_min_max(pos2(before.max.x, rect.min.y), pos2(after.min.x, rect.max.y))
+        };
+        let first = span(&shown, split.lo, split.mid, t.gap);
+        let available = first + span(&shown, split.mid, split.hi, t.gap);
+        let id = egui::Id::new(("dock-gutter", split.path.clone()));
+        let response = ResizeHandle::new(id, split_axis(vertical), divider, label, handle_style).value(first, 0.0..=available).show(ui);
+        reg.add_response(&format!("dock.gutter.{}", split.path), &response.response, "gutter");
+        let start_id = id.with("start");
+        if response.response.drag_started() {
+            ui.data_mut(|d| d.insert_temp(start_id, DragStart { sizes: shown.clone(), offset: 0.0 }));
+        }
+        if response.delta != 0.0 {
+            // a pointer drag works from where it began, so dragging back undoes a push
+            let start = response.response.dragged().then(|| ui.data(|d| d.get_temp::<DragStart>(start_id))).flatten().filter(|s| s.sizes.len() == shown.len());
+            let (from, offset) = match start {
+                Some(DragStart { sizes, offset }) => {
+                    let offset = offset + response.delta;
+                    ui.data_mut(|d| d.insert_temp(start_id, DragStart { sizes: sizes.clone(), offset }));
+                    (sizes, offset)
+                }
+                None => (shown.clone(), response.delta),
+            };
+            if let Some(sizes) = push_divider(&from, &mins, split.mid, offset) {
+                for (path, size) in write_back(&splits, &shown, &sizes, t.gap) {
+                    actions.push(craft_ui::docking::Action::ResizeSplit { path, size });
+                }
             }
-            let mut first_path = tree_path.to_vec();
-            first_path.push(false);
-            let mut second_path = tree_path.to_vec();
-            second_path.push(true);
-            layout_inner(ui, a, split.first, t, &format!("{path}a"), &first_path, out, reg, actions);
-            layout_inner(ui, b, split.second, t, &format!("{path}b"), &second_path, out, reg, actions);
         }
+        if response.response.drag_stopped() {
+            ui.data_mut(|d| d.remove::<DragStart>(start_id));
+        }
+    }
+    for (item, r) in items.into_iter().zip(rects) {
+        layout_inner(ui, item.node, r, t, &item.path, &item.tree_path, out, reg, actions);
     }
 }
 
@@ -919,6 +1137,146 @@ mod tests {
         assert_eq!(split_first(SplitSize::FixedA(300.0), 1000.0), 300.0);
         assert_eq!(split_first(SplitSize::FixedB(300.0), 1000.0), 700.0);
         assert_eq!(split_first(SplitSize::Ratio(0.0), 1000.0), 20.0);
+    }
+
+    #[test]
+    fn divider_shrinks_then_pushes() {
+        // Project | Tools | Timeline | Meters
+        let sizes = [300.0, 64.0, 600.0, 116.0];
+        let mins = [PANEL_MIN; 4];
+        let push = |k, delta| push_divider(&sizes, &mins, k, delta).unwrap();
+        // Project|Tools right: Tools narrows, then Timeline, then the Meters
+        assert_eq!(push(1, 10.0), [310.0, 54.0, 600.0, 116.0]);
+        assert_eq!(push(1, 100.0), [400.0, 40.0, 524.0, 116.0]);
+        assert_eq!(push(1, 5000.0), [960.0, 40.0, 40.0, 40.0]);
+        // Tools|Timeline left: Tools narrows, then Project
+        assert_eq!(push(2, -10.0), [300.0, 54.0, 610.0, 116.0]);
+        assert_eq!(push(2, -100.0), [224.0, 40.0, 700.0, 116.0]);
+        // pulled outwards, the strip widens
+        assert_eq!(push(2, 30.0), [300.0, 94.0, 570.0, 116.0]);
+        assert_eq!(push(1, -30.0), [270.0, 94.0, 600.0, 116.0]);
+        // hostile input moves nothing
+        assert_eq!(push_divider(&sizes, &mins, 1, f32::NAN), None);
+        assert_eq!(push_divider(&sizes, &mins, 0, 10.0), None);
+        assert_eq!(push_divider(&sizes, &mins, 4, 10.0), None);
+    }
+
+    #[test]
+    fn strip_below_min_takes_room_from_nearest() {
+        let strips = [false, true, false, true];
+        // Tools needs a second column: the Timeline after it gives the room, not the Meters
+        assert_eq!(fit_minimums(&[300.0, 64.0, 600.0, 116.0], &[40.0, 100.0, 40.0, 40.0], &strips), [300.0, 100.0, 564.0, 116.0]);
+        // Project | Tools | Meters | Timeline: Project is the nearest panel
+        assert_eq!(fit_minimums(&[300.0, 64.0, 116.0, 600.0], &[40.0, 100.0, 40.0, 40.0], &[false, true, true, false]), [264.0, 100.0, 116.0, 600.0]);
+        // nothing to spare: it stays as it is
+        assert_eq!(fit_minimums(&[40.0, 64.0], &[40.0, 100.0], &[false, true]), [40.0, 64.0]);
+    }
+
+    #[test]
+    fn tools_strip_widens_adds_column() {
+        let t = Tokens::for_kind(crate::theme::ThemeKind::Dark);
+        let row = |h: f32| {
+            let mut node = hsplit(SplitSize::FixedA(64.0), tabs(&[PanelKind::Tools], 0), tabs(&[PanelKind::Timeline], 0));
+            let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, h));
+            let (mut items, mut splits) = (vec![], vec![]);
+            collect_run(&mut node, false, rect, String::new(), vec![], t.gap, &mut items, &mut splits);
+            let tree: Vec<f32> = items.iter().map(|i| i.rect.width()).collect();
+            let mins: Vec<f32> = items.iter().map(|i| min_extent(&*i.node, i.rect, false, &t)).collect();
+            fit_minimums(&tree, &mins, &[true, false])[0]
+        };
+        assert_eq!(row(600.0), 64.0);
+        assert_eq!(row(200.0), crate::panels::tools::width_for(192.0));
+        assert!(row(200.0) > 64.0 && row(100.0) > row(200.0));
+    }
+
+    #[test]
+    fn timeline_min_keeps_track_headers() {
+        let t = Tokens::for_kind(crate::theme::ThemeKind::Dark);
+        let timeline = tabs(&[PanelKind::Timeline], 0);
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(500.0, 300.0));
+        // its track headers and scrollbar stay in view; its height has the usual minimum
+        assert_eq!(min_extent(&timeline, rect, false, &t), 204.0 + 17.0);
+        assert_eq!(min_extent(&timeline, rect, true, &t), PANEL_MIN);
+    }
+
+    /// Every way of nesting `panels` into splits side by side; strips get their fixed size.
+    fn nestings(panels: &[PanelKind]) -> Vec<DockNode> {
+        if let [panel] = panels {
+            return vec![tabs(&[*panel], 0)];
+        }
+        let mut out = vec![];
+        for cut in 1..panels.len() {
+            for a in nestings(&panels[..cut]) {
+                for b in nestings(&panels[cut..]) {
+                    let size = match (is_strip(&a), is_strip(&b)) {
+                        (true, _) => SplitSize::FixedA(if cut == 1 && panels[0] == PanelKind::Tools { 64.0 } else { 116.0 }),
+                        (_, true) => SplitSize::FixedB(if panels[cut] == PanelKind::Tools { 64.0 } else { 116.0 }),
+                        _ => SplitSize::Ratio(0.5),
+                    };
+                    out.push(hsplit(size, a.clone(), b));
+                }
+            }
+        }
+        out
+    }
+
+    fn permutations(panels: &[PanelKind]) -> Vec<Vec<PanelKind>> {
+        if panels.len() <= 1 {
+            return vec![panels.to_vec()];
+        }
+        let mut out = vec![];
+        for i in 0..panels.len() {
+            let mut rest = panels.to_vec();
+            let first = rest.remove(i);
+            for mut p in permutations(&rest) {
+                p.insert(0, first);
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_arrangement_shrinks_then_pushes() {
+        use PanelKind::*;
+        let t = Tokens::for_kind(crate::theme::ThemeKind::Dark);
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 600.0));
+        let measure = |node: &mut DockNode| {
+            let (mut items, mut splits) = (vec![], vec![]);
+            collect_run(node, false, rect, String::new(), vec![], t.gap, &mut items, &mut splits);
+            let sizes: Vec<f32> = items.iter().map(|i| i.rect.width()).collect();
+            let mins: Vec<f32> = items.iter().map(|i| min_extent(&*i.node, i.rect, false, &t)).collect();
+            (sizes, mins, splits)
+        };
+        let mut checked = 0;
+        for order in permutations(&[Project, MediaBrowser, Tools, AudioMeters, Timeline]) {
+            for tree in nestings(&order) {
+                let (sizes, mins, splits) = measure(&mut tree.clone());
+                for split in &splits {
+                    for delta in [15.0, 90.0, 3000.0, -15.0, -90.0, -3000.0] {
+                        let want = push_divider(&sizes, &mins, split.mid, delta).unwrap();
+                        let k = split.mid;
+                        // the item it moves into shrinks first; the one behind only once that is at its minimum
+                        let (near, far) = if delta > 0.0 { (k, k + 1) } else { (k - 1, k.wrapping_sub(2)) };
+                        if let Some(&next) = want.get(far)
+                            && next < sizes[far]
+                        {
+                            assert_eq!(want[near], mins[near].min(sizes[near]), "{order:?} {tree:?} divider {k} by {delta}");
+                        }
+                        let mut moved = tree.clone();
+                        for (path, size) in write_back(&splits, &sizes, &want, t.gap) {
+                            assert!(crate::dock_shared::apply_tree(&mut moved, craft_ui::docking::Action::ResizeSplit { path, size }), "{order:?} {tree:?}");
+                        }
+                        let (got, _, _) = measure(&mut moved);
+                        for (g, w) in got.iter().zip(&want) {
+                            assert!((g - w).abs() < 0.05, "{order:?} {tree:?} divider {k} by {delta}: {got:?} != {want:?}");
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000, "{checked}");
     }
 
     #[test]

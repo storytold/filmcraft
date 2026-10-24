@@ -28,6 +28,11 @@ pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
 const RULER_H: f32 = 44.0;
 const SCROLLBAR_H: f32 = 17.0;
+
+/// The narrowest the panel gets in the dock: the track headers and the scrollbar, no clips.
+pub fn min_width() -> f32 {
+    crate::state::TimelineView::default().header_w + SCROLLBAR_H
+}
 const DIVIDER_H: f32 = 5.0;
 const MASTER_H: f32 = 34.0;
 /// The selected gap between two clips (#648, #668).

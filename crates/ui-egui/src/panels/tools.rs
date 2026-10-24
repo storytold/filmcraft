@@ -1,4 +1,5 @@
-//! The vertical Tools panel. Grouped tools show a small flyout triangle; right-click, a long
+//! The Tools panel: a column of tools, more columns side by side when it is too short for one
+//! (the dock widens it to fit). Grouped tools show a small flyout triangle; right-click, a long
 //! press or pressing and dragging opens the group to pick another tool.
 
 use egui::{Rect, Sense, pos2, vec2};
@@ -7,17 +8,46 @@ use crate::FilmcraftApp;
 use crate::icons;
 use crate::state::Tool;
 
+/// A tool button.
+const BUTTON: f32 = 32.0;
+/// A button and the space before the next one.
+const CELL: f32 = BUTTON + 4.0;
+/// Room left under the last row before the tools take another column.
+const BOTTOM: f32 = 8.0;
+
+/// The columns the tools need in `height`, each filled top to bottom.
+pub fn columns(height: f32) -> usize {
+    let rows = ((height - BOTTOM) / CELL).floor();
+    let rows = if rows >= 1.0 { rows as usize } else { 1 };
+    Tool::groups().len().div_ceil(rows)
+}
+
+/// The narrowest a Tools strip `height` tall gets: a button with 8 points either side for one
+/// column, one more cell for each other.
+pub fn width_for(height: f32) -> f32 {
+    BUTTON + 16.0 + (columns(height) - 1) as f32 * CELL
+}
+
+/// The height of one row of tools.
+pub fn min_height() -> f32 {
+    CELL + BOTTOM
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    let mut y = rect.min.y + 4.0;
-    let size = 32.0;
+    let size = BUTTON;
+    let groups = Tool::groups();
+    let cols = columns(rect.height());
+    let rows = groups.len().div_ceil(cols);
+    let left = rect.center().x - (cols as f32 * CELL - 4.0) / 2.0;
     let held_id = egui::Id::new("tools-held");
     if ui.input(|i| i.pointer.any_pressed()) {
         ui.data_mut(|d| d.remove::<egui::Id>(held_id));
     }
-    for group in Tool::groups() {
+    for (index, group) in groups.into_iter().enumerate() {
         let current = if group.contains(&app.ui.tool) { app.ui.tool } else { group[0] };
-        let r = Rect::from_min_size(pos2(rect.center().x - size / 2.0, y), vec2(size, size));
+        let (col, row) = (index / rows, index % rows);
+        let r = Rect::from_min_size(pos2(left + col as f32 * CELL, rect.min.y + 4.0 + row as f32 * CELL), vec2(size, size));
         let tip = if current.shortcut().is_empty() {
             app.ui.language.tr(current.label()).to_owned()
         } else {
@@ -85,10 +115,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             });
         }
-        y += size + 4.0;
-        if y > rect.max.y - size {
-            break;
-        }
     }
 }
 
@@ -127,6 +153,30 @@ mod tests {
         frame(&mut app, &ctx, 1.05, vec![egui::Event::PointerMoved(at + by)]);
         frame(&mut app, &ctx, 1.1, vec![]);
         (app, ctx)
+    }
+
+    #[test]
+    fn a_short_panel_shows_every_tool_in_more_columns() {
+        assert_eq!((columns(700.0), columns(160.0), columns(44.0), columns(0.0), columns(f32::NAN)), (1, 2, 8, 8, 8));
+        assert_eq!((width_for(700.0), width_for(160.0)), (48.0, 84.0));
+        // three columns need three rows and the room under them: 124 points with the grip
+        assert_eq!((columns(116.0), columns(115.0)), (3, 4));
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        for height in [700.0, 150.0, 80.0, 40.0] {
+            let rect = Rect::from_min_size(pos2(10.0, 20.0), vec2(width_for(height), height));
+            app.auto.begin_frame();
+            let mut out = ctx
+                .run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0))), ..Default::default() }, |ui| {
+                    show(&mut app, ui, rect)
+                });
+            out.textures_delta.clear();
+            for group in Tool::groups() {
+                let [x, y, w, h] = app.auto.elements.iter().find(|e| e.id == format!("tools.{:?}", group[0])).expect("every tool is shown").rect;
+                assert!(rect.contains_rect(Rect::from_min_size(pos2(x, y), vec2(w, h))), "{:?} outside a panel {height} tall", group[0]);
+            }
+        }
     }
 
     #[test]
