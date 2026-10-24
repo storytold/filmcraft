@@ -298,6 +298,37 @@ pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f3
 const TRACK_HEADER_TINT: f32 = 0.18;
 const TRACK_LANE_TINT: f32 = 0.10;
 
+/// Every tool but Selection (the arrow) shows its own icon as the pointer, wherever it acts.
+pub(crate) fn tool_draws_pointer(tool: Tool) -> bool {
+    tool != Tool::Selection
+}
+
+/// The tool's icon centred on the pointer, outlined so it reads over clips of any colour.
+pub(crate) fn paint_tool_pointer(ctx: &egui::Context, tool: Tool, at: Pos2) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tool-pointer")));
+    let r = Rect::from_center_size(at, vec2(22.0, 22.0));
+    for d in [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0)] {
+        icons::paint(&painter, r.translate(d), tool.icon(), Color32::BLACK);
+    }
+    icons::paint(&painter, r, tool.icon(), Color32::WHITE);
+}
+
+/// The tracks the Razor's preview line crosses at the pointer over `clip`: the clip's own and its
+/// linked clips' tracks, or every track with Shift, leaving out locked ones (what `timeline.razor`
+/// cuts).
+pub fn razor_line_tracks(app: &FilmcraftApp, clip: ClipId, shift: bool) -> Vec<TrackId> {
+    let (Some(layout), Some(seq)) = (app.tl.layout.as_ref(), app.session.active_sequence()) else { return Vec::new() };
+    let unlocked = |t: &TrackId| seq.track(*t).is_some_and(|t| !t.locked);
+    if shift {
+        return layout.rows.iter().map(|r| r.track).filter(unlocked).collect();
+    }
+    filmcraft_engine::commands::with_links(&app.session, &[clip])
+        .into_iter()
+        .filter_map(|c| seq.find_item(c).map(|(track, _)| track))
+        .filter(unlocked)
+        .collect()
+}
+
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
     crate::panels::settings::label_color(app, l)
 }
@@ -2358,18 +2389,30 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
         };
         ctx.set_cursor_icon(cur);
+        // the editing tools show their own icon as the pointer wherever they act in the tracks (the
+        // system pointer is hidden); a blocked edit, a volume line and the ruler keep the system one
+        if !blocked && tool_draws_pointer(tool) && !matches!(g, Grab::Volume { .. } | Grab::Other(Hit::Ruler | Hit::None)) {
+            ctx.set_cursor_icon(CursorIcon::None);
+            paint_tool_pointer(&ctx, tool, p);
+        }
         // the edge a press here would grab, and the trim it starts (#259)
         if let Grab::Edge { track, clip, edge, kind } = g {
             super::trim_monitor::paint_hover_bracket(ui.painter(), seq, layout, track, clip, edge, kind);
         }
-        // razor preview line
+        // razor preview line: where a click cuts, through the clip and the clips linked to it
+        // (every track with Shift), as the click does
         if tool == Tool::Razor
-            && let Grab::Other(Hit::Clip { track, .. }) = g
-            && let Some(row) = layout.rows.iter().find(|r| r.track == track)
+            && let Grab::Other(Hit::Clip { clip, .. }) = g
         {
             let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x)), &[]);
             let x = layout.x_of(t);
-            ui.painter().line_segment([pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)], Stroke::new(1.0, Color32::WHITE));
+            let tracks = razor_line_tracks(app, clip, mods.shift);
+            let painter = ui.painter().with_clip_rect(Rect::from_min_max(pos2(layout.content.min.x, layout.content.min.y), layout.content.max));
+            for row in layout.rows.iter().filter(|r| tracks.contains(&r.track)) {
+                let seg = [pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)];
+                painter.line_segment(seg, Stroke::new(3.0, Color32::from_black_alpha(110)));
+                painter.line_segment(seg, Stroke::new(1.0, Color32::WHITE));
+            }
         }
     }
 
@@ -3123,6 +3166,22 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             let label = if count == 1 { tl!("1 file").to_string() } else { tlf!("{n} files", n = count) };
             ui.painter().text(r.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, label, Tokens::ui(10.0), Color32::WHITE);
         }
+    }
+    // the tool's own pointer stays on through the drag it started (a trim, slip, slide, stretch,
+    // remix or pan); a pointer the drag set itself (NotAllowed for a blocked edit, Copy for an
+    // Option-drag) stays
+    if let Some(d) = &app.tl.drag
+        && let Some(p) = pos
+        && tool_draws_pointer(tool)
+        && match d {
+            Drag::Pan { .. } => tool == Tool::Hand,
+            Drag::Scrub { .. } | Drag::Volume(_) | Drag::Marquee { .. } | Drag::Divider | Drag::ZoomBar { .. } => false,
+            _ => true,
+        }
+        && ctx.output(|o| o.cursor_icon) == CursorIcon::Default
+    {
+        ctx.set_cursor_icon(CursorIcon::None);
+        paint_tool_pointer(&ctx, tool, p);
     }
     app.auto.add("timeline.tracks", layout.content, "tracks");
 }

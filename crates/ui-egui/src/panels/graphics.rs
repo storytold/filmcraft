@@ -598,8 +598,10 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // cursors
     if let Some(p) = hover {
         match tool {
-            Tool::Type | Tool::VerticalType => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
-            Tool::Rectangle | Tool::Ellipse | Tool::Pen => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
+            Tool::Type | Tool::VerticalType | Tool::Rectangle | Tool::Ellipse | Tool::Pen => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+                super::timeline::paint_tool_pointer(ui.ctx(), tool, p);
+            }
             Tool::Selection => {
                 let selected = || views.iter().filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer));
                 let handle = selected().find_map(|v| resize_handle_cursor(v, p));
