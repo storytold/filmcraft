@@ -27,6 +27,10 @@ use filmcraft_time::Tick;
 use crate::gpufx::FxOp;
 use crate::{Blend, RenderOptions, SourceProvider, motion_matrix, output_size};
 
+/// A GPU frame plan retains every resolved source frame. Nested sequences may share the same
+/// child sequence many times, so recursion depth alone does not bound this expansion.
+const MAX_PLAN_LAYERS: usize = 4096;
+
 /// One layer for the GPU, bottom to top.
 #[derive(Clone)]
 pub struct PlanLayer {
@@ -93,33 +97,63 @@ pub enum PlanStep {
 }
 
 #[derive(Default)]
-struct PlanStack(Vec<PlanStep>);
+struct PlanStack {
+    steps: Vec<PlanStep>,
+    exhausted: bool,
+    /// Layers held in `steps`, kept as they are pushed so the cap check stays O(1).
+    layers: usize,
+}
 
 impl PlanStack {
-    fn push(&mut self, layer: PlanLayer) {
-        if let Some(PlanStep::Layers(layers)) = self.0.last_mut() {
-            layers.push(layer);
-        } else {
-            self.0.push(PlanStep::Layers(vec![layer]));
-        }
+    fn layer_count(&self) -> usize {
+        self.layers
     }
 
-    fn into_layers(self, width: usize, height: usize) -> Vec<PlanLayer> {
+    fn push(&mut self, layer: PlanLayer) {
+        if self.exhausted {
+            return;
+        }
+        if self.layer_count() >= MAX_PLAN_LAYERS {
+            self.exhausted = true;
+            return;
+        }
+        if let Some(PlanStep::Layers(layers)) = self.steps.last_mut() {
+            layers.push(layer);
+        } else {
+            self.steps.push(PlanStep::Layers(vec![layer]));
+        }
+        self.layers = self.layers.saturating_add(1);
+    }
+
+    fn push_transition(&mut self, inputs: [Vec<PlanLayer>; 2], effect: filmcraft_project::EffectInstance, progress: f32, scale: f32) {
+        let added: usize = inputs.iter().map(Vec::len).sum();
+        if self.exhausted || self.layer_count().saturating_add(added) > MAX_PLAN_LAYERS {
+            self.exhausted = true;
+            return;
+        }
+        self.layers = self.layers.saturating_add(added);
+        self.steps.push(PlanStep::Transition { inputs, effect, progress, scale });
+    }
+
+    fn into_layers(self, width: usize, height: usize) -> Option<Vec<PlanLayer>> {
+        if self.exhausted {
+            return None;
+        }
         match self.finish(width, height) {
-            FramePlan::Layers { layers, .. } => layers,
-            plan => vec![PlanLayer::new(cpu_frame(execute_cpu(&plan)), Affine::IDENTITY, 1.0, Blend::Normal)],
+            FramePlan::Layers { layers, .. } => Some(layers),
+            plan => Some(vec![PlanLayer::new(cpu_frame(execute_cpu(&plan)), Affine::IDENTITY, 1.0, Blend::Normal)]),
         }
     }
 
     fn finish(mut self, width: usize, height: usize) -> FramePlan {
-        if self.0.len() <= 1 && self.0.first().is_none_or(|s| matches!(s, PlanStep::Layers(_))) {
-            let layers = match self.0.pop() {
+        if self.steps.len() <= 1 && self.steps.first().is_none_or(|s| matches!(s, PlanStep::Layers(_))) {
+            let layers = match self.steps.pop() {
                 Some(PlanStep::Layers(layers)) => layers,
                 _ => Vec::new(),
             };
             FramePlan::Layers { width, height, layers }
         } else {
-            FramePlan::Composite { width, height, steps: self.0 }
+            FramePlan::Composite { width, height, steps: self.steps }
         }
     }
 }
@@ -200,6 +234,9 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
     }
     let mut layers = PlanStack::default();
     push_tracks(project, seq, t, opts, sources, 0, &mut layers);
+    if layers.exhausted {
+        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+    }
     if opts.captions {
         for o in crate::caption_overlays(seq, t, w, h) {
             layers.push(PlanLayer::new(
@@ -209,6 +246,9 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
                 Blend::Normal,
             ));
         }
+    }
+    if layers.exhausted {
+        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     layers.finish(w, h)
 }
@@ -258,6 +298,9 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
 fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, nest: u32, layers: &mut PlanStack) {
     let (w, h) = output_size(seq, opts.scale);
     for tr in &seq.video_tracks {
+        if layers.exhausted {
+            return;
+        }
         if !tr.enabled {
             continue;
         }
@@ -273,7 +316,11 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
                         if let Some(item) = item {
                             let mut input = PlanStack::default();
                             push_item(project, seq, item, t, opts, sources, 1.0, Some(Blend::Normal), nest, &mut input);
-                            *slot = input.into_layers(w, h);
+                            let Some(input_layers) = input.into_layers(w, h) else {
+                                layers.exhausted = true;
+                                return;
+                            };
+                            *slot = input_layers;
                         }
                     }
                     let progress = if trn.reverse {
@@ -282,7 +329,7 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
                     } else {
                         p
                     };
-                    layers.0.push(PlanStep::Transition { inputs, effect: trn.effect.clone(), progress, scale: opts.scale });
+                    layers.push_transition(inputs, trn.effect.clone(), progress, opts.scale);
                 }
                 "dip_to_black" | "dip_to_white" => {
                     let col = if trn.effect.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
@@ -345,6 +392,9 @@ fn push_item(
     nest: u32,
     out: &mut PlanStack,
 ) {
+    if out.exhausted {
+        return;
+    }
     // frame time (`ft`) vs. effect time (`mt`): they differ inside a frame hold without Hold Filters
     let ft = item.source_time_at(t);
     let mt = item.effect_time_at(t);
@@ -383,6 +433,9 @@ fn push_item(
         && nest_is_plain(project, seq, nested, ft)
     {
         push_tracks(project, nested, ft, opts, sources, nest + 1, out);
+        if out.exhausted {
+            return;
+        }
         let (w, h) = output_size(nested, opts.scale);
         for o in crate::caption_overlays(nested, ft, w, h) {
             out.push(PlanLayer::new(
@@ -563,9 +616,20 @@ mod tests {
             scale: 1.0,
         }];
         let expected = execute_cpu(&FramePlan::Composite { width: 1, height: 1, steps: steps.clone() });
-        let layers = PlanStack(steps).into_layers(1, 1);
+        let layers = PlanStack { steps, exhausted: false, layers: 1 }.into_layers(1, 1).unwrap();
         let got = execute_cpu(&FramePlan::Layers { width: 1, height: 1, layers });
         assert_eq!(got.px, expected.px);
         assert!(got.px.iter().any(|v| *v != 0.0));
+    }
+
+    #[test]
+    fn layer_plan_has_a_global_budget() {
+        let frame = Arc::new(VideoFrame::rgba_f32(1, 1, vec![0.0; 4]));
+        let mut stack = PlanStack::default();
+        for _ in 0..=MAX_PLAN_LAYERS {
+            stack.push(PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal));
+        }
+        assert!(stack.exhausted);
+        assert_eq!(stack.layer_count(), MAX_PLAN_LAYERS);
     }
 }

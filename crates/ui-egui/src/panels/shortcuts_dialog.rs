@@ -822,13 +822,17 @@ mod localization_tests {
     use super::*;
 
     #[test]
-    fn command_search_accepts_spanish_labels_ids_and_keys() {
-        crate::i18n::set_current(crate::i18n::Language::Es);
+    fn command_search_accepts_translated_labels_ids_and_keys() {
         let row = json!({"id": "edit.undo", "label": "Undo", "category": "Edit", "shortcuts": [{"keys": "Cmd+Z", "display": "Ctrl+Z"}]});
-        for query in ["deshacer", "undo", "edit.undo", "ctrl+z", "cmd+z"] {
-            assert!(matches_search(&row, query), "{query}");
+        for l in crate::i18n::Language::ALL {
+            crate::i18n::set_current(l);
+            let undo = l.tr("Undo").to_lowercase();
+            for query in [undo.as_str(), "undo", "edit.undo", "ctrl+z", "cmd+z"] {
+                assert!(matches_search(&row, query), "{}: {query}", l.code());
+            }
+            let redo = l.tr("Redo").to_lowercase();
+            assert!(!matches_search(&row, &redo), "{}: {redo}", l.code());
         }
-        assert!(!matches_search(&row, "rehacer"));
         crate::i18n::set_current(crate::i18n::Language::En);
     }
 }

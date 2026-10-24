@@ -144,6 +144,13 @@ fn builtin_templates_apply_and_thumbnail() {
 }
 
 #[test]
+fn template_thumbnail_dimensions_fit_a_bounded_rectangle() {
+    assert_eq!(super::thumbnail_dimensions([1920, 1080], 160), (160, 90));
+    assert_eq!(super::thumbnail_dimensions([1, 16_384], 1920), (1, 1920));
+    assert_eq!(super::thumbnail_dimensions([16_384, 1], 1920), (1920, 1));
+}
+
+#[test]
 fn responsive_time_protects_intro_and_outro_when_trimmed() {
     let mut s = demo("gt-time");
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Fade", "seconds": 5})).unwrap());

@@ -58,7 +58,7 @@ does), so the decoder doesn't need to know.
   rayon task directly into the output planes.
 - Robustness: every size field is validated before allocation, codewords longer than 56 bits are
   rejected, and arithmetic is overflow-safe. Mutated streams return `Err`, never panic (see
-  `tests/fuzz.rs`).
+  `tests/it/fuzz.rs`).
 
 ## Encoder
 
@@ -79,7 +79,7 @@ does), so the decoder doesn't need to know.
 
 ## Accuracy (vs ffmpeg as an external oracle)
 
-`tests/oracle_decode.rs` decodes 29 fixtures made by ffmpeg's `prores_ks` and `prores_aw`
+`tests/it/oracle_decode.rs` decodes 29 fixtures made by ffmpeg's `prores_ks` and `prores_aw`
 encoders. They cover every profile, testsrc2/mandelbrot/SMPTE bars at 1920×1080, 1918×1080,
 1280×720, 640×360, 352×288, 70×38 and 333×201, interlaced 720×486 TFF/BFF and 1080i, 2-MB slices,
 and 4444 with 8- and 16-bit alpha. The results are compared with ffmpeg's decode at the native
@@ -89,7 +89,7 @@ bit-identical (86% for 12-bit XQ mandelbrot). Alpha is always bit-exact. The rem
 differences are the reference decoder's integer-IDCT rounding. This decoder is closer to the
 exact IDCT and does not reproduce that approximation.
 
-`tests/oracle_encode.rs` encodes 1920×1080 frames with every profile (testsrc2, mandelbrot and
+`tests/it/oracle_encode.rs` encodes 1920×1080 frames with every profile (testsrc2, mandelbrot and
 noisy content; 4444 with an alpha disc) and writes them into a minimal test-only MOV. ffmpeg then
 decodes them with `-xerror`, with no errors, and agrees with this decoder within ±1. HQ PSNR is
 69.9/69.2 dB (Y/C) on mandelbrot at 100% of the target rate. Busy content lands at 99.9–100.4%
@@ -97,7 +97,7 @@ of the target.
 
 ## Performance
 
-Measured with `cargo test --release -p filmcraft-prores --test perf -- --ignored --nocapture` on
+Measured with `cargo test --release -p filmcraft-prores --test it perf:: -- --ignored --nocapture` on
 an M4 Pro (14 cores) that was heavily loaded by other jobs, so these are lower bounds. A 1080p HQ
 frame at the full nominal rate (918 KB) decoded at up to 318 fps threaded and 53 fps on one
 thread. A prores_ks HQ mandelbrot frame (657 KB) decoded at 390 fps threaded. Encoding a 1080p

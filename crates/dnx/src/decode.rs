@@ -54,9 +54,11 @@ pub fn decode_frame_with(data: &[u8], opts: &DecodeOptions) -> Result<Frame> {
     } else {
         (decode_unit(&h1, &data[..off], opts), decode_unit(&h2, &data[off..], opts))
     };
+    let (top, bottom) = if h1.field == FieldCode::Field2 { (p2?, p1?) } else { (p1?, p2?) };
+    // Both field payloads must be valid before committing the full-frame
+    // allocation; a damaged header alone must not allocate an output picture.
     let mut f = Frame::new_like(&h1, h1.width, h1.lines * 2);
     f.interlace = Interlace::TopFieldFirst;
-    let (top, bottom) = if h1.field == FieldCode::Field2 { (p2?, p1?) } else { (p1?, p2?) };
     top.copy_into(&mut f, 0, 2);
     bottom.copy_into(&mut f, 1, 2);
     Ok(f)

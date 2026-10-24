@@ -38,6 +38,8 @@ use serde_json::Value;
 const MAX_DEPTH: usize = 16;
 /// Most menu items accepted from a reference file.
 const MAX_ITEMS: usize = 20_000;
+/// Most UTF-8 bytes retained in one expanded leaf path.
+const MAX_PATH_BYTES: usize = 4 * 1024;
 /// Keys holding a node's label, and its children.
 const LABEL_KEYS: [&str; 3] = ["name", "title", "label"];
 const CHILD_KEYS: [&str; 6] = ["children", "items", "submenu", "menu", "menuItems", "menu_items"];
@@ -302,6 +304,10 @@ fn push_leaf(prefix: &[String], label: &str, min: usize, out: &mut Vec<Vec<Strin
     }
     if out.len() >= MAX_ITEMS {
         return Err(format!("reference has more than {MAX_ITEMS} items"));
+    }
+    let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len())).ok_or("reference path is too large")?;
+    if bytes > MAX_PATH_BYTES {
+        return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
     }
     let mut path = prefix.to_vec();
     path.push(label.trim().to_string());
@@ -622,6 +628,8 @@ mod tests {
             assert!(reference_paths(&json!(many), area).unwrap_err().contains("more than"));
             let bare: Vec<String> = (0..MAX_ITEMS + 1).map(|i| format!("Effect {i}")).collect();
             assert!(area == Area::Menus || reference_paths(&json!(bare), area).unwrap_err().contains("more than"));
+            let long = format!("File > {}", "x".repeat(MAX_PATH_BYTES));
+            assert!(reference_paths(&json!([long]), area).unwrap_err().contains("bytes"));
         }
         // odd values are skipped, not trusted
         assert_eq!(reference_paths(&json!([1, null, true, {"name": 5}, ["File"]]), Area::Menus).unwrap(), Vec::<Vec<String>>::new());

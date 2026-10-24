@@ -115,16 +115,16 @@ draft mode.
 - Draft mode (`draft_mode_changes_only_flagged_non_reference_frames`): on a two-layer temporal
   scalability stream, single- and frame-threaded, every unflagged frame is bit-exact and only
   flagged frames differ.
-- Conformance (`tests/conformance.rs`): the fixture matrix below plus a stream concatenating two
+- Conformance (`tests/it/conformance.rs`): the fixture matrix below plus a stream concatenating two
   sizes. `compare_detects_mismatch` guards the harness. `coverage_report` (ignored) prints the
   decoder statistics for each fixture.
-- Synthetic (`tests/synthetic.rs`): headers of libvpx output are rewritten to produce what ffmpeg's
+- Synthetic (`tests/it/synthetic.rs`): headers of libvpx output are rewritten to produce what ffmpeg's
   libvpx wrapper cannot: inter frames of a stream encoded at another size spliced after a 352x288
   key frame with explicit frame sizes, i.e. **scaled reference prediction** (downscale 256x208,
   upscale 480x400, odd 301x199; a same-size splice is the control); a key frame rewritten as a
   hidden **intra-only frame** (reset_frame_context 3 / 2 / 0, various refresh masks) shown with
   **show_existing_frame**; show_existing_frame of every slot, also inside a superframe.
-- Robustness (`tests/robustness.rs`): bit flips, byte replacement and truncation of real streams,
+- Robustness (`tests/it/robustness.rs`): bit flips, byte replacement and truncation of real streams,
   truncated frames, random data and oversized frames never panic (debug and release) or hang,
   single- and multi-threaded.
 
@@ -158,7 +158,7 @@ Backward adaptation is on (`-frame-parallel 0`) unless noted.
 
 ## Performance
 
-`cargo test --release -p filmcraft-vp9 --test perf -- --ignored --nocapture` (bit-exactness is
+`cargo test --release -p filmcraft-vp9 --test it perf:: -- --ignored --nocapture` (bit-exactness is
 verified first), or `VP9_THREADS=n VP9_LOOPS=k cargo run --release -p filmcraft-vp9 --example
 vp9dec -- in.ivf` (decodes the file k times and prints the statistics; `VP9_DRAFT=1` for draft
 mode).
