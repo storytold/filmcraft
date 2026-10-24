@@ -167,6 +167,82 @@ fn lumetri_lut_menus_and_section_switches() {
 }
 
 #[test]
+fn effect_controls_lut_rows_pick_a_lut() {
+    // #1123: Input LUT / Look LUT in Effect Controls were a read-only label
+    let mut d = Driver::demo();
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
+    // maximized, so the Lumetri rows fit
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(4);
+    let ids = d.ids("effectControls.lumetri.input_lut");
+    assert!(ids.iter().any(|i| i == "effectControls.lumetri.input_lut"), "{ids:?}");
+    d.click("effectControls.lumetri.input_lut");
+    d.frames(2);
+    d.click("effectControls.lumetri.input_lut.lut.builtin:slog3-sgamut3cine-to-rec709");
+    d.frames(2);
+    let e = lumetri(&mut d, clip);
+    assert_eq!(e["params"]["input_lut"]["value"], json!("Text(\"builtin:slog3-sgamut3cine-to-rec709\")"), "{e}");
+    // one undo step
+    d.exec("edit.undo", json!({}));
+    let e = lumetri(&mut d, clip);
+    assert_eq!(e["params"]["input_lut"]["value"], json!("Text(\"\")"), "{e}");
+}
+
+#[test]
+fn effect_controls_lut_browse_imports_and_sets_in_one_undo_step() {
+    // Browse… imports the picked file into the LUT library and sets the row; one undo takes both back
+    let dir = std::env::temp_dir().join(format!("fc-lut-browse-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("swap.cube");
+    let mut cube = String::from("LUT_3D_SIZE 2\n");
+    for b in 0..2 {
+        for g in 0..2 {
+            for r in 0..2 {
+                cube.push_str(&format!("{b} {g} {r}\n"));
+            }
+        }
+    }
+    std::fs::write(&path, cube).unwrap();
+    let mut d = Driver::demo();
+    let picked = path.to_string_lossy().into_owned();
+    d.harness.state_mut().hooks.run_dialog = Some(Box::new(move |_dialog| {
+        let (tx, rx) = channel();
+        tx.send(vec![picked.clone()]).unwrap();
+        rx
+    }));
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(4);
+    let luts = |d: &mut Driver| d.harness.state().session.project.luts.len();
+    let before = luts(&mut d);
+    d.click("effectControls.lumetri.input_lut");
+    d.frames(2);
+    // Browse… is at the bottom of a long list: scroll it into view
+    let first = d.ids("effectControls.lumetri.input_lut.lut.").into_iter().next().expect("the LUT list is open");
+    for _ in 0..10 {
+        d.ok("ui.scroll", json!({"id": first, "dy": -400.0}));
+        d.frames(1);
+    }
+    d.click("effectControls.lumetri.input_lut.browse");
+    d.frames(6);
+    let status = d.harness.state().ui.status.clone();
+    assert_eq!(luts(&mut d), before + 1, "imported into the LUT library: {status}");
+    let e = lumetri(&mut d, clip);
+    assert!(e["params"]["input_lut"]["value"].as_str().is_some_and(|v| v.contains("lib:")), "{e}");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(luts(&mut d), before, "one undo removes the import too");
+    let e = lumetri(&mut d, clip);
+    assert_eq!(e["params"]["input_lut"]["value"], json!("Text(\"\")"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     let mut d = Driver::demo();
     d.ok("ui.set", json!({"workspace": "Color"}));

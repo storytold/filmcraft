@@ -297,7 +297,42 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
         _ => String::new(),
     };
     let cmd: &'static str = if input { "lumetri.setInputLut" } else { "lumetri.setLook" };
-    let shown = filmcraft_render::luts::label(Some(&app.session.project), &cur);
+    let mut rect = Rect::NOTHING;
+    ui.horizontal(|ui| {
+        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim)));
+        let width = (ui.available_width() - 40.0).max(60.0);
+        let (r, pick) = lut_menu(ui, app, ("lumetri-lut", param), &cur, input, width, &format!("lumetri.{param}"));
+        match pick {
+            Some(LutPick::Lut(r)) => out.push((cmd, json!({"lut": r}))),
+            Some(LutPick::Browse) => out.push((cmd, json!({"browse": true}))),
+            None => {}
+        }
+        rect = r;
+    });
+    app.auto.add(&format!("lumetri.{param}"), rect, label);
+}
+
+/// What was chosen in a [`lut_menu`].
+pub(crate) enum LutPick {
+    /// A LUT reference (`builtin:<id>`, `lib:<id>`), or "" for None.
+    Lut(String),
+    /// Browse…: pick a .cube / .3dl file.
+    Browse,
+}
+
+/// The LUT combo box for the LUT reference `cur`: None, the built-in input LUTs (`input`) or looks,
+/// the project's LUT library, Browse…. Shared by the Lumetri Color panel and Effect Controls (#1123).
+/// The entries get automation ids `<auto_id>.lut.<reference>` (`.lut.none`) and `<auto_id>.browse`.
+pub(crate) fn lut_menu(
+    ui: &mut egui::Ui,
+    app: &mut FilmcraftApp,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    cur: &str,
+    input: bool,
+    width: f32,
+    auto_id: &str,
+) -> (Rect, Option<LutPick>) {
+    let shown = filmcraft_render::luts::label(Some(&app.session.project), cur);
     let mut entries: Vec<(String, String)> = vec![(String::new(), tl!("None").into())];
     let builtins: Vec<&filmcraft_render::luts::Builtin> = if input {
         filmcraft_render::luts::input_builtins().collect()
@@ -306,26 +341,23 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
     };
     entries.extend(builtins.into_iter().map(|b| (format!("builtin:{}", b.id), b.label.clone())));
     entries.extend(app.session.project.luts.iter().map(|l| (format!("lib:{}", l.id), l.name.clone())));
-    let mut rect = Rect::NOTHING;
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim)));
-        let r = egui::ComboBox::from_id_salt(("lumetri-lut", param)).selected_text(shown).truncate().width((ui.available_width() - 40.0).max(60.0)).show_ui(
-            ui,
-            |ui| {
-                for (r, name) in &entries {
-                    if ui.selectable_label(*r == cur, name).clicked() && *r != cur {
-                        out.push((cmd, json!({"lut": r})));
-                    }
-                }
-                ui.separator();
-                if ui.selectable_label(false, tl!("Browse…")).clicked() {
-                    out.push((cmd, json!({"browse": true})));
-                }
-            },
-        );
-        rect = r.response.rect;
+    let mut pick = None;
+    let r = egui::ComboBox::from_id_salt(salt).selected_text(shown).truncate().width(width).show_ui(ui, |ui| {
+        for (r, name) in &entries {
+            let b = ui.selectable_label(r == cur, name);
+            app.auto.add(&format!("{auto_id}.lut.{}", if r.is_empty() { "none" } else { r }), b.rect, name);
+            if b.clicked() && r != cur {
+                pick = Some(LutPick::Lut(r.clone()));
+            }
+        }
+        ui.separator();
+        let b = ui.selectable_label(false, tl!("Browse…"));
+        app.auto.add(&format!("{auto_id}.browse"), b.rect, tl!("Browse…"));
+        if b.clicked() {
+            pick = Some(LutPick::Browse);
+        }
     });
-    app.auto.add(&format!("lumetri.{param}"), rect, label);
+    (r.response.rect, pick)
 }
 
 /// A section header; returns (expanded, switch clicked). `on` is the section's enable switch.
