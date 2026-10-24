@@ -151,6 +151,28 @@ of a batch (a render-preview segment, a proxy), which the next part reuses. A pr
 332 MB idle and at **258 MB** with the trim. The memory does not come back at once: macOS returns
 freed pages over a few seconds (892 MB right after the export in both cases, 726 MB after 2 s).
 
+## Results (adjustment layers on the GPU compositor, main → after)
+
+An adjustment layer anywhere at a time sent the whole frame to the CPU renderer (`plan::layered_at`),
+so Export ▸ GPU Rendering did nothing for the frames under one. A full-frame adjustment layer at
+100 % opacity, Normal, unmasked and with only GPU effects is now a `PlanStep::Adjust`: its effects
+run in the GPU effect stage on the composite of the tracks below. Windows 11 Pro 26300, Xeon
+E5-2680 v4 (14 cores / 28 threads), RTX 5060 8 GB (driver 617.14), 2026-10-23, release builds of
+main 20f02b9a and of the change with `cargo build --release -p filmcraft -p filmcraft-cli`, two
+alternating rounds, `filmcraft-cli … run` of `file.exportMedia` (H.264, `gpuRendering` and
+`hardwareEncoding` Auto, NVENC), 300 frames of a 1920×1080 30 fps sequence, seconds:
+
+| scene | main | **after** |
+|---|---|---|
+| the CityNight demo footage under an adjustment layer (Lumetri: contrast, exposure, vignette; Gaussian Blur 4) | 35.5, 35.8 | **9.4, 8.6** |
+| a real edit: 1080p H.264 camera clips with dips to black, an adjustment layer with Lumetri over 89 % of it, about 150 titles and shapes above | 26.1, 24.4 | **5.2, 5.0** |
+
+3.9× and 4.9× faster. GPU 3D utilisation (`nvidia-smi dmon`) went from 1–4 % to 18–31 %. The two
+builds' files decode to the same picture within encoder noise (ffmpeg `psnr` between them: average
+61.4 / 54.0 dB, lowest frame 58.8 / 52.6 dB). The whole 82 s real edit (2,472 frames) exports in
+43.7 s; with the adjustment layer the render stage is still most of that (decoded pictures and
+the composite still go through the CPU, and titles are rasterised there).
+
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
 Before = this change with clips that carry standard effects sent back to the CPU layer path in

@@ -269,8 +269,8 @@ fn morph_cut_frames_render_on_the_cpu_with_the_morph() {
         reverse: false,
     });
     let opts = RenderOptions { scale: 0.5, ..Default::default() };
-    assert!(plan::is_cpu_frame(&p, seq, rate.tick_of(24)));
-    assert!(!plan::is_cpu_frame(&p, seq, rate.tick_of(10)), "outside the transition the frame stays on the GPU");
+    assert!(plan::is_cpu_frame(&p, seq, rate.tick_of(24), opts));
+    assert!(!plan::is_cpu_frame(&p, seq, rate.tick_of(10), opts), "outside the transition the frame stays on the GPU");
     let plan = plan::plan_frame(&p, seq, rate.tick_of(24), opts, &map);
     assert!(matches!(plan, plan::FramePlan::Image(_)));
     assert_eq!(plan::execute_cpu(&plan).px, render_sequence(&p, seq, rate.tick_of(24), opts, &map).px);

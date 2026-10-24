@@ -388,6 +388,8 @@ impl FxOp {
                 let amt = f(e, "amount", cx) / 100.0 * (w.min(h) as f32) * 0.5;
                 FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt)
             }
+            // the shutter's motion blur (`vfx::distort::transform_fx`) is CPU only
+            "transform" if b(e, "shutter_override") && f(e, "shutter_angle", cx) > 0.5 => return None,
             "transform" => {
                 let img = Image { w, h, px: Vec::new() };
                 let anchor = point(e, "anchor", cx, &img);

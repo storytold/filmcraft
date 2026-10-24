@@ -313,7 +313,10 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
-  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
+  placed like any layer. An adjustment layer that covers the whole frame at 100 % opacity in
+  Normal, unmasked and with only effects from that set, is a step of the plan: its effects run the
+  same way on the composite of the tracks below it, and the result replaces it before the tracks
+  above are drawn. Other standard effects, effect and opacity masks, the other adjustment layers,
   nested sequences (except a plain one, whose own layers go into the plan: same frame size and
   colour settings as its parent, nothing on the clip that changes the picture, every layer inside
   blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame

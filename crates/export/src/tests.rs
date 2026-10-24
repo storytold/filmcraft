@@ -453,16 +453,18 @@ fn gpu_hook_scenarios() {
     // at most one panic per pooled renderer (4): none is used again after it panicked
     assert!(PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4, "renderer reused after a panic: {}", PANICS.load(std::sync::atomic::Ordering::SeqCst));
 
-    // 5. A frame the planner hands back as one CPU image (an adjustment layer over the clip from
-    //    frame 12) is rendered by the CPU without taking a pooled renderer: it counts as a
-    //    fallback, and the renderer's picture reaches only the frames before it.
+    // 5. A frame the planner hands back as one CPU image (an adjustment layer with an effect the
+    //    GPU doesn't run, over the clip from frame 12) is rendered by the CPU without taking a
+    //    pooled renderer: it counts as a fallback, and the renderer's picture reaches only the
+    //    frames before it.
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
     let (p, seq, m) = project();
     let mut p = Arc::unwrap_or_clone(p);
     let r = FrameRate::FPS_24;
     let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
-    let over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+    let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+    over.effects.insert(0, filmcraft_project::find_effect("emboss").unwrap().instance());
     let v2 = filmcraft_project::TrackId(p.alloc_id());
     let q = p.sequence_mut(seq).unwrap();
     q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));

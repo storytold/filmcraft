@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: hardware decode / encode per platform and codec, GPU effects, devices; re-measured after NVDEC #549 and GPU export #421) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (adjustment layers on the GPU compositor) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
 [`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
@@ -53,6 +53,7 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 | Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **34 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs, sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Lumetri basic / creative / vignette | ~40% |
 | Lumetri curves, wheels, HSL secondary | GPU | CPU | 0% |
 | Keys (Ultra Key), masks, distortions, transitions | GPU | CPU (masks have WGSL parity tests, not in the live path) | 10% |
+| Adjustment layers | GPU when every effect on them is accelerated | **GPU** for a full-frame one at 100 % opacity, Normal, unmasked, with only GPU effects (`PlanStep::Adjust`): 3.9–4.9× faster GPU exports under one; any other one renders the whole frame on the CPU | 60% |
 | Export rendering on the GPU | yes | **yes** (#421; Export ▸ GPU Rendering, Auto): 2.4× (1080p) to 3.2× (4K) faster on effects-heavy timelines | 80% |
 | Thumbnails on the GPU (26.0) | yes | CPU | 0% |
 | Software adapter fallback | warns | silently renders everything on the CPU (#632) | — |
@@ -84,4 +85,5 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | Adjustment layers row: full-frame, opaque, Normal ones with GPU effects run on the GPU compositor |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |
