@@ -334,6 +334,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }));
         #[cfg(target_os = "macos")]
         {
+            app.hooks.promised_drops = promised_drops(cc.egui_ctx.clone());
             let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());
             app.command_inbox = Some(rx);
             app.hooks.menu_changed = Some(update);
@@ -345,6 +346,59 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         Ok(Box::new(app))
     })
+}
+
+/// Takes over drops whose files are only promised, so a video dragged out of Photos.app arrives
+/// as the movie rather than as the JPEG poster frame that is the drag's only plain path. `None`
+/// when the platform layer could not install itself, which leaves winit's drops as they were.
+#[cfg(target_os = "macos")]
+fn promised_drops(ctx: egui::Context) -> Option<filmcraft_ui_egui::PromisedDrops> {
+    use std::sync::PoisonError;
+
+    let shared = filmcraft_ui_egui::PromisedDrops::default();
+    let destination = Arc::clone(&shared.destination);
+    let arrived = Arc::clone(&shared.arrived);
+    let lost = Arc::clone(&shared.lost);
+    let positions = filmcraft_platform::file_promise::PendingDrops::<egui::Pos2>::default();
+    let dropped_at = positions.clone();
+    let received_at = positions.clone();
+    let failed_at = positions;
+    let dropped_ctx = ctx.clone();
+    let failed_ctx = ctx.clone();
+    let installed = filmcraft_platform::file_promise::install(filmcraft_platform::file_promise::Handlers {
+        destination: Box::new(move || {
+            let dir = destination.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            if dir.is_empty() { std::env::temp_dir().join("FilmCraft").join("Dropped Media") } else { std::path::PathBuf::from(dir) }
+        }),
+        dropped: Box::new(move |id, at| {
+            // The platform layer reports the drop in the window's own points; the UI works in
+            // those divided by its zoom (Settings ▸ Appearance ▸ UI scaling), so an app zoomed
+            // to 125% would otherwise place a drop a quarter of the way down and across from
+            // where it landed. Without a position, fall back to the last pointer the UI saw
+            // (the OS reports no motion during a drag, so it may be from before the drag).
+            let zoom = dropped_ctx.zoom_factor();
+            let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
+            let at = at
+                .map(|(x, y)| egui::pos2(x as f32 / zoom, y as f32 / zoom))
+                .or_else(|| dropped_ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())));
+            dropped_at.dropped(id, at);
+        }),
+        received: Box::new(move |id, files| {
+            let at = received_at.take(id);
+            arrived
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(filmcraft_ui_egui::PromisedFiles { paths: files.iter().map(|f| f.to_string_lossy().into_owned()).collect(), dropped_at: at });
+            // The files arrive between frames: without this the import waits for the next one.
+            ctx.request_repaint();
+        }),
+        failed: Box::new(move |id, files, reason| {
+            failed_at.take(id);
+            lost.lock().unwrap_or_else(PoisonError::into_inner).push(filmcraft_ui_egui::PromiseLost { files, reason });
+            failed_ctx.request_repaint();
+        }),
+    });
+    installed.then_some(shared)
 }
 
 /// Files copied in the file manager, else an image, on the system clipboard (Paste, #611).

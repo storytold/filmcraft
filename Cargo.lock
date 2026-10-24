@@ -2192,6 +2192,7 @@ dependencies = [
 name = "filmcraft-platform"
 version = "0.12.0"
 dependencies = [
+ "block2 0.6.2",
  "filmcraft-bitstream",
  "filmcraft-codecs",
  "filmcraft-color",
@@ -2207,9 +2208,12 @@ dependencies = [
  "filmcraft-time",
  "libloading",
  "log",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
+ "objc2-foundation 0.3.2",
  "objc2-video-toolbox",
  "windows 0.62.2",
 ]

@@ -3616,3 +3616,5 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	A dragged file could not be fetched: {why}	ドラッグされたファイルを取得できませんでした: {why}
+	{n} dragged files could not be fetched: {why}	ドラッグされた {n} 個のファイルを取得できませんでした: {why}

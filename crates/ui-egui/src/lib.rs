@@ -64,8 +64,8 @@ mod theme_favorites;
 pub mod widgets;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
 use egui::{TextureHandle, TextureOptions};
 use filmcraft_engine::{Services, Session};
@@ -173,6 +173,71 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Files a drag only *promised*, which the host writes out after the drop (macOS: Photos.app
+    /// offers a dragged video as a file promise, and its only plain path is a JPEG poster frame,
+    /// so without this a dragged-in video was imported as a still). Shared with the host: this
+    /// says where to write them while files hover, and takes the ones that have arrived.
+    pub promised_drops: Option<PromisedDrops>,
+}
+
+/// The two halves of a promised-file drop shared with the host ([`HostHooks::promised_drops`]).
+/// Both are locked only to swap a string or drain a list, never across a frame.
+#[derive(Clone, Default)]
+pub struct PromisedDrops {
+    /// Where the host writes files it receives, kept up to date so it follows the open project
+    /// (Project Settings ▸ Scratch Disks ▸ Captured). It cannot wait for files to hover: a drag
+    /// that promises its files has no path for the windowing layer to report as hovering, and the
+    /// host reads this the moment such a drag is dropped.
+    pub destination: Arc<Mutex<String>>,
+    /// Files that have finished arriving, imported on the next frame as a drop of their own.
+    pub arrived: Arc<Mutex<Vec<PromisedFiles>>>,
+    /// Drops whose files never arrived, reported in the status bar on the next frame. Nothing is
+    /// imported for them: what such a drag offers outright is a poster frame rather than the
+    /// movie it promised, and importing that is the very thing this exists to stop.
+    pub lost: Arc<Mutex<Vec<PromiseLost>>>,
+}
+
+/// Files of one promised drop that have arrived, with where that drop landed.
+#[derive(Clone, Debug, Default)]
+pub struct PromisedFiles {
+    /// The files themselves, which exist by now.
+    pub paths: Vec<String>,
+    /// Where the drag was dropped, in UI points, as the host read it at the drop rather than when
+    /// the files turned up: fulfilling a promise can take minutes (a 500 MB iCloud video is
+    /// downloaded first), and by then the pointer is wherever the user has moved on to.
+    pub dropped_at: Option<egui::Pos2>,
+}
+
+/// Promises of one drop that the dragging source never kept.
+#[derive(Clone, Debug, Default)]
+pub struct PromiseLost {
+    /// How many files of the drop were lost.
+    pub files: usize,
+    /// What the source said about the first of them (an iCloud asset with nothing to download it
+    /// over, a destination it could not write to).
+    pub reason: String,
+}
+
+impl PromisedDrops {
+    /// Hands over the files received so far, leaving the list empty.
+    fn take(&self) -> Vec<PromisedFiles> {
+        let mut arrived = self.arrived.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut arrived)
+    }
+
+    /// Hands over the drops that came to nothing, leaving the list empty.
+    fn take_lost(&self) -> Vec<PromiseLost> {
+        let mut lost = self.lost.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut lost)
+    }
+
+    /// Points the host at `dir` for the files of any drag it takes from here on.
+    fn point_at(&self, dir: String) {
+        let mut destination = self.destination.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *destination != dir {
+            *destination = dir;
+        }
+    }
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -365,7 +430,20 @@ pub struct FilmcraftApp {
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
     /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
-    pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// One entry per drop, because two promised drops can finish downloading between frames and
+    /// each has its own landing point: keeping only the last would import the earlier one to the
+    /// bin and quietly forget where it was dropped.
+    pending_timeline_drops: Vec<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// Drops the Timeline could not place this frame but must not forget: opening a sequence
+    /// changes what the rest of the frame is laying out, so a drop that lands on an empty
+    /// Timeline alongside the one that becomes the sequence is held over to the next frame,
+    /// where there is a sequence to place it on.
+    deferred_timeline_drops: Vec<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// The promise destination last given to the host, with the settings it was resolved from.
+    /// Resolving it walks the filesystem (`trusted_scratch` canonicalizes), and the host has to
+    /// be pointed somewhere every frame because a promising drag reports no hover to react to,
+    /// so it is recomputed only when one of those settings changes.
+    promised_destination: Option<(Option<String>, Option<String>, Vec<String>, String)>,
     /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
@@ -597,7 +675,9 @@ impl FilmcraftApp {
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
-            pending_timeline_drop: None,
+            pending_timeline_drops: Vec::new(),
+            deferred_timeline_drops: Vec::new(),
+            promised_destination: None,
             file_drag_hover: None,
             timeline_view_last: None,
             fps: 60.0,
@@ -1471,34 +1551,90 @@ impl FilmcraftApp {
     /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
     /// queued to be placed at the pointer (see `timeline::interact`).
     fn handle_drops(&mut self, ctx: &egui::Context) {
+        // A drop the Timeline held over because it had no sequence to place it on, now that it has.
+        self.pending_timeline_drops.append(&mut self.deferred_timeline_drops);
         // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
         let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        // A promise is fulfilled into a directory the host must know before the drop, and a drag
+        // that promises its files reports nothing as hovering (it has no path to report), so the
+        // host is kept pointed at this project's (Scratch Disks ▸ Captured) rather than told once
+        // a drag shows up.
+        if self.hooks.promised_drops.is_some() {
+            let (captured, path, folders) =
+                (&self.session.project.settings.scratch.captured, &self.session.path, &self.session.prefs.auto_save.scratch_folders);
+            let current = self.promised_destination.as_ref().is_some_and(|(c, p, f, _)| c == captured && p == path && f == folders);
+            if !current {
+                let dir = filmcraft_engine::voiceover::captured_media_dir(&self.session, "Dropped Media");
+                self.promised_destination = Some((captured.clone(), path.clone(), folders.clone(), dir));
+            }
+            if let (Some(promised), Some((.., dir))) = (self.hooks.promised_drops.as_ref(), self.promised_destination.as_ref()) {
+                promised.point_at(dir.clone());
+            }
+        }
         self.file_drag_hover = if hovering > 0 && self.session.prefs.timeline.drop_import_to_timeline {
             ctx.request_repaint();
             self.drop_pointer(ctx).map(|p| (hovering, p))
         } else {
             None
         };
-        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        // An automation-owned app is isolated from native input, drops included (`raw_input_hook`
+        // clears them), and a promised drop does not come through raw input: drain it and drop it
+        // on the floor, or a drag on the machine running the automation would import into it.
+        if self.control_input_only {
+            if let Some(promised) = self.hooks.promised_drops.as_ref() {
+                promised.take();
+                promised.take_lost();
+            }
+            return;
+        }
+        // Files the host received for a drag that only promised them land after their drop, each
+        // batch with where its own drag was dropped: the pointer has moved on long before a large
+        // download finishes, so where they go is not read from it now.
+        for promised in self.hooks.promised_drops.as_ref().map(PromisedDrops::take).unwrap_or_default() {
+            let at = promised.dropped_at.or_else(|| self.drop_pointer(ctx));
+            self.import_dropped(promised.paths, at);
+        }
+        // A promise the source never kept imports nothing, and it fails long after the drop, so
+        // the user is told twice over: an Events panel entry keeps the reason (`error_toast`,
+        // which is how the engine reports a failure nobody just asked for), and the status bar
+        // shows it, since nothing draws toasts yet.
+        for lost in self.hooks.promised_drops.as_ref().map(PromisedDrops::take_lost).unwrap_or_default() {
+            let message = if lost.files == 1 {
+                tlf!("A dragged file could not be fetched: {why}", why = lost.reason)
+            } else {
+                tlf!("{n} dragged files could not be fetched: {why}", n = lost.files, why = lost.reason)
+            };
+            self.session.error_toast("file.import", message.clone());
+            self.ui.status = message;
+        }
         let mut paths = Vec::new();
-        for f in dropped {
+        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
             let p = f.path();
             if p.exists() {
                 paths.push(p.to_string_lossy().to_string());
             }
         }
         if !paths.is_empty() {
-            let pointer = self.drop_pointer(ctx);
-            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-            if let Ok(v) = imported
-                && let Some(pos) = pointer
-                && self.session.prefs.timeline.drop_import_to_timeline
-            {
-                let items: Vec<filmcraft_engine::project::ItemId> =
-                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-                if !items.is_empty() {
-                    self.pending_timeline_drop = Some((items, pos));
-                }
+            let at = self.drop_pointer(ctx);
+            self.import_dropped(paths, at);
+        }
+    }
+
+    /// Imports files dropped on the window, and with Timeline ▸ drop imports to the timeline
+    /// queues them to be placed where the drop landed.
+    fn import_dropped(&mut self, paths: Vec<String>, at: Option<egui::Pos2>) {
+        if paths.is_empty() {
+            return;
+        }
+        let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+        if let Ok(v) = imported
+            && let Some(pos) = at
+            && self.session.prefs.timeline.drop_import_to_timeline
+        {
+            let items: Vec<filmcraft_engine::project::ItemId> =
+                v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+            if !items.is_empty() {
+                self.pending_timeline_drops.push((items, pos));
             }
         }
     }
@@ -1881,8 +2017,9 @@ impl FilmcraftApp {
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
-        // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
-        self.pending_timeline_drop = None;
+        // the Timeline has had its chance to place a file drop this frame; anything left stays a
+        // bin import, except what it deliberately held over for the next frame
+        self.pending_timeline_drops.clear();
         panels::dialogs::show(self, &ctx);
         if !self.ui.show_status_bar {
             // no bar to draw the job in, but a finished preview render still plays

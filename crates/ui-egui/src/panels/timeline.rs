@@ -758,21 +758,26 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     // OS files dropped on an empty Timeline: import already happened; create a sequence from the first item
-    if let Some((items, p)) = app.pending_timeline_drop.clone()
-        && rect.contains(p)
-        && let Some((first, rest)) = items.split_first()
-    {
-        app.pending_timeline_drop = None;
-        if let Err(e) = app.session.execute("file.newSequence", json!({"fromItem": first.0})) {
-            app.ui.status = e.to_string();
-        } else {
-            let mut t = app.session.project.item(*first).map(|i| i.duration()).unwrap_or(Tick::ZERO);
-            for item in rest {
-                let params = json!({"item": item.0, "time": t.0, "insert": false});
-                if let Err(e) = app.session.execute("timeline.place", params) {
-                    app.ui.status = e.to_string();
-                } else {
-                    t = Tick(t.0.saturating_add(app.session.project.item(*item).map(|i| i.duration().0.max(0)).unwrap_or(0)));
+    // Only the first lands here: it becomes the sequence, and a sequence open changes what the
+    // rest of the frame is looking at, so any other drop on the Timeline is held over to the next
+    // frame, which has a sequence to place it on. Without that it would keep its bin import and
+    // lose its landing point, the very thing `pending_timeline_drops` is a queue to prevent.
+    if let Some(i) = app.pending_timeline_drops.iter().position(|(_, p)| rect.contains(*p)) {
+        let (items, _) = app.pending_timeline_drops.remove(i);
+        let held: Vec<_> = app.pending_timeline_drops.iter().filter(|(_, p)| rect.contains(*p)).cloned().collect();
+        app.deferred_timeline_drops.extend(held);
+        if let Some((first, rest)) = items.split_first() {
+            if let Err(e) = app.session.execute("file.newSequence", json!({"fromItem": first.0})) {
+                app.ui.status = e.to_string();
+            } else {
+                let mut t = app.session.project.item(*first).map(|i| i.duration()).unwrap_or(Tick::ZERO);
+                for item in rest {
+                    let params = json!({"item": item.0, "time": t.0, "insert": false});
+                    if let Err(e) = app.session.execute("timeline.place", params) {
+                        app.ui.status = e.to_string();
+                    } else {
+                        t = Tick(t.0.saturating_add(app.session.project.item(*item).map(|i| i.duration().0.max(0)).unwrap_or(0)));
+                    }
                 }
             }
         }
@@ -3087,11 +3092,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
     // ---- OS file drops imported with "drop imports to the timeline": placed at the drop point, one after another
-    if let Some((items, p)) = app.pending_timeline_drop.clone()
-        && layout.content.contains(p)
-        && app.timeline_drop_target(ui.ctx(), p)
-    {
-        app.pending_timeline_drop = None;
+    while let Some(i) = app.pending_timeline_drops.iter().position(|(_, p)| layout.content.contains(*p) && app.timeline_drop_target(ui.ctx(), *p)) {
+        let (items, p) = app.pending_timeline_drops.remove(i);
         let row = layout.row_at(p.y).cloned().or_else(|| layout.rows.iter().find(|r| r.kind == TrackKind::Video).cloned());
         if let Some(row) = row {
             let (vt, at) = match row.kind {
