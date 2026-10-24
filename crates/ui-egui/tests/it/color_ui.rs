@@ -179,10 +179,22 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     assert_eq!(r["dialog"], "interpretFootage");
     d.frames(3);
     d.click("colorDialog.space.slog3-sgamut3cine");
+    // the Pixel Aspect Ratio section offers the anamorphic squeezes: 4:3 pixels for a 1.33x lens
+    assert!(d.ids("colorDialog.par.").iter().any(|i| i == "colorDialog.par.4x3"), "{:?}", d.ids("colorDialog.par."));
+    d.click("colorDialog.par.4x3");
     d.snapshot("color-interpret-footage", None);
     d.click("colorDialog.ok");
     let info = d.exec("media.colorInfo", json!({"item": item}));
     assert_eq!(info["override"], "slog3-sgamut3cine", "{info}");
+    assert_eq!(info["pixelAspectOverride"], json!([4, 3]), "one OK applies both sections: {info}");
+    // reopened, the dialog shows the override; "from file" goes back to the file's square pixels
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    d.click("colorDialog.par.file");
+    d.click("colorDialog.ok");
+    let info = d.exec("media.colorInfo", json!({"item": item}));
+    assert_eq!((info["pixelAspectOverride"].clone(), info["pixelAspect"].clone()), (Value::Null, json!([1, 1])), "{info}");
+    d.exec("edit.undo", json!({}));
     // Sequence ▸ Color Management…: Rec. 2100 PQ
     let r = d.ok("ui.menu.invoke", json!({"id": "sequence.colorSettings"}));
     assert_eq!(r["dialog"], "sequenceColor");
@@ -202,6 +214,50 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     d.exec("edit.undo", json!({}));
     let info = d.exec("media.colorInfo", json!({"item": item}));
     assert_eq!(info["override"], Value::Null, "{info}");
+}
+
+/// With several items selected, the dialog shows the first item's interpretation, and OK sends
+/// only what the user picked: each item keeps its own override of the other setting.
+#[test]
+fn interpret_footage_sends_only_what_the_user_picked() {
+    let mut d = Driver::demo();
+    let media: Vec<u64> = d.app().session.project.items.iter().filter(|(_, it)| it.as_media().is_some()).map(|(id, _)| id.0).collect();
+    let (a, b) = (media[0], media[1]);
+    d.exec("clip.interpretFootage", json!({"items": [b], "pixelAspect": [2, 1]}));
+    d.exec("project.select", json!({"items": [a, b]}));
+    let info = |d: &mut Driver, i: u64| {
+        let v = d.exec("media.colorInfo", json!({"item": i}));
+        (v["override"].clone(), v["pixelAspectOverride"].clone())
+    };
+    let open = |d: &mut Driver| {
+        d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+        d.frames(3);
+    };
+    // only the colour space: the second item keeps its 2:1 pixels
+    open(&mut d);
+    d.click("colorDialog.space.slog3-sgamut3cine");
+    d.click("colorDialog.ok");
+    assert_eq!(info(&mut d, a), (json!("slog3-sgamut3cine"), Value::Null));
+    assert_eq!(info(&mut d, b), (json!("slog3-sgamut3cine"), json!([2, 1])));
+    // only the pixel aspect: the second item keeps its colour space
+    d.exec("clip.interpretFootage", json!({"items": [a], "colorSpace": "auto"}));
+    open(&mut d);
+    d.click("colorDialog.par.4x3");
+    d.click("colorDialog.ok");
+    assert_eq!(info(&mut d, a), (Value::Null, json!([4, 3])));
+    assert_eq!(info(&mut d, b), (json!("slog3-sgamut3cine"), json!([4, 3])));
+    // the first item's own nonstandard ratio, picked, goes to every item
+    d.exec("clip.interpretFootage", json!({"items": [a], "pixelAspect": [7, 5]}));
+    open(&mut d);
+    d.click("colorDialog.par.7x5");
+    d.click("colorDialog.ok");
+    assert_eq!(info(&mut d, b), (json!("slog3-sgamut3cine"), json!([7, 5])));
+    // nothing picked: OK changes nothing (no undo step)
+    let undo = d.app().session.history.undo.len();
+    open(&mut d);
+    d.click("colorDialog.ok");
+    assert_eq!(d.app().session.history.undo.len(), undo);
+    assert!(d.app().ui.color_dialog.is_none(), "OK still closes the dialog");
 }
 
 #[test]

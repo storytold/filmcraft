@@ -52,23 +52,31 @@ pub(crate) struct Geometry {
 }
 
 impl Geometry {
-    pub fn new(settings: &ExportSettings, seq_w: u32, seq_h: u32, w: u32, h: u32) -> Self {
+    /// The picture of a `seq_w` x `seq_h` sequence whose pixels are `seq_par` wide in a `w` x `h`
+    /// output frame. The output's pixel aspect is the export setting, else the sequence's ("Match
+    /// Source": an anamorphic sequence exports anamorphic, the ratio signalled in the file).
+    /// Fitting compares display sizes, so a 4:3-pixel sequence into square pixels gets wider.
+    pub fn new(settings: &ExportSettings, seq_w: u32, seq_h: u32, seq_par: (u32, u32), w: u32, h: u32) -> Self {
         let (sw, sh) = (seq_w.max(1) as f32, seq_h.max(1) as f32);
-        if settings.frame_size.is_none() && settings.pixel_aspect.is_none() && !settings.max_render_quality {
+        let seq_par = filmcraft_project::par_ratio(seq_par) as f32;
+        let out_par = settings.pixel_aspect.map(|p| filmcraft_project::par_ratio(p) as f32).unwrap_or(seq_par);
+        if settings.frame_size.is_none() && (out_par - seq_par).abs() < 1e-6 && !settings.max_render_quality {
             // the sequence size times `scale`, rendered directly (even-size crop/pad at the edge)
             return Geometry { w, h, render_scale: w as f32 / sw, content: None, offset: (0, 0) };
         }
-        let par = settings.pixel_aspect.map(|(n, d)| n.max(1) as f32 / d.max(1) as f32).unwrap_or(1.0);
-        let disp_w = w as f32 * par;
-        let (fx, fy) = (disp_w / sw, h as f32 / sh);
+        let seq_disp_w = sw * seq_par;
+        let disp_w = w as f32 * out_par;
+        let (fx, fy) = (disp_w / seq_disp_w, h as f32 / sh);
         let (sx, sy) = match settings.scaling {
             Scaling::ScaleToFit => (fx.min(fy), fx.min(fy)),
             Scaling::ScaleToFill => (fx.max(fy), fx.max(fy)),
             Scaling::StretchToFill => (fx, fy),
         };
-        let cw = (sw * sx / par).round().max(1.0) as usize;
+        // the picture's size in output pixels: its display width over the output pixel width
+        let scale_x = sx * seq_par / out_par;
+        let cw = (sw * scale_x).round().max(1.0) as usize;
         let ch = (sh * sy).round().max(1.0) as usize;
-        let render_scale = if settings.max_render_quality { 1.0f32.max(sy).max(sx / par) } else { sy.max(sx / par) }.clamp(0.01, 4.0);
+        let render_scale = if settings.max_render_quality { 1.0f32.max(sy).max(scale_x) } else { sy.max(scale_x) }.clamp(0.01, 4.0);
         Geometry { w, h, render_scale, content: Some((cw, ch)), offset: ((w as i64 - cw as i64) / 2, (h as i64 - ch as i64) / 2) }
     }
 }
@@ -192,7 +200,7 @@ impl Pipeline {
         settings.validate()?;
         let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
         filmcraft_project::validate_frame_size(r.width, r.height).map_err(ExportError::Unsupported)?;
-        let geom = Geometry::new(settings, q.settings.width, q.settings.height, r.width, r.height);
+        let geom = Geometry::new(settings, q.settings.width, q.settings.height, q.settings.par, r.width, r.height);
         if let Some((w, h)) = geom.content {
             let w = u32::try_from(w).map_err(|_| ExportError::Unsupported("scaled picture width is too large".into()))?;
             let h = u32::try_from(h).map_err(|_| ExportError::Unsupported("scaled picture height is too large".into()))?;
@@ -533,4 +541,42 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
         c.iter_mut().for_each(|v| *v += d);
     }
     c.iter_mut().for_each(|v| *v = v.clamp(0.0, hi.max(lo)));
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    #[test]
+    fn match_source_keeps_the_sequence_pixels_and_square_output_desqueezes() {
+        // a 1.33x anamorphic 6K sequence (4:3 pixels) at Match Source: rendered as it is
+        let s = ExportSettings::default();
+        let g = Geometry::new(&s, 6048, 3402, (4, 3), 6048, 3402);
+        assert_eq!((g.content, g.offset, g.render_scale), (None, (0, 0), 1.0));
+        // the same with the output pixel aspect set to the sequence's: the same direct path
+        let s = ExportSettings { pixel_aspect: Some((4, 3)), ..Default::default() };
+        assert_eq!(Geometry::new(&s, 6048, 3402, (4, 3), 6048, 3402).content, None);
+        // square output pixels at the sequence size: the 8064-wide display picture is fit to width,
+        // letterboxed (2.37:1 in 16:9)
+        let s = ExportSettings { pixel_aspect: Some((1, 1)), ..Default::default() };
+        let g = Geometry::new(&s, 6048, 3402, (4, 3), 6048, 3402);
+        assert_eq!(g.content, Some((6048, 2552)));
+        assert_eq!(g.offset, (0, 425));
+        // the picture is as wide as the sequence: rendered at 1:1, the height resampled down
+        assert!((g.render_scale - 1.0).abs() < 1e-6, "{}", g.render_scale);
+        // a desqueezed square-pixel frame of the display size holds the whole picture at 1:1 height
+        let g = Geometry::new(&s, 6048, 3402, (4, 3), 8064, 3402);
+        assert_eq!((g.content, g.offset), (Some((8064, 3402)), (0, 0)));
+        assert!((g.render_scale - 4.0 / 3.0).abs() < 1e-6);
+        // square-pixel sequences behave as before: an explicit 4:3 output narrows the picture
+        let g = Geometry::new(&s, 1920, 1080, (1, 1), 1920, 1080);
+        assert_eq!(g.content, None);
+        let s = ExportSettings { pixel_aspect: Some((4, 3)), ..Default::default() };
+        let g = Geometry::new(&s, 1920, 1080, (1, 1), 1440, 1080);
+        assert_eq!((g.content, g.offset), (Some((1440, 1080)), (0, 0)));
+        assert!((g.render_scale - 1.0).abs() < 1e-6, "rendered at full height, the width resampled down");
+        // hostile ratios are square
+        let g = Geometry::new(&ExportSettings::default(), 1920, 1080, (0, 0), 1920, 1080);
+        assert_eq!(g.content, None);
+    }
 }

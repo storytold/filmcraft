@@ -793,11 +793,28 @@ impl Default for ProjectManagerDraft {
     }
 }
 
+fn pixel_aspect_from_file() -> String {
+    "file".into()
+}
+
 /// Colour dialogs: drafts are applied with one engine command on OK.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ColorDialog {
-    /// `clip.interpretFootage`: the media items and the chosen colour space id ("auto" = metadata).
-    Interpret { items: Vec<u64>, color_space: String },
+    /// `clip.interpretFootage`: the media items, the chosen colour space id ("auto" = metadata) and
+    /// the pixel aspect ratio to conform to ("file" = the file's, else "num:den").
+    Interpret {
+        items: Vec<u64>,
+        color_space: String,
+        #[serde(default = "pixel_aspect_from_file")]
+        pixel_aspect: String,
+        /// The user picked a pixel aspect choice: only then does OK send it, so changing just the
+        /// colour space keeps each selected item's own pixel aspect override.
+        #[serde(default)]
+        pixel_aspect_set: bool,
+        /// The same for the colour space: changing just the pixel aspect keeps each item's own.
+        #[serde(default)]
+        color_space_set: bool,
+    },
     /// `sequence.colorSettings`.
     Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
 }
@@ -867,6 +884,14 @@ pub struct SequenceSettingsDraft {
     pub fps_den: i64,
     pub width: u32,
     pub height: u32,
+    /// The pixel aspect ratio: Sequence Settings starts from the sequence's, New Sequence from the
+    /// chosen preset's; both send it when it changed (`pixelAspect`).
+    pub par: (u32, u32),
+    /// The Pixel Aspect Ratio list is on Custom: the ratio is typed as two numbers.
+    pub par_custom: bool,
+    /// New Sequence: the name of the chosen preset (`sequence.presets`), sent as `preset`; empty
+    /// when none was chosen.
+    pub preset: String,
     pub scale_motion: bool,
     pub drop_frame: bool,
     pub mix: String,
@@ -889,6 +914,9 @@ impl Default for SequenceSettingsDraft {
             fps_den: 1001,
             width: 1920,
             height: 1080,
+            par: (1, 1),
+            par_custom: false,
+            preset: String::new(),
             scale_motion: true,
             drop_frame: false,
             mix: "Stereo".into(),

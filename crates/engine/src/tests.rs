@@ -256,6 +256,60 @@ fn sequence_settings_timecode_render_quality_and_colour() {
 }
 
 #[test]
+fn sequence_settings_change_the_pixel_aspect_ratio_in_one_undo_step() {
+    let mut s = demo();
+    let before = (*s.project).clone();
+    let history = s.history.undo.len();
+    // the exact 1.33x squeeze, kept apart from 4:3
+    s.execute("sequence.settings", json!({"pixelAspect": [133, 100]})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.par, (133, 100));
+    assert_eq!(s.history.undo.len(), history + 1);
+    // stored in lowest terms, together with a new frame size in the same step
+    s.execute("sequence.settings", json!({"pixelAspect": [8, 6], "width": 6048, "height": 3402})).unwrap();
+    let st = s.active_sequence().unwrap().settings.clone();
+    assert_eq!((st.par, st.width, st.height), ((4, 3), 6048, 3402));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.par, (133, 100));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, before, "each change is one undo step");
+    // ratios that make no sense are refused and change nothing; null leaves the ratio alone
+    for bad in [
+        json!([0, 1]),
+        json!([1, 0]),
+        json!([9, 1]),
+        json!([1, 9]),
+        json!([4]),
+        json!([4, 3, 1]),
+        json!("4:3"),
+        json!([-4, 3]),
+        json!([4.5, 3]),
+        json!([4294967296u64, 1]),
+    ] {
+        assert!(s.execute("sequence.settings", json!({"pixelAspect": bad.clone()})).is_err(), "{bad}");
+        assert_eq!(*s.project, before, "{bad}");
+    }
+    s.execute("sequence.settings", json!({"pixelAspect": null, "maxRenderQuality": true})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.par, (1, 1));
+    // the preset name follows the picture: a squeeze leaves the preset it no longer matches
+    s.execute("file.newSequence", json!({"name": "Named", "preset": "6K 16:9 6048x3402 23.976"})).unwrap();
+    s.execute("sequence.settings", json!({"maxRenderQuality": false})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.preset, "6K 16:9 6048x3402 23.976", "no picture change, no rename");
+    s.execute("sequence.settings", json!({"pixelAspect": [133, 100]})).unwrap();
+    let st = s.active_sequence().unwrap().settings.clone();
+    let expect = filmcraft_project::sequence_preset_of(&st).map_or_else(|| format!("6048x3402 {}", st.frame_rate.label()), |p| p.name.to_string());
+    assert_eq!(st.preset, expect);
+    assert_ne!(st.preset, "6K 16:9 6048x3402 23.976");
+    let inspected = s.execute("sequence.inspect", json!({})).unwrap();
+    assert!(!inspected.to_string().contains("6K 16:9 6048x3402"), "{inspected}");
+    // New Sequence takes the ratio too, over a preset's
+    s.execute("file.newSequence", json!({"name": "Ana", "preset": "6K 16:9 6048x3402 23.976", "pixelAspect": [133, 100]})).unwrap();
+    let st = s.active_sequence().unwrap().settings.clone();
+    assert_eq!((st.width, st.par), (6048, (133, 100)));
+    assert_eq!(st.preset, "6048x3402 23.976", "no longer the square-pixel preset");
+    assert!(s.execute("file.newSequence", json!({"name": "Bad", "pixelAspect": [0, 0]})).is_err());
+}
+
+#[test]
 fn zero_fps_is_refused() {
     let mut s = demo();
     let rate = s.sequence_rate();

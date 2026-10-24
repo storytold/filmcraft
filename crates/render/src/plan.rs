@@ -596,7 +596,7 @@ fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
         let placed = if l.matrix == Affine::scale(width as f64, height as f64) && src.w == 1 && src.h == 1 {
             crate::Image::filled(width, height, src.get(0, 0))
         } else {
-            src.transformed(width, height, &l.matrix)
+            src.placed(width, height, &l.matrix)
         };
         crate::blend::composite(canvas, &placed, l.opacity, l.blend);
     }

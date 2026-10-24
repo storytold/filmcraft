@@ -513,7 +513,7 @@ fn sequence_settings_dialog_shows_the_sequence() {
     d.frames(3);
     for (id, shown) in [
         ("sequenceSettings.name", "Main Edit"),
-        ("sequenceSettings.editingMode", "Custom"),
+        ("sequenceSettings.editingMode", "HD 1080p 23.976"),
         ("sequenceSettings.timebase", "23.976 frames/second"),
         ("sequenceSettings.width", "1920"),
         ("sequenceSettings.height", "1080"),
@@ -601,6 +601,49 @@ fn sequence_settings_dialog_applies_in_one_undo_step() {
     assert_eq!(*d.app().session.project, before, "one undo step for the whole dialog");
 }
 
+/// Pixel Aspect Ratio is editable for an existing sequence: the named ratios (Interpret Footage's
+/// list, with the exact 1.33x squeeze apart from 4:3) and Custom; OK changes it in one undo step.
+#[test]
+fn sequence_settings_dialog_changes_the_pixel_aspect_ratio() {
+    let mut d = Driver::demo();
+    let before = (*d.app().session.project).clone();
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(10);
+    d.click("sequenceSettings.par");
+    let options = d.ids("sequenceSettings.par.option.");
+    for id in ["1x1", "133x100", "4x3", "3x2", "2x1", "10x11", "custom"] {
+        assert!(options.iter().any(|i| i == &format!("sequenceSettings.par.option.{id}")), "{id} missing: {options:?}");
+    }
+    d.click("sequenceSettings.par.option.133x100");
+    d.frames(2);
+    assert_eq!(d.label("sequenceSettings.par"), "Anamorphic 1.33x, exact (1.33)");
+    // 1920 x 1080 with 1.33 pixels shows 2554 wide
+    assert_eq!(d.label("sequenceSettings.aspect"), "2.36:1");
+    d.click("sequenceSettings.ok");
+    assert!(d.ids("sequenceSettings.").is_empty(), "dialog closed");
+    assert_eq!(d.app().session.active_sequence().unwrap().settings.par, (133, 100));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(*d.app().session.project, before, "one undo step");
+    // Custom: two numbers, sent in lowest terms
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(10);
+    d.click("sequenceSettings.par");
+    d.click("sequenceSettings.par.option.custom");
+    d.frames(2);
+    assert!(d.ids("sequenceSettings.par.num").iter().any(|i| i == "sequenceSettings.par.num"));
+    d.app().ui.sequence_settings.par = (12, 10);
+    d.frames(2);
+    assert_eq!(d.label("sequenceSettings.par"), "Custom (1.2000)");
+    d.click("sequenceSettings.ok");
+    assert_eq!(d.app().session.active_sequence().unwrap().settings.par, (6, 5));
+    // a sequence with a ratio the list doesn't name opens on Custom
+    d.ok("ui.menu.invoke", json!({"id": "sequence.settings"}));
+    d.frames(10);
+    assert_eq!(d.label("sequenceSettings.par"), "Custom (1.2000)");
+    assert_eq!(d.label("sequenceSettings.par.den"), "5");
+    d.click("sequenceSettings.cancel");
+}
+
 /// The General tab's Sequence Name renames the sequence (its Project panel item) together with
 /// the other settings, in the same undo step; a blank name keeps the old one.
 #[test]
@@ -646,10 +689,27 @@ fn new_sequence_opens_its_dialog() {
     assert_eq!(r["dialog"], "newSequence", "{r}");
     d.frames(10);
     assert_eq!(sequences(&mut d), n0, "nothing is made before OK");
+    // it opens on Sequence Presets with the default preset chosen; 6K and UHD presets are offered
+    assert_eq!(d.label("sequenceSettings.presetGroup.6K"), "6K");
+    assert!(d.ids("sequenceSettings.preset.HD 1080p").iter().any(|i| i == "sequenceSettings.preset.HD 1080p 23.976"), "the default preset's group is open");
+    d.click("sequenceSettings.presetGroup.HD"); // fold HD so the 6K rows are in view
+    d.click("sequenceSettings.presetGroup.6K");
+    d.frames(2);
+    let six_k = d.ids("sequenceSettings.preset.6K");
+    assert!(six_k.iter().any(|i| i == "sequenceSettings.preset.6K 16:9 6048x3402 59.94"), "{six_k:?}");
+    assert!(six_k.iter().any(|i| i == "sequenceSettings.preset.6K Anamorphic 1.33x 6048x3402 23.976"), "{six_k:?}");
+    d.click("sequenceSettings.preset.6K Anamorphic 1.33x 6048x3402 23.976");
+    d.frames(2);
+    assert!(d.label("sequenceSettings.presetDescription").contains("8064 x 3402"), "{}", d.label("sequenceSettings.presetDescription"));
+    d.snapshot("new-sequence-presets", "sequenceSettings.");
+    d.click("sequenceSettings.tab.general");
+    assert_eq!(d.label("sequenceSettings.editingMode"), "6K Anamorphic 1.33x 6048x3402 23.976");
+    assert_eq!((d.label("sequenceSettings.width"), d.label("sequenceSettings.height")), ("6048".to_string(), "3402".to_string()));
+    assert_eq!(d.label("sequenceSettings.par"), "4:3 / HD Anamorphic 1080 (1.3333)");
     assert_eq!(d.label("sequenceSettings.name"), format!("Sequence {:02}", n0 + 1));
     assert_eq!(d.label("sequenceSettings.timebase"), "23.976 frames/second");
     assert!(d.ids("sequenceSettings.tab.").iter().any(|i| i == "sequenceSettings.tab.tracks"));
-    assert!(d.ids("sequenceSettings.tab.color").is_empty(), "New Sequence has General and Tracks");
+    assert!(d.ids("sequenceSettings.tab.color").is_empty(), "New Sequence has Sequence Presets, General and Tracks");
     d.click("sequenceSettings.tab.tracks");
     assert_eq!(d.label("sequenceSettings.tracks.video"), "3");
     assert_eq!(d.label("sequenceSettings.tracks.audio"), "3");
@@ -671,8 +731,22 @@ fn new_sequence_opens_its_dialog() {
     let q = d.app().session.active_sequence().unwrap().clone();
     assert_eq!((q.settings.width, q.settings.height, q.settings.frame_rate), (1080, 1920, filmcraft_engine::time::FrameRate::FPS_30));
     assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (2, 4));
+    // the picture no longer matches the chosen preset, but its pixel aspect ratio was kept
+    assert_eq!((q.settings.par, q.settings.preset.as_str()), ((4, 3), "1080x1920 30"));
     d.exec("edit.undo", json!({}));
     assert_eq!(sequences(&mut d), n0, "one undo step");
+    // a preset taken as it is names the sequence
+    d.ok("ui.menu.invoke", json!({"id": "file.newSequence"}));
+    d.frames(10);
+    d.click("sequenceSettings.presetGroup.HD");
+    d.click("sequenceSettings.presetGroup.UHD 4K");
+    d.frames(2);
+    d.click("sequenceSettings.preset.UHD 2160p 59.94");
+    d.click("sequenceSettings.ok");
+    let q = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!((q.settings.width, q.settings.height, q.settings.preset.as_str(), q.settings.drop_frame), (3840, 2160, "UHD 2160p 59.94", true));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(sequences(&mut d), n0);
     // Cancel makes nothing
     d.ok("ui.menu.invoke", json!({"id": "file.newSequence"}));
     d.frames(10);
@@ -805,6 +879,7 @@ fn new_sequence_stays_open_on_invalid_frame_size() {
     let n0 = d.app().session.project.sequences().count();
     d.ok("ui.menu.invoke", json!({"id": "file.newSequence"}));
     d.frames(10);
+    d.click("sequenceSettings.tab.general");
     {
         let s = &mut d.app().ui.sequence_settings;
         s.name = "Keep Me".into();

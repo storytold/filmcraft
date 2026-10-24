@@ -204,6 +204,18 @@ pub(crate) fn hdr_output(working_hdr: bool, sdr: bool, format: Format, hdr_avail
         }
 }
 
+/// A video sample entry with the export's non-square pixel aspect as its `pasp` (players read the
+/// container's ratio; the codec's own VUI, where the encoder writes one, says the same).
+fn with_pixel_aspect(mut entry: SampleEntry, settings: &ExportSettings) -> SampleEntry {
+    if let Some(v) = entry.video.as_mut()
+        && v.pixel_aspect.is_none()
+        && let Some(par) = settings.pixel_aspect.and_then(filmcraft_project::checked_par).filter(|(n, d)| n != d)
+    {
+        v.pixel_aspect = Some(par);
+    }
+    entry
+}
+
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
     video_factories()
         .read()
@@ -230,6 +242,13 @@ impl Exporter {
         let pipe = q.settings.color;
         let hdr_out = hdr_output(pipe.working.is_hdr(), settings.sdr, settings.video_format(), crate::hdr_available);
         let mut settings = settings.clone();
+        // Match Source pixels: a sequence with non-square pixels (an anamorphic sequence from a
+        // 1.33x clip) exports them as they are, the ratio signalled in the stream and container
+        if settings.pixel_aspect.is_none()
+            && let Some(par) = filmcraft_project::checked_par(q.settings.par).filter(|(n, d)| n != d)
+        {
+            settings.pixel_aspect = Some(par);
+        }
         settings.signal = match (hdr_out, pipe.working) {
             (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
             (true, _) => ColorSignal::HLG,
@@ -410,7 +429,7 @@ impl Exporter {
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
         let mut mux = Mp4Writer::new(file, opts).map_err(|e| ExportError::Io(e.to_string()))?;
-        let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
+        let mut vcfg = TrackConfig::new(with_pixel_aspect(self.venc.sample_entry(), &self.settings), self.venc.timescale());
         vcfg.media_start = self.venc.media_start();
         self.vt = mux.add_track(vcfg).map_err(|e| ExportError::Io(e.to_string()))?;
         self.at = match (&self.audio, &self.aenc) {

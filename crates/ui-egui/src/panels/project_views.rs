@@ -245,6 +245,15 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("file.newSequence".into(), json!({"fromItem": id.0})));
         ui.close();
     }
+    // an anamorphic clip can also be edited desqueezed, in square pixels at its display size
+    // (media only: file.newSequence takes the settings of a media item, not a subclip or sequence)
+    if matches!(kind, ItemKind::Media(_))
+        && app.session.project.source_par(id).is_some_and(|p| p != (1, 1))
+        && ui.button(tl!("New Desqueezed Sequence From Clip")).clicked()
+    {
+        actions.push(("file.newSequence".into(), json!({"fromItem": id.0, "desqueeze": true})));
+        ui.close();
+    }
     if ui.button(tl!("Duplicate")).clicked() {
         actions.push(("project.select".into(), sel()));
         actions.push(("edit.duplicate".into(), json!({})));
