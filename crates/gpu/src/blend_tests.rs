@@ -13,7 +13,7 @@ use filmcraft_render::plan::execute_cpu;
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = crate::adapter::native_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features: optional_features(&adapter), ..Default::default() })).ok()
 }
 
 pub(crate) fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
