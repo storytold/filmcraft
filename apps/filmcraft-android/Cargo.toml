@@ -1,0 +1,43 @@
+[package]
+name = "filmcraft-android"
+description = "FilmCraft on Android: eframe + wgpu shell on GameActivity, reusing the desktop engine and egui UI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The workspace forbids `unsafe`; the Android entry point needs `#[unsafe(no_mangle)]`, so this
+# crate follows the `crates/platform` pattern: `deny`, with `#[allow(unsafe_code)]` on the entry.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"
+
+[lib]
+name = "main"
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+filmcraft-engine = { workspace = true }
+filmcraft-ui-egui = { workspace = true }
+filmcraft-codecs = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-isobmff = { workspace = true }
+filmcraft-platform = { workspace = true }
+egui = { workspace = true }
+serde_json = { workspace = true }
+jni = "0.22"
+ndk-context = "0.1"
+eframe = { workspace = true, default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "android-game-activity",
+] }
+winit = { version = "0.30", default-features = false }
+log = { workspace = true }
+android_logger = "0.15"

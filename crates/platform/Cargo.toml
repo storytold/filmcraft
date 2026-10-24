@@ -58,6 +58,13 @@ windows = { version = "0.62", features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8"
 
+# Android: AMediaCodec / AMediaFormat through the safe `ndk` bindings (no `unsafe` of ours).
+[target.'cfg(target_os = "android")'.dependencies]
+filmcraft-color = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-time = { workspace = true }
+ndk = { version = "0.9", features = ["media", "api-level-31"] }
+
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
 filmcraft-media = { workspace = true }

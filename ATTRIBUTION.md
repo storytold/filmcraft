@@ -172,3 +172,24 @@ SHA-256 (`crates/speech/src/models.rs`, `docs/transcripts.md`).
 | Asset | Author | Source | Licence |
 |---|---|---|---|
 | Whisper tiny / base / small speech-recognition weights (`model.safetensors`, `config.json`, `generation_config.json`, `tokenizer.json`) | OpenAI | `https://huggingface.co/openai/whisper-{tiny,base,small}` (revisions `169d4a43…`, `e37978b9…`, `973afd24…`); weights released with `https://github.com/openai/whisper` | MIT (weights and code, github.com/openai/whisper); the Hugging Face conversion is labelled Apache-2.0 |
+
+## Android launcher icons and self-test fixtures (filmcraft)
+
+`apps/filmcraft-android` ships the Android Studio new-project template's default launcher art (as a
+stand-in -- the app's own brand icon is not in this repository), plus the fixture the on-device
+start-up self-test decodes.
+
+| Asset | Author | Source | Licence |
+|---|---|---|---|
+| `apps/filmcraft-android/android/app/src/main/ic_launcher-playstore.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/drawable/ic_launcher_foreground.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-hdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-mdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
+| `apps/filmcraft-android/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png` | The Android Open Source Project | Android Studio new-project template, unmodified | Apache-2.0 |
