@@ -354,15 +354,17 @@ fn audio_fx_chain_is_continuous_and_random_access_matches() {
 #[test]
 fn offline_slate_is_deterministic_and_marked() {
     use crate::offline::{FIELD, OfflineReason, slate_rgba8};
-    let a = slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::Missing);
-    assert_eq!(a, slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::Missing));
-    assert_ne!(a, slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::MadeOffline), "the headline names the reason");
+    let a = slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::Missing).unwrap();
+    assert_eq!(a, slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::Missing).unwrap());
+    assert_ne!(a, slate_rgba8(640, 360, "A001_C002.mov", OfflineReason::MadeOffline).unwrap(), "the headline names the reason");
     // corners are the red field / stripes, opaque
     let px = |x: usize, y: usize| &a[(y * 640 + x) * 4..(y * 640 + x) * 4 + 4];
     assert_eq!(px(0, 359)[3], 255);
     assert!(px(0, 359)[0] >= FIELD[0] && px(0, 359)[1] <= 0x20, "{:?}", px(0, 359));
     // tiny sizes work (thumbnails)
-    assert_eq!(slate_rgba8(8, 4, "x", OfflineReason::Unreadable).len(), 8 * 4 * 4);
+    assert_eq!(slate_rgba8(8, 4, "x", OfflineReason::Unreadable).unwrap().len(), 8 * 4 * 4);
+    assert!(slate_rgba8(1280, 1280, "x", OfflineReason::Missing).is_err());
+    assert!(slate_rgba8(usize::MAX, usize::MAX, "x", OfflineReason::Missing).is_err());
     if let Some(p) = std::env::var_os("FILMCRAFT_SLATE_PNG") {
         ::image::save_buffer(p, &a, 640, 360, ::image::ExtendedColorType::Rgba8).unwrap();
     }
