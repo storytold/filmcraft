@@ -17,14 +17,18 @@
 pub mod color;
 pub mod demosaic;
 pub mod ljpeg;
+pub mod options;
 pub mod process;
 pub mod raw;
+#[cfg(any(test, feature = "writer"))]
+pub mod reference;
 pub mod tiff;
 #[cfg(any(test, feature = "writer"))]
 pub mod writer;
 
 use color::{Calibration, M3, V3};
 use demosaic::Pattern;
+pub use options::{DemosaicQuality, Highlights, OutputSpace, ProcessOptions, WhiteBalance};
 use process::Params;
 use raw::{PHOTOMETRIC_CFA, RawImage};
 use tiff::{Entry, Ifd, Tiff, tags};
@@ -329,12 +333,37 @@ impl<'a> Dng<'a> {
         raw::read(&self.tiff, self.raw_ifd())
     }
 
-    /// Develop the main image to scene-linear Rec. 709.
+    /// The as-shot white balance as (temperature in kelvin, tint), for a settings panel to start
+    /// from ([`WhiteBalance::Custom`] with these values develops like [`WhiteBalance::AsShot`]).
+    /// `None` for monochrome files and files without a ColorMatrix.
+    pub fn as_shot_temperature_tint(&self) -> Result<Option<(f64, f64)>> {
+        let calibration = self.calibration()?;
+        if calibration.color_matrix.iter().all(Option::is_none) || self.cfa()?.is_none() && raw::layout(&self.tiff, self.raw_ifd())?.samples_per_pixel == 1 {
+            return Ok(None);
+        }
+        Ok(color::xy_to_temperature_tint(calibration.solve()?.white_xy))
+    }
+
+    /// Develop the main image to scene-linear Rec. 709 as the file says
+    /// ([`ProcessOptions::default`]).
     pub fn develop(&self) -> Result<Image> {
+        self.develop_with(&ProcessOptions::default())
+    }
+
+    /// Develop the main image with raw settings.
+    pub fn develop_with(&self, o: &ProcessOptions) -> Result<Image> {
         let info = self.info()?;
         let p = self.params()?;
         let raw = self.raw()?;
-        let calibration = self.calibration()?;
+        let mut calibration = self.calibration()?;
+        calibration.baseline_exposure += o.exposure_stops();
+        if let WhiteBalance::Custom { temperature, tint } = o.white_balance
+            && calibration.color_matrix.iter().any(Option::is_some)
+        {
+            let xy = color::temperature_tint_to_xy(temperature, tint).ok_or(Error::Unsupported("a non-finite white balance".into()))?;
+            calibration.as_shot_neutral = None;
+            calibration.as_shot_white_xy = Some(xy);
+        }
         let solved = if p.cfa.is_none() && raw.samples_per_pixel == 1 {
             // monochrome: no colour, only the exposure
             let e = 2f64.powf(calibration.baseline_exposure.clamp(-16.0, 16.0));
@@ -342,7 +371,7 @@ impl<'a> Dng<'a> {
         } else {
             calibration.solve()?
         };
-        let d = process::develop(&raw, &p, &solved.neutral, &solved.matrix)?;
+        let d = process::develop_with(&raw, &p, &solved.neutral, &solved.matrix, o)?;
         Ok(Image { info, width: d.width, height: d.height, rgba: d.rgba })
     }
 }
@@ -350,6 +379,11 @@ impl<'a> Dng<'a> {
 /// Parse and develop a DNG file.
 pub fn decode(bytes: &[u8]) -> Result<Image> {
     Dng::parse(bytes)?.develop()
+}
+
+/// Parse and develop a DNG file with raw settings.
+pub fn decode_with(bytes: &[u8], o: &ProcessOptions) -> Result<Image> {
+    Dng::parse(bytes)?.develop_with(o)
 }
 
 /// Parse a DNG file's metadata.

@@ -178,6 +178,10 @@ pub struct Interpretation {
     /// is edited into a sequence. None = one stereo clip of the first two channels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_channels: Option<AudioChannelMap>,
+    /// Clip ▸ Source Settings… for camera raw footage (DNG stills, CinemaDNG folders and MXF):
+    /// how the raw pictures are developed. None = as the file says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<filmcraft_media::raw::RawSettings>,
 }
 
 /// Modify ▸ Audio Channels: the clip channel format and, per audio clip, the source channels it

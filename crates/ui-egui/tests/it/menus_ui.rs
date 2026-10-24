@@ -1,7 +1,8 @@
 //! Headless UI tests of the M3.11 menu long tail: Find, Create Search Bin (and its Project panel
 //! rows), Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence,
 //! Normalize Mix Track, Dynamic Audio Waveforms, Reveal Log Files and the System Compatibility
-//! Report, all driven by automation id through the control channel.
+//! Report, and Clip ▸ Source Settings… for camera raw footage, all driven by automation id through
+//! the control channel.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -304,6 +305,74 @@ fn color_matte_dialog_picks_and_changes_the_color() {
     d.exec("project.select", json!({"items": [seq]}));
     assert_eq!(d.call("ui.menu.invoke", json!({"id": "project.matteColor"}))["ok"], json!(false));
     assert!(!d.dialog_open());
+}
+
+/// A 24 × 16 RGGB DNG of a flat grey (12-bit, lossless JPEG): camera raw footage.
+fn dng() -> Vec<u8> {
+    use filmcraft_dng::tiff::tags;
+    use filmcraft_dng::writer::{Compression, Options, Value, write};
+    let o = Options {
+        width: 24,
+        height: 16,
+        bits: 12,
+        compression: Compression::LosslessJpeg { predictor: 1, components: 2, restart_lines: 0, pt: 0 },
+        raw_tags: vec![(tags::WHITE_LEVEL, Value::Short(vec![4095]))],
+        main_tags: vec![(tags::AS_SHOT_NEUTRAL, Value::rationals(&[1.0, 1.0, 1.0]))],
+        ..Default::default()
+    };
+    write(&vec![1000u16; 24 * 16], &o)
+}
+
+/// Clip ▸ Source Settings… edits camera raw footage (white balance, exposure, demosaic) as one
+/// undo step; for other footage it only says why there are no source settings.
+#[test]
+fn source_settings_dialog_for_camera_raw() {
+    let mut d = Driver::new();
+    let dir = std::env::temp_dir().join(format!("filmcraft-source-settings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("A001_C001_still.dng");
+    std::fs::write(&path, dng()).unwrap();
+    let r = d.exec("file.import", json!({"paths": [path.to_string_lossy()]}));
+    let id = r["items"][0].as_u64().unwrap();
+    d.exec("project.select", json!({"items": [id]}));
+    assert_eq!(d.menu("clip.sourceSettings")["dialog"], "sourceSettings");
+    for k in ["whiteBalance.asShot", "whiteBalance.custom", "exposure", "demosaic.high", "demosaic.fast", "reset", "ok", "cancel"] {
+        assert!(d.has(&format!("sourceSettings.{k}")), "{k}");
+    }
+    assert!(!d.has("sourceSettings.temperature"), "As Shot has no temperature control");
+    d.click("sourceSettings.whiteBalance.custom");
+    assert!(d.has("sourceSettings.temperature") && d.has("sourceSettings.tint"));
+    d.ok("ui.set", json!({"menuDialog": {"temperature": 4000.0, "tint": 5.0, "exposure": 1.0}}));
+    d.frames(2);
+    d.click("sourceSettings.demosaic.fast");
+    let undo = d.app().session.history.undo.len();
+    d.click("sourceSettings.ok");
+    assert!(!d.dialog_open());
+    let raw = d.app().session.project.item(ItemId(id)).unwrap().as_media().unwrap().interpret.raw.unwrap();
+    assert_eq!(raw.white_balance, filmcraft_dng::WhiteBalance::Custom { temperature: 4000.0, tint: 5.0 });
+    assert_eq!((raw.exposure, raw.demosaic), (1.0, filmcraft_dng::DemosaicQuality::Fast));
+    assert_eq!(d.app().session.history.undo.len(), undo + 1);
+    // reopened, the dialog shows the item's settings; Reset to As Shot + OK develops as the file says
+    d.menu("clip.sourceSettings");
+    assert!(d.has("sourceSettings.temperature"));
+    assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().params["exposure"], 1.0);
+    d.click("sourceSettings.reset");
+    d.click("sourceSettings.ok");
+    assert!(d.app().session.project.item(ItemId(id)).unwrap().as_media().unwrap().interpret.raw.is_none());
+    // Cancel changes nothing
+    d.menu("clip.sourceSettings");
+    d.click("sourceSettings.whiteBalance.custom");
+    d.click("sourceSettings.cancel");
+    assert!(!d.dialog_open());
+    assert!(d.app().session.project.item(ItemId(id)).unwrap().as_media().unwrap().interpret.raw.is_none());
+    // other footage: an information dialog
+    let ocean = d.item_named("Ocean_Sunset.mp4");
+    d.exec("project.select", json!({"items": [ocean]}));
+    d.menu("clip.sourceSettings");
+    assert!(d.has("sourceSettings.ok") && !d.has("sourceSettings.cancel") && !d.has("sourceSettings.exposure"));
+    d.click("sourceSettings.ok");
+    assert!(!d.dialog_open());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

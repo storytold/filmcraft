@@ -30,7 +30,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | DV / DVCPRO / DV100 | decode + encode | none | none | — | 0% | 15–25 h |
 | MPEG-4 Part 2 | decode | none | none | — | 0% | 10–20 h |
 | WMV / VC-1 | decode, encode on Windows | none | none | — | 0% | 20–35 h |
-| CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; **no** lossy / JPEG XL DNG, MXF-wrapped CinemaDNG, opcode lists or Raw settings UI | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values | 60% | 10–20 h |
+| CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; CinemaDNG in MXF (frame-wrapped DNG, the specification's provisional labels; synthetic files only, no camera file tested); Clip ▸ Source Settings… (white balance as shot or temperature / tint, exposure, demosaic quality; output scene-linear Rec. 709), reduced-resolution development for ½–⅛ playback; **no** lossy / JPEG XL DNG, opcode lists or highlight recovery | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values; MXF frames and Source Settings checked against the synthetic DNGs' known values | 70% | 10–20 h |
 | Camera RAW: R3D (incl. R3D NE), ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW (plug-in) | decode (vendor SDKs) | none (#383) | — | — | 0% | 50–90 h for the ones with public specs; vendor-SDK-only formats need an owner decision |
 | GIF (animated) | encode | decode as still | encode | — | 80% | — |
 | Uncompressed / v210 / RGB | decode + encode (AVI, MOV) | partial (MOV PCM-style video not verified) | none | — | 30% | 8–15 h |
@@ -61,5 +61,6 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-11 | minor | CinemaDNG in MXF and camera raw Source Settings (#1065) |
 | 2026-10-11 | minor | CinemaDNG / DNG decode (#1065) |
 | 2026-10-10 | major | Created: codec-by-codec comparison with Premiere 26.5.2 from the codec crates' READMEs, the export format registry and the installed bundle's listings |

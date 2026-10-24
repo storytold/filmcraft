@@ -1846,6 +1846,7 @@ dependencies = [
  "filmcraft-avi",
  "filmcraft-bitstream",
  "filmcraft-color",
+ "filmcraft-dng",
  "filmcraft-dnx",
  "filmcraft-frame",
  "filmcraft-h264",
@@ -1887,6 +1888,8 @@ version = "0.12.0"
 dependencies = [
  "filmcraft-dng",
  "rayon",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -2137,6 +2140,7 @@ dependencies = [
  "png",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -2351,6 +2355,7 @@ dependencies = [
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-dng",
  "filmcraft-edit",
  "filmcraft-engine",
  "filmcraft-export",

@@ -45,4 +45,6 @@ symphonia = { version = "0.5.5", default-features = false, features = ["aac", "m
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+# synthetic DNG frames for the CinemaDNG-in-MXF tests
+filmcraft-dng = { workspace = true, features = ["writer"] }
 serde_json = { workspace = true }

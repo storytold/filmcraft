@@ -2,9 +2,10 @@
 //! Scratch Disks / Ingest Settings), Get Media File Properties, Edit Offline, Source Settings,
 //! Update Metadata, Automate to Sequence, Scene Edit Detection, Normalize Mix Track, Simplify
 //! Sequence, Transcribe Sequence, Save as Template, Add Flash Cue Marker and the System
-//! Compatibility Report; plus the frontend side of Edit Original / Reveal Log Files (the OS
-//! opener), Reveal in Finder, Generate Audio Waveform (the timeline's peak cache), Import from
-//! Media Browser (the Media Browser selection) and View ▸ Dynamic Audio Waveforms.
+//! Compatibility Report (Source Settings edits camera raw footage, see `source_settings_ui`);
+//! plus the frontend side of Edit Original / Reveal Log Files (the OS opener), Reveal in Finder,
+//! Generate Audio Waveform (the timeline's peak cache), Import from Media Browser (the Media
+//! Browser selection) and View ▸ Dynamic Audio Waveforms.
 //!
 //! The open dialog lives in `UiState::extras.dialog` (serde, like `clip_dialogs`): the engine
 //! command it runs and the parameters being edited, so agents open it from the menu, change
@@ -321,7 +322,10 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
             }
             (p, Value::Null)
         }
-        "clip.sourceSettings" => (json!({}), s.execute("clip.sourceSettings", json!({})).map_err(|e| e.to_string())?),
+        "clip.sourceSettings" => {
+            let info = s.execute("clip.sourceSettings", json!({})).map_err(|e| e.to_string())?;
+            (source_settings_params(&info), info)
+        }
         "clip.updateMetadata" => {
             let n = s.state.project_selection.len().max(s.state.selection.len());
             (json!({}), json!({"count": n}))
@@ -365,6 +369,72 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         }
         _ => (json!({}), Value::Null),
     })
+}
+
+/// The Source Settings dialog's parameters for camera raw footage (`clip.sourceSettings`'s
+/// description `info`): the item's settings, a custom white balance starting from the file's
+/// as-shot one. Empty for other footage.
+fn source_settings_params(info: &Value) -> Value {
+    if info["raw"] != true {
+        return json!({});
+    }
+    let st = &info["settings"];
+    let pick = |k: &str, fallback: f64| st[k].as_f64().or_else(|| info["asShot"][k].as_f64()).unwrap_or(fallback);
+    json!({
+        "items": [info["item"]],
+        "whiteBalance": st["whiteBalance"],
+        "temperature": pick("temperature", 6500.0).round(),
+        "tint": pick("tint", 0.0).round(),
+        "exposure": st["exposure"],
+        "highlights": st["highlights"],
+        "demosaic": st["demosaic"],
+        "output": st["output"],
+    })
+}
+
+/// Source Settings of camera raw footage (Premiere's Source Settings for raw formats): white
+/// balance (As Shot or a custom temperature and tint), exposure, highlights, demosaic quality and
+/// the output colour space. Automation ids: `sourceSettings.whiteBalance.<asShot|custom>`,
+/// `.temperature`, `.tint`, `.exposure`, `.demosaic.<fast|high>`, `.reset`, `.ok`, `.cancel`.
+fn source_settings_ui(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, info: &Value) {
+    ui.label(RichText::new(info["pixelFormat"].as_str().unwrap_or_default()).weak());
+    ui.separator();
+    ui.label(RichText::new(tl!("White Balance")).strong());
+    radios(ui, elems, pre, p, "whiteBalance", tl!("White balance:"), &[("asShot", tl!("As Shot")), ("custom", tl!("Custom"))]);
+    if p["whiteBalance"] == "custom" {
+        let range = |k: &str, lo: f64, hi: f64| info["ranges"][k][0].as_f64().unwrap_or(lo)..=info["ranges"][k][1].as_f64().unwrap_or(hi);
+        number(ui, elems, pre, p, "temperature", tl!("Temperature:"), range("temperature", 2000.0, 15000.0), " K");
+        number(ui, elems, pre, p, "tint", tl!("Tint:"), range("tint", -150.0, 150.0), "");
+    } else if let (Some(t), Some(n)) = (info["asShot"]["temperature"].as_f64(), info["asShot"]["tint"].as_f64()) {
+        ui.label(RichText::new(tlf!("As shot: {temperature} K, tint {tint}", temperature = t.round(), tint = n.round())).weak());
+    }
+    ui.label(RichText::new(tl!("Tone")).strong());
+    let lo = info["ranges"]["exposure"][0].as_f64().unwrap_or(-8.0);
+    let hi = info["ranges"]["exposure"][1].as_f64().unwrap_or(8.0);
+    ui.horizontal(|ui| {
+        ui.label(tl!("Exposure:"));
+        let mut v = p["exposure"].as_f64().unwrap_or(0.0);
+        let r = ui.add(egui::Slider::new(&mut v, lo..=hi).step_by(0.05).suffix(tl!(" stops")));
+        push(elems, format!("{pre}.exposure"), &r, "Exposure");
+        if r.changed() {
+            p["exposure"] = json!(v);
+        }
+    });
+    ui.label(tl!("Highlights: clipped (highlight recovery is not available yet)"));
+    ui.label(RichText::new(tl!("Decode Quality")).strong());
+    radios(ui, elems, pre, p, "demosaic", tl!("Demosaic:"), &[("high", tl!("High (gradient-corrected)")), ("fast", tl!("Fast (bilinear)"))]);
+    ui.label(tl!("Output color space: scene-linear Rec. 709"));
+    let r = ui.button(tl!("Reset to As Shot"));
+    push(elems, format!("{pre}.reset"), &r, "Reset");
+    if r.clicked() {
+        p["whiteBalance"] = json!("asShot");
+        p["exposure"] = json!(0.0);
+        p["demosaic"] = json!("high");
+        if let (Some(t), Some(n)) = (info["asShot"]["temperature"].as_f64(), info["asShot"]["tint"].as_f64()) {
+            p["temperature"] = json!(t.round());
+            p["tint"] = json!(n.round());
+        }
+    }
 }
 
 fn check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str) {
@@ -461,7 +531,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let mut browse: Option<String> = None;
-    let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
+    let info_only = match d.command.as_str() {
+        "file.mediaProperties" | "help.systemCompatibilityReport" => true,
+        // camera raw footage has settings to change; other footage only says why it has none
+        "clip.sourceSettings" => d.info["raw"] != true,
+        _ => false,
+    };
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("menu-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
@@ -685,7 +760,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             "clip.sourceSettings" => {
                 ui.label(tlf!("Codec: {codec}", codec = d.info["codec"].as_str().unwrap_or_default()));
-                ui.label(RichText::new(d.info["message"].as_str().unwrap_or_default()).weak());
+                if d.info["raw"] == true {
+                    source_settings_ui(ui, &mut elems, pre, p, &d.info);
+                } else {
+                    ui.label(RichText::new(d.info["message"].as_str().unwrap_or_default()).weak());
+                }
             }
             "clip.updateMetadata" => {
                 ui.label(tlf!("Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?", n = d.info["count"]));
@@ -891,6 +970,18 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             if p["ingest"] != d.info["ingest"] {
                 s.execute("project.ingestSettings", p["ingest"].clone()).map_err(|e| e.to_string())?;
             }
+            Ok(None)
+        }
+        "clip.sourceSettings" => {
+            // the as-shot white balance takes no temperature / tint
+            let mut q = p.clone();
+            if q["whiteBalance"] == "asShot"
+                && let Some(m) = q.as_object_mut()
+            {
+                m.remove("temperature");
+                m.remove("tint");
+            }
+            s.execute("clip.sourceSettings", q).map_err(|e| e.to_string())?;
             Ok(None)
         }
         "file.saveAsTemplate" => {

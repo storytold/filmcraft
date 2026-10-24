@@ -13,7 +13,7 @@ workspace = true
 filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
-filmcraft-dng = { workspace = true }
+filmcraft-dng = { workspace = true, features = ["serde"] }
 rayon = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +21,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
-filmcraft-dng = { workspace = true, features = ["writer"] }
+filmcraft-dng = { workspace = true, features = ["writer", "serde"] }
+serde_json = { workspace = true }
 # APNG fixtures for the animated-image tests (the image crate does not encode APNG)
 png = "0.18"
