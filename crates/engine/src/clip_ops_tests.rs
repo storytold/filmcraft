@@ -379,6 +379,24 @@ fn modify_audio_channels_and_breakout_to_mono() {
     assert!(s.execute("clip.breakoutToMono", json!({})).is_err(), "no audio");
 }
 
+/// #1845: with no project item selected, a `channels`-less call (a stray `format` included)
+/// used to fall into the timeline-clip branch anyway and reset `source_channels` to `[]` via
+/// `unwrap_or_default()`, instead of being rejected. The map set by the previous `channels` call
+/// must survive a later `format`-only call under the same (empty) project selection.
+#[test]
+fn audio_channels_rejects_a_channel_less_call_with_no_item_selected() {
+    let mut s = demo();
+    s.state.project_selection.clear();
+    let a1 = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    s.state.selection = vec![a1];
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    assert_eq!(clip(&s, a1.0).source_channels, vec![1]);
+    assert!(s.execute("clip.audioChannels", json!({"format": null})).is_err(), "nothing to do: no item selected and no `channels`");
+    assert_eq!(clip(&s, a1.0).source_channels, vec![1], "the existing map must survive a rejected call");
+    assert!(s.execute("clip.audioChannels", json!({})).is_err(), "same with no params at all");
+    assert_eq!(clip(&s, a1.0).source_channels, vec![1]);
+}
+
 #[test]
 fn modify_timecode_and_reset() {
     let mut s = demo();
