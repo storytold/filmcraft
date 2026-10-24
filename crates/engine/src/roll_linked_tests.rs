@@ -45,6 +45,31 @@ fn roll_moves_linked_audio_cut() {
     assert_eq!(range(&s, a1), (f(60), f(96)));
 }
 
+/// The delta the Timeline previews while a cut is rolled is the one `timeline.roll` applies on
+/// release: rolled far to the left, the cut stops where the right clip's media starts, 12 frames
+/// before its In point.
+#[test]
+fn roll_delta_stops_at_the_start_of_the_media() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Roll", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    for (frame, source_in) in [(0, 48), (48, 12)] {
+        s.execute("timeline.place", json!({"item": item.0, "frame": frame, "sourceIn": f(source_in).0, "duration": f(48).0})).unwrap();
+    }
+    let q = s.active_sequence().unwrap();
+    let (left, right) = (q.video_tracks[0].items[0].id, q.video_tracks[0].items[1].id);
+    let far = Tick(-3600 * filmcraft_time::TICKS_PER_SECOND);
+    let shown = crate::commands::roll_delta(&s, left, right, far).unwrap();
+    assert_eq!(shown, -f(12), "clamped to the media before the right clip's In point");
+    assert_eq!(crate::commands::roll_delta(&s, left, right, -f(5)).unwrap(), -f(5), "a roll within the media is not clamped");
+    let r = s.execute("timeline.roll", json!({"left": left.0, "right": right.0, "delta": far.0})).unwrap();
+    assert_eq!(r["delta"], json!(shown.0), "the preview and the roll agree");
+    assert_eq!(range(&s, right), (f(36), f(96)));
+}
+
 /// Linked selection off (or unlinked clips) rolls only the given pair and says so.
 #[test]
 fn roll_without_linked_selection_leaves_audio() {

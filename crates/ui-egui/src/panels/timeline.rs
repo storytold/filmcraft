@@ -2691,7 +2691,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }),
             Drag::Roll { left, right, from, .. } => seq.find_item(left).map(|(_, l)| {
                 let target = snap(app, seq, layout, rate.snap_nearest(l.end() + (t_here - from)), &[left, right]);
-                Drag::Roll { left, right, delta: target - l.end(), from }
+                // stop where the roll on release stops: the media, a frame left in each clip and linked
+                // cuts
+                let delta = filmcraft_engine::commands::roll_delta(&app.session, left, right, target - l.end()).unwrap_or(target - l.end());
+                Drag::Roll { left, right, delta, from }
             }),
             Drag::Slip { clip, .. } => {
                 let start = resp.interact_pointer_pos().map(|_| ()).and(ctx.input(|i| i.pointer.press_origin()));

@@ -635,6 +635,32 @@ pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: 
     clamp_trim_linked(q, &with_links(s, &[clip]), edge, mode, delta, &ctx)
 }
 
+/// The delta a roll of every cut in `pairs` can apply together: `delta` clamped by each pair's
+/// media and the frame left in each clip, each tried on a copy of `q`.
+fn clamp_roll_linked(q: &filmcraft_project::Sequence, pairs: &[(ClipId, ClipId)], delta: Tick, ctx: &mut edit::EditCtx) -> Result<Tick> {
+    let mut d = delta;
+    for &(pl, pr) in pairs {
+        let mut probe = q.clone();
+        let x = edit::roll(&mut probe, pl, pr, d, ctx)?;
+        if x.abs() < d.abs() {
+            d = x;
+        }
+    }
+    Ok(d)
+}
+
+/// The delta `timeline.roll` would apply for `delta`, without editing anything: the Timeline's
+/// Rolling Edit drag shows this, so the cut stops where the roll on release stops instead of
+/// following the pointer past the media.
+pub fn roll_delta(s: &Session, left: ClipId, right: ClipId, delta: Tick) -> Result<Tick> {
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
+    let starts = |id: ItemId| crate::media_start(&s.project, id);
+    let mut next = s.project.next_id;
+    let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
+    clamp_roll_linked(q, &linked_roll_pairs(q, left, right, s.state.linked_selection), delta, &mut ctx)
+}
+
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
 /// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
 /// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
@@ -2854,14 +2880,7 @@ fn build() -> Vec<CommandSpec> {
             let (x, n, linked) = s.edit_sequence("Rolling Edit", |q, ctx, _| {
                 let pairs = linked_roll_pairs(q, l, r, follow);
                 let linked = pairs.len() > 1;
-                let mut d = d;
-                for &(pl, pr) in &pairs {
-                    let mut probe = q.clone();
-                    let x = edit::roll(&mut probe, pl, pr, d, ctx)?;
-                    if x.abs() < d.abs() {
-                        d = x;
-                    }
-                }
+                let d = clamp_roll_linked(q, &pairs, d, ctx)?;
                 if d != Tick::ZERO {
                     for &(pl, pr) in &pairs {
                         edit::roll(q, pl, pr, d, ctx)?;
