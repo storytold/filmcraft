@@ -680,7 +680,9 @@ impl Shortcuts {
                     self.bindings = b;
                     self.modified = false;
                 } else {
-                    self.bindings = convert(f.bindings, f.platform);
+                    let mut bindings = convert(f.bindings, f.platform);
+                    drop_control_collisions(&mut bindings, Platform::current());
+                    self.bindings = bindings;
                     self.modified = f.modified;
                 }
                 self.revision += 1;
@@ -848,7 +850,9 @@ impl Shortcuts {
             None => {
                 let path = self.preset_path(name).ok_or("no data directory for custom presets")?;
                 let f = read_file(&path)?;
-                convert(f.bindings, f.platform)
+                let mut bindings = convert(f.bindings, f.platform);
+                drop_control_collisions(&mut bindings, Platform::current());
+                bindings
             }
         };
         let before = self.snapshot();
@@ -903,7 +907,9 @@ impl Shortcuts {
         } else {
             f.name.clone()
         };
-        let bindings: Vec<Binding> = convert(f.bindings, f.platform).into_iter().filter(|b| self.known(&b.command)).collect();
+        let mut bindings: Vec<Binding> = convert(f.bindings, f.platform);
+        drop_control_collisions(&mut bindings, Platform::current());
+        bindings.retain(|b| self.known(&b.command));
         if let Some(p) = self.preset_path(&name) {
             let file = PresetFile { format: FILE_FORMAT.into(), version: 1, name: name.clone(), platform: None, modified: false, bindings: bindings.clone() };
             write_file(&p, &file)?;
