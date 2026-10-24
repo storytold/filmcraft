@@ -255,6 +255,49 @@ fn sequence_settings_timecode_render_quality_and_colour() {
     assert!(empty.execute("sequence.settings", json!({"width":1280})).is_err());
 }
 
+/// With no parameters `sequence.settings` reports the current settings, as `sequence.inspect` does,
+/// and changes nothing: no edit, no undo step (#1540).
+#[test]
+fn sequence_settings_without_params_reports_the_settings() {
+    let mut s = demo();
+    s.execute(
+        "sequence.settings",
+        json!({"fps":29.97,"dropFrame":true,"width":1280,"height":720,"mix":"Mono","sampleRate":44100,"workingSpace":"rec2100-hlg"}),
+    )
+    .unwrap();
+    let before = (*s.project).clone();
+    let history = s.history.undo.len();
+    let r = s.execute("sequence.settings", json!({})).unwrap();
+    assert_eq!(*s.project, before);
+    assert_eq!(s.history.undo.len(), history, "no undo step");
+    assert_eq!(r, json!({"settings": s.execute("sequence.inspect", json!({})).unwrap()["settings"]}), "{r}");
+    assert_eq!((r["settings"]["width"].clone(), r["settings"]["height"].clone()), (json!(1280), json!(720)), "{r}");
+}
+
+/// Reporting the settings is a query: like `sequence.inspect` it is not journaled; an edit is.
+#[test]
+fn sequence_settings_report_is_not_journaled() {
+    let mut s = demo();
+    let journal = s.journal.len();
+    s.execute("sequence.settings", json!({})).unwrap();
+    s.execute("sequence.settings", Value::Null).unwrap();
+    assert_eq!(s.journal.len(), journal, "{:?}", &s.journal[journal..]);
+    s.execute("sequence.settings", json!({"maxRenderQuality": true})).unwrap();
+    assert_eq!(s.journal.len(), journal + 1);
+}
+
+/// `null` and `{}` are "nothing to change"; any other non-object params are refused, not taken for
+/// a request to report the settings.
+#[test]
+fn sequence_settings_refuses_params_that_are_not_an_object() {
+    let mut s = demo();
+    assert!(s.execute("sequence.settings", Value::Null).unwrap()["settings"].is_object());
+    for p in [json!([]), json!("bad"), json!(3), json!(true)] {
+        let e = s.execute("sequence.settings", p.clone()).unwrap_err();
+        assert!(matches!(&e, EngineError::BadParams { cmd, .. } if cmd == "sequence.settings"), "{p}: {e:?}");
+    }
+}
+
 #[test]
 fn zero_fps_is_refused() {
     let mut s = demo();

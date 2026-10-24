@@ -717,7 +717,8 @@ impl Session {
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
-        if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
+        let journal = spec.journal && !commands::reports_only(id, &params);
+        if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
         if let Err(why) = self.enabled_for(spec, &params) {
@@ -738,7 +739,7 @@ impl Session {
             source_monitor::track_history(self);
         }
         // source graphics: an edited instance updates the shared layers and the other instances
-        if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
+        if r.is_ok() && journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
         }
         if self.exec_depth == 0
@@ -749,7 +750,7 @@ impl Session {
         self.sync_persistence();
         // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
         self.previews.live.publish_project(self.project.clone());
-        if r.is_ok() && spec.journal {
+        if r.is_ok() && journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
                 self.journal.drain(..1000);

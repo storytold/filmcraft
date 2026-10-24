@@ -185,6 +185,11 @@ pub(crate) fn named_items(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
+/// A call that only reports, so it is not journaled although its command edits: `sequence.settings`
+/// with nothing to change (`null` or `{}`) answers the settings, as `sequence.inspect` does (#1540).
+pub(crate) fn reports_only(id: &str, p: &Value) -> bool {
+    id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty()))
+}
 /// A marker's `color` param: absent (or null) is `None`; anything but a label name is an error
 /// that lists the accepted names, instead of silently becoming Green (#857).
 pub(crate) fn marker_color_p(p: &Value, cmd: &str) -> Result<Option<Label>> {
@@ -2190,6 +2195,15 @@ fn build() -> Vec<CommandSpec> {
             |s, p| {
                 const CMD: &str = "sequence.settings";
                 let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+                // nothing to change: report the settings as `sequence.inspect` does, without an empty
+                // undo step (#1540)
+                if reports_only(CMD, p) {
+                    let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
+                    return Ok(json!({"settings": q.settings}));
+                }
+                if !p.is_object() {
+                    return Err(bad(CMD, "`params` must be an object"));
+                }
                 let fps = fps_p(p, CMD)?;
                 let mix = match str_p(p, "mix") {
                     Some(m) => Some(crate::mixer::channels_from(m).ok_or_else(|| bad(CMD, format!("unknown mix `{m}` (Stereo, Mono, 5.1, Adaptive)")))?),
