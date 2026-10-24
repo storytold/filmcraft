@@ -309,7 +309,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
     // a never-saved project is saved through the Save dialog
-    let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some();
+    let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
@@ -604,40 +604,81 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 Err(e) => d.error = e.to_string(),
             }
         }
-        Some("dontSave") | Some("save") => {
-            if action == Some("save") {
-                let saved = if app.session.path.is_some() {
-                    app.session.execute("file.save", json!({})).map(|_| ()).map_err(|e| e.to_string())
-                } else {
-                    app.file_dialog("file.save", &json!({})).map(|_| ())
-                };
-                if let Err(e) = saved {
-                    app.ui.status = e;
+        Some("dontSave") => {
+            leave(app, ctx, &d.command);
+            return;
+        }
+        Some("save") => {
+            if app.session.path.is_some() {
+                if let Err(e) = app.session.execute("file.save", json!({})) {
+                    app.ui.status = e.to_string();
                     app.ui.clip_dialog = None;
                     return;
                 }
-                // the Save dialog was cancelled: back to the prompt
-                if app.session.is_dirty() {
-                    app.ui.clip_dialog = Some(d);
-                    return;
-                }
+                leave(app, ctx, &d.command);
+                return;
             }
-            // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
-            // snapshot, so the next launch doesn't offer them back
-            let close = d.command != "app.quit" || app.session.is_dirty();
-            if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
-                app.ui.status = e.to_string();
-            }
-            if d.command == "app.quit" {
-                app.quit_confirmed = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            // A new project: Save As, then go on once it is saved. The host's dialog may answer
+            // in a later frame (Linux and Windows run it off the UI thread), so going on is part
+            // of its answer, not of this frame (#2211); a cancelled dialog shows the prompt again.
             app.ui.clip_dialog = None;
+            let (prompt, ctx2) = (d.clone(), ctx.clone());
+            // the project the dialog saves (not one opened, created or closed to meanwhile)
+            let project = app.session.project_generation;
+            let name = format!("{}.fcproj", app.session.project.name);
+            let r = app.pick(crate::native_dialogs::FileDialog::SaveProject { name }, move |app, paths| {
+                if app.session.project_generation != project {
+                    return Ok(Value::Null);
+                }
+                // a newer prompt (Quit asked while Close Project's dialog was open) is the one to
+                // finish or to show again
+                let newer = matches!(app.ui.clip_dialog.as_ref().map(|c| c.command.as_str()), Some("app.quit" | "file.closeProject"));
+                let prompt = if newer { app.ui.clip_dialog.take().unwrap_or(prompt) } else { prompt };
+                let Some(path) = paths.into_iter().next() else {
+                    // cancelled: the prompt again, unless another dialog is open now
+                    if app.ui.clip_dialog.is_none() {
+                        app.ui.clip_dialog = Some(prompt);
+                    }
+                    return Ok(Value::Null);
+                };
+                let r = app.session.execute("file.saveAs", json!({"path": path})).map_err(|e| e.to_string());
+                match &r {
+                    Ok(_) if !app.session.is_dirty() => leave(app, &ctx2, &prompt.command),
+                    Ok(_) => app.ui.clip_dialog = Some(prompt),
+                    // the save failed: the prompt stays, with the reason in the status bar
+                    Err(e) => {
+                        app.ui.status = e.clone();
+                        app.ui.clip_dialog = Some(prompt);
+                    }
+                }
+                r
+            });
+            // no dialog shown (another one is open): the prompt stays, with the reason
+            if let Err(e) = r {
+                app.ui.status = e;
+                app.ui.clip_dialog = Some(d);
+            }
             return;
         }
         _ => {}
     }
     app.ui.clip_dialog = Some(d);
+}
+
+/// Go on after the unsaved-changes prompt (Don't Save, or Save once it saved): close the project,
+/// and for Quit close the window.
+fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, command: &str) {
+    // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
+    // snapshot, so the next launch doesn't offer them back
+    let close = command != "app.quit" || app.session.is_dirty();
+    if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
+        app.ui.status = e.to_string();
+    }
+    if command == "app.quit" {
+        app.quit_confirmed = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+    app.ui.clip_dialog = None;
 }
 
 /// The parameters sent on OK (dialog-only fields dropped or converted).

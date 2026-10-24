@@ -219,3 +219,122 @@ fn export_location_browse_works_with_the_runner_and_with_synchronous_pickers() {
     assert_eq!(d.app().ui.export.location, "/tmp/exports-b");
     assert!(!d.app().native_dialog_open());
 }
+
+/// #2211: Quit ▸ Save on a new project with a dialog the host answers later (Linux, Windows):
+/// once the file is picked the project is saved and the window closes; a cancelled dialog brings
+/// the prompt back and nothing quits.
+#[test]
+fn quit_save_waits_for_a_save_dialog_answered_later() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-dialogs-quit");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("quit.fcproj");
+    let _ = std::fs::remove_file(&path);
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    assert!(d.app().session.is_dirty());
+    let close = |d: &mut Driver| {
+        d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        d.frames(3);
+    };
+    let closes =
+        |d: &Driver| d.harness.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close));
+    // cancelled: the prompt comes back, nothing quits
+    close(&mut d);
+    d.click("quit.save");
+    let (dialog, answer) = d.asked();
+    assert!(matches!(dialog, FileDialog::SaveProject { .. }), "{dialog:?}");
+    answer.send(Vec::new()).unwrap();
+    d.frames(3);
+    assert!(d.app().ui.clip_dialog.is_some() && !d.app().quit_confirmed, "back to the prompt");
+    // a file is picked a few frames later: saved, and the window closes
+    d.click("quit.save");
+    let (_, answer) = d.asked();
+    d.frames(3);
+    assert!(!d.app().quit_confirmed, "waits for the answer");
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    let mut closed = false;
+    for _ in 0..10 {
+        d.frames(1);
+        closed |= closes(&d);
+    }
+    assert!(d.app().quit_confirmed && !d.app().session.is_dirty(), "saved and quitting");
+    assert!(closed, "the window was asked to close");
+    assert!(path.exists());
+    let _ = std::fs::remove_file(&path);
+}
+
+/// While Close Project ▸ Save's dialog is open the window is asked to close: once a file is picked
+/// the project is saved and the app quits (the newer Quit prompt is the one finished). And an
+/// answer that arrives after another project was opened saves nothing.
+#[test]
+fn a_late_save_answer_finishes_the_newest_prompt_and_only_for_its_project() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-dialogs-late");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("late.fcproj");
+    let _ = std::fs::remove_file(&path);
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.ok("ui.menu.invoke", json!({"id": "file.closeProject"}));
+    d.frames(2);
+    d.click("closeProject.save");
+    let (_, answer) = d.asked();
+    // Quit while the Save dialog is open
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    d.frames(3);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"));
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    d.frames(5);
+    assert!(path.exists() && d.app().quit_confirmed, "saved, then quit (not just closed)");
+    let _ = std::fs::remove_file(&path);
+
+    // the same, but the save fails: the newer Quit prompt stays, with the reason (#2437 review)
+    let blocker = dir.join("not-a-folder");
+    std::fs::write(&blocker, b"").unwrap();
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.ok("ui.menu.invoke", json!({"id": "file.closeProject"}));
+    d.frames(2);
+    d.click("closeProject.save");
+    let (_, answer) = d.asked();
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    d.frames(3);
+    answer.send(vec![blocker.join("late.fcproj").to_string_lossy().into_owned()]).unwrap();
+    d.frames(5);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"), "the Quit prompt stays");
+    assert!(!d.app().quit_confirmed && !d.app().ui.status.is_empty(), "not quitting, with the reason");
+    let _ = std::fs::remove_file(&blocker);
+
+    // a project opened while the dialog is open: the late answer saves nothing
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.ok("ui.menu.invoke", json!({"id": "file.closeProject"}));
+    d.frames(2);
+    d.click("closeProject.save");
+    let (_, answer) = d.asked();
+    d.ok("engine.execute", json!({"command": "file.newProject", "params": {"force": true}}));
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    d.frames(5);
+    assert!(!path.exists(), "the other project was not saved under the old project's file");
+}
+
+/// Save on the quit prompt while another file dialog is already open: no Save dialog can be shown,
+/// so the prompt stays (with the reason) instead of disappearing.
+#[test]
+fn quit_save_keeps_the_prompt_when_no_dialog_can_open() {
+    let mut d = Driver::new(true);
+    d.app().session.path = None;
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    // another dialog, still open
+    d.ok("ui.menu.invoke", json!({"id": "file.open"}));
+    let _pending = d.asked();
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    d.frames(3);
+    d.click("quit.save");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("app.quit"), "the prompt stays");
+    assert!(!d.app().ui.status.is_empty(), "with the reason");
+    assert!(d.asked.lock().unwrap().is_empty(), "no second dialog");
+}

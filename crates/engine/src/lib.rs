@@ -428,6 +428,10 @@ pub struct Session {
     pub history: History,
     pub revision: u64,
     pub saved_revision: u64,
+    /// Counts the projects this session has held: it changes when another project replaces this
+    /// one (open, new, close), never with an edit. Work that finishes later (a file dialog's
+    /// answer) checks it is still for the same project.
+    pub project_generation: u64,
     pub path: Option<String>,
     pub state: EditorState,
     pub media: Arc<MediaPool>,
@@ -546,6 +550,7 @@ impl Session {
             history: History { limit: 200, ..Default::default() },
             revision: 1,
             saved_revision: 1,
+            project_generation: 0,
             path: None,
             state: EditorState {
                 snapping: true,
