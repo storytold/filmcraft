@@ -20,6 +20,9 @@ pub struct StreamResampler {
     next_out: Option<i64>,
 }
 
+/// Maximum source frames fetched in a single resampler pull.
+pub const MAX_RESAMPLE_SOURCE_SPAN: usize = 384_000 * 10;
+
 impl StreamResampler {
     /// Rates of zero are treated as 1 Hz rather than dividing by zero.
     pub fn new(from: u32, to: u32) -> Self {
@@ -53,7 +56,7 @@ impl StreamResampler {
         }
         let held_end = self.held_start + self.held.first().map_or(0, Vec::len) as i64;
         if last + 1 > held_end {
-            let want = (last + 1 - held_end) as usize;
+            let want = ((last + 1 - held_end) as usize).min(MAX_RESAMPLE_SOURCE_SPAN);
             let got = pull(held_end, want);
             if self.held.is_empty() {
                 self.held = vec![Vec::new(); got.len().max(1)];

@@ -108,7 +108,7 @@ pub struct ClickParams {
     /// left | right | middle
     #[serde(default)]
     pub button: Option<String>,
-    /// 2 for double-click.
+    /// Number of clicks (0–10; defaults to 1). Use 2 for double-click. Larger values are rejected.
     #[serde(default)]
     pub count: Option<u32>,
     /// {"shift":bool,"alt":bool,"command":bool,"ctrl":bool}
@@ -122,6 +122,7 @@ pub struct DragParams {
     pub from: Value,
     /// End point, same forms.
     pub to: Value,
+    /// Movement steps (0–1024; defaults to 12; 0 or 1 uses 2). Larger values are rejected.
     #[serde(default)]
     pub steps: Option<u32>,
     #[serde(default)]
@@ -497,6 +498,7 @@ impl FilmcraftMcp {
         self.ui("ui.elements", json!({"prefix": p.prefix.unwrap_or_default()})).await
     }
 
+    /// Forward a click to the live editor; an omitted count is sent as null and uses its default.
     #[tool(
         title = "Live app: click",
         description = "Live app: click an element by id or at x,y (points). Supports right/middle button, double-click (count=2) and modifiers.",
@@ -513,6 +515,7 @@ impl FilmcraftMcp {
         self.ui("ui.click", v).await
     }
 
+    /// Forward a drag to the live editor, which applies the step default and validates its bounds.
     #[tool(
         title = "Live app: drag",
         description = "Live app: press-drag-release from one point/element to another (move clips, trim edges, scrub, resize panels, drop project items onto tracks).",

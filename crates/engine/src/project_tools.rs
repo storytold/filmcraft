@@ -1030,7 +1030,7 @@ fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
 
 /// Remember the Scratch Disks folders chosen in this session, so projects naming them may use
 /// them later (see [`trusted_scratch`]).
-fn remember_scratch_folders(s: &mut Session, dirs: &[String]) {
+pub(crate) fn remember_scratch_folders(s: &mut Session, dirs: &[String]) {
     const KEEP: usize = 64;
     let mut prefs = s.prefs.clone();
     let list = &mut prefs.auto_save.scratch_folders;

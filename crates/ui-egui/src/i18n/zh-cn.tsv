@@ -3664,3 +3664,5 @@
 	Relink canceled; Script marks were preserved.	已取消重新链接；脚本标记已保留。
 	Review Script marks	检查脚本标记
 	{n} Script-linked clip(s) still need review. Select each remaining source to relink.	仍有 {n} 个脚本关联片段需要检查。请逐一选择其余素材并重新链接。
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。
