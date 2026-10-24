@@ -344,6 +344,75 @@ the encoder's hand-off). Only NVENC, whose encode is light on the CPU, comes clo
 encoder waits for the renderer), as expected. 1080p exports use 70-160 MB more (the second batch of 16
 frames); 4K exports use less than before because the batch is smaller (8 for SDR, 2 for HDR instead of 16).
 
+## Results (export: a clip's source opened once under parallel first requests, before → after)
+
+`MediaPool::resolve` looked the item up in the cache, opened the file on a miss and then stored the
+source. The frames of an export batch are rendered in parallel (one rayon worker per frame, up to
+four GPU renderers), so a clip's first frames reached the pool at the same moment, every worker
+missed and every worker opened the file: one source, one GOP cache and one decoder each, which
+each walked the GOP from the sync sample to deliver a single frame. Only the last source stored
+survived; the others were dropped with their decoders. On a timeline of H.264 camera clips this
+showed in `perf.stats` as one hardware session and one seek per renderer for each clip the export
+entered, not one per clip, and as samples decoded far above the frames the export asked for.
+
+Now the pool holds a lock per item while a source is being opened (`MediaPool::opening`): the first
+worker opens the file, the others wait on that lock, find the source stored and share it. An item
+already in the pool takes the read-locked lookup as before, different items still open in
+parallel, and the same gate covers proxies. A proxy that fails to open is not tried again for that
+item for a second (`PROXY_RETRY`), so the requests waiting on the gate fall back to the
+full-resolution file instead of each paying for the failure in turn. The open itself runs off the
+asking thread, on a pool of its own (`codecs::gop::isolated_open`, one thread per core, beside the decode
+pool of #480): an opener that decodes at open (an EXR still) starts rayon work, and a frame worker
+waiting inside that work on its own pool could pick up another frame job of the export, which
+would block on the gate the worker holds. Opens do not run on the decode pool, so a slow file
+never holds up the caches' decoding. Where that pool cannot be made, and on the web build, which
+has no threads, the open runs on the asking thread without the gate, as before; a deferred-read
+mark (`media::pending`) the thread already had stays set across it. The tests
+(`parallel_first_requests_open_an_item_once` and its neighbours) run the requests as frame jobs on
+a rayon pool against a host whose reader takes 50 ms and records the opens and the threads they
+run on: one open per item and per proxy (8 before), a missing proxy tried once (9 before), two
+items open side by side, opens on the open pool, an opener that runs a pending rayon job while it
+opens finishes the batch (stuck for good with the open run on the frame worker), and an open
+keeps the thread's deferred-read mark.
+
+Measured (Xeon E5-2680 v4 14C/28T, RTX 5060, Windows 11, release CLI of this change against
+`main` at the same base, `gpuRendering` and `hardwareEncoding` auto, 1080p30 H.264 + AAC output,
+a timeline of 1080p H.264 camera clips at 30 and 59.94 fps with 0.2 s dip-to-black transitions,
+`perf.stats decode` after the export, two alternated rounds on an otherwise idle machine; the
+counters vary with scheduling between runs, so the ranges over the rounds are given):
+
+| Range | Build | HW sessions | seeks | samples decoded | `decodeMs` |
+|---|---|---|---|---|---|
+| 5 s (1 media item, 150 frames) | before | 4 | 5 | 621 | 2904–2942 |
+| 5 s | after | 1 | 2 | 348–349 | 682–694 |
+| 20 s (3 media items, 600 frames) | before | 10 | 11 | 1436–1438 | 5501–5531 |
+| 20 s | after | 3 | 4–6 | 926–1173 | 1973–2342 |
+
+`RAYON_NUM_THREADS=1` (one frame at a time, which cannot race) gave the 5 s range on `main` 1
+session, 2 seeks and 348 samples: the after row. After the change the export opens exactly one
+source per media item (3 for 3 items) and seeks once per clip entered (4 clips in the 20 s range);
+the round with 6 seeks had a late frame request behind the one decoder's position, which costs a
+seek whatever the number of sources. The samples decoded above the frames requested that remain
+(926 for 600 frames) are the GOP walks at the clips' in points and the 59.94 fps sources decoded
+for 30 fps output; they are not duplicate work. The output files are byte-identical before and
+after (same frames, same encoder input order), checked with `cmp` on every export below.
+
+Time (CLI process from start to exit, the export's own `seconds`, CPU time of the process, GPU
+utilisation averaged over the run from `nvidia-smi dmon`):
+
+| Range | Build | wall | export | process CPU | GPU |
+|---|---|---|---|---|---|
+| 5 s | before | 4.6 s, 4.0 s | 2.8 s, 2.7 s | 10.4 s, 9.9 s | 11 %, 24 % |
+| 5 s | after | 3.9 s, 3.5 s | 2.2 s, 2.2 s | 9.4 s, 10.2 s | 13 %, 26 % |
+| 20 s | before | 9.4 s, 9.0 s | 8.1 s, 7.6 s | 35.5 s, 38.7 s | 33 %, 30 % |
+| 20 s | after | 8.7 s, 8.5 s | 7.3 s, 7.1 s | 35.4 s, 36.0 s | 30 %, 27 % |
+
+The export is 20 % shorter over 5 s (one clip entered, where the duplicate GOP walks were most of
+the decode) and 8 % over 20 s. The duplicate decoders ran on the hardware decoder in parallel with
+the renderers, so removing them shortens the decode work (`decodeMs` −58 to −77 %) more than the
+export itself; process CPU time is the same within noise (rendering and the NVENC hand-off
+dominate it, and the duplicate decoding was mostly hardware time).
+
 ## Results (HW3: VideoToolbox hardware H.265 (HEVC) encoding, against hardware H.264)
 
 Apple M1 (8 cores, 16 GB), 2026-10-07, single runs on an otherwise idle machine, release build. Both

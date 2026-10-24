@@ -458,15 +458,27 @@ const FRAME_CACHE_CEILING: usize = 384 << 20;
 /// rather than restarting at the sync sample.
 const CONTINUE_THROUGH: usize = 48;
 
-/// Threads that run the caches' decoding (see [`isolated`]); `None` where none can be made.
+/// A pool of one thread per core named `<name>-<i>`; `None` where none can be made.
+#[cfg(not(target_arch = "wasm32"))]
+fn pool_per_core(name: &'static str) -> Option<rayon::ThreadPool> {
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(move |i| format!("{name}-{i}")).build().ok()
+}
+
+/// Threads that run the caches' decoding (see [`isolated`]).
 #[cfg(not(target_arch = "wasm32"))]
 fn decode_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(|i| format!("decode-{i}")).build().ok()
-    })
-    .as_ref()
+    POOL.get_or_init(|| pool_per_core("decode")).as_ref()
+}
+
+/// Threads that open sources (see [`isolated_open`]): apart from [`decode_pool`], so an open
+/// that reads a slow file, or decodes a frame through a cache while it opens, never holds up
+/// the caches' decoding.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| pool_per_core("open")).as_ref()
 }
 
 /// Run a cache's decoding, its lock held by the caller, on [`decode_pool`], the caller waiting
@@ -481,32 +493,85 @@ fn decode_pool() -> Option<&'static rayon::ThreadPool> {
 /// rayon worker would also run other jobs of its pool while it waits for the decode pool, some
 /// of them asking for a cache's lock while it holds this one: it waits on a plain thread instead.
 fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Result<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        isolated_on(decode_pool(), "decode-wait", "decoding", f)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        filmcraft_media::cancel::Context::current().run(f)
+    }
+}
+
+/// Run a source's opening, a lock on that source held by the caller, on [`open_pool`], the caller
+/// waiting without doing other rayon work meanwhile, for the reason [`isolated`] gives: an opener
+/// that decodes as it opens (an EXR still) starts rayon work, and the frame worker holding the
+/// lock, waiting inside that work, could pick up another frame job that blocks on the lock. The
+/// open pool's work never waits on such a lock. An open started from an open (a job of the open
+/// pool) runs right there: waiting for the pool from inside it could leave every one of its
+/// threads waiting for the others.
+pub fn isolated_open<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Result<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let pool = open_pool();
+        if pool.and_then(|p| p.current_thread_index()).is_some() {
+            return filmcraft_media::cancel::Context::current().run(f);
+        }
+        isolated_on(pool, "open-wait", "opening", f)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        filmcraft_media::cancel::Context::current().run(f)
+    }
+}
+
+/// Whether [`isolated_open`] runs its job on the open pool. Without it (the pool could not be
+/// made; the web build, which has no threads) the job runs on the calling thread.
+pub fn opens_apart() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        open_pool().is_some()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
+/// Run `f` on `pool` with the caller's cancel hints, the caller waiting on a plain thread named
+/// `wait` when it is a rayon worker (so it runs none of its pool's jobs meanwhile); `f` runs on
+/// the calling thread when there is no pool or no thread to wait on. `what` names the work in the
+/// error for a job that panicked.
+#[cfg(not(target_arch = "wasm32"))]
+fn isolated_on<T: Send>(
+    pool: Option<&'static rayon::ThreadPool>,
+    wait: &'static str,
+    what: &'static str,
+    f: impl FnOnce() -> crate::Result<T> + Send,
+) -> crate::Result<T> {
     let ctx = filmcraft_media::cancel::Context::current();
     let job = move || ctx.run(f);
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(pool) = decode_pool() {
-        if rayon::current_thread_index().is_none() {
-            return pool.install(job);
-        }
-        let slot = Mutex::new(Some(job));
-        let waited = std::thread::scope(|scope| {
-            let spawned = std::thread::Builder::new().name("decode-wait".into()).spawn_scoped(scope, || {
-                let job = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
-                job.map(|job| pool.install(job))
-            });
-            spawned.map(|h| h.join())
-        });
-        return match waited {
-            Ok(Ok(Some(r))) => r,
-            Ok(Err(_)) => Err(CodecError::Decode("internal error while decoding".into())),
-            // no thread to wait on: decode here, as before
-            Ok(Ok(None)) | Err(_) => match slot.into_inner().unwrap_or_else(PoisonError::into_inner) {
-                Some(job) => job(),
-                None => Err(CodecError::Decode("internal error while decoding".into())),
-            },
-        };
+    let Some(pool) = pool else { return job() };
+    if rayon::current_thread_index().is_none() {
+        return pool.install(job);
     }
-    job()
+    let slot = Mutex::new(Some(job));
+    let waited = std::thread::scope(|scope| {
+        let spawned = std::thread::Builder::new().name(wait.into()).spawn_scoped(scope, || {
+            let job = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
+            job.map(|job| pool.install(job))
+        });
+        spawned.map(|h| h.join())
+    });
+    match waited {
+        Ok(Ok(Some(r))) => r,
+        Ok(Err(_)) => Err(CodecError::Decode(format!("internal error while {what}"))),
+        // no thread to wait on: run here, as before
+        Ok(Ok(None)) | Err(_) => match slot.into_inner().unwrap_or_else(PoisonError::into_inner) {
+            Some(job) => job(),
+            None => Err(CodecError::Decode(format!("internal error while {what}"))),
+        },
+    }
 }
 
 impl GopCache {
