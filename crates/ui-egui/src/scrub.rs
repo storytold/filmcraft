@@ -81,6 +81,19 @@ impl FilmcraftApp {
         self.scrub.open
     }
 
+    /// Play one scrub grain after a keyboard frame-step command.
+    pub(crate) fn scrub_keyboard_step(&mut self, now: f64) {
+        if !self.session.prefs.audio.scrub_audio
+            || self.playback.playing
+            || self.source_playback.clock.playing
+        {
+            return;
+        }
+        let ph = self.session.playhead();
+        self.scrub.last_tick = Some(ph);
+        self.scrub_grain(ph, now);
+    }
+
     /// Aim the scrub stream at `at` (opening it if needed) and play one grain.
     fn scrub_grain(&mut self, at: Tick, now: f64) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
@@ -231,6 +244,35 @@ mod tests {
         assert!(app.scrub_tick(0.05, false), "lingers briefly after release");
         assert!(!app.scrub_tick(0.05 + LINGER_S, false), "then closes");
         assert!(fill.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn keyboard_step_plays_a_grain_and_closes() {
+        let (mut app, fill) = app(true);
+        let rate = app.session.sequence_rate();
+
+        app.scrub_tick(0.0, false);
+        app.session.set_playhead(rate.tick_of(60));
+        app.scrub_keyboard_step(0.02);
+
+        assert!(loudness(&fill) > 0.0, "keyboard stepping plays audio");
+        assert_eq!(loudness(&fill), 0.0, "one grain, then silence");
+        assert!(app.scrub_tick(0.03, false), "stream remains open briefly");
+        assert!(!app.scrub_tick(0.02 + LINGER_S, false), "stream closes after linger");
+        assert!(fill.lock().unwrap().is_none(), "audio stream was released");
+    }
+
+    #[test]
+    fn keyboard_step_respects_disabled_audio() {
+        let (mut app, fill) = app(false);
+        let rate = app.session.sequence_rate();
+
+        app.scrub_tick(0.0, false);
+        app.session.set_playhead(rate.tick_of(60));
+        app.scrub_keyboard_step(0.02);
+
+        assert!(!app.scrub.is_open(), "scrub stream stays closed");
+        assert!(fill.lock().unwrap().is_none(), "no audio is started");
     }
 
     #[test]
