@@ -547,6 +547,9 @@ pub struct UiState {
     /// Create Proxies dialog (open when Some).
     #[serde(default)]
     pub create_proxies: Option<ProxyDraft>,
+    /// Sequence ▸ Auto Reframe Sequence… dialog (open when Some).
+    #[serde(default)]
+    pub auto_reframe: Option<AutoReframeDraft>,
     /// Project Manager dialog (open when Some).
     #[serde(default)]
     pub project_manager: Option<ProjectManagerDraft>,
@@ -746,6 +749,17 @@ impl Default for LinkMediaDraft {
             message: String::new(),
         }
     }
+}
+
+/// Sequence ▸ Auto Reframe Sequence…: the new sequence's name, target aspect (an index into
+/// `filmcraft_engine::auto_reframe::ASPECTS`) and motion tracking (0 slower, 1 default, 2 faster).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoReframeDraft {
+    pub sequence: u64,
+    pub name: String,
+    pub aspect: usize,
+    pub motion: usize,
 }
 
 /// Clip ▸ Proxy ▸ Create Proxies….
@@ -1007,6 +1021,7 @@ impl Default for UiState {
             pen_points: vec![],
             link_media: None,
             create_proxies: None,
+            auto_reframe: None,
             project_manager: None,
             make_offline: None,
             color_dialog: None,

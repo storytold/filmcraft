@@ -820,3 +820,45 @@ fn new_sequence_stays_open_on_invalid_frame_size() {
     assert_eq!(d.label("sequenceSettings.width"), "20000");
     assert_eq!(d.label("sequenceSettings.height"), "20000");
 }
+
+/// Sequence ▸ Auto Reframe Sequence… (#1564) opens a dialog (name, target aspect, motion); the
+/// name follows the aspect until it is edited, OK makes and opens the reframed copy in one undo
+/// step, Cancel makes nothing.
+#[test]
+fn auto_reframe_sequence_dialog_makes_a_reframed_copy() {
+    let mut d = Driver::demo();
+    let source = d.app().session.state.active_sequence.unwrap();
+    let source_name = d.app().session.project.item(source).unwrap().name.clone();
+    let count = |d: &mut Driver| d.app().session.project.sequences().count();
+    let n0 = count(&mut d);
+    let r = d.ok("ui.menu.invoke", json!({"id": "sequence.autoReframe"}));
+    assert_eq!(r["dialog"], "autoReframe", "{r}");
+    d.frames(3);
+    assert_eq!(count(&mut d), n0, "opening the dialog makes nothing");
+    assert_eq!(d.app().ui.auto_reframe.as_ref().unwrap().name, format!("{source_name} - Vertical 9x16"));
+    // pick Square 1:1: the default name follows
+    d.click("autoReframe.aspect");
+    d.click("autoReframe.aspect.option.1");
+    assert_eq!(d.app().ui.auto_reframe.as_ref().unwrap().name, format!("{source_name} - Square 1x1"));
+    d.click("autoReframe.motion");
+    d.click("autoReframe.motion.option.0");
+    d.click("autoReframe.ok");
+    assert!(d.app().ui.auto_reframe.is_none(), "dialog closed");
+    assert_eq!(count(&mut d), n0 + 1);
+    let new = d.app().session.state.active_sequence.unwrap();
+    assert_ne!(new, source, "the copy opens");
+    let q = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!((q.settings.width, q.settings.height), (1080, 1080));
+    assert_eq!(d.app().session.project.item(new).unwrap().name, format!("{source_name} - Square 1x1"));
+    let fx = q.video_tracks[0].items[0].effects.iter().find(|e| e.effect == "auto_reframe").expect("reframed").clone();
+    assert_eq!(fx.param("preset").unwrap().value, filmcraft_engine::project::ParamValue::Choice(0), "Slower Motion");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(count(&mut d), n0, "one undo step");
+    // Cancel makes nothing
+    d.exec("sequence.open", json!({"item": source.0}));
+    d.ok("ui.menu.invoke", json!({"id": "sequence.autoReframe"}));
+    d.frames(2);
+    d.click("autoReframe.cancel");
+    assert!(d.app().ui.auto_reframe.is_none());
+    assert_eq!(count(&mut d), n0);
+}
