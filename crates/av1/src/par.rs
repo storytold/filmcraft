@@ -53,20 +53,4 @@ impl Pool {
         }
         items.iter_mut().enumerate().map(|(i, t)| f(i, t)).collect()
     }
-
-    /// `f(i, chunk)` for the consecutive `chunk_len`-element chunks of `data`.
-    pub fn chunks<T: Send>(&self, data: &mut [T], chunk_len: usize, f: impl Fn(usize, &mut [T]) + Sync + Send) {
-        let chunk_len = chunk_len.max(1);
-        #[cfg(feature = "threads")]
-        if let Some(pool) = &self.pool
-            && data.len() > chunk_len
-        {
-            use rayon::prelude::*;
-            pool.install(|| data.par_chunks_mut(chunk_len).enumerate().for_each(|(i, c)| f(i, c)));
-            return;
-        }
-        for (i, c) in data.chunks_mut(chunk_len).enumerate() {
-            f(i, c);
-        }
-    }
 }

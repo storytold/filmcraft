@@ -959,9 +959,6 @@ impl FrameHeader {
     }
 
     fn segmentation_params(&mut self, r: &mut BitReader, st: &mut HeaderState) -> Result<()> {
-        const BITS: [u32; SEG_LVL_MAX] = [8, 6, 6, 6, 6, 3, 0, 0];
-        const SIGNED: [bool; SEG_LVL_MAX] = [true, true, true, true, true, false, false, false];
-        const MAX: [i32; SEG_LVL_MAX] = [255, 63, 63, 63, 63, 7, 0, 0];
         let s = &mut self.seg;
         s.enabled = r.flag()?;
         if s.enabled {
@@ -983,9 +980,9 @@ impl FrameHeader {
                         st.seg_features.enabled[i][j] = en;
                         let mut v = 0;
                         if en {
-                            let bits = BITS[j];
-                            let limit = MAX[j];
-                            if SIGNED[j] {
+                            let bits = SEGMENTATION_FEATURE_BITS[j] as u32;
+                            let limit = SEGMENTATION_FEATURE_MAX[j] as i32;
+                            if SEGMENTATION_FEATURE_SIGNED[j] != 0 {
                                 v = r.su(1 + bits)?.clamp(-limit, limit);
                             } else {
                                 v = (r.f(bits)? as i32).clamp(0, limit);

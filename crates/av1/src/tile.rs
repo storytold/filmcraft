@@ -3,7 +3,7 @@
 
 use crate::Result;
 use crate::cdf::Cdfs;
-use crate::frame::{MiInfo, Mv};
+use crate::frame::Mv;
 use crate::header::{FrameHeader, NONE, SequenceHeader};
 use crate::intra::{IntraParams, is_directional_mode, predict_intra, round2_signed};
 use crate::spec_tables::*;
@@ -45,7 +45,6 @@ pub(crate) struct Block {
     pub palette_colors_v: [u16; 8],
     pub tx_size: usize,
     pub ref_frame: [i8; 2],
-    pub mv: [Mv; 2],
     pub interp_filter: [u8; 2],
     pub motion_mode: u8,
     pub comp_group_idx: u8,
@@ -173,8 +172,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         self.delta_lf = [0; 4];
         for plane in 0..self.fs.num_planes {
             for pass in 0..2 {
-                self.ref_sgr_xqd[plane][pass] = [-32, 31][pass];
-                self.ref_lr_wiener[plane][pass] = [3, -7, 15];
+                self.ref_sgr_xqd[plane][pass] = SGRPROJ_XQD_MID[pass] as i32;
+                self.ref_lr_wiener[plane][pass] = WIENER_TAPS_MID.map(i32::from);
             }
         }
         let sb128 = self.seq().use_128x128_superblock;
@@ -270,31 +269,14 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 };
                 self.sd.read_symbol(cdf)
             } else if has_cols || has_rows {
-                let pcdf: Vec<u16> = match bsl {
-                    2 => self.cdf.partition_w16[ctx].to_vec(),
-                    3 => self.cdf.partition_w32[ctx].to_vec(),
-                    4 => self.cdf.partition_w64[ctx].to_vec(),
-                    _ => self.cdf.partition_w128[ctx].to_vec(),
+                let pcdf: &[u16] = match bsl {
+                    2 => &self.cdf.partition_w16[ctx],
+                    3 => &self.cdf.partition_w32[ctx],
+                    4 => &self.cdf.partition_w64[ctx],
+                    _ => &self.cdf.partition_w128[ctx],
                 };
-                // pcdf holds cumulative values; P(k) = cdf[k] - cdf[k-1] (cdf[-1] = 0)
-                let pr = |k: usize| pcdf[k] as i32 - if k == 0 { 0 } else { pcdf[k - 1] as i32 };
-                let psum = if has_cols {
-                    // split_or_horz
-                    let mut s = pr(PARTITION_VERT) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_VERT_A) + pr(PARTITION_VERT_B);
-                    if bsize != BLOCK_128X128 {
-                        s += pr(PARTITION_VERT_4);
-                    }
-                    s
-                } else {
-                    let mut s = pr(PARTITION_HORZ) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_HORZ_B) + pr(PARTITION_VERT_A);
-                    if bsize != BLOCK_128X128 {
-                        s += pr(PARTITION_HORZ_4);
-                    }
-                    s
-                };
-                // The spec's inverse-CDF convention: cdf values count down from 32768.
-                let _ = psum;
-                let bit = self.read_split_bool(&pcdf, has_cols, bsize);
+                let psum = split_psum(pcdf, has_cols, bsize);
+                let bit = self.read_split_bool(psum);
                 if has_cols {
                     if bit { PARTITION_SPLIT } else { PARTITION_HORZ }
                 } else if bit {
@@ -370,18 +352,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
 
     /// split_or_horz / split_or_vert: a binary symbol whose probability is derived from the
     /// partition CDF (8.3.2). Returns true for PARTITION_SPLIT.
-    fn read_split_bool(&mut self, pcdf: &[u16], split_or_horz: bool, bsize: usize) -> bool {
-        // The spec gives cdf values as P(X <= k) * 32768 (increasing); the probability of
-        // partition k is cdf[k] - cdf[k - 1].
-        let pr = |k: usize| pcdf[k] as i32 - if k == 0 { 0 } else { pcdf[k - 1] as i32 };
-        let mut psum = if split_or_horz {
-            pr(PARTITION_VERT) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_VERT_A) + pr(PARTITION_VERT_B)
-        } else {
-            pr(PARTITION_HORZ) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_HORZ_B) + pr(PARTITION_VERT_A)
-        };
-        if bsize != BLOCK_128X128 {
-            psum += if split_or_horz { pr(PARTITION_VERT_4) } else { pr(PARTITION_HORZ_4) };
-        }
+    fn read_split_bool(&mut self, psum: i32) -> bool {
         let mut cdf = [((1i32 << 15) - psum) as u16, 1 << 15, 0];
         // no adaptation: the array is constructed for this read only
         let save = self.sd.disable_update;
@@ -1245,7 +1216,6 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     }
 
     fn residual(&mut self) -> Result<()> {
-        let sb_mask = if self.fs.seq.use_128x128_superblock { 31 } else { 15 };
         let ms = self.b.mi_size;
         let width_chunks = (block_width(ms) >> 6).max(1);
         let height_chunks = (block_height(ms) >> 6).max(1);
@@ -1255,7 +1225,6 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             for chunk_x in 0..width_chunks {
                 let mi_row_chunk = self.b.mi_row + (chunk_y << 4);
                 let mi_col_chunk = self.b.mi_col + (chunk_x << 4);
-                let _ = (mi_row_chunk & sb_mask, mi_col_chunk & sb_mask);
                 for plane in 0..(1 + 2 * self.b.has_chroma as usize) {
                     let tx_sz = if self.b.lossless { TX_4X4 } else { self.get_tx_size(plane, self.b.tx_size) };
                     let step_x = TX_WIDTH[tx_sz] as usize >> 2;
@@ -2026,9 +1995,6 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         self.t.lr.lr_type[plane][idx] = rtype;
         self.t.lr_written[plane].push(idx);
         if rtype == RESTORE_WIENER as u8 {
-            const MIN: [i32; 3] = [-5, -23, -17];
-            const MAX: [i32; 3] = [10, 8, 46];
-            const K: [u32; 3] = [1, 2, 3];
             for pass in 0..2 {
                 let first = if plane > 0 {
                     self.t.lr.lr_wiener[plane][idx][pass][0] = 0;
@@ -2037,7 +2003,12 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                     0
                 };
                 for j in first..3 {
-                    let v = self.decode_signed_subexp_with_ref_bool(MIN[j], MAX[j] + 1, K[j], self.ref_lr_wiener[plane][pass][j]);
+                    let v = self.decode_signed_subexp_with_ref_bool(
+                        WIENER_TAPS_MIN[j] as i32,
+                        WIENER_TAPS_MAX[j] as i32 + 1,
+                        WIENER_TAPS_K[j] as u32,
+                        self.ref_lr_wiener[plane][pass][j],
+                    );
                     self.t.lr.lr_wiener[plane][idx][pass][j] = v as i8;
                     self.ref_lr_wiener[plane][pass][j] = v;
                 }
@@ -2045,14 +2016,13 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         } else if rtype == RESTORE_SGRPROJ as u8 {
             let set = self.sd.read_literal(SGRPROJ_PARAMS_BITS as u32) as usize;
             self.t.lr.lr_sgr_set[plane][idx] = set as u8;
-            const MIN: [i32; 2] = [-96, -32];
-            const MAX: [i32; 2] = [31, 95];
             for i in 0..2 {
+                let (min, max) = (SGRPROJ_XQD_MIN[i] as i32, SGRPROJ_XQD_MAX[i] as i32);
                 let radius = SGR_PARAMS[set][i * 2];
                 let v = if radius != 0 {
-                    self.decode_signed_subexp_with_ref_bool(MIN[i], MAX[i] + 1, SGRPROJ_PRJ_SUBEXP_K as u32, self.ref_sgr_xqd[plane][i])
+                    self.decode_signed_subexp_with_ref_bool(min, max + 1, SGRPROJ_PRJ_SUBEXP_K as u32, self.ref_sgr_xqd[plane][i])
                 } else if i == 1 {
-                    ((1 << SGRPROJ_PRJ_BITS) - self.ref_sgr_xqd[plane][0]).clamp(MIN[i], MAX[i])
+                    ((1 << SGRPROJ_PRJ_BITS) - self.ref_sgr_xqd[plane][0]).clamp(min, max)
                 } else {
                     0
                 };
@@ -2265,5 +2235,18 @@ fn palette_color_context(map: &[u8], r: usize, c: usize, n: usize) -> ([u8; 8], 
     (order, hash)
 }
 
-#[allow(dead_code)]
-fn _unused(_: &MiInfo) {}
+/// Probability of the split_or_horz / split_or_vert outcome (spec 8.3.2): the spec gives cdf
+/// values as P(X <= k) * 32768 (increasing); the probability of partition k is
+/// cdf[k] - cdf[k - 1].
+fn split_psum(pcdf: &[u16], split_or_horz: bool, bsize: usize) -> i32 {
+    let pr = |k: usize| pcdf[k] as i32 - if k == 0 { 0 } else { pcdf[k - 1] as i32 };
+    let mut psum = if split_or_horz {
+        pr(PARTITION_VERT) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_VERT_A) + pr(PARTITION_VERT_B)
+    } else {
+        pr(PARTITION_HORZ) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_HORZ_B) + pr(PARTITION_VERT_A)
+    };
+    if bsize != BLOCK_128X128 {
+        psum += if split_or_horz { pr(PARTITION_VERT_4) } else { pr(PARTITION_HORZ_4) };
+    }
+    psum
+}
