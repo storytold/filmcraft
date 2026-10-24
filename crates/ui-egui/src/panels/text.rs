@@ -540,19 +540,32 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let c = rect.center();
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
         ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, tl!("Transcribe sequence"), Tokens::semibold(16.0), t.text);
-        let note = if filmcraft_speech_available(app) {
+        let available = filmcraft_speech_available(app);
+        let note = if available {
             tl!("Speech-to-text turns the dialogue into editable text.")
         } else {
             tl!("This build has no speech-to-text; import a transcript with transcript.set.")
         };
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
-        let resp = ui.interact(r, egui::Id::new("text.transcript.generate"), Sense::click());
-        ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
+        // without speech-to-text the button is shown disabled: it looked ready and a click did
+        // nothing visible (the refusal only flashed in the status bar, #2402)
+        let resp = ui.interact(r, egui::Id::new("text.transcript.generate"), if available { Sense::click() } else { Sense::hover() });
+        let fill = match (available, resp.hovered()) {
+            (false, _) => t.separator,
+            (true, true) => t.accent_hover,
+            (true, false) => t.accent,
+        };
+        ui.painter().rect_filled(r, 13.0, fill);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), if available { Color32::WHITE } else { t.text_dim });
         app.auto.add("text.transcript.generate", r, "Transcribe");
-        if resp.clicked() {
+        if let Some(e) = app.auto.elements.last_mut() {
+            e.enabled = Some(available);
+        }
+        if available && resp.clicked() {
             actions.push(("transcript.generate".into(), json!({})));
+        } else if !available {
+            resp.on_hover_text(note);
         }
         run(app, ui, actions);
         return;
