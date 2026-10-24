@@ -1,0 +1,9 @@
+asset:        docs/window-controls/kde-x11.png
+title:        FilmCraft window controls on KDE X11
+author:       @danielmigueltejedor with Codex
+source:       original work; isolated compositor, synthetic demo content or empty home screen
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT
+added:        2026-10-21 by @danielmigueltejedor
+notes:        No personal documents or desktop content. Screenshot includes only the application window.
+sha256:       015722df3a89e0f83feb25f3aa19a6009ca54fd4307a765cdd7e215e1d0bc8cd
