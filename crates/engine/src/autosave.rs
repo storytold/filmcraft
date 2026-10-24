@@ -639,6 +639,9 @@ struct Snapshot {
     project: Arc<Project>,
     revision: u64,
     path: Option<String>,
+    /// The project file's thumbnail, kept when Auto Save also saves the current project (the
+    /// recovery journal and auto-save copies are written without it).
+    thumbnail: Option<filmcraft_format::Thumbnail>,
 }
 
 enum Msg {
@@ -759,8 +762,8 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        let _ = self.tx.send(Msg::Dirty(Snapshot { project, revision, path }));
+    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>, thumbnail: Option<filmcraft_format::Thumbnail>) {
+        let _ = self.tx.send(Msg::Dirty(Snapshot { project, revision, path, thumbnail }));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -1039,7 +1042,16 @@ impl Worker {
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
                 {
-                    match filmcraft_format::atomic_write(Path::new(p), &bytes) {
+                    // the project file keeps its thumbnail (Home ▸ Recent Projects)
+                    let with_thumbnail;
+                    let current = match &s.thumbnail {
+                        Some(t) => {
+                            with_thumbnail = filmcraft_format::encode_with_view_and_thumbnail(&s.project, None, Some(t), false);
+                            &with_thumbnail
+                        }
+                        None => &bytes,
+                    };
+                    match filmcraft_format::atomic_write(Path::new(p), current) {
                         Ok(()) => {
                             let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
                         }
