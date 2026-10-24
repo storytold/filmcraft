@@ -298,6 +298,25 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `filmcraft_export::register_format_probe`, so the H.265 format exists where an HEVC encoder does,
   and choosing it is the opt-in (the Hardware encoding toggle governs H.264 only). With no software
   H.265 encoder, what NVENC declines is counted and ends the export with an error that says why.
+- **Smart rendering.** An export frame normally goes source → decode → render → encode. For an
+  intra-only export (ProRes, DNxHR: `VideoEncoder::sample_copy` returns the flavour the encoder
+  writes as an `export::SampleCopy`), the render task first asks whether the frame can be the
+  source's compressed sample instead (`Pipeline::copied_sample`, no decoding): the export draws
+  nothing on the frame (the passthrough conditions: SDR, no alpha kept, limiter, overlays or
+  scaling), the timeline shows one source frame untouched (`render::plan::untouched_clip`, the
+  decode-free twin of `untouched_frame`, which also gives the media time the renderer would ask
+  for), the clip plays forward at 100 % from a source at the output frame rate, and the source hands
+  out the sample its decoder would decode for that time (`MediaSource::compressed_video_sample`:
+  `Mp4Source` and `MxfSource` for ProRes and DNx, with the same time-to-sample mapping as
+  `video_frame`; none when a clean aperture or rotation changes the decoded picture). The sample is
+  copied only when it matches the encoder's output in every respect a player sees, checked from
+  the container and the frame header (`SampleCopy::check`: fourcc / compression ID, coded size,
+  progressive scan, alpha, BT.709 colour, square pixels, frame rate code, and
+  `prores::check_frame` / `dnx::check_frame` for a frame whose sizes and tables are consistent with
+  the sample). It is then written as that frame's packet (sync, one frame long, no composition
+  offset), in order with the encoded ones; any other frame, or a sample that can't be read or
+  fails a check, is rendered and encoded as before. Copied frames are counted in `perf.stats`
+  (`export.smartRender`); why a candidate was rendered goes to the debug log.
 - **Compositor.** `render` is the reference for monitors, thumbnails and export. `render::plan`
   turns a frame into GPU layers, each with its opacity and blend mode. All 27 blend modes run on the
   GPU (`filmcraft-gpu`): Normal and Dissolve with fixed-function "over" blending, the others by

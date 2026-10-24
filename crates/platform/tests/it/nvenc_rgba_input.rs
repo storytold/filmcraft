@@ -58,7 +58,7 @@ fn round_trip(profile: Profile, w: usize, h: usize, frames: &[Vec<u8>]) -> Vec<[
     let mut enc =
         Nvenc::with_rgba_input(&config(w as u32, h as u32, profile), &Signal::default()).unwrap_or_else(|e| panic!("{profile:?} with RGBA input: {e}"));
     assert!(enc.takes_rgba());
-    assert!(enc.encode(&[0; 4], &[0; 1], &[0; 1], 0).is_err(), "planar pictures are refused");
+    assert!(enc.encode(&[0; 4], &[0; 1], &[0; 1], 0).is_err(), "short planar pictures are refused");
     let mut packets: Vec<Packet> = Vec::new();
     for (i, f) in frames.iter().enumerate() {
         packets.extend(enc.encode_rgba(f, i as u64).unwrap());

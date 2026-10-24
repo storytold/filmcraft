@@ -31,6 +31,73 @@ pub fn probe(data: &[u8]) -> Result<FrameHeader> {
     FrameHeader::parse(data).map(|(h, _, _)| h)
 }
 
+/// Check, without decoding it, that `data` is one whole ProRes frame: its frame header, picture
+/// headers and slice tables parse, agree with the frame's geometry and stay inside the frame, the
+/// frame size its header gives is the length of `data` (no bytes missing, none appended), and the
+/// frame is exactly its headers, slice tables and slices: no bytes between the last slice of a
+/// picture and the end the picture header gives, none after the last picture. Returns the frame
+/// header. A frame that passes can still hold damaged slice data: this is the check of an
+/// intra-only sample copied unchanged (smart rendering), not a decode.
+pub fn check_frame(data: &[u8]) -> Result<FrameHeader> {
+    let (hdr, off, frame_size) = FrameHeader::parse(data)?;
+    if frame_size != data.len() {
+        return Err(Error::Invalid("frame size does not match the sample size"));
+    }
+    let (_, padding) = layout(data, &hdr, off)?;
+    if padding != 0 {
+        return Err(Error::Invalid("bytes in the frame that belong to no slice"));
+    }
+    Ok(hdr)
+}
+
+/// The pictures of a frame (one progressive, two interlaced) starting at byte `off` of `data` (the
+/// frame): each picture's slices as byte ranges inside `data`, with the slice widths (in
+/// macroblocks) of a macroblock row; and the bytes of `data` no header, slice table or slice
+/// covers (after the slices of a picture, after the last picture), which a decoder skips.
+fn layout(data: &[u8], hdr: &FrameHeader, mut off: usize) -> Result<(Vec<(Picture, Vec<usize>)>, usize)> {
+    let interlaced = hdr.interlace != Interlace::Progressive;
+    let mb_width = (hdr.width as usize).div_ceil(16);
+    let mb_height = if interlaced { (hdr.height as usize).div_ceil(32) } else { (hdr.height as usize).div_ceil(16) };
+    let npics = if interlaced { 2 } else { 1 };
+    let mut pics = Vec::with_capacity(npics);
+    let mut padding = 0usize;
+    for p in 0..npics {
+        let ph = PictureHeader::parse(data.get(off..).ok_or(Error::Truncated)?)?;
+        let pic_end = off.checked_add(ph.picture_size).ok_or(Error::Truncated)?;
+        if pic_end > data.len() || ph.picture_size < ph.header_size {
+            return Err(Error::Truncated);
+        }
+        let widths = row_slice_widths(mb_width, ph.log2_slice_mbs);
+        let nslices = widths.len() * mb_height;
+        if ph.num_slices != 0 && ph.num_slices != nslices {
+            return Err(Error::Invalid("slice count does not match frame geometry"));
+        }
+        let table = off + ph.header_size;
+        let mut pos = table + 2 * nslices;
+        if pos > pic_end {
+            return Err(Error::Truncated);
+        }
+        let mut slices = Vec::with_capacity(nslices);
+        for i in 0..nslices {
+            let sz = u16::from_be_bytes([data[table + 2 * i], data[table + 2 * i + 1]]) as usize;
+            // Every slice carries at least its 6-byte header.
+            if sz < 6 || pos + sz > pic_end {
+                return Err(Error::Truncated);
+            }
+            slices.push((pos, sz));
+            pos += sz;
+        }
+        padding += pic_end - pos;
+        let parity = match (hdr.interlace, p) {
+            (Interlace::BottomFieldFirst, 0) | (Interlace::TopFieldFirst, 1) => 1,
+            _ => 0,
+        };
+        pics.push((Picture { parity, slices }, widths));
+        off = pic_end;
+    }
+    Ok((pics, padding + (data.len() - off)))
+}
+
 /// Decode one ProRes frame (the contents of one QuickTime sample) with default options.
 pub fn decode_frame(data: &[u8]) -> Result<Frame> {
     decode_frame_with(data, &DecodeOptions::default())
@@ -112,7 +179,7 @@ pub fn decode_frame_with(data: &[u8], opts: &DecodeOptions) -> Result<Frame> {
 /// Decode one ProRes frame into `out`, reusing its plane allocations (the fastest way to decode
 /// a sequence). On error the contents of `out` are unspecified.
 pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> Result<()> {
-    let (hdr, mut off, frame_size) = FrameHeader::parse(data)?;
+    let (hdr, off, frame_size) = FrameHeader::parse(data)?;
     let data = &data[..frame_size];
     let depth = opts.bit_depth.unwrap_or(match hdr.chroma {
         ChromaFormat::Yuv422 => 10,
@@ -134,44 +201,8 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
         return Err(Error::Invalid("frame dimensions exceed the decoder memory limit"));
     }
     let interlaced = hdr.interlace != Interlace::Progressive;
-    let mb_width = width.div_ceil(16);
     let mb_height = if interlaced { height.div_ceil(32) } else { height.div_ceil(16) };
-
-    let npics = if interlaced { 2 } else { 1 };
-    let mut pics = Vec::with_capacity(npics);
-    for p in 0..npics {
-        let ph = PictureHeader::parse(data.get(off..).ok_or(Error::Truncated)?)?;
-        let pic_end = off.checked_add(ph.picture_size).ok_or(Error::Truncated)?;
-        if pic_end > data.len() || ph.picture_size < ph.header_size {
-            return Err(Error::Truncated);
-        }
-        let widths = row_slice_widths(mb_width, ph.log2_slice_mbs);
-        let nslices = widths.len() * mb_height;
-        if ph.num_slices != 0 && ph.num_slices != nslices {
-            return Err(Error::Invalid("slice count does not match frame geometry"));
-        }
-        let table = off + ph.header_size;
-        let mut pos = table + 2 * nslices;
-        if pos > pic_end {
-            return Err(Error::Truncated);
-        }
-        let mut slices = Vec::with_capacity(nslices);
-        for i in 0..nslices {
-            let sz = u16::from_be_bytes([data[table + 2 * i], data[table + 2 * i + 1]]) as usize;
-            // Every slice carries at least its 6-byte header.
-            if sz < 6 || pos + sz > pic_end {
-                return Err(Error::Truncated);
-            }
-            slices.push((pos, sz));
-            pos += sz;
-        }
-        let parity = match (hdr.interlace, p) {
-            (Interlace::BottomFieldFirst, 0) | (Interlace::TopFieldFirst, 1) => 1,
-            _ => 0,
-        };
-        pics.push((Picture { parity, slices }, widths));
-        off = pic_end;
-    }
+    let (pics, _) = layout(data, &hdr, off)?;
 
     let ctx = Ctx {
         width,

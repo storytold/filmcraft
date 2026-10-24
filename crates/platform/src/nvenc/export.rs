@@ -19,7 +19,7 @@
 
 use filmcraft_export::{
     BitrateMode, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, H264Pass, H264Profile, HardwareEncoding, Result,
-    VideoEncoder,
+    VideoEncoder, Yuv420,
 };
 use filmcraft_isobmff::{AvcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
@@ -72,6 +72,11 @@ impl NvencEncoder {
         let duration = u32::try_from(den).unwrap_or(u32::MAX);
         ps.into_iter().map(|p| EncodedPacket { data: p.data, key: p.key, duration, composition_offset: composition_offset(p.pts, p.dts, den) }).collect()
     }
+
+    /// What an encoding error adds: for H.264, how to get the software encoder instead.
+    fn hint(&self) -> &'static str {
+        if self.enc.codec() == Codec::H264 { " (turn Export ▸ Hardware encoding off to use the software encoder)" } else { "" }
+    }
 }
 
 /// `(pts - dts) × den` as an MP4 composition offset. It is a few frames (the B-frame delay); a
@@ -103,12 +108,14 @@ impl VideoEncoder for NvencEncoder {
         u32::try_from(self.rate.num).unwrap_or(u32::MAX)
     }
 
+    /// Encodes a rendered picture: HDR floats converted to 10-bit for Main 10, RGBA converted by the
+    /// GPU on an RGBA-input session, or to 4:2:0 here otherwise.
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         if f.width != self.w || f.height != self.h {
             return Err(ExportError::Encode(format!("NVENC: a {}x{} picture for a {}x{} encoder", f.width, f.height, self.w, self.h)));
         }
         let (w, h) = (self.w as usize, self.h as usize);
-        let hint = if self.enc.codec() == Codec::H264 { " (turn Export ▸ Hardware encoding off to use the software encoder)" } else { "" };
+        let hint = self.hint();
         let ps = match (self.enc.is_ten_bit(), f.hdr) {
             // Main 10 takes the encoded R'G'B' floats: 10-bit limited-range BT.2020 NCL (or the signal's matrix)
             (true, Some(rgb)) => {
@@ -129,6 +136,21 @@ impl VideoEncoder for NvencEncoder {
                 self.enc.encode(&self.y, &self.u, &self.v, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?
             }
         };
+        filmcraft_export::note_hw_encode_frame();
+        Ok(self.packets(ps))
+    }
+
+    /// Untouched frames go in as they were decoded (8-bit 4:2:0 BT.709 limited range, the stream's
+    /// own signal) through the slots' NV12 buffers, next to the rendered RGBA pictures. Main 10
+    /// takes 10-bit pictures only.
+    fn takes_yuv420(&self) -> bool {
+        !self.enc.is_ten_bit()
+    }
+
+    /// Encodes an untouched frame's decoded 4:2:0 planes through the NV12 input.
+    fn encode_yuv420(&mut self, picture: &Yuv420, index: u64) -> Result<Vec<EncodedPacket>> {
+        let hint = self.hint();
+        let ps = self.enc.encode(&picture.y, &picture.u, &picture.v, index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?;
         filmcraft_export::note_hw_encode_frame();
         Ok(self.packets(ps))
     }

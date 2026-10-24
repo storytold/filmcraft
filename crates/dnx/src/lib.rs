@@ -21,7 +21,7 @@ pub mod header;
 mod spec_tables;
 mod tables;
 
-pub use decode::{DecodeOptions, decode_frame, decode_frame_with, probe};
+pub use decode::{DecodeOptions, check_frame, decode_frame, decode_frame_with, probe};
 pub use encode::{Encoder, EncoderConfig};
 pub use header::{FieldCode, FrameHeader};
 pub use tables::ri_frame_size;

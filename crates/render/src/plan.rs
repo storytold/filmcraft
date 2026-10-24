@@ -260,6 +260,120 @@ pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick) -> bool {
     project.sequence(seq_id).is_none_or(|seq| whole_frame_on_cpu(project, seq, t))
 }
 
+/// The decoded source frame that is, unchanged, the whole picture of `seq_id` at `t`: one visible
+/// media clip with no standard effect, mask or transition, placed where it is at its own size
+/// (Motion at rest, or anything else the plan reduces to the identity), fully opaque and blending
+/// Normal, with no caption or other layer over it, in a plain colour pipeline that decodes it the
+/// default way. None for every other frame, and for a picture the renderer had to draw itself
+/// (frame blending of a speed change, for example).
+///
+/// The renderer would only turn such a frame into linear light and back. A caller that wants the
+/// picture in the frame's own Y'CbCr (an exporter whose encoder takes it) can use the decoded
+/// samples instead. The timeline is checked before anything is planned, so frames that are
+/// composited are not decoded or planned twice; [`untouched_source`] is that check alone.
+pub fn untouched_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Arc<VideoFrame>> {
+    let seq = project.sequence(seq_id)?;
+    sole_plain_clip(project, seq, t, opts)?;
+    let FramePlan::Layers { width, height, layers } = plan_frame(project, seq_id, t, opts, sources) else {
+        return None;
+    };
+    let [layer] = layers.as_slice() else {
+        return None;
+    };
+    let decoded = !matches!(layer.frame.data, filmcraft_frame::PixelData::RgbaF32(_));
+    let size = (layer.frame.width as usize, layer.frame.height as usize);
+    (decoded
+        && layer.fx.is_none()
+        && layer.input.is_none()
+        && layer.blend == Blend::Normal
+        && layer.opacity >= 1.0
+        && near_identity(&layer.matrix)
+        && size == (width, height))
+        .then(|| layer.frame.clone())
+}
+
+/// The media item [`untouched_frame`] would decode for the frame of `seq_id` at `t`, from the
+/// timeline alone (nothing is planned or decoded). None where [`untouched_frame`] returns None
+/// without planning. A caller can look at what that source declares before anything is decoded.
+pub fn untouched_source(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions) -> Option<ItemId> {
+    let seq = project.sequence(seq_id)?;
+    sole_plain_clip(project, seq, t, opts).map(|clip| clip.item)
+}
+
+/// The one visible media clip of `seq` at `t` with no standard effect, opacity mask or transition
+/// and nothing over it (no other clip, no burned-in caption), at full render scale in a frame that
+/// plans as layers: the timeline conditions of [`untouched_frame`], [`untouched_source`] and
+/// [`untouched_clip`].
+fn sole_plain_clip<'a>(project: &Project, seq: &'a Sequence, t: Tick, opts: RenderOptions) -> Option<&'a TrackItem> {
+    if opts.scale != 1.0 || whole_frame_on_cpu(project, seq, t) {
+        return None;
+    }
+    if opts.captions && seq.caption_tracks.iter().any(|tr| tr.enabled && tr.caption_at(t).is_some()) {
+        return None;
+    }
+    let mut clip = None;
+    for tr in seq.video_tracks.iter().filter(|tr| tr.enabled) {
+        if tr.transitions.iter().any(|x| x.range().contains(t)) {
+            return None;
+        }
+        if let Some(item) = tr.item_at(t).filter(|i| i.enabled)
+            && clip.replace(item).is_some()
+        {
+            return None;
+        }
+    }
+    let item = clip?;
+    let media = project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }));
+    if !media || (opts.effects && item.has_standard_effects()) || item.has_opacity_masks() {
+        return None;
+    }
+    Some(item)
+}
+
+/// The clip and source frame [`untouched_clip`] found.
+#[derive(Clone, Copy, Debug)]
+pub struct UntouchedClip<'a> {
+    /// The clip on the timeline (its `item` is the source to ask).
+    pub clip: &'a TrackItem,
+    /// The media time the renderer asks the source for (the frame shown).
+    pub time: Tick,
+    /// The source's full-resolution size, which is the sequence's frame size.
+    pub size: (u32, u32),
+}
+
+/// [`untouched_frame`] without decoding anything: the clip, and the media time of its source frame,
+/// that is unchanged the whole picture of `seq_id` at `t`, provided the source decodes that frame
+/// at `size` as plain BT.709 video ([`ColorInfo::REC709`](filmcraft_color::ColorInfo::REC709):
+/// the default decode, no colour management), which only the frame itself can tell. For a caller
+/// that checks this from the compressed sample (an export copying intra-only samples unchanged):
+/// whenever that holds, [`untouched_frame`] returns the frame this names. The same conditions as
+/// `plan_frame` for such a frame: one media clip as [`untouched_frame`] wants it, at rest (Motion
+/// reducing to the identity at the source's own size, the sequence's), fully opaque and blending
+/// Normal, not frame blended or interpolated by a speed change, and no colour space override but
+/// BT.709.
+pub fn untouched_clip<'a>(project: &'a Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<UntouchedClip<'a>> {
+    let seq = project.sequence(seq_id)?;
+    let item = sole_plain_clip(project, seq, t, opts)?;
+    if gpu_chain(project, item, opts).is_none_or(|chain| !chain.is_empty()) {
+        return None;
+    }
+    let src = sources.source(item.item)?;
+    let rate = src.info().frame_rate();
+    let size = crate::source_size(project, item.item)?;
+    let mt = item.effect_time_at(t);
+    let (opacity, blend) = crate::opacity_blend(item, mt);
+    let motion = motion_matrix(seq, item, size, crate::source_par(project, item.item), mt);
+    let matrix = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
+    let rec709 = filmcraft_color::ColorSpace::from_info(&filmcraft_color::ColorInfo::REC709);
+    let plain = crate::colorman::override_of(project, item.item).is_none_or(|cs| cs == rec709) && crate::interpolation_blend(item, t, rate).is_none();
+    let fits = (size.0 as usize, size.1 as usize) == output_size(seq, opts.scale);
+    (plain && fits && opacity >= 1.0 && blend == Blend::Normal && near_identity(&matrix)).then(|| UntouchedClip {
+        clip: item,
+        time: crate::video_source_time(item, t, rate),
+        size,
+    })
+}
+
 /// The frames [`plan_frame`] does not plan: an HDR / wide-gamut sequence composites and converts
 /// on the CPU, and so does a frame with an adjustment layer or a complex transition anywhere at
 /// `t` (whole-frame fallback).
