@@ -209,6 +209,8 @@ pub struct Layout {
     pub scroll: f64,
     /// The y of the divider between the video tracks (above) and the audio tracks (below).
     pub split_y: f32,
+    /// The parameter each clip's keyframe line shows (#2213): [`crate::state::TimelineView::clip_lanes`].
+    pub clip_lanes: std::collections::BTreeMap<u64, String>,
 }
 
 impl Layout {
@@ -454,7 +456,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
         rows.push(Row { track: tr.id, kind: TrackKind::Audio, index: i, rect, lane: app.ui.timeline.track_lanes.contains_key(&tr.id.0) });
     }
-    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y };
+    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y, clip_lanes: app.ui.timeline.clip_lanes.clone() };
     app.tl.layout = Some(layout.clone());
 
     // ---- backgrounds
@@ -510,7 +512,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             continue;
         }
         let p = painter.with_clip_rect(Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y)));
-        let volume_line = r.kind == TrackKind::Audio && !r.lane;
         // the selected gap (#648, #668): a light block across the empty time, as in Premiere Pro
         if let Some(g) = app.session.state.gap_selection.filter(|g| g.track == r.track) {
             let x0 = layout.x_of(g.range.start).max(content.min.x - 1.0);
@@ -534,8 +535,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let x1 = layout.x_of(start + dur);
             let body = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1.max(x0 + 1.0), r.rect.max.y - 1.0));
             draw_clip(app, &ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate);
-            if volume_line {
-                super::timeline_volume::paint(&p, body, it);
+            if let Some(l) = super::timeline_volume::lane(&layout, r, it) {
+                super::timeline_volume::paint(&p, body, it, &l);
             }
             app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
             // a nest that runs past the end of its sequence's contents: that part is empty
@@ -558,8 +559,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             {
                 let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
                 draw_clip(app, &ctx, &p, body, it, r.kind, true, &t, rate);
-                if volume_line {
-                    super::timeline_volume::paint(&p, body, it);
+                if let Some(l) = super::timeline_volume::lane(&layout, r, it) {
+                    super::timeline_volume::paint(&p, body, it, &l);
                 }
             }
         }
@@ -730,7 +731,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- interaction
     interact(app, ui, seq, &layout, rect);
-    super::timeline_volume::interact(app, ui, seq, &layout, aclip);
+    super::timeline_volume::interact(app, ui, seq, &layout, vclip, aclip);
     // track keyframes (drawn and edited on top of the clips)
     super::timeline_automation::show(app, ui, seq, &layout, aclip);
     if cap_n > 0 {
@@ -2089,6 +2090,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Fit to frame", "clip.fitToFrame"),
         ("Fill frame", "clip.fillFrame"),
     ],
+    &[("Show Clip Keyframes", "clip.showKeyframes")],
     &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
 ];
 
@@ -2979,6 +2981,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                         multicam_menu(app, ui, &picked);
                         continue;
                     }
+                    if cmd == "clip.showKeyframes" {
+                        super::timeline_volume::menu(app, ui, seq, &picked);
+                        continue;
+                    }
                     let label = match cmd {
                         "clip.enable" if all_enabled => tl!("✓ Enable"),
                         "clip.link" if linked => tl!("Unlink"),
@@ -3444,6 +3450,7 @@ mod new_track_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: 200.0,
+            clip_lanes: Default::default(),
         };
         let at = |y| new_track_at(&seq, &layout, y, 50.0, 50.0);
         assert_eq!(at(40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));
@@ -3484,6 +3491,7 @@ mod new_track_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: 150.0,
+            clip_lanes: Default::default(),
         };
         assert_eq!(new_track_at(&seq, &layout, 10.0, 50.0, 50.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 50.0)))));
         // scrolled to the bottom, V1..V3 fill the area as before

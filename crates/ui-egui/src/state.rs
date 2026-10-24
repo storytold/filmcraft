@@ -208,6 +208,11 @@ pub struct TimelineView {
     /// (`volume`, `pan`, `mute`, `send.<i>.level`, `fx.<slot>.<param>`).
     #[serde(default)]
     pub track_lanes: std::collections::BTreeMap<u64, String>,
+    /// The parameter each clip's keyframe line shows, picked with "Show Clip Keyframes" (#2213):
+    /// clip id → `<effect id>#<n>/<param id>` or `none` (see [`crate::panels::timeline_volume`]).
+    /// A clip not in it shows its usual line: Volume on audio, nothing on video.
+    #[serde(default)]
+    pub clip_lanes: std::collections::BTreeMap<u64, String>,
 }
 
 impl TimelineView {
@@ -238,6 +243,7 @@ impl Default for TimelineView {
             seen_playhead: None,
             fit_empty: None,
             track_lanes: Default::default(),
+            clip_lanes: Default::default(),
         }
     }
 }
