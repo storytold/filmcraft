@@ -45,6 +45,14 @@ Not represented: speed changes and frame holds (exported at 100 % with a report 
 graphics and synthetic media (gaps), video effects other than transitions, clip
 markers (written to the master mob, so they come back as media markers), OMF video and markers.
 
+## FCPXML spatial conform
+
+`adjust-conform` says how a clip's picture is scaled into the sequence frame before its
+`adjust-transform` (#2218). A missing element means `fit`, so FCPXML import sets the clip's
+scale-to-frame-size flag for `fit` and clears it for `none` (native pixels); `fill` has no
+equivalent yet, so it is reported and imported as `fit`. Export writes `<adjust-conform type="none"/>`
+for a clip without the flag. `tests/fcpxml_conform.rs` covers each case and a round trip of random flags.
+
 ## Nested sequences
 
 For the formats Premiere Pro exports (FCP7 XML, OTIO, EDL, AAF, OMF) a nested sequence is written
