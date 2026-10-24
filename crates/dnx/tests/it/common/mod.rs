@@ -49,7 +49,7 @@ pub fn make(ff: &Path, spec: &Spec) -> PathBuf {
         let t = tmp.to_str().unwrap().to_string();
         args.push(&t);
         run(ff, &args);
-        std::fs::rename(&tmp, &path).unwrap();
+        filmcraft_testkit::fixtures::publish(&tmp, &path).unwrap();
     }
     path
 }
@@ -267,7 +267,7 @@ pub fn source_frames(ff: &Path, name: &str, lavfi: &str, frames: u32, w: u32, h:
         let tmp = filmcraft_testkit::temp_path(&path);
         let f = frames.to_string();
         run(ff, &["-f", "lavfi", "-i", lavfi, "-frames:v", &f, "-f", "rawvideo", "-pix_fmt", pix, tmp.to_str().unwrap()]);
-        std::fs::rename(&tmp, &path).unwrap();
+        filmcraft_testkit::fixtures::publish(&tmp, &path).unwrap();
     }
     let bytes = std::fs::read(&path).unwrap();
     let s: Vec<u16> = if depth == 8 {
