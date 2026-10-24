@@ -88,16 +88,23 @@ impl DirectorySource {
     pub fn system() -> Self {
         let mut dirs: Vec<PathBuf> = Vec::new();
         let home = std::env::var_os("HOME").map(PathBuf::from);
+        // Fonts activated through Adobe Fonts (Creative Cloud) live in a CoreSync folder that the
+        // OS font manager lists but the standard folders don't hold (#1878); on Windows the files
+        // there have no extension.
         if cfg!(target_os = "macos") {
             dirs.extend(["/System/Library/Fonts", "/Library/Fonts"].map(PathBuf::from));
             if let Some(h) = &home {
                 dirs.push(h.join("Library/Fonts"));
+                dirs.push(h.join("Library/Application Support/Adobe/CoreSync/plugins/livetype"));
             }
         } else if cfg!(windows) {
             let win = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
             dirs.push(win.join("Fonts"));
             if let Some(l) = std::env::var_os("LOCALAPPDATA") {
                 dirs.push(PathBuf::from(l).join("Microsoft\\Windows\\Fonts"));
+            }
+            if let Some(a) = std::env::var_os("APPDATA") {
+                dirs.push(PathBuf::from(a).join("Adobe\\CoreSync\\plugins\\livetype"));
             }
         } else if cfg!(unix) && !cfg!(target_arch = "wasm32") {
             dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from));
@@ -123,8 +130,21 @@ fn walk(dir: &std::path::Path, depth: u32, out: &mut Vec<PathBuf>) {
             if depth < 4 {
                 walk(&p, depth + 1, out);
             }
-        } else if is_file && p.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc")) {
+        } else if is_file && is_font_file(&p) {
             out.push(p);
+        }
+    }
+}
+
+/// A font file by extension, or an extensionless file that starts with an OpenType / TrueType /
+/// collection tag (Adobe Fonts stores its files without an extension on Windows).
+fn is_font_file(p: &std::path::Path) -> bool {
+    match p.extension().and_then(|x| x.to_str()) {
+        Some(x) => matches!(x.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc"),
+        None => {
+            let mut tag = [0u8; 4];
+            std::fs::File::open(p).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut tag)).is_ok()
+                && matches!(&tag, [0, 1, 0, 0] | b"OTTO" | b"ttcf" | b"true")
         }
     }
 }
@@ -610,6 +630,32 @@ mod tests {
         assert!(f.has_char('A') && f.has_char('Ж'));
         assert!(!f.has_char('\u{5d0}'), "Inter has no Hebrew");
         assert!(f.has_feature(b"liga") || f.has_feature(b"calt"));
+    }
+
+    #[test]
+    fn adobe_fonts_folders_are_scanned() {
+        // #1878: macOS keeps activated fonts as hidden `.r/.<id>.otf`, Windows as `r/<id>` without an extension
+        let root = std::env::temp_dir().join(format!("filmcraft-livetype-{}", std::process::id()));
+        for d in [".r", "r"] {
+            std::fs::create_dir_all(root.join(d)).expect("temp dir");
+        }
+        std::fs::write(root.join(".r/.12345.otf"), INTER_REGULAR).expect("write");
+        std::fs::write(root.join("r/12346"), INTER_REGULAR).expect("write");
+        std::fs::write(root.join("r/12347"), b"not a font").expect("write");
+        let faces = DirectorySource { dirs: vec![root.clone()] }.faces();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(faces.iter().filter(|f| f.family == "Inter").count(), 2, "{:?}", faces.iter().map(|f| &f.data).collect::<Vec<_>>());
+        // and the system scan includes the whole CoreSync path
+        let expected = if cfg!(target_os = "macos") {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support/Adobe/CoreSync/plugins/livetype"))
+        } else if cfg!(windows) {
+            std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("Adobe\\CoreSync\\plugins\\livetype"))
+        } else {
+            None
+        };
+        if let Some(expected) = expected {
+            assert!(DirectorySource::system().dirs.contains(&expected), "{expected:?}");
+        }
     }
 
     #[test]
