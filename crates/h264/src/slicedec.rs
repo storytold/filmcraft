@@ -10,7 +10,7 @@ use crate::params::{Pps, Sps};
 use crate::picture::*;
 use crate::slice::{SliceHeader, SliceType};
 use crate::tables::*;
-use crate::transform::{self, LevelScale};
+use crate::transform::{self, Dequant, LevelScale};
 use filmcraft_bitstream::BitReader;
 
 /// Per-slice data kept with the picture (deblocking, motion field export).
@@ -1076,45 +1076,36 @@ impl<'a> SliceDecoder<'a> {
         if self.mb().kind.is_intra() { 0 } else { 3 }
     }
 
-    /// Store a 4x4 luma block given in scan order (levels[0..16]); `ac_only` skips position 0.
-    pub fn put_luma4(&mut self, raster: usize, levels: &[i32; 16], ac_only: bool) {
+    /// Coefficients, level scales and dequantiser of luma 4x4 block `raster`: the residual
+    /// decoders write each coefficient straight to its raster position.
+    pub fn luma4_dst(&mut self, raster: usize) -> (&mut [i32; 16], &'a [i32; 16], Dequant) {
         let qp = self.qp;
         let ls = &self.ls.ls4[self.luma_list4()][(qp % 6) as usize];
-        let blk = &mut self.s.coef[raster * 16..raster * 16 + 16];
-        let mut any = false;
-        for (k, &lv) in levels.iter().enumerate().skip(ac_only as usize) {
-            if lv != 0 {
-                let p = ZIGZAG4[k] as usize;
-                blk[p] = transform::scale4(lv, ls[p], qp);
-                any = true;
-            }
-        }
-        if any {
-            self.s.blk_nz |= 1 << raster;
-            self.pic.mbs[self.mb_addr].nz_mask |= 1 << raster;
-        }
+        let blk = &mut self.s.coef.as_chunks_mut::<16>().0[raster];
+        (blk, ls, Dequant::new4(qp))
     }
 
-    /// Store an 8x8 luma block given in scan order.
-    pub fn put_luma8(&mut self, b8: usize, levels: &[i32; 64]) {
+    /// Luma 4x4 block `raster` has coefficients.
+    pub fn mark_luma4(&mut self, raster: usize) {
+        self.s.blk_nz |= 1 << raster;
+        self.pic.mbs[self.mb_addr].nz_mask |= 1 << raster;
+    }
+
+    /// `luma4_dst` for luma 8x8 block `b8`.
+    pub fn luma8_dst(&mut self, b8: usize) -> (&mut [i32; 64], &'a [i32; 64], Dequant) {
         let qp = self.qp;
         let list = if self.mb().kind.is_intra() { 0 } else { 1 };
         let ls = &self.ls.ls8[list][(qp % 6) as usize];
-        let blk = &mut self.s.coef[b8 * 64..b8 * 64 + 64];
-        let mut any = false;
-        for (k, &lv) in levels.iter().enumerate() {
-            if lv != 0 {
-                let p = ZIGZAG8[k] as usize;
-                blk[p] = transform::scale8(lv, ls[p], qp);
-                any = true;
-            }
-        }
-        if any {
-            self.s.blk_nz |= 1 << b8;
-            let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
-            let m = (0b11u16 << (by * 4 + bx)) | (0b11u16 << ((by + 1) * 4 + bx));
-            self.pic.mbs[self.mb_addr].nz_mask |= m;
-        }
+        let blk = &mut self.s.coef.as_chunks_mut::<64>().0[b8];
+        (blk, ls, Dequant::new8(qp))
+    }
+
+    /// Luma 8x8 block `b8` has coefficients.
+    pub fn mark_luma8(&mut self, b8: usize) {
+        self.s.blk_nz |= 1 << b8;
+        let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
+        let m = (0b11u16 << (by * 4 + bx)) | (0b11u16 << ((by + 1) * 4 + bx));
+        self.pic.mbs[self.mb_addr].nz_mask |= m;
     }
 
     /// Intra16x16 DC levels in scan order -> scaled DC of each 4x4 block.
@@ -1149,23 +1140,18 @@ impl<'a> SliceDecoder<'a> {
         }
     }
 
-    /// Chroma AC levels (scan positions 1..16 in levels[1..]) for block `b` of component `c`.
-    pub fn put_chroma_ac(&mut self, c: usize, b: usize, levels: &[i32; 16]) {
+    /// `luma4_dst` for chroma AC block `b` of component `c`.
+    pub fn chroma_ac_dst(&mut self, c: usize, b: usize) -> (&mut [i32; 16], &'a [i32; 16], Dequant) {
         let qpc = self.chroma_qp(self.qp, c);
         let list = if self.mb().kind.is_intra() { 1 + c } else { 4 + c };
         let ls = &self.ls.ls4[list][(qpc % 6) as usize];
-        let blk = &mut self.s.coef_c[c][b * 16..b * 16 + 16];
-        let mut any = false;
-        for (k, &lv) in levels.iter().enumerate().skip(1) {
-            if lv != 0 {
-                let p = ZIGZAG4[k] as usize;
-                blk[p] = transform::scale4(lv, ls[p], qpc);
-                any = true;
-            }
-        }
-        if any {
-            self.s.c_nz[c] |= 1 << b;
-        }
+        let blk = &mut self.s.coef_c[c].as_chunks_mut::<16>().0[b];
+        (blk, ls, Dequant::new4(qpc))
+    }
+
+    /// Chroma AC block `b` of component `c` has coefficients.
+    pub fn mark_chroma_ac(&mut self, c: usize, b: usize) {
+        self.s.c_nz[c] |= 1 << b;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1358,7 +1344,7 @@ impl<'a> SliceDecoder<'a> {
         if kind == MbKind::I16x16 {
             let nc = self.nc_luma(0);
             let mut lv = [0i32; 16];
-            cavlc::residual_block(r, &mut lv, 0, 15, 16, nc)?;
+            cavlc::residual_block(r, 0, 15, 16, nc, |k, v| lv[k] = v)?;
             self.put_luma_dc(&lv);
         }
         for b8 in 0..4 {
@@ -1367,30 +1353,41 @@ impl<'a> SliceDecoder<'a> {
                 continue;
             }
             if t8 {
-                let mut lv8 = [0i32; 64];
+                let mut any = false;
                 for i4 in 0..4 {
                     let raster = (by8 + (i4 >> 1)) * 4 + bx8 + (i4 & 1);
                     let nc = self.nc_luma(raster);
-                    let mut lv = [0i32; 16];
-                    let tc = cavlc::residual_block(r, &mut lv, 0, 15, 16, nc)?;
+                    let (blk, ls, dq) = self.luma8_dst(b8);
+                    let tc = cavlc::residual_block(r, 0, 15, 16, nc, |k, v| {
+                        let p = ZIGZAG8[4 * k + i4] as usize;
+                        blk[p] = dq.apply(v, ls[p]);
+                    })?;
                     self.mb_mut().nnz[raster] = tc;
-                    for (i, &v) in lv.iter().enumerate() {
-                        lv8[4 * i + i4] = v;
-                    }
+                    any |= tc > 0;
                 }
-                self.put_luma8(b8, &lv8);
+                if any {
+                    self.mark_luma8(b8);
+                }
             } else {
                 for i4 in 0..4 {
                     let raster = (by8 + (i4 >> 1)) * 4 + bx8 + (i4 & 1);
                     let nc = self.nc_luma(raster);
-                    let mut lv = [0i32; 16];
+                    let (blk, ls, dq) = self.luma4_dst(raster);
                     let tc = if kind == MbKind::I16x16 {
-                        cavlc::residual_block(r, &mut lv[1..], 0, 14, 15, nc)?
+                        cavlc::residual_block(r, 0, 14, 15, nc, |k, v| {
+                            let p = ZIGZAG4[k + 1] as usize;
+                            blk[p] = dq.apply(v, ls[p]);
+                        })?
                     } else {
-                        cavlc::residual_block(r, &mut lv, 0, 15, 16, nc)?
+                        cavlc::residual_block(r, 0, 15, 16, nc, |k, v| {
+                            let p = ZIGZAG4[k] as usize;
+                            blk[p] = dq.apply(v, ls[p]);
+                        })?
                     };
                     self.mb_mut().nnz[raster] = tc;
-                    self.put_luma4(raster, &lv, kind == MbKind::I16x16);
+                    if tc > 0 {
+                        self.mark_luma4(raster);
+                    }
                 }
             }
         }
@@ -1398,7 +1395,7 @@ impl<'a> SliceDecoder<'a> {
         if cbp_c & 3 != 0 {
             for c in 0..2 {
                 let mut lv = [0i32; 4];
-                cavlc::residual_block(r, &mut lv, 0, 3, 4, -1)?;
+                cavlc::residual_block(r, 0, 3, 4, -1, |k, v| lv[k] = v)?;
                 self.put_chroma_dc(c, &lv);
             }
         }
@@ -1406,10 +1403,15 @@ impl<'a> SliceDecoder<'a> {
             for c in 0..2 {
                 for b in 0..4 {
                     let nc = self.nc_chroma(c, b);
-                    let mut lv = [0i32; 16];
-                    let tc = cavlc::residual_block(r, &mut lv[1..], 0, 14, 15, nc)?;
+                    let (blk, ls, dq) = self.chroma_ac_dst(c, b);
+                    let tc = cavlc::residual_block(r, 0, 14, 15, nc, |k, v| {
+                        let p = ZIGZAG4[k + 1] as usize;
+                        blk[p] = dq.apply(v, ls[p]);
+                    })?;
                     self.mb_mut().nnz_c[c][b] = tc;
-                    self.put_chroma_ac(c, b, &lv);
+                    if tc > 0 {
+                        self.mark_chroma_ac(c, b);
+                    }
                 }
             }
         }
