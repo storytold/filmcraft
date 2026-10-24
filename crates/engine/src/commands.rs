@@ -1151,6 +1151,7 @@ fn build() -> Vec<CommandSpec> {
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
+            s.thumbnail = None;
             if s.path.take().is_some() {
                 s.previews.reset_temp();
             }
@@ -1165,6 +1166,7 @@ fn build() -> Vec<CommandSpec> {
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
+            s.thumbnail = None;
             s.state.active_sequence = Some(seq);
             s.state.open_sequences = vec![seq];
             s.state.playheads.insert(seq, FrameRate::FPS_23_976.tick_of(4 * 24 + 6));

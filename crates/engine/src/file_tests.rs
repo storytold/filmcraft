@@ -177,6 +177,29 @@ fn save_without_an_active_sequence_keeps_the_previous_thumbnail() {
     assert_eq!((img.width, img.height), (kept.width, kept.height));
 }
 
+/// A thumbnail belongs to its project: after File ▸ Close Project or New Project, a Save As
+/// (with no sequence open to render a new one) writes none, and the file opens without one.
+#[test]
+fn closing_or_replacing_the_project_drops_its_thumbnail() {
+    let d = temp_dir("thumb-close");
+    let first = d.join("first.fcproj").to_string_lossy().to_string();
+    for (i, (cmd, params)) in [("file.closeProject", json!({"force": true})), ("file.newProject", json!({"name": "Next"}))].into_iter().enumerate() {
+        let mut s = demo();
+        s.execute("file.saveAs", json!({"path": first})).unwrap();
+        assert!(s.thumbnail.is_some());
+        s.execute(cmd, params).unwrap();
+        assert!(s.state.active_sequence.is_none());
+        assert!(s.thumbnail.is_none(), "{cmd} keeps the closed project's thumbnail");
+        let next = d.join(format!("next {i}.fcproj")).to_string_lossy().to_string();
+        s.execute("file.saveAs", json!({"path": next})).unwrap();
+        assert_eq!(filmcraft_format::read_thumbnail(std::path::Path::new(&next)).unwrap(), None, "{cmd}: no thumbnail of the closed project");
+        let mut o = Session::default();
+        o.execute("file.open", json!({"path": next})).unwrap();
+        assert!(o.thumbnail.is_none(), "{cmd}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// A thumbnail that cannot be read never stops the project from opening, and the next save
 /// replaces it.
 #[test]

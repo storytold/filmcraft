@@ -681,6 +681,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     s.history = Default::default();
     s.history.limit = 200;
     s.state = Session::default().state;
+    s.thumbnail = None;
     s.state.active_sequence = s.project.sequences().next().map(|i| i.id);
     s.state.open_sequences = s.state.active_sequence.into_iter().collect();
     if s.path.take().is_some() {
