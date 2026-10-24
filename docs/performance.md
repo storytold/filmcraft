@@ -139,6 +139,32 @@ CPU. GPU rendering is nevertheless **Off by default** (opt-in per export) until 
 measured on Windows and macOS: the GPU result matches the CPU within the compositor's parity
 tolerance, not bit for bit, and Off keeps exports byte-reproducible on every machine. (The 4K row used the same scene with the sequence, clip and positions scaled to 4K.)
 
+### On a laptop with integrated and discrete graphics
+
+The export renderer asked wgpu for an adapter with no power preference, which takes the first one
+listed. On a laptop with an Intel integrated GPU (Arrow Lake, Mesa ANV) listed before an NVIDIA RTX 50
+series GPU (Linux, NVIDIA driver) that is the integrated GPU, and its read-back memory is uncached: the
+compositor read a 1080p half-float frame there two bytes at a time, which took 650 ms (2 ms on the
+NVIDIA GPU), and with four renderers reading at once 1.3 s per frame. GPU
+rendering made exports more than ten times slower than the CPU. Now the export renders on the
+high-performance GPU, the one the app's window asks for (`WGPU_POWER_PREF` overrides both), and every
+read-back copies each row out of the mapped buffer in one go before reading it sample by sample (85
+ms for the same frame on the integrated GPU).
+
+Same laptop, `cargo xtask bench --sections export --repeat 2 --hw auto` (GPU rendering Auto and
+NVENC; ProRes has no hardware encoder), best of 2, 2026-10-24:
+
+| scene | before | after (RTX 5090) | after, integrated GPU forced (`WGPU_POWER_PREF=low`) |
+|---|---|---|---|
+| `h264` | 61.7 s | **1.42 s** | 7.97 s |
+| `h264_fx` | 65.3 s | **1.56 s** | 14.21 s |
+| `prores` | 61.1 s | **4.63 s** | 7.53 s |
+
+The CPU path (`--hw off`) is unchanged: `h264_fx` 11.76 s before, 11.57 s after. With layers and
+effects, GPU rendering and NVENC now export 7.4 times as fast as the CPU compositor and the built-in
+encoder on this machine. On the integrated GPU alone the read-back still costs more than the GPU
+saves (`h264_fx` 14.21 s against 11.57 s on the CPU), but no longer ten times as much.
+
 ### Memory after an export
 
 The recycled images stay on the shelves of `filmcraft_frame::pool` (up to 320 MiB of them, and

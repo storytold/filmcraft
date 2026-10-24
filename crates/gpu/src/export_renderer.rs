@@ -112,7 +112,14 @@ impl ExportRenderer {
                     return None;
                 }
                 let instance = wgpu::Instance::default();
-                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+                // The GPU the app's window asks for: the high-performance one (`WGPU_POWER_PREF`
+                // overrides it, as for the window). wgpu's default, no preference, takes the first
+                // adapter listed: on a laptop with integrated and discrete graphics that can be the
+                // integrated GPU, whose read-back memory is uncached (a 1080p export frame took 1.3 s
+                // to read back there).
+                let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference, ..Default::default() })).ok()?;
+                log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
