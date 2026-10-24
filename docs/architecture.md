@@ -691,7 +691,8 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
   H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
   DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
-  `<data dir>/export-presets.json` (`export.presets.*`).
+  `<data dir>/export-presets.json` (`export.presets.*`). A `bitrateKbps` in `settings` turns the
+  adaptive bitrate off, as the flat parameter does, unless `adaptiveBitrate` comes with it.
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
   or ranges add several items); `export.queue.start` encodes ready items one after another as
   ordinary jobs, advanced by `Session::poll_persistence` / `pump_jobs` (or synchronously with

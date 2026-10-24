@@ -211,6 +211,11 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         let mut v = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
         merge(&mut v, patch);
         settings = serde_json::from_value(v).map_err(|e| bad(cmd, format!("settings: {e}")))?;
+        // A bitrate given in `settings` is the bitrate, as the flat `bitrateKbps` is: an adaptive
+        // bitrate from the preset would otherwise replace it (`ExportSettings::resolve`).
+        if patch.get("bitrateKbps").is_some() && patch.get("adaptiveBitrate").is_none() {
+            settings.adaptive_bitrate = None;
+        }
         // serde ignores keys it doesn't know, so a misspelt or misplaced key (a flat parameter
         // such as `loudnessLufs` put inside `settings`) would silently do nothing.
         let known = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
