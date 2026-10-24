@@ -1183,3 +1183,75 @@ fn transform_shutter_uses_the_sequence_frame_rate_without_env() {
         assert!(delta(frame) > 1e-3, "frame {frame} moves but is sharp");
     }
 }
+
+/// The corrections of an analysed path are worked out once per set of settings, not for every
+/// rendered frame: smoothing the whole path took 0.8 ms per frame for a 30 s clip, 7 ms for 2
+/// minutes and 15 ms for 10 minutes.
+mod stabilizer_corrections_cache {
+    use super::super::temporal::{CorrectedCache, StabilizerPath, corrections, cover_scale};
+    use filmcraft_geom::Affine;
+    use std::sync::Arc;
+
+    fn path(n: usize, seed: usize) -> Arc<StabilizerPath> {
+        // a shaky path: small steps with a drift and some turning, so the borders do get exposed
+        let steps = (0..n - 1)
+            .map(|k| {
+                let j = (k * 7919 + seed) % 13;
+                Affine::translate(j as f64 * 0.4 - 2.0, ((k * 104_729 + seed) % 11) as f64 * 0.3 - 1.4)
+            })
+            .collect();
+        Arc::new(StabilizerPath { w: 480, h: 270, steps, fps: 30.0 })
+    }
+
+    #[test]
+    fn the_same_path_and_settings_are_worked_out_once_and_match_the_direct_result() {
+        let p = path(400, 1);
+        let cache = CorrectedCache::default();
+        let a = cache.get(&p, 15.0, false, false);
+        let b = cache.get(&p, 15.0, false, false);
+        assert!(Arc::ptr_eq(&a, &b), "a second frame reuses the first frame's corrections");
+        let direct = corrections(&p, 15.0, false, false);
+        assert_eq!(a.corr.len(), direct.len());
+        assert!(a.corr.iter().zip(&direct).all(|(x, y)| (x.a, x.b, x.c, x.d, x.e, x.f) == (y.a, y.b, y.c, y.d, y.e, y.f)), "same numbers as `corrections`");
+    }
+
+    #[test]
+    fn other_settings_or_another_path_get_their_own_corrections() {
+        let p = path(300, 2);
+        let cache = CorrectedCache::default();
+        let base = cache.get(&p, 15.0, false, false);
+        for other in [
+            cache.get(&p, 16.0, false, false),
+            cache.get(&p, 15.0, true, false),
+            cache.get(&p, 15.0, false, true),
+            cache.get(&path(300, 2), 15.0, false, false),
+        ] {
+            assert!(!Arc::ptr_eq(&base, &other));
+        }
+        assert!(Arc::ptr_eq(&base, &cache.get(&p, 15.0, false, false)), "and the first set is still there");
+    }
+
+    #[test]
+    fn the_worst_border_matches_a_direct_scan_for_each_zoom_limit() {
+        let p = path(500, 3);
+        let c = CorrectedCache::default().get(&p, 4.0, false, false);
+        for max in [1.0, 1.2, 1.5, 4.0] {
+            let direct = c.corr.iter().map(|x| cover_scale(x, 480.0, 270.0, max)).fold(1.0, f64::max);
+            assert_eq!(c.worst_cover(480.0, 270.0, max), direct, "max {max}");
+            assert_eq!(c.worst_cover(480.0, 270.0, max), direct, "max {max}, again");
+        }
+        assert!(c.worst_cover(480.0, 270.0, 4.0) > 1.0, "the test path does expose borders");
+    }
+
+    #[test]
+    fn an_animated_smoothness_does_not_grow_the_cache_without_bound() {
+        let p = path(120, 4);
+        let cache = CorrectedCache::default();
+        for k in 0..100 {
+            let smooth = 5.0 + k as f64 * 0.1;
+            let c = cache.get(&p, smooth, false, false);
+            let direct = corrections(&p, smooth, false, false);
+            assert_eq!(c.corr[60].e, direct[60].e, "smooth {smooth}");
+        }
+    }
+}

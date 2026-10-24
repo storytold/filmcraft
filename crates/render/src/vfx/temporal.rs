@@ -351,6 +351,62 @@ pub(crate) fn corrections(path: &StabilizerPath, smooth_frames: f64, no_motion: 
         .collect()
 }
 
+/// The corrections of one analysed path for one set of Smoothness / Result / Preserve Scale
+/// settings, and the zoom that hides the borders of the worst of them (per `max` zoom allowed).
+pub(crate) struct Corrected {
+    pub(crate) corr: Vec<Affine>,
+    /// Keeps the path the corrections came from alive, so its address can't be reused by another.
+    _path: Arc<StabilizerPath>,
+    worst: Mutex<Vec<(u64, f64)>>,
+}
+
+impl Corrected {
+    /// The largest [`cover_scale`] of any correction, with at most `max` zoom: what Crop Less
+    /// Smooth Motion framing and Auto-scale need, the same for every frame of the clip.
+    pub(crate) fn worst_cover(&self, w: f64, h: f64, max: f64) -> f64 {
+        let key = max.to_bits();
+        if let Some(v) = self.worst.lock().ok().and_then(|l| l.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)) {
+            return v;
+        }
+        let v = self.corr.iter().map(|c| cover_scale(c, w, h, max)).fold(1.0, f64::max);
+        if let Ok(mut l) = self.worst.lock() {
+            l.push((key, v));
+        }
+        v
+    }
+}
+
+type CorrectedKey = (usize, u64, bool, bool);
+
+/// Corrections already worked out, by path and settings.
+#[derive(Default)]
+pub(crate) struct CorrectedCache(Mutex<HashMap<CorrectedKey, Arc<Corrected>>>);
+
+impl CorrectedCache {
+    pub(crate) fn get(&self, path: &Arc<StabilizerPath>, smooth_frames: f64, no_motion: bool, preserve_scale: bool) -> Arc<Corrected> {
+        let key = (Arc::as_ptr(path) as usize, smooth_frames.to_bits(), no_motion, preserve_scale);
+        if let Some(c) = self.0.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return c;
+        }
+        let c = Arc::new(Corrected { corr: corrections(path, smooth_frames, no_motion, preserve_scale), _path: path.clone(), worst: Mutex::new(Vec::new()) });
+        if let Ok(mut m) = self.0.lock() {
+            // a keyframed Smoothness makes a new key for every frame: don't keep them all
+            if m.len() >= 16 {
+                m.clear();
+            }
+            m.insert(key, c.clone());
+        }
+        c
+    }
+}
+
+/// [`corrections`] for `path`, computed once per set of settings instead of for every rendered
+/// frame: smoothing the whole path and finding its worst border took 0.8 ms per frame for a 30 s
+/// clip, 7 ms for 2 minutes and 15 ms for 10 minutes, on every frame of playback and export.
+pub(crate) fn corrected(path: &Arc<StabilizerPath>, smooth_frames: f64, no_motion: bool, preserve_scale: bool) -> Arc<Corrected> {
+    static CACHE: OnceLock<CorrectedCache> = OnceLock::new();
+    CACHE.get_or_init(Default::default).get(path, smooth_frames, no_motion, preserve_scale)
+}
 /// Smallest zoom about the centre (≥ 1) that hides the borders a correction exposes.
 pub(crate) fn cover_scale(corr: &Affine, w: f64, h: f64, max: f64) -> f64 {
     let Some(inv) = corr.inverse() else { return 1.0 };
@@ -388,14 +444,15 @@ pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let k = ((cx.seconds * path.fps).round().max(0.0) as usize).min(n - 1);
     let smooth = fv(e, "smoothness", cx) as f64 / 100.0 * path.fps;
     let crop_less = fv(e, "crop_less", cx) as f64 / 100.0;
-    let corr = corrections(&path, smooth * (0.5 + crop_less), chv(e, "result") == 1, bv(e, "preserve_scale"));
+    let corrected = corrected(&path, smooth * (0.5 + crop_less), chv(e, "result") == 1, bv(e, "preserve_scale"));
+    let corr = &corrected.corr;
     let framing = chv(e, "framing");
     let (aw, ah) = (path.w as f64, path.h as f64);
     let max_scale = (fv(e, "max_scale", cx) as f64 / 100.0).max(1.0);
     let safe = 1.0 + fv(e, "action_safe", cx) as f64 / 100.0;
     let extra = fv(e, "additional_scale", cx) as f64 / 100.0;
     let zoom = match framing {
-        2 => corr.iter().map(|c| cover_scale(c, aw, ah, max_scale)).fold(1.0, f64::max) * safe,
+        2 => corrected.worst_cover(aw, ah, max_scale) * safe,
         _ => 1.0,
     } * extra;
     // analysis px → layer px
@@ -410,7 +467,7 @@ pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     match framing {
         1 => {
             // crop to the area every frame covers
-            let worst = corr.iter().map(|c| cover_scale(c, aw, ah, 4.0)).fold(1.0, f64::max);
+            let worst = corrected.worst_cover(aw, ah, 4.0);
             let (mx, my) = (lw * (1.0 - 1.0 / worst) / 2.0, lh * (1.0 - 1.0 / worst) / 2.0);
             crate::effects::crop(img, (mx / lw) as f32, (my / lh) as f32, (mx / lw) as f32, (my / lh) as f32, 0.0);
         }
