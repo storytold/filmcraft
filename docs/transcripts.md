@@ -53,7 +53,15 @@ Both are **optional features**, off by default and never built for the web:
 Without `whisper`, and with no recogniser installed, `transcript.generate` and Transcribe Sequence
 are disabled, with "speech-to-text is not available in this build" as the reason (`describe`,
 `command_list {"enabled_only": true}` and the menus show it); with Automatically transcribe clips
-on, `file.import` reports the same reason as a `transcription: …` entry in its `errors`.
+on with the all-imported scope, `file.import` reports the same reason as a `transcription: …`
+entry in its `errors`.
+
+The default sequence-only scope waits until enabled audio is placed in a sequence (including
+Source Insert/Overwrite, timeline placement, paste and sequence expansion). It transcribes the
+underlying media once, preserving any existing transcript, and includes the new transcript in
+the placement's undo step. Undo/Redo and opening or recovering a project do not run recognition.
+If recognition fails, the clips stay placed and a warning appears in the Events panel and a toast.
+
 Without `speech-download`, `transcript.downloadModel` is disabled the same way. Transcripts can
 still be imported with `transcript.set` and edited with every other command. Hosts and tests can
 install any recogniser in `Session::transcriber`, which enables transcription in any build.
