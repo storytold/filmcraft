@@ -52,6 +52,17 @@ impl FilmcraftApp {
     /// Once a frame: play a grain when the playhead moved under a held mouse button.
     pub(crate) fn scrub_audio(&mut self, ctx: &egui::Context) {
         let (now, down) = ctx.input(|i| (i.time, i.pointer.any_down()));
+        if let Some(audio) = self.audio.as_mut()
+            && let Some(result) = audio.poll_start()
+        {
+            match result {
+                Ok(()) => self.scrub.open = true,
+                Err(e) => {
+                    self.scrub.open = false;
+                    log::warn!("audio output unavailable for scrubbing: {e}");
+                }
+            }
+        }
         if self.scrub_tick(now, down) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(LINGER_S));
         }
@@ -102,7 +113,7 @@ impl FilmcraftApp {
         let fill = grain_fill(mix, self.scrub.grain.clone(), ((RAMP_S * sr as f64) as i64).max(1));
         let Some(a) = self.audio.as_mut() else { return };
         a.stop();
-        match a.start(fill) {
+        match a.start_scrub(fill) {
             Ok(_) => self.scrub.open = true,
             Err(e) => log::warn!("audio output unavailable for scrubbing: {e}"),
         }

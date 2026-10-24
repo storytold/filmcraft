@@ -83,6 +83,12 @@ use theme::{ThemeKind, Tokens};
 pub trait AudioOut {
     /// Start output; `fill(buffer, channels)` is called on the audio thread with interleaved f32.
     fn start(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String>;
+    fn start_scrub(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+        self.start(fill)
+    }
+    fn poll_start(&mut self) -> Option<Result<(), String>> {
+        None
+    }
     fn stop(&mut self);
     /// Device sample rate.
     fn sample_rate(&self) -> u32;
