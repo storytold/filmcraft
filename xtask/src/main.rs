@@ -285,13 +285,34 @@ fn target_dir() -> std::path::PathBuf {
     std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"))
 }
 
+/// FNV-1a hash of built files, used as the `?v=` cache stamp in index.html.
+fn hash_files(files: &[std::path::PathBuf]) -> Result<String, String> {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for f in files {
+        for b in std::fs::read(f).map_err(|e| format!("{}: {e}", f.display()))? {
+            h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    Ok(format!("{h:016x}"))
+}
+
 /// Build the web app into `<target>/web/dist` (see docs/web.md).
 fn web(args: &[String]) -> Result<(), String> {
     let dev = args.iter().any(|a| a == "--dev");
+    let threads = args.iter().any(|a| a == "--threads");
     let serve = args.iter().position(|a| a == "--serve").map(|i| args.get(i + 1).and_then(|p| p.parse::<u16>().ok()).unwrap_or(8765));
     let profile = if dev { "dev" } else { "release" };
     let mut build = Command::new(env!("CARGO"));
     build.args(["build", "--target", "wasm32-unknown-unknown", "-p", "filmcraft-web", "--profile", profile]);
+    // Wasm SIMD is stable and needs no cross-origin isolation: enable it for every web
+    // build so the codec/colour kernels compiled under `target_feature = "simd128"` run
+    // (docs/web-optimization-plan.md, phase 1). Appended to any caller's rustflags.
+    let mut rustflags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    if !rustflags.is_empty() {
+        rustflags.push('\u{1f}');
+    }
+    rustflags.push_str("-C\u{1f}target-feature=+simd128");
+    build.env("CARGO_ENCODED_RUSTFLAGS", rustflags);
     run(&mut build)?;
     let out = Command::new("wasm-bindgen")
         .arg("--version")
@@ -315,29 +336,90 @@ fn web(args: &[String]) -> Result<(), String> {
         // optional: smaller and faster (binaryen); skipped when not installed
         let opt = dist.join("filmcraft_web_opt.wasm");
         run(Command::new("wasm-opt")
-            .args(["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-mutable-globals"])
+            .args(["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-mutable-globals", "--enable-simd"])
             .arg(&bg)
             .arg("-o")
             .arg(&opt))?;
         std::fs::rename(&opt, &bg).map_err(|e| e.to_string())?;
     }
+    // The threaded build (phase 2 of docs/web-optimization-plan.md): the same crate
+    // compiled by nightly with a build-std std that supports atomics, so the app gets
+    // real worker threads (the FrameServer pool) on cross-origin isolated pages.
+    // Artifacts land in dist/mt/; index.html picks them at boot when
+    // `crossOriginIsolated` is true. Needs: rustup toolchain install nightly,
+    // rustup target add wasm32-unknown-unknown --toolchain nightly,
+    // rustup component add rust-src --toolchain nightly.
+    let mut mt_build = String::new();
+    if threads {
+        let mt_target = target_dir().join("web-mt");
+        // Through rustup: `env!("CARGO")` names the current toolchain's own cargo
+        // binary, which does not understand a `+nightly` argument.
+        let mut b = Command::new("rustup");
+        b.args([
+            "run",
+            "nightly",
+            "cargo",
+            "build",
+            "-Z",
+            "build-std=std,panic_abort",
+            "--target",
+            "wasm32-unknown-unknown",
+            "-p",
+            "filmcraft-web",
+            "--profile",
+            profile,
+        ]);
+        b.env("CARGO_TARGET_DIR", &mt_target);
+        let mut flags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+        if !flags.is_empty() {
+            flags.push('\u{1f}');
+        }
+        flags.push_str("-C\u{1f}target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128\u{1f}--cfg\u{1f}fc_wasm_threads");
+        // The module must import a *shared* memory (created by the JS glue), or std's
+        // thread support dies at the first spawn with "Int32Array is not a shared
+        // typed array". --shared-memory requires explicit initial/max sizes.
+        flags.push_str("\u{1f}-C\u{1f}link-arg=--import-memory\u{1f}-C\u{1f}link-arg=--export-memory\u{1f}-C\u{1f}link-arg=--shared-memory\u{1f}-C\u{1f}link-arg=--initial-memory=67108864\u{1f}-C\u{1f}link-arg=--max-memory=2147483648");
+        // wasm-bindgen's thread transform needs the TLS symbols exported.
+        flags.push_str("\u{1f}-C\u{1f}link-arg=--export=__wasm_init_tls\u{1f}-C\u{1f}link-arg=--export=__tls_size\u{1f}-C\u{1f}link-arg=--export=__tls_align\u{1f}-C\u{1f}link-arg=--export=__tls_base");
+        b.env("CARGO_ENCODED_RUSTFLAGS", flags);
+        run(&mut b).map_err(|e| format!("threaded web build failed (nightly toolchain with wasm32 target + rust-src required): {e}"))?;
+        let mt_wasm = mt_target.join("wasm32-unknown-unknown").join(dir).join("filmcraft_web.wasm");
+        let mt_dir = dist.join("mt");
+        std::fs::create_dir_all(&mt_dir).map_err(|e| e.to_string())?;
+        run(Command::new("wasm-bindgen").args(["--target", "web", "--no-typescript", "--out-dir"]).arg(&mt_dir).arg(&mt_wasm))?;
+        let mt_bg = mt_dir.join("filmcraft_web_bg.wasm");
+        if !dev && Command::new("wasm-opt").arg("--version").output().is_ok() {
+            let opt = mt_dir.join("filmcraft_web_opt.wasm");
+            run(Command::new("wasm-opt")
+                .args([
+                    "-O2",
+                    "--enable-bulk-memory",
+                    "--enable-nontrapping-float-to-int",
+                    "--enable-sign-ext",
+                    "--enable-mutable-globals",
+                    "--enable-simd",
+                    "--enable-threads",
+                ])
+                .arg(&mt_bg)
+                .arg("-o")
+                .arg(&opt))?;
+            std::fs::rename(&opt, &mt_bg).map_err(|e| e.to_string())?;
+        }
+        mt_build = hash_files(&[mt_dir.join("filmcraft_web.js"), mt_bg])?;
+    }
     // index.html loads the glue and the wasm with `?v=<hash of this build>`: hosts cache them as
     // immutable (packaging/web/_headers), so a new build must change their URLs.
-    let build = {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
-        for f in ["filmcraft_web.js", "filmcraft_web_bg.wasm"] {
-            for b in std::fs::read(dist.join(f)).map_err(|e| format!("{f}: {e}"))? {
-                h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
-            }
-        }
-        format!("{h:016x}")
-    };
+    let build = hash_files(&[dist.join("filmcraft_web.js"), dist.join("filmcraft_web_bg.wasm")])?;
+    if mt_build.is_empty() {
+        // No threaded artifacts: the loader compares stamps, so give it the same one.
+        mt_build = build.clone();
+    }
     let web = std::path::Path::new("apps/filmcraft-web/web");
     for e in std::fs::read_dir(web).map_err(|e| e.to_string())?.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
         if name == "index.html" {
             let html = std::fs::read_to_string(e.path()).map_err(|e| format!("{name}: {e}"))?;
-            std::fs::write(dist.join(&name), html.replace("__FC_BUILD__", &build)).map_err(|e| format!("{name}: {e}"))?;
+            std::fs::write(dist.join(&name), html.replace("__FC_BUILD__", &build).replace("__FC_BUILD_MT__", &mt_build)).map_err(|e| format!("{name}: {e}"))?;
         } else if !name.ends_with(".attribution") {
             std::fs::copy(e.path(), dist.join(&name)).map_err(|e| format!("{name}: {e}"))?;
         }

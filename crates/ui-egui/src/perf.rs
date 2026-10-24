@@ -26,7 +26,7 @@ pub fn stats(app: &FilmcraftApp) -> Value {
         v["playback"]["audio"] = app.playback.audio_stats.to_json(sr);
     }
     let mut frames = app.frames.stats().to_json();
-    frames["workers"] = json!(app.frames.workers());
+    frames["workers"] = json!(app.frames.live_workers());
     frames["queued"] = json!(app.frames.queue_len());
     frames["renderCostMs"] = json!(app.frames.render_cost() * 1e3);
     frames["cache"] = json!({"images": images, "imageMB": image_bytes as f64 / 1e6, "plans": plans, "planMB": plan_bytes as f64 / 1e6});

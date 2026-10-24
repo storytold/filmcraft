@@ -316,6 +316,9 @@ pub struct FilmcraftApp {
     /// Requests waiting for the UI to show an element: (request, give-up time).
     deferred: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
+    /// Duration of the previous frame's egui pass (ms). On the web the frame pump spends
+    /// only what the display interval leaves after this pass (see `ui`); unused elsewhere.
+    last_pass_ms: f32,
     pub(crate) synthetic: Vec<egui::Event>,
     /// macOS: a Control+Click already translated to a secondary (context) click, so its release is
     /// translated too even if Control is let go mid-click. AppKit delivers Control+Click to the
@@ -576,6 +579,7 @@ impl FilmcraftApp {
             synthetic_modifiers: egui::Modifiers::NONE,
             deferred: Vec::new(),
             last_ui_time: 0.0,
+            last_pass_ms: 0.0,
             synthetic: Vec::new(),
             mac_ctrl_click_armed: false,
             value_press: None,
@@ -2196,14 +2200,28 @@ impl eframe::App for FilmcraftApp {
             return;
         }
         // No frame worker threads on the web: render queued frames here, within a time budget
-        // that leaves room for the UI pass (a no-op where workers run).
-        self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
+        // that leaves room for the UI pass (a no-op where workers run). While playing, the
+        // budget adapts to the display: the pump may spend what the predicted frame
+        // interval leaves after last frame's UI pass and a small input margin, so pump +
+        // pass fit in one refresh instead of the fixed cap overrunning it (at 60 Hz a
+        // 24 ms pump alone already exceeds the 16.7 ms interval). The caps stay as maxima
+        // and a 4 ms floor keeps frames flowing on slow passes (web-optimization-plan §1).
+        let budget = if self.playback.playing {
+            let interval_ms = ui.ctx().input(|i| i.predicted_dt) * 1000.0;
+            let room = interval_ms - self.last_pass_ms - 2.0;
+            std::time::Duration::from_secs_f32((room.clamp(4.0, 24.0)) / 1000.0)
+        } else {
+            std::time::Duration::from_millis(40)
+        };
+        self.frames.pump(budget);
         // A panic in one panel must not close the app (losing unsaved work) or leave a blank
         // window: catch it, keep the session, and say what happened.
+        let pass_t0 = web_time::Instant::now();
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ui))).is_err() {
             self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
             self.playback.playing = false;
         }
+        self.last_pass_ms = pass_t0.elapsed().as_secs_f32() * 1000.0;
         self.error_window(ui.ctx());
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
@@ -2219,7 +2237,7 @@ impl eframe::App for FilmcraftApp {
                 let _ = w.send(json!({"ok": true, "result": null}));
             }
         }
-        if self.frames.queue_len() > 0 {
+        if self.frames.queue_len() > 0 || self.frames.repaint_requested() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }

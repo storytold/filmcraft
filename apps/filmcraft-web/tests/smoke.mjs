@@ -104,11 +104,38 @@ async function until(expr, ms = 60000, step = 100) {
   throw new Error(`timeout waiting for ${expr}`);
 }
 
+// Phase 0 of docs/web-optimization-plan.md: frame-time and long-task capture, installed
+// before navigation so it sees the whole session. `__fcPerf.frames` records rAF deltas
+// only while `recording` is set (the play windows below); long tasks are always counted.
+const perfScript = `
+window.__fcPerf = { frames: [], recording: false, longtasks: 0, longtaskMs: 0 };
+try {
+  new PerformanceObserver((l) => {
+    for (const e of l.getEntries()) { window.__fcPerf.longtasks++; window.__fcPerf.longtaskMs += e.duration; }
+  }).observe({ type: "longtask", buffered: true });
+} catch {}
+let __fcLast = performance.now();
+requestAnimationFrame(function __fcTick(t) {
+  if (window.__fcPerf.recording) window.__fcPerf.frames.push(t - __fcLast);
+  __fcLast = t;
+  requestAnimationFrame(__fcTick);
+});
+window.__fcPerf.summary = () => {
+  const f = [...window.__fcPerf.frames].sort((a, b) => a - b);
+  const q = (p) => f.length ? Math.round(f[Math.min(f.length - 1, Math.floor(p * f.length))] * 10) / 10 : 0;
+  return {
+    frames: f.length, p50: q(0.5), p95: q(0.95), max: f.length ? Math.round(f[f.length - 1] * 10) / 10 : 0,
+    over25ms: f.filter((d) => d > 25).length, over50ms: f.filter((d) => d > 50).length,
+    longtasks: window.__fcPerf.longtasks, longtaskMs: Math.round(window.__fcPerf.longtaskMs),
+  };
+};`;
+
 const report = { url, steps: {} };
 try {
   await connect();
   await send("Page.enable");
   await send("Runtime.enable");
+  await send("Page.addScriptToEvaluateOnNewDocument", { source: perfScript }).catch(() => {});
   await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads }).catch(() => {});
   await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
   const t0 = Date.now();
@@ -123,12 +150,17 @@ try {
   await sleep(1500);
   report.steps.demo = { screenshot: await shot("01-demo"), inspect: await js("filmcraft.inspect().then(i => ({window: i.window, activeSequence: i.activeSequence, fps: i.fps}))") };
 
-  // play 2 seconds
+  // play 2 seconds (frame times + engine counters recorded for the perf baseline)
+  await js("window.__fcPerf && (window.__fcPerf.frames.length = 0, window.__fcPerf.recording = true)").catch(() => {});
   await js("filmcraft.request('ui.playback', {action: 'play'})");
   await sleep(2000);
   const pb = await js("filmcraft.inspect().then(i => ({playhead: i.playhead, playback: i.playback, fps: i.fps}))");
   report.steps.play = { ...pb, screenshot: await shot("02-playing") };
   await js("filmcraft.request('ui.playback', {action: 'stop'})");
+  report.perf = {
+    demoPlay: await js("window.__fcPerf ? (window.__fcPerf.recording = false, window.__fcPerf.summary()) : null").catch(() => null),
+    stats: await js("filmcraft.request('perf.stats', {}).catch(() => null)").catch(() => null),
+  };
 
   // import generated media
   const imp = await js(`filmcraft.importUrl(${JSON.stringify(media)})`);
@@ -138,10 +170,12 @@ try {
   // a sequence from the clip, then look at its first frames
   report.steps.sequence = await js(`filmcraft.execute("file.newSequence", {fromItem: ${item}, name: "Web import"})`).catch((e) => ({ error: String(e) }));
   await sleep(1500);
+  await js("window.__fcPerf && (window.__fcPerf.frames.length = 0, window.__fcPerf.recording = true)").catch(() => {});
   await js("filmcraft.request('ui.playback', {action: 'play'})");
   await sleep(1500);
   report.steps.importPlay = { ...(await js("filmcraft.inspect().then(i => ({playhead: i.playhead, playback: i.playback}))")), screenshot: await shot("03-imported") };
   await js("filmcraft.request('ui.playback', {action: 'stop'})");
+  if (report.perf) report.perf.importPlay = await js("window.__fcPerf ? (window.__fcPerf.recording = false, window.__fcPerf.summary()) : null").catch(() => null);
 
   // export H.264 (stepped job; the file is offered as a download)
   const ex = await js(`filmcraft.execute("file.exportMedia", {format: "h264", path: "/exports/web-export.mp4", bitrateKbps: 4000})`);

@@ -55,11 +55,20 @@ panic on `wasm32-unknown-unknown` (use `filmcraft_engine::temp_dir`, `web_time`,
 ### Threads
 
 wasm threads need a cross-origin isolated page **and** a wasm build with atomics (a nightly
-`build-std` toolchain), so this build is single-threaded everywhere: frame rendering, decoding,
-mixing and encoding are cooperative on the UI thread, and `rayon` runs inline.
+`build-std` toolchain), so the default build is single-threaded everywhere: frame rendering,
+decoding, mixing and encoding are cooperative on the UI thread, and `rayon` runs inline.
 `filmcraft.info()` reports `crossOriginIsolated` so a threaded build can choose at start-up.
 Commands that need a thread on the desktop (render previews, proxies, Project Manager, mask
 tracking) report an error on the web for now.
+
+`cargo xtask web --threads` additionally builds that threaded variant (nightly +
+`-Z build-std=std,panic_abort`, `+atomics`, `--cfg fc_wasm_threads`) into `dist/mt/`.
+`index.html` loads it when the page is cross-origin isolated, and falls back to the
+single-threaded build otherwise, on `?nothreads`, or if the threaded start throws. In the
+threaded build the FrameServer runs its real worker pool (a failed spawn degrades back to
+the UI-thread pump, so frames keep flowing); the rest of the app — mixing, export, media
+reads — still runs cooperatively as above. See
+[web-optimization-plan.md](web-optimization-plan.md) for the roadmap.
 
 ### Media reads
 

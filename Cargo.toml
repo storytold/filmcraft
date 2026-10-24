@@ -70,6 +70,7 @@ log = "0.4"
 # All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; AGENTS.md).
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
+wide = "0.7"
 proptest = "1"
 roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82a24b006eefa036b43c09a67fb9a3fbd17ffe63" }
@@ -85,6 +86,9 @@ rfd = "0.17"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# `fc_wasm_threads` is set by `cargo xtask web --threads` (RUSTFLAGS --cfg) for the
+# threaded wasm build only; see docs/web-optimization-plan.md.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fc_wasm_threads)"] }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
