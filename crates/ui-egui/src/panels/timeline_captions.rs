@@ -1,9 +1,10 @@
 //! Caption track rows of the Timeline: drawn in their own area above the video tracks (Premiere's
 //! layout). Each row has a header (C1…, name, format, output eye, lock) and caption blocks in a
 //! distinct colour showing their text. Click selects (Cmd/Shift adds), dragging the body moves
-//! the selection (Option-drag copies it), dragging an edge trims, double-click opens the Text
-//! panel's Captions tab. Every gesture ends in one `captions.*` command; every element registers an
-//! automation id (`timeline.caption.*`, `timeline.captionTrack.C1.*`).
+//! the selection (Option-drag copies it), dragging an edge trims, the Razor tool splits (Shift:
+//! every caption track), double-click opens the Text panel's Captions tab. Every gesture ends in
+//! one `captions.*` command; every element registers an automation id (`timeline.caption.*`,
+//! `timeline.captionTrack.C1.*`).
 
 use egui::{Align2, Color32, CursorIcon, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::{CaptionTrack, ClipId, Sequence};
@@ -14,6 +15,7 @@ use super::timeline::Layout;
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::icons::Icon;
+use crate::state::Tool;
 use crate::theme::Tokens;
 
 /// Height of one caption track row.
@@ -194,10 +196,53 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area:
             if r.width() <= 0.0 {
                 continue;
             }
-            interact_block(app, ui, tr, c, r, rate, &mut actions);
+            if app.ui.tool == Tool::Razor {
+                razor_block(app, ui, seq, layout, tr, c, r, row, &mut actions);
+            } else {
+                interact_block(app, ui, tr, c, r, rate, &mut actions);
+            }
         }
     }
     run(app, ui, actions);
+}
+
+/// The Razor tool over a caption: a white line where it would cut, and a click splits the caption
+/// there (Shift: every caption on an unlocked caption track at that time), as it cuts clips.
+#[allow(clippy::too_many_arguments)]
+fn razor_block(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    seq: &Sequence,
+    layout: &Layout,
+    tr: &CaptionTrack,
+    c: &filmcraft_project::Caption,
+    r: Rect,
+    row: Rect,
+    actions: &mut Vec<(String, Value)>,
+) {
+    let ctx = ui.ctx().clone();
+    let resp = ui.interact(r, egui::Id::new(("caption-block", c.id.0)), Sense::click_and_drag());
+    if tr.locked {
+        return;
+    }
+    let rate = seq.settings.frame_rate;
+    let at = |app: &mut FilmcraftApp, x: f32| super::timeline::snap(app, seq, layout, rate.snap_nearest(layout.tick_at(x)), &[]);
+    if let Some(p) = resp.hover_pos() {
+        ctx.set_cursor_icon(CursorIcon::Crosshair);
+        let x = layout.x_of(at(app, p.x));
+        ui.painter().with_clip_rect(layout.content).line_segment([pos2(x, row.min.y), pos2(x, row.max.y)], Stroke::new(1.0, Color32::WHITE));
+    }
+    // a press that starts a drag cuts as well, as on clips
+    if (resp.clicked() || resp.drag_started())
+        && let Some(p) = ctx.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        let t = at(app, p.x);
+        if ctx.input(|i| i.modifiers.shift) {
+            actions.push(("captions.split".into(), json!({"time": t.0})));
+        } else if c.start < t && t < c.end() {
+            actions.push(("captions.split".into(), json!({"caption": c.id.0, "time": t.0})));
+        }
+    }
 }
 
 fn interact_block(

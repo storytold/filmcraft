@@ -1,6 +1,6 @@
 # Codec parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: every codec Premiere Pro 26.5.2 decodes or encodes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
@@ -17,7 +17,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 |---|---|---|---|---|---|---|
 | H.264 / AVC | decode all common profiles incl. High 10, 4:2:2 (XAVC S-I, AVC-Intra); encode 8/10-bit | own decoder, **8-bit 4:2:0 only** (Baseline / Main / High, CABAC / CAVLC); no High 10 / 4:2:2 / 4:4:4, interlaced field / MBAFF, lossless | own encoder (High / Main / Baseline, B-frames, CBR / VBR / 2-pass); 8-bit 4:2:0 only; hardware VideoToolbox / NVENC | decode bit-exact on 37+ conformance streams, 500–600 fps 1080p; encode ffprobe-checked, byte-identical across machines | 65% | 20–35 h |
 | HEVC / H.265 | decode Main, Main 10, 4:2:2 10 (XAVC HS); encode 8/10-bit, HDR | own decoder Main / Main 10 / Main Still Picture, bit-exact on 41 fixtures, ~225 fps 1080p; **no 4:2:2 / RExt** | **hardware only** (VideoToolbox 8-bit; NVENC 8-bit and Main 10 HDR on Windows); no software encoder | NVENC round trip 48.9 dB (8-bit), 71.1 dB (10-bit); ffprobe | 60% | 30–60 h |
-| ProRes 422 family / 4444 / XQ | decode + encode all | own decode + encode, all six profiles, alpha | yes (export UI exposes 422 flavours; 4444 / XQ request #342) | ±1 LSB, 318 fps | 85% | 3–6 h |
+| ProRes 422 family / 4444 / XQ | decode + encode all | own decode + encode, all six profiles, alpha | yes (export UI exposes 422 flavours; 4444 / XQ request #342) | ±1 LSB, 318 fps; alpha final-run conformance and native macOS HD decode checked ([details](../crates/prores/README.md#alpha-bitstream-conformance)) | 85% | 3–6 h |
 | ProRes RAW | decode | none (#345) | — | — | 0% | 30–50 h (spec availability uncertain) |
 | DNxHD / DNxHR | decode + encode, MXF / MOV | own decode (all SMPTE ST 2019-1 CIDs, 8/10/12-bit, 4:2:2 / 4:4:4, interlaced, alpha) and encode LB / SQ / HQ / HQX / 444 | yes, MOV + MXF | within IDCT precision of ffmpeg on 22 fixtures | 90% | 2–4 h |
 | AV1 | decode (hardware on Windows); export through Media Encoder plug-ins / recent versions | own decoder Main 8/10-bit, all tools, film grain, bit-exact vs libdav1d on 41 vectors; hardware on Windows | none | slow in software (~4 fps 1080p single-thread) | 55% | 30–50 h (encoder + speed) |
@@ -61,5 +61,6 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | ProRes alpha final-run syntax regression tests and native macOS HD decode validation |
 | 2026-10-11 | minor | CinemaDNG / DNG decode (#1065) |
 | 2026-10-10 | major | Created: codec-by-codec comparison with Premiere 26.5.2 from the codec crates' READMEs, the export format registry and the installed bundle's listings |

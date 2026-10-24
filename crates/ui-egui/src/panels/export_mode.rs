@@ -336,6 +336,22 @@ fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options
     chosen
 }
 
+/// Why a format cannot be exported on this machine, or None when it can. H.265 and AV1 have no
+/// software encoder: without a hardware one (NVENC on NVIDIA, VideoToolbox on macOS) they are
+/// greyed out with the reason, instead of failing at export time.
+fn unavailable_why(format: Format) -> Option<&'static str> {
+    if filmcraft_engine::export::available(format) {
+        return None;
+    }
+    Some(match format {
+        Format::Hevc => tl!(
+            "H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead."
+        ),
+        Format::Av1 => tl!("AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet."),
+        _ => tl!("Not supported by FilmCraft's encoders yet"),
+    })
+}
+
 fn opts(labels: &[&str]) -> Vec<(String, bool)> {
     labels.iter().map(|l| (l.to_string(), true)).collect()
 }
@@ -552,8 +568,9 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         });
         row(ui, &t, tl!("Format"), |ui| {
-            let labels: Vec<(String, bool)> = Format::ALL.iter().map(|f| (f.label().to_string(), filmcraft_engine::export::available(*f))).collect();
-            if let Some(i) = combo(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
+            // a format without an encoder here says why: H.265 and AV1 have hardware encoders only
+            let labels: Vec<(String, Option<&str>)> = Format::ALL.iter().map(|f| (f.label().to_string(), unavailable_why(*f))).collect();
+            if let Some(i) = combo_why(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
                 let f = Format::ALL[i];
                 if f != ex.settings.format {
                     // a format switch starts from that format's defaults (keeping size / rate / range)
@@ -569,6 +586,12 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
         });
+        // a preset can name a format this machine cannot encode (an H.265 preset without a hardware
+        // encoder): say so where the format is chosen, before the export fails
+        if let Some(why) = unavailable_why(ex.settings.format) {
+            let r = ui.label(egui::RichText::new(why).color(t.danger).small());
+            reg.add("export.format.unavailable", r.rect, why);
+        }
         ui.add_space(8.0);
         let s = &mut ex.settings;
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {

@@ -2,6 +2,7 @@ mod audio51_ui;
 mod audio_fx_editor_ui;
 mod caption_option_drag_ui;
 mod caption_properties_ui;
+mod caption_razor_ui;
 mod captions_font_ui;
 mod chrome_ui;
 mod clip_audio_ui;

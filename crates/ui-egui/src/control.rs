@@ -28,8 +28,15 @@ use serde_json::{Value, json};
 const MAX_CLICK_COUNT: u64 = 10;
 const MAX_DRAG_STEPS: u64 = 1_024;
 
+/// Read a pointer repetition count, using `default` when `key` is absent or null.
+///
+/// Reject non-integer, negative and above-`maximum` values; raise accepted counts to `minimum`.
 fn bounded_repetitions(params: &Value, key: &str, default: u64, minimum: u64, maximum: u64) -> Result<u64, String> {
-    let value = params.get(key).map(|value| value.as_u64().ok_or_else(|| format!("`{key}` must be a non-negative integer"))).transpose()?.unwrap_or(default);
+    // The MCP bridge serializes omitted optional counts as null.
+    let value = match params.get(key) {
+        None | Some(Value::Null) => default,
+        Some(value) => value.as_u64().ok_or_else(|| format!("`{key}` must be a non-negative integer"))?,
+    };
     if value > maximum {
         return Err(format!("`{key}` must not exceed {maximum}"));
     }
@@ -640,6 +647,113 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     chunk(&mut out, b"IDAT", &z);
     chunk(&mut out, b"IEND", &[]);
     Ok(out)
+}
+
+#[cfg(test)]
+mod input_bounds_tests {
+    use super::*;
+
+    /// Create an empty editor session for inspecting queued synthetic input without a window.
+    fn app() -> FilmcraftApp {
+        FilmcraftApp::new(filmcraft_engine::Session::default())
+    }
+
+    /// Dispatch a control request and fail the test if hostile parameters cause a panic.
+    fn request(app: &mut FilmcraftApp, method: &str, params: Value) -> Outcome {
+        let (req, _) = ControlRequest::new(method, params);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(app, &egui::Context::default(), &req)))
+            .expect("hostile control parameters must not panic")
+    }
+
+    /// Require an immediate error naming `field`, with all previously queued input unchanged.
+    fn assert_rejected(app: &mut FilmcraftApp, method: &str, params: Value, field: &str) {
+        let before = app.synthetic.clone();
+        let Outcome::Done(reply) = request(app, method, params) else { panic!("invalid input must return an error immediately") };
+        assert_eq!(reply["ok"], false);
+        assert!(reply["error"].as_str().unwrap().contains(field), "{reply}");
+        assert_eq!(app.synthetic, before, "rejection must not queue partial input or change existing input");
+    }
+
+    /// Check the first rejected click count without allocating an enormous event queue.
+    #[test]
+    fn click_count_above_limit_is_rejected() {
+        // A small boundary value reproduces the missing guard without exhausting memory.
+        assert_rejected(&mut app(), "ui.click", json!({"x": 10, "y": 20, "count": 11}), "count");
+    }
+
+    /// Check that one step above the drag limit returns an error before queuing input.
+    #[test]
+    fn drag_steps_above_limit_are_rejected() {
+        assert_rejected(&mut app(), "ui.drag", json!({"from": {"x": 0, "y": 0}, "to": {"x": 10, "y": 20}, "steps": 1025}), "steps");
+    }
+
+    /// Reject extreme counts and malformed types while preserving pending and subsequent input.
+    #[test]
+    fn hostile_counts_and_steps_leave_pending_input_unchanged() {
+        let mut app = app();
+        app.synthetic.push(egui::Event::PointerGone);
+        for value in [json!(u32::MAX), json!(u64::MAX), json!(-1), json!(1.5), json!("2"), json!(true), json!([]), json!({})] {
+            assert_rejected(&mut app, "ui.click", json!({"x": 10, "y": 20, "count": value}), "count");
+            assert_rejected(&mut app, "ui.drag", json!({"from": {"x": 0, "y": 0}, "to": {"x": 10, "y": 20}, "steps": value}), "steps");
+        }
+        // A rejected request must not prevent subsequent valid input.
+        assert!(matches!(request(&mut app, "ui.click", json!({"x": 10, "y": 20})), Outcome::AfterInput));
+    }
+
+    /// Verify missing/null defaults, accepted click bounds, button pairs and modifier resets.
+    #[test]
+    fn valid_click_counts_preserve_button_pairs_and_modifiers() {
+        let mut app = app();
+        let pos = egui::pos2(10.0, 20.0);
+        let modifiers = egui::Modifiers { shift: true, ..Default::default() };
+        for (value, count) in [(None, 1), (Some(Value::Null), 1), (Some(json!(0)), 0), (Some(json!(1)), 1), (Some(json!(2)), 2), (Some(json!(10)), 10)] {
+            app.synthetic.clear();
+            let mut params = json!({"x": 10, "y": 20, "button": "right", "modifiers": {"shift": true}});
+            if let Some(v) = value {
+                params["count"] = v;
+            }
+            assert!(matches!(request(&mut app, "ui.click", params), Outcome::AfterInput));
+            let mut expected = vec![egui::Event::ModifiersChanged(modifiers), egui::Event::PointerMoved(pos)];
+            for _ in 0..count {
+                for pressed in [true, false] {
+                    expected.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers });
+                }
+            }
+            expected.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            assert_eq!(app.synthetic, expected);
+        }
+        app.synthetic.clear();
+        assert!(matches!(request(&mut app, "ui.move", json!({"x": 10, "y": 20, "count": u64::MAX})), Outcome::AfterInput));
+        assert_eq!(app.synthetic.len(), 3, "ui.move does not use count");
+    }
+
+    /// Verify missing/null defaults and accepted drag bounds retain endpoints and button release.
+    #[test]
+    fn valid_drag_steps_preserve_defaults_endpoints_and_release() {
+        let mut app = app();
+        for (value, steps) in [(None, 12), (Some(Value::Null), 12), (Some(json!(0)), 2), (Some(json!(1)), 2), (Some(json!(2)), 2), (Some(json!(1024)), 1024)] {
+            app.synthetic.clear();
+            let mut params = json!({"from": {"x": 0, "y": 0}, "to": {"x": 10, "y": 20}, "modifiers": {"shift": true}});
+            if let Some(v) = value {
+                params["steps"] = v;
+            }
+            assert!(matches!(request(&mut app, "ui.drag", params), Outcome::AfterInput));
+            assert_eq!(app.synthetic.len(), steps + 5);
+            let modifiers = egui::Modifiers { shift: true, ..Default::default() };
+            assert_eq!(app.synthetic[0], egui::Event::ModifiersChanged(modifiers));
+            assert_eq!(app.synthetic[1], egui::Event::PointerMoved(egui::pos2(0.0, 0.0)));
+            assert_eq!(
+                app.synthetic[2],
+                egui::Event::PointerButton { pos: egui::pos2(0.0, 0.0), button: egui::PointerButton::Primary, pressed: true, modifiers }
+            );
+            assert_eq!(app.synthetic[steps + 2], egui::Event::PointerMoved(egui::pos2(10.0, 20.0)));
+            assert_eq!(
+                app.synthetic[steps + 3],
+                egui::Event::PointerButton { pos: egui::pos2(10.0, 20.0), button: egui::PointerButton::Primary, pressed: false, modifiers }
+            );
+            assert_eq!(app.synthetic[steps + 4], egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        }
+    }
 }
 
 #[cfg(test)]

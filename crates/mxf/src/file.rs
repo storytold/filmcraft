@@ -327,12 +327,13 @@ fn walk(src: &(impl ByteSource + ?Sized)) -> Result<WalkResult> {
     let mut win = Window { src, off: 0, buf: Vec::new() };
     let mut pos = run_in;
     let mut cur_meta: Option<usize> = None;
+    let mut resync_budget = 64 << 20;
     while pos + 17 <= len {
         let hdr = win.get(pos, 25)?.to_vec();
         let key = Ul(hdr[..16].try_into().unwrap_or([0; 16]));
         if !key.is_smpte() {
             // Lost sync (corrupt data): look for the next partition pack.
-            match resync(src, pos + 1, len)? {
+            match resync(src, pos + 1, len, &mut resync_budget)? {
                 Some(p) => {
                     w.warnings.push(format!("lost KLV sync at byte {pos}; resumed at {p}"));
                     pos = p;
@@ -418,12 +419,14 @@ fn is_essence_item(k: &Ul) -> bool {
     matches!(k.0[12], 0x05 | 0x06 | 0x07 | 0x15 | 0x16 | 0x17 | 0x18)
 }
 
-/// The next partition pack key at or after `from` (scans at most 16 MiB).
-fn resync(src: &(impl ByteSource + ?Sized), from: u64, len: u64) -> Result<Option<u64>> {
+/// The next partition pack key at or after `from` (scans at most 16 MiB and shares `budget`
+/// with every other recovery attempt in this file).
+fn resync(src: &(impl ByteSource + ?Sized), from: u64, len: u64, budget: &mut usize) -> Result<Option<u64>> {
     let mut at = from;
     let end = len.min(from + (16 << 20));
-    while at < end {
-        let chunk = read_upto(src, at, 1 << 20)?;
+    while at < end && *budget > 0 {
+        let chunk = read_upto(src, at, (1 << 20).min(*budget))?;
+        *budget = budget.saturating_sub(chunk.len());
         if chunk.len() < 16 {
             break;
         }

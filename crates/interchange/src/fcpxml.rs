@@ -14,7 +14,7 @@
 //!   clip markers. Transitions are supported on the primary storyline (and read from secondary
 //!   storylines); transitions elsewhere are reported.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use filmcraft_geom::Vec2;
 use filmcraft_media::MediaKind;
@@ -105,10 +105,11 @@ fn audio_rate_str(sr: u32) -> String {
 
 fn parse_audio_rate(s: &str) -> Option<u32> {
     let s = s.trim();
-    match s.strip_suffix('k') {
+    let r = match s.strip_suffix('k') {
         Some(k) => k.parse::<f64>().ok().map(|v| (v * 1000.0).round() as u32),
         None => s.parse().ok(),
-    }
+    };
+    r.filter(|&sr| sr > 0 && sr <= 384_000)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -132,6 +133,7 @@ struct Imp<'a, 'i, 'r> {
     assets: HashMap<String, Asset>,
     media_nodes: HashMap<String, Node<'a, 'i>>,
     media_items: HashMap<String, ItemId>,
+    media_active: HashSet<String>,
     effects: HashMap<String, String>,
 }
 
@@ -163,6 +165,7 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
         assets: HashMap::new(),
         media_nodes: HashMap::new(),
         media_items: HashMap::new(),
+        media_active: HashSet::new(),
         effects: HashMap::new(),
     };
     if let Some(res) = child(root, "resources") {
@@ -281,9 +284,15 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let n = *self.media_nodes.get(id)?;
         let s = child(n, "sequence")?;
-        // Reserve first so recursion terminates.
+        if !self.media_active.insert(id.into()) {
+            self.report.warn(format!("recursive FCPXML media resource {id:?} ignored"));
+            return None;
+        }
+        // Mark the resource before descending: a compound clip can reference itself through a
+        // ref-clip before a completed sequence is available to cache.
         let name = n.attribute("name").unwrap_or("Compound Clip").to_string();
         let item = self.sequence(s, &name, None);
+        self.media_active.remove(id);
         self.media_items.insert(id.into(), item);
         Some(item)
     }

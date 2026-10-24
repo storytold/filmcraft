@@ -352,6 +352,7 @@ impl Decoder {
                     ensure!(s <= data.len() - pos, "tile size {s} beyond frame data");
                     s
                 };
+                ensure!(sz > 0, "empty tile payload");
                 td.push(&data[pos..pos + sz]);
                 pos += sz;
             }

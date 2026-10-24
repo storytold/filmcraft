@@ -248,6 +248,16 @@ fn h265_shows_the_h264_family_controls_without_the_h264_only_ones() {
     }
     let sum = d.ok("ui.elements", json!({"prefix": "export.summary"}))[0]["label"].as_str().unwrap().to_string();
     assert!(sum.contains("HEVC Main") && sum.contains("Target 20.00 Mbps"), "{sum}");
+    // headless there is no hardware encoder: H.265 says so where the format is chosen (a preset
+    // can still name it), and its entry in the Format list is greyed out with the same reason
+    assert!(!filmcraft_engine::export::available(Format::Hevc), "no NVENC / VideoToolbox probe is registered here");
+    let why = d.ok("ui.elements", json!({"prefix": "export.format.unavailable"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(why.contains("hardware encoder") && why.contains("H.265") && why.contains("H.264 or ProRes"), "{why}");
+    d.click("export.format");
+    let hevc = Format::ALL.iter().position(|f| *f == Format::Hevc).unwrap();
+    let entries = d.ok("ui.elements", json!({"prefix": format!("export.format.option.{hevc}")}));
+    assert_eq!(entries[0]["label"], "H.265 (HEVC)", "{entries}");
+    d.ok("ui.key", json!({"key": "Escape"}));
     d.snapshot("export-h265");
 }
 

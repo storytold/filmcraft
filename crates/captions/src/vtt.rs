@@ -83,7 +83,7 @@ pub fn parse(text: &str) -> Result<Document> {
             doc.blocks.push(b.join("\n"));
             continue;
         }
-        if !seen_cue && !first.contains("-->") && (first == "STYLE" || first == "REGION") {
+        if !seen_cue && !b.iter().any(|l| l.contains("-->")) && (first == "STYLE" || first == "REGION") {
             doc.blocks.push(b.join("\n"));
             continue;
         }
@@ -151,6 +151,15 @@ mod tests {
     use crate::TICKS_PER_MS;
 
     const SAMPLE: &str = "WEBVTT - with header\nKind: captions\n\nSTYLE\n::cue { color: yellow }\n\nNOTE a comment\nspanning lines\n\nintro\n00:01.000 --> 00:00:03.500 line:90% align:start\n<v.loud Ann Smith>Hello there\nsecond line\n\n00:00:04.000 --> 00:00:05.000\n<i>plain</i> &amp; tags\n";
+
+    #[test]
+    fn style_region_identifier_cue_is_kept() {
+        for id in ["STYLE", "REGION"] {
+            let d = parse(&format!("WEBVTT\n\n{id}\n00:00:01.000 --> 00:00:02.000\nHi\n")).unwrap();
+            assert_eq!(d.cues.len(), 1, "{id}");
+            assert!(d.blocks.is_empty(), "{id}");
+        }
+    }
 
     #[test]
     fn parse_sample() {

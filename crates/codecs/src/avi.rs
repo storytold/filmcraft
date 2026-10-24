@@ -154,6 +154,8 @@ fn random_access(data: &[u8], hevc: bool) -> bool {
 
 /// The packets of a framed audio stream: every frame header found in the stream of chunks, and
 /// the samples each frame decodes to. Bytes that start no frame are skipped (resynchronisation).
+const MAX_FRAMED_AUDIO_SCAN_BYTES: u64 = 256 << 20;
+
 fn split_frames(
     file: &AviFile,
     bytes: &crate::Src,
@@ -161,12 +163,18 @@ fn split_frames(
     ts: &filmcraft_mpegts::Codec,
 ) -> (Vec<Piece>, Vec<usize>, Vec<u32>, Option<filmcraft_mpegts::FrameInfo>) {
     let Some(st) = file.streams.get(s) else { return Default::default() };
+    // AVI indexes can reference the same physical chunk repeatedly. Keep header scanning bounded
+    // by both the source itself and a practical absolute limit before issuing those repeated reads.
+    let budget = bytes.0.len().saturating_mul(4).min(MAX_FRAMED_AUDIO_SCAN_BYTES);
     // chunk start positions in the concatenated stream
     let mut at = Vec::with_capacity(st.chunks.len());
     let mut total = 0usize;
     for c in &st.chunks {
         at.push(total);
         total = total.saturating_add(c.size as usize);
+        if total as u64 > budget {
+            return Default::default();
+        }
     }
     let locate = |pos: usize| -> Option<(usize, usize)> {
         let k = at.partition_point(|&a| a <= pos).checked_sub(1)?;

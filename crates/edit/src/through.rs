@@ -22,6 +22,18 @@ pub fn is_through_edit(a: &TrackItem, b: &TrackItem) -> bool {
     if a.end() != b.start || a.item != b.item || a.speed != b.speed || a.reverse != b.reverse || a.multicam != b.multicam {
         return false;
     }
+    if a.enabled != b.enabled
+        || a.gain_db != b.gain_db
+        || a.effects != b.effects
+        || a.scale_to_frame != b.scale_to_frame
+        || a.hold_filters != b.hold_filters
+        || a.time_interpolation != b.time_interpolation
+        || a.field_options != b.field_options
+        || a.audio_stream != b.audio_stream
+        || a.source_channels != b.source_channels
+    {
+        return false;
+    }
     match (a.frame_hold, b.frame_hold) {
         (None, None) => {}
         (Some(x), Some(y)) => return x == y,
@@ -212,6 +224,20 @@ mod tests {
         assert_eq!(te[0].time, Tick(40));
         assert_eq!(join_through_edits(&mut q, &[]), 1);
         assert_eq!(q.video_tracks[0].items, orig.video_tracks[0].items);
+    }
+
+    #[test]
+    fn pieces_with_different_settings_are_not_through_edits() {
+        let tweaks: [fn(&mut TrackItem); 3] = [|t| t.enabled = false, |t| t.gain_db = -20.0, |t| t.scale_to_frame = true];
+        for tweak in tweaks {
+            let mut q = seq_with(vec![item(10, 0, 100, 500)]);
+            let mut n = 1000;
+            razor(&mut q, &[], Tick(40), &mut ctx(&mut n));
+            tweak(&mut q.video_tracks[0].items[1]);
+            assert!(through_edits(&q).is_empty());
+            assert_eq!(join_through_edits(&mut q, &[]), 0);
+            assert_eq!(q.video_tracks[0].items.len(), 2);
+        }
     }
 
     #[test]

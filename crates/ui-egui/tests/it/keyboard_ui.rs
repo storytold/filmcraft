@@ -71,6 +71,32 @@ impl Driver {
     }
 }
 
+/// Rejected pointer counts must preserve the editor and allow later MCP-default and double clicks.
+#[test]
+fn rejected_pointer_counts_leave_the_ui_usable() {
+    let mut d = Driver::new();
+    let project = d.app().session.project.clone();
+    for (method, params) in [
+        ("ui.click", json!({"id": "tools.Razor", "count": u64::MAX})),
+        ("ui.drag", json!({"from": {"id": "tools.Razor"}, "to": {"id": "tools.Selection"}, "steps": u64::MAX})),
+    ] {
+        let (req, reply) = ControlRequest::new(method, params);
+        d.tx.send(req).unwrap();
+        d.frames(3);
+        let response = reply.try_recv().expect("invalid counts must be answered without queuing input");
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Selection);
+        assert_eq!(*d.app().session.project, *project);
+    }
+    d.ok("ui.click", json!({"id": "tools.Razor", "count": null}));
+    d.frames(3);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Razor);
+    d.ok("ui.click", json!({"id": "tools.Selection", "count": 2}));
+    d.frames(3);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Selection);
+    assert_eq!(*d.app().session.project, *project);
+}
+
 /// Ids added for keyboard parity (engine + UI).
 fn new_ids() -> Vec<String> {
     let mut v: Vec<String> = filmcraft_engine::keyboard::commands().iter().map(|c| c.id.to_string()).collect();
