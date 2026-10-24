@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (G4: `--graphics gl`, an opt-in OpenGL mode for Intel Gen 9 graphics, #1458) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -84,8 +84,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
   (Windows), then a software adapter (WARP, lavapipe, llvmpipe) with CPU compositing, and keeps
   the mode that works; a start-up error wgpu reports moves on in the same process. A fallback mode
-  shows a notice with Use Default Graphics; `--graphics default|dx12|software` picks a mode by
-  hand. An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
+  shows a notice with Use Default Graphics; `--graphics default|dx12|gl|software` picks a mode by
+  hand (`gl`, on Windows, only that way: the GPU compositor's path on Intel Gen 9 graphics, #1458).
+  Creating OpenGL can crash some AMD drivers (`atio6axx.dll`, #477), so `gl` is never automatic.
+  An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
   installed versions of one driver (GPUs on different driver packages) draws with the newer one
   instead of dying inside the stale one (`filmcraft_gpu::adapter`).
 - **Missing:** a launch that never fails, and CI that runs the gates.
@@ -320,3 +322,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-19 | minor | G4: `--graphics gl`, an opt-in OpenGL mode, gives Intel Gen 9 graphics (UHD 6xx) the GPU compositor (#1458); never a step of the automatic fallback, since creating OpenGL can crash some AMD drivers (#477) |

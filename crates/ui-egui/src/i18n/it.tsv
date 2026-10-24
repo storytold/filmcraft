@@ -3580,6 +3580,7 @@
 	Use Default Graphics	Usa grafica predefinita
 	The default graphics are used from the next start.	La grafica predefinita viene usata dal prossimo avvio.
 	DirectX 12 only	Solo DirectX 12
+	OpenGL only	Solo OpenGL
 	software rendering	rendering software
 	Label Color Presets	Predefiniti colori etichette
 	{name} (Modified)	{name} (modificato)

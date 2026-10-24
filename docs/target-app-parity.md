@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (Stability: the `--graphics gl` workaround for Intel Gen 9 graphics, #1458; no score change) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -151,9 +151,10 @@ Evidence for the cross-cutting rows:
   a CPU fallback adapter rendering everything in software (#632).
 - **Stability ~45%.** Never-crash rules enforced by lints; hostile-input fuzzing. But open
   launch crashes on macOS 12 (missing VideoToolbox symbol, #468 / #661, #655), Intel UHD graphics
-  (#512), Windows 11 (#380, #582), a generic "keeps crashing" (#687), and **no workflow runs the
-  test suite on pull requests** (`.github/workflows` has release, packaging lint, FreeBSD and
-  Windows ARM64 builds only); `cargo xtask ci` runs locally only.
+  (#512; on Gen 9, `--graphics gl` reaches the GPU compositor by hand, #1458), Windows 11 (#380,
+  #582), a generic "keeps crashing" (#687), and **no workflow runs the test suite on pull
+  requests** (`.github/workflows` has release, packaging lint, FreeBSD and Windows ARM64 builds
+  only); `cargo xtask ci` runs locally only.
 - **Platforms ~60%.** Releases for macOS, Windows (x64, ARM64), Linux (AppImage, Flatpak, deb,
   tar) and FreeBSD; Linux is something Premiere doesn't run on at all. Runtime testing is still
   mostly macOS; Windows and Linux reports dominate the issue list. The web build runs but its shell
@@ -354,6 +355,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | Stability: Intel Gen 9 graphics can reach the GPU compositor with `--graphics gl` (#1458); the default start still crashes there (#512), so Stability stays ~45% |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |
