@@ -366,6 +366,17 @@ pub struct FilmcraftApp {
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,
     /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame.
     pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// Files dropped from the OS with "drop imports to the timeline" whose background import is
+    /// still running: its job, the drop point and the items the drop imported at once. When the
+    /// import finishes those items and its own join [`Self::ready_drops`].
+    drop_imports: Vec<(u64, egui::Pos2, Vec<filmcraft_engine::project::ItemId>)>,
+    /// Dropped files imported and waiting for the Timeline, oldest first: one a frame in Edit mode
+    /// becomes [`Self::pending_timeline_drop`], so drops that finish in the same frame, or while
+    /// the Timeline is not shown, are all placed.
+    ready_drops: std::collections::VecDeque<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
+    /// The session's `project_generation` the drops above belong to: their item ids mean nothing
+    /// in a replacement project.
+    drops_generation: u64,
     /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2)>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
@@ -598,6 +609,9 @@ impl FilmcraftApp {
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             pending_timeline_drop: None,
+            drop_imports: Vec::new(),
+            ready_drops: std::collections::VecDeque::new(),
+            drops_generation: 0,
             file_drag_hover: None,
             timeline_view_last: None,
             fps: 60.0,
@@ -1373,7 +1387,8 @@ impl FilmcraftApp {
                         return Ok(Value::Null);
                     }
                     let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
-                    let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
+                    // the files open in the background and appear as they do: the window keeps responding
+                    let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin, "async": true})).map_err(|e| e.to_string());
                     if let Ok(v) = &r
                         && let Some(errs) = v.get("errors").and_then(Value::as_array)
                         && !errs.is_empty()
@@ -1470,6 +1485,16 @@ impl FilmcraftApp {
 
     /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
     /// queued to be placed at the pointer (see `timeline::interact`).
+    /// The project was replaced: the drops still to place name items of the old one.
+    fn forget_stale_drops(&mut self) {
+        if self.drops_generation != self.session.project_generation {
+            self.drops_generation = self.session.project_generation;
+            self.drop_imports.clear();
+            self.ready_drops.clear();
+            self.pending_timeline_drop = None;
+        }
+    }
+
     fn handle_drops(&mut self, ctx: &egui::Context) {
         // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
         let hovering = ctx.input(|i| i.raw.hovered_files.len());
@@ -1489,16 +1514,25 @@ impl FilmcraftApp {
         }
         if !paths.is_empty() {
             let pointer = self.drop_pointer(ctx);
-            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-            if let Ok(v) = imported
-                && let Some(pos) = pointer
-                && self.session.prefs.timeline.drop_import_to_timeline
-            {
-                let items: Vec<filmcraft_engine::project::ItemId> =
-                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-                if !items.is_empty() {
-                    self.pending_timeline_drop = Some((items, pos));
+            // The files open in the background and appear as they do, wherever they were dropped:
+            // a drop of 353 files imported on the UI thread froze the window for 4.8 s in a field
+            // report. With "drop imports to the timeline" the drop point is kept, and the
+            // Timeline places the items there once the import has added them (ImportFinished).
+            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0, "async": true}));
+            match imported {
+                Ok(v) if self.session.prefs.timeline.drop_import_to_timeline => {
+                    // some files import at once (a detected image sequence, a file without a
+                    // streamed reader, every file on the web): placed now, or with the rest
+                    let now: Vec<filmcraft_engine::project::ItemId> =
+                        v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+                    match (pointer, v["importJob"].as_u64()) {
+                        (Some(pos), Some(job)) => self.drop_imports.push((job, pos, now)),
+                        (Some(pos), None) if !now.is_empty() => self.ready_drops.push_back((now, pos)),
+                        _ => {}
+                    }
                 }
+                Ok(_) => {}
+                Err(e) => self.ui.status = e.to_string(),
             }
         }
     }
@@ -1837,10 +1871,23 @@ impl FilmcraftApp {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
+                filmcraft_engine::Event::ImportFinished { job, items } => {
+                    if let Some(k) = self.drop_imports.iter().position(|d| d.0 == job) {
+                        let (_, pos, mut placed) = self.drop_imports.remove(k);
+                        placed.extend(items);
+                        if !placed.is_empty() {
+                            self.ready_drops.push_back((placed, pos));
+                        }
+                    }
+                }
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
+        self.forget_stale_drops();
+        // a drop whose import was cancelled (the project was replaced) never finishes
+        let running = &self.session.background_imports;
+        self.drop_imports.retain(|d| running.iter().any(|p| p.job == d.0));
         self.sync_timeline_view();
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
@@ -1876,6 +1923,17 @@ impl FilmcraftApp {
         }
         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
+        // a finished drop waits while the Timeline is not drawn (Import or Export mode), and the
+        // next one gets its frame without waiting for input
+        self.forget_stale_drops();
+        if self.ui.mode == state::Mode::Edit {
+            if self.pending_timeline_drop.is_none() {
+                self.pending_timeline_drop = self.ready_drops.pop_front();
+            }
+            if !self.ready_drops.is_empty() {
+                ctx.request_repaint();
+            }
+        }
         match self.ui.mode {
             state::Mode::Edit => self.dock_area(ui, body),
             state::Mode::Import => panels::import_mode::show(self, ui, body),
@@ -1949,7 +2007,7 @@ impl FilmcraftApp {
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+        let verb = job_verb(&job.label);
         p.text(
             egui::pos2(bar.min.x - 8.0, sb.center().y),
             egui::Align2::RIGHT_CENTER,
@@ -2322,6 +2380,28 @@ fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modi
         })
         .collect();
     events.extend(keys.into_iter().map(|key| Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }));
+}
+
+/// The status bar's word for a running job, from its label.
+fn job_verb(label: &str) -> String {
+    if label.starts_with("Rendering") {
+        crate::i18n::t(label).to_string()
+    } else if label.starts_with("Import ") {
+        tl!("Importing").to_string()
+    } else {
+        tl!("Exporting").to_string()
+    }
+}
+
+#[cfg(test)]
+mod job_verb_tests {
+    #[test]
+    fn a_background_import_is_importing_not_exporting() {
+        assert_eq!(super::job_verb("Import 353 files"), "Importing");
+        assert_eq!(super::job_verb("Import 1 file"), "Importing");
+        assert_eq!(super::job_verb("Rendering 3 preview segments"), "Rendering 3 preview segments");
+        assert_eq!(super::job_verb("Export clip.mp4"), "Exporting");
+    }
 }
 
 #[cfg(test)]

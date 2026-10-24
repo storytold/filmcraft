@@ -56,6 +56,8 @@ pub struct TlState {
     /// from, and the key worked out for the session revision last seen.
     seq_peak_keys: Arc<Mutex<HashMap<ItemId, u64>>>,
     seq_keys_seen: HashMap<ItemId, (u64, u64)>,
+    /// This app's waveform jobs (see [`waveforms::Pool`]).
+    pub(crate) waveforms: waveforms::Pool,
     /// Source peak of each cached peak list (keyed by the list's address), for the waveform
     /// display gain: scanning the whole source per clip per frame cost more than drawing.
     peak_max: HashMap<PeakKey, (usize, f32)>,
@@ -763,18 +765,10 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some((first, rest)) = items.split_first()
     {
         app.pending_timeline_drop = None;
-        if let Err(e) = app.session.execute("file.newSequence", json!({"fromItem": first.0})) {
+        // one command, one undo step: the first sets the sequence, the rest follow it back to back
+        let ids: Vec<u64> = std::iter::once(first).chain(rest).map(|i| i.0).collect();
+        if let Err(e) = app.session.execute("file.newSequence", json!({"fromItems": ids})) {
             app.ui.status = e.to_string();
-        } else {
-            let mut t = app.session.project.item(*first).map(|i| i.duration()).unwrap_or(Tick::ZERO);
-            for item in rest {
-                let params = json!({"item": item.0, "time": t.0, "insert": false});
-                if let Err(e) = app.session.execute("timeline.place", params) {
-                    app.ui.status = e.to_string();
-                } else {
-                    t = Tick(t.0.saturating_add(app.session.project.item(*item).map(|i| i.duration().0.max(0)).unwrap_or(0)));
-                }
-            }
         }
     }
 }
@@ -1125,15 +1119,13 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
         }
         pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != pkey);
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    std::thread::spawn(run);
-    #[cfg(target_arch = "wasm32")]
-    run();
+    app.tl.waveforms.submit(Box::new(run));
     have
 }
 
-/// Min/max peaks (one per 256 samples at 48 kHz) of audio stream `stream` of `src`, `dur` long.
-fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick) -> Vec<(f32, f32)> {
+/// Min/max peaks (one per 256 samples at 48 kHz) of audio stream `stream` of `src`, `dur` long,
+/// and whether the whole stream was read (a read error ends the peaks early).
+fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick) -> (Vec<(f32, f32)>, bool) {
     let sr = 48_000u32;
     let total = dur.to_units_floor(sr as i64).max(0) as usize;
     let mut out = Vec::with_capacity(total / 256 + 1);
@@ -1149,11 +1141,11 @@ fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick
                     out.push((lo, hi));
                 }
             }
-            Err(_) => break,
+            Err(_) => return (out, false),
         }
         s += n;
     }
-    out
+    (out, true)
 }
 
 /// Waveform peaks of audio stream `stream` of `item` (a clip's `audio_stream`).
@@ -1165,8 +1157,6 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize)
     if let Some(p) = app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).get(&pkey) {
         return Some(p.clone());
     }
-    // No source: try again on a later frame instead of leaving the item pending forever.
-    let src = app.session.source(item)?;
     {
         let mut pend = app.tl.peaks_pending.lock().unwrap_or_else(|e| e.into_inner());
         if pend.contains(&pkey) {
@@ -1176,17 +1166,275 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize)
     }
     let peaks = app.tl.peaks.clone();
     let pending = app.tl.peaks_pending.clone();
-    let dur = src.info().duration;
+    // The source is opened on the waveform thread, never here: opening an unopened clip can start
+    // a decoder, and a timeline zoomed out over a hundred clips asked for every one of them in one
+    // frame (in a field report, 80 probes on the UI thread, the window frozen for seconds).
+    let provider = app.session.media.provider(app.session.project.clone(), app.session.services.clone());
+    // Settings ▸ Media Cache: the peaks of a file read once are kept, so a project opened again
+    // draws its waveforms at once (a card of 109 clips took 4.4 s to read again)
+    let cached_at = app.session.media_cache_dir().zip(media_file(app, item)).map(|(dir, file)| (dir, file, stream));
     let run = move || {
-        let out = source_peaks(&*src, stream, dur);
-        peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(pkey, Arc::new(out));
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            use filmcraft_render::SourceProvider;
+            let cache = cached_at.as_ref().and_then(|(dir, file, stream)| peak_cache::path_for(dir, file, *stream));
+            if let Some(peaks) = cache.as_deref().and_then(peak_cache::read) {
+                return Some(peaks);
+            }
+            let src = provider.source(item)?;
+            let dur = src.info().duration;
+            let (peaks, complete) = source_peaks(&*src, stream, dur);
+            if complete && let Some(path) = &cache {
+                peak_cache::write(path, &peaks);
+            }
+            Some(peaks)
+        }));
+        // No source (or a failure): leave it unpending so a later frame asks again.
+        if let Ok(Some(out)) = out {
+            peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(pkey, Arc::new(out));
+        }
         pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != pkey);
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    std::thread::spawn(run);
-    #[cfg(target_arch = "wasm32")]
-    run();
+    app.tl.waveforms.submit(Box::new(run));
     None
+}
+
+/// The file behind `item` (followed as the media pool follows it), when it is file media.
+fn media_file(app: &FilmcraftApp, item: ItemId) -> Option<String> {
+    let it = app.session.project.item(item)?;
+    let m = it.as_media()?;
+    let filmcraft_project::MediaRef::File { path } = &m.media else { return None };
+    app.session.media.follow(path).ok()
+}
+
+/// Waveform peaks kept in the media cache folder (`waveforms/<key>.peaks`). The key is the file's
+/// path, size, modification time and audio stream, so a file that changes gets new peaks; a cache
+/// file that does not read back exactly (truncated, foreign, hostile) is ignored and replaced.
+pub(crate) mod peak_cache {
+    use std::path::{Path, PathBuf};
+
+    const MAGIC: &[u8; 8] = b"FCPEAK01";
+    /// Most peaks a cache file may hold (one per 256 samples at 48 kHz: about 97 hours).
+    const MAX_PEAKS: usize = 64 << 20;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// Where the peaks of `stream` of `file` live under `dir`, or `None` when the file cannot be
+    /// looked at.
+    pub fn path_for(dir: &Path, file: &str, stream: usize) -> Option<PathBuf> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (dir, file, stream);
+            None
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let meta = std::fs::metadata(file).ok()?;
+            let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+            let key = format!("{file}\n{}\n{modified}\n{stream}", meta.len());
+            Some(dir.join("waveforms").join(format!("{:016x}.peaks", fnv1a(key.as_bytes()))))
+        }
+    }
+
+    /// The peaks stored at `path`, if the file is a whole, well-formed cache file.
+    pub fn read(path: &Path) -> Option<Vec<(f32, f32)>> {
+        let bytes = std::fs::read(path).ok()?;
+        decode(&bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Vec<(f32, f32)>> {
+        let rest = bytes.strip_prefix(MAGIC)?;
+        let count = usize::try_from(u64::from_le_bytes(rest.get(..8)?.try_into().ok()?)).ok()?;
+        let body = rest.get(8..)?;
+        if count > MAX_PEAKS || body.len() != count.checked_mul(8)? {
+            return None;
+        }
+        let peaks: Vec<(f32, f32)> =
+            body.as_chunks::<8>().0.iter().map(|c| (f32::from_le_bytes([c[0], c[1], c[2], c[3]]), f32::from_le_bytes([c[4], c[5], c[6], c[7]]))).collect();
+        peaks.iter().all(|(lo, hi)| lo.is_finite() && hi.is_finite() && lo <= hi).then_some(peaks)
+    }
+
+    fn encode(peaks: &[(f32, f32)]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16 + peaks.len() * 8);
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&(peaks.len() as u64).to_le_bytes());
+        for (lo, hi) in peaks {
+            out.extend_from_slice(&lo.to_le_bytes());
+            out.extend_from_slice(&hi.to_le_bytes());
+        }
+        out
+    }
+
+    /// Store `peaks` at `path` (written aside, then renamed into place: a reader never sees half
+    /// a file). Best effort: a cache that cannot be written only means reading the audio again.
+    pub fn write(path: &Path, peaks: &[(f32, f32)]) {
+        if peaks.len() > MAX_PEAKS {
+            return;
+        }
+        let Some(dir) = path.parent() else { return };
+        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        let written = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&tmp, encode(peaks))).and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            log::debug!("waveform cache not written ({}): {e}", path.display());
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn peaks_round_trip_and_anything_else_reads_as_absent() {
+            let peaks = vec![(-0.5f32, 0.25f32), (0.0, 0.0), (-1.0, 1.0)];
+            let bytes = encode(&peaks);
+            assert_eq!(decode(&bytes), Some(peaks.clone()));
+            for end in 0..bytes.len() {
+                assert_eq!(decode(&bytes[..end]), None, "truncated at {end}");
+            }
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert_eq!(decode(&longer), None);
+            let mut wrong = bytes.clone();
+            wrong[0] = b'X';
+            assert_eq!(decode(&wrong), None);
+            let mut huge = bytes.clone();
+            huge[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+            assert_eq!(decode(&huge), None);
+            let mut nan = bytes.clone();
+            nan[16..20].copy_from_slice(&f32::NAN.to_le_bytes());
+            assert_eq!(decode(&nan), None);
+            let mut inverted = bytes;
+            inverted[16..20].copy_from_slice(&2.0f32.to_le_bytes());
+            assert_eq!(decode(&inverted), None, "a minimum above its maximum");
+            assert_eq!(decode(&encode(&[])), Some(vec![]));
+        }
+
+        #[test]
+        fn a_file_that_changes_gets_new_peaks_and_the_cache_survives_a_reread() {
+            let dir = std::env::temp_dir().join(format!("fc-peak-cache-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("clip.wav");
+            std::fs::write(&file, b"one").unwrap();
+            let file = file.to_string_lossy().into_owned();
+            let cache = dir.join("cache");
+            let first = path_for(&cache, &file, 0).unwrap();
+            assert_ne!(Some(first.clone()), path_for(&cache, &file, 1), "each stream has its own peaks");
+            assert_eq!(read(&first), None);
+            write(&first, &[(-0.1, 0.1)]);
+            assert_eq!(read(&first), Some(vec![(-0.1, 0.1)]));
+            std::fs::write(&file, b"a longer file").unwrap();
+            assert_ne!(path_for(&cache, &file, 0), Some(first), "a changed file is a new key");
+            assert_eq!(path_for(&cache, &dir.join("gone.wav").to_string_lossy(), 0), None);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+/// Waveform work off the UI thread: each app has a queue served by [`waveforms::THREADS`] named
+/// threads. Each waveform used to get a thread of its own, and each one opens that clip's audio
+/// decoder: a timeline of 104 clips ran 104 threads and 104 decoders at once (a field report).
+/// Now at most this many clips are read at a time; the rest wait in order. The queue belongs to
+/// the app, not the process, so apps in one process (the tests) never wait on each other's
+/// waveforms. On the web there are no threads: the job runs at once.
+pub(crate) mod waveforms {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Condvar, Mutex, PoisonError};
+
+    /// Waveforms one app computes at once.
+    pub const THREADS: usize = 2;
+
+    type Job = Box<dyn FnOnce() + Send>;
+
+    #[derive(Default)]
+    struct State {
+        jobs: VecDeque<Job>,
+        /// Threads started so far (they start with the first jobs, up to [`THREADS`]).
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+        threads: usize,
+        /// The pool was dropped: its threads end once they see this.
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+        closed: bool,
+    }
+
+    #[derive(Default)]
+    struct Queue {
+        state: Mutex<State>,
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+        ready: Condvar,
+    }
+
+    /// One app's waveform queue. Its threads start with its first jobs and end when it is
+    /// dropped with the app; jobs still waiting then are dropped too (their results would go to
+    /// the dropped app's maps).
+    #[derive(Default)]
+    pub struct Pool {
+        queue: Arc<Queue>,
+    }
+
+    impl Pool {
+        /// Queue `job` (desktop) or run it now (web).
+        pub fn submit(&self, job: Job) {
+            #[cfg(target_arch = "wasm32")]
+            {
+                job();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let mut state = self.queue.state.lock().unwrap_or_else(PoisonError::into_inner);
+                state.jobs.push_back(job);
+                if state.threads < THREADS {
+                    let (i, queue) = (state.threads, self.queue.clone());
+                    match std::thread::Builder::new().name(format!("filmcraft-waveform-{i}")).spawn(move || serve(&queue)) {
+                        Ok(_) => state.threads += 1,
+                        Err(e) => log::warn!("waveform thread {i} not started: {e}"),
+                    }
+                }
+                drop(state);
+                self.queue.ready.notify_one();
+            }
+        }
+
+        /// Jobs waiting (not counting those running).
+        pub fn queued(&self) -> usize {
+            self.queue.state.lock().unwrap_or_else(PoisonError::into_inner).jobs.len()
+        }
+    }
+
+    impl Drop for Pool {
+        fn drop(&mut self) {
+            let mut state = self.queue.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.closed = true;
+            state.jobs.clear();
+            drop(state);
+            self.queue.ready.notify_all();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn serve(queue: &Queue) {
+        loop {
+            let job = {
+                let mut state = queue.state.lock().unwrap_or_else(PoisonError::into_inner);
+                loop {
+                    if state.closed {
+                        return;
+                    }
+                    if let Some(job) = state.jobs.pop_front() {
+                        break job;
+                    }
+                    state = queue.ready.wait(state).unwrap_or_else(PoisonError::into_inner);
+                }
+            };
+            // a panicking waveform must not take a pool thread with it
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+                log::warn!("a waveform job panicked; the waveform stays empty");
+            }
+        }
+    }
 }
 
 /// 45° hatching over `r` (transitions, and the empty end of a nested sequence clip).
@@ -3184,12 +3432,13 @@ mod trim_preview_tests {
             file_size: None,
         };
         let src = TwoStreams(info);
-        let first = source_peaks(&src, 0, Tick(TICKS_PER_SECOND));
-        let second = source_peaks(&src, 1, Tick(TICKS_PER_SECOND));
+        let (first, whole) = source_peaks(&src, 0, Tick(TICKS_PER_SECOND));
+        assert!(whole, "stream 0 reads to its end");
+        let (second, _) = source_peaks(&src, 1, Tick(TICKS_PER_SECOND));
         assert!(!first.is_empty() && first.len() == second.len());
         assert!(first.iter().all(|&(_, hi)| (hi - 0.1).abs() < 1e-6), "stream 0 is the quiet one");
         assert!(second.iter().all(|&(_, hi)| (hi - 0.5).abs() < 1e-6), "stream 1 is its own audio, not stream 0 again");
-        assert!(source_peaks(&src, 2, Tick(TICKS_PER_SECOND)).is_empty(), "a missing stream has no peaks");
+        assert!(source_peaks(&src, 2, Tick(TICKS_PER_SECOND)).0.is_empty(), "a missing stream has no peaks");
     }
 
     #[test]
@@ -3459,5 +3708,123 @@ mod ruler_tests {
         }
         let (minor, label) = ruler_steps(1.0, i64::MAX);
         assert!(minor >= 1 && label >= 1 && label % minor == 0, "an unrepresentable rate: tick {minor}, label {label}");
+    }
+}
+
+#[cfg(test)]
+mod waveform_pool_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Occupy every thread of `pool` until the returned sender is dropped.
+    fn block_pool(pool: &waveforms::Pool) -> mpsc::Sender<()> {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+        let (started_tx, started_rx) = mpsc::channel();
+        for _ in 0..waveforms::THREADS {
+            let (rx, started) = (release_rx.clone(), started_tx.clone());
+            pool.submit(Box::new(move || {
+                let _ = started.send(());
+                // wait for the release (the sender dropped), with a bound so a failure cannot hang
+                let _ = rx.lock().unwrap_or_else(|e| e.into_inner()).recv_timeout(Duration::from_secs(30));
+            }));
+        }
+        for _ in 0..waveforms::THREADS {
+            started_rx.recv_timeout(Duration::from_secs(30)).expect("a waveform thread runs the blocker");
+        }
+        release_tx
+    }
+
+    #[test]
+    fn waveforms_run_a_few_at_a_time_however_many_are_asked_for() {
+        // Regression: a thread per waveform, 104 at once for a 104-clip timeline.
+        let (running, peak, done) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let n = 12;
+        let pool = waveforms::Pool::default();
+        for _ in 0..n {
+            let (running, peak, done) = (running.clone(), peak.clone(), done.clone());
+            pool.submit(Box::new(move || {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(30));
+                running.fetch_sub(1, Ordering::SeqCst);
+                done.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        let started = std::time::Instant::now();
+        while done.load(Ordering::SeqCst) < n && started.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(done.load(Ordering::SeqCst), n, "every waveform job ran");
+        assert!(peak.load(Ordering::SeqCst) <= waveforms::THREADS, "at most {} at once, saw {}", waveforms::THREADS, peak.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn asking_for_a_waveform_never_opens_the_source_on_the_calling_thread() {
+        // Regression: the timeline's paint opened every clip's source on the UI thread to read
+        // its duration (80 probes in one session, the window frozen).
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = FilmcraftApp::new(s);
+        let seq = app.session.active_sequence().unwrap().clone();
+        let item = seq.audio_tracks.iter().flat_map(|t| t.items.iter()).map(|it| it.item).next().expect("an audio clip");
+        // as for a project just opened: the clip's source is not open yet
+        app.session.media.remove(item);
+        assert!(app.session.media.cached(item).is_none());
+        let release = block_pool(&app.tl.waveforms);
+        assert!(request_peaks(&mut app, item, 0).is_none(), "nothing computed yet");
+        assert!(app.session.media.cached(item).is_none(), "the source was opened by the caller, not the waveform thread");
+        drop(release);
+        let started = std::time::Instant::now();
+        while request_peaks(&mut app, item, 0).is_none() && started.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(request_peaks(&mut app, item, 0).is_some(), "the waveform arrives from the pool");
+        assert!(app.session.media.cached(item).is_some(), "and the pool opened the source");
+    }
+
+    fn wait_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Vec<(f32, f32)>>> {
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(p) = request_peaks(app, item, 0) {
+                return Some(p);
+            }
+            if started.elapsed() > Duration::from_secs(30) {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_project_opened_again_reads_its_waveforms_from_the_media_cache() {
+        // A field report: reopening a 109-clip project read every clip's audio again (4.4 s of
+        // audio decoding before the timeline had its waveforms).
+        let dir = std::env::temp_dir().join(format!("fc-waveform-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("tone.wav");
+        let samples: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        std::fs::write(&wav, filmcraft_media::wav::write_wav16(&samples, 1, 48_000)).unwrap();
+        let cache = dir.join("cache");
+        let mut s = filmcraft_engine::Session::default();
+        s.prefs.media_cache.location = cache.to_string_lossy().into_owned();
+        s.execute("file.import", serde_json::json!({ "paths": [wav.to_string_lossy()] })).unwrap();
+        let item = s.project.items.iter().find(|(_, i)| i.as_media().is_some()).map(|(id, _)| *id).expect("the WAV is in the project");
+        let mut app = FilmcraftApp::new(s);
+        app.session.media.remove(item);
+        let first = wait_peaks(&mut app, item).expect("peaks from the audio");
+        assert!(!first.is_empty());
+        let stored: Vec<_> = std::fs::read_dir(cache.join("waveforms")).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        assert_eq!(stored.len(), 1, "one cache file, no temporary left behind: {stored:?}");
+        // as for the project opened again: no peaks in memory, the source not open
+        app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        app.session.media.remove(item);
+        let again = wait_peaks(&mut app, item).expect("peaks from the cache");
+        assert_eq!(*again, *first);
+        assert!(app.session.media.cached(item).is_none(), "the cache answered without opening the file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

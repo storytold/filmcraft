@@ -137,10 +137,15 @@ fn the_app_keeps_running_while_the_import_dialog_is_open_and_imports_when_it_ans
     }
     d.frames(20);
     assert_eq!(d.items(), before);
-    // the user chooses a file: it is imported on the next frame
+    // the user chooses a file: the dialog closes on the next frame and the file, opened in the
+    // background, is added a few frames later
     answer.send(vec![wav().to_string_lossy().into_owned()]).unwrap();
     d.frames(2);
     assert!(!d.app().native_dialog_open());
+    let started = std::time::Instant::now();
+    while d.items() == before && started.elapsed() < std::time::Duration::from_secs(10) {
+        d.frames(1);
+    }
     assert_eq!(d.items(), before + 1);
     assert!(d.app().session.project.items.values().any(|i| i.name == "tone.wav"));
 }

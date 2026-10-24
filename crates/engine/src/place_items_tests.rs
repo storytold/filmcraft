@@ -142,3 +142,27 @@ fn a_panic_in_a_group_rolls_back_and_keeps_the_history_limit() {
     assert_eq!(s.history.undo.len(), steps);
     assert_eq!(s.project.to_json(), before);
 }
+
+/// A field report: a drop of 353 files placed them in 821-1572 ms on the UI thread.
+#[test]
+#[ignore = "timing probe: cargo test --release -p filmcraft-engine --lib probe_place_353 -- --ignored --nocapture"]
+fn probe_place_353() {
+    let (mut s, items) = three();
+    let mut p = (*s.project).clone();
+    let src = p.item(items[0]).unwrap().clone();
+    let mut many = Vec::new();
+    for k in 0..353 {
+        let filmcraft_project::ItemKind::Media(m) = &src.kind else { panic!() };
+        many.push(p.add_item(&format!("clip{k}"), filmcraft_project::Label::Iris, filmcraft_project::ItemKind::Media(m.clone()), None).0);
+    }
+    s.project = std::sync::Arc::new(p);
+    let t0 = std::time::Instant::now();
+    s.execute("timeline.place", json!({"items": many, "time": 0})).unwrap();
+    println!("timeline.place 353 items: {:.0} ms", t0.elapsed().as_secs_f64() * 1e3);
+    let t0 = std::time::Instant::now();
+    s.execute("file.newSequence", json!({"fromItems": many})).unwrap();
+    println!("file.newSequence fromItems 353: {:.0} ms", t0.elapsed().as_secs_f64() * 1e3);
+    let t0 = std::time::Instant::now();
+    let r = s.execute("file.newSequenceFromClip", json!({"items": many})).unwrap();
+    println!("file.newSequenceFromClip 353: {:.0} ms ({} clips)", t0.elapsed().as_secs_f64() * 1e3, r["clips"].as_array().map_or(0, Vec::len));
+}

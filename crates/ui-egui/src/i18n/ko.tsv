@@ -1084,6 +1084,7 @@
 	Exported to {path}	{path}(으)로 내보냄
 	Exported {path}	{path} 내보냄
 	Exporting	내보내는 중
+	Importing	가져오는 중
 	Exporting {path}	내보내는 중: {path}
 	Export…	내보내기…
 	Exposure	노출

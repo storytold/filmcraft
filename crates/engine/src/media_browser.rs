@@ -469,8 +469,8 @@ fn merge_import(out: &mut serde_json::Map<String, Value>, r: Value) {
 }
 
 /// Run `file.import` and merge its result; a failure becomes an error of the merged result.
-fn import_into(s: &mut Session, files: &[String], bin: Option<u64>, out: &mut serde_json::Map<String, Value>) {
-    let mut q = json!({"paths": files, "imageSequence": false});
+fn import_into(s: &mut Session, files: &[String], bin: Option<u64>, background: bool, out: &mut serde_json::Map<String, Value>) {
+    let mut q = json!({"paths": files, "imageSequence": false, "async": background});
     if let Some(b) = bin {
         q["bin"] = json!(b);
     }
@@ -482,16 +482,16 @@ fn import_into(s: &mut Session, files: &[String], bin: Option<u64>, out: &mut se
 
 /// Import a folder as a bin named after it, in `parent`: its files go into the bin, each
 /// sub-folder becomes a bin inside it (Premiere's Media Browser keeps the folder structure).
-fn import_folder(s: &mut Session, folder: &Folder, parent: Option<u64>, out: &mut serde_json::Map<String, Value>) -> Result<()> {
+fn import_folder(s: &mut Session, folder: &Folder, parent: Option<u64>, background: bool, out: &mut serde_json::Map<String, Value>) -> Result<()> {
     let name = folder.name.clone();
     let bin = s.edit("New Bin", |pr, _| Ok(pr.add_bin(&name, parent.map(filmcraft_project::BinId))))?;
     merge_import(out, json!({"bins": [bin.0]}));
     if !folder.files.is_empty() {
-        import_into(s, &folder.files, Some(bin.0), out);
+        import_into(s, &folder.files, Some(bin.0), background, out);
     }
     // recursion as deep as the walk went, which is bounded
     for sub in &folder.subs {
-        import_folder(s, sub, Some(bin.0), out)?;
+        import_folder(s, sub, Some(bin.0), background, out)?;
     }
     Ok(())
 }
@@ -507,6 +507,8 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let seq = bool_p(p, "imageSequence").unwrap_or(s.prefs.media_browser.import_as_image_sequence);
     let bin = u64_p(p, "bin");
+    // the panel's own imports open their files in the background (`file.import {async}`)
+    let background = bool_p(p, "async").unwrap_or(false);
     let mut files = Vec::new();
     let mut folders = Vec::new();
     let mut empty = Vec::new();
@@ -536,7 +538,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         if files.is_empty() && !empty.is_empty() {
             return Err(bad("mediaBrowser.import", format!("no media files in {}", empty.join(", "))));
         }
-        let mut q = json!({"paths": files, "imageSequence": seq});
+        let mut q = json!({"paths": files, "imageSequence": seq, "async": background});
         if let Some(b) = bin {
             q["bin"] = json!(b);
         }
@@ -545,10 +547,10 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out = serde_json::Map::new();
     merge_import(&mut out, json!({"items": [], "errors": empty.iter().map(|e| format!("{e}: no media files")).collect::<Vec<_>>(), "bins": []}));
     if !files.is_empty() {
-        import_into(s, &files, bin, &mut out);
+        import_into(s, &files, bin, background, &mut out);
     }
     for f in &folders {
-        import_folder(s, f, bin, &mut out)?;
+        import_folder(s, f, bin, background, &mut out)?;
     }
     Ok(Value::Object(out))
 }
@@ -692,7 +694,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             r#"{"fileTypes":"all|video|audio|image|project|caption|<ext>"?,"view":"list|thumbnails"?,"columns":[str]?,"importAsImageSequence":bool?,"hoverScrub":bool?,"thumbnailSize":f32?}"#,
             settings,
         ),
-        c("mediaBrowser.import", "Import", r#"{"paths":[str]?,"bin":binId?,"imageSequence":bool?}"#, import),
+        c("mediaBrowser.import", "Import", r#"{"paths":[str]?,"bin":binId?,"imageSequence":bool?,"async":bool?}"#, import),
         CommandSpec {
             id: "mediaBrowser.openInSource",
             label: "Open In Source Monitor",

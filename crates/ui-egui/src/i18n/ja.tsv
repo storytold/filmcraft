@@ -2953,6 +2953,7 @@
 	Quick Export: {path}	クイック書き出し: {path}
 	Graphics problem: switched to software compositing	グラフィックスに問題が発生したため、ソフトウェア合成に切り替えました
 	Exporting	書き出し中
+	Importing	読み込み中
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	クリックで選択します。何もない場所からドラッグすると範囲選択になります。Shift、Opt、Cmd キーを併用すると、ほかのオプションも使えます。
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	クリックすると、全トラックでクリック位置より右にあるクリップをすべて選択します。Shift+クリックでは 1 つのトラックだけが対象になります。
 	Click to select all clips to the left in all tracks. Shift-click for a single track.	クリックすると、全トラックでクリック位置より左にあるクリップをすべて選択します。Shift+クリックでは 1 つのトラックだけが対象になります。

@@ -348,7 +348,7 @@ fn node(
             ui.close();
         }
         if ui.button(tl!("Import")).clicked() {
-            exec(app, ctx, "mediaBrowser.import", json!({"paths": [path]}));
+            exec(app, ctx, "mediaBrowser.import", json!({"paths": [path], "async": true}));
             ui.close();
         }
         if section == "recent" && ui.button(tl!("Clear Recent Directories")).clicked() {
@@ -401,7 +401,7 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
             exec(app, &ctx, "mediaBrowser.navigate", json!({"path": e.path}));
             refresh(&ctx);
         } else if matches!(e.kind, "project" | "caption") {
-            exec(app, &ctx, "mediaBrowser.import", json!({"paths": [e.path]}));
+            exec(app, &ctx, "mediaBrowser.import", json!({"paths": [e.path], "async": true}));
         } else {
             exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
         }
@@ -414,7 +414,7 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
         let b = ui.button(tl!("Import"));
         app.auto.add("mediaBrowser.entryMenu.import", b.rect, "Import");
         if b.clicked() {
-            exec(app, &ctx, "mediaBrowser.import", json!({"paths": paths, "imageSequence": false}));
+            exec(app, &ctx, "mediaBrowser.import", json!({"paths": paths, "imageSequence": false, "async": true}));
             ui.close();
         }
         if !e.is_dir {
@@ -799,7 +799,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         close = true;
     }
     if item(app, ui, "import", tl!("Import"), has_sel, None, "") {
-        exec(app, &ctx, "mediaBrowser.import", json!({}));
+        exec(app, &ctx, "mediaBrowser.import", json!({"async": true}));
         close = true;
     }
     if item(app, ui, "openInSource", tl!("Open In Source Monitor"), has_sel, None, "Shift+O") {
