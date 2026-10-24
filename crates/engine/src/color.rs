@@ -10,7 +10,7 @@
 //! renders a folder's thumbnail grid (our Lumetri on the procedural preview picture) to a PNG.
 
 use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
-use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
+use filmcraft_project::{ClipId, ItemId, ItemKind, MediaClip, ParamValue, ProjectLut, TrackKind};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, has_seq, item_p, str_p, time_p};
@@ -40,7 +40,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "clip.interpretFootage",
             "Interpret Footage…",
             &["Clip", "Modify"],
-            r#"{"items":[id]?,"colorSpace":"auto"|"<color space id>"?,"pixelAspect":[num,den]|"file"?}"#,
+            r#"{"items":[id]?,"colorSpace":"auto"|"<color space id>"?,"pixelAspect":[num,den]|"file"?,"frameRate":fps|"num/den"|"file"?,"ignoreAlpha":bool?,"invertAlpha":bool?}"#,
             has_footage,
             interpret,
         ),
@@ -295,9 +295,12 @@ pub(crate) fn footage_targets(s: &Session, p: &Value) -> Vec<ItemId> {
     v
 }
 
-/// `clip.interpretFootage`: the colour space (`colorSpace`) and / or the pixel aspect ratio
-/// (`pixelAspect`) the footage is interpreted with. `"auto"` / `"file"` go back to the file's
-/// metadata; a parameter left out keeps its current interpretation.
+/// `clip.interpretFootage`: the colour space (`colorSpace`), the pixel aspect ratio
+/// (`pixelAspect`), the frame rate (`frameRate`, Assume this frame rate) and / or the alpha
+/// channel (`ignoreAlpha`, `invertAlpha`) the footage is interpreted with. `"auto"` / `"file"` go back to the file's metadata; a parameter left out
+/// keeps its current interpretation. A new frame rate conforms the footage
+/// ([`filmcraft_project::Conform`]) and keeps every clip, mark and keyframe on its frame
+/// ([`filmcraft_project::Project::retime_media`]).
 fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "clip.interpretFootage";
     let items = footage_targets(s, p);
@@ -317,8 +320,23 @@ fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
                 bad(CMD, format!("pixelAspect must be [num, den] between 1:{0} and {0}:1, or \"file\"", filmcraft_project::MAX_PIXEL_ASPECT))
             })?)),
         };
-    if cs.is_none() && par.is_none() {
-        return Err(bad(CMD, "need `colorSpace` (auto or a colour space id) or `pixelAspect`"));
+    let rate = match p.get("frameRate") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(f)) if f == "file" || f == "auto" => Some(None),
+        Some(v) => Some(Some(
+            crate::export_tools::parse_rate(v)
+                .filter(|r| r.is_usable())
+                .ok_or_else(|| bad(CMD, "frameRate must be a rate in frames per second (25, 29.97) or \"num/den\", up to 1000, or \"file\""))?,
+        )),
+    };
+    let flag = |k: &str| match p.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(bad(CMD, format!("`{k}` must be true or false"))),
+    };
+    let (ignore_alpha, invert_alpha) = (flag("ignoreAlpha")?, flag("invertAlpha")?);
+    if cs.is_none() && par.is_none() && rate.is_none() && ignore_alpha.is_none() && invert_alpha.is_none() {
+        return Err(bad(CMD, "need `colorSpace` (auto or a colour space id), `pixelAspect`, `frameRate`, `ignoreAlpha` or `invertAlpha`"));
     }
     s.edit("Interpret Footage", |pr, _| {
         for i in &items {
@@ -329,6 +347,25 @@ fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(par) = par {
                     m.interpret.par = par;
                 }
+                if let Some(b) = ignore_alpha {
+                    m.interpret.ignore_alpha = b;
+                }
+                if let Some(b) = invert_alpha {
+                    m.interpret.invert_alpha = b;
+                }
+            }
+            if let Some(rate) = rate {
+                let Some(m) = pr.item_mut(*i).and_then(|it| it.as_media_mut()) else { continue };
+                // stills and sound have no frame rate to assume (several items may be mixed)
+                if m.info.video.is_none() || matches!(m.info.kind, filmcraft_media::MediaKind::Still) {
+                    continue;
+                }
+                // the rate the footage plays at before and after (a still or sound has none to conform)
+                let playing = |m: &MediaClip| m.conform().map_or(m.info.frame_rate(), |c| c.assumed);
+                let from = playing(m);
+                m.interpret.frame_rate = rate;
+                let to = playing(m);
+                pr.retime_media(*i, from, to);
             }
         }
         Ok(())
@@ -338,6 +375,10 @@ fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
         "items": items.iter().map(|i| i.0).collect::<Vec<_>>(),
         "colorSpace": first.and_then(|m| m.interpret.color_space).map(|c| c.id()).unwrap_or("auto"),
         "pixelAspect": first.map(|m| m.pixel_aspect()),
+        "frameRate": first.map(|m| m.frame_rate().label()),
+        "fileFrameRate": first.map(|m| m.info.frame_rate().label()),
+        "ignoreAlpha": first.is_some_and(|m| m.interpret.ignore_alpha),
+        "invertAlpha": first.is_some_and(|m| m.interpret.invert_alpha),
     }))
 }
 
