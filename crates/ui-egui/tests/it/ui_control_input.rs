@@ -276,6 +276,25 @@ fn modified_control_drag_keeps_shift_until_release_and_clears_it_afterward() {
     assert_eq!(d.h.ctx.input(|input| input.modifiers), Modifiers::NONE);
 }
 
+#[test]
+fn a_request_its_transport_gave_up_on_never_runs() {
+    // #1584: the window was hidden, the control server timed out and told the caller the edit
+    // was not made. When the window shows again the queued request must be dropped, not run.
+    let mut d = Driver::new(false);
+    let before = d.ok("engine.execute", json!({"command":"sequence.inspect","params":{}}), true);
+    let (request, reply) = ControlRequest::new("engine.execute", json!({"command":"playhead.set","params":{"seconds":3}}));
+    assert!(request.ticket().abandon(), "the UI has not taken it yet");
+    d.tx.send(request).unwrap();
+    d.frames(4, true);
+    assert!(reply.try_recv().is_err(), "an abandoned request gets no reply");
+    let after = d.ok("engine.execute", json!({"command":"sequence.inspect","params":{}}), true);
+    assert_eq!(after["playhead"], before["playhead"], "the abandoned edit must not have run");
+    // The same request, not abandoned, does move the playhead (so the check above means something).
+    d.ok("engine.execute", json!({"command":"playhead.set","params":{"seconds":3}}), true);
+    let moved = d.ok("engine.execute", json!({"command":"sequence.inspect","params":{}}), true);
+    assert_ne!(moved["playhead"], before["playhead"]);
+}
+
 /// CodeRabbit on #2006: in control-only mode the native menu's commands are ignored, but its Quit
 /// item (now `app.quit` through the command inbox, #1943) must still close the window, as the
 /// predefined Quit item did.

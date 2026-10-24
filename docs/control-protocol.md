@@ -37,6 +37,13 @@ its request line is rejected first. At most 16 connections are served at once; f
 line and are closed. Clients that get an error reply should reconnect. Transport:
 `apps/filmcraft/src/control_server.rs`.
 
+**Timeouts.** Requests run on the UI thread between frames. A request with no reply after 60 s gets
+`{"ok": false, "ran": false|true, "error": "timeout: …"}`. `ran: false` means the app never took it (for
+example its window was hidden on Wayland, where a hidden surface draws no frames): the request is
+cancelled and **will not run later**, so it is safe to retry. `ran: true` means it ran and only its reply
+is late (a screenshot of a hidden window, say): check the state before retrying, or the edit is applied
+twice.
+
 ```json
 {"id": 1, "token": "<FILMCRAFT_CONTROL_TOKEN>", "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}
 {"id": 1, "ok": true, "result": {"cuts": 2}}

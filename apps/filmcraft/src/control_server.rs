@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
 use filmcraft_ui_egui::ControlRequest;
@@ -24,6 +24,8 @@ use subtle::ConstantTimeEq;
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 pub const MAX_CONNECTIONS: usize = 16;
+/// How long a connection waits for the UI thread to answer one request.
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 /// A peer that stops sending or reading must eventually give back its connection slot.
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -94,13 +96,37 @@ fn serve_with_timeout(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let read = stream.try_clone()?;
-    serve_lines(read, stream, token, |method, params| {
-        let (req, rrx) = ControlRequest::new(method, params);
-        tx.send(req).ok()?;
-        ctx.request_repaint();
-        Some(rrx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| json!({"ok": false, "error": "timeout"})))
-    });
+    serve_lines(read, stream, token, |method, params| ask(tx, method, params, REPLY_TIMEOUT, || ctx.request_repaint()));
     Ok(())
+}
+
+/// Queue one request for the UI thread and wait up to `timeout` for its reply; `None` when the
+/// app is gone. `wake` nudges the UI to run a frame.
+///
+/// A timeout says whether the command ran (#1584): if the UI never took the request (its window
+/// was hidden and drew no frames) it is cancelled and will not run later, so a client may retry;
+/// if it already ran, only its reply is late, and a retry would apply the edit twice.
+fn ask(tx: &Sender<ControlRequest>, method: String, params: Value, timeout: Duration, wake: impl FnOnce()) -> Option<Value> {
+    let (req, rrx) = ControlRequest::new(method, params);
+    let ticket = req.ticket();
+    tx.send(req).ok()?;
+    wake();
+    match rrx.recv_timeout(timeout) {
+        Ok(reply) => Some(reply),
+        Err(RecvTimeoutError::Disconnected) => Some(json!({"ok": false, "error": "the app dropped the request without answering"})),
+        Err(RecvTimeoutError::Timeout) => {
+            let secs = timeout.as_secs();
+            if ticket.abandon() {
+                return Some(
+                    json!({"ok": false, "ran": false, "error": format!("timeout: the app did not take the request within {secs} s (is its window hidden?); it was cancelled and will not run")}),
+                );
+            }
+            // It ran; the reply may have landed between the timeout and `abandon`.
+            Some(rrx.try_recv().unwrap_or_else(|_| {
+                json!({"ok": false, "ran": true, "error": format!("timeout: the request ran but did not reply within {secs} s; check the result before retrying")})
+            }))
+        }
+    }
 }
 
 /// One parsed line.
@@ -317,6 +343,70 @@ mod tests {
         assert_eq!(lines.len(), 2, "{text}");
         assert!(lines[0].contains("\"id\":7"));
         assert!(lines[1].contains("closing the connection"));
+    }
+
+    /// Play the UI thread's side of [`ask`] synchronously, right after the request is queued (in
+    /// `wake`), so no test depends on thread timing: take the request as `drain_control` does and
+    /// end it with `ran`. The request is kept alive (reply channel open) in `kept`.
+    fn ui_takes(rx: &Receiver<ControlRequest>, ran: bool, kept: &mut Option<ControlRequest>) {
+        let req = rx.try_recv().unwrap();
+        assert!(req.begin(), "a request still waiting can be taken");
+        req.finish(ran);
+        *kept = Some(req);
+    }
+
+    #[test]
+    fn a_timed_out_request_is_cancelled_and_never_runs_later() {
+        // #1584: the window is hidden, so no frame drains the queue before the timeout.
+        let (tx, rx) = channel::<ControlRequest>();
+        let r = ask(&tx, "engine.execute".into(), json!({}), Duration::from_millis(20), || {}).unwrap();
+        assert_eq!(r["ok"], false);
+        assert_eq!(r["ran"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains("will not run"), "{r}");
+        // The window shows again and the queue drains: the request must be refused, or a client
+        // that retried after the timeout would get its edit applied twice.
+        let late = rx.try_recv().unwrap();
+        assert!(!late.begin(), "an abandoned request must not run");
+    }
+
+    #[test]
+    fn a_timeout_after_the_request_ran_says_so() {
+        // it ran, but its reply never comes (say a screenshot of a hidden window)
+        let (tx, rx) = channel::<ControlRequest>();
+        let mut kept = None;
+        let r = ask(&tx, "ui.screenshot".into(), json!({}), Duration::from_millis(20), || ui_takes(&rx, true, &mut kept)).unwrap();
+        assert_eq!(r["ok"], false);
+        assert_eq!(r["ran"], true, "{r}");
+    }
+
+    #[test]
+    fn a_retry_goes_back_to_waiting_and_can_still_be_cancelled() {
+        // `Outcome::Retry`: the UI looked at it, did nothing and will try again next frame
+        let (tx, rx) = channel::<ControlRequest>();
+        let mut kept = None;
+        let r = ask(&tx, "ui.click".into(), json!({}), Duration::from_millis(20), || ui_takes(&rx, false, &mut kept)).unwrap();
+        assert_eq!(r["ran"], false, "{r}");
+        assert!(!kept.unwrap().begin(), "the retry must not run once the caller gave up");
+    }
+
+    #[test]
+    fn a_reply_in_time_is_passed_through() {
+        let (tx, rx) = channel::<ControlRequest>();
+        let mut kept = None;
+        let r = ask(&tx, "perf.stats".into(), json!({}), Duration::from_secs(5), || {
+            ui_takes(&rx, true, &mut kept);
+            kept.as_ref().unwrap().reply.send(json!({"ok": true, "result": 5})).unwrap();
+        })
+        .unwrap();
+        assert_eq!(r, json!({"ok": true, "result": 5}));
+    }
+
+    #[test]
+    fn a_dropped_request_is_not_reported_as_a_timeout() {
+        let (tx, rx) = channel::<ControlRequest>();
+        let r = ask(&tx, "app.quit".into(), json!({}), Duration::from_secs(5), || drop(rx.try_recv().unwrap())).unwrap();
+        assert_eq!(r["ok"], false);
+        assert!(!r["error"].as_str().unwrap().contains("timeout"), "{r}");
     }
 
     #[test]
