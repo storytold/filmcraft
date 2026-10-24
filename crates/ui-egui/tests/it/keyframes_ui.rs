@@ -392,15 +392,16 @@ fn effect_controls_zoom_bar_scales_keyframes_and_ruler() {
 }
 
 #[test]
-fn alt_wheel_zoom_is_anchored_to_the_pointer_and_zoom_bar_sits_at_lane_bottom() {
-    let (mut d, _clip) = Driver::demo();
+fn alt_wheel_zoom_keeps_the_playhead_anchored_and_zoom_bar_sits_at_lane_bottom() {
+    let (mut d, clip) = Driver::demo();
     d.ok("ui.set", json!({"effectControls": {"timeZoom": null}}));
     d.frames(2);
     let lane = d.rect("effectControls.lane");
     let bar = d.rect("effectControls.zoomBar");
     assert!(bar[1] > lane[1] + lane[3] * 0.8, "navigator is placed below the keyframe area: {bar:?} {lane:?}");
-    let u = 0.31;
-    let x = lane[0] + lane[2] * u;
+    // The zoom anchors the playback cursor, not the pointer: the wheel is at 31 % of the lane.
+    let u = ((d.playhead() - clip.start) as f64 / clip.duration.max(1) as f64).clamp(0.0, 1.0);
+    let x = lane[0] + lane[2] * 0.31;
     d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.55, "dy": 100.0, "modifiers": {"alt": true}}));
     assert!(
         !d.harness.ctx.input(|input| input.raw.events.iter().any(|event| matches!(event, egui::Event::MouseWheel { modifiers, .. } if modifiers.alt))),
@@ -409,7 +410,7 @@ fn alt_wheel_zoom_is_anchored_to_the_pointer_and_zoom_bar_sits_at_lane_bottom() 
     d.frames(3);
     let zoom = d.harness.state().ui.effect_controls_time_zoom.expect("Alt-wheel zooms in");
     assert!(zoom[1] - zoom[0] < 1.0);
-    assert!(((zoom[0] + (zoom[1] - zoom[0]) * u) - u).abs() < 0.01, "the time under the pointer remains anchored: {zoom:?}");
+    assert!(((zoom[0] + (zoom[1] - zoom[0]) * u) - u).abs() < 0.01, "the playback cursor keeps its lane position: {zoom:?}");
 
     d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.55, "dy": -40.0, "modifiers": {"alt": true}}));
     d.frames(2);
@@ -422,17 +423,16 @@ fn alt_wheel_zoom_is_anchored_to_the_pointer_and_zoom_bar_sits_at_lane_bottom() 
     d.frames(3);
     assert_eq!(d.harness.state().ui.effect_controls_time_zoom, Some(before), "Alt-wheel outside the keyframe lane does not zoom");
 
-    for edge in [0.01, 0.99] {
-        d.ok("ui.set", json!({"effectControls": {"timeZoom": null}}));
-        d.frames(2);
-        let lane = d.rect("effectControls.lane");
-        let x = lane[0] + lane[2] * edge;
-        let pointer_fraction = (x - lane[0]) / lane[2];
-        d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.5, "dy": 80.0, "modifiers": {"alt": true}}));
-        d.frames(2);
-        let [start, end] = d.harness.state().ui.effect_controls_time_zoom.expect("edge wheel zoom");
-        assert!((start + (end - start) * pointer_fraction - pointer_fraction).abs() < 0.01, "edge time stays under pointer: {edge} → [{start}, {end}]");
-    }
+    // A playback cursor outside the visible range is drawn against the nearest edge, so the zoom
+    // keeps it pinned there instead of jumping the view onto it.
+    let outside = if u > 0.5 { [0.0, 0.5] } else { [0.5, 1.0] };
+    d.ok("ui.set", json!({"effectControls": {"timeZoom": outside}}));
+    d.frames(2);
+    d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.5, "dy": 80.0, "modifiers": {"alt": true}}));
+    d.frames(2);
+    let [start, end] = d.harness.state().ui.effect_controls_time_zoom.expect("wheel zooms the clipped view");
+    let pinned = if u > 0.5 { end } else { start };
+    assert!((pinned - 0.5).abs() < 0.01, "the cursor outside the view stays pinned to its edge: [{start}, {end}]");
 
     // A clip shorter than the five-frame zoom minimum stays at its full range.
     let app = d.harness.state_mut();
@@ -440,7 +440,7 @@ fn alt_wheel_zoom_is_anchored_to_the_pointer_and_zoom_bar_sits_at_lane_bottom() 
     let rate = app.session.sequence_rate();
     let item = std::sync::Arc::make_mut(&mut app.session.project)
         .sequence_mut(sequence)
-        .and_then(|sequence| sequence.find_item_mut(ClipId(_clip.id)).map(|(_, item)| item))
+        .and_then(|sequence| sequence.find_item_mut(ClipId(clip.id)).map(|(_, item)| item))
         .expect("selected clip");
     item.duration = Tick(rate.frame_duration().0.saturating_mul(3));
     d.harness.state_mut().ui.effect_controls_time_zoom = Some([0.1, 0.8]);
