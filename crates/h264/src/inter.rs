@@ -274,6 +274,13 @@ pub enum Weight {
 /// Combine prediction(s) into `dst` (stride `ds`). `p0`/`p1` have stride `ps`.
 #[allow(clippy::too_many_arguments)]
 pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&[u8]>, ps: usize, bw: usize, bh: usize, w: Weight) {
+    // equal weights 1 << logWD with no offset (implicit 32/32) reduce exactly to the rounded average
+    let w = match w {
+        Weight::Weighted { log_wd, w0, w1, o0, o1 } if p0.is_some() && p1.is_some() && w0 == w1 && w0 == 1 << log_wd && (o0 + o1 + 1) >> 1 == 0 => {
+            Weight::Default
+        }
+        w => w,
+    };
     match (p0, p1, w) {
         (Some(a), Some(b), Weight::Default) => {
             for r in 0..bh {
@@ -509,5 +516,21 @@ mod tests {
         assert_eq!(d, [75; 4]);
         weighted_store(&mut d, 4, Some(&a), None, 4, 4, 1, Weight::Weighted { log_wd: 5, w0: 16, w1: 0, o0: 3, o1: 0 });
         assert_eq!(d, [53; 4]);
+    }
+
+    #[test]
+    fn equal_power_of_two_weights_are_the_average() {
+        let a: Vec<u8> = (0..=255).collect();
+        let b: Vec<u8> = (0..=255).rev().map(|v: u8| v.wrapping_mul(7)).collect();
+        for (log_wd, o0, o1) in [(5, 0, 0), (0, 0, 0), (7, 0, 0), (3, 1, -2), (2, -1, 0)] {
+            let w0 = 1 << log_wd;
+            let mut fast = [0u8; 256];
+            weighted_store(&mut fast, 16, Some(&a), Some(&b), 16, 16, 16, Weight::Weighted { log_wd, w0, w1: w0, o0, o1 });
+            let mut want = [0u8; 256];
+            for i in 0..256 {
+                want[i] = clip1(((a[i] as i32 * w0 + b[i] as i32 * w0 + (1 << log_wd)) >> (log_wd + 1)) + ((o0 + o1 + 1) >> 1));
+            }
+            assert_eq!(fast, want, "logWD {log_wd}");
+        }
     }
 }
