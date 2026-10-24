@@ -646,7 +646,7 @@ fn label_presets(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) {
                 pick = selected.cloned();
             }
             if preset_button(app, ui, "import", Icon::Import, tl!("Import a preset file…"), true)
-                && let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Label Color Presets"), &["json"]))
+                && let Some(path) = app.while_modal(|app| app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Label Color Presets"), &["json"])))
             {
                 d.label_presets = None;
                 match app.session.import_label_preset(std::path::Path::new(&path)) {
@@ -658,7 +658,9 @@ fn label_presets(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) {
                 }
             }
             if preset_button(app, ui, "export", Icon::Export, tl!("Export the labels to a preset file…"), true)
-                && let Some(path) = app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Label Color Presets"), &["json"], &format!("{}.json", labels.preset)))
+                && let Some(path) = app.while_modal(|app| {
+                    app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Label Color Presets"), &["json"], &format!("{}.json", labels.preset)))
+                })
             {
                 d.preset_message = match settings::LabelPreset::export(std::path::Path::new(&path), &labels) {
                     Ok(_) => tlf!("Exported to {path}", path),

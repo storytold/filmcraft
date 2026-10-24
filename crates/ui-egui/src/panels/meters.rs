@@ -6,8 +6,123 @@ use egui::{Align2, Rect, pos2, vec2};
 use crate::FilmcraftApp;
 use crate::theme::Tokens;
 
-/// Feed the loudness meter with exactly the programme audio played since the last frame
-/// (consecutive, non-overlapping blocks, so gating and integration are correct). Seeks reset it.
+/// The BS.1770 loudness of the programme as it plays, measured off the UI thread.
+///
+/// The meter is fed exactly the programme audio played since the last feed (consecutive,
+/// non-overlapping blocks, so gating and integration are correct); a seek resets it. Measuring
+/// means mixing that audio again, and the mix used to run on the UI thread every frame: with a
+/// slow source it waited for the sound, and frames of 0.3-4.5 s followed one another for as long
+/// as playback ran. The mix now runs on a worker thread, one block at a time; while one is mixing
+/// the next block just grows, and the readout shows the last values.
+#[derive(Default)]
+pub(crate) struct LoudnessFeed {
+    /// The meter, as far as it has been fed (the worker writes it).
+    meter: std::sync::Arc<std::sync::Mutex<Option<filmcraft_audio_dsp::LoudnessMeter>>>,
+    /// The sample the next block starts at (the end of the last one asked for).
+    next: Option<i64>,
+    /// The playhead's sample at the last feed: a jump from it is a seek.
+    last_now: Option<i64>,
+    /// A block is being mixed.
+    busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(not(target_arch = "wasm32"))]
+    worker: Option<std::sync::mpsc::Sender<LoudnessJob>>,
+}
+
+/// Work for the loudness worker.
+pub(crate) enum LoudnessJob {
+    /// Start a new measurement at `sample_rate` (a seek, a new playback).
+    Reset { sample_rate: f64 },
+    /// Mix `frames` samples of `seq` from `start` and feed them to the meter.
+    Feed {
+        project: std::sync::Arc<filmcraft_project::Project>,
+        seq: filmcraft_project::ItemId,
+        start: i64,
+        frames: usize,
+        provider: filmcraft_engine::media_pool::PoolProvider,
+        previews: std::sync::Arc<filmcraft_engine::previews::PreviewStore>,
+    },
+}
+
+/// The longest block the worker is asked to mix at once (a slow source must not queue up
+/// minutes of audio).
+const MAX_BLOCK_SECONDS: i64 = 10;
+
+impl LoudnessFeed {
+    /// The readout: momentary, short-term and integrated loudness (LUFS) and the true peak (dBTP).
+    pub(crate) fn readout(&self) -> (f64, f64, f64, f64) {
+        let none = (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        match self.meter.try_lock() {
+            Ok(m) => m.as_ref().map_or(none, |l| (l.momentary(), l.short_term(), l.integrated(), l.true_peak_dbtp())),
+            // being fed this instant (a few microseconds): the next frame shows it
+            Err(std::sync::TryLockError::WouldBlock) => none,
+            Err(std::sync::TryLockError::Poisoned(p)) => {
+                p.into_inner().as_ref().map_or(none, |l| (l.momentary(), l.short_term(), l.integrated(), l.true_peak_dbtp()))
+            }
+        }
+    }
+
+    fn send(&mut self, job: LoudnessJob) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            run_job(&self.meter, job);
+            self.busy.store(false, std::sync::atomic::Ordering::Release);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.worker.is_none() {
+                let (tx, rx) = std::sync::mpsc::channel::<LoudnessJob>();
+                let (meter, busy) = (self.meter.clone(), self.busy.clone());
+                let spawned = std::thread::Builder::new().name("filmcraft-loudness".into()).spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_job(&meter, job))).is_err() {
+                            log::warn!("the loudness meter's mix panicked; the readout continues with the next block");
+                        }
+                        busy.store(false, std::sync::atomic::Ordering::Release);
+                    }
+                });
+                match spawned {
+                    Ok(_) => self.worker = Some(tx),
+                    Err(e) => {
+                        log::warn!("loudness meter thread not started: {e}");
+                        self.busy.store(false, std::sync::atomic::Ordering::Release);
+                        return;
+                    }
+                }
+            }
+            if let Some(tx) = &self.worker
+                && tx.send(job).is_err()
+            {
+                // the worker is gone: start another next time
+                self.worker = None;
+                self.busy.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+    }
+}
+
+fn run_job(meter: &std::sync::Mutex<Option<filmcraft_audio_dsp::LoudnessMeter>>, job: LoudnessJob) {
+    match job {
+        LoudnessJob::Reset { sample_rate } => {
+            *meter.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(filmcraft_audio_dsp::LoudnessMeter::new(sample_rate, 2));
+        }
+        LoudnessJob::Feed { project, seq, start, frames, provider, previews } => {
+            // the mix (sources, effects, the Mix's meters) without the meter's lock
+            let buf = previews.mix(&project, seq, start, frames, &provider);
+            let chans: Vec<&[f32]> = buf.channels.iter().take(2).map(Vec::as_slice).collect();
+            let mut m = meter.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(m) = m.as_mut() {
+                if chans.len() == 2 {
+                    m.process(&chans);
+                } else if let Some(c) = chans.first() {
+                    m.process(&[c, c]);
+                }
+            }
+        }
+    }
+}
+
+/// Feed the loudness meter with the programme audio played since the last frame (see
+/// [`LoudnessFeed`]). Never waits for the mix.
 pub(crate) fn feed_loudness(app: &mut FilmcraftApp) {
     if !app.playback.playing {
         return;
@@ -15,30 +130,34 @@ pub(crate) fn feed_loudness(app: &mut FilmcraftApp) {
     let Some(seq) = app.session.active_sequence() else { return };
     let sr = seq.settings.sample_rate as i64;
     let now = app.session.playhead().to_units_floor(sr);
-    let fresh = match &app.loudness {
-        Some((_, next)) => now < *next || now - *next > sr,
-        None => true,
-    };
-    if fresh {
-        app.loudness = Some((filmcraft_audio_dsp::LoudnessMeter::new(sr as f64, 2), now));
+    let feed = &mut app.loudness;
+    let seek = feed.last_now.is_none_or(|last| now < last || now - last > sr);
+    feed.last_now = Some(now);
+    if seek {
+        feed.next = Some(now);
+        feed.busy.store(true, std::sync::atomic::Ordering::Release);
+        feed.send(LoudnessJob::Reset { sample_rate: sr as f64 });
         return;
     }
-    let next = app.loudness.as_ref().map_or(now, |l| l.1);
-    if now <= next {
+    let next = feed.next.unwrap_or(now);
+    if now <= next || feed.busy.load(std::sync::atomic::Ordering::Acquire) {
+        // nothing new yet, or a block still mixing: the next one covers this frame too
         return;
     }
-    let provider = app.session.media.provider(app.session.project.clone(), app.session.services.clone());
+    let start = next.max(now.saturating_sub(MAX_BLOCK_SECONDS.saturating_mul(sr)));
     let Some(seq_id) = app.session.state.active_sequence else { return };
-    let buf = app.session.previews.mix(&app.session.project, seq_id, next, (now - next) as usize, &provider);
-    if let Some((m, n)) = app.loudness.as_mut() {
-        let chans: Vec<&[f32]> = buf.channels.iter().take(2).map(Vec::as_slice).collect();
-        if chans.len() == 2 {
-            m.process(&chans);
-        } else if let Some(c) = chans.first() {
-            m.process(&[c, c]);
-        }
-        *n = now;
-    }
+    let job = LoudnessJob::Feed {
+        project: app.session.project.clone(),
+        seq: seq_id,
+        start,
+        frames: usize::try_from(now - start).unwrap_or(0),
+        provider: app.session.media.provider(app.session.project.clone(), app.session.services.clone()),
+        previews: app.session.previews.clone(),
+    };
+    let feed = &mut app.loudness;
+    feed.next = Some(now);
+    feed.busy.store(true, std::sync::atomic::Ordering::Release);
+    feed.send(job);
 }
 
 fn lufs_text(v: f64) -> String {
@@ -147,9 +266,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let parts = parts(rect, names, |text, font| ui.painter().layout_no_wrap(text.to_string(), font, t.text).size());
     let area = parts.area;
     if let Some((lr, units)) = parts.readout {
-        let (m, s, i, tp) = app.loudness.as_ref().map_or((f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |(l, _)| {
-            (l.momentary(), l.short_term(), l.integrated(), l.true_peak_dbtp())
-        });
+        let (m, s, i, tp) = app.loudness.readout();
         ui.painter().rect_filled(lr, 2.0, t.meter_readout_bg);
         let rows = [("M", lufs_text(m)), ("S", lufs_text(s)), ("I", lufs_text(i)), ("TP", lufs_text(tp))];
         for (k, (label, val)) in rows.iter().enumerate() {
@@ -215,6 +332,65 @@ mod tests {
         })
         .textures_delta
         .clear();
+    }
+
+    /// A source whose sound takes `delay` per read (a slow or busy decoder).
+    struct SlowSound(filmcraft_media::SharedSource, std::time::Duration);
+
+    impl filmcraft_media::MediaSource for SlowSound {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            self.0.info()
+        }
+        fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<std::sync::Arc<filmcraft_frame::VideoFrame>> {
+            self.0.video_frame(req)
+        }
+        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            std::thread::sleep(self.1);
+            self.0.audio(start, frames, sample_rate)
+        }
+        fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            std::thread::sleep(self.1);
+            self.0.audio_stream(stream, start, frames, sample_rate)
+        }
+    }
+
+    /// A field report: the loudness readout mixed the programme on the UI thread every frame of
+    /// playback; with a slow source each mix waited for its sound and the frames took 0.3-4.5 s.
+    #[test]
+    fn feeding_the_loudness_meter_never_waits_for_the_mix() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let delay = std::time::Duration::from_millis(400);
+        let items: Vec<_> = s.project.items.values().filter(|i| i.as_media().is_some_and(|m| !m.info.audio_streams.is_empty())).map(|i| i.id).collect();
+        for item in items {
+            if let Some(src) = s.source(item) {
+                s.media.insert(item, std::sync::Arc::new(SlowSound(src, delay)));
+            }
+        }
+        let mut app = FilmcraftApp::new(s);
+        app.playback.playing = true;
+        let at = |app: &mut FilmcraftApp, secs: f64| {
+            app.session.execute("playhead.set", serde_json::json!({"seconds": secs})).unwrap();
+        };
+        at(&mut app, 2.0);
+        let mut worst = std::time::Duration::ZERO;
+        for k in 1..=10 {
+            at(&mut app, 2.0 + f64::from(k) * 0.05);
+            let t = std::time::Instant::now();
+            feed_loudness(&mut app);
+            worst = worst.max(t.elapsed());
+        }
+        assert!(worst < delay / 4, "a feed took {worst:?}; the mix is {delay:?}");
+        // the readout follows once the worker has mixed (momentary loudness needs 400 ms of it)
+        let started = std::time::Instant::now();
+        let mut secs = 2.5;
+        while !app.loudness.readout().3.is_finite() && started.elapsed() < std::time::Duration::from_secs(20) {
+            secs += 0.05;
+            at(&mut app, secs);
+            feed_loudness(&mut app);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(app.loudness.readout().3.is_finite(), "the true peak was measured");
     }
 
     const STEREO: [&str; 2] = ["L", "R"];

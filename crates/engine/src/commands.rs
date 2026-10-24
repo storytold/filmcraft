@@ -4405,10 +4405,17 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
 }
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
+    // where an open that keeps the window waiting spends its time (logged when it is slow)
+    let t0 = web_time::Instant::now();
+    let mut phases: Vec<(&str, f64)> = Vec::new();
+    let lap = |name: &'static str, phases: &mut Vec<(&str, f64)>| phases.push((name, t0.elapsed().as_secs_f64() * 1e3));
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    lap("read", &mut phases);
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    lap("decode", &mut phases);
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     install_project(s, loaded.project, Some(path.to_string()), true);
+    lap("install", &mut phases);
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
     }
@@ -4416,12 +4423,27 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
+    lap("view", &mut phases);
     s.note_recent_project();
+    lap("recent", &mut phases);
     s.loaded_schema = from;
     if migrated {
         s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));
     }
     let missing = crate::relink::on_open(s);
+    lap("media check", &mut phases);
+    if t0.elapsed().as_millis() >= 100 {
+        let mut prev = 0.0;
+        let parts: Vec<String> = phases
+            .iter()
+            .map(|(name, at)| {
+                let d = at - prev;
+                prev = *at;
+                format!("{name} {d:.0} ms")
+            })
+            .collect();
+        log::info!("file.open {path}: {}", parts.join(", "));
+    }
     Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
 }
 
@@ -4440,13 +4462,13 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
         s.events.push(crate::Event::OpenSequence(seq));
     }
     crate::relink::on_open(s);
-    // Our own journal must hold the recovered state before the old one is deleted.
+    // Our own journal must hold the recovered state before the old one is deleted: the worker
+    // writes it, then deletes the old one, in that order, while the window goes on.
     s.sync_persistence();
     if let Some(per) = s.persistence.as_mut() {
-        per.flush();
         per.candidates.remove(idx);
+        per.remove_after_journal(c.dir.clone());
     }
-    crate::autosave::discard_candidate(&c).map_err(|e| EngineError::Other(e.to_string()))?;
     s.toast(format!("Recovered unsaved changes to {} from {saved_at}", c.meta.project_name));
     Ok(json!({"id": c.id, "name": c.meta.project_name, "path": c.meta.project_path, "savedAt": saved_at, "revision": c.meta.revision}))
 }

@@ -43,10 +43,17 @@ pub fn stats(app: &FilmcraftApp) -> Value {
     v["monitor"] = json!({
         "frame": app.program_picture().map(|k| k.frame),
         "revision": app.program_picture().map(|k| k.revision),
+        // the scale it was made at, in thousandths (1000: full resolution)
+        "scaleMilli": app.program_picture().map(|k| k.size),
         "projectRevision": app.session.revision,
         "playheadFrame": app.session.active_sequence().map(|q| q.settings.frame_rate.frame_at(app.session.playhead())),
     });
-    v["ui"] = json!({"fps": app.fps, "frameMs": if app.fps > 0.0 { 1000.0 / app.fps as f64 } else { 0.0 }});
+    let mut ui = json!({"fps": app.fps, "frameMs": if app.fps > 0.0 { 1000.0 / app.fps as f64 } else { 0.0 }});
+    // the frames themselves: the longest, and how many went over 50 / 100 / 250 ms (freezes)
+    if let (Some(ui), serde_json::Value::Object(t)) = (ui.as_object_mut(), app.ui_timing.stats()) {
+        ui.extend(t);
+    }
+    v["ui"] = ui;
     v["process"] = json!({"cpuS": crate::frames::process_cpu_time().map(|d| d.as_secs_f64())});
     v
 }

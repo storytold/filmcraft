@@ -470,9 +470,16 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
         d.ok("ui.playback", json!({"action": "play"}));
         d.frames(10);
         let prefix = if workspace == "Audio" { "mixer.Mix.meter" } else { "audioMeters.channel." };
-        let playing = d.ok("ui.elements", json!({"prefix": prefix}));
         let labels = |elements: &Value| elements.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        let active = labels(&playing);
+        // Without an audio device (CI, headless machines) the meters are fed by the loudness readout's mix, which
+        // runs on a thread of its own: give it the moment it takes (a few milliseconds a block).
+        let mut active = labels(&d.ok("ui.elements", json!({"prefix": prefix})));
+        let started = std::time::Instant::now();
+        while active.iter().all(|label| label.contains("-90.0")) && started.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            d.frames(1);
+            active = labels(&d.ok("ui.elements", json!({"prefix": prefix})));
+        }
         assert!(!active.is_empty(), "{workspace}: the meters must be visible");
         assert!(active.iter().any(|label| !label.contains("-90.0")), "{workspace}: the demo must feed the meters: {active:?}");
         d.ok("ui.playback", json!({"action": "stop"}));

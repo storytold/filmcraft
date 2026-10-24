@@ -206,7 +206,9 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let n = app.session.export_queue.items.len();
     p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, tlf!("Queue ({n})", n), Tokens::semibold(13.0), t.text);
     let body = Rect::from_min_max(pos2(rect.min.x + 8.0, qtop + 14.0), pos2(rect.max.x - 8.0, rect.max.y - 40.0));
-    let items: Vec<Value> = app.session.execute("export.queue.list", json!({})).ok().and_then(|v| v["items"].as_array().cloned()).unwrap_or_default();
+    // read from the session, not through `export.queue.list`: the queue advances every frame
+    // anyway (poll_persistence), and a command per frame filled the log
+    let items: Vec<Value> = filmcraft_engine::export_tools::queue_list_json(&app.session).as_array().cloned().unwrap_or_default();
     let mut action: Option<(&'static str, Value)> = None;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("export-queue"));
     egui::ScrollArea::vertical().id_salt("export-queue-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
@@ -1509,7 +1511,12 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         // a file name goes in the shown folder; a typed or pasted path replaces both
         app.ui.export.quick_path = if v.contains(['/', '\\']) { v } else { std::path::Path::new(&folder).join(v.trim()).to_string_lossy().to_string() };
     }
-    if browse && let Some(p) = app.hooks.pick_save_as.as_mut().and_then(|f| f(format, &[ext], &app.ui.export.quick_path)) {
+    if browse
+        && let Some(p) = app.while_modal(|app| {
+            let at = app.ui.export.quick_path.clone();
+            app.hooks.pick_save_as.as_mut().and_then(|f| f(format, &[ext], &at))
+        })
+    {
         app.ui.export.quick_path = p;
     }
     if go {

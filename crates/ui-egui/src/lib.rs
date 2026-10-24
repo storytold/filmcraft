@@ -61,6 +61,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod ui_timing;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -326,8 +327,8 @@ pub struct FilmcraftApp {
     /// The mouse press in progress (its start time) and the undo history when it began, for Escape
     /// to take back what the press changed (#580).
     value_press: Option<(f64, filmcraft_engine::UndoMark)>,
-    /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
-    pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
+    /// BS.1770 loudness of the programme as it plays, measured off the UI thread.
+    pub(crate) loudness: panels::meters::LoudnessFeed,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
     /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
@@ -347,6 +348,9 @@ pub struct FilmcraftApp {
     input_waiters: Vec<Sender<Value>>,
     next_token: u64,
     styled: bool,
+    /// The fonts were installed with the system fallback faces scanned at start-up
+    /// ([`theme::warm_system_fonts`]); until then they are installed without them.
+    system_fonts_installed: bool,
     /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
     pub ui_error: Option<String>,
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a
@@ -371,6 +375,8 @@ pub struct FilmcraftApp {
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
+    /// Wall time of each frame's own work, for `perf.stats.ui` and the slow-frame log.
+    pub ui_timing: ui_timing::UiTiming,
     bindings: Vec<menus::KeyBinding>,
     /// Shortcut-set revision `bindings` were built from.
     bindings_rev: u64,
@@ -546,6 +552,8 @@ impl FilmcraftApp {
 
 impl FilmcraftApp {
     pub fn new(mut session: Session) -> Self {
+        // the system fallback fonts are scanned meanwhile, not on the first frame
+        theme::warm_system_fonts();
         session.shortcuts.register_external(menus::external_commands());
         let recovery = !session.recovery_candidates().is_empty();
         let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
@@ -579,7 +587,7 @@ impl FilmcraftApp {
             synthetic: Vec::new(),
             mac_ctrl_click_armed: false,
             value_press: None,
-            loudness: None,
+            loudness: Default::default(),
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
             queued_screenshots: Vec::new(),
@@ -590,6 +598,7 @@ impl FilmcraftApp {
             input_waiters: Vec::new(),
             next_token: 1,
             styled: false,
+            system_fonts_installed: false,
             ui_error: None,
             panic_next_frame: false,
             quit_confirmed: false,
@@ -602,6 +611,7 @@ impl FilmcraftApp {
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
+            ui_timing: ui_timing::UiTiming::default(),
             bindings: Vec::new(),
             bindings_rev: 0,
             menu_sent: Vec::new(),
@@ -746,13 +756,15 @@ impl FilmcraftApp {
                 }
                 None => i18n::Language::default(),
             };
+            // Chinese and Korean faces may still be being scanned (theme::warm_system_fonts):
+            // asking now would wait for the scan; `logic_pass` checks once it is done.
             if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Japanese font is installed on this system; the interface stays in English").into();
-            } else if language == i18n::Language::ZhCn && !i18n::chinese_font_available() {
+            } else if language == i18n::Language::ZhCn && theme::system_fonts_done() && !i18n::chinese_font_available() {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Chinese font is installed on this system; the interface stays in English").into();
-            } else if language == i18n::Language::Ko && !i18n::korean_font_available() {
+            } else if language == i18n::Language::Ko && theme::system_fonts_done() && !i18n::korean_font_available() {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Korean font is installed on this system; the interface stays in English").into();
             } else {
@@ -2130,20 +2142,57 @@ impl eframe::App for FilmcraftApp {
         }
     }
 
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.ui_timing.begin();
+        self.logic_pass(ctx, frame);
+        self.ui_timing.end(ui_timing::Half::Logic);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.ui_timing.begin();
+        self.ui_pass(ui, frame);
+        self.ui_timing.end(ui_timing::Half::Panels);
+    }
+
+    fn on_exit(&mut self) {
+        // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
+        // removes its journal, one with unsaved changes keeps it for the next launch.
+        self.session.shutdown();
+    }
+}
+
+impl FilmcraftApp {
+    fn logic_pass(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
+        // the system fallback fonts have been scanned meanwhile: install the fonts again with them
+        // (the scan does not wake an idle window, so look again until it is done)
+        if !self.system_fonts_installed {
+            if theme::system_fonts_done() {
+                self.system_fonts_installed = true;
+                self.styled = false;
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
         if !self.styled {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
             // (likewise Chinese without a Chinese face, Korean without a Hangul one)
+            // (the Chinese and Korean checks wait for the system font scan, see `apply_prefs`)
             let japanese_missing = self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx);
-            if japanese_missing
-                || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available())
-                || (self.ui.language == i18n::Language::Ko && !i18n::korean_font_available())
-            {
+            let scanned = theme::system_fonts_done();
+            let chinese_missing = scanned && self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available();
+            let korean_missing = scanned && self.ui.language == i18n::Language::Ko && !i18n::korean_font_available();
+            if chinese_missing {
+                self.ui.status = tl!("no Chinese font is installed on this system; the interface stays in English").into();
+            } else if korean_missing {
+                self.ui.status = tl!("no Korean font is installed on this system; the interface stays in English").into();
+            }
+            if japanese_missing || chinese_missing || korean_missing {
                 self.ui.language = i18n::Language::En;
+                i18n::set_current(self.ui.language);
             }
             self.styled = true;
             ctx.request_repaint();
@@ -2184,13 +2233,7 @@ impl eframe::App for FilmcraftApp {
         self.collect_screenshots(ctx);
     }
 
-    fn on_exit(&mut self) {
-        // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
-        // removes its journal, one with unsaved changes keeps it for the next launch.
-        self.session.shutdown();
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui_pass(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if !self.fonts_ready {
             ui.ctx().request_repaint();
             return;
@@ -2557,9 +2600,16 @@ mod audio_recovery_tests {
     #[test]
     fn maintain_pitch_shuttling_controls_the_samples_sent_to_the_device() {
         use std::sync::Mutex;
-        struct Capture(Arc<Mutex<Vec<f32>>>);
+        struct Capture(Arc<Mutex<Vec<f32>>>, Arc<crate::play_ahead::AudioStats>);
         impl AudioOut for Capture {
             fn start(&mut self, mut fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+                // the first block is mixed on the mixing thread (never by the caller): wait for
+                // it before the first callback, as a device's start-up does
+                let t0 = std::time::Instant::now();
+                while self.1.blocks_mixed.load(Ordering::Acquire) == 0 {
+                    assert!(t0.elapsed() < std::time::Duration::from_secs(10), "the first block was never mixed");
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
                 let mut buf = vec![0.0; 2048];
                 fill(&mut buf, 2);
                 *self.0.lock().unwrap() = buf;
@@ -2591,7 +2641,7 @@ mod audio_recovery_tests {
         session.execute("timeline.place", json!({"item":item.0,"audioTrack":"A1","seconds":0.0})).unwrap();
         let mut app = FilmcraftApp::new(session);
         let samples = Arc::new(Mutex::new(Vec::new()));
-        app.audio = Some(Box::new(Capture(samples.clone())));
+        app.audio = Some(Box::new(Capture(samples.clone(), app.playback.audio_stats.clone())));
         let mut normal = None;
         for maintain in [true, false] {
             app.session.prefs.audio.maintain_pitch_shuttling = maintain;

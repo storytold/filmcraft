@@ -1743,7 +1743,11 @@ impl Session {
         }
         let mut next = self.prefs.clone();
         next.note_recent(&p);
-        let _ = self.set_prefs(next);
+        // nothing else changes, so nothing set_prefs applies: just the list, written meanwhile
+        self.prefs = next;
+        if let Some(path) = &self.prefs_path {
+            self.prefs.save_in_background(path);
+        }
     }
 }
 

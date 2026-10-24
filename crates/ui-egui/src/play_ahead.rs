@@ -35,6 +35,9 @@ pub struct AudioStats {
     /// Fewest frames left in the ring after a callback, once it first filled to the lead
     /// (`u64::MAX` until then).
     pub min_lead_frames: AtomicU64,
+    /// Blocks the mixing thread has put in the ring with sound still due (the first one arrives
+    /// after [`spawn`] returns; a block that was all late by the time it was mixed is not counted).
+    pub blocks_mixed: AtomicU64,
 }
 
 impl AudioStats {
@@ -43,6 +46,7 @@ impl AudioStats {
         self.underruns.store(0, Ordering::Relaxed);
         self.missing_frames.store(0, Ordering::Relaxed);
         self.min_lead_frames.store(u64::MAX, Ordering::Relaxed);
+        self.blocks_mixed.store(0, Ordering::Relaxed);
     }
 
     pub fn to_json(&self, sample_rate: u32) -> serde_json::Value {
@@ -121,8 +125,8 @@ impl Drop for StopOnDrop {
 
 /// Mixes `mix(cursor, buf, channels)` (interleaved frames from device frame `cursor`) on its own
 /// thread, from `start`, and returns the device callback that plays it (`fill(buf, channels)`).
-/// The first block is mixed before this returns, so playback starts with sound. The thread runs
-/// until the returned callback is dropped.
+/// The first block is mixed on that thread too (the device plays silence until it is in, see
+/// [`AudioStats::blocks_mixed`]). The thread runs until the returned callback is dropped.
 pub fn spawn<M>(mut mix: M, start: i64, sample_rate: u32, channels: usize, stats: Arc<AudioStats>) -> Box<dyn FnMut(&mut [f32], usize) + Send>
 where
     M: FnMut(i64, &mut [f32], usize) + Send + 'static,
@@ -132,15 +136,17 @@ where
     let lead = ((sample_rate as f64 * LEAD_S) as usize).max(BLOCK_FRAMES * 2);
     let ring = Arc::new(Ring::new(lead * ch));
     let mut block = vec![0.0; BLOCK_FRAMES * ch];
-    mix(start, &mut block, ch);
-    ring.push(&block);
+    // The first block is mixed on the mixing thread too, never by the caller (the UI thread):
+    // mixing can open the clip under the playhead, and opening a slow decoder's audio stalled the
+    // UI at every play. The device plays silence until it arrives, which the cursor then skips as
+    // for any late block.
     // Frames the callback played as silence that the mixer has not skipped yet.
     let skip = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     {
-        let (ring, skip, stop) = (ring.clone(), skip.clone(), stop.clone());
+        let (ring, skip, stop, mixed) = (ring.clone(), skip.clone(), stop.clone(), stats.clone());
         let body = move || {
-            let mut cursor = start + BLOCK_FRAMES as i64;
+            let mut cursor = start;
             while !stop.load(Ordering::Acquire) {
                 if ring.len() + block.len() > lead * ch {
                     std::thread::sleep(Duration::from_millis(2));
@@ -155,6 +161,11 @@ where
                 let drop = late.min(BLOCK_FRAMES);
                 cursor += (late - drop) as i64;
                 ring.push(block.get(drop * ch..).unwrap_or_default());
+                // (a block that was all late put nothing in the ring; a stopped stream's last block
+                // does not count for the next one, which shares the stats)
+                if drop < BLOCK_FRAMES && !stop.load(Ordering::Acquire) {
+                    mixed.blocks_mixed.fetch_add(1, Ordering::Release);
+                }
             }
         };
         let spawned = std::thread::Builder::new().name("filmcraft-audio-mix".into()).spawn(move || {
