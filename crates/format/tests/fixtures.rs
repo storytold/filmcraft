@@ -85,6 +85,20 @@ fn hostile_audio_stream_counts_and_indices_are_repaired_not_rejected() {
     assert_eq!(loaded.item(ItemId(5)).unwrap().as_media().unwrap().info.audio_streams.len(), filmcraft_media::MAX_AUDIO_STREAMS);
 }
 
+/// Persisted media metadata is used to allocate synthetic and offline source frames, so it must
+/// have the same bounded dimensions as a sequence before the project is opened.
+#[test]
+fn hostile_media_video_dimensions_are_rejected() {
+    let mut p = decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    let media = p.item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+    let video = media.info.video.as_mut().unwrap();
+    video.width = u32::MAX;
+    video.height = 1;
+
+    let err = decode(&encode(&p, false)).unwrap_err();
+    assert!(matches!(err, FormatError::Corrupt(ref message) if message.contains("media `Ocean_Sunset.mp4`") && message.contains("frame size")), "{err}");
+}
+
 /// Schema 8 (before M3.10): no time interpolation / Hold Filters / Field Options / source channels
 /// on clips, no audio channel map, subclips without Restrict Trims.
 #[test]

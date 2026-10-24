@@ -1251,6 +1251,9 @@ impl FrameHeader {
             g.point_y_value[i] = r.f(8)? as u8;
             g.point_y_scaling[i] = r.f(8)? as u8;
         }
+        if !strictly_increasing(&g.point_y_value[..g.num_y_points]) {
+            return Err(Error::Invalid("point_y_value"));
+        }
         g.chroma_scaling_from_luma = if seq.color.mono_chrome { false } else { r.flag()? };
         if seq.color.mono_chrome || g.chroma_scaling_from_luma || (seq.color.subsampling_x == 1 && seq.color.subsampling_y == 1 && g.num_y_points == 0) {
             g.num_cb_points = 0;
@@ -1264,6 +1267,9 @@ impl FrameHeader {
                 g.point_cb_value[i] = r.f(8)? as u8;
                 g.point_cb_scaling[i] = r.f(8)? as u8;
             }
+            if !strictly_increasing(&g.point_cb_value[..g.num_cb_points]) {
+                return Err(Error::Invalid("point_cb_value"));
+            }
             g.num_cr_points = r.f(4)? as usize;
             if g.num_cr_points > 10 {
                 return Err(Error::Invalid("num_cr_points"));
@@ -1271,6 +1277,9 @@ impl FrameHeader {
             for i in 0..g.num_cr_points {
                 g.point_cr_value[i] = r.f(8)? as u8;
                 g.point_cr_scaling[i] = r.f(8)? as u8;
+            }
+            if !strictly_increasing(&g.point_cr_value[..g.num_cr_points]) {
+                return Err(Error::Invalid("point_cr_value"));
             }
         }
         g.grain_scaling_minus_8 = r.f(2)?;
@@ -1322,6 +1331,12 @@ pub(crate) fn default_gm_params() -> [[i32; 6]; 8] {
     p
 }
 
+/// Film grain scaling points must strictly increase (6.8.20); equal points would divide by zero when
+/// the scaling lookup is interpolated.
+fn strictly_increasing(values: &[u8]) -> bool {
+    values.windows(2).all(|w| w.first() < w.get(1))
+}
+
 fn inverse_recenter(r: i32, v: i32) -> i32 {
     if v > 2 * r {
         v
@@ -1357,5 +1372,19 @@ fn decode_subexp(r: &mut BitReader, num_syms: i32) -> Result<i32> {
         } else {
             return Ok(r.f(b2 as u32)? as i32 + mk);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strictly_increasing;
+
+    #[test]
+    fn film_grain_points_must_strictly_increase() {
+        assert!(strictly_increasing(&[]));
+        assert!(strictly_increasing(&[7]));
+        assert!(strictly_increasing(&[0, 64, 255]));
+        assert!(!strictly_increasing(&[0, 64, 64]));
+        assert!(!strictly_increasing(&[128, 64]));
     }
 }

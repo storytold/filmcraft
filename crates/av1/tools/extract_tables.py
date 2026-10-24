@@ -14,6 +14,8 @@ Only the specification text is read:
 Each table is emitted as a nested Rust array whose shape is checked against the declared
 dimensions; the element type is the narrowest of u8/i8/u16/i16/i32 that holds every value.
 """
+import ast
+import operator
 import os
 import re
 import sys
@@ -43,7 +45,30 @@ def ev(expr):
     e = expr.strip().replace("\\", "")
     e = re.sub(r"\b([A-Z][A-Z0-9_]*)\b", lambda m: str(consts[m.group(1)]) if m.group(1) in consts else m.group(1), e)
     e = e.replace("/", "//")
-    return int(eval(e, {"__builtins__": {}}, {}))
+    binary = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.FloorDiv: operator.floordiv,
+        ast.Mod: operator.mod,
+        ast.LShift: operator.lshift,
+        ast.RShift: operator.rshift,
+        ast.BitOr: operator.or_,
+        ast.BitAnd: operator.and_,
+        ast.BitXor: operator.xor,
+    }
+    unary = {ast.UAdd: operator.pos, ast.USub: operator.neg, ast.Invert: operator.invert}
+
+    def calculate(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in binary:
+            return binary[type(node.op)](calculate(node.left), calculate(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in unary:
+            return unary[type(node.op)](calculate(node.operand))
+        raise ValueError("unsupported specification expression")
+
+    return int(calculate(ast.parse(e, mode="eval").body))
 
 
 # --- constants: symbol table (section 3) ---

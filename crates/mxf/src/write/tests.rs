@@ -47,6 +47,15 @@ fn op1a_config(rate: Rational, coding: PictureCoding) -> WriterConfig {
     cfg
 }
 
+#[test]
+fn op1a_rejects_an_unbounded_pcm_edit_unit_before_padding() {
+    let mut cfg = WriterConfig::new(Pattern::Op1a, Rational::new(1, 36_000), PackageIds::from_seed("low-rate", "Low Rate"));
+    cfg.picture = Some(PictureDesc::new(PictureCoding::ProRes { profile: 3 }, 64, 36));
+    cfg.sound = vec![SoundDesc { sample_rate: 48_000, channels: 2, bits: 16 }];
+    let err = MxfWriter::new(Cursor::new(Vec::new()), cfg).err().unwrap();
+    assert!(err.to_string().contains("PCM edit unit"));
+}
+
 /// 10 ProRes-like pictures at 25 fps with stereo 16-bit and mono 24-bit sound pushed in uneven chunks.
 fn build_op1a() -> Vec<u8> {
     let cfg = op1a_config(Rational::new(25, 1), PictureCoding::ProRes { profile: 3 });

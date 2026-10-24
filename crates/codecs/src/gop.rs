@@ -446,11 +446,13 @@ pub struct GopCache {
     budget: usize,
 }
 
-/// The cache always has room for this many frames, whatever their size: a frame-threaded decoder
-/// runs up to ~2x its thread count ahead of the frame it returns, and playback prefetches ahead
-/// of the playhead, so a byte budget alone would evict 4K frames before they are shown and force
-/// a re-decode from the keyframe.
+/// The cache reserves room for this many small frames: a frame-threaded decoder runs up to ~2x
+/// its thread count ahead of the frame it returns, and playback prefetches ahead of the playhead.
 const MIN_FRAMES: usize = 64;
+/// A source cache never retains more decoded pixels than this, regardless of frame dimensions.
+/// In particular, untrusted VP9 `show_existing_frame` samples must not turn the small-frame
+/// reserve above into an unbounded number of full-resolution copies.
+const FRAME_CACHE_CEILING: usize = 384 << 20;
 
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
 /// rather than restarting at the sync sample.
@@ -533,7 +535,7 @@ impl GopCache {
             pool: pool.clone(),
         });
         pool.register(&shared);
-        Self { shared, explicit_color, rotation: 0, crop: None, budget: 384 << 20 }
+        Self { shared, explicit_color, rotation: 0, crop: None, budget: FRAME_CACHE_CEILING }
     }
 
     /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
@@ -568,6 +570,12 @@ impl GopCache {
         self.store_finished(st, pts, self.finish(f), draft);
     }
 
+    /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
+    fn cache_budget(&self, frame_bytes: usize) -> usize {
+        let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
+        self.budget.min(FRAME_CACHE_CEILING).max(reserve)
+    }
+
     /// Cache a frame [`Self::finish`] has been applied to.
     fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
         st.last_used = Instant::now();
@@ -577,7 +585,7 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.budget.max(MIN_FRAMES * f.byte_size());
+        let budget = self.cache_budget(f.byte_size());
         let before = st.bytes;
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
@@ -1447,6 +1455,17 @@ mod tests {
         fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
             Ok(Box::new(Big(self.0)))
         }
+    }
+
+    #[test]
+    fn large_frames_cannot_enlarge_the_gop_cache_ceiling() {
+        let mut c = GopCache::new(None);
+        c.budget = usize::MAX;
+        assert_eq!(c.cache_budget(1), FRAME_CACHE_CEILING);
+        assert_eq!(c.cache_budget(FRAME_CACHE_CEILING), FRAME_CACHE_CEILING);
+        c.budget = 0;
+        assert_eq!(c.cache_budget(4), MIN_FRAMES * 4, "small frames retain the playback reserve");
+        assert_eq!(c.cache_budget(FRAME_CACHE_CEILING), FRAME_CACHE_CEILING, "large frames are capped instead of reserving 64 copies");
     }
 
     #[test]

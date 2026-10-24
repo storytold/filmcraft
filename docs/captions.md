@@ -40,13 +40,15 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | `captions.add` | Sequence ▸ Captions ▸ Add Caption at Playhead (⌥⌘C) | `track`, `text`, `time`, `durationSeconds` (3) |
 | `captions.next` / `captions.previous` | Sequence ▸ Captions ▸ Go to Next/Previous Caption Segment (⌥⌘↓/↑) | |
 | `captions.showAll` / `captions.hideAll` | Sequence ▸ Captions | |
-| `captions.split` | Text panel ✂ | `caption`, `time` (default: every caption under the playhead) |
+| `captions.split` | Text panel ✂; Razor tool on a caption (⇧: every caption track) | `caption`, `time` (default: every caption under the playhead) |
 | `captions.merge` | Text panel | `captions` (consecutive, one track) |
 | `captions.setText` | Text panel text field | `caption`, `text`, `speaker` |
 | `captions.setTimes` | Text panel in/out fields | `caption`, `start…`/`end…` (`Time` ticks, `Frame`, `Seconds`, `Timecode`) |
 | `captions.trim` | drag a caption edge in the timeline | `caption`, `edge` (`in`/`out`), `delta` or `deltaFrames` |
 | `captions.move` | drag a caption in the timeline | `captions`, `delta` or `deltaFrames` |
+| `captions.duplicate` | ⌥-drag a caption in the timeline | `captions`, `delta` or `deltaFrames` — copies on the same tracks, overwriting what is there |
 | `captions.delete` | Edit ▸ Clear / Ripple Delete with captions selected | `captions`, `ripple` |
+| `edit.copy` / `edit.cut` / `edit.paste` / `edit.pasteInsert` | ⌘C / ⌘X / ⌘V / ⇧⌘V with only captions selected | captions paste at the playhead on the tracks they came from, overwriting (Paste Insert pushes later captions on); Paste places whichever of clips or captions was copied last |
 | `captions.select`, `captions.goTo` | click / number button | `captions`, `add` / `caption` |
 | `captions.setTrack` | caption track header (eye, lock) | `track`, `name`, `format`, `language`, `enabled`, `locked`, `syncLock` |
 | `captions.setStyle` | Text panel style strip | `track`, `size`, `color`, `background`, `backgroundColor`, `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |
@@ -62,7 +64,8 @@ also splits captions.
 ## Timeline and Text panel
 
 - Caption rows: header with `C1…` badge, lock, output eye, name and format; caption blocks in
-  violet showing their text (Arabic and Hebrew in reading order from the block's right edge). Click selects (⌘/⇧ adds), drag moves, edge drag trims, double-click
+  violet showing their text (Arabic and Hebrew in reading order from the block's right edge). Click selects (⌘/⇧ adds), drag moves (the whole selection; ⌥-drag
+  copies), edge drag trims, the Razor tool cuts, double-click
   opens the Text panel. Automation ids: `timeline.caption.<id>`,
   `timeline.captionTrack.C1[.locked|.enabled]`.
 - **Text panel ▸ Captions**: search, track picker (also creates tracks of each format), add /

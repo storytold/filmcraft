@@ -381,6 +381,11 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// Captions copied from the Timeline, with their caption track's index (starts relative to the
+    /// copied range). Copying clips empties it and copying captions empties `clipboard`, so Paste
+    /// places whichever was copied last.
+    #[serde(skip)]
+    pub caption_clipboard: Vec<(usize, filmcraft_project::Caption)>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,

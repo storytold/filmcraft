@@ -39,6 +39,67 @@ const NS_XML: &str = "http://www.w3.org/XML/1998/namespace";
 const IMSC1_TEXT: &str = "http://www.w3.org/ns/ttml/profile/imsc1/text";
 const DFXP_PROFILE: &str = "http://www.w3.org/ns/ttml/profile/dfxp-presentation";
 
+/// TTML is normally only a few containers deep. Keep the XML parser and our recursive content
+/// walkers safely below a native-stack-sized nesting level for untrusted caption files.
+const MAX_XML_DEPTH: usize = 128;
+
+/// Count XML element nesting without constructing an XML tree. This deliberately only decides
+/// where markup ends (respecting quoted attributes, comments, CDATA and processing instructions);
+/// `roxmltree` remains responsible for XML syntax and matching tags.
+fn check_xml_depth(text: &str) -> Result<()> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut depth = 0usize;
+    while let Some(relative) = text[i..].find('<') {
+        let start = i + relative;
+        let rest = &text[start..];
+        if rest.starts_with("<!--") {
+            let Some(end) = text[start + 4..].find("-->") else { return Ok(()) };
+            i = start + 4 + end + 3;
+            continue;
+        }
+        if rest.starts_with("<![CDATA[") {
+            let Some(end) = text[start + 9..].find("]]>") else { return Ok(()) };
+            i = start + 9 + end + 3;
+            continue;
+        }
+        if rest.starts_with("<?") {
+            let Some(end) = text[start + 2..].find("?>") else { return Ok(()) };
+            i = start + 2 + end + 2;
+            continue;
+        }
+
+        let mut j = start + 1;
+        let mut quote = None;
+        while j < bytes.len() {
+            match (bytes[j], quote) {
+                (b'\'' | b'\"', None) => quote = Some(bytes[j]),
+                (b, Some(q)) if b == q => quote = None,
+                (b'>', None) => break,
+                _ => {}
+            }
+            j += 1;
+        }
+        if j == bytes.len() {
+            return Ok(());
+        }
+
+        if rest.starts_with("</") {
+            depth = depth.checked_sub(1).ok_or_else(|| Error::Syntax { line: 1, msg: "unexpected XML closing tag".into() })?;
+        } else if !rest.starts_with("<!") {
+            let self_closing = bytes[start + 1..j].iter().rev().find(|b| !b.is_ascii_whitespace()) == Some(&b'/');
+            if !self_closing {
+                depth += 1;
+                if depth > MAX_XML_DEPTH {
+                    return Err(Error::Syntax { line: 1, msg: format!("TTML XML nesting exceeds {MAX_XML_DEPTH} elements") });
+                }
+            }
+        }
+        i = j + 1;
+    }
+    Ok(())
+}
+
 fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
@@ -70,7 +131,23 @@ fn time_expr(t: Tick, rate: Option<FrameRate>) -> String {
 /// Caption text (`\n` lines, `<i>`/`<b>`/`<u>` tags) → TTML inline content.
 fn inline(text: &str) -> String {
     let mut out = String::new();
-    let mut open: Vec<&str> = Vec::new();
+    // Keep the logical style state separate from what has been written. There are only three
+    // supported styles, so duplicate or crossing input tags cannot grow an unbounded span stack.
+    let mut active: Vec<&'static str> = Vec::new();
+    let mut emitted: Vec<&'static str> = Vec::new();
+    let sync = |out: &mut String, active: &[&'static str], emitted: &mut Vec<&'static str>| {
+        if *emitted != active {
+            for _ in emitted.drain(..) {
+                out.push_str("</span>");
+            }
+            for attr in active {
+                out.push_str("<span ");
+                out.push_str(attr);
+                out.push('>');
+                emitted.push(attr);
+            }
+        }
+    };
     let mut rest = text;
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix('<')
@@ -89,26 +166,16 @@ fn inline(text: &str) -> String {
             };
             if let Some(a) = attr {
                 if closing {
-                    if let Some(pos) = open.iter().rposition(|x| *x == a) {
-                        // close spans opened after it, then it, then reopen the inner ones
-                        let inner: Vec<&str> = open.drain(pos..).skip(1).collect();
-                        for _ in 0..=inner.len() {
-                            out.push_str("</span>");
-                        }
-                        for x in inner {
-                            out.push_str(&format!("<span {x}>"));
-                            open.push(x);
-                        }
-                    }
-                } else {
-                    out.push_str(&format!("<span {a}>"));
-                    open.push(a);
+                    active.retain(|style| *style != a);
+                } else if !active.contains(&a) {
+                    active.push(a);
                 }
             }
             rest = &after[end + 1..];
             continue;
         }
         let Some(ch) = rest.chars().next() else { break };
+        sync(&mut out, &active, &mut emitted);
         if ch == '\n' {
             out.push_str("<br/>");
         } else {
@@ -116,7 +183,7 @@ fn inline(text: &str) -> String {
         }
         rest = &rest[ch.len_utf8()..];
     }
-    for _ in open {
+    for _ in emitted {
         out.push_str("</span>");
     }
     out
@@ -277,8 +344,42 @@ fn speaker_names(root: roxmltree::Node) -> HashMap<String, String> {
 fn speaker(n: roxmltree::Node, names: &HashMap<String, String>) -> Option<String> {
     let refs = n.attributes().find(|a| a.name() == "agent" && metadata_namespace(a.namespace())).map(|a| a.value()).or_else(|| n.attribute("agent"));
     refs.map(|refs| {
-        // The project stores one speaker label; multiple agents become an ordered display label.
-        refs.split_whitespace().map(|id| names.get(id).cloned().unwrap_or_else(|| id.trim_start_matches('_').replace('_', " "))).collect::<Vec<_>>().join(", ")
+        // The project stores one speaker label. Keep document-defined long names and repeated
+        // references from multiplying into an unbounded per-cue allocation.
+        const MAX_REFS: usize = 64;
+        const MAX_LABEL_BYTES: usize = 4096;
+        let mut out = String::new();
+        for id in refs.split_whitespace().take(MAX_REFS) {
+            if !out.is_empty() {
+                if out.len() + 2 > MAX_LABEL_BYTES {
+                    break;
+                }
+                out.push_str(", ");
+            }
+            let name = names.get(id).map(String::as_str).unwrap_or(id);
+            if names.contains_key(id) {
+                let room = MAX_LABEL_BYTES.saturating_sub(out.len());
+                let mut end = 0;
+                for (i, ch) in name.char_indices() {
+                    if i + ch.len_utf8() > room {
+                        break;
+                    }
+                    end = i + ch.len_utf8();
+                }
+                out.push_str(&name[..end]);
+            } else {
+                for ch in id.trim_start_matches('_').chars() {
+                    if out.len() + ch.len_utf8() > MAX_LABEL_BYTES {
+                        break;
+                    }
+                    out.push(if ch == '_' { ' ' } else { ch });
+                }
+            }
+            if out.len() == MAX_LABEL_BYTES {
+                break;
+            }
+        }
+        out
     })
 }
 
@@ -482,6 +583,7 @@ fn clean(s: &str) -> String {
 }
 
 pub fn parse(text: &str) -> Result<Document> {
+    check_xml_depth(text)?;
     let xml = roxmltree::Document::parse(text).map_err(|_| Error::NotFormat("TTML"))?;
     let root = xml.root_element();
     if root.tag_name().name() != "tt" {
@@ -650,6 +752,12 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_ttml_is_rejected_before_xml_parsing() {
+        let xml = format!("<tt>{}<p begin=\"0s\" end=\"1s\">caption</p>{}</tt>", "<div>".repeat(MAX_XML_DEPTH), "</div>".repeat(MAX_XML_DEPTH));
+        assert!(matches!(parse(&xml), Err(Error::Syntax { msg, .. }) if msg.contains("nesting exceeds")));
+    }
+
+    #[test]
     fn missing_timing_parameters_keep_defaults() {
         for (params, begin, end) in [
             ("", "1s", "2s"),
@@ -815,5 +923,12 @@ mod tests {
         assert_eq!(back.cues[0].speaker.as_deref(), Some("Ann Lee"));
         let d = write(&doc, Flavor::Dfxp, Some(r), "en");
         assert!(d.contains(DFXP_PROFILE) && d.contains("begin=\"00:00:01.001\""), "{d}");
+    }
+
+    #[test]
+    fn duplicate_and_crossing_spans_have_bounded_output() {
+        let text = format!("{}x{}", "<i>".repeat(1_000), "</i>".repeat(1_000));
+        let out = inline(&text);
+        assert_eq!(out, "<span tts:fontStyle=\"italic\">x</span>");
     }
 }

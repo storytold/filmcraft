@@ -77,6 +77,8 @@ pub struct Decoder {
     pending: Option<PendingPic>,
     next_id: u32,
     active_sps: Option<Arc<Sps>>,
+    /// One lazily allocated gray backing for unavailable references in the active format.
+    gray_reference: Option<Frame>,
     first_picture: bool,
     after_eos: bool,
     /// RASL pictures associated with the last IRAP are skipped (it had NoRaslOutputFlag = 1).
@@ -132,6 +134,7 @@ impl Decoder {
             pending: None,
             next_id: 1,
             active_sps: None,
+            gray_reference: None,
             first_picture: true,
             after_eos: false,
             skip_rasl: false,
@@ -225,6 +228,7 @@ impl Decoder {
             f.wait_complete();
         }
         self.first_picture = true;
+        self.gray_reference = None;
         pics
     }
 
@@ -392,6 +396,9 @@ impl Decoder {
         if changed && self.active_sps.is_some() {
             self.dpb.flush(&mut outs);
         }
+        if changed {
+            self.gray_reference = None;
+        }
         self.active_sps = Some(sps.clone());
         self.dpb.max_dec_pic_buffering = sps.max_dec_pic_buffering as usize;
         self.dpb.max_num_reorder = sps.max_num_reorder as usize;
@@ -412,12 +419,14 @@ impl Decoder {
         let (w, h) = (sps.width as usize, sps.height as usize);
         let template = Frame::new(0, 0, w, h, sps.log2_ctb, sps.bit_depth_luma, sps.bit_depth_chroma);
         let next_id = &mut self.next_id;
+        let gray_reference = &mut self.gray_reference;
         let mut missing = 0u64;
         let mut make_missing = |p: i32| -> FrameRef {
             missing += 1;
             let id = *next_id;
             *next_id += 1;
-            Arc::new(Frame::gray(id, p, &template))
+            let gray = gray_reference.get_or_insert_with(|| Frame::gray(0, 0, &template));
+            Arc::new(gray.with_identity(id, p))
         };
         let rps = self.dpb.apply_rps(sh, poc, max_lsb, irap_no_rasl, &mut make_missing)?;
         if missing > 0 {
@@ -634,6 +643,141 @@ fn make_picture(o: &Output<FrameRef>) -> Picture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn missing_refs(decoder: &mut Decoder, poc: u32, deltas: &[i32]) -> Vec<FrameRef> {
+        let stream = crate::synth_tests::missing_reference_picture(poc, deltas);
+        for nal in annexb_nals(&stream) {
+            decoder.handle_nal(nal, i64::from(poc)).unwrap();
+        }
+        decoder.pending.as_ref().unwrap().rps.st_curr_before.iter().map(|r| r.frame.clone()).collect()
+    }
+
+    fn assert_shared_gray_rows(a: &Frame, b: &Frame) {
+        fn check<S: Sample>(a: &Frame, b: &Frame) {
+            let (gy, gc) = (1u16 << (a.bit_depth - 1), 1u16 << (a.bit_depth_c - 1));
+            for row in 0..a.num_rows() {
+                let a = a.row::<S>(row).unwrap();
+                let b = b.row::<S>(row).unwrap();
+                assert!(a.y.iter().all(|v| v.to_u16() == gy));
+                assert!(a.cb.iter().chain(a.cr.iter()).all(|v| v.to_u16() == gc));
+                assert!(a.col.iter().all(|v| v.flags == 0));
+                assert!(std::ptr::eq(a.y.as_ref(), b.y.as_ref()), "missing references duplicated luma row {row}");
+                assert!(std::ptr::eq(a.cb.as_ref(), b.cb.as_ref()), "missing references duplicated Cb row {row}");
+                assert!(std::ptr::eq(a.cr.as_ref(), b.cr.as_ref()), "missing references duplicated Cr row {row}");
+                assert!(std::ptr::eq(a.col.as_ref(), b.col.as_ref()), "missing references duplicated motion row {row}");
+            }
+        }
+        assert_eq!(a.num_rows(), b.num_rows());
+        assert!(a.is_complete() && b.is_complete());
+        assert_eq!((a.width, a.height, a.log2_ctb, a.bit_depth, a.bit_depth_c), (b.width, b.height, b.log2_ctb, b.bit_depth, b.bit_depth_c));
+        if stores_u8(a.bit_depth, a.bit_depth_c) {
+            check::<u8>(a, b);
+        } else {
+            check::<u16>(a, b);
+        }
+    }
+
+    fn backing(frame: &Frame) -> usize {
+        if stores_u8(frame.bit_depth, frame.bit_depth_c) {
+            frame.row::<u8>(0).unwrap().y.as_ptr() as usize
+        } else {
+            frame.row::<u16>(0).unwrap().y.as_ptr() as usize
+        }
+    }
+
+    #[test]
+    /// Missing references keep their identities while sharing one small immutable gray backing.
+    fn missing_reference_rows_are_shared_with_distinct_identities() {
+        for threads in [1, 4] {
+            let mut decoder = Decoder::with_threads(threads);
+            let refs = missing_refs(&mut decoder, 4, &[-1, -2]);
+            assert_eq!(refs.len(), 2);
+            assert_eq!((refs[0].poc, refs[1].poc), (3, 2));
+            assert_ne!(refs[0].id, refs[1].id);
+            assert_shared_gray_rows(&refs[0], &refs[1]);
+        }
+    }
+
+    #[test]
+    /// Concurrent/pending pictures must not each allocate their own full gray samples.
+    fn missing_reference_rows_are_shared_across_pictures() {
+        for threads in [1, 4] {
+            let mut decoder = Decoder::with_threads(threads);
+            let first = missing_refs(&mut decoder, 4, &[-1, -2]);
+            let second = missing_refs(&mut decoder, 5, &[-2, -3]);
+            assert_eq!((first.len(), second.len()), (2, 2));
+            assert_eq!((second[0].poc, second[1].poc), (3, 2));
+            let ids: std::collections::HashSet<_> = first.iter().chain(second.iter()).map(|f| f.id).collect();
+            assert_eq!(ids.len(), 4);
+            for frame in first.iter().chain(second.iter()) {
+                assert_shared_gray_rows(&first[0], frame);
+            }
+            let pictures = decoder.flush();
+            assert_eq!(pictures.len(), 2);
+            for picture in pictures {
+                assert!(picture.y.as_u8().unwrap().iter().chain(picture.u.as_u8().unwrap()).chain(picture.v.as_u8().unwrap()).all(|&v| v == 128));
+            }
+            assert!(decoder.take_error().is_none());
+            assert_eq!(decoder.stats().missing_refs, 4);
+        }
+    }
+
+    #[test]
+    /// Geometry and independent plane-depth changes replace the cache without invalidating readers.
+    fn missing_reference_cache_tracks_format_and_keeps_old_rows_alive() {
+        let mut decoder = Decoder::with_threads(1);
+        let mut held = missing_refs(&mut decoder, 4, &[-1, -2]);
+        let original = decoder.pending.take().unwrap();
+        let mut previous = (96, 64, 4, 8, 8);
+        let formats = [
+            (96, 64, 4, 8, 8),
+            (128, 64, 4, 8, 8),
+            (128, 32, 4, 8, 8),
+            (128, 32, 5, 8, 8),
+            (128, 32, 5, 10, 8),
+            (128, 32, 5, 10, 10),
+            (128, 32, 5, 8, 10),
+            (128, 32, 5, 8, 8),
+        ];
+        for format in formats {
+            let mut sps = (*original.sps).clone();
+            (sps.width, sps.height, sps.log2_ctb, sps.bit_depth_luma, sps.bit_depth_chroma) = format;
+            decoder.start_picture(&original.first_sh, &Arc::new(sps), &original.pps, 0).unwrap();
+            let pending = decoder.pending.take().unwrap();
+            let refs: Vec<_> = pending.rps.st_curr_before.iter().map(|r| r.frame.clone()).collect();
+            assert_shared_gray_rows(&refs[0], &refs[1]);
+            if format == previous {
+                assert_eq!(backing(held.last().unwrap()), backing(&refs[0]));
+            } else {
+                assert_ne!(backing(held.last().unwrap()), backing(&refs[0]));
+            }
+            assert_ne!(held.last().unwrap().id, refs[0].id);
+            held.extend(refs);
+            previous = format;
+        }
+        for frame in held {
+            assert_shared_gray_rows(&frame, &frame);
+        }
+    }
+
+    #[test]
+    /// Ordinary streams allocate no gray cache; flush releases it even with retained reference rows.
+    fn missing_reference_cache_is_lazy_and_released_on_flush() {
+        let mut decoder = Decoder::with_threads(1);
+        let stream = crate::synth_tests::missing_reference_picture(0, &[]);
+        let mut pictures = decoder.decode(&stream, 0).unwrap();
+        assert!(decoder.gray_reference.is_none());
+        pictures.extend(decoder.flush());
+        assert_eq!(pictures.len(), 1);
+        let refs = missing_refs(&mut decoder, 4, &[-1, -2]);
+        assert!(decoder.gray_reference.is_some());
+        assert_eq!(decoder.flush().len(), 1);
+        assert!(decoder.gray_reference.is_none());
+        let next = missing_refs(&mut decoder, 7, &[-1, -2]);
+        assert_ne!(backing(&refs[0]), backing(&next[0]));
+        assert_shared_gray_rows(&refs[0], &refs[1]);
+        assert_shared_gray_rows(&next[0], &next[1]);
+    }
 
     /// The branch-free block counts classify every flag combination as the if / else-if chain did.
     #[test]

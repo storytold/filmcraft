@@ -187,7 +187,9 @@ w("")
 def taps(eq_no, var, n):
     for l in lines:
         if "(%s)" % eq_no in l:
-            expr = l.split("=", 1)[1].split(">>")[0]
+            expr = " ".join(l.split("=", 1)[1].split(">>")[0].split())
+            if len(expr) > 8192:
+                raise SystemExit("equation %s is unexpectedly long" % eq_no)
             coef = {}
             for sign, c, k in re.findall(r"([+-]?)\s*(?:(\d+)\s*\*\s*)?%s0,\s*(-?\d)" % var, expr):
                 coef[int(k)] = (-1 if sign == "-" else 1) * (int(c) if c else 1)

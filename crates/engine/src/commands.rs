@@ -79,6 +79,11 @@ pub(crate) fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() { Err("no clips selected".into()) } else { Ok(()) }
 }
+/// Clips or captions selected (Copy / Cut work on either).
+fn has_clips_or_captions(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if s.state.selection.is_empty() && s.state.caption_selection.is_empty() { Err("no clips or captions selected".into()) } else { Ok(()) }
+}
 /// Clips or captions selected (Clear / Ripple Delete work on either).
 fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -120,7 +125,7 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
+    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
 }
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
@@ -1521,18 +1526,27 @@ fn build() -> Vec<CommandSpec> {
             let all = bool_p(p, "all").unwrap_or(false);
             let id = str_p(p, "id").map(str::to_string);
             let Some(per) = s.persistence.as_mut() else { return Ok(json!({"discarded": 0})) };
-            let mut n = 0;
+            let mut n = 0usize;
             let mut keep = Vec::new();
+            let mut failure = None;
             for (i, c) in std::mem::take(&mut per.candidates).into_iter().enumerate() {
                 let hit = all || id.as_deref().map_or(i == 0, |want| want == c.id);
-                if hit {
-                    crate::autosave::discard_candidate(&c).map_err(|e| EngineError::Other(e.to_string()))?;
-                    n += 1;
+                if hit && failure.is_none() {
+                    match crate::autosave::discard_candidate(&c) {
+                        Ok(()) => n = n.saturating_add(1),
+                        Err(e) => {
+                            failure = Some(EngineError::Other(format!("could not discard recovery session {}: {e}", c.id)));
+                            keep.push(c);
+                        }
+                    }
                 } else {
                     keep.push(c);
                 }
             }
             per.candidates = keep;
+            if let Some(e) = failure {
+                return Err(e);
+            }
             if n == 0 {
                 return Err(bad("file.discardRecovery", "no such recovery session"));
             }
@@ -1615,7 +1629,13 @@ fn build() -> Vec<CommandSpec> {
         // ================= Edit =================
         cmd!("edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| Ok(json!({"undone": s.undo()}))),
         cmd!("edit.redo", "Redo", ["Edit"], Some("Cmd+Shift+Z"), "{}", can_redo, |s, _| Ok(json!({"redone": s.redo()}))),
-        cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{}", has_selection, |s, _| {
+        cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{}", has_clips_or_captions, |s, _| {
+            if s.state.selection.is_empty() {
+                crate::captions::copy(s);
+                let caps = s.state.caption_selection.clone();
+                crate::captions::delete(s, &caps, false)?;
+                return Ok(Value::Null);
+            }
             copy_selection(s);
             let sel = with_links(s, &s.state.selection.clone());
             s.edit_sequence("Cut", |q, _, st| {
@@ -1625,7 +1645,10 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{}", has_selection, |s, _| {
+        cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{}", has_clips_or_captions, |s, _| {
+            if s.state.selection.is_empty() {
+                return Ok(json!({"copied": crate::captions::copy(s)}));
+            }
             copy_selection(s);
             Ok(json!({"copied": s.state.clipboard.len()}))
         }),
@@ -3661,9 +3684,13 @@ fn copy_selection(s: &mut Session) {
     }
     s.state.clipboard = clip;
     s.state.clipboard_markers = markers;
+    s.state.caption_clipboard.clear();
 }
 
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {
+    if !s.state.caption_clipboard.is_empty() {
+        return crate::captions::paste(s, insert);
+    }
     let at = s.playhead();
     let clip = s.state.clipboard.clone();
     let markers = if s.state.copy_paste_sequence_markers { s.state.clipboard_markers.clone() } else { Vec::new() };
