@@ -775,7 +775,7 @@ fn gpu_matches_cpu_on_golden_scenes() {
         let cpu = render_cpu(&s);
         let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
         let kind = if matches!(plan, filmcraft_render::plan::FramePlan::Layers { .. }) { "layers" } else { "cpu image" };
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
         px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
         let gpu = Rgba8::new(gw, gh, px);
@@ -853,7 +853,7 @@ fn gpu_blend_modes_match_cpu_render() {
             continue;
         };
         assert_eq!(layers.len(), 4, "{mode}");
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
         px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
         let gpu = Rgba8::new(gw, gh, px);
@@ -888,7 +888,7 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
     assert!(layers.iter().all(|l| l.blend == filmcraft_render::Blend::Normal));
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     let (gw, gh, mut px) = c.read_output().expect("GPU readback");
     px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
     let d = diff(&render_cpu(&s), &Rgba8::new(gw, gh, px)).unwrap();
@@ -945,7 +945,7 @@ fn gpu_effect_chains_match_cpu_render() {
         let fx = l.fx.as_ref().unwrap_or_else(|| panic!("V{}: not a GPU effect layer", i + 1));
         assert!(!fx.ops.is_empty());
     }
-    assert!(layers[4].fx.is_none(), "Emboss is rendered on the CPU");
+    assert!(layers[4].fx.is_some(), "Emboss has a GPU procedural route; the GPU-vs-CPU diff below covers it");
     let Some((dev, q)) = device("gpu effect parity", true) else {
         return;
     };
@@ -954,7 +954,7 @@ fn gpu_effect_chains_match_cpu_render() {
     for frame in [0, 12, 30] {
         s.frame = frame;
         let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(frame), RenderOptions::default(), &s.sources);
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (gw, gh, mut px) = c.read_output().expect("GPU readback");
         px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
         let gpu = Rgba8::new(gw, gh, px);
@@ -974,7 +974,7 @@ fn gpu_effect_chains_match_cpu_render() {
     let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), opts, &s.sources);
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("½: planned as a CPU image") };
     assert!(layers.iter().take(4).all(|l| l.fx.is_some()));
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     let (gw, gh, mut px) = c.read_output().expect("GPU readback");
     px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
     let gpu = Rgba8::new(gw, gh, px);

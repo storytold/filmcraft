@@ -69,7 +69,7 @@ fn yuv_code_range_gpu_matches_cpu() {
                 });
                 let cpu = frame.to_rgba8();
                 let plan = FramePlan::Layers { width: 256, height: 1, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
-                c.composite(&plan);
+                c.composite(&plan).expect("composite");
                 let (w, h, gpu) = c.read_output().expect("readback");
                 assert_eq!((w, h, gpu.len()), (256, 1, cpu.len()));
                 let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().expect("pixels");
@@ -79,7 +79,7 @@ fn yuv_code_range_gpu_matches_cpu() {
                     assert!(gpu.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2]), "neutral tint: {bits}-bit {range:?}");
                 }
                 let prepared = prepare(&plan);
-                prepared_compositor.composite_prepared(&plan, Some(&prepared));
+                prepared_compositor.composite_prepared(&plan, Some(&prepared)).expect("composite");
                 assert_eq!(prepared_compositor.read_output().expect("prepared readback").2, gpu, "prepared: {bits}-bit {range:?}");
                 eprintln!("range gate: {bits}-bit {range:?} U={u} V={v}, max error={error}, prepared=inline");
             }
@@ -135,7 +135,7 @@ fn gpu_matches_cpu_plan() {
         ],
     };
     let cpu = execute_cpu(&plan).over_black_rgba8();
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     let (gw, gh, gpu) = c.read_output().expect("readback");
     assert_eq!((gw as usize, gh as usize), (w, h));
     // compare away from antialiased edges: mean abs error and 99th percentile
@@ -147,7 +147,7 @@ fn gpu_matches_cpu_plan() {
     assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}");
     // cache: compositing the same plan again uploads nothing
     let before = c.uploaded_bytes;
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     assert_eq!(c.uploaded_bytes, before);
 }
 
@@ -203,7 +203,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
                     ],
                 };
                 let cpu = execute_cpu(&plan).over_black_rgba8();
-                c.composite_prepared(&plan, Some(&prepare(&plan)));
+                c.composite_prepared(&plan, Some(&prepare(&plan))).expect("composite");
                 let (_, _, gpu) = c.read_output().expect("readback");
                 let mut diffs: Vec<u32> =
                     cpu.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0).map(|(a, b)| (0..3).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap()).collect();
@@ -229,7 +229,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
             scale: 1.0,
         }],
     };
-    c.composite(&fallback);
+    c.composite(&fallback).expect("composite");
     let (_, _, got) = c.read_output().expect("fallback readback");
     let expected = execute_cpu(&fallback).over_black_rgba8();
     assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
@@ -250,7 +250,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
         height: h,
         steps: vec![PlanStep::Layers(vec![layer(1)]), transition(0.25), PlanStep::Layers(vec![middle]), transition(0.75)],
     };
-    c.composite_prepared(&stacked, Some(&prepare(&stacked)));
+    c.composite_prepared(&stacked, Some(&prepare(&stacked))).expect("composite");
     let (_, _, gpu) = c.read_output().expect("stacked readback");
     let cpu = execute_cpu(&stacked).over_black_rgba8();
     // One byte level tolerates half-float resolve rounding.
@@ -296,12 +296,12 @@ fn prepared_upload_matches_inline_conversion() {
     let image = FramePlan::Image(filmcraft_render::Image { w: w as usize, h: h as usize, px: f32_layer });
     for plan in [layers, image] {
         let mut a = GpuCompositor::new(&dev, &q);
-        a.composite(&plan);
+        a.composite(&plan).expect("composite");
         let inline = a.read_output().expect("readback");
         let mut b = GpuCompositor::new(&dev, &q);
         let prep = prepare(&plan);
         assert!(prep.bytes() > 0);
-        b.composite_prepared(&plan, Some(&prep));
+        b.composite_prepared(&plan, Some(&prep)).expect("composite");
         let prepared = b.read_output().expect("readback");
         assert!(inline == prepared, "prepared upload differs");
     }
@@ -324,7 +324,7 @@ fn upload_cache_keeps_buffers_alive() {
         height: 8,
         layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }],
     };
-    c.composite(&plan);
+    c.composite(&plan).expect("composite");
     drop(plan);
     assert!(Arc::strong_count(&px) > 1, "cached upload must own its pixel buffer");
 }
@@ -477,7 +477,7 @@ fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
             ],
         };
         let cpu = execute_cpu(&plan).over_black_rgba8();
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (_, _, gpu) = c.read_output().expect("readback");
         let mut diffs: Vec<u32> =
             cpu.chunks(4).zip(gpu.chunks(4)).map(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).unsigned_abs()).max().unwrap_or(0)).collect();
@@ -539,16 +539,122 @@ fn hdr_input_gpu_matches_cpu() {
         let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal) };
         let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
         let cpu = execute_cpu(&plan).over_black_rgba8();
-        c.composite(&plan);
+        c.composite(&plan).expect("composite");
         let (_, _, gpu) = c.read_output().expect("readback");
         let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
         // and the stage does something: the default decode of the same frame is far off
         let plain = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
-        c.composite(&plain);
+        c.composite(&plain).expect("composite");
         let (_, _, unmanaged) = c.read_output().expect("readback");
         let apart = cpu.iter().zip(&unmanaged).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
         eprintln!("{name}: max error {error}, unmanaged differs by up to {apart}");
         assert!(error <= 2, "{name}: GPU differs from the CPU by up to {error} codes");
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
+}
+
+#[test]
+fn required_preview_resolves_srgb_and_renders_verified_transitions() {
+    use filmcraft_media::{Generator, MediaSource, generators::GeneratorSource};
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
+    use std::sync::Arc;
+    let (dev, queue) = device().expect("GPU required for preview color regression");
+    let mut compositor = GpuCompositor::new(&dev, &queue);
+    let source = GeneratorSource::new(Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] }, 8, 8, FrameRate::FPS_24, Tick(TICKS_PER_SECOND));
+    let mut project = filmcraft_project::Project::new("preview color regression");
+    let media = project.add_item(
+        "fixture",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::File { path: "preview-test-fixture.mov".into() },
+            info: source.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: Vec::new(),
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let seq = project.new_sequence("preview", SequenceSettings { width: 8, height: 8, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+    let clip = project.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
+    let clip_id = clip.id;
+    project.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+    let mut sources = filmcraft_render::SourceMap::default();
+    sources.0.insert(media, Arc::new(source));
+    let receipt = filmcraft_render::plan::preflight_frame_required(&project, seq, Tick::ZERO, Default::default()).unwrap();
+    let plan = filmcraft_render::plan::materialize_frame_required(receipt, &sources).unwrap();
+    compositor.composite_required_display(&plan).expect("strict GPU display resolve");
+    let (_, _, rgba) = compositor.read_output().expect("test-only display readback");
+    for pixel in rgba.as_chunks::<4>().0 {
+        assert!((i32::from(pixel[0]) - 128).abs() <= 2, "sRGB mid-grey must remain mid-grey, got {pixel:?}");
+        assert_eq!(pixel[0], pixel[1]);
+        assert_eq!(pixel[1], pixel[2]);
+        assert_eq!(pixel[3], 255);
+    }
+    for (index, id) in ["flare", "blur_dissolve", "dip_to_black", "dip_to_white"].iter().enumerate() {
+        project.sequence_mut(seq).unwrap().video_tracks[0].transitions = vec![filmcraft_project::Transition {
+            id: filmcraft_project::TransitionId(9999),
+            effect: filmcraft_project::find_effect(id).unwrap().instance(),
+            start: Tick::ZERO,
+            duration: Tick(TICKS_PER_SECOND),
+            from: None,
+            to: Some(clip_id),
+            align: filmcraft_project::TransitionAlign::StartAtCut,
+            reverse: false,
+        }];
+        let receipt = filmcraft_render::plan::preflight_frame_required(&project, seq, Tick(TICKS_PER_SECOND / 2), Default::default()).unwrap();
+        let plan = filmcraft_render::plan::materialize_frame_required(receipt, &sources).unwrap();
+        compositor.composite_required_display(&plan).unwrap_or_else(|error| panic!("{id}: {error}"));
+        assert_eq!(compositor.gpu_transitions, index as u64 + 1, "{id} must execute on GPU");
+        assert_eq!(compositor.cpu_transitions, 0, "preview must never fall back to CPU");
+    }
+}
+
+/// GUI preview of the built-in demo project: the scenes are generated on the GPU and shown without
+/// any CPU pixels, while the decoded route keeps refusing them.
+#[test]
+fn demo_preview_is_generated_on_the_gpu_and_shown() {
+    use filmcraft_media::{DemoScene, Generator, MediaSource, generators::GeneratorSource};
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
+    let (dev, queue) = device().expect("GPU required for the demo preview regression");
+    let mut compositor = GpuCompositor::new(&dev, &queue);
+    let scene = DemoScene::Aurora;
+    let source = GeneratorSource::demo(scene);
+    let mut project = filmcraft_project::Project::new("demo preview");
+    let media = project.add_item(
+        "Aurora",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(Generator::Demo(scene)),
+            info: source.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: Vec::new(),
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let seq = project.new_sequence("preview", SequenceSettings { width: 320, height: 180, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+    let clip = project.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(5 * TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
+    project.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+    let at = Tick(TICKS_PER_SECOND);
+    let refused = filmcraft_render::plan::preflight_frame_required(&project, seq, at, Default::default()).unwrap();
+    let no_cpu_source = |_item| -> Option<filmcraft_media::SharedSource> { panic!("a demo scene must not ask the CPU provider") };
+    assert!(filmcraft_render::plan::materialize_frame_required(refused, &no_cpu_source).is_err(), "the decoded route refuses demo scenes");
+    let receipt = filmcraft_render::plan::preflight_frame_required(&project, seq, at, Default::default()).unwrap();
+    let plan = filmcraft_render::plan::materialize_frame_required_demo(receipt).expect("demo-only plan");
+    let (_, size, _) = compositor.composite_demo_display(&plan).expect("GPU-generated demo display");
+    assert_eq!(size, (320, 180));
+    let (_, _, rgba) = compositor.read_output().expect("test-only display readback");
+    let first = [rgba[0], rgba[1], rgba[2]];
+    assert!(rgba.as_chunks::<4>().0.iter().any(|p| [p[0], p[1], p[2]] != first), "the generated scene must not be a flat colour");
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
 }

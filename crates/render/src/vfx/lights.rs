@@ -289,21 +289,30 @@ pub fn wonder_glow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     add_image(img, &acc, [inten * 1.5; 3], chv(e, "mode") == 1);
 }
 
-/// Lens Flare (26.5 rebuild): core glow, halo, ghosts along the line through the frame centre and
-/// a lens-type-dependent streak; tinted by Flare Color, scaled by Size.
-pub fn lens_flare(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let c = pv(e, "center", cx, img);
+/// Everything Lens Flare needs per pixel, evaluated once per frame (shared by the CPU effect and the GPU plan).
+pub(crate) struct LensFlareParams {
+    pub c: Vec2,
+    pub scale: f64,
+    pub core_k: f64,
+    pub lens: u32,
+    pub mid: Vec2,
+    /// (position along the line through the centre, radius, hue) of each ghost.
+    pub ghosts: Vec<(f64, f64, [f32; 3])>,
+    pub tint: [f32; 3],
+    /// Brightness times (1 - blend).
+    pub k: f32,
+}
+
+pub(crate) fn lens_flare_params(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize) -> LensFlareParams {
+    let c = pv(e, "center", cx, &Image { w, h, px: Vec::new() });
     let br = fv(e, "brightness", cx) / 100.0;
     let blend = fv(e, "blend", cx) / 100.0;
     let lens = chv(e, "lens_type");
-    let tintc = lin(cv(e, "color", cx));
+    let tint = lin(cv(e, "color", cx));
     let size = (fv(e, "size", cx) / 100.0).max(0.05) as f64;
     let ghosts = fv(e, "ghosts", cx).clamp(0.0, 8.0) as usize;
-    let (w, h) = (img.w as f64, img.h as f64);
-    let (mx, my) = (w / 2.0, h / 2.0);
-    let scale = w.max(h) * size;
-    let core_k = [18.0, 26.0, 14.0, 22.0][lens.min(3) as usize];
-    let ghost_list: Vec<(f64, f64, [f32; 3])> = (0..ghosts)
+    let (w, h) = (w as f64, h as f64);
+    let ghost_list = (0..ghosts)
         .map(|i| {
             let t = 0.35 + i as f64 * 0.42 + hash01(i as i64, lens as i64, 0, 7) as f64 * 0.2;
             let r = 0.02 + hash01(i as i64, lens as i64, 1, 7) as f64 * 0.07;
@@ -311,38 +320,58 @@ pub fn lens_flare(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             (t, r, hue)
         })
         .collect();
+    LensFlareParams {
+        c,
+        scale: w.max(h) * size,
+        core_k: [18.0, 26.0, 14.0, 22.0][lens.min(3) as usize],
+        lens,
+        mid: Vec2::new(w / 2.0, h / 2.0),
+        ghosts: ghost_list,
+        tint,
+        k: br * (1.0 - blend),
+    }
+}
+
+/// The light Lens Flare adds at pixel centre (`px`, `py`), already tinted and scaled by brightness.
+pub(crate) fn lens_flare_add(f: &LensFlareParams, px: f64, py: f64) -> [f32; 3] {
+    let (c, scale, lens) = (f.c, f.scale, f.lens);
+    let d = (px - c.x).hypot(py - c.y) / scale;
+    let core = 0.35 * (-d * f.core_k).exp() + 0.08 * (-d * 3.0).exp();
+    let mut add = [core as f32; 3];
+    if lens == 1 || lens == 2 {
+        let ring = (1.0 - ((d - 0.12) / 0.012).abs()).max(0.0) * 0.08;
+        for (k, v) in add.iter_mut().enumerate() {
+            *v += (ring * [0.6, 0.8, 1.0][k]) as f32;
+        }
+    }
+    if lens == 3 {
+        // anamorphic: long horizontal streak
+        let s = (-((py - c.y).abs() / scale) * 160.0).exp() * (-((px - c.x).abs() / scale) * 2.0).exp() * 0.5;
+        add[0] += s as f32 * 0.5;
+        add[1] += s as f32 * 0.7;
+        add[2] += s as f32;
+    }
+    for (t, rad, hue) in &f.ghosts {
+        let gx = c.x + (f.mid.x - c.x) * 2.0 * t;
+        let gy = c.y + (f.mid.y - c.y) * 2.0 * t;
+        let dd = (px - gx).hypot(py - gy) / scale;
+        let g = ((1.0 - ((dd - rad) / 0.01).abs()).max(0.0) * 0.12 + if dd < *rad { 0.05 } else { 0.0 }) as f32;
+        for k in 0..3 {
+            add[k] += hue[k] * g;
+        }
+    }
+    [add[0] * f.tint[0] * f.k, add[1] * f.tint[1] * f.k, add[2] * f.tint[2] * f.k]
+}
+
+/// Lens Flare (26.5 rebuild): core glow, halo, ghosts along the line through the frame centre and
+/// a lens-type-dependent streak; tinted by Flare Color, scaled by Size.
+pub fn lens_flare(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let params = lens_flare_params(e, cx, img.w, img.h);
     let wi = img.w;
     img.px.par_chunks_mut(wi * 4).enumerate().for_each(|(y, row)| {
         for x in 0..wi {
-            let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
-            let d = (px - c.x).hypot(py - c.y) / scale;
-            let core = 0.35 * (-d * core_k).exp() + 0.08 * (-d * 3.0).exp();
-            let mut add = [core as f32; 3];
-            if lens == 1 || lens == 2 {
-                let ring = (1.0 - ((d - 0.12) / 0.012).abs()).max(0.0) * 0.08;
-                for (k, v) in add.iter_mut().enumerate() {
-                    *v += (ring * [0.6, 0.8, 1.0][k]) as f32;
-                }
-            }
-            if lens == 3 {
-                // anamorphic: long horizontal streak
-                let s = (-((py - c.y).abs() / scale) * 160.0).exp() * (-((px - c.x).abs() / scale) * 2.0).exp() * 0.5;
-                add[0] += s as f32 * 0.5;
-                add[1] += s as f32 * 0.7;
-                add[2] += s as f32;
-            }
-            for (t, rad, hue) in &ghost_list {
-                let gx = c.x + (mx - c.x) * 2.0 * t;
-                let gy = c.y + (my - c.y) * 2.0 * t;
-                let dd = (px - gx).hypot(py - gy) / scale;
-                let g = ((1.0 - ((dd - rad) / 0.01).abs()).max(0.0) * 0.12 + if dd < *rad { 0.05 } else { 0.0 }) as f32;
-                for k in 0..3 {
-                    add[k] += hue[k] * g;
-                }
-            }
-            let p = &mut row[x * 4..x * 4 + 4];
-            let k = br * (1.0 - blend);
-            add_light(p, [add[0] * tintc[0] * k, add[1] * tintc[1] * k, add[2] * tintc[2] * k]);
+            let add = lens_flare_add(&params, x as f64 + 0.5, y as f64 + 0.5);
+            add_light(&mut row[x * 4..x * 4 + 4], add);
         }
     });
 }

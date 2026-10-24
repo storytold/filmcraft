@@ -197,8 +197,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 let backend = cc.wgpu_render_state.as_ref().map(|rs| rs.adapter.get_info().backend);
                 set_info("backend", json!(backend.map(|b| format!("{b:?}"))));
-                // The GPU compositor needs float render targets everywhere: WebGPU only (WebGL2
-                // composites on the CPU).
+                // Strict GPU preview requires WebGPU; CPU compositing needs explicit `?cpu` opt-in.
                 if let Some(rs) = cc.wgpu_render_state.clone()
                     && backend == Some(eframe::wgpu::Backend::BrowserWebGpu)
                     && !query_flag("cpu")
@@ -206,7 +205,13 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                     app.set_wgpu(rs);
                     set_info("compositor", json!("gpu"));
                 } else {
-                    set_info("compositor", json!("cpu"));
+                    if query_flag("cpu") {
+                        app.enable_cpu_composite();
+                        set_info("compositor", json!("cpu-explicit"));
+                    } else {
+                        app.status("GPU preview unavailable; CPU fallback is disabled");
+                        set_info("compositor", json!("unavailable"));
+                    }
                 }
                 let audio = audio::Handle::new();
                 if let Some(a) = &audio {

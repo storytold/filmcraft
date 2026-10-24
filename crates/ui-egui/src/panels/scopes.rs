@@ -50,6 +50,10 @@ fn hash_of(v: impl Hash) -> u64 {
 /// the frame workers at priority `prio`) or, for Rec. 2100 scopes of an HDR sequence, a small
 /// working-space render. While a new frame renders the last one stays.
 pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, frame: i64, st: &ScopesState, prio: u32) -> Option<ScopeFrame> {
+    if !crate::panels::menu_dialogs::software_renderer(app) {
+        app.ui.status = tl!("Scopes unavailable in GPU-only preview; CPU fallback is disabled").into();
+        return None;
+    }
     let seq_id = app.session.state.active_sequence?;
     let q = app.session.active_sequence()?;
     let hdr_seq = q.settings.color.working.is_hdr();

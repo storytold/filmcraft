@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use filmcraft_color::ColorInfo;
 use filmcraft_frame::{AudioBuffer, VideoFrame};
-use filmcraft_time::{FrameRate, Tick};
+use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 
 pub use cache::FrameCache;
@@ -52,6 +52,32 @@ pub enum MediaError {
 }
 
 pub type Result<T> = std::result::Result<T, MediaError>;
+
+/// Metadata for one compressed video sample, available before allocating its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompressedVideoSample {
+    pub index: usize,
+    pub offset: u64,
+    pub size: u32,
+    pub dts: i64,
+    pub pts: i64,
+    pub presentation_pts: i64,
+    pub duration: u32,
+    pub is_sync: bool,
+    pub description_index: u32,
+}
+
+/// Full-resolution random-access compressed video input for resident export.
+pub trait CompressedVideoSource: Send + Sync {
+    fn source_range(&self) -> Option<TimeRange>;
+    fn source_marks(&self) -> (Option<Tick>, Option<Tick>);
+    fn timescale(&self) -> u32;
+    fn sample_count(&self) -> usize;
+    fn sample_metadata(&self, index: usize) -> Result<CompressedVideoSample>;
+    fn sample_entry(&self, index: usize) -> Result<&filmcraft_isobmff::SampleEntry>;
+    fn seek(&self, time: Tick) -> Result<Option<usize>>;
+    fn read_sample(&self, index: usize) -> Result<Vec<u8>>;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaKind {

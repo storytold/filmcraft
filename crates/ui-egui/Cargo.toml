@@ -47,6 +47,7 @@ cpu-time = "1"
 
 [dev-dependencies]
 pollster = "0.4"
+filmcraft-speech = { workspace = true }
 filmcraft-codecs = { workspace = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui
 # itself stays OS-independent and web-portable)

@@ -48,16 +48,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
             let ppp = ctx.pixels_per_point();
             let scale = crate::panels::monitor::quantize_scale((pic.width() * ppp / w).clamp(1.0 / 32.0, 1.0));
-            let key = FrameKey { target: Target::Sequence(seq_id), frame, size: (scale * 1000.0) as u32, revision: app.session.revision, draft: false };
-            let project = app.session.project.clone();
-            app.frames.request(key, rate.tick_of(frame), scale, &project, 3);
-            let tex = match app.frames.get(&key) {
-                Some(img) => Some(app.texture_for(&ctx, "reference-monitor", key, &img)),
-                None => app.texture_existing("reference-monitor").map(|x| x.0),
-            };
-            if let Some(tex) = tex {
-                ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                elems.push(("reference.picture".into(), pic, "reference frame".into()));
+            if crate::panels::menu_dialogs::software_renderer(app) {
+                let key = FrameKey { target: Target::Sequence(seq_id), frame, size: (scale * 1000.0) as u32, revision: app.session.revision, draft: false };
+                let project = app.session.project.clone();
+                app.frames.request(key, rate.tick_of(frame), scale, &project, 3);
+                if let Some(img) = app.frames.get(&key) {
+                    let tex = app.texture_for(&ctx, "reference-monitor", key, &img);
+                    ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    elems.push(("reference.picture".into(), pic, "reference frame".into()));
+                }
+            } else {
+                app.ui.status = tl!("Reference Monitor unavailable in GPU-only preview; CPU fallback is disabled").into();
             }
         }
         RefDisplay::Scopes => {

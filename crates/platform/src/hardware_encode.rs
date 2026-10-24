@@ -24,7 +24,7 @@ use crate::videotoolbox_encode::{ParamSets, VtCodec, VtConfig, VtEncoder, VtPack
 /// The hardware encoder's configuration for an export, or why it is not used for it.
 pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result<VtConfig, String> {
     let hevc = s.format == Format::Hevc;
-    if !hevc && s.hardware_encoding != HardwareEncoding::Auto {
+    if !hevc && !matches!(s.hardware_encoding, HardwareEncoding::Auto | HardwareEncoding::GpuRequired) {
         return Err("hardware encoding is off".into());
     }
     if s.format.is_mxf() {
@@ -125,7 +125,7 @@ pub fn videotoolbox_encoder_factory(
     s: &ExportSettings,
 ) -> Option<filmcraft_export::Result<Box<dyn VideoEncoder>>> {
     let name = match format {
-        Format::H264 if s.hardware_encoding == HardwareEncoding::Auto => "H.264",
+        Format::H264 if matches!(s.hardware_encoding, HardwareEncoding::Auto | HardwareEncoding::GpuRequired) => "H.264",
         Format::Hevc => "HEVC",
         _ => return None,
     };

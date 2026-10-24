@@ -1,7 +1,8 @@
-// The declarations in this file are transcribed from libva's `va/va.h`, `va/va_dec_hevc.h` and `va/va_drm.h`
+// The declarations in this file are transcribed from libva's `va/va.h`, `va/va_dec_hevc.h`, `va/va_enc_h264.h`, `va/va_enc_hevc.h`,
+// `va/va_drm.h` and `va/va_drmcommon.h`
 // (VA-API 1.23, libva 2.23), which carry this notice:
 //
-// Copyright (c) 2007-2009 Intel Corporation. All Rights Reserved.
+// Copyright (c) 2007-2009, 2012 Intel Corporation. All Rights Reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the
@@ -23,8 +24,8 @@
 // TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-//! VA-API (`va.h`, `va_dec_hevc.h`, `va_drm.h`; MIT-licensed headers by Intel) as `libva.so.2` /
-//! `libva-drm.so.2` expect it: the H.264 and HEVC decode buffers this backend fills in, the image structures it reads back
+//! VA-API (`va.h`, `va_dec_hevc.h`, `va_enc_h264.h`, `va_enc_hevc.h`, `va_drm.h`, `va_drmcommon.h`; MIT-licensed headers by Intel) as `libva.so.2` /
+//! `libva-drm.so.2` expect it: the H.264 and HEVC decode buffers and the H.264/HEVC encode buffers this backend fills in, the image structures it reads back
 //! through, and the entry points it calls. Written from the public header; sizes and field offsets
 //! are checked against a C compiler's by `abi_tests.rs`.
 //!
@@ -61,6 +62,8 @@ pub const VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT: VAStatus = 0x0d;
 pub const VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT: VAStatus = 0x0e;
 pub const VA_STATUS_ERROR_RESOLUTION_NOT_SUPPORTED: VAStatus = 0x13;
 pub const VA_STATUS_ERROR_DECODING_ERROR: VAStatus = 0x17;
+pub const VA_STATUS_ERROR_UNIMPLEMENTED: VAStatus = 0x14;
+pub const VA_STATUS_ERROR_TIMEDOUT: VAStatus = 0x26;
 
 pub const VA_INVALID_ID: VAGenericID = 0xffff_ffff;
 pub const VA_INVALID_SURFACE: VASurfaceID = VA_INVALID_ID;
@@ -75,6 +78,9 @@ pub const VAEntrypointVLD: VAEntrypoint = 1;
 pub const VAConfigAttribRTFormat: VAConfigAttribType = 0;
 pub const VA_RT_FORMAT_YUV420: c_uint = 0x0000_0001;
 pub const VA_RT_FORMAT_YUV420_10: c_uint = 0x0000_0100;
+pub const VA_RT_FORMAT_YUV420_12: c_uint = 0x0000_0200;
+pub const VA_RT_FORMAT_YUV422_10: c_uint = 0x0000_0400;
+pub const VA_RT_FORMAT_YUV422_12: c_uint = 0x0000_0800;
 
 /// `vaCreateContext` flag: progressive pictures only.
 pub const VA_PROGRESSIVE: c_int = 0x1;
@@ -93,6 +99,8 @@ pub const VA_PICTURE_H264_LONG_TERM_REFERENCE: u32 = 0x0000_0010;
 
 pub const VA_FOURCC_NV12: u32 = 0x3231_564E;
 pub const VA_FOURCC_P010: u32 = 0x3031_3050;
+pub const DRM_FORMAT_R8: u32 = u32::from_le_bytes(*b"R8  ");
+pub const DRM_FORMAT_GR88: u32 = u32::from_le_bytes(*b"GR88");
 
 pub const VA_PICTURE_HEVC_INVALID: u32 = 0x0000_0001;
 pub const VA_PICTURE_HEVC_LONG_TERM_REFERENCE: u32 = 0x0000_0008;
@@ -102,6 +110,88 @@ pub const VA_PICTURE_HEVC_RPS_LT_CURR: u32 = 0x0000_0040;
 
 pub const VA_PADDING_LOW: usize = 4;
 pub const VA_PADDING_MEDIUM: usize = 8;
+
+// `va/va_drmcommon.h` (libva 2.23): DRM PRIME v2 export descriptor.
+pub const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: u32 = 0x4000_0000;
+pub const VA_SURFACE_ATTRIB_GETTABLE: u32 = 0x0000_0001;
+pub const VA_SURFACE_ATTRIB_SETTABLE: u32 = 0x0000_0002;
+pub const VA_SURFACE_ATTRIB_PIXEL_FORMAT: c_int = 1;
+pub const VA_SURFACE_ATTRIB_DRM_FORMAT_MODIFIERS: c_int = 9;
+pub const VA_GENERIC_VALUE_TYPE_INTEGER: c_int = 1;
+pub const VA_GENERIC_VALUE_TYPE_POINTER: c_int = 3;
+pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+pub const VA_EXPORT_SURFACE_READ_ONLY: u32 = 0x0001;
+pub const VA_EXPORT_SURFACE_WRITE_ONLY: u32 = 0x0002;
+pub const VA_EXPORT_SURFACE_SEPARATE_LAYERS: u32 = 0x0004;
+pub const VA_EXPORT_SURFACE_COMPOSED_LAYERS: u32 = 0x0008;
+pub const VA_DRM_PRIME_MAX_OBJECTS: usize = 4;
+pub const VA_DRM_PRIME_MAX_PLANES: usize = 4;
+pub const VA_DRM_PRIME_MAX_LAYERS: usize = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union VAGenericValueData {
+    pub integer: i32,
+    pub float: f32,
+    pub pointer: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct VAGenericValue {
+    pub type_: c_int,
+    pub value: VAGenericValueData,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct VASurfaceAttrib {
+    pub type_: c_int,
+    pub flags: u32,
+    pub value: VAGenericValue,
+}
+
+impl Default for VASurfaceAttrib {
+    fn default() -> Self {
+        Self { type_: 0, flags: 0, value: VAGenericValue { type_: 0, value: VAGenericValueData { integer: 0 } } }
+    }
+}
+
+#[repr(C)]
+pub struct VADRMFormatModifierList {
+    pub num_modifiers: u32,
+    pub modifiers: *mut u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VADRMPRIMEObjectDescriptor {
+    pub fd: c_int,
+    pub size: u32,
+    pub drm_format_modifier: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VADRMPRIMELayerDescriptor {
+    pub drm_format: u32,
+    pub num_planes: u32,
+    pub object_index: [u32; VA_DRM_PRIME_MAX_PLANES],
+    pub offset: [u32; VA_DRM_PRIME_MAX_PLANES],
+    pub pitch: [u32; VA_DRM_PRIME_MAX_PLANES],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VADRMPRIMESurfaceDescriptor {
+    pub fourcc: u32,
+    pub width: u32,
+    pub height: u32,
+    pub num_objects: u32,
+    pub objects: [VADRMPRIMEObjectDescriptor; VA_DRM_PRIME_MAX_OBJECTS],
+    pub num_layers: u32,
+    pub layers: [VADRMPRIMELayerDescriptor; VA_DRM_PRIME_MAX_LAYERS],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -467,9 +557,11 @@ pub type vaCreateSurfaces = unsafe extern "C" fn(
     height: c_uint,
     surfaces: *mut VASurfaceID,
     num_surfaces: c_uint,
-    attrib_list: *mut c_void,
+    attrib_list: *mut VASurfaceAttrib,
     num_attribs: c_uint,
 ) -> VAStatus;
+pub type vaQuerySurfaceAttributes =
+    unsafe extern "C" fn(dpy: VADisplay, config_id: VAConfigID, attrib_list: *mut VASurfaceAttrib, num_attribs: *mut c_uint) -> VAStatus;
 pub type vaDestroySurfaces = unsafe extern "C" fn(dpy: VADisplay, surfaces: *mut VASurfaceID, num_surfaces: c_int) -> VAStatus;
 pub type vaCreateContext = unsafe extern "C" fn(
     dpy: VADisplay,
@@ -496,6 +588,7 @@ pub type vaBeginPicture = unsafe extern "C" fn(dpy: VADisplay, context: VAContex
 pub type vaRenderPicture = unsafe extern "C" fn(dpy: VADisplay, context: VAContextID, buffers: *mut VABufferID, num_buffers: c_int) -> VAStatus;
 pub type vaEndPicture = unsafe extern "C" fn(dpy: VADisplay, context: VAContextID) -> VAStatus;
 pub type vaSyncSurface = unsafe extern "C" fn(dpy: VADisplay, render_target: VASurfaceID) -> VAStatus;
+pub type vaExportSurfaceHandle = unsafe extern "C" fn(dpy: VADisplay, surface_id: VASurfaceID, mem_type: u32, flags: u32, descriptor: *mut c_void) -> VAStatus;
 pub type vaCreateImage = unsafe extern "C" fn(dpy: VADisplay, format: *mut VAImageFormat, width: c_int, height: c_int, image: *mut VAImage) -> VAStatus;
 pub type vaDestroyImage = unsafe extern "C" fn(dpy: VADisplay, image: VAImageID) -> VAStatus;
 pub type vaGetImage =
@@ -517,3 +610,318 @@ pub type vaMapBuffer = unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID, 
 pub type vaUnmapBuffer = unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
 /// `libva-drm.so.2`: the display of a DRM device (render node) file descriptor.
 pub type vaGetDisplayDRM = unsafe extern "C" fn(fd: c_int) -> VADisplay;
+
+// ---- H.264 encoding (va.h misc / coded buffers, va_enc_h264.h)
+
+pub const VAEntrypointEncSlice: VAEntrypoint = 6;
+pub const VAConfigAttribRateControl: VAConfigAttribType = 5;
+pub const VAConfigAttribMaxPictureWidth: VAConfigAttribType = 18;
+pub const VAConfigAttribMaxPictureHeight: VAConfigAttribType = 19;
+/// A configuration attribute the driver does not support (its `value`).
+pub const VA_ATTRIB_NOT_SUPPORTED: u32 = 0x8000_0000;
+pub const VA_RC_CBR: u32 = 0x0000_0002;
+pub const VA_RC_VBR: u32 = 0x0000_0004;
+
+pub const VAEncCodedBufferType: VABufferType = 21;
+pub const VAEncSequenceParameterBufferType: VABufferType = 22;
+pub const VAEncPictureParameterBufferType: VABufferType = 23;
+pub const VAEncSliceParameterBufferType: VABufferType = 24;
+pub const VAEncMiscParameterBufferType: VABufferType = 27;
+
+pub const VAEncMiscParameterTypeFrameRate: u32 = 0;
+pub const VAEncMiscParameterTypeRateControl: u32 = 1;
+pub const VAEncMiscParameterTypeHRD: u32 = 5;
+pub const VAEncPackedHeaderParameterBufferType: VABufferType = 25;
+pub const VAEncPackedHeaderDataBufferType: VABufferType = 26;
+pub const VAEncPackedHeaderRawData: u32 = 0;
+pub const VA_ENC_PACKED_HEADER_SEQUENCE: u32 = 1;
+pub const VA_ENC_PACKED_HEADER_PICTURE: u32 = 2;
+pub const VA_ENC_PACKED_HEADER_SLICE: u32 = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VAEncSequenceParameterBufferH264 {
+    pub seq_parameter_set_id: u8,
+    pub level_idc: u8,
+    pub intra_period: u32,
+    pub intra_idr_period: u32,
+    pub ip_period: u32,
+    pub bits_per_second: u32,
+    pub max_num_ref_frames: u32,
+    pub picture_width_in_mbs: u16,
+    pub picture_height_in_mbs: u16,
+    /// `seq_fields` bits, low bit first: chroma_format_idc(2), frame_mbs_only,
+    /// mb_adaptive_frame_field, seq_scaling_matrix_present, direct_8x8_inference,
+    /// log2_max_frame_num_minus4(4), pic_order_cnt_type(2), log2_max_pic_order_cnt_lsb_minus4(4),
+    /// delta_pic_order_always_zero.
+    pub seq_fields: u32,
+    pub bit_depth_luma_minus8: u8,
+    pub bit_depth_chroma_minus8: u8,
+    pub num_ref_frames_in_pic_order_cnt_cycle: u8,
+    pub offset_for_non_ref_pic: i32,
+    pub offset_for_top_to_bottom_field: i32,
+    pub offset_for_ref_frame: [i32; 256],
+    pub frame_cropping_flag: u8,
+    pub frame_crop_left_offset: u32,
+    pub frame_crop_right_offset: u32,
+    pub frame_crop_top_offset: u32,
+    pub frame_crop_bottom_offset: u32,
+    pub vui_parameters_present_flag: u8,
+    /// `vui_fields` bits, low bit first: aspect_ratio_info_present, timing_info_present,
+    /// bitstream_restriction, log2_max_mv_length_horizontal(5), log2_max_mv_length_vertical(5),
+    /// fixed_frame_rate, low_delay_hrd, motion_vectors_over_pic_boundaries.
+    pub vui_fields: u32,
+    pub aspect_ratio_idc: u8,
+    pub sar_width: u32,
+    pub sar_height: u32,
+    pub num_units_in_tick: u32,
+    pub time_scale: u32,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VAEncPictureParameterBufferH264 {
+    pub CurrPic: VAPictureH264,
+    pub ReferenceFrames: [VAPictureH264; 16],
+    pub coded_buf: VABufferID,
+    pub pic_parameter_set_id: u8,
+    pub seq_parameter_set_id: u8,
+    pub last_picture: u8,
+    pub frame_num: u16,
+    pub pic_init_qp: u8,
+    pub num_ref_idx_l0_active_minus1: u8,
+    pub num_ref_idx_l1_active_minus1: u8,
+    pub chroma_qp_index_offset: i8,
+    pub second_chroma_qp_index_offset: i8,
+    /// `pic_fields` bits, low bit first: idr_pic, reference_pic(2), entropy_coding_mode,
+    /// weighted_pred, weighted_bipred_idc(2), constrained_intra_pred, transform_8x8_mode,
+    /// deblocking_filter_control_present, redundant_pic_cnt_present, pic_order_present,
+    /// pic_scaling_matrix_present.
+    pub pic_fields: u32,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VAEncSliceParameterBufferH264 {
+    pub macroblock_address: u32,
+    pub num_macroblocks: u32,
+    pub macroblock_info: VABufferID,
+    pub slice_type: u8,
+    pub pic_parameter_set_id: u8,
+    pub idr_pic_id: u16,
+    pub pic_order_cnt_lsb: u16,
+    pub delta_pic_order_cnt_bottom: i32,
+    pub delta_pic_order_cnt: [i32; 2],
+    pub direct_spatial_mv_pred_flag: u8,
+    pub num_ref_idx_active_override_flag: u8,
+    pub num_ref_idx_l0_active_minus1: u8,
+    pub num_ref_idx_l1_active_minus1: u8,
+    pub RefPicList0: [VAPictureH264; 32],
+    pub RefPicList1: [VAPictureH264; 32],
+    pub luma_log2_weight_denom: u8,
+    pub chroma_log2_weight_denom: u8,
+    pub luma_weight_l0_flag: u8,
+    pub luma_weight_l0: [i16; 32],
+    pub luma_offset_l0: [i16; 32],
+    pub chroma_weight_l0_flag: u8,
+    pub chroma_weight_l0: [[i16; 2]; 32],
+    pub chroma_offset_l0: [[i16; 2]; 32],
+    pub luma_weight_l1_flag: u8,
+    pub luma_weight_l1: [i16; 32],
+    pub luma_offset_l1: [i16; 32],
+    pub chroma_weight_l1_flag: u8,
+    pub chroma_weight_l1: [[i16; 2]; 32],
+    pub chroma_offset_l1: [[i16; 2]; 32],
+    pub cabac_init_idc: u8,
+    pub slice_qp_delta: i8,
+    pub disable_deblocking_filter_idc: u8,
+    pub slice_alpha_c0_offset_div2: i8,
+    pub slice_beta_offset_div2: i8,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VAEncMiscParameterRateControl {
+    pub bits_per_second: u32,
+    pub target_percentage: u32,
+    pub window_size: u32,
+    pub initial_qp: u32,
+    pub min_qp: u32,
+    pub basic_unit_size: u32,
+    /// `rc_flags` (a bit-field union in C); 0 = driver defaults.
+    pub rc_flags: u32,
+    pub ICQ_quality_factor: u32,
+    pub max_qp: u32,
+    pub quality_factor: u32,
+    pub target_frame_size: u32,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VAEncMiscParameterFrameRate {
+    /// Denominator in the high 16 bits, numerator in the low 16 (0 high bits = integer rate).
+    pub framerate: u32,
+    pub framerate_flags: u32,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VAEncMiscParameterHRD {
+    pub initial_buffer_fullness: u32,
+    pub buffer_size: u32,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+/// A `VAEncMiscParameterBuffer`: the type tag followed by its payload (C's flexible `data[]`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VAEncMisc<T: Copy> {
+    pub type_: u32,
+    pub data: T,
+}
+
+/// One segment of a mapped coded buffer (a linked list owned by the driver while mapped).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VACodedBufferSegment {
+    pub size: u32,
+    pub bit_offset: u32,
+    pub status: u32,
+    pub reserved: u32,
+    pub buf: *mut c_void,
+    pub next: *mut c_void,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+// HEVC encode declarations: libva 2.22.0 va_enc_hevc.h (Intel MIT notice above).
+// C bit-field unions use their integer value member; checked by abi_tests.rs.
+pub const VAEntrypointEncSliceLP: VAEntrypoint = 8;
+pub const VAConfigAttribEncPackedHeaders: VAConfigAttribType = 10;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VAEncSequenceParameterBufferHEVC {
+    pub general_profile_idc: u8,
+    pub general_level_idc: u8,
+    pub general_tier_flag: u8,
+    pub intra_period: u32,
+    pub intra_idr_period: u32,
+    pub ip_period: u32,
+    pub bits_per_second: u32,
+    pub pic_width_in_luma_samples: u16,
+    pub pic_height_in_luma_samples: u16,
+    pub seq_fields: u32,
+    pub log2_min_luma_coding_block_size_minus3: u8,
+    pub log2_diff_max_min_luma_coding_block_size: u8,
+    pub log2_min_transform_block_size_minus2: u8,
+    pub log2_diff_max_min_transform_block_size: u8,
+    pub max_transform_hierarchy_depth_inter: u8,
+    pub max_transform_hierarchy_depth_intra: u8,
+    pub pcm_sample_bit_depth_luma_minus1: u32,
+    pub pcm_sample_bit_depth_chroma_minus1: u32,
+    pub log2_min_pcm_luma_coding_block_size_minus3: u32,
+    pub log2_max_pcm_luma_coding_block_size_minus3: u32,
+    pub vui_parameters_present_flag: u8,
+    pub vui_fields: u32,
+    pub aspect_ratio_idc: u8,
+    pub sar_width: u32,
+    pub sar_height: u32,
+    pub vui_num_units_in_tick: u32,
+    pub vui_time_scale: u32,
+    pub min_spatial_segmentation_idc: u16,
+    pub max_bytes_per_pic_denom: u8,
+    pub max_bits_per_min_cu_denom: u8,
+    pub scc_fields: u32,
+    pub va_reserved: [u32; VA_PADDING_MEDIUM - 1],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VAEncPictureParameterBufferHEVC {
+    pub decoded_curr_pic: VAPictureHEVC,
+    pub reference_frames: [VAPictureHEVC; 15],
+    pub coded_buf: VABufferID,
+    pub collocated_ref_pic_index: u8,
+    pub last_picture: u8,
+    pub pic_init_qp: u8,
+    pub diff_cu_qp_delta_depth: u8,
+    pub pps_cb_qp_offset: i8,
+    pub pps_cr_qp_offset: i8,
+    pub num_tile_columns_minus1: u8,
+    pub num_tile_rows_minus1: u8,
+    pub column_width_minus1: [u8; 19],
+    pub row_height_minus1: [u8; 21],
+    pub log2_parallel_merge_level_minus2: u8,
+    pub ctu_max_bitsize_allowed: u8,
+    pub num_ref_idx_l0_default_active_minus1: u8,
+    pub num_ref_idx_l1_default_active_minus1: u8,
+    pub slice_pic_parameter_set_id: u8,
+    pub nal_unit_type: u8,
+    pub pic_fields: u32,
+    pub hierarchical_level_plus1: u8,
+    pub va_byte_reserved: u8,
+    pub scc_fields: u16,
+    pub va_reserved: [u32; 15],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VAEncSliceParameterBufferHEVC {
+    pub slice_segment_address: u32,
+    pub num_ctu_in_slice: u32,
+    pub slice_type: u8,
+    pub slice_pic_parameter_set_id: u8,
+    pub num_ref_idx_l0_active_minus1: u8,
+    pub num_ref_idx_l1_active_minus1: u8,
+    pub ref_pic_list0: [VAPictureHEVC; 15],
+    pub ref_pic_list1: [VAPictureHEVC; 15],
+    pub luma_log2_weight_denom: u8,
+    pub delta_chroma_log2_weight_denom: i8,
+    pub delta_luma_weight_l0: [i8; 15],
+    pub luma_offset_l0: [i8; 15],
+    pub delta_chroma_weight_l0: [[i8; 2]; 15],
+    pub chroma_offset_l0: [[i8; 2]; 15],
+    pub delta_luma_weight_l1: [i8; 15],
+    pub luma_offset_l1: [i8; 15],
+    pub delta_chroma_weight_l1: [[i8; 2]; 15],
+    pub chroma_offset_l1: [[i8; 2]; 15],
+    pub max_num_merge_cand: u8,
+    pub slice_qp_delta: i8,
+    pub slice_cb_qp_offset: i8,
+    pub slice_cr_qp_offset: i8,
+    pub slice_beta_offset_div2: i8,
+    pub slice_tc_offset_div2: i8,
+    pub slice_fields: u32,
+    pub pred_weight_table_bit_offset: u32,
+    pub pred_weight_table_bit_length: u32,
+    pub va_reserved: [u32; VA_PADDING_MEDIUM - 2],
+}
+
+pub type vaMaxNumProfiles = unsafe extern "C" fn(dpy: VADisplay) -> c_int;
+pub type vaQueryConfigProfiles = unsafe extern "C" fn(dpy: VADisplay, profiles: *mut VAProfile, count: *mut c_int) -> VAStatus;
+pub type vaMaxNumEntrypoints = unsafe extern "C" fn(dpy: VADisplay) -> c_int;
+pub type vaQueryConfigEntrypoints = unsafe extern "C" fn(dpy: VADisplay, profile: VAProfile, entrypoints: *mut VAEntrypoint, count: *mut c_int) -> VAStatus;
+
+pub const VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK: u32 = 0x200;
+pub const VA_CODED_BUF_STATUS_FRAME_SIZE_OVERFLOW: u32 = 0x1000;
+pub const VA_CODED_BUF_STATUS_BAD_BITSTREAM: u32 = 0x8000;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VAEncPackedHeaderParameterBuffer {
+    pub type_: u32,
+    pub bit_length: u32,
+    pub has_emulation_bytes: u8,
+    pub va_reserved: [u32; 4],
+}
+
+// pub const VA_ENC_PACKED_HEADER_SLICE: u32 = 4;
+
+// pub const VA_STATUS_ERROR_UNIMPLEMENTED: VAStatus = 0x14;
+// pub const VA_STATUS_ERROR_TIMEDOUT: VAStatus = 0x26;
+pub type vaSyncSurface2 = unsafe extern "C" fn(dpy: VADisplay, surface: VASurfaceID, timeout_ns: u64) -> VAStatus;
