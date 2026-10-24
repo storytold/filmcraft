@@ -3603,3 +3603,4 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+	Hardware decoding isn't used for {reason}. FilmCraft decodes it on the CPU, so 4K or high-bitrate video can play back slowly.	{reason}에는 하드웨어 디코딩이 사용되지 않습니다. FilmCraft가 CPU로 디코딩하므로 4K나 고비트레이트 영상은 재생이 느릴 수 있습니다.

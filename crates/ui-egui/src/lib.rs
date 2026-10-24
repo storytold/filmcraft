@@ -336,6 +336,9 @@ pub struct FilmcraftApp {
     /// A paused monitor drew a stand-in (nearest cached) picture last frame: its exact frame is
     /// still decoding.
     pub(crate) monitor_inexact: bool,
+    /// Hardware-decoding decline reasons already told in the status bar
+    /// (`filmcraft_engine::perf::hw_declined_reasons`, #2751).
+    pub(crate) hw_declines_told: usize,
     /// Per monitor: the frames it asked for on its latest paused passes, oldest first (stand-ins
     /// while the newest renders, see `panels::monitor`).
     pub(crate) monitor_asked: HashMap<String, std::collections::VecDeque<FrameKey>>,
@@ -584,6 +587,7 @@ impl FilmcraftApp {
             pending_screenshots: Vec::new(),
             queued_screenshots: Vec::new(),
             monitor_inexact: false,
+            hw_declines_told: 0,
             monitor_asked: HashMap::new(),
             program_shown: None,
             timeline_still: 0,
@@ -1669,6 +1673,20 @@ impl FilmcraftApp {
         ctx.request_repaint();
     }
 
+    /// A stream the hardware decoder declined now decodes on the CPU, which can make 4K or
+    /// high-bitrate video stutter: say so in the status bar, once per reason, with the reason
+    /// (on Windows, e.g. that the HEVC Video Extensions are not installed; #2751).
+    pub(crate) fn tell_hw_declines(&mut self) {
+        let reasons = filmcraft_engine::perf::hw_declined_reasons();
+        // every reason that came since the last pass, not only the newest
+        if let Some(new) = reasons.get(self.hw_declines_told..).filter(|new| !new.is_empty()) {
+            let reason = new.join("; ");
+            self.ui.status =
+                tlf!("Hardware decoding isn't used for {reason}. FilmCraft decodes it on the CPU, so 4K or high-bitrate video can play back slowly.", reason);
+        }
+        self.hw_declines_told = reasons.len();
+    }
+
     fn drain_control(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.control_rx.take() else { return };
         let now = ctx.input(|i| i.time);
@@ -2165,6 +2183,7 @@ impl eframe::App for FilmcraftApp {
         if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
+        self.tell_hw_declines();
         let had_synthetic = !self.synthetic.is_empty();
         self.drain_control(ctx);
         if !self.synthetic.is_empty() && !had_synthetic {

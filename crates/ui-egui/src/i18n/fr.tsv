@@ -3584,3 +3584,4 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+	Hardware decoding isn't used for {reason}. FilmCraft decodes it on the CPU, so 4K or high-bitrate video can play back slowly.	Le décodage matériel n’est pas utilisé pour {reason}. FilmCraft le décode sur le processeur : la vidéo 4K ou à débit élevé peut être lente à la lecture.

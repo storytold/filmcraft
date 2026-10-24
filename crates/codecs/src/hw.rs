@@ -89,6 +89,30 @@ pub fn note_hw_declined() {
     DECLINED.fetch_add(1, Ordering::Relaxed);
 }
 
+/// The distinct reasons hardware factories gave for declining streams this run, oldest first
+/// ([`note_hw_declined_because`]); at most [`MAX_DECLINED_REASONS`].
+static REASONS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// Distinct decline reasons kept (each one stream kind, so a handful in practice).
+pub const MAX_DECLINED_REASONS: usize = 16;
+
+/// A hardware factory declined a stream, and why: `reason` names the stream and the cause ("HEVC
+/// video: no HEVC decoder MFT (the HEVC Video Extensions are not installed)"). Counted like
+/// [`note_hw_declined`] and kept once, so the user can be told that this video plays from the CPU
+/// and why (#2751: a 4K HEVC recording lagged on Windows with nothing saying so).
+pub fn note_hw_declined_because(reason: &str) {
+    note_hw_declined();
+    let reason: String = reason.trim().chars().take(300).collect();
+    let mut kept = REASONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !reason.is_empty() && kept.len() < MAX_DECLINED_REASONS && !kept.contains(&reason) {
+        kept.push(reason);
+    }
+}
+
+/// The reasons [`note_hw_declined_because`] kept, oldest first.
+pub fn hw_declined_reasons() -> Vec<String> {
+    REASONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
 /// A hardware decoder switched to software mid-stream.
 pub fn note_hw_fallback() {
     FALLBACKS.fetch_add(1, Ordering::Relaxed);
@@ -395,6 +419,27 @@ impl NalStreamInfo {
 
 #[cfg(test)]
 mod tests {
+
+    /// #2751: a decline's reason is kept once (trimmed, capped in length and number), and still
+    /// counted every time.
+    #[test]
+    fn declined_reasons_are_kept_once() {
+        let reason = "HEVC video: no HEVC decoder MFT (the HEVC Video Extensions are not installed) #2751-test";
+        let before = hw_stats().declined;
+        note_hw_declined_because(reason);
+        note_hw_declined_because(&format!("  {reason}  "));
+        assert_eq!(hw_stats().declined, before + 2, "both declines counted");
+        assert_eq!(hw_declined_reasons().iter().filter(|r| r.as_str() == reason).count(), 1, "kept once");
+        note_hw_declined_because(&"x".repeat(1000));
+        assert!(hw_declined_reasons().iter().all(|r| r.chars().count() <= 300));
+        for i in 0..2 * MAX_DECLINED_REASONS {
+            note_hw_declined_because(&format!("filler {i}"));
+        }
+        assert!(hw_declined_reasons().len() <= MAX_DECLINED_REASONS);
+        note_hw_declined_because("   ");
+        assert!(!hw_declined_reasons().iter().any(|r| r.is_empty()));
+    }
+
     use super::*;
 
     #[test]

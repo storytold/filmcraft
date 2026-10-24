@@ -201,8 +201,10 @@ pub fn videotoolbox_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<fi
     match videotoolbox::VtDecoder::new(info.clone()) {
         Ok(vt) => Some(Ok(Box::new(HybridDecoder::new(Box::new(vt), entry.clone(), info)))),
         Err(why) => {
-            log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
-            filmcraft_codecs::hw::note_hw_declined();
+            // a warning, so the log file has it: the stream now decodes on the CPU (#2751)
+            let reason = format!("{} video: {why}", entry.codec.name());
+            log::warn!("hardware decoding declined for {reason}");
+            filmcraft_codecs::hw::note_hw_declined_because(&reason);
             None
         }
     }
@@ -220,8 +222,10 @@ pub fn media_foundation_factory(entry: &filmcraft_isobmff::SampleEntry) -> Optio
     match media_foundation::MfDecoder::new(info.clone()) {
         Ok(mf) => Some(Ok(Box::new(HybridDecoder::new(Box::new(mf), entry.clone(), info)))),
         Err(why) => {
-            log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
-            filmcraft_codecs::hw::note_hw_declined();
+            // a warning, so the log file has it: the stream now decodes on the CPU (#2751)
+            let reason = format!("{} video: {why}", entry.codec.name());
+            log::warn!("hardware decoding declined for {reason}");
+            filmcraft_codecs::hw::note_hw_declined_because(&reason);
             None
         }
     }
@@ -239,8 +243,10 @@ pub fn vaapi_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft
     match vaapi::VaDecoder::new(info.clone()) {
         Ok(va) => Some(Ok(Box::new(HybridDecoder::new(Box::new(va), entry.clone(), info)))),
         Err(why) => {
-            log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
-            filmcraft_codecs::hw::note_hw_declined();
+            // a warning, so the log file has it: the stream now decodes on the CPU (#2751)
+            let reason = format!("{} video: {why}", entry.codec.name());
+            log::warn!("hardware decoding declined for {reason}");
+            filmcraft_codecs::hw::note_hw_declined_because(&reason);
             None
         }
     }
@@ -260,7 +266,7 @@ pub fn nvdec_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft
             log::info!("NVDEC declined {} video: {why}", entry.codec.name());
             // with VA-API behind this factory, that one counts the decline (or takes the stream)
             if !filmcraft_codecs::video_decoder_registered(vaapi_factory) {
-                filmcraft_codecs::hw::note_hw_declined();
+                filmcraft_codecs::hw::note_hw_declined_because(&format!("{} video: {why}", entry.codec.name()));
             }
             None
         }
