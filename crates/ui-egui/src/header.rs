@@ -80,10 +80,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         icons::paint(ui.painter(), r.shrink(6.0), icon, if resp.hovered() { t.text } else { t.text_dim });
         resp
     };
-    if btn(ui, Icon::Fullscreen, "fullscreen", tl!("Full screen"), app).clicked() {
-        let fs = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
-    }
     if btn(ui, Icon::Speaker, "volume", tl!("Volume"), app).clicked() {
         app.ui.status = tl!("Master volume: use the Audio Track Mixer").into();
     }
