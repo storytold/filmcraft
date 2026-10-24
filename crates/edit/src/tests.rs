@@ -869,6 +869,75 @@ fn roll_reversed_clips_keeps_media_mapping() {
     assert_eq!((r.start, r.duration, r.source_in), (f(40), f(20), f(50)));
 }
 
+/// A rolling edit moves the transition on its cut with the cut, and stops where the transition
+/// would leave one of its two clips.
+#[test]
+fn roll_keeps_the_transition_on_its_clips() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 10);
+    let b = fx.put(v1, 10, 10, 10);
+    fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(8),
+        duration: f(4),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    }];
+    let mut n = fx.next;
+    // left: the transition reaches the sequence start after 8 frames, not the 9 the clips allow
+    assert_eq!(roll(&mut fx.seq, a, b, -f(9), &mut Fx::ctx(&mut n)).unwrap(), -f(8));
+    assert_eq!(fx.spans(v1), vec![(0, 2), (2, 18)]);
+    let tr = &fx.seq.track(v1).unwrap().transitions[0];
+    assert_eq!((tr.start, tr.duration), (f(0), f(4)), "the transition moved with the cut");
+    // right: it reaches the end of the second clip after 16 frames, not 17
+    assert_eq!(roll(&mut fx.seq, a, b, f(17), &mut Fx::ctx(&mut n)).unwrap(), f(16));
+    assert_eq!(fx.spans(v1), vec![(0, 18), (18, 2)]);
+    let tr = &fx.seq.track(v1).unwrap().transitions[0];
+    assert_eq!((tr.start, tr.duration), (f(16), f(4)));
+    fx.seq.check().unwrap();
+}
+
+/// A ripple trim or a slide that moves a cut close to the start of its first clip keeps the
+/// transition on that cut within its two clips, and its stored alignment follows: an End at Cut
+/// transition that now crosses the cut is stored as centered (Custom Start has no variant).
+#[test]
+fn edits_that_move_a_cut_keep_its_transition_on_its_clips() {
+    for slide_it in [false, true] {
+        let mut fx = Fx::new();
+        let v1 = fx.v(0);
+        let a = fx.put(v1, 0, 10, 10);
+        let b = fx.put(v1, 10, 10, 10);
+        fx.put(v1, 20, 10, 10);
+        fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
+            id: TransitionId(1),
+            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            start: f(6),
+            duration: f(4),
+            from: Some(a),
+            to: Some(b),
+            align: TransitionAlign::EndAtCut,
+            reverse: false,
+        }];
+        let mut n = fx.next;
+        if slide_it {
+            slide(&mut fx.seq, b, -f(9), &mut Fx::ctx(&mut n)).unwrap();
+        } else {
+            trim(&mut fx.seq, a, Edge::Out, TrimMode::Ripple, -f(9), &mut Fx::ctx(&mut n)).unwrap();
+        }
+        let t = fx.seq.track(v1).unwrap();
+        let (cut, a_start) = (t.item(b).unwrap().start, t.item(a).unwrap().start);
+        assert_eq!(cut, f(1), "slide {slide_it}");
+        let tr = &t.transitions[0];
+        assert_eq!((tr.start, tr.duration), (a_start, f(4)), "slide {slide_it}: the transition starts with its first clip");
+        assert_eq!(tr.align, TransitionAlign::CenterAtCut, "slide {slide_it}");
+        fx.seq.check().unwrap();
+    }
+}
+
 /// #374: moving an edge must not change which media sits under any timeline time the clip still
 /// covers (the timeline's live trim preview draws its waveform from this item), and must leave the
 /// item as the trim itself does.

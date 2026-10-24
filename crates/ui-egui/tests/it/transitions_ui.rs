@@ -344,3 +344,42 @@ fn transition_timeline_in_effect_controls() {
     assert!(ph.is_some_and(|p| p > c.cut), "{ph:?}");
     assert!(d.find("effectControls.transition.timeline.playhead").is_some(), "the playhead shows in the transition's timeline");
 }
+
+/// Dragging the cut line over the transition in Effect Controls moves the cut and the transition
+/// together: the clips' In and Out points change, the sequence keeps its length, and the drag is
+/// one undo step.
+#[test]
+fn dragging_the_cut_in_effect_controls_moves_it_with_the_transition() {
+    let mut d = Driver::demo();
+    let c = d.crossing();
+    let frame = frame_ticks(d.rate());
+    d.click(&format!("timeline.transition.{}", c.id));
+    let x = d.transition(c.id).unwrap();
+    let (from, to) = (x["from"].as_u64().unwrap(), x["to"].as_u64().unwrap());
+    // (start, duration, source in) of a clip
+    let clip = |d: &mut Driver, id: u64| {
+        let q = d.exec("sequence.inspect", json!({}));
+        let it = q["video"].as_array().unwrap().iter().flat_map(|t| t["items"].as_array().unwrap().clone()).find(|i| i["clip"] == id).unwrap();
+        (it["start"].as_i64().unwrap(), it["duration"].as_i64().unwrap(), it["sourceIn"].clone())
+    };
+    let (a0, b0) = (clip(&mut d, from), clip(&mut d, to));
+    let (x0, y0, w, h, _) = d.find("effectControls.transition.timeline.cut").expect("the cut line over the transition");
+    let (cx, cy) = (x0 + w / 2.0, y0 + h / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + 20.0, "y": cy}, "steps": 8}));
+    d.frames(3);
+    let (a1, b1) = (clip(&mut d, from), clip(&mut d, to));
+    let moved = b1.0 - b0.0;
+    assert!(moved > 0, "the cut moved right: {b0:?} -> {b1:?}");
+    assert_eq!(moved % frame, 0, "by whole frames");
+    assert_eq!((a1.0, a1.1), (a0.0, a0.1 + moved), "the first clip ends at the new cut");
+    assert_eq!(b1.0 + b1.1, b0.0 + b0.1, "the second clip still ends where it did");
+    assert_ne!(b1.2, b0.2, "the second clip starts later in its media");
+    let x1 = d.transition(c.id).unwrap();
+    assert_eq!((x1["start"].as_i64(), x1["duration"].as_i64()), (Some(c.start + moved), Some(c.duration)), "the transition moved with the cut");
+    assert_eq!(x1["align"], json!("center"), "still centered on its cut");
+    // one undo step
+    d.exec("edit.undo", json!({}));
+    assert_eq!((clip(&mut d, from), clip(&mut d, to)), (a0, b0));
+    let back = d.transition(c.id).unwrap();
+    assert_eq!((back["start"].as_i64(), back["duration"].as_i64()), (Some(c.start), Some(c.duration)));
+}

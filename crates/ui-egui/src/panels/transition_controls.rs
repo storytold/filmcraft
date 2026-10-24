@@ -11,6 +11,10 @@
 //! [`trn::drag_span`]); each drag is one undo step. Clicking or dragging the ruler moves the
 //! playhead. The divider between the settings and the timeline is the clip view's.
 //!
+//! Dragging the cut line where it crosses the transition moves the cut and the transition
+//! together, as Premiere's Move a cut and transition together describes it: one `timeline.roll`
+//! on release, so the clips' In and Out points change and the sequence keeps its length.
+//!
 //! Not here yet: the A/B preview thumbnails with their Start / End sliders, Show Actual Sources,
 //! and a rolling edit by dragging clip A or B in the transition's timeline.
 //!
@@ -19,13 +23,14 @@
 //! `.y`; a list's entries `.param.<id>.option.<n>` while open); its timeline's
 //! `effectControls.transition.timeline`, `.timeline.ruler`, `.timeline.a` / `.timeline.b` (the
 //! clips, labelled with their names), `.timeline.span` (the transition) with its ends
-//! `.timeline.span.in` / `.timeline.span.out`, `.timeline.playhead`; `effectControls.divider`;
+//! `.timeline.span.in` / `.timeline.span.out`, `.timeline.cut` (the cut line over the transition,
+//! between two clips), `.timeline.playhead`; `effectControls.divider`;
 //! the dialog's `transitionDuration.value`, `.ok`, `.cancel`.
 
 use egui::{Align2, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
-use filmcraft_edit::Edge;
 use filmcraft_edit::transitions::{self as trn, Alignment};
-use filmcraft_project::{ParamKind, ParamValue, Transition, TransitionId};
+use filmcraft_edit::{Edge, EditCtx};
+use filmcraft_project::{ClipId, ParamKind, ParamValue, Transition, TransitionId};
 use filmcraft_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
@@ -40,6 +45,8 @@ const MIN_LIST_W: f32 = 260.0;
 const MIN_LANE_W: f32 = 60.0;
 const RULER_H: f32 = 24.0;
 const BAR_H: f32 = 18.0;
+/// How far either side of the cut line a press over the transition grabs the cut.
+const CUT_PX: f32 = 3.0;
 /// How far into the transition from either end a press grabs that end (the Timeline's width).
 const EDGE_PX: f32 = 7.0;
 
@@ -201,10 +208,13 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
 /// A drag in the transition's timeline: the end it grabbed (`None`: the middle), where the
 /// transition was when it began, and the stretch of time the lane showed then, so the drag is
 /// measured against a ruler that holds still while the transition changes under it. `begun` once
-/// its first change went through: the rest merge into that undo step.
+/// its first change went through: the rest merge into that undo step. `cut` when it grabbed the
+/// cut line instead, with `roll` how far the cut has moved so far (applied on release).
 #[derive(Clone, Copy, Debug)]
 struct LaneDrag {
     edge: Option<Edge>,
+    cut: bool,
+    roll: Tick,
     start: Tick,
     duration: Tick,
     view: (Tick, Tick),
@@ -255,6 +265,9 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     let mem = egui::Id::new(("tr-ec-lane-drag", id.0));
     let mut drag: Option<LaneDrag> = ui.data(|d| d.get_temp(mem));
     let v = drag.map_or_else(|| view(x, cut, frame), |d| d.view);
+    // while the cut is dragged, the clips' edges at the cut and the transition are drawn where it goes
+    let roll = drag.filter(|d| d.cut).map_or(Tick::ZERO, |d| d.roll);
+    let two_sided = clip_a.is_some() && clip_b.is_some();
     let painter = ui.painter().with_clip_rect(lane.intersect(ui.clip_rect()));
     painter.rect_filled(lane, 0.0, t.tl_bg);
     let ruler = Rect::from_min_max(lane.min, pos2(lane.max.x, lane.min.y + RULER_H));
@@ -267,7 +280,8 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     let (row_a, row_x, row_b) = (row(0.0), row(1.0), row(2.0));
     for ((clip, r), key) in [(&clip_a, row_a), (&clip_b, row_b)].into_iter().zip(["a", "b"]) {
         let Some((s, e, name)) = clip else { continue };
-        let bar = Rect::from_min_max(pos2(x_of(lane, v, *s).max(lane.min.x), r.min.y), pos2(x_of(lane, v, *e).min(lane.max.x), r.max.y));
+        let (s, e) = if key == "a" { (*s, *e + roll) } else { (*s + roll, *e) };
+        let bar = Rect::from_min_max(pos2(x_of(lane, v, s).max(lane.min.x), r.min.y), pos2(x_of(lane, v, e).min(lane.max.x), r.max.y));
         if bar.width() <= 0.0 {
             continue;
         }
@@ -276,7 +290,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         elems.push((format!("effectControls.transition.timeline.{key}"), bar, name.clone()));
     }
     // the transition, outlined as selected (it is), with the Timeline's end zones
-    let (x0, x1) = (x_of(lane, v, x.start), x_of(lane, v, x.end()));
+    let (x0, x1) = (x_of(lane, v, x.start + roll), x_of(lane, v, x.end() + roll));
     let span = Rect::from_min_max(pos2(x0, row_x.min.y), pos2(x1.max(x0 + 1.0), row_x.max.y));
     painter.rect_filled(span, 0.0, egui::Color32::from_black_alpha(90));
     painter.rect_stroke(span, 0.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
@@ -295,8 +309,16 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     elems.push(("effectControls.transition.timeline.span.in".into(), Rect::from_min_max(span.min, pos2(span.min.x + zone, span.max.y)), "start".into()));
     elems.push(("effectControls.transition.timeline.span.out".into(), Rect::from_min_max(pos2(span.max.x - zone, span.min.y), span.max), "end".into()));
     // the cut, through all three rows
-    let cx = x_of(lane, v, cut);
+    let cx = x_of(lane, v, cut + roll);
     painter.line_segment([pos2(cx, row_a.min.y), pos2(cx, row_b.max.y)], Stroke::new(1.0, t.text_dim));
+    // where a press grabs the cut: on its line over the transition, outside the ends' zones
+    let middle = Rect::from_min_max(pos2(span.min.x + zone, span.min.y), pos2(span.max.x - zone, span.max.y));
+    let cut_zone = Rect::from_min_max(pos2(cx - CUT_PX, span.min.y), pos2(cx + CUT_PX, span.max.y)).intersect(middle);
+    let cut_zone = (two_sided && cut_zone.width() > 0.0).then_some(cut_zone);
+    let on_cut = |px: f32| cut_zone.is_some_and(|z| z.x_range().contains(px));
+    if let Some(z) = cut_zone {
+        elems.push(("effectControls.transition.timeline.cut".into(), z, "cut".into()));
+    }
     // the playhead, while it is in view
     let ph = app.session.playhead();
     if ph >= v.0 && ph <= v.1 {
@@ -317,7 +339,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     {
         seek = Some(rate.snap_nearest(tick_at(lane, v, pos.x.clamp(lane.min.x, lane.max.x))).max(Tick::ZERO));
     }
-    // the transition: its middle slides it, its ends change its duration
+    // the transition: its middle slides it, its ends change its duration, its cut line moves the cut
     let grab = |px: f32| -> Option<Edge> {
         if px < span.min.x + zone {
             Some(Edge::In)
@@ -333,11 +355,20 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     }
     if sresp.drag_started() {
         let from = ui.input(|i| i.pointer.press_origin()).or(sresp.interact_pointer_pos()).map_or(span.center().x, |p: Pos2| p.x);
-        drag = Some(LaneDrag { edge: grab(from), start: x.start, duration: x.duration, view: v, from_x: from, begun: false });
+        let edge = grab(from);
+        let cut = edge.is_none() && on_cut(from);
+        drag = Some(LaneDrag { edge, cut, roll: Tick::ZERO, start: x.start, duration: x.duration, view: v, from_x: from, begun: false });
     }
     let mut change = None;
     if sresp.dragged()
         && let Some(d) = drag.as_mut()
+        && d.cut
+        && let (Some(pos), Some(a), Some(b)) = (sresp.interact_pointer_pos(), x.from, x.to)
+    {
+        d.roll = roll_reach(app, a, b, rate.snap_nearest(ticks_for(lane, d.view, pos.x - d.from_x)));
+    } else if sresp.dragged()
+        && let Some(d) = drag.as_mut()
+        && !d.cut
         && let Some(pos) = sresp.interact_pointer_pos()
     {
         let delta = rate.snap_nearest(ticks_for(lane, d.view, pos.x - d.from_x));
@@ -349,6 +380,15 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
             d.begun = true;
         }
     }
+    // over the cut line (and not an end), the pointer shows that it moves the cut
+    if sresp.hover_pos().is_some_and(|h| grab(h.x).is_none() && on_cut(h.x)) || drag.is_some_and(|d| d.cut) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    // a drag of the cut is one rolling edit, made when it is released
+    let rolled = match (drag, x.from, x.to) {
+        (Some(d), Some(a), Some(b)) if sresp.drag_stopped() && d.cut && d.roll != Tick::ZERO => Some((a, b, d.roll)),
+        _ => None,
+    };
     // released, or a drag that lost its transition (deleted, deselected) while it went on
     if !sresp.dragged() && !sresp.drag_started() {
         drag = None;
@@ -357,6 +397,11 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         app.stop();
         app.session.set_playhead(tk);
     }
+    if let Some((a, b, d)) = rolled
+        && let Err(e) = app.session.execute("timeline.roll", json!({"left": a.0, "right": b.0, "delta": d.0}))
+    {
+        app.ui.status = e.to_string();
+    }
     ui.data_mut(|m| match drag {
         Some(d) => {
             m.insert_temp(mem, d);
@@ -364,6 +409,28 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         None => m.remove::<LaneDrag>(mem),
     });
     change
+}
+
+/// How far `timeline.roll` would move the cut between `left` and `right` toward `want`: the same
+/// limits on a copy of the sequence (the clips' media, a frame left in each, the transition on the
+/// cut, linked clips when Linked Selection is on). 0 when the roll would fail.
+fn roll_reach(app: &FilmcraftApp, left: ClipId, right: ClipId, want: Tick) -> Tick {
+    let Some(seq) = app.session.active_sequence() else { return Tick::ZERO };
+    let project = &app.session.project;
+    let durations = |item| filmcraft_engine::media_duration(project, &app.session.media, item);
+    let starts = |item| filmcraft_engine::media_start(project, item);
+    let mut next = project.next_id;
+    let mut ctx = EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: seq.settings.frame_rate.frame_duration() };
+    let mut d = want;
+    for (l, r) in filmcraft_engine::commands::linked_roll_pairs(seq, left, right, app.session.state.linked_selection) {
+        let mut probe = seq.clone();
+        match filmcraft_edit::roll(&mut probe, l, r, d, &mut ctx) {
+            Ok(reach) if reach.abs() < d.abs() => d = reach,
+            Ok(_) => {}
+            Err(_) => return Tick::ZERO,
+        }
+    }
+    d
 }
 
 /// The timeline's ruler: ticks and sequence timecode across `view` (the clip view's spacing).

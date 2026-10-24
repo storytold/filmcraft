@@ -26,7 +26,7 @@ pub mod transitions;
 
 use std::collections::HashMap;
 
-use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionId};
+use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionAlign, TransitionId};
 use filmcraft_time::{Tick, TimeRange};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -196,20 +196,43 @@ fn transition_anchor(track: &Track, tr: &Transition) -> Option<Tick> {
 }
 
 /// Keep transitions on their edit points after an edit moved cuts (ripple trim, roll, slide, ripple
-/// speed change): each transition shifts by as much as its anchor clip edge moved.
+/// speed change): each transition shifts by as much as its anchor clip edge moved. A shifted
+/// transition between two clips stays within them (shortened when they are now shorter than it),
+/// and its stored alignment follows where that leaves it on the cut.
 fn transitions_follow_cuts(before: &Sequence, after: &mut Sequence) {
+    let frame = after.settings.frame_rate.frame_duration();
     for track in after.all_tracks_mut() {
         let Some(old) = before.track(track.id) else { continue };
-        let shifts: Vec<Tick> = track
+        let shifts: Vec<(Tick, Option<(Tick, Tick, Tick)>)> = track
             .transitions
             .iter()
-            .map(|tr| match (transition_anchor(old, tr), transition_anchor(track, tr)) {
-                (Some(a), Some(b)) => b - a,
-                _ => Tick::ZERO,
+            .map(|tr| {
+                let d = match (transition_anchor(old, tr), transition_anchor(track, tr)) {
+                    (Some(a), Some(b)) => b - a,
+                    _ => Tick::ZERO,
+                };
+                let within = match (tr.from.and_then(|c| track.item(c)), tr.to.and_then(|c| track.item(c))) {
+                    (Some(f), Some(t)) if f.start < t.end() => Some((f.start, t.start, t.end())),
+                    _ => None,
+                };
+                (d, within)
             })
             .collect();
-        for (tr, d) in track.transitions.iter_mut().zip(shifts) {
+        for (tr, (d, within)) in track.transitions.iter_mut().zip(shifts) {
             tr.start += d;
+            if d != Tick::ZERO
+                && let Some((lo, cut, hi)) = within
+                && (tr.start < lo || tr.end() > hi)
+            {
+                tr.duration = tr.duration.min(hi - lo);
+                tr.start = tr.start.clamp(lo, hi - tr.duration);
+                // as `transitions::set_span` stores it (interchange): Custom Start has no variant
+                tr.align = match transitions::alignment(tr, cut, frame) {
+                    transitions::Alignment::Start => TransitionAlign::StartAtCut,
+                    transitions::Alignment::End => TransitionAlign::EndAtCut,
+                    transitions::Alignment::Center | transitions::Alignment::Custom => TransitionAlign::CenterAtCut,
+                };
+            }
         }
     }
 }
@@ -895,6 +918,10 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     let mut d = delta;
     // left out-point limits
     d = d.max(-(l.duration - ctx.min_duration)).min(r.duration - ctx.min_duration);
+    // a transition on this cut moves with it and stays within the two clips
+    for x in seq.all_tracks().flat_map(|t| &t.transitions).filter(|x| x.from == Some(left) && x.to == Some(right)) {
+        d = d.max((l.start - x.start).min(Tick::ZERO)).min((r.end() - x.end()).max(Tick::ZERO));
+    }
     // a reversed clip consumes media from the opposite end, so its media limit is the other one
     if l.reverse {
         d = d.min(Tick((head(ctx, l).0 as f64 / l.speed.abs()).floor() as i64));
