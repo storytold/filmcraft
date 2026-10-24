@@ -42,14 +42,23 @@ pub fn controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect) {
     let left = row.center().x - (width * 3.0 + gap * 2.0) * 0.5;
     for (i, (id, label, video, audio, enabled)) in buttons.into_iter().enumerate() {
         let rect = Rect::from_min_size(pos2(left + i as f32 * (width + gap), row.min.y), vec2(width, row.height()));
-        let response = ui.add_enabled_ui(enabled, |ui| ui.interact(rect, egui::Id::new(id), Sense::drag())).inner;
+        let response = ui.add_enabled_ui(enabled, |ui| ui.interact(rect, egui::Id::new(id), Sense::click_and_drag())).inner;
+        // a click chooses the streams a drag from the picture carries; a second click (or one on
+        // Drag Video and Audio) goes back to both
+        if response.clicked() {
+            let both = video && audio;
+            app.ui.source_drag_streams = (!both && app.ui.source_drag_streams != Some((video, audio))).then_some((video, audio));
+        }
+        let chosen = app.ui.source_drag_streams == Some((video, audio));
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
         let t = app.tokens;
-        if response.hovered() || response.dragged() {
+        if response.hovered() || response.dragged() || chosen {
             ui.painter().rect_filled(rect, 2.0, t.hover);
         }
         let color = if !enabled {
             t.text_faint
+        } else if chosen {
+            t.accent
         } else if response.hovered() {
             t.tab_text_active
         } else {
@@ -72,7 +81,8 @@ pub fn controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect) {
         // Windows maps Grab/Grabbing to crossed arrows; Pointer maps to its hand cursor.
         let hover_cursor = if cfg!(windows) { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Grab };
         let drag_cursor = if cfg!(windows) { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Grabbing };
-        let response = response.on_hover_cursor(hover_cursor).on_hover_text(label);
+        let hint = if video && audio { tl!("Drag onto the Timeline") } else { tl!("Drag onto the Timeline, or click to drag only this from the picture") };
+        let response = response.on_hover_cursor(hover_cursor).on_hover_text(format!("{}\n{hint}", crate::i18n::t(label)));
         if response.dragged() {
             ui.ctx().set_cursor_icon(drag_cursor);
         }

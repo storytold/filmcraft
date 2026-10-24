@@ -391,3 +391,37 @@ fn program_handles_exist_only_for_explicit_marks_and_clear_hides_them() {
     assert!(!has(&h, "program.range.in") && !has(&h, "program.range.out") && !has(&h, "program.range.body"));
     assert!(has(&h, "source.range.in") && has(&h, "source.range.out"));
 }
+
+fn click(h: &mut Harness<'static, FilmcraftApp>, id: &str) {
+    let at = control_rect(h, id).center();
+    pointer(h, at, Some(true));
+    pointer(h, at, Some(false));
+    step(h);
+}
+
+/// #1396, #2527: a click on Drag Video Only / Drag Audio Only makes a drag from the picture carry
+/// only that stream; a second click goes back to both.
+#[test]
+fn a_clicked_stream_control_applies_to_a_drag_from_the_picture() {
+    let counts = |h: &Harness<'static, FilmcraftApp>| {
+        let q = h.state().session.active_sequence().unwrap().clone();
+        (q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>(), q.audio_tracks.iter().map(|t| t.items.len()).sum::<usize>())
+    };
+    for (control, audio, expect) in [("source.drag.audio", true, (0, 1)), ("source.drag.video", false, (1, 0))] {
+        let mut h = harness(5);
+        click(&mut h, control);
+        assert!(h.state().ui.source_drag_streams.is_some(), "{control} is chosen");
+        drag(&mut h, "source.picture", audio, false);
+        assert_eq!(counts(&h), expect, "{control}: {}", h.state().ui.status);
+        // clicked again: the picture carries both again
+        click(&mut h, control);
+        assert_eq!(h.state().ui.source_drag_streams, None);
+    }
+    // Drag Video and Audio clears a choice too
+    let mut h = harness(5);
+    click(&mut h, "source.drag.audio");
+    click(&mut h, "source.drag.both");
+    assert_eq!(h.state().ui.source_drag_streams, None);
+    drag(&mut h, "source.picture", false, false);
+    assert_eq!(counts(&h), (1, 1));
+}

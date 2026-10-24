@@ -538,6 +538,11 @@ pub struct UiState {
     /// On-monitor text editing (Type tool / double-click on a text layer).
     #[serde(default)]
     pub gfx_edit: Option<GfxEdit>,
+    /// The Source monitor's Drag Video Only / Drag Audio Only control that was clicked: a drag
+    /// from the picture carries only those streams (video, audio) until it is clicked again
+    /// (#1396, #2527). None: both, as in Premiere.
+    #[serde(default)]
+    pub source_drag_streams: Option<(bool, bool)>,
     /// Pen tool: path points placed so far (sequence pixels).
     #[serde(default)]
     pub pen_points: Vec<[f64; 2]>,
@@ -1004,6 +1009,7 @@ impl Default for UiState {
             sequence_settings: SequenceSettingsDraft::default(),
             transition_duration: TransitionDurationDraft::default(),
             gfx_edit: None,
+            source_drag_streams: None,
             pen_points: vec![],
             link_media: None,
             create_proxies: None,
