@@ -2241,7 +2241,12 @@ pub(crate) fn wheel_input(ctx: &egui::Context) -> WheelInput {
 
 /// Puts the playhead where the pointer is on the ruler: what a press does before any drag (#1090).
 fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Pos2, shift: bool) {
-    app.stop();
+    // A press on the ruler stops playback, but it must not close a scrub stream that is already
+    // open: `stop()` drops the output stream, and the grain a frame later has to open the device
+    // again (slow on WASAPI, #2633). A press while nothing runs has nothing to stop.
+    if app.transport_running() {
+        app.stop();
+    }
     let mut tt = seq.settings.frame_rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO));
     if shift || app.session.prefs.timeline.snap_playhead {
         tt = snap_playhead(app, seq, layout, tt);

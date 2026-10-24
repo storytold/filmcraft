@@ -905,3 +905,57 @@ decode 2642 / 2925 → 2506 / 2064; playback 5246 / 7903 → 3379 / 3121; scrub 
 Not feasible / not done: reduced-resolution decode for H.264 / HEVC (inter prediction needs
 full-resolution references, so it cannot be bit-exact; ½/¼ playback already decimates after
 decode); AV1 internals untouched (measured only); export encoders not optimised.
+
+## Results (#2633: a playhead press re-opened the audio device, Windows)
+
+Reported on Windows: the Timeline playhead felt laggy and jumped on every click and drag, on an
+empty sequence too. The Timeline UI is not the cost (~3 ms a pass, below); the stalls were audio
+device opens on the UI thread.
+
+`ScrubAudio` plays a grain while the playhead moves with a button held (default on,
+`audio.scrubAudio`), and `scrub_playhead` called `app.stop()` on every press. The press path runs
+twice in one drag, so the stream the first grain had just opened was torn down two frames later and
+opened again. `CpalOut::config` also listed `supported_output_configs()` on every open, even when
+the settings ask for the rate the device already runs at.
+
+Measured on this machine (Realtek WASAPI, cpal 0.16). "Warm" is a stream built while another one is
+already playing; "cold" is the first stream after the audio engine went idle, which is the normal
+case between two gestures:
+
+| step | warm | cold |
+|---|---|---|
+| `default_output_device` | 2.7 ms | 3.6 ms |
+| `default_output_config` | 1.1 ms | 0.9 ms |
+| `supported_output_configs` | 191.3 ms | - |
+| `build_output_stream` | 19.3-23.1 ms | **558.7 ms** (494.9-1039.3) |
+| `play` | 0.0 ms | 0.0 ms |
+| drop the stream | 2.5 ms | 21.7 ms |
+
+So caching the device or its configuration buys nothing: the cost is `IAudioClient::Initialize`
+starting the Windows audio engine, and it is paid once per stream. The first open of a new process
+took 1003 ms; ten seconds of silence did not make the next one cheaper (544-1096 ms).
+
+Timeline UI pass, empty 3V/3A sequence at 1600x980 (`egui_kittest`): idle p50 2.2 ms / max 3.6; a
+120-step playhead drag p50 3.1 ms / max 6.9. The whole frame is cheap, so the device open was the
+only stall.
+
+Fixed:
+
+- the press path opened the device twice per drag (once, then `app.stop()` closed it two frames
+  later and the next grain opened it again), and `config()` listed every supported configuration
+  (~190 ms) even when the settings ask for the rate the device already runs at;
+- the remaining open moved off the UI thread: the scrub grain plays on its own output
+  (`ScrubOut`, `CpalScrubOut`), whose thread owns the stream (`cpal::Stream` is `!Send`) and keeps
+  it for 5 s after the last grain. Asking it for a grain costs a channel send; a press or a drag
+  never waits for the device.
+
+A cold drag went from ~1.5 s of frozen playhead (two opens of 558 + 191 ms) to no blocking work in
+the frame at all. What is left is a silent first grain: the stream still takes ~0.6 s to open, on
+the scrub thread, so the first ~0.6 s of a drag after the engine went cold plays nothing. Playback's
+own start still opens on the UI thread (the same cost, not part of this issue).
+
+Test: `crates/ui-egui/tests/scrub_stream_ui.rs` — one drag asks for the scrub output once, never
+touches the playback output, and a second drag in the linger reuses the stream; a press while
+playing still stops the transport. `apps/filmcraft` (`audio::tests`) — `play` returns without
+waiting for the device.
+

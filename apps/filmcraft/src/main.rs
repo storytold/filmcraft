@@ -261,6 +261,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Keep device selection available even when the default device is unavailable.
         // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).
         app.audio = Some(Box::new(audio::CpalOut::new()));
+        // The scrub grain gets its own output on its own thread (#2633): opening a device stream
+        // can take ~0.6 s, which must never happen in a playhead-drag frame.
+        let document_rate = app.session.active_sequence().map(|q| q.settings.sample_rate);
+        app.scrub_out = Some(Box::new(audio::CpalScrubOut::new(&app.session.prefs.audio_hardware, document_rate)));
         app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
             rfd::FileDialog::new()
                 .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
