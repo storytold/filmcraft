@@ -837,6 +837,9 @@
 	Delete Empty Caption Tracks	빈 자막 트랙 삭제
 	Delete files older than	다음보다 오래된 파일 삭제
 	Delete Graphic Layer	그래픽 레이어 삭제
+	Copy Graphic Layers	그래픽 레이어 복사
+	Paste Graphic Layers	그래픽 레이어 붙여넣기
+	Duplicate Graphic Layers	그래픽 레이어 복제
 	Delete Guide Template	안내선 템플릿 삭제
 	Delete Layer	레이어 삭제
 	Delete Mask	마스크 삭제

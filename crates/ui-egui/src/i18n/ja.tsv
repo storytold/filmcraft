@@ -3061,6 +3061,9 @@
 	Decrease Video Tracks Height	ビデオトラックの高さを縮小
 	Delete Captions	キャプションを削除
 	Delete Graphic Layer	グラフィックレイヤーを削除
+	Copy Graphic Layers	グラフィックレイヤーをコピー
+	Paste Graphic Layers	グラフィックレイヤーをペースト
+	Duplicate Graphic Layers	グラフィックレイヤーを複製
 	Delete Guide Template	ガイドテンプレートを削除
 	Delete Media Cache Files	メディアキャッシュファイルを削除
 	Discard Unsaved Changes	未保存の変更を破棄

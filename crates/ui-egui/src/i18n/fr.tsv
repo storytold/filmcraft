@@ -3060,6 +3060,9 @@
 	Decrease Video Tracks Height	Réduire la hauteur des pistes vidéo
 	Delete Captions	Supprimer les sous-titres
 	Delete Graphic Layer	Supprimer le calque graphique
+	Copy Graphic Layers	Copier les calques graphiques
+	Paste Graphic Layers	Coller les calques graphiques
+	Duplicate Graphic Layers	Dupliquer les calques graphiques
 	Delete Guide Template	Supprimer le modèle de repères
 	Delete Media Cache Files	Supprimer les fichiers du cache des médias
 	Discard Unsaved Changes	Abandonner les modifications non enregistrées

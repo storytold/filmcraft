@@ -672,6 +672,135 @@ fn arrange_layer(s: &mut Session, p: &Value, to: Value) -> Result<Value> {
     Ok(json!({"clip": clip.0, "layer": dest}))
 }
 
+/// The effect indices of the layers a copy / duplicate acts on (`layers`, else the selected
+/// layers, else the frontmost), back to front. A layer number that names no layer is an error.
+fn chosen_layer_effects(s: &Session, clip: ClipId, p: &Value, cmd: &str) -> Result<Vec<usize>> {
+    let layers = layers_p(s, clip, p)?;
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, it) = seq.find_item(clip).ok_or_else(|| bad(cmd, "no such clip"))?;
+    let idx = layer_indices(&it.effects);
+    let mut out = layers.iter().map(|&l| idx.get(l).copied().ok_or_else(|| bad(cmd, format!("no layer {l}")))).collect::<Result<Vec<usize>>>()?;
+    out.sort_unstable();
+    out.dedup();
+    if out.is_empty() {
+        return Err(bad(cmd, "select a graphic layer"));
+    }
+    Ok(out)
+}
+
+fn has_layer_clipboard(s: &Session) -> std::result::Result<(), String> {
+    has_graphic(s)?;
+    if s.state.layer_clipboard.is_empty() { Err("copy a graphic layer first".into()) } else { Ok(()) }
+}
+
+/// Make the layers just added at effect indices `added` real copies: each one that had a uid gets
+/// a fresh one (pins and template controls find layers by uid, and two layers sharing one would
+/// both answer), a pin to another copied layer follows that layer's copy, and a pin to a layer this
+/// clip does not have is dropped instead of pointing at whatever later takes that uid.
+fn adopt_layer_copies(effects: &mut [EffectInstance], added: &[usize], same_graphic: bool) {
+    use filmcraft_project::graphic_design::PinTarget;
+    use filmcraft_project::gtemplate::layer_uid;
+    // the layers that were there before, read before the copies are renamed: a fresh uid can be
+    // the very number a copied pin still names
+    let present: Vec<u64> =
+        layer_indices(effects).into_iter().filter(|i| !added.contains(i)).filter_map(|i| effects.get(i)).map(layer_uid).filter(|&u| u != 0).collect();
+    let mut next = effects.iter().map(layer_uid).max().unwrap_or(0).saturating_add(1);
+    let mut renamed: Vec<(u64, u64)> = Vec::new();
+    for &e in added {
+        let Some(extra) = effects.get_mut(e).and_then(|l| l.layer.as_mut()) else { continue };
+        if extra.uid != 0 && next != u64::MAX {
+            renamed.push((extra.uid, next));
+            extra.uid = next;
+            next += 1;
+        }
+    }
+    for &e in added {
+        let Some(extra) = effects.get_mut(e).and_then(|l| l.layer.as_mut()) else { continue };
+        if let Some(PinTarget::Layer(u)) = extra.pin.as_ref().map(|p| p.to) {
+            match renamed.iter().find(|(old, _)| *old == u) {
+                Some(&(_, new)) => {
+                    if let Some(pin) = extra.pin.as_mut() {
+                        pin.to = PinTarget::Layer(new);
+                    }
+                }
+                // a layer uid means something only in its own graphic: in another one the same
+                // number is an unrelated layer (#2460 review)
+                None if !same_graphic || !present.contains(&u) => extra.pin = None,
+                None => {}
+            }
+        }
+    }
+}
+
+/// `graphics.copyLayer`: copy graphic layers (text and shapes, with every property, keyframe and
+/// mask) for `graphics.pasteLayer` (#2264, #2265).
+fn copy_layers(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "graphics.copyLayer";
+    let clip = target_clip(s, p).ok_or_else(|| bad(cmd, "no graphic clip"))?;
+    let chosen = chosen_layer_effects(s, clip, p, cmd)?;
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, it) = seq.find_item(clip).ok_or_else(|| bad(cmd, "no such clip"))?;
+    let copied: Vec<EffectInstance> = chosen.iter().filter_map(|&e| it.effects.get(e).cloned()).collect();
+    let n = copied.len();
+    s.state.layer_clipboard = copied;
+    s.state.layer_clipboard_clip = Some(clip);
+    Ok(json!({"clip": clip.0, "copied": n}))
+}
+
+/// `graphics.pasteLayer`: add the copied layers to a graphic clip (the one they came from or
+/// another), in front of its layers and in their own order; selects them. The copies are
+/// independent: editing one changes nothing else.
+fn paste_layers(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "graphics.pasteLayer";
+    if s.state.layer_clipboard.is_empty() {
+        return Err(bad(cmd, "copy a graphic layer first"));
+    }
+    let clip = target_clip(s, p).ok_or_else(|| bad(cmd, "no graphic clip"))?;
+    let layers = s.state.layer_clipboard.clone();
+    let count = layers.len();
+    let same_graphic = s.state.layer_clipboard_clip == Some(clip);
+    let pasted = s.edit_sequence("Paste Graphic Layers", |q, _, st| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        // in front: after the last graphic layer, as a new layer goes
+        let pos = layer_indices(&it.effects).last().map_or(it.effects.len(), |l| l + 1);
+        for (k, l) in layers.into_iter().enumerate() {
+            it.effects.insert(pos + k, l);
+        }
+        adopt_layer_copies(&mut it.effects, &(pos..pos + count).collect::<Vec<_>>(), same_graphic);
+        let n = layer_indices(&it.effects).len();
+        let pasted: Vec<usize> = (n.saturating_sub(count)..n).collect();
+        st.selection = vec![clip];
+        st.graphic_layers = pasted.clone();
+        Ok(pasted)
+    })?;
+    Ok(json!({"clip": clip.0, "layers": pasted}))
+}
+
+/// `graphics.duplicateLayer`: copy graphic layers in place, each copy just in front of its
+/// original; selects the copies. The layer clipboard is left alone.
+fn duplicate_layers(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "graphics.duplicateLayer";
+    let clip = target_clip(s, p).ok_or_else(|| bad(cmd, "no graphic clip"))?;
+    let chosen = chosen_layer_effects(s, clip, p, cmd)?;
+    let copies = s.edit_sequence("Duplicate Graphic Layers", |q, _, st| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        // back to front, so the effect indices still to be copied stay where they were
+        for &e in chosen.iter().rev() {
+            let Some(copy) = it.effects.get(e).cloned() else { continue };
+            it.effects.insert(e + 1, copy);
+        }
+        let added: Vec<usize> = chosen.iter().enumerate().map(|(i, &e)| e + i + 1).collect();
+        adopt_layer_copies(&mut it.effects, &added, true);
+        // the i-th original moved up by the i copies inserted before it; its copy is just after it
+        let idx = layer_indices(&it.effects);
+        let copies: Vec<usize> = added.iter().filter_map(|a| idx.iter().position(|x| x == a)).collect();
+        st.selection = vec![clip];
+        st.graphic_layers = copies.clone();
+        Ok(copies)
+    })?;
+    Ok(json!({"clip": clip.0, "layers": copies}))
+}
+
 /// Graphic clips of the active sequence in timeline order (start, then track bottom → top).
 fn graphic_clips(s: &Session) -> Vec<(Tick, usize, ClipId)> {
     let Some(q) = s.active_sequence() else { return Vec::new() };
@@ -1089,6 +1218,25 @@ pub fn commands() -> Vec<CommandSpec> {
             s.state.graphic_layers = layers;
             Ok(Value::Null)
         }),
+        spec(
+            "graphics.copyLayer",
+            "Copy Graphic Layers",
+            &[],
+            None,
+            r#"{"clip":id?,"layers":[n]? (default: the selected layers, else the frontmost)}"#,
+            has_graphic,
+            copy_layers,
+        ),
+        spec("graphics.pasteLayer", "Paste Graphic Layers", &[], None, r#"{"clip":id? (default: the selected graphic)}"#, has_layer_clipboard, paste_layers),
+        spec(
+            "graphics.duplicateLayer",
+            "Duplicate Graphic Layers",
+            &[],
+            None,
+            r#"{"clip":id?,"layers":[n]? (default: the selected layers, else the frontmost)}"#,
+            has_graphic,
+            duplicate_layers,
+        ),
         spec("graphics.deleteLayer", "Delete Graphic Layer", &[], None, r#"{"clip":id?,"layer":n?}"#, has_graphic, |s, p| {
             let clip = target_clip(s, p).ok_or_else(|| bad("graphics.deleteLayer", "no graphic clip"))?;
             let (_, ei) = layer_effect_index(s, clip, p)?;

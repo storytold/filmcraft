@@ -95,6 +95,7 @@ Timecode and Clip Name effects also draw with the text engine.
 | `graphics.set` | Properties panel | `clip`, `layer`, `props` {parameter id or camelCase alias: value; choices by index or name}, `time`, `merge` + `begin` (a drag is one undo step: send `merge: true` on every change and `begin: true` on the first change of each press) |
 | `graphics.selectLayer` | layer list / monitor click | `clip`, `layers` |
 | `graphics.deleteLayer`, `graphics.arrangeLayer` | layer list | `clip`, `layer`, `to` (front/back/forward/backward/index) |
+| `graphics.copyLayer`, `graphics.pasteLayer`, `graphics.duplicateLayer` | layer list right-click ▸ Copy / Paste / Duplicate; Edit ▸ Copy, Paste and Duplicate while Properties or Essential Graphics has focus and a layer is selected | `clip`, `layers` (default: the selected layers). Copies keep every property, keyframe and mask and are independent of the original: each gets its own layer uid, a Responsive Design pin between two copied layers moves to the copies, and a pin to a layer the destination graphic does not have is dropped. Paste adds the copied layers in front of another or the same graphic's layers; Duplicate puts each copy just in front of its original. Both select the new layers; one undo step each |
 | `graphics.align` | Align and Transform | `align` (left/hcenter/right/top/vcenter/bottom), `to` (frame/group/selection), `layers` |
 | `graphics.alignFrame.<how>` | Align to Video Frame ▸ Left / Center Horizontally / Right / Top / Center Vertically / Bottom | each selected layer to the frame |
 | `graphics.alignGroup.<how>` | Align to Video Frame as Group ▸ … | the selected layers' union to the frame (2+ layers; relative positions kept) |
@@ -143,7 +144,7 @@ small caps / underline, kerning and ligatures; the wrench in the section's heade
 Properties**: Text Layer Type and Ligatures), **Shape**, and **Appearance** (fill, two strokes, background,
 shadow). Automation ids: `graphics.layers.<n>`, `graphics.prop.<parameter id>`,
 `graphics.align.<how>`, `graphics.distribute.<axis>`, `graphics.sourceText`, `graphics.NewTextLayer`,
-`graphics.NewRectangle`, `graphics.NewEllipse`, `graphics.deleteLayer`, `graphics.section.<name>`,
+`graphics.NewRectangle`, `graphics.NewEllipse`, `graphics.deleteLayer`, `graphics.layers.<n>.menu.<copy|paste|duplicate|delete>`, `graphics.section.<name>`,
 `graphics.textProperties` (the wrench) and in its dialog `graphics.textProperties.type`,
 `.type.point`, `.type.paragraph`, `.ligatures`, `.ok`, `.cancel`.
 

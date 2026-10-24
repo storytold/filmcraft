@@ -309,6 +309,9 @@ pub const PREMIERE_PANEL: &[Entry] = &[
     ("graphics.nudgeUp5", "Cmd+Shift+Up", "Properties"),
     ("graphics.nudgeDown5", "Cmd+Shift+Down", "Properties"),
     ("edit.clear", "Backspace", "Properties"),
+    // Duplicate the selected graphic layers; Cmd+D stays Apply Video Transition elsewhere
+    ("edit.duplicate", "Cmd+D", "Properties"),
+    ("edit.duplicate", "Cmd+D", "Essential Graphics"),
     ("view.showRulers", "Cmd+R", "Program"),
     ("view.showGuides", "Cmd+;", "Program"),
     ("view.snapInProgramMonitor", "Cmd+Shift+;", "Program"),

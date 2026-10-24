@@ -3059,6 +3059,9 @@
 	Decrease Video Tracks Height	Riduci altezza tracce video
 	Delete Captions	Elimina sottotitoli
 	Delete Graphic Layer	Elimina livello grafico
+	Copy Graphic Layers	Copia livelli grafici
+	Paste Graphic Layers	Incolla livelli grafici
+	Duplicate Graphic Layers	Duplica livelli grafici
 	Delete Guide Template	Elimina modello di guide
 	Delete Media Cache Files	Elimina file della cache multimediale
 	Discard Unsaved Changes	Scarta modifiche non salvate

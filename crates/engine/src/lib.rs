@@ -397,6 +397,14 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// Graphic layers copied with `graphics.copyLayer`, back to front; `graphics.pasteLayer` adds
+    /// them to a graphic clip (#2264, #2265).
+    #[serde(skip)]
+    pub layer_clipboard: Vec<filmcraft_project::EffectInstance>,
+    /// The graphic clip the layer clipboard was copied from: a pin to a layer that wasn't copied
+    /// keeps its target only when pasting back into it (uids are per graphic).
+    #[serde(skip)]
+    pub layer_clipboard_clip: Option<filmcraft_project::ClipId>,
     /// Captions copied from the Timeline, with their caption track's index (starts relative to the
     /// copied range). Copying clips empties it and copying captions empties `clipboard`, so Paste
     /// places whichever was copied last.

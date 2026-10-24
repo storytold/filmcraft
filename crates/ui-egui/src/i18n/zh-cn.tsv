@@ -3055,6 +3055,9 @@
 	Decrease Video Tracks Height	降低视频轨道高度
 	Delete Captions	删除字幕
 	Delete Graphic Layer	删除图形图层
+	Copy Graphic Layers	复制图形图层
+	Paste Graphic Layers	粘贴图形图层
+	Duplicate Graphic Layers	创建图形图层副本
 	Delete Guide Template	删除参考线模板
 	Delete Media Cache Files	删除媒体缓存文件
 	Discard Unsaved Changes	放弃未保存的更改

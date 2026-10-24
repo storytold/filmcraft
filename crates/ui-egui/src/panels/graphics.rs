@@ -1582,6 +1582,25 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 } else if resp.clicked() {
                     actions.push(("graphics.selectLayer".into(), json!({"clip": clip.0, "layers": [li]})));
                 }
+                // right-click: Copy / Paste / Duplicate / Delete this layer (#2264, #2265); Edit ▸
+                // Copy, Paste and Duplicate do the same for the selected layers while this panel
+                // has focus
+                let can_paste = !app.session.state.layer_clipboard.is_empty();
+                resp.context_menu(|ui| {
+                    for (key, name, label, cmd, p, enabled) in [
+                        ("copy", "Copy", tl!("Copy"), "graphics.copyLayer", json!({"clip": clip.0, "layers": [li]}), true),
+                        ("paste", "Paste", tl!("Paste"), "graphics.pasteLayer", json!({"clip": clip.0}), can_paste),
+                        ("duplicate", "Duplicate", tl!("Duplicate"), "graphics.duplicateLayer", json!({"clip": clip.0, "layers": [li]}), true),
+                        ("delete", "Delete Layer", tl!("Delete Layer"), "graphics.deleteLayer", json!({"clip": clip.0, "layer": li}), true),
+                    ] {
+                        let b = ui.add_enabled(enabled, egui::Button::new(label));
+                        autos.push((format!("graphics.layers.{li}.menu.{key}"), b.rect, name.into()));
+                        if b.clicked() {
+                            actions.push((cmd.into(), p));
+                            ui.close();
+                        }
+                    }
+                });
             }
         }
         // ---- template properties (a graphic made from a graphics template)
