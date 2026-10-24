@@ -230,11 +230,10 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
     let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
     let (w, h) = output_size(seq, opts.scale);
     // An HDR / wide-gamut sequence plans as layers too: its sources are decoded into the working
-    // space (the shader's input transform for display-referred media, `colorman::decode` on the
-    // CPU for log media and camera gamuts) and the compositor's resolve pass runs the sequence's
-    // display transform (working space → monitor). Frames the compositor cannot finish stay on
-    // the CPU: an adjustment layer, a transition it cannot mix, or a display transform the shader
-    // cannot encode (an HDR target).
+    // space on the GPU (`colorman::gpu_input`, which a log curve enters through the CPU's decode
+    // table) and the compositor's resolve pass runs the sequence's display transform (working
+    // space → monitor). Frames the compositor cannot finish stay on the CPU: an adjustment layer,
+    // a transition it cannot mix, or a display transform the shader cannot encode (an HDR target).
     if !layered_at(project, seq, t) || crate::colorman::display_transform(&seq.settings.color).gpu_params().is_none() {
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
@@ -479,9 +478,10 @@ fn push_item(
         let time = crate::video_source_time(item, t, src.info().frame_rate());
         let Ok(frame) = src.video_frame(FrameRequest { time, scale: want }) else { return };
         let cs = crate::colorman::source_space(project, item.item, &frame);
-        // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
-        // media and other pipelines are converted on the CPU (below), and so are blended
-        // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
+        // HDR, wide-gamut and log media is converted on the GPU (#965): the shader's own curves, a
+        // log curve through the CPU's decode table. What has no shader form is converted below on
+        // the CPU, and so are blended in-between frames (Frame Blending / Optical Flow on
+        // speed-changed clips)
         let pipe = &seq.settings.color;
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
         let plain =

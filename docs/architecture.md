@@ -565,8 +565,8 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   wide-gamut media (PQ, HLG, BT.2020, P3) is converted in the compositor's shader, and an HDR /
   wide-gamut sequence composites on the GPU too: the resolve pass runs its display transform
   (working space → monitor, `OutputTransform::gpu_params`); a display transform the shader cannot
-  encode keeps the whole frame on the CPU. Log media and camera gamuts are converted on the CPU
-  (the GPU path draws them as pre-rendered images, like layers with effects).
+  encode keeps the whole frame on the CPU. Log media is converted in the shader as well, through
+  the CPU's own decode table (`InputTransform::gpu_lut`), camera-gamut compression included.
 - **Outputs.** `RenderOptions::working_output` returns working-space pixels (HDR exports,
   scopes); otherwise the top-level render is converted for an SDR monitor. The other colour
   effects work on display-encoded values clamped to 0..1 (they clip HDR highlights above

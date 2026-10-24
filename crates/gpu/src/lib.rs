@@ -306,6 +306,7 @@ impl GpuCompositor {
                 tex_entry(2),
                 tex_entry(3),
                 tex_entry(5),
+                tex_entry(6),
             ],
         });
         let blend_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -322,6 +323,7 @@ impl GpuCompositor {
                 tex_entry(3),
                 tex_entry(4),
                 tex_entry(5),
+                tex_entry(6),
             ],
         });
         let final_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -499,6 +501,36 @@ impl GpuCompositor {
         t.create_view(&Default::default())
     }
 
+    /// Upload the input transform's log decode table as a 1D texture (`GpuCurve::Lut`). A log curve
+    /// is a table on the CPU too, so the shader samples the same numbers instead of a second
+    /// formula: 8192 entries, 32 KB, re-made per layer per frame (the picture's own upload is three
+    /// orders of magnitude larger). The entries are laid out in rows of [`LUT_ROW`] (entry `i` at
+    /// `(i % LUT_ROW, i / LUT_ROW)`), so the table fits the smallest 2D texture limit (WebGL2's
+    /// 2048) instead of being one 8192-wide row.
+    fn lut_texture(&mut self, values: &[f32]) -> wgpu::TextureView {
+        let rows = u32::try_from(values.len().div_ceil(LUT_ROW as usize)).unwrap_or(1).max(1);
+        let mut bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        bytes.resize(LUT_ROW as usize * rows as usize * 4, 0);
+        let t = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("input-lut"),
+            size: wgpu::Extent3d { width: LUT_ROW, height: rows, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * LUT_ROW), rows_per_image: Some(rows) },
+            wgpu::Extent3d { width: LUT_ROW, height: rows, depth_or_array_layers: 1 },
+        );
+        self.uploaded_bytes += bytes.len() as u64;
+        t.create_view(&Default::default())
+    }
+
     /// Upload (or reuse) the textures of a frame, using `prep` when it was converted beforehand.
     fn upload(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> (usize, u32, u32) {
         let id = match &f.data {
@@ -650,17 +682,20 @@ impl GpuCompositor {
         let taps = if footprint > 1.25 { footprint.ceil().min(4.0) } else { 1.0 };
         let _ = Matrix::Bt709;
         // colour management (q0..q5), stage by stage as `InputTransform::apply`
-        let q = src.input.map_or([0.0; 24], |p| {
+        let q = src.input.map_or([0.0; 28], |p| {
             let curve = match p.curve {
                 filmcraft_color::GpuCurve::Sdr => 0.0,
                 filmcraft_color::GpuCurve::Linear => 1.0,
                 filmcraft_color::GpuCurve::Pq => 2.0,
                 filmcraft_color::GpuCurve::Hlg => 3.0,
+                // a log curve: the shader samples the CPU's decode table (binding 6)
+                filmcraft_color::GpuCurve::Lut => 4.0,
             };
             let (hl, hk) = p.hlg.unwrap_or(([0.0; 3], 0.0));
             let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
             let (sp, dp) = p.tone.unwrap_or((0.0, 0.0));
             let dl = p.desaturate.unwrap_or([0.0; 3]);
+            let (lut_lo, lut_hi, lut_n) = p.lut.unwrap_or((0.0, 1.0, 0));
             let on = |b: bool| if b { 1.0 } else { 0.0 };
             #[rustfmt::skip]
             let q = [
@@ -670,6 +705,7 @@ impl GpuCompositor {
                 mx[1][0], mx[1][1], mx[1][2], sp,
                 mx[2][0], mx[2][1], mx[2][2], dp,
                 dl[0], dl[1], dl[2], on(p.desaturate.is_some()),
+                lut_lo, lut_hi, lut_n as f32, on(p.compress),
             ];
             q
         });
@@ -859,6 +895,14 @@ impl GpuCompositor {
             // HDR / wide-gamut Y'CbCr: the planner's input transform, in the shader (#965)
             let src = SrcInfo { input: l.input.as_ref().filter(|_| src.kind == 2).and_then(|t| t.gpu_params()), ..src };
             let views = self.uploads.get(k).map_or_else(|| std::array::from_fn(|_| self.dummy.clone()), |up| up.views.clone());
+            // a log source's decode table, which the shader samples (`GpuCurve::Lut`) wherever the
+            // source is drawn (onto the working image too); the compositor's own dummy for every
+            // other curve
+            let lut = l.input.as_deref().and_then(filmcraft_color::InputTransform::gpu_lut);
+            let lut_view = match lut {
+                Some(values) => self.lut_texture(values),
+                None => self.dummy.clone(),
+            };
             let job = match &l.fx {
                 Some(lfx) => {
                     // the source drawn onto the working image (box-decimated by n, as the CPU decodes)
@@ -877,6 +921,7 @@ impl GpuCompositor {
                             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lut_view) },
                         ],
                     });
                     match self.fx.as_mut() {
@@ -915,6 +960,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tex[1]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&tex[2]) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&tex[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lut_view) },
             ];
             let (layout, region) = match (&backdrop_view, l.blend.reads_destination()) {
                 (Some(b), true) => {
@@ -1077,6 +1123,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.dummy) },
             ],
         });
         let stage = self.fx.as_mut()?;
@@ -1247,8 +1294,11 @@ struct SrcInfo {
     input: Option<filmcraft_color::GpuInputParams>,
 }
 
+/// Entries per row of a log decode table's texture (`lut_texture`; `LUT_ROW` in `composite.wgsl`).
+const LUT_ROW: u32 = 256;
+
 /// Floats in a layer's uniform block (`U` in `composite.wgsl`: 13 vec4).
-const UNIFORM_FLOATS: usize = 52;
+const UNIFORM_FLOATS: usize = 56;
 /// Floats in the display transform uniform (`struct O` in `composite.wgsl`): 5 vec4.
 const DISPLAY_FLOATS: usize = 20;
 
