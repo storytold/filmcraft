@@ -49,6 +49,7 @@ pub enum Language {
     It,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    Ka,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -62,9 +63,11 @@ static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static GEORGIAN: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 13] =
+        [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It, Self::Ka];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -80,6 +83,7 @@ impl Language {
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
             Self::Ko => "한국어",
+            Self::Ka => "ქართული",
         }
     }
 
@@ -97,6 +101,7 @@ impl Language {
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
             "ko" => Some(Self::Ko),
+            "ka" => Some(Self::Ka),
             _ => None,
         }
     }
@@ -107,11 +112,11 @@ impl Language {
     /// any German (`de-AT`, `de_CH.UTF-8`…) gets the German one and any French (`fr-CA`, `fr_BE.UTF-8`…)
     /// the French one; any Indonesian (`id-ID`, `id_ID.UTF-8`, and the legacy `in-ID` that older Java
     /// and Android runtimes report) the Indonesian one; any Italian (`it-IT`, `it-CH`, `it_IT.UTF-8`…)
-    /// the Italian one. Chinese gets the Simplified catalog
+    /// the Italian one; any Georgian (`ka-GE`, `ka_GE.UTF-8`) the Georgian one. Chinese gets the Simplified catalog
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 13] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -124,6 +129,7 @@ impl Language {
             ("in", Language::Id),
             ("it", Language::It),
             ("ko", Language::Ko),
+            ("ka", Language::Ka),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -156,6 +162,7 @@ impl Language {
             Self::Id => "id",
             Self::It => "it",
             Self::Ko => "ko",
+            Self::Ka => "ka",
         }
     }
 
@@ -174,6 +181,7 @@ impl Language {
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Ka => Some(GEORGIAN.get_or_init(|| Catalog::parse(include_str!("ka.tsv")))),
         }
     }
 
@@ -355,6 +363,7 @@ mod tests {
             Language::Id => Some(include_str!("id.tsv")),
             Language::It => Some(include_str!("it.tsv")),
             Language::Ko => Some(include_str!("ko.tsv")),
+            Language::Ka => Some(include_str!("ka.tsv")),
         }
     }
 
@@ -389,7 +398,7 @@ mod tests {
         }
         assert_eq!(Language::En.tr("File"), "File");
         assert_eq!(Language::parse("xx"), None);
-        for code in ["de-DE", "fr-FR", "id-ID", "it-IT"] {
+        for code in ["de-DE", "fr-FR", "id-ID", "it-IT", "ka-GE"] {
             assert_eq!(Language::parse(code), None, "the preference stores the bare code");
         }
         // language names are always shown in their own language
@@ -403,6 +412,7 @@ mod tests {
             (Language::Id, "Bahasa Indonesia"),
             (Language::It, "Italiano"),
             (Language::Ko, "한국어"),
+            (Language::Ka, "ქართული"),
         ] {
             assert_eq!(l.name(), name);
         }
@@ -889,6 +899,27 @@ mod tests {
         set_current(Language::En);
     }
 
+    /// Georgian switches, shows as checked in Edit > Language, and persists.
+    #[test]
+    fn georgian_switches_and_persists() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        let r = crate::menus::invoke(&mut app, &ctx, "app.language.georgian", serde_json::json!({}));
+        assert_eq!(r.unwrap(), serde_json::json!("ka"));
+        assert_eq!((app.ui.language, current()), (Language::Ka, Language::Ka));
+        assert_eq!(app.session.prefs.general.interface_language, "ka");
+        for it in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
+            assert_eq!(it.checked, Some(it.id == "app.language.georgian"), "{}", it.id);
+        }
+        assert_eq!(Language::Ka.tr("Save As…"), "შენახვა როგორც…");
+        let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+        let mut restarted = filmcraft_engine::Session::default();
+        restarted.prefs = serde_json::from_str(&prefs).unwrap();
+        assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Ka);
+        crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+        set_current(Language::En);
+    }
+
     /// #218: System Language picks the first of the user's preferred languages the interface has.
     #[test]
     fn system_language_follows_the_preferred_locales() {
@@ -930,6 +961,12 @@ mod tests {
             assert_eq!(l(&[tag]), Language::Ko, "{tag}");
         }
         for none in [&["ita"][..], &["i"], &["-it"]] {
+            assert_eq!(l(none), Language::En, "{none:?}");
+        }
+        for tag in ["ka", "KA", "ka-GE", "ka_GE", "ka_GE.UTF-8", "ka_GE.UTF-8@x"] {
+            assert_eq!(l(&[tag]), Language::Ka, "{tag}");
+        }
+        for none in [&["kat"][..], &["k"], &["-ka"]] {
             assert_eq!(l(none), Language::En, "{none:?}");
         }
         assert_eq!(l(&["sv-SE", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");

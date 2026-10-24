@@ -415,8 +415,8 @@ pub fn font_families() -> Vec<FontFamily> {
 }
 
 /// Install the Latin UI fonts, Chinese fallback (craft-fonts or an installed face), Japanese
-/// craft-fonts, Arabic and Hebrew fallbacks (craft-fonts or installed faces, [`crate::rtl`]) and
-/// egui visuals. Document names keep their glyphs in every interface language.
+/// craft-fonts, Arabic, Hebrew and Georgian fallbacks (craft-fonts or installed faces,
+/// [`crate::rtl`]) and egui visuals. Document names keep their glyphs in every interface language.
 pub fn install(ctx: &egui::Context, t: &Tokens) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_REGULAR)));
@@ -695,6 +695,31 @@ mod tests {
         let galley = ctx.fonts_mut(|f| f.layout_no_wrap(JAPANESE.into(), FontId::new(13.0, FontFamily::Proportional), Color32::WHITE));
         assert_eq!(galley.rows.iter().map(|r| r.glyphs.len()).sum::<usize>(), JAPANESE.chars().count());
         assert!(galley.size().x > 13.0 * 4.0, "{:?}", galley.size());
+    }
+
+    /// Built with a craft-fonts that has Noto Sans Georgian (`Geor`): it is in every font family
+    /// ([`crate::rtl`]), so Georgian text gets real glyphs.
+    #[test]
+    fn georgian_renders_with_craft_fonts() {
+        if !filmcraft_text::fonts::CRAFT_FONTS.iter().any(|f| f.scripts.contains(&"Geor")) {
+            eprintln!("SKIPPED: built without a craft-fonts Georgian face (set CRAFT_FONTS_DIR to a craft-fonts checkout that has one)");
+            return;
+        }
+        let ctx = installed();
+        ctx.fonts_mut(|fonts| {
+            let defs = fonts.definitions().clone();
+            for (family, stack) in &defs.families {
+                assert!(stack.iter().any(|n| n == "craft:Noto Sans Georgian Regular"), "{family:?}: {stack:?}");
+            }
+            // not Monospace: egui's Hack draws Georgian there and is also that family's replacement
+            // face, so `has_glyph` reports a false negative for it
+            for family in [FontFamily::Proportional, FontFamily::Name("semibold".into()), FontFamily::Name("medium".into())] {
+                let font = FontId::new(13.0, family);
+                for ch in "ქართული ფილმი".chars().filter(|c| !c.is_whitespace()) {
+                    assert!(fonts.has_glyph(&font, ch), "missing {ch} in {font:?}");
+                }
+            }
+        });
     }
 
     /// Latin text keeps its UI faces, with or without craft-fonts and system Chinese fonts.

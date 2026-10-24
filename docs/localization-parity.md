@@ -10,7 +10,7 @@ Portuguese (Brazil), Russian, Simplified Chinese.
 
 Edit ▸ Language (also Settings ▸ General, `general.interfaceLanguage`) switches the interface and
 persists across restarts; System Language (the default) follows the OS's or browser's preferred
-languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian>`
+languages and falls back to English. Commands `app.language.<english|japanese|spanish|portuguese|ukrainian|chinese|german|russian|french|indonesian|italian|georgian>`
 are reachable over the control channel. One catalog per language,
 `crates/ui-egui/src/i18n/<code>.tsv` (format in the header of `es.tsv`); UI code wraps strings in
 `tl!("…")` / `tlf!("…{name}", name)`, and registry names (effects and their parameters, settings,
@@ -24,7 +24,7 @@ control channel, the CLI and MCP stay English.
 
 Fonts come from [craft-fonts](https://github.com/storytold/craft-fonts) (`CRAFT_FONTS_DIR`, all
 official releases) or an installed system face; without one, switching to Japanese or Chinese is
-refused with a message. Simplified Chinese is picked for `zh`, `zh-CN`, `zh-SG`, `zh-Hans`, not
+refused with a message. Georgian uses the craft-fonts Noto Sans Georgian face, or an installed Georgian face without craft-fonts (`rtl.rs`). Simplified Chinese is picked for `zh`, `zh-CN`, `zh-SG`, `zh-Hans`, not
 Traditional locales. Ukrainian uses the bundled Cyrillic interface fonts. Vertical text in titles
 is supported. The interface (egui) shapes each font run with harfrust and has Arabic and Hebrew
 fallback fonts (`crates/ui-egui/src/rtl.rs`), but it has no bidi pass: only captions (timeline
@@ -55,6 +55,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | Vietnamese | vi | 0 (0%) | — | Latin with stacked diacritics (font coverage to check) | — | none | 6–12 h + review |
 | *Other shipped:* Italian | it | 3,573 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
+| *Other shipped:* Georgian | ka | 3,596 (every Spanish entry) | as Spanish | Georgian (craft-fonts Noto Sans Georgian, else an installed face) | native speaker | partial | review |
 
 UI strings are catalog entries (the non-comment lines of `src/i18n/<code>.tsv`; English counts the
 source strings in the code), so the rows were measured at different times: at this change the
