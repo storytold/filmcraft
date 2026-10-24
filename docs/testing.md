@@ -180,6 +180,10 @@ Each codec README has the full fixture matrix and the measured results.
 - `gpu_matches_cpu_on_golden_scenes` sets each scene's display transform as the app does, so the
   colour-managed scenes (`hdr_tone_map`, and `lumetri_hdr_pq` in a Rec. 2100 PQ sequence) are
   converted and tone mapped on the GPU too.
+- `gpu_export_matches_cpu_on_golden_scenes` renders the scenes the GPU export renderer takes
+  (`ExportRenderer::render` returns None for transitions, which the export leaves to the CPU) and
+  compares them with `render_sequence`, for display (SDR) and working-space (HDR) output, with the
+  same criterion.
 
 ## 4. UI: control channel and screenshots
 

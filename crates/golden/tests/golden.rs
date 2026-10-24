@@ -834,6 +834,35 @@ fn gpu_shows_an_hdr_cpu_frame_as_rendered() {
     assert!(d.p99 <= 6 && mean_rgb < 1.5, "HDR CPU frame on the GPU differs from the CPU: {d}");
 }
 
+/// The export's GPU renderer returns what `render_sequence` does, for an SDR file (the picture
+/// through the sequence's display transform) and an HDR one (the working-space picture): HDR and
+/// wide-gamut sequences export on the GPU too, so an SDR export of one must be tone mapped there.
+#[test]
+fn gpu_export_matches_cpu_on_golden_scenes() {
+    let Some(mut r) = filmcraft_gpu::ExportRenderer::new() else {
+        eprintln!("SKIPPED (gpu export parity): no adapter");
+        return;
+    };
+    let mut failures = Vec::new();
+    for (name, _, make) in scenes() {
+        let s = make();
+        let t = RATE.tick_of(s.frame);
+        for working_output in [false, true] {
+            let opts = RenderOptions { working_output, ..Default::default() };
+            // (transitions are left to the CPU renderer by the export path)
+            let Some(gpu) = r.render(&s.project, s.seq, t, opts, &s.sources) else { continue };
+            let cpu = render_sequence(&s.project, s.seq, t, opts, &s.sources);
+            let to8 = |img: &filmcraft_render::Image| Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
+            let d = diff(&to8(&cpu), &to8(&gpu)).unwrap();
+            let mean_rgb = d.mean_abs * 4.0 / 3.0;
+            if d.p99 > 6 || mean_rgb >= 1.5 {
+                failures.push(format!("{name} (working output {working_output}): {d}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "GPU export differs from the CPU reference:\n{}", failures.join("\n"));
+}
+
 /// Per-pixel max RGB difference (99th percentile, mean) over the pixels at least 1.5 px from every
 /// plan layer's quad outline: the CPU resampler fades a layer's edge over one more pixel than the
 /// GPU rasterises, and with blend modes those edge pixels are a visible share of a 320×180 frame.

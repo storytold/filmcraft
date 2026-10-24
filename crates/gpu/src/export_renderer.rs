@@ -147,7 +147,15 @@ impl ExportRenderer {
                     return None;
                 }
                 timing::add_frame();
-                Some(Image { w: w as usize, h: h as usize, px })
+                let mut img = Image { w: w as usize, h: h as usize, px };
+                // The accumulator is the working space; an SDR file of an HDR / wide-gamut sequence
+                // takes its display transform, as `render_sequence` applies it.
+                if !opts.working_output
+                    && let Some(q) = project.sequence(seq)
+                {
+                    filmcraft_render::colorman::to_display(&mut img, &q.settings.color);
+                }
+                Some(img)
             }
             // Transitions: the export path leaves them to the CPU reference renderer.
             FramePlan::Composite { .. } => None,

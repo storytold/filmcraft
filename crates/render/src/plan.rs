@@ -234,7 +234,7 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
     // table) and the compositor's resolve pass runs the sequence's display transform (working
     // space → monitor). Frames the compositor cannot finish stay on the CPU: an adjustment layer,
     // a transition it cannot mix, or a display transform the shader cannot encode (an HDR target).
-    if !layered_at(project, seq, t) || crate::colorman::display_transform(&seq.settings.color).gpu_params().is_none() {
+    if whole_frame_on_cpu(project, seq, t) {
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     let mut layers = PlanStack::default();
@@ -260,20 +260,17 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
 
 /// Whether [`plan_frame`] hands the frame at `t` back as one CPU image ([`FramePlan::Image`]). A
 /// GPU renderer gains nothing on such a frame, so a caller with only a few of them (the export's
-/// pool) can render it on the CPU without taking one.
-/// Whether the frame at `t` needs the CPU compositor: an HDR / wide-gamut sequence, an adjustment
-/// layer, or a transition the compositor cannot mix. Callers that render on the CPU only (the
-/// export's pool) use it to skip taking a GPU plan; [`plan_frame`] itself plans an HDR / wide-gamut
-/// frame as layers whenever the compositor can finish it.
+/// pool) can render it on the CPU without taking one. An HDR / wide-gamut sequence is *not* such a
+/// frame when the compositor can finish it: the export reads the working-space accumulator back
+/// and encodes it itself, so HDR and log-source exports composite on the GPU too.
 pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick) -> bool {
     project.sequence(seq_id).is_none_or(|seq| whole_frame_on_cpu(project, seq, t))
 }
 
-/// The frames the CPU-only path ([`is_cpu_frame`]) covers: an HDR / wide-gamut sequence (its
-/// display transform and any log-source decode), an adjustment layer, or a complex transition
-/// anywhere at `t` (whole-frame fallback).
+/// The frames [`plan_frame`] renders whole on the CPU: an adjustment layer or a complex transition
+/// anywhere at `t`, or a display transform the resolve pass cannot encode (an HDR monitor target).
 fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick) -> bool {
-    !seq.settings.color.is_plain() || !layered_at(project, seq, t)
+    !layered_at(project, seq, t) || crate::colorman::display_transform(&seq.settings.color).gpu_params().is_none()
 }
 
 /// Whether the frame of `seq` at `t` can be planned as layers: no adjustment layer and no
