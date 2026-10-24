@@ -3452,6 +3452,7 @@
 	Encoder	编码器
 	Hardware (H.265 has no software encoder)	硬件（H.265 无软件编码器）
 	Hardware (AV1 has no software encoder)	硬件（AV1 无软件编码器）
+	Software (AV1)	软件 (AV1)
 	Text Properties	文本属性
 	Text Box Height	文本框高度
 	Paragraph Text	段落文本

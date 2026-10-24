@@ -3469,6 +3469,7 @@
 	Encoder	Enkoder
 	Hardware (H.265 has no software encoder)	Perangkat keras (H.265 tidak memiliki enkoder perangkat lunak)
 	Hardware (AV1 has no software encoder)	Perangkat keras (AV1 tidak memiliki enkoder perangkat lunak)
+	Software (AV1)	Perangkat lunak (AV1)
 	Text Properties	Properti Teks
 	Text Box Height	Tinggi Kotak Teks
 	Paragraph Text	Teks Paragraf

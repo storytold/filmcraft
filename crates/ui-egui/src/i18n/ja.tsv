@@ -3458,6 +3458,7 @@
 	Encoder	エンコーダー
 	Hardware (H.265 has no software encoder)	ハードウェア (H.265 にはソフトウェアエンコーダーがありません)
 	Hardware (AV1 has no software encoder)	ハードウェア (AV1 にはソフトウェアエンコーダーがありません)
+	Software (AV1)	ソフトウェア (AV1)
 	Text Properties	テキストのプロパティ
 	Text Box Height	テキストボックスの高さ
 	Paragraph Text	段落テキスト

@@ -3473,6 +3473,7 @@
 	Encoder	Codificador
 	Hardware (H.265 has no software encoder)	Hardware (H.265 no tiene codificador por software)
 	Hardware (AV1 has no software encoder)	Hardware (AV1 no tiene codificador por software)
+	Software (AV1)	Software (AV1)
 	Text Properties	Propiedades de texto
 	Text Box Height	Altura del cuadro de texto
 	Paragraph Text	Texto de párrafo
