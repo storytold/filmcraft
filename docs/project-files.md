@@ -38,7 +38,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
   (`filmcraft_format::Thumbnail`). Like `view` it is beside the project, not in it: it is never an
   undo step, saving it does not mark the project as changed, and it is outside the schema version
   (older builds ignore it). A save with no open sequence, or whose frame cannot be rendered, keeps
-  the thumbnail the file was opened with; the thumbnail never fails a save. On read nothing in it is
+  the thumbnail the file was opened with (none after Close Project or New Project); the thumbnail
+  never fails a save. On read nothing in it is
   trusted: a `thumbnail` that is not an object of this shape, is larger than 1024 px a side or
   512 KB encoded, is not valid base64 or does not start with its format's signature is ignored,
   never a load error, and decoding it is bounded by the same size limits. It is written before
@@ -47,7 +48,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
   RGBA picture (`Ok(None)` for files without a readable one; `filmcraft_format::scan_thumbnail`
   does the same on bytes already in memory). It does blocking file I/O and a JPEG decode, so the
   Home screen calls it off the UI thread and caches it. Auto-save copies and recovery snapshots
-  carry no thumbnail.
+  carry no thumbnail; Auto Save's "also save the current project" keeps the project file's.
 - A coordinate of an effect's point parameter may be `null`. Point parameters use NaN for "auto"
   (the frame centre, or the source centre for `anchor`), and JSON writes NaN as `null`; it reads back
   as "auto". Placing a clip resolves these points at once. An interchange import resolves them
