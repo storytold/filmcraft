@@ -2212,6 +2212,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-video-toolbox",
  "windows 0.62.2",
+ "x11rb",
 ]
 
 [[package]]

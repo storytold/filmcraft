@@ -31,6 +31,8 @@ mod audio_in;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
+#[cfg(target_os = "linux")]
+mod display;
 mod file_filters;
 mod graphics;
 mod logging;
@@ -180,7 +182,7 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
             .with_icon(app_icon())
             // Wayland matches the window to `packaging/linux/ai.storyteller.filmcraft.desktop`.
             .with_app_id(APP_ID),
-        event_loop_builder: agent_event_loop(agent),
+        event_loop_builder: event_loop_hook(agent),
         ..Default::default()
     }
 }
@@ -313,6 +315,11 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
+        // Started on X11 for drag-and-drop (display.rs): ask the X server where a file drag is.
+        #[cfg(target_os = "linux")]
+        if *display::current() == display::Choice::X11 {
+            app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::x11_cursor_screen_position));
+        }
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
         // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
         // compositor reports no theme to winit (no polling: see appearance.rs).
@@ -425,9 +432,10 @@ fn local_offset(unix: i64) -> i32 {
     chrono::Local.timestamp_opt(unix, 0).single().map(|d| d.offset().local_minus_utc()).unwrap_or(0)
 }
 
-/// Driven by an agent (`--control`): don't activate the app on launch, so the user's keyboard
-/// focus stays where it is (macOS; winit activates ignoring other apps by default).
-fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
+/// Event-loop options. Driven by an agent (`--control`): don't activate the app on launch, so the
+/// user's keyboard focus stays where it is (macOS; winit activates ignoring other apps by default).
+/// On Linux, start on X11 when `display` says so (file drag-and-drop, see `display`).
+fn event_loop_hook(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     #[cfg(target_os = "macos")]
     if agent {
         return Some(Box::new(|b| {
@@ -436,6 +444,21 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
         }));
     }
     let _ = agent;
+    #[cfg(target_os = "linux")]
+    match display::current() {
+        display::Choice::X11 => {
+            return Some(Box::new(|b| {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                b.with_x11();
+            }));
+        }
+        display::Choice::Default => {}
+        display::Choice::None => {
+            // winit's own error says little to someone who started FilmCraft from a console.
+            log::error!("no display: DISPLAY and WAYLAND_DISPLAY are not set");
+            eprintln!("FilmCraft needs a graphical session: neither DISPLAY nor WAYLAND_DISPLAY is set.");
+        }
+    }
     None
 }
 

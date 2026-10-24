@@ -57,6 +57,9 @@ windows = { version = "0.62", features = [
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8"
+# The cursor position during an X11 file drag (`cursor.rs`): pure-Rust X11 protocol (MIT OR
+# Apache-2.0; already in the lockfile through winit).
+x11rb = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
