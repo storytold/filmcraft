@@ -23,6 +23,7 @@ const VALUED: &[&str] = &[
     "--data-dir",
     "--settings",
     "--gpu-rendering",
+    "--hardware-encoding",
 ];
 
 #[derive(Debug, Default)]
@@ -196,5 +197,12 @@ mod tests {
         let b = args("export out.wav --gpu-rendering auto");
         assert_eq!(b.positionals, ["export", "out.wav"]);
         assert_eq!(b.opt("--gpu-rendering"), Some("auto"));
+    }
+
+    #[test]
+    fn hardware_encoding_takes_a_space_separated_value() {
+        let a = args("export --hardware-encoding auto out.mp4");
+        assert_eq!(a.positionals, ["export", "out.mp4"]);
+        assert_eq!(a.opt("--hardware-encoding"), Some("auto"));
     }
 }

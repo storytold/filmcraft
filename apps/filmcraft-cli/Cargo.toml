@@ -24,6 +24,9 @@ filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-gpu = { workspace = true }
+# filmcraft-gpu asks wgpu for no backend; without this a CLI built on its own has no GPU and every
+# export renders on the CPU (the desktop app gets its backends through eframe).
+wgpu = { version = "30", features = ["wgsl", "metal", "vulkan", "dx12", "gles"] }
 filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-platform = { workspace = true }

@@ -77,7 +77,7 @@ SUBCOMMANDS
   inspect [project|sequence]    project tree or active sequence as JSON (default: both)
   import <file>...              import media into the project
   export <out> [--preset name] [--format f] [--range r] [--start s --end s] [--settings json]
-         [--gpu-rendering auto|off]
+         [--gpu-rendering auto|off] [--hardware-encoding auto|off]
          [--scale f] [--quality 0-100] [--no-audio] [--queue] [--allow-offline]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
@@ -86,8 +86,10 @@ SUBCOMMANDS
                                 range in seconds; --settings is ExportSettings JSON merged over the
                                 preset; --scale renders at a fraction of the frame size (0.5 =
                                 half); --quality 0-100 for the formats that take one; --no-audio
-                                leaves the sound out; --queue adds to the export queue and runs it
-                                instead. Offline media (missing, made offline, unreadable) renders
+                                leaves the sound out; --hardware-encoding auto encodes H.264 / HEVC
+                                on the system's hardware encoder (VideoToolbox, NVENC) where it
+                                takes the settings: faster, but not byte-identical from run to run;
+                                --queue adds to the export queue and runs it instead. Offline media (missing, made offline, unreadable) renders
                                 as placeholder frames: the export then lists it in `offlineMedia`,
                                 warns on stderr and exits 1, unless --allow-offline accepts it
   export --list-presets [query] list export presets (name, category, format) as JSON
@@ -470,6 +472,9 @@ async fn cli() {
             }
             if let Some(v) = a.opt("--gpu-rendering") {
                 p["gpuRendering"] = json!(v); // off | auto (validated by the export command)
+            }
+            if let Some(v) = a.opt("--hardware-encoding") {
+                p["hardwareEncoding"] = json!(v); // off | auto (validated by the export command)
             }
             let mut b = Backend::open(&a);
             let t0 = std::time::Instant::now();

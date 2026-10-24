@@ -1833,6 +1833,7 @@ dependencies = [
  "filmcraft-time",
  "serde_json",
  "tokio",
+ "wgpu",
 ]
 
 [[package]]
