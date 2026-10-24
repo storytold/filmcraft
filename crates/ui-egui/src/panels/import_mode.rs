@@ -109,7 +109,8 @@ fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, y: f32) -> f32 
     }
     if let Some(path) = open {
         let ctx = ui.ctx().clone();
-        if crate::menus::invoke(app, &ctx, "file.open", json!({"path": path})).is_ok() {
+        // unsaved changes: Save / Don't Save / Cancel first, asked over the project they were made in
+        if crate::panels::clip_dialogs::intercept_open(app, &path) || crate::menus::invoke(app, &ctx, "file.open", json!({"path": path})).is_ok() {
             app.ui.mode = crate::state::Mode::Edit;
         }
     }
