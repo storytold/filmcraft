@@ -724,6 +724,23 @@ fn interchange_roundtrip_through_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn interchange_import_uses_the_project_panel_bin() {
+    let dir = std::env::temp_dir().join(format!("fc-ix-bin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("demo.xml").to_string_lossy().to_string();
+    let mut s = demo();
+    s.execute("file.exportFcp7Xml", json!({"path": path})).unwrap();
+    let bin = s.execute("file.newBin", json!({"name": "Imported"})).unwrap()["bin"].as_u64().unwrap();
+
+    let imported = s.execute("file.import", json!({"paths": [path], "bin": bin})).unwrap();
+    let sequence = ItemId(imported["sequences"][0].as_u64().unwrap());
+    let target = s.project.root.find_bin(filmcraft_project::BinId(bin)).expect("the target bin remains available");
+    assert!(target.children.iter().any(|entry| matches!(entry, filmcraft_project::BinEntry::Item(id) if *id == sequence)));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `file.exportInterchange {format: "<unknown>"}` used to write FCP7 XML without a word.
 #[test]
 fn export_interchange_refuses_an_unknown_format() {
