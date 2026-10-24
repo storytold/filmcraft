@@ -1747,6 +1747,13 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if response.changed() {
                 cx.set("vertical", json!(value));
             }
+            // 縦中横: half-width digits and short Latin set side by side in one cell (vertical only).
+            let mut tcy = pv(e, "tate_chu_yoko", mt).as_bool().unwrap_or(false);
+            let response = vui.add_enabled(vertical, egui::Checkbox::new(&mut tcy, tl!("Tate-Chu-Yoko")));
+            cx.auto("tate_chu_yoko", response.rect, "Tate-Chu-Yoko");
+            if response.changed() {
+                cx.set("tate_chu_yoko", json!(tcy));
+            }
             cx.number(ui, tl!("Text Box Width"), "box_width", 2.0, (0.0, 100_000.0), 0, "");
             cx.number(ui, tl!("Text Box Height"), "box_height", 2.0, (0.0, 100_000.0), 0, "");
             let (_, mut vui) = cx.row(ui, tl!("Style"));

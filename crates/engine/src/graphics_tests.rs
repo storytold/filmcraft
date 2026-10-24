@@ -689,3 +689,36 @@ fn align_to_frame_moves_selected_video_clips_by_position_only() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!((pos(&s).0.y - 200.0).abs() < 1e-6, "one undo step per alignment");
 }
+
+/// The Text section's 縦中横 toggle: `tate_chu_yoko` is a layer property (off by default, kept in
+/// the effect instance so it saves with the project) and `graphics.setCharStyle` can set it for a
+/// range of characters.
+#[test]
+fn tate_chu_yoko_property_and_character_style() {
+    let mut s = demo();
+    let r = s.execute("graphics.newText", json!({"text": "12", "vertical": true})).unwrap();
+    let clip = ClipId(r["clip"].as_u64().unwrap());
+    let layer_flag = |s: &Session| -> bool {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(clip).unwrap();
+        let i = filmcraft_project::graphic::layer_indices(&it.effects)[0];
+        match eval_layer(&it.effects[i], Tick::ZERO, (q.settings.width, q.settings.height)).unwrap().content {
+            LayerContent::Text(t) => t.tate_chu_yoko,
+            _ => panic!("not text"),
+        }
+    };
+    assert!(!layer_flag(&s), "off by default");
+    s.execute("graphics.set", json!({"clip": clip, "layer": 0, "props": {"tate_chu_yoko": true}})).unwrap();
+    assert!(layer_flag(&s), "graphics.set sets the layer's 縦中横");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(!layer_flag(&s), "one undo restores it");
+    // Per-character: the character-style command parses the flag.
+    s.execute("graphics.setCharStyle", json!({"clip": clip, "start": 0, "end": 2, "style": {"tateChuYoko": true}})).unwrap();
+    let (_, it) = s.active_sequence().unwrap().find_item(clip).unwrap();
+    let runs = it.effects.iter().find(|e| e.effect == "graphic_text").and_then(|e| e.layer.as_ref()).map(|x| x.runs.clone()).unwrap_or_default();
+    assert_eq!(runs.first().and_then(|r| r.style.tate_chu_yoko), Some(true), "{runs:?}");
+    // Clearing the style removes it again.
+    s.execute("graphics.setCharStyle", json!({"clip": clip, "clear": true})).unwrap();
+    let (_, it) = s.active_sequence().unwrap().find_item(clip).unwrap();
+    assert!(it.effects.iter().find(|e| e.effect == "graphic_text").and_then(|e| e.layer.as_ref()).is_none(), "the cleared style leaves no runs");
+}

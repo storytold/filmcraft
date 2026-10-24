@@ -26,7 +26,7 @@ kerning and ligatures, bidi, line breaking, all drawn as vectors in linear light
 
 | Group | Properties (parameter ids) |
 |---|---|
-| Text | `text` (Source Text), `font`, `font_style`, `size` (px), `align` (Left/Center/Right/Justify), `tracking` (1/1000 em), `kerning`, `ligatures`, `leading` (px added to the natural line height), `baseline_shift`, `faux_bold`, `faux_italic`, `caps` (Normal/All Caps/Small Caps), `underline`, `box_width` (0 = point text, else paragraph text wrapped at that width), `box_height` (paragraph text: lines that do not fit are not shown; 0 = as tall as the text) |
+| Text | `text` (Source Text), `font`, `font_style`, `size` (px), `align` (Left/Center/Right/Justify), `tracking` (1/1000 em), `kerning`, `ligatures`, `leading` (px added to the natural line height), `baseline_shift`, `faux_bold`, `faux_italic`, `caps` (Normal/All Caps/Small Caps), `underline`, `box_width` (0 = point text, else paragraph text wrapped at that width), `box_height` (paragraph text: lines that do not fit are not shown; 0 = as tall as the text), `vertical` (vertical text: characters stack top to bottom, paragraphs are columns right to left), `tate_chu_yoko` (縦中横: 2–4 consecutive half-width characters of the run set side by side in one cell; vertical text only) |
 | Shape | `shape` (Rectangle/Ellipse/Polygon/Path), `size` [w, h], `sides`, `corner_radius` (one radius for all four corners, at most half the shorter side; on the Program monitor, drag one of the four small circles just inside a selected rectangle's corners), `points` (path vertices relative to the layer origin) |
 | Appearance | `fill`, `fill_color`; `stroke`, `stroke_color`, `stroke_width`, `stroke_type` (Outer/Center/Inner) and the same for `stroke2`; `background`, `background_color`, `background_opacity`, `background_size` (padding), `background_radius`; `shadow`, `shadow_color`, `shadow_opacity`, `shadow_angle` (135° = down-right), `shadow_distance`, `shadow_size`, `shadow_blur` |
 | Transform | `position` (graphic canvas px), `anchor` (layer px), `scale`, `scale_width`, `uniform_scale`, `rotation`, `opacity` |
@@ -65,6 +65,22 @@ A text layer is one of two types, as in Premiere Pro (behaviour observed in Prem
   box hid). To paragraph text: the box is fitted to the text. Either way the text stays where it
   is and Position is untouched; only Anchor Point is renumbered. Vertical text is always point
   text.
+
+### Vertical text and 縦中横
+
+Vertical text (`graphics.newText`/`graphics.newVerticalText` with `vertical: true`, or the Text
+section's **Vertical Text** checkbox) is always point text: characters stack top to bottom and
+paragraphs become columns running right to left. Japanese titles often set a short run of
+half-width digits or Latin — a year, a score — side by side across the column inside one
+character's height instead: **縦中横 (tate-chu-yoko)**. The Text section's **Tate-Chu-Yoko**
+checkbox (`tate_chu_yoko`, off by default, enabled while Vertical Text is on) does that for the
+whole layer: 2–4 consecutive half-width printable ASCII characters of a flagged run share one
+cell, upright and side by side, and the text after them moves up by the cells the group saves. A
+caret or a click still lands between two of the characters. A character style
+(`graphics.setCharStyle` with `"tateChuYoko": true`) flags a range instead of the whole layer.
+The setting saves with the project; horizontal text ignores it. Limits: only consecutive printable
+ASCII characters group (kana and full-width characters keep their own cells), at most four in one
+cell, a group wider than the column overflows across it, and there is no automatic 縦中横.
 
 Known differences from Premiere: the first line of paragraph text sits one font ascent below the
 box's top (Premiere places it higher, about one cap height below); Premiere's smallest box and

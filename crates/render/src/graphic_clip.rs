@@ -49,6 +49,7 @@ pub fn text_styles(t: &TextProps) -> (TextStyle, ParagraphStyle) {
             faux_italic: t.faux_italic,
             caps: caps_of(t.caps),
             underline: t.underline,
+            tate_chu_yoko: t.tate_chu_yoko,
         },
         ParagraphStyle {
             align: match t.align {
@@ -91,6 +92,7 @@ pub fn text_runs(t: &TextProps, base: &TextStyle) -> Vec<StyleRun> {
                 faux_italic: c.faux_italic.unwrap_or(base.faux_italic),
                 caps: c.caps.map_or(base.caps, caps_of),
                 underline: c.underline.unwrap_or(base.underline),
+                tate_chu_yoko: c.tate_chu_yoko.unwrap_or(base.tate_chu_yoko),
                 ..base.clone()
             },
         })
@@ -719,6 +721,50 @@ mod tests {
         let (b1, b2) = (ink_box(&img).unwrap(), ink_box(&img2).unwrap());
         assert!(b2[1] + 30 < b1[1], "the big letter rises higher: {b1:?} {b2:?}");
         assert!(b2[3].abs_diff(b1[3]) <= 1, "same baseline: {b1:?} {b2:?}");
+    }
+
+    /// 縦中横: a vertical text layer flagged `tate_chu_yoko` sets its half-width characters side
+    /// by side in one cell of the column — one row tall, two glyphs wide — in the layout and in
+    /// the painted pixels; without the flag each character gets a cell of its own, and a
+    /// character-style range can flag one the same way.
+    #[test]
+    fn tate_chu_yoko_sets_half_width_characters_in_one_cell() {
+        use filmcraft_project::graphic_design::{CharStyle, LayerExtra, StyleRun};
+        let mut e = new_text_layer("12", Vec2::new(200.0, 40.0), 80.0);
+        set(&mut e, "vertical", ParamValue::Bool(true));
+        let layout = |e: &EffectInstance| match &eval_layer(e, Tick::ZERO, (400, 300)).unwrap().content {
+            LayerContent::Text(t) => text_layout(t),
+            _ => panic!("not text"),
+        };
+        let stacked_layout = layout(&e);
+        assert_eq!(stacked_layout.lines.len(), 2, "one character per cell without the flag");
+        let paint = |e: &EffectInstance| {
+            let mut img = Image::new(400, 300);
+            render_graphic_layers(std::slice::from_ref(e), Tick::ZERO, (400, 300), &Affine::IDENTITY, &mut img);
+            ink_box(&img).expect("the digits paint")
+        };
+        let stacked = paint(&e);
+        set(&mut e, "tate_chu_yoko", ParamValue::Bool(true));
+        let side_layout = layout(&e);
+        assert_eq!(side_layout.lines.len(), 1, "both digits in one cell");
+        let digits: Vec<_> = side_layout.glyphs.iter().filter(|g| g.size == 80.0).collect();
+        assert_eq!(digits.len(), 2, "one glyph per digit");
+        assert!((digits[0].y - digits[1].y).abs() < 0.01, "side by side, not stacked: {digits:?}");
+        assert!(digits[1].x > digits[0].x, "in reading order: {digits:?}");
+        let side = paint(&e);
+        let (sw, sh) = (stacked[2] - stacked[0] + 1, stacked[3] - stacked[1] + 1);
+        let (dw, dh) = (side[2] - side[0] + 1, side[3] - side[1] + 1);
+        assert!(dh * 3 < sh * 2, "one row tall painted: {side:?} against {stacked:?}");
+        assert!(dw * 2 > sw * 3, "two glyphs across painted: {side:?} against {stacked:?}");
+        // A character-style run flags a range (and wins over the layer's off setting).
+        set(&mut e, "tate_chu_yoko", ParamValue::Bool(false));
+        e.layer = Some(Box::new(LayerExtra {
+            runs: vec![StyleRun { start: 0, end: 2, style: CharStyle { tate_chu_yoko: Some(true), ..Default::default() } }],
+            ..Default::default()
+        }));
+        assert_eq!(layout(&e).lines.len(), 1, "the flagged range groups");
+        let run = paint(&e);
+        assert!(run[3] - run[1] + 1 < sh * 2 / 3 && run[2] - run[0] + 1 > sw * 3 / 2, "a flagged range paints one cell: {run:?} against {stacked:?}");
     }
 
     #[test]

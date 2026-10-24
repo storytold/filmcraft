@@ -132,6 +132,7 @@ pub(crate) fn layer_defs() -> Vec<EffectDef> {
                 fl("box_width", "Text Box Width", 0.0, (0.0, 100_000.0), (0.0, 3840.0), "", X),
                 fl("box_height", "Text Box Height", 0.0, (0.0, 100_000.0), (0.0, 2160.0), "", X),
                 bo("vertical", "Vertical Text", false, X),
+                bo("tate_chu_yoko", "Tate-Chu-Yoko", false, X),
             ],
         ),
         layer_def(
@@ -216,6 +217,9 @@ pub struct TextProps {
     pub box_height: f32,
     /// Vertical text (characters stacked top to bottom; columns right to left).
     pub vertical: bool,
+    /// 縦中横 (horizontal in vertical): half-width Latin and digits of a run are set side by side
+    /// across the column in one cell instead of one per cell (vertical text only).
+    pub tate_chu_yoko: bool,
     /// Per-character style overrides as *byte* ranges of `text` (sorted, non-overlapping).
     pub runs: Vec<(std::ops::Range<usize>, crate::graphic_design::CharStyle)>,
 }
@@ -308,6 +312,7 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
                 box_width: ff(e, "box_width", t).max(0.0),
                 box_height: ff(e, "box_height", t).max(0.0),
                 vertical: bb(e, "vertical", t),
+                tate_chu_yoko: bb(e, "tate_chu_yoko", t),
             }
         }),
         SHAPE_LAYER => {
@@ -475,6 +480,9 @@ mod tests {
     fn layers_round_trip_and_evaluate() {
         let mut e = new_text_layer("Hello", Vec2::new(100.0, 200.0), 72.0);
         e.params.get_mut("fill_color").unwrap().value = ParamValue::Color([1.0, 0.0, 0.0, 1.0]);
+        // 縦中横 is a layer property like Vertical Text and must survive the project save too.
+        e.params.get_mut("vertical").unwrap().value = ParamValue::Bool(true);
+        e.params.get_mut("tate_chu_yoko").unwrap().value = ParamValue::Bool(true);
         let json = serde_json::to_string(&e).unwrap();
         let back: EffectInstance = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e);
@@ -482,6 +490,7 @@ mod tests {
         let LayerContent::Text(t) = &s.content else { panic!() };
         assert_eq!(t.text, "Hello");
         assert_eq!(t.size, 72.0);
+        assert!(t.vertical && t.tate_chu_yoko, "vertical text with 縦中横 comes back from the save");
         assert_eq!(t.font, "Inter");
         assert_eq!(s.appearance.fill, Some([1.0, 0.0, 0.0, 1.0]));
         assert!(s.appearance.gradient.is_none(), "solid fill stays solid");

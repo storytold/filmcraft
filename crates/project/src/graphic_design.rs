@@ -78,6 +78,10 @@ pub struct CharStyle {
     /// 0 normal, 1 all caps, 2 small caps.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caps: Option<u32>,
+    /// Horizontal in vertical (縦中横): set these characters side by side in one cell of vertical
+    /// text (`None` = the layer's setting).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tate_chu_yoko: Option<bool>,
 }
 
 impl CharStyle {
@@ -97,6 +101,7 @@ impl CharStyle {
             tracking: over.tracking.or(self.tracking),
             baseline_shift: over.baseline_shift.or(self.baseline_shift),
             caps: over.caps.or(self.caps),
+            tate_chu_yoko: over.tate_chu_yoko.or(self.tate_chu_yoko),
         }
     }
 }
@@ -461,6 +466,21 @@ mod tests {
     }
     fn bold() -> CharStyle {
         CharStyle { faux_bold: Some(true), ..Default::default() }
+    }
+
+    /// 縦中横 on a character range: saved with the graphic, merged over a base style, and clear
+    /// restores the default.
+    #[test]
+    fn tate_chu_yoko_character_style_round_trips() {
+        let tcy = CharStyle { tate_chu_yoko: Some(true), ..Default::default() };
+        assert!(!tcy.is_empty());
+        let json = serde_json::to_string(&tcy).unwrap();
+        assert!(json.contains("tateChuYoko"), "{json}");
+        assert_eq!(serde_json::from_str::<CharStyle>(&json).unwrap(), tcy);
+        assert_eq!(CharStyle::default().merged(&tcy).tate_chu_yoko, Some(true));
+        // A later range that doesn't set it keeps the earlier value.
+        let later = CharStyle { faux_bold: Some(true), ..Default::default() };
+        assert_eq!(tcy.merged(&later).tate_chu_yoko, Some(true));
     }
 
     #[test]
