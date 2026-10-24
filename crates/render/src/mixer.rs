@@ -254,6 +254,21 @@ impl<'a> Lane<'a> {
         if let Some(v) = self.constant() {
             return Some(f(v));
         }
+        // Scalar automation holds its endpoint outside the keyed interval. Evaluate it
+        // once only when every requested sample lies on the same outer hold. Touch
+        // release ramps and switch lanes keep their existing per-sample behavior.
+        if self.ov.is_none()
+            && !self.hold
+            && let Some(p) = self.param
+            && let (Some(first), Some(last)) = (p.keyframes.first(), p.keyframes.last())
+            && let Some(end) = out.len().checked_sub(1).and_then(|n| i64::try_from(n).ok()).and_then(|n| c0.checked_add(n))
+        {
+            let start = Tick::from_units(c0, sr as i64);
+            let end = Tick::from_units(end, sr as i64);
+            if end <= first.time || first.time <= last.time && start >= last.time {
+                return Some(f(self.auto(start)));
+            }
+        }
         for (i, o) in out.iter_mut().enumerate() {
             *o = f(self.at(Tick::from_units(c0 + i as i64, sr as i64)));
         }
@@ -635,6 +650,9 @@ fn run_inserts(chain: &mut [Box<dyn AudioEffect>], ins: &[Insert], buf: &mut Bus
         return;
     }
     let n = buf[0].len();
+    if n == 0 {
+        return;
+    }
     // Reapply constant settings once per request (so live edits are picked up), not at every
     // 64-sample boundary. Animated inserts keep the absolute-grid evaluation below.
     let refresh: Vec<bool> = ins
@@ -643,6 +661,21 @@ fn run_inserts(chain: &mut [Box<dyn AudioEffect>], ins: &[Insert], buf: &mut Bus
             !matches!(e.effect.effect.as_str(), "parametric_eq" | "dynamics" | "studio_reverb") || e.effect.params.values().any(|p| !p.keyframes.is_empty())
         })
         .collect();
+    // These sample-recursive effects do not depend on process-call boundaries. With
+    // constant settings there is no parameter-grid work between the samples, so run
+    // the whole request once instead of allocating channel views for every 64 samples.
+    // Keep the grid path for automation and effects whose settings need refreshes.
+    if refresh.iter().all(|refresh| !refresh) {
+        let t = Tick::from_units(x0.div_euclid(PARAM_BLOCK) * PARAM_BLOCK - lat as i64, sr as i64);
+        for (d, e) in chain.iter_mut().zip(ins) {
+            (e.map.apply)(d.as_mut(), &e.effect, t);
+        }
+        let mut ch: Vec<&mut [f32]> = buf.iter_mut().map(Vec::as_mut_slice).collect();
+        for d in chain.iter_mut() {
+            d.process(&mut ch);
+        }
+        return;
+    }
     let mut i = 0usize;
     while i < n {
         let pos = x0 + i as i64;
@@ -952,4 +985,69 @@ pub(crate) fn mix_graph_at(
         l.post_meters(&meters);
     }
     AudioBuffer { sample_rate: sr, channels: out.into_iter().map(|c| c[skip..].to_vec()).collect() }
+}
+
+#[cfg(test)]
+mod lane_span_tests {
+    use super::*;
+    use filmcraft_project::{Keyframe, TrackKind};
+
+    fn track() -> Track {
+        let mut track = Track::new(TrackId(1), TrackKind::Audio, "Volume".into());
+        track.lane_mut(LANE_VOLUME).unwrap().keyframes =
+            vec![Keyframe::new(Tick::from_units(0, 48000), ParamValue::Float(-6.0)), Keyframe::new(Tick::from_units(96000, 48000), ParamValue::Float(0.0))];
+        track
+    }
+
+    fn check(lane: &Lane<'_>, start: i64, count: usize, constant: bool) {
+        let mut values = vec![f32::NAN; count];
+        let returned = lane.fill(start, 48000, &mut values, db_gain);
+        assert_eq!(returned.is_some(), constant, "{start}+{count}");
+        for (i, value) in values.iter().enumerate() {
+            let expected = db_gain(lane.at(Tick::from_units(start + i as i64, 48000)));
+            assert_eq!(returned.unwrap_or(*value).to_bits(), expected.to_bits(), "sample {i}");
+        }
+    }
+
+    #[test]
+    fn outer_holds_and_edge_crossings_match_the_scalar_grid() {
+        let track = track();
+        let overrides = HashMap::new();
+        let lane = Lane::new(&track, track.id, LANE_VOLUME, &overrides);
+        for (start, count, constant) in [
+            (-129, 129, true),
+            (-1, 3, false),
+            (0, 1, true),
+            (0, 2, false),
+            (32000, 513, false),
+            (95999, 2, false),
+            (96000, 19, true),
+            (96001, 17, true),
+            (96000, 0, false),
+        ] {
+            check(&lane, start, count, constant);
+        }
+    }
+
+    #[test]
+    fn touch_release_after_the_last_key_keeps_its_sample_ramp() {
+        let track = track();
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            (track.id, LANE_VOLUME.to_string()),
+            Override { value: -3.0, release: Some((Tick::from_units(100000, 48000), Tick::from_units(48000, 48000))) },
+        );
+        let lane = Lane::new(&track, track.id, LANE_VOLUME, &overrides);
+        check(&lane, 110000, 513, false);
+        check(&lane, 148001, 17, false);
+    }
+
+    #[test]
+    fn switch_lanes_keep_the_per_sample_path() {
+        let track = track();
+        let overrides = HashMap::new();
+        let mut lane = Lane::new(&track, track.id, LANE_VOLUME, &overrides);
+        lane.hold = true;
+        check(&lane, 96000, 19, false);
+    }
 }

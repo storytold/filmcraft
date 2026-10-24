@@ -18,6 +18,35 @@ use crate::{SourceMap, mixer};
 mod support;
 use support::{Rig, SR, busy_rig, kf, noise};
 
+/// A live change to constant inserts must be picked up at the next request,
+/// including requests that start between parameter-grid boundaries. The larger
+/// constant-chain calls must preserve the recursive state and smoothing exactly.
+#[test]
+fn constant_insert_live_edits_preserve_request_partitioning() {
+    let render = |sizes: &[usize]| {
+        let mut r = busy_rig(3);
+        let mut out = r.mix_cut(0, 4097, sizes, None);
+        for e in &mut r.track(0).effects {
+            match e.effect.as_str() {
+                "parametric_eq" => e.param_mut("master_gain").unwrap().value = ParamValue::Float(-3.0),
+                "dynamics" => e.param_mut("threshold").unwrap().value = ParamValue::Float(-30.0),
+                "studio_reverb" => e.param_mut("decay").unwrap().value = ParamValue::Float(80.0),
+                _ => {}
+            }
+        }
+        let next = r.mix_cut(4097, 8193, sizes, None);
+        for (dst, src) in out.iter_mut().zip(next) {
+            dst.extend(src);
+        }
+        out
+    };
+    let whole = render(&[4097, 8193]);
+    let split = render(&[1, 17, 64, 513, 1024]);
+    for (i, (a, b)) in whole.iter().flatten().zip(split.iter().flatten()).enumerate() {
+        assert_eq!(a.to_bits(), b.to_bits(), "sample {i}");
+    }
+}
+
 fn dc(_: i64, _: usize) -> f32 {
     0.5
 }
