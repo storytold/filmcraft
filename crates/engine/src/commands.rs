@@ -3033,6 +3033,12 @@ fn build() -> Vec<CommandSpec> {
             }
             let (fw, fh) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
             let label = format!("Apply {}", def.name);
+            // standard effects run on the clip's source picture, so "auto" points (the centre) are
+            // measured in it, not in the sequence frame
+            let source_sizes: std::collections::BTreeMap<ClipId, (u32, u32)> = s
+                .active_sequence()
+                .map(|q| clips.iter().filter_map(|c| q.find_item(*c).and_then(|(_, i)| s.project.source_size(i.item)).map(|sz| (*c, sz))).collect())
+                .unwrap_or_default();
             s.edit_sequence(&label, |q, _, _| {
                 let mut n = 0;
                 for t in q.all_tracks_mut() {
@@ -3041,7 +3047,10 @@ fn build() -> Vec<CommandSpec> {
                     }
                     for i in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
                         let mut inst = def.instance();
-                        resolve_auto_points(&mut inst, (fw, fh), (fw, fh));
+                        let size = source_sizes.get(&i.id).copied().unwrap_or((fw, fh));
+                        // intrinsic effects (Motion) are laid out in the sequence frame, as `reset_params` does
+                        let frame = if def.intrinsic { (fw, fh) } else { size };
+                        resolve_auto_points(&mut inst, frame, size);
                         // standard effects go before the intrinsic ones (render order)
                         let pos = i.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(i.effects.len());
                         let pos = if is_audio { i.effects.len() } else { pos };
@@ -3235,12 +3244,13 @@ fn build() -> Vec<CommandSpec> {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.reset", "need `clip`"))?;
             let idx = u64_p(p, "index").unwrap_or(0) as usize;
             let frame = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
+            let source = s.active_sequence().and_then(|q| q.find_item(c)).and_then(|(_, i)| s.project.source_size(i.item)).unwrap_or(frame);
             let ph = s.playhead();
             s.edit_sequence("Reset Effect", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                 let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
                 if let Some(e) = it.effects.get_mut(idx) {
-                    reset_params(e, None, frame, mt);
+                    reset_params(e, None, frame, source, mt);
                 }
                 Ok(())
             })?;
@@ -3251,6 +3261,7 @@ fn build() -> Vec<CommandSpec> {
             let pid = str_p(p, "param").ok_or_else(|| bad("effects.resetParam", "need `param`"))?.to_string();
             let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
             let frame = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
+            let source = s.active_sequence().and_then(|q| q.find_item(c)).and_then(|(_, i)| s.project.source_size(i.item)).unwrap_or(frame);
             let ph = s.playhead();
             s.edit_sequence("Reset Parameter", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
@@ -3261,7 +3272,7 @@ fn build() -> Vec<CommandSpec> {
                     _ => None,
                 }
                 .ok_or_else(|| bad("effects.resetParam", "no such effect on clip"))?;
-                if !reset_params(e, Some(&pid), frame, mt) {
+                if !reset_params(e, Some(&pid), frame, source, mt) {
                     return Err(bad("effects.resetParam", format!("no param `{pid}`")));
                 }
                 Ok(())
@@ -3540,11 +3551,12 @@ fn build() -> Vec<CommandSpec> {
 /// Put `e`'s parameters (all of them, or only `only`) back to their defaults, as Premiere's reset
 /// buttons do: a parameter that is not animated gets its default as its static value, and an
 /// animated one keeps its keyframes and gets the default as a keyframe at media time `mt`.
-/// Masks are left alone. Returns whether any parameter was reset.
-fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, frame: (u32, u32), mt: Tick) -> bool {
+/// Masks are left alone. Returns whether any parameter was reset. "Auto" points are centred as
+/// when the effect was added: a standard effect's in the clip's `source` picture it runs on.
+fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, frame: (u32, u32), source: (u32, u32), mt: Tick) -> bool {
     let Some(d) = e.def() else { return false };
     let mut fresh = d.instance();
-    resolve_auto_points(&mut fresh, frame, frame);
+    resolve_auto_points(&mut fresh, if d.intrinsic { frame } else { source }, source);
     let mut any = false;
     for (id, prm) in fresh.params {
         if only.is_some_and(|o| o != id) {

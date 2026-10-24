@@ -1082,3 +1082,37 @@ fn toggle_animation_creates_a_parameter_missing_from_an_older_instance() {
     let rot = it.effect("motion").unwrap().param("rotation").unwrap();
     assert!(rot.is_animated(), "the stopwatch is on");
 }
+
+/// Transform's Anchor Point and Position are centred in the clip's own picture (on apply and on reset), so Scale grows it
+/// from its centre (they used to be centred in the sequence frame, off to the side of a smaller picture).
+#[test]
+fn applied_transform_centres_its_points_in_the_clip_picture() {
+    let mut s = demo();
+    let r = s.execute("file.newColorMatte", json!({"width": 960, "height": 1080, "color": "#ff0000"})).unwrap();
+    let matte = r["item"].as_u64().unwrap();
+    let r = s.execute("timeline.place", json!({"item": matte, "track": "V3", "seconds": 0.0})).unwrap();
+    let c = r["clips"][0].as_u64().unwrap();
+    s.execute("effects.apply", json!({"clips": [c], "effect": "transform"})).unwrap();
+    let centre = filmcraft_geom::Vec2::new(480.0, 540.0);
+    let point = |s: &Session, k: &str| clip(s, c).effect("transform").unwrap().param(k).unwrap().value.as_vec2().unwrap();
+    assert_eq!(point(&s, "anchor"), centre);
+    assert_eq!(point(&s, "position"), centre);
+    // Reset Effect and Reset Parameter centre them the same way
+    for k in ["anchor", "position"] {
+        s.execute("effects.setParam", json!({"clip": c, "effect": "transform", "param": k, "value": [10.0, 20.0]})).unwrap();
+    }
+    let idx = clip(&s, c).effects.iter().position(|e| e.effect == "transform").unwrap();
+    s.execute("effects.reset", json!({"clip": c, "index": idx})).unwrap();
+    assert_eq!(point(&s, "anchor"), centre);
+    assert_eq!(point(&s, "position"), centre);
+    s.execute("effects.setParam", json!({"clip": c, "effect": "transform", "param": "anchor", "value": [10.0, 20.0]})).unwrap();
+    s.execute("effects.resetParam", json!({"clip": c, "effect": "transform", "param": "anchor"})).unwrap();
+    assert_eq!(point(&s, "anchor"), centre);
+    // intrinsic effects stay centred in the sequence frame when applied to a smaller clip
+    let q = s.active_sequence().unwrap();
+    let frame_centre = filmcraft_geom::Vec2::new(f64::from(q.settings.width) / 2.0, f64::from(q.settings.height) / 2.0);
+    s.execute("effects.apply", json!({"clips": [c], "effect": "motion"})).unwrap();
+    for m in clip(&s, c).effects.iter().filter(|e| e.effect == "motion") {
+        assert_eq!(m.param("position").unwrap().value.as_vec2().unwrap(), frame_centre);
+    }
+}
