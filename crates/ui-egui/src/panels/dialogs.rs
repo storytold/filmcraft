@@ -14,6 +14,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::multicam::show_dialog(app, ctx);
     crate::panels::multicam::show_edit_cameras(app, ctx);
     crate::panels::monitor_view::dialogs(app, ctx);
+    crate::panels::misc::marker_dialog(app, ctx);
     crate::panels::graphics::dialogs(app, ctx);
     crate::panels::workspaces::dialogs(app, ctx);
     crate::panels::voiceover::show(app, ctx);

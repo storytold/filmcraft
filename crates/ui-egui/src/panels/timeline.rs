@@ -2040,6 +2040,7 @@ fn marker_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui, m
         ui.close();
         return;
     };
+    super::misc::marker_edit_item(app, ui, &marker, "timeline.markerMenu");
     super::misc::marker_label_menu(app, ui, &marker, "timeline.markerMenu");
     ui.separator();
     for (label, cmd) in [("Clear Selected Marker", "markers.clearCurrent"), ("Clear Markers", "markers.clearAll")] {
@@ -2844,6 +2845,14 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         && let Hit::Transition { id, .. } = hit(seq, layout, p)
     {
         crate::panels::transition_controls::open_duration(app, id);
+    }
+
+    // ---- double-click a marker on the ruler: Edit Marker (#2416)
+    if resp.double_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(m) = marker_under_pointer(seq, layout, p).cloned()
+    {
+        crate::panels::misc::open_marker_dialog(app, &m);
     }
 
     // ---- double-click a nested sequence clip: open it in its own Timeline tab

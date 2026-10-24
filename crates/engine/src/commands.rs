@@ -190,6 +190,44 @@ pub(crate) fn named_items(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
 
 // ---------- param helpers ----------
 
+/// The longest marker `markers.edit` takes, in frames (over 46 hours at 60 fps).
+const MAX_MARKER_FRAMES: i64 = 10_000_000;
+
+/// `markers.edit`'s `durationFrames`: absent or null is `None`; anything but a whole number from 0
+/// to [`MAX_MARKER_FRAMES`] is an error.
+fn marker_frames_p(p: &Value) -> Result<Option<i64>> {
+    match p.get("durationFrames").filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(v) => match v.as_i64() {
+            Some(f @ 0..=MAX_MARKER_FRAMES) => Ok(Some(f)),
+            _ => Err(bad("markers.edit", "`durationFrames` must be a whole number from 0 to 10000000")),
+        },
+    }
+}
+
+/// `markers.edit`'s `kind`: absent or null is `None`; anything but one of the kind names is an
+/// error.
+pub(crate) fn marker_kind_p(p: &Value) -> Result<Option<MarkerKind>> {
+    match p.get("kind").filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(v) => {
+            v.as_str().and_then(marker_kind).map(Some).ok_or_else(|| bad("markers.edit", "`kind` must be comment, chapter, segmentation, webLink or flashCue"))
+        }
+    }
+}
+
+/// A marker type by its `markers.edit` name.
+fn marker_kind(name: &str) -> Option<MarkerKind> {
+    Some(match name {
+        "comment" => MarkerKind::Comment,
+        "chapter" => MarkerKind::Chapter,
+        "segmentation" => MarkerKind::Segmentation,
+        "webLink" => MarkerKind::WebLink,
+        "flashCue" => MarkerKind::FlashCue,
+        _ => return None,
+    })
+}
+
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
@@ -1148,6 +1186,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
+            s.project_generation += 1;
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
@@ -1162,6 +1201,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
             s.project = std::sync::Arc::new(p);
+            s.project_generation += 1;
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
@@ -2544,9 +2584,12 @@ fn build() -> Vec<CommandSpec> {
             "Edit Marker…",
             [],
             None,
-            r#"{"target":"program|source","marker":id,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?}"#,
+            r#"{"target":"program|source","marker":id,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?,"kind":"comment|chapter|segmentation|webLink|flashCue"?}"#,
             always,
             |s, p| {
+                // checked before routing, so Source markers are held to the same limits
+                let frames = marker_frames_p(p)?;
+                let kind = marker_kind_p(p)?;
                 if let Some(v) = crate::source_monitor::route(s, "markers.edit", p)? {
                     return Ok(v);
                 }
@@ -2565,8 +2608,11 @@ fn build() -> Vec<CommandSpec> {
                     if let Some(c) = color {
                         m.color = c;
                     }
-                    if let Some(f) = p.get("durationFrames").and_then(Value::as_i64) {
+                    if let Some(f) = frames {
                         m.duration = rate.tick_of(f);
+                    }
+                    if let Some(k) = kind {
+                        m.kind = k;
                     }
                     Ok(())
                 })?;
@@ -4486,6 +4532,7 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    s.project_generation += 1;
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);

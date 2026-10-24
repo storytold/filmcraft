@@ -577,6 +577,9 @@ pub struct UiState {
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
+    /// Open Edit Marker dialog (double-click a marker, or Edit Marker… in its menu).
+    #[serde(default)]
+    pub marker_dialog: Option<MarkerDraft>,
     /// Open Text Properties dialog (the wrench in the Properties panel's Text section).
     #[serde(default)]
     pub text_props_dialog: Option<TextPropsDialog>,
@@ -802,6 +805,25 @@ pub enum ColorDialog {
     Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
 }
 
+/// The Edit Marker dialog (#2416): the marker it edits and its fields as typed. `duration` is a
+/// timecode, `color` a label name, `kind` a `markers.edit` kind. `sequence` and `generation` (the
+/// session's `project_generation`) tie it to where it was opened: in another project, or the same
+/// file opened again, the same marker id is another marker. `duration0` is the duration as the dialog opened, so OK leaves a duration it
+/// cannot show exactly (part of a frame) alone unless it was edited.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarkerDraft {
+    pub sequence: u64,
+    pub generation: u64,
+    pub duration0: String,
+    pub marker: u64,
+    pub name: String,
+    pub comment: String,
+    pub duration: String,
+    pub color: String,
+    pub kind: String,
+}
+
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1017,6 +1039,7 @@ impl Default for UiState {
             multicam_record: true,
             edit_cameras: None,
             guide_dialog: None,
+            marker_dialog: None,
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,

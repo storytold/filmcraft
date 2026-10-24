@@ -1060,6 +1060,26 @@ fn linked_rate_stretch_keeps_one_speed_when_a_neighbour_blocks_the_sound() {
     assert!((r["speed"].as_f64().unwrap() - 60.0 / 70.0).abs() < 1e-9);
 }
 
+/// `project_generation` changes whenever another project replaces the session's (so work that
+/// finishes later, like a Save dialog's answer, can tell), and never with an ordinary edit.
+#[test]
+fn project_generation_changes_with_the_project_not_with_edits() {
+    let mut s = crate::Session::default();
+    let g = |s: &crate::Session| s.project_generation;
+    let mut last = g(&s);
+    s.execute("file.newBin", serde_json::json!({"name": "B"})).unwrap();
+    assert_eq!(g(&s), last, "an edit");
+    for (cmd, p) in [
+        ("file.openDemoProject", serde_json::json!({})),
+        ("file.newProject", serde_json::json!({"name": "N"})),
+        ("file.closeProject", serde_json::json!({"force": true})),
+    ] {
+        s.execute(cmd, p).unwrap();
+        assert!(g(&s) > last, "{cmd}");
+        last = g(&s);
+    }
+}
+
 /// #2358: Toggle Animation on a parameter an older effect instance lacks (it was added to the
 /// effect later) creates it from its default and animates it, instead of "no such param".
 #[test]
