@@ -422,3 +422,9 @@ current default profiles, without profile overrides: **3,763 tests passed, zero 
 layers, 69 attributed assets and WASM checks for 49 crates. Nextest used four test workers.
 Six focused importer/component-relink UI regressions also passed with wgpu rendering;
 the preview, small-window expanded report and component-match screenshots were inspected.
+
+The hosted gate then exposed Rust 1.99's `chunks_exact_to_as_chunks` lint. The identity
+hex decoder and six test-helper occurrences now use fixed-size array chunks, retaining
+the same width checks, sample values and assertions. Strict workspace/all-target Clippy
+also passes with the hosted runner's Rust 1.99.1; the minimum-toolchain validation above
+remains explicitly Rust 1.95.0.

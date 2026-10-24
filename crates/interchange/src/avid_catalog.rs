@@ -111,7 +111,9 @@ fn identity_key(m: &Value) -> Result<Vec<u8>> {
     }
     let mut bytes = raw
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digits = std::str::from_utf8(pair).map_err(|_| bad("invalid identity hex"))?;
             u8::from_str_radix(digits, 16).map_err(|_| bad("invalid identity hex"))

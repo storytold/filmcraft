@@ -898,13 +898,13 @@ mod tests {
             assert!(max <= 2, "frame {expected}: max YUV difference {max}");
             s.execute("playhead.set", json!({"time":time.0})).unwrap();
             let rendered = s.render_program(0.125).unwrap();
-            assert!(rendered.px.chunks_exact(4).any(|p| p[0] > 0.05), "mixed-rate shot must render real picture");
+            assert!(rendered.px.as_chunks::<4>().0.iter().any(|p| p[0] > 0.05), "mixed-rate shot must render real picture");
             eprintln!("timeline frame {frame} -> MXF frame {expected}, max YUV difference {max}");
         }
         for frame in [88, 100, 105] {
             s.execute("playhead.set", json!({"time":Tick::from_units(frame,24).0})).unwrap();
             let gap = s.render_program(0.125).unwrap();
-            assert!(gap.px.chunks_exact(4).all(|p| p[0].abs() < 1e-6 && p[1].abs() < 1e-6 && p[2].abs() < 1e-6));
+            assert!(gap.px.as_chunks::<4>().0.iter().all(|p| p[0].abs() < 1e-6 && p[1].abs() < 1e-6 && p[2].abs() < 1e-6));
         }
         let provider = s.media.provider(s.project.clone(), s.services.clone());
         let q = s.project.sequence(id).unwrap();

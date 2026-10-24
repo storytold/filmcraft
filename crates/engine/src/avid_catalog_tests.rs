@@ -321,7 +321,7 @@ fn avid_audio_local_mxf_decoding_matches_oracle() {
             .output()
             .unwrap();
         assert!(oracle.status.success());
-        let expected: Vec<f32> = oracle.stdout.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let expected: Vec<f32> = oracle.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
         assert_eq!(expected.len(), 240000);
         for start in [0, 48000, 192000, 239000] {
             let actual = src.audio(start, 1000, 48000).unwrap();

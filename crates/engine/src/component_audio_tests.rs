@@ -243,7 +243,7 @@ fn component_audio_local_audible_pcm_and_timeline() {
         let oracle =
             std::process::Command::new("ffmpeg").args(["-v", "error", "-i", c.path.as_deref().unwrap(), "-map", "0:a:0", "-f", "f32le", "-"]).output().unwrap();
         assert!(oracle.status.success());
-        let expected: Vec<f32> = oracle.stdout.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let expected: Vec<f32> = oracle.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
         // The source MXFs contain one sample beyond the AVB's frame-aligned master range.
         assert_eq!(expected.len(), count + 1);
         assert!(expected.iter().any(|x| x.abs() > 0.01), "silent fixtures cannot validate audible decoding");

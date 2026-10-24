@@ -649,7 +649,7 @@ fn native_large_bin_indexes_before_binding_and_verifies_audio_ranges() {
                         .unwrap();
                     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
                     assert_eq!(output.stdout.len(), 8 * 4);
-                    let expected: Vec<_> = output.stdout.chunks_exact(4).map(|v| f32::from_le_bytes(v.try_into().unwrap())).collect();
+                    let expected: Vec<_> = output.stdout.as_chunks::<4>().0.iter().map(|v| f32::from_le_bytes(*v)).collect();
                     assert_eq!(head.channels[slot], expected, "PCM oracle mismatch for slot {slot}");
                 }
             }

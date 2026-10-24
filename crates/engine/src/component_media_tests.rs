@@ -97,7 +97,7 @@ fn component_media_local_picture_audio_and_oracle() {
         let oracle =
             std::process::Command::new("ffmpeg").args(["-v", "error", "-i", c.path.as_deref().unwrap(), "-map", "0:a:0", "-f", "f32le", "-"]).output().unwrap();
         assert!(oracle.status.success());
-        let expected: Vec<f32> = oracle.stdout.chunks_exact(4).map(|x| f32::from_le_bytes(x.try_into().unwrap())).collect();
+        let expected: Vec<f32> = oracle.stdout.as_chunks::<4>().0.iter().map(|x| f32::from_le_bytes(*x)).collect();
         let actual = source.audio(0, 484000, 48000).unwrap();
         assert!(expected.len() >= 484000);
         assert!(expected.iter().any(|x| x.abs() > 0.01));
