@@ -276,7 +276,7 @@ pub(crate) fn set_props(
     let props = props.clone();
     s.edit_sequence_as(label, merge, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-        let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
+        let mt = it.effect_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         let e = it.effects.get_mut(eidx).ok_or_else(|| bad("graphics.set", "no such layer"))?;
         apply_props(e, &props, mt)?;
         Ok(())
@@ -303,7 +303,7 @@ fn set_text_type(s: &mut Session, p: &Value) -> Result<Value> {
         _ => (seq.settings.width, seq.settings.height),
     };
     let ph = s.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let spec = it.effects.get(ei).and_then(|e| eval_layer(e, mt, size)).ok_or_else(|| bad(ID, "no such layer"))?;
     let LayerContent::Text(tp) = &spec.content else { return Err(bad(ID, "not a text layer")) };
     if tp.vertical {
@@ -372,7 +372,7 @@ fn list_layers(s: &Session, clip: ClipId) -> Result<Value> {
         _ => (seq.settings.width, seq.settings.height),
     };
     let ph = s.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let shown = item_layer_specs(it, mt, size);
     let layers: Vec<Value> = layer_indices(&it.effects)
         .iter()
@@ -439,7 +439,7 @@ fn layer_boxes(s: &Session, clip: ClipId, layers: &[usize]) -> Result<(Vec<(usiz
         Some(ItemKind::Graphic { width, height, .. }) => (*width, *height),
         _ => (seq.settings.width, seq.settings.height),
     };
-    let mt = it.source_time_at(s.playhead().clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(s.playhead().clamp(it.start, it.end() - Tick(1)));
     let idx = layer_indices(&it.effects);
     let shown = item_layer_specs(it, mt, size);
     let mut out = Vec::new();
@@ -469,7 +469,7 @@ pub(crate) fn move_layers(s: &mut Session, clip: ClipId, moves: Vec<(usize, Vec2
     let tl = s.playhead();
     s.edit_sequence(label, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-        let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
+        let mt = it.effect_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         for (ei, pos) in &moves {
             let Some(e) = it.effects.get_mut(*ei) else { continue };
             let Some(prm) = e.params.get_mut("position") else { continue };
@@ -537,7 +537,7 @@ fn has_graphic_or_clip(s: &Session) -> std::result::Result<(), String> {
 fn align_clips(s: &mut Session, clips: &[ClipId], how: &str, mode: AlignTo) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let t = s.playhead();
-    let at = |it: &filmcraft_project::TrackItem| it.source_time_at(t.min(it.end() - Tick(1)).max(it.start));
+    let at = |it: &filmcraft_project::TrackItem| it.effect_time_at(t.min(it.end() - Tick(1)).max(it.start));
     let frame = [0.0, 0.0, seq.settings.width as f64, seq.settings.height as f64];
     let mut boxes = Vec::new();
     for (i, &c) in clips.iter().enumerate() {

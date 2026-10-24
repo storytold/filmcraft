@@ -453,7 +453,7 @@ fn edit_layers(s: &mut Session, label: &str, param: &'static str, text_only: boo
     let tl = s.playhead();
     let n = s.edit_sequence(label, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-        let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
+        let mt = it.effect_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         let mut n = 0;
         for ei in &layers {
             let Some(e) = it.effects.get_mut(*ei) else { continue };
@@ -514,7 +514,7 @@ fn nudge_object(s: &mut Session, dx: f64, dy: f64) -> Result<Value> {
     s.edit_sequence("Nudge", |q, _, _| {
         for c in &clips {
             let Some((_, it)) = q.find_item_mut(*c) else { continue };
-            let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
+            let mt = it.effect_time_at(tl.clamp(it.start, it.end() - Tick(1)));
             if let Some(p) = it.effect_mut("motion").and_then(|e| e.param_mut("position"))
                 && let Some(v) = shift(&p.value_at(mt))
             {
