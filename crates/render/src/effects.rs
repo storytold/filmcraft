@@ -1330,7 +1330,7 @@ fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
 }
 
 /// Gaussian blur of a single-channel plane (three box passes per axis, edges clamped).
-fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
+pub(crate) fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
     let radii = boxes_for_gauss(sigma, 3);
     let pass = |p: &mut [f32], w: usize, h: usize, r: usize| {
         if r == 0 {
