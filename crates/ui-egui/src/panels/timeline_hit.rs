@@ -96,6 +96,12 @@ pub fn marker_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Tick> {
     marker_under_pointer(seq, layout, pos).map(|m| m.start)
 }
 
+/// The top of a transition's box on a track row: below the clip's name strip, and from the top of
+/// the track when it is compact (a short track would leave a sliver too thin to read or grab).
+pub fn transition_top(row: Rect) -> f32 {
+    if row.height() < 50.0 { row.min.y + 1.0 } else { row.min.y + 17.0 }
+}
+
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     if layout.ruler.contains(pos) {
         return Hit::Ruler;
@@ -108,7 +114,7 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     for trn in &tr.transitions {
         let x0 = layout.x_of(trn.start);
         let x1 = layout.x_of(trn.end());
-        if pos.x >= x0 && pos.x <= x1 && pos.y > row.rect.min.y + 17.0 {
+        if pos.x >= x0 && pos.x <= x1 && pos.y > transition_top(row.rect) {
             // the ends are edge zones, narrower on a short transition so its middle stays grabbable
             let zone = EDGE_PX.min((x1 - x0) / 3.0);
             let edge = if pos.x - x0 <= zone {
