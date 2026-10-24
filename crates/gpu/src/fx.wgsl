@@ -467,8 +467,9 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     let whl = whl_val * whl_val * whl_val;
     let nl = max(l + sh_k * ws + hl_k * whl, 0.0);
     if l > 1e-5 {
-        let k = nl / l;
-        v = v * k;
+        // cap the gain near black, the rest is a neutral lift (#2094; LUMETRI_TONE_MAX_GAIN in gpufx.rs)
+        let k = min(nl / l, 4.0);
+        v = v * k + vec3(nl - l * k);
     }
 
     // contrast: smooth S-curve around mid grey
