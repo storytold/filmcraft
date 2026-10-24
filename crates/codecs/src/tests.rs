@@ -3,19 +3,79 @@
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use filmcraft_media::FrameRequest;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
-pub(crate) fn ffmpeg() -> Option<&'static str> {
-    ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists())
+pub(crate) fn ffmpeg() -> Option<PathBuf> {
+    filmcraft_testkit::ffmpeg_or_skip("filmcraft-codecs unit tests")
+}
+
+const ORACLE_PROBE_ENV: &str = "FILMCRAFT_CODECS_ORACLE_PROBE";
+
+fn oracle_probe(path: &std::path::Path) -> std::process::Output {
+    Command::new(std::env::current_exe().expect("test executable path"))
+        .args(["--exact", "tests::oracle_lookup_probe", "--nocapture"])
+        .env(ORACLE_PROBE_ENV, "1")
+        .env("FILMCRAFT_FFMPEG", path)
+        .env("FILMCRAFT_REQUIRE_ORACLES", "1")
+        .output()
+        .expect("run isolated oracle lookup test")
+}
+
+fn oracle_probe_dir() -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../target/fixtures/codecs/oracle-lookup-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("create isolated oracle lookup directory");
+    dir
+}
+
+#[test]
+fn oracle_lookup_probe() {
+    if std::env::var(ORACLE_PROBE_ENV).as_deref() != Ok("1") {
+        return;
+    }
+    if let Some(path) = ffmpeg() {
+        println!("CODECS_FFMPEG_PATH={}", path.display());
+    }
+}
+
+#[test]
+fn oracle_lookup_honors_explicit_ffmpeg_override() {
+    let dir = oracle_probe_dir();
+    let fake_ffmpeg = dir.join("ffmpeg");
+    std::fs::write(&fake_ffmpeg, b"discovery-only test file").expect("write fake ffmpeg path");
+
+    let output = oracle_probe(&fake_ffmpeg);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = format!("CODECS_FFMPEG_PATH={}", fake_ffmpeg.display());
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "child failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains(&expected), "expected `{expected}` in child output: {stdout}");
+}
+
+#[test]
+fn oracle_lookup_rejects_invalid_ffmpeg_override() {
+    let dir = oracle_probe_dir();
+    let missing_ffmpeg = dir.join("missing-ffmpeg");
+
+    let output = oracle_probe(&missing_ffmpeg);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(!output.status.success(), "invalid explicit override unexpectedly succeeded: {output:?}");
+    assert!(stderr.contains("FILMCRAFT_FFMPEG"), "missing override diagnostic: {stderr}");
+    assert!(stderr.contains(&missing_ffmpeg.to_string_lossy().to_string()), "missing path in diagnostic: {stderr}");
 }
 
 fn fixture(name: &str, args: &[&str]) -> Option<Arc<[u8]>> {
-    let ff = ffmpeg().or_else(|| {
-        eprintln!("ffmpeg not found; skipping");
-        None
-    })?;
+    let ff = ffmpeg()?;
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/codecs");
     std::fs::create_dir_all(&dir).ok()?;
     let out = dir.join(name);

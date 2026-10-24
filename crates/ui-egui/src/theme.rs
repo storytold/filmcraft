@@ -672,16 +672,33 @@ mod tests {
             eprintln!("SKIPPED: built without craft-fonts (set CRAFT_FONTS_DIR to run)");
             return;
         }
+        let japanese: Vec<_> = filmcraft_text::fonts::craft_japanese().map(craft_font_name).collect();
+        let chinese: Vec<_> = crate::cjk::craft_fonts().map(craft_font_name).filter(|name| !japanese.contains(name)).collect();
         let ctx = installed();
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             for (family, stack) in &defs.families {
-                // installed right-to-left faces (Hebrew is not in craft-fonts) come after the craft run
-                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n)).collect();
-                let first = stack.iter().position(|n| n.starts_with("craft:")).unwrap_or(stack.len());
-                assert!(first > 0 && stack[first..].iter().all(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
-                let first_japanese = stack.iter().find(|n| n.starts_with("craft:BIZ") || n.starts_with("craft:Shippori"));
-                assert!(first_japanese.is_some_and(|n| n.starts_with("craft:BIZ UDPGothic")), "{family:?}: {stack:?}");
+                // Japanese faces follow the UI fonts, before Chinese/Korean and RTL fallbacks.
+                // Those later fallbacks are expected to be system or craft fonts too.
+                let first_japanese = stack.iter().position(|name| japanese.contains(name));
+                assert!(first_japanese.is_some_and(|index| index > 0), "{family:?}: {stack:?}");
+                assert_eq!(stack.iter().position(|name| name.starts_with("craft:")), first_japanese, "{family:?}: {stack:?}");
+                assert!(
+                    first_japanese.is_some_and(|index| stack.get(index).is_some_and(|name| name.starts_with("craft:BIZ UDPGothic"))),
+                    "{family:?}: {stack:?}"
+                );
+                assert!(japanese.iter().all(|name| stack.contains(name)), "{family:?}: {stack:?}");
+
+                let last_japanese = stack.iter().rposition(|name| japanese.contains(name));
+                let first_chinese = stack.iter().position(|name| chinese.contains(name) || name == "system-chinese");
+                if let (Some(last_japanese), Some(first_chinese)) = (last_japanese, first_chinese) {
+                    assert!(last_japanese < first_chinese, "Japanese must precede Chinese: {family:?}: {stack:?}");
+                }
+                if let Some(last_japanese) = last_japanese {
+                    for (index, _) in stack.iter().enumerate().filter(|(_, name)| crate::rtl::is_system_face(name)) {
+                        assert!(last_japanese < index, "Japanese must precede system RTL fallbacks: {family:?}: {stack:?}");
+                    }
+                }
             }
             for family in [FontFamily::Proportional, FontFamily::Monospace] {
                 let font = FontId::new(13.0, family);
