@@ -437,3 +437,39 @@ fn closing_the_project_shows_home() {
     d.click("home.new");
     assert_eq!(d.app().ui.mode, Mode::Edit);
 }
+
+/// Home lists the recent projects that still exist: when the newest entries are gone, an older
+/// project beyond Home's six rows is listed (At Startup ▸ Show Home chooses Home because of it).
+#[test]
+fn home_lists_recent_projects_that_still_exist() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-home-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let kept = dir.join("kept.fcproj").to_string_lossy().to_string();
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": kept}));
+    let mut recent: Vec<String> = (0..9).map(|i| dir.join(format!("gone {i}.fcproj")).to_string_lossy().to_string()).collect();
+    recent.push(kept.clone());
+    d.app().session.prefs.general.recent_projects = recent;
+    d.click("header.home");
+    let rows = d.ok("ui.elements", json!({"prefix": "home.recent."}));
+    let rows: Vec<&str> = rows.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap()).collect();
+    assert_eq!(rows, ["kept.fcproj"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Home scrolls, so a Community link below the window has no automation element: `ui.click` must
+/// not resolve a point outside the window from its full rectangle.
+#[test]
+fn home_registers_only_visible_community_links() {
+    let mut d = Driver::new();
+    d.harness.set_size(egui::vec2(1600.0, 420.0));
+    d.frames(3);
+    d.click("header.home");
+    assert!(d.has("home.new"));
+    let all = d.ok("ui.elements", json!({"prefix": "home."}));
+    for e in all.as_array().unwrap() {
+        let bottom = e["rect"][1].as_f64().unwrap() + e["rect"][3].as_f64().unwrap();
+        assert!(bottom <= 420.0, "{} is registered below the window: {e}", e["id"]);
+    }
+    assert!(!d.has("home.link.discord"), "the Discord link is scrolled out of view");
+}

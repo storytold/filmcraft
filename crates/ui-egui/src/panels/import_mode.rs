@@ -63,7 +63,7 @@ pub(crate) fn community(app: &mut FilmcraftApp, ui: &mut egui::Ui, origin: egui:
         let g = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(13.0), t.text);
         let r = Rect::from_min_size(pos2(x, origin.y + 18.0), vec2(g.size().x + 44.0, 34.0));
         let resp = ui.interact(r, egui::Id::new((prefix, "link", *id)), Sense::click()).on_hover_text(*url);
-        app.auto.add(&format!("{prefix}.link.{}", id.trim_start_matches("help.")), r, label);
+        crate::panels::home::register(app, ui, &format!("{prefix}.link.{}", id.trim_start_matches("help.")), r, label);
         let (bg, fg) = if primary {
             (if resp.hovered() { t.accent_hover } else { t.accent }, Color32::WHITE)
         } else {

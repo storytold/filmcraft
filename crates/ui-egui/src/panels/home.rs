@@ -36,7 +36,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     egui::ScrollArea::vertical().id_salt("home-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         let avail = ui.available_width();
         let w = (avail - 48.0).clamp(1.0, COLUMN_W);
-        let recent: Vec<String> = app.session.prefs.general.recent_projects.iter().take(RECENT_ROWS).cloned().collect();
+        // Only projects still on disk, so one beyond the first rows shows when newer ones are gone
+        // (At Startup ▸ Show Home chooses Home when any recent project exists).
+        let recent: Vec<String> =
+            app.session.prefs.general.recent_projects.iter().filter(|p| std::path::Path::new(p).exists()).take(RECENT_ROWS).cloned().collect();
         let columns = (((w + CARD_GAP) / (CARD.x + CARD_GAP)).floor() as usize).max(1);
         let card_rows = SIZES.len().div_ceil(columns);
         // Section tops, from the top of the content.
@@ -54,8 +57,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     });
 }
 
-/// Registers an automation id for `r` when it is on screen (Home scrolls).
-fn register(app: &mut FilmcraftApp, ui: &egui::Ui, id: &str, r: Rect, label: &str) {
+/// Registers an automation id for the part of `r` that is on screen (Home scrolls), so `ui.click`
+/// never aims at a point outside the window.
+pub(crate) fn register(app: &mut FilmcraftApp, ui: &egui::Ui, id: &str, r: Rect, label: &str) {
     let visible = r.intersect(ui.clip_rect());
     if visible.is_positive() {
         app.auto.add(id, visible, label);
