@@ -3,12 +3,17 @@
 //! Workspace… and Edit Workspaces… (rename, delete). Saved layouts live in `workspaces.json` beside the
 //! preferences file. A built-in workspace can be changed and reset but not deleted or renamed;
 //! deleting its saved changes brings back the original.
+//!
+//! Window ▸ Workspace Set (`window.workspaceSet.<standard|evolve>`) chooses the family of
+//! built-in workspaces: the standard ones, or the Evolve pages (`window.page.<page>`), which add
+//! the page bar at the bottom of the window ([`crate::pages`]). Saved workspaces belong to the
+//! set they were saved in (`docs/appearance.md`).
 
 use egui::Align2;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
-use crate::dock::{self, is_builtin, slug};
+use crate::dock::{self, EVOLVE_PAGES, WorkspaceSet, is_builtin, slug};
 use crate::menus::MenuItem;
 use crate::state::WorkspaceDialog;
 
@@ -16,9 +21,25 @@ use crate::state::WorkspaceDialog;
 const ACTIONS: [&str; 6] = ["reset", "saveChanges", "saveAs", "edit", "rename", "delete"];
 
 /// `window.workspace.*`: switch (`window.workspace.<name>`), `reset`, `saveChanges`,
-/// `saveAs {name?}` (no name: open the dialog), `edit`, `rename {from, to}`, `delete {name}`.
+/// `saveAs {name?}` (no name: open the dialog), `edit`, `rename {from, to}`, `delete {name}`;
+/// `window.workspaceSet.<set>` and `window.page.<page>` (which switches to the Evolve set).
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    if let Some(set) = id.strip_prefix("window.workspaceSet.") {
+        let Some(set) = WorkspaceSet::from_name(set) else { return Some(Err(format!("unknown workspace set `{set}` (standard, evolve)"))) };
+        return Some(app.set_workspace_set(set).map(|()| json!({"workspaceSet": set.id(), "workspace": app.ui.workspace})));
+    }
+    if let Some(page) = id.strip_prefix("window.page.") {
+        let Some(name) = EVOLVE_PAGES.iter().find(|n| slug(n) == page) else { return Some(Err(format!("unknown page `{page}`"))) };
+        return Some(app.select_in_workspace_set(WorkspaceSet::Evolve, name).map(|()| json!({"workspace": name, "workspaceSet": WorkspaceSet::Evolve.id()})));
+    }
     let ws = id.strip_prefix("window.workspace.")?;
+    // a Standard workspace's id is that workspace even on an Evolve page of the same name (Color,
+    // Audio), which has its own `window.page.*`
+    if app.workspaces.set != WorkspaceSet::Standard
+        && let Some(n) = dock::WORKSPACES.iter().find(|n| slug(n) == ws)
+    {
+        return Some(app.select_in_workspace_set(WorkspaceSet::Standard, n).map(|()| json!({"workspace": n, "workspaceSet": WorkspaceSet::Standard.id()})));
+    }
     let arg = |k: &str| params.get(k).and_then(Value::as_str).map(str::to_string);
     let r = match ws {
         "reset" => {
@@ -44,11 +65,13 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         "rename" => rename(app, &arg("from").unwrap_or_default(), &arg("to").unwrap_or_default()),
         "delete" => delete(app, &arg("name").unwrap_or_default()),
         key => match dock::names(&app.workspaces).into_iter().find(|n| slug(n) == key) {
-            Some(n) => {
-                app.set_workspace(&n);
-                Ok(json!({"workspace": n}))
-            }
-            None => Err(format!("unknown workspace `{key}`")),
+            Some(n) => app.select_in_workspace_set(app.workspaces.set, &n).map(|()| json!({"workspace": n})),
+            // a built-in workspace of the other set (a Standard-set key pressed on a Evolve page,
+            // a Evolve page asked for in the Standard set): switch sets and show it
+            None => match WorkspaceSet::ALL.into_iter().find_map(|set| set.builtins().iter().find(|n| slug(n) == key).map(|n| (set, *n))) {
+                Some((set, n)) => app.select_in_workspace_set(set, n).map(|()| json!({"workspace": n, "workspaceSet": set.id()})),
+                None => Err(format!("unknown workspace `{key}`")),
+            },
         },
     };
     Some(r)
@@ -60,13 +83,14 @@ fn save(app: &mut FilmcraftApp, name: &str) -> Result<(), String> {
     let layout = serde_json::to_value(&app.ui.dock).map_err(|e| e.to_string())?;
     let floating = if app.ui.floating.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&app.ui.floating).map_err(|e| e.to_string())? };
     let mut next = app.workspaces.clone();
+    let set = next.set;
     let saved = &mut next.saved;
-    match saved.iter_mut().find(|s| s.name == name) {
+    match saved.iter_mut().find(|s| s.name == name && s.set == set) {
         Some(s) => {
             s.layout = layout;
             s.floating = floating;
         }
-        None => saved.push(dock::SavedWorkspace { name: name.to_string(), layout, floating }),
+        None => saved.push(dock::SavedWorkspace { name: name.to_string(), layout, floating, set }),
     }
     next.current = name.to_string();
     app.set_workspaces(next)
@@ -84,6 +108,11 @@ fn new_name(app: &FilmcraftApp, name: &str) -> Result<String, String> {
     if let Some(n) = dock::find(&app.workspaces, name) {
         return Err(format!("a workspace named `{n}` already exists"));
     }
+    // the other set's built-ins too: a saved "Cut" in the Standard set would count as built-in
+    // (`is_builtin`) and could never be renamed or deleted
+    if let Some(n) = WorkspaceSet::ALL.iter().flat_map(|set| set.builtins()).find(|n| slug(n) == slug(name)) {
+        return Err(format!("`{n}` is the name of a built-in workspace"));
+    }
     Ok(name.to_string())
 }
 
@@ -98,12 +127,13 @@ fn rename(app: &mut FilmcraftApp, from: &str, to: &str) -> Result<Value, String>
     if is_builtin(from) {
         return Err(format!("`{from}` is a built-in workspace and keeps its name"));
     }
-    if !app.workspaces.saved.iter().any(|s| s.name == from) {
+    let set = app.workspaces.set;
+    if !app.workspaces.saved.iter().any(|s| s.name == from && s.set == set) {
         return Err(format!("unknown workspace `{from}`"));
     }
     let to = new_name(app, to)?;
     let mut next = app.workspaces.clone();
-    for s in next.saved.iter_mut().filter(|s| s.name == from) {
+    for s in next.saved.iter_mut().filter(|s| s.name == from && s.set == set) {
         s.name = to.clone();
     }
     if next.current == from {
@@ -120,13 +150,14 @@ fn rename(app: &mut FilmcraftApp, from: &str, to: &str) -> Result<Value, String>
 fn delete(app: &mut FilmcraftApp, name: &str) -> Result<Value, String> {
     let mut next = app.workspaces.clone();
     let before = next.saved.len();
-    next.saved.retain(|s| s.name != name);
+    let set = next.set;
+    next.saved.retain(|s| !(s.name == name && s.set == set));
     if next.saved.len() == before {
         return Err(if is_builtin(name) { format!("`{name}` is a built-in workspace and can't be deleted") } else { format!("unknown workspace `{name}`") });
     }
     app.set_workspaces(next)?;
     if app.ui.workspace == name {
-        app.set_workspace(if is_builtin(name) { name } else { "Editing" });
+        app.set_workspace(if is_builtin(name) { name } else { app.workspaces.set.default_workspace() });
     }
     Ok(if is_builtin(name) { json!({"restored": name}) } else { json!({"deleted": name}) })
 }
@@ -152,7 +183,7 @@ fn splice(items: &mut Vec<MenuItem>, prefs: &dock::WorkspacePrefs, session: &fil
     let mut sub: Vec<MenuItem> = dock::names(prefs)
         .into_iter()
         .map(|n| {
-            let id = format!("window.workspace.{}", slug(&n));
+            let id = prefs.set.command_id(&n);
             MenuItem {
                 label: tr(&n),
                 path: vec!["Window".into(), "Workspaces".into()],
@@ -175,7 +206,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut close = crate::widgets::escape_closes(ctx);
     let mut act: Option<(&str, Value)> = None;
     let names = dock::names(&app.workspaces);
-    let changed: Vec<String> = app.workspaces.saved.iter().map(|s| s.name.clone()).collect();
+    let changed: Vec<String> = app.workspaces.saved.iter().filter(|s| s.set == app.workspaces.set).map(|s| s.name.clone()).collect();
     let (title, shown) = match &d {
         WorkspaceDialog::SaveAs { .. } => ("New Workspace", tl!("New Workspace")),
         WorkspaceDialog::Edit { .. } => ("Edit Workspaces", tl!("Edit Workspaces")),

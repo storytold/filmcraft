@@ -96,7 +96,7 @@ pub struct AppearancePrefs {
     pub color_theme: String,
     /// "Appearance Mode": `auto` (follow the operating system) | `dark` (default) | `light`.
     pub appearance_mode: String,
-    /// The theme shown in dark mode: `darkest` (default) | `dark`.
+    /// The theme shown in dark mode: `darkest` (default) | `dark` | `evolve`.
     pub dark_theme: String,
     /// The theme shown in light mode: `light`.
     pub light_theme: String,
@@ -911,7 +911,7 @@ const STARTUP: &[(&str, &str)] = &[("showHome", "Show Home"), ("openMostRecent",
 const OPENING: &[(&str, &str)] = &[("showOpenDialog", "Show Open Dialog"), ("showHome", "Show Home")];
 const BIN_OPEN: &[(&str, &str)] = &[("openInPlace", "Open in place"), ("openNewTab", "Open new tab"), ("openNewWindow", "Open in new window")];
 const PROJECT_OPEN: &[(&str, &str)] = &[("openNewTab", "Open new tab"), ("openNewWindow", "Open in new window")];
-const THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("light", "Light")];
+const THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("evolve", "Evolve Dark"), ("light", "Light")];
 pub const APPEARANCE_MODES: &[(&str, &str)] = &[("auto", "Sync with system"), ("dark", "Dark"), ("light", "Light")];
 pub const UI_SCALES: &[(&str, &str)] = &[
     ("auto", "Auto (system)"),
@@ -924,7 +924,8 @@ pub const UI_SCALES: &[(&str, &str)] = &[
     ("250", "250%"),
     ("300", "300%"),
 ];
-pub const DARK_THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark")];
+/// The dark themes: the two standard brightnesses and the Evolve theme (`docs/appearance.md`).
+pub const DARK_THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("evolve", "Evolve Dark")];
 pub const LIGHT_THEMES: &[(&str, &str)] = &[("light", "Light")];
 const MIXDOWN: &[(&str, &str)] = &[("front", "Front Only"), ("frontRear", "Front + Rear"), ("frontLfe", "Front + LFE"), ("frontRearLfe", "Front + Rear + LFE")];
 const AUDITION: &[(&str, &str)] = &[("scratch", "Scratch disk location for Captured Audio"), ("nextToMedia", "Next to original media files")];

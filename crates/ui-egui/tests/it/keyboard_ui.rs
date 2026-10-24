@@ -6,7 +6,7 @@ use std::sync::mpsc::{Sender, channel};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_engine::shortcut_presets as presets;
-use filmcraft_engine::shortcuts::{PREMIERE_PRESET, Platform};
+use filmcraft_engine::shortcuts::{EVOLVE_PRESET, PREMIERE_PRESET, Platform};
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
@@ -113,6 +113,9 @@ fn premiere_table_has_no_dangling_ids_or_new_conflicts() {
     for (id, _, _) in presets::FILMCRAFT_PANEL.iter().chain(presets::PREMIERE_PANEL) {
         assert!(filmcraft_engine::find_command(id).is_some() || ui.iter().any(|u| u == id), "panel table: `{id}` is not a command");
     }
+    for (id, keys, panel) in presets::EVOLVE {
+        assert!(filmcraft_engine::find_command(id).is_some() || ui.iter().any(|u| u == id), "Evolve table: `{id}` ({keys} {panel}) is not a command");
+    }
     let mut s = Session::default();
     s.shortcuts.register_external(filmcraft_ui_egui::menus::external_commands());
     let new = new_ids();
@@ -124,6 +127,15 @@ fn premiere_table_has_no_dangling_ids_or_new_conflicts() {
             assert!(!ids.iter().any(|i| new.contains(i)), "{preset:?}: {key} in {ctx} is bound to {ids:?}");
         }
     }
+    // the Evolve preset: every id is bound as listed and no key is bound twice in one context
+    s.shortcuts.load_preset(EVOLVE_PRESET).unwrap();
+    assert!(s.shortcuts.conflicts(Platform::Mac).is_empty(), "{:?}", s.shortcuts.conflicts(Platform::Mac));
+    assert!(s.shortcuts.conflicts(Platform::Windows).is_empty(), "{:?}", s.shortcuts.conflicts(Platform::Windows));
+    for (id, keys, panel) in presets::EVOLVE {
+        let panel = (!panel.is_empty()).then_some(*panel);
+        assert!(s.shortcuts.for_command(id).iter().any(|b| b.keys == *keys && b.panel.as_deref() == panel), "{id} is not bound to {keys} in the Evolve preset");
+    }
+    s.shortcuts.load_preset(PREMIERE_PRESET).unwrap();
     // the Premiere preset binds every new command that Premiere has a key for
     for id in ["timeline.selectClipAtPlayhead", "file.exportFrame", "window.maximizeFrame", "timeline.nudgeRight", "clip.volumeUp"] {
         assert!(!s.shortcuts.for_command(id).is_empty(), "{id} has no key in the Premiere preset");

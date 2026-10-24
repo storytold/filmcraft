@@ -548,6 +548,7 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
         name: "Reveal cancellation".into(),
         layout: serde_json::to_value(&h.state().ui.dock).unwrap(),
         floating: serde_json::to_value(&h.state().ui.floating).unwrap(),
+        set: Default::default(),
     };
     h.state_mut().workspaces.saved.push(saved);
     h.state_mut().show_panel(PanelKind::TextToSpeech);

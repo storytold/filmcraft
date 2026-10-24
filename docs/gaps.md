@@ -164,6 +164,12 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize;
   the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
   X11 (#457).
+- **Editors from page-based grading suites:** the Evolve Dark theme, the Evolve page workspaces
+  and the Evolve keyboard preset ([appearance.md](appearance.md)) cover look, layout and keys. Not
+  covered, as follow-ups: node-based grading, primaries colour wheels (Lumetri's controls are
+  sliders and curves) and a console-style audio mixer; the three-point edits beyond Insert /
+  Overwrite / Replace (Place On Top, Ripple Overwrite, Fit to Fill, Append at End) and Dynamic
+  Trim as a mode ([keyboard.md](keyboard.md#evolve-keys-with-no-filmcraft-counterpart)).
 - **Estimate:** 120–200 h. Doc: [ui-parity.md](ui-parity.md).
 
 ## G9. Windows and Linux at run time
