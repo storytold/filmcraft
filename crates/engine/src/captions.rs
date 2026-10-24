@@ -470,7 +470,13 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("captions.duplicate", "Duplicate Captions", &[], None, r#"{"captions":[id]?,"delta":ticks|"deltaFrames":i64}"#, has_captions, |s, p| {
             // Option-drag in the Timeline: copies `delta` later (or earlier) on their own
             // tracks, overwriting what is there; the originals stay
-            let ids = caption_ids(s, p);
+            let mut ids = caption_ids(s, p);
+            // each caption is copied once, however often it is named
+            let mut seen = std::collections::HashSet::new();
+            ids.retain(|id| seen.insert(*id));
+            if ids.is_empty() {
+                return Err(EngineError::Edit(edit::EditError::Nothing));
+            }
             let d = delta_p(s, p).ok_or_else(|| bad("captions.duplicate", "need `delta` or `deltaFrames`"))?;
             let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
             let mut by_track: Vec<(TrackId, Vec<filmcraft_project::Caption>)> = Vec::new();

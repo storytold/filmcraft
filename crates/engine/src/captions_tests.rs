@@ -185,5 +185,9 @@ fn captions_duplicate_copies_and_overwrites() {
     assert_eq!(caption_spans(&s)[0], (0.0, 1.0, "one".into()));
     assert!(s.execute("captions.duplicate", json!({"captions": [one.0], "delta": 0})).is_err());
     assert!(s.execute("captions.duplicate", json!({"captions": [one.0]})).is_err(), "needs a delta");
+    assert!(s.execute("captions.duplicate", json!({"captions": [], "delta": TICKS_PER_SECOND})).is_err(), "needs a caption");
+    let before = s.active_sequence().unwrap().caption_tracks[0].captions.len();
+    s.execute("captions.duplicate", json!({"captions": [one.0, one.0], "delta": 20 * TICKS_PER_SECOND})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].captions.len(), before + 1, "a caption named twice is copied once");
     s.active_sequence().unwrap().check().unwrap();
 }
