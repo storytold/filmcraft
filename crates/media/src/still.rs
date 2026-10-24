@@ -114,4 +114,7 @@ impl MediaSource for StillSource {
     fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> Result<filmcraft_frame::AudioBuffer> {
         Err(MediaError::NoStream("audio"))
     }
+    fn resident_bytes(&self) -> u64 {
+        self.frame.byte_size() as u64
+    }
 }
