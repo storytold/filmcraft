@@ -43,12 +43,12 @@ reference) is used only as an external test oracle.
 
 ## Accuracy
 
-`tests/oracle_intra.rs` encodes all-intra streams with ffmpeg's libsvtav1 (with and without the
+`tests/it/oracle_intra.rs` encodes all-intra streams with ffmpeg's libsvtav1 (with and without the
 in-loop filters; 64×64 and 128×128 superblocks; intra edge filter on and off) and compares every
 decoded frame with libdav1d: **bit-exact** on all 13 fixtures (8- and 10-bit 4:2:0; 128×128 to
 1280×720 including odd sizes; testsrc2, mandelbrot, gradients and noise; presets 1–8).
 
-`tests/conformance.rs` downloads libaom's conformance test vectors on first use
+`tests/it/conformance.rs` downloads libaom's conformance test vectors on first use
 (storage.googleapis.com/aom-test-data) and compares with libdav1d: `av1-1-b8-02-allintra`
 (39 frames, deblocking + CDEF + self-guided restoration), `05-mv`, `06-mfmv`, `24-monochrome`
 and `b10-23-film_grain-50` are **bit-exact** in the default run. The ignored
@@ -58,8 +58,8 @@ and `b10-23-film_grain-50` are **bit-exact** in the default run. The ignored
 with scaled inter-layer prediction), `24-monochrome` (8 and 10-bit) and
 `16-intra_only-intrabc-extreme-dv` (1080p intra block copy), `23-film_grain-50` (8 and 10-bit).
 
-`tests/oracle_inter.rs` also checks draft mode: every unflagged frame stays bit-exact with
-libdav1d and only flagged frames differ, with 1 and 4 threads. `tests/oracle_inter.rs` encodes SVT-AV1 GOPs (hierarchical references, compound prediction,
+`tests/it/oracle_inter.rs` also checks draft mode: every unflagged frame stays bit-exact with
+libdav1d and only flagged frames differ, with 1 and 4 threads. `tests/it/oracle_inter.rs` encodes SVT-AV1 GOPs (hierarchical references, compound prediction,
 OBMC / warped motion, motion-field projection, all loop filters; presets 3–8, 8- and 10-bit, odd
 sizes), plus super-resolution (denominator 12) and film-grain streams, and compares every frame
 with libdav1d: **bit-exact** on all 6 fixtures.
@@ -76,13 +76,13 @@ independent). Results never depend on scheduling (the oracle tests compare 1 thr
 and libdav1d). With frame threads, pictures may be returned by a
 later `decode_pts` call or by `flush`; each carries the `pts` of the temporal unit that showed it.
 
-`tests/perf.rs` (ignored) prints single-threaded fps (thread CPU time), per-stage ms/frame
+`tests/it/perf.rs` (ignored) prints single-threaded fps (thread CPU time), per-stage ms/frame
 (`Decoder::stats()`) and all-core fps with its per-stage ms/frame for 1080p fixtures (key frames,
 GOPs, tiles, low delay) and a single-tile 2160p GOP; `AV1_PERF_ONLY=a,b` picks fixtures. The hot loops (sub-pixel filters,
 CDEF, inverse transforms, deblocking, entropy decoding) are written for auto-vectorisation.
 
 Measured 2026-10-01 on a 14-core Apple Silicon Mac (release build, SVT-AV1 preset 8 1080p
-fixtures from `tests/perf.rs`), before (`31f8b3d`: hot loops only, no threading) and after tile / frame /
+fixtures from `tests/it/perf.rs`), before (`31f8b3d`: hot loops only, no threading) and after tile / frame /
 post-filter threading. The machine was heavily loaded by other builds during both runs (load
 average 200–400), so the all-core wall figures understate what an idle machine reaches and are
 noisy; single-threaded figures use thread CPU time and are comparable.

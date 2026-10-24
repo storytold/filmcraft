@@ -10,6 +10,16 @@ use serde_json::{Value, json};
 use crate::Session;
 
 #[test]
+fn project_names_become_one_export_filename_component() {
+    for name in ["../../outside", "/absolute/path", r"C:\\outside", ".."] {
+        let safe = crate::export_tools::file_safe(name);
+        assert!(!safe.contains(['/', '\\']), "{name:?} became {safe:?}");
+        assert_ne!(safe, ".");
+        assert_ne!(safe, "..");
+    }
+}
+
+#[test]
 fn hostile_export_ranges_are_rejected_without_panicking() {
     let mut session = demo();
     for params in [
@@ -145,11 +155,13 @@ fn files_in(dir: &Path) -> Vec<String> {
     v
 }
 
-/// Every built-in preset: a quarter second of the demo sequence (seven frames at 23.976) exported
+/// Every built-in preset: 1.0 to 1.08 s of the demo sequence (three frames at 23.976) exported
 /// with `file.exportMedia {preset}`; ffprobe checks container, codec, profile, frame size, frame
-/// rate and audio format, and the data rate where the codec fixes it.
+/// rate and audio format, and the data rate where the codec fixes it. Three frames are enough for
+/// all of these, and each extra frame costs a 4K H.264 encode in five presets.
 #[test]
 fn every_builtin_preset_exports_and_ffprobe_confirms() {
+    let (start, end) = (1.0, 1.08);
     let mut s = demo();
     let presets = s.execute("export.presets.list", json!({})).unwrap()["presets"].as_array().unwrap().clone();
     assert!(presets.len() >= 24);
@@ -159,7 +171,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
         let sub = dir.0.join(format!("p{}", filmcraft_export::presets::preset_key(name)));
         std::fs::create_dir_all(&sub).unwrap();
         let path = sub.join("Demo").to_string_lossy().to_string();
-        let params = json!({"preset": name, "path": path, "range": "custom", "startSeconds": 1.0, "endSeconds": 1.25, "wait": true});
+        let params = json!({"preset": name, "path": path, "range": "custom", "startSeconds": start, "endSeconds": end, "wait": true});
         let frames = s.execute("export.resolve", params.clone()).unwrap()["frames"].as_u64().unwrap();
         let r = s.execute("file.exportMedia", params).unwrap_or_else(|e| panic!("{name}: {e}"));
         let out = r["path"].as_str().unwrap().to_string();
@@ -172,7 +184,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
         if matches!(fmt.as_str(), "png" | "tiff" | "bmp" | "jpg" | "tga" | "dpx" | "exr") {
             let files = files_in(&sub);
             let ext = Path::new(&out).extension().unwrap().to_string_lossy().to_string();
-            assert_eq!(frames, 7, "frames 23..=29 at 23.976 fps");
+            assert_eq!(frames, 3, "frames 23..=25 at 23.976 fps");
             let want: Vec<String> = (0..frames).map(|i| format!("Demo{i:03}.{ext}")).collect();
             assert_eq!(files, want, "{name}");
             if let Some(j) = probe(&sub.join(&want[0]).to_string_lossy()) {
@@ -208,7 +220,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!(a["codec_name"], codec, "{name}");
                 assert_eq!(a["sample_rate"], "48000", "{name}");
                 assert_eq!(a["channels"], 2, "{name}");
-                assert!((num(&j["format"]["duration"]) - 0.25).abs() < 0.01, "{name}: {}", j["format"]["duration"]);
+                assert!((num(&j["format"]["duration"]) - (end - start)).abs() < 0.01, "{name}: {}", j["format"]["duration"]);
                 continue;
             }
             "aac" => {
@@ -218,7 +230,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!(j["streams"].as_array().unwrap().len(), 1, "{name}");
                 let a = stream(&j, "audio").unwrap();
                 assert_eq!((a["codec_name"].as_str(), a["sample_rate"].as_str(), a["channels"].as_u64()), (Some("aac"), Some("48000"), Some(2)), "{name}");
-                assert!((num(&j["format"]["duration"]) - 0.25).abs() < 0.03, "{name}: {}", j["format"]["duration"]);
+                assert!((num(&j["format"]["duration"]) - (end - start)).abs() < 0.03, "{name}: {}", j["format"]["duration"]);
                 continue;
             }
             "gif" => {
@@ -322,9 +334,6 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
     }
 }
 
-/// H.264 bitrate control over three seconds of the demo: the adaptive Match Source preset
-/// targets width × height × fps × bpp, the 1080p delivery presets their fixed targets; ffprobe's
-/// measured video bitrate stays within the VBR maximum and close to the target.
 #[test]
 fn aac_audio_keeps_a_dot_aac_path_as_adts_and_adds_m4a_otherwise() {
     let mut s = demo();
@@ -344,6 +353,12 @@ fn aac_audio_keeps_a_dot_aac_path_as_adts_and_adds_m4a_otherwise() {
     assert_eq!(&std::fs::read(&m4a).unwrap()[4..8], b"ftyp");
 }
 
+/// H.264 bitrate control over one second of the demo: the adaptive Match Source preset targets
+/// width × height × fps × bpp, the 1080p delivery presets their fixed targets; ffprobe's measured
+/// video bitrate stays within the VBR maximum and close to the target. 0.5 to 1.5 s holds the
+/// second half of the one-second fade in from black, where every frame changes and each preset
+/// spends its whole budget; the shot after it is simple enough that both 1080p presets land at the
+/// same bitrate, far under their targets.
 #[test]
 fn h264_presets_hit_their_bitrates() {
     let mut s = demo();
@@ -356,7 +371,7 @@ fn h264_presets_hit_their_bitrates() {
         let path = dir.path(&format!("{}.mp4", filmcraft_export::presets::preset_key(preset)));
         s.execute(
             "file.exportMedia",
-            json!({"preset": preset, "path": path, "range": "custom", "startSeconds": 0.0, "endSeconds": 3.0, "audio": false, "wait": true}),
+            json!({"preset": preset, "path": path, "range": "custom", "startSeconds": 0.5, "endSeconds": 1.5, "audio": false, "wait": true}),
         )
         .unwrap();
         let Some(j) = probe(&path) else { return };

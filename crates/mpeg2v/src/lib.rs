@@ -338,11 +338,16 @@ pub fn access_units(es: &[u8]) -> Vec<std::ops::Range<usize>> {
             }
             PICTURE_START => {
                 // picture_structure from the picture coding extension that follows
-                let structure = codes[k + 1..]
+                let structure = codes
                     .iter()
-                    .take_while(|c| c.1 == EXTENSION || c.1 == headers::USER_DATA)
-                    .find_map(|&(p, c)| {
-                        let end = codes.iter().find(|x| x.0 > p).map_or(es.len(), |x| x.0);
+                    .enumerate()
+                    .skip(k + 1)
+                    .take_while(|(_, c)| c.1 == EXTENSION || c.1 == headers::USER_DATA)
+                    .find_map(|(next, &(p, c))| {
+                        // `next` is this unit's position in `codes`, so its successor gives the
+                        // payload end directly. Searching `codes` from the beginning here made a
+                        // stream of short picture/extension pairs quadratic to index.
+                        let end = codes.get(next + 1).map_or(es.len(), |x| x.0);
                         (c == EXTENSION).then(|| Extension::parse(&es[(p + 4).min(end)..end]).ok()).flatten()
                     })
                     .and_then(|e| match e {

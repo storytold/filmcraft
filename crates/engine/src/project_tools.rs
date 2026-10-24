@@ -1076,12 +1076,10 @@ fn project_settings_scratch(s: &mut Session, p: &Value) -> Result<Value> {
             None => {}
             Some(Value::Null) => *slot = None,
             Some(Value::String(x)) if x.is_empty() || x.eq_ignore_ascii_case("same as project") => *slot = None,
-            Some(Value::String(x))
-                if matches!(crate::doc_path::resolve(x, s.path.as_deref().map(std::path::Path::new)), Err(crate::doc_path::NotFollowed::Refused(_))) =>
-            {
-                return Err(bad("file.projectSettings.scratchDisks", format!("`{k}` must be a folder on this computer, not a network share or device")));
-            }
             Some(Value::String(x)) => {
+                if let Err(crate::doc_path::NotFollowed::Refused(why)) = crate::doc_path::resolve(x, s.path.as_deref().map(std::path::Path::new)) {
+                    return Err(bad("file.projectSettings.scratchDisks", format!("`{k}` must be a folder on this computer: {why}")));
+                }
                 chosen.push(x.clone());
                 *slot = Some(x.clone());
             }

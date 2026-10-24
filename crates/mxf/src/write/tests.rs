@@ -267,6 +267,22 @@ fn timestamps() {
     assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (2023, 11, 14, 22, 13, 20));
     let t = Timestamp::from_unix(951_782_400); // 2000-02-29
     assert_eq!((t.year, t.month, t.day), (2000, 2, 29));
+    // Years far outside chrono's own range are preserved with month/day/time intact and only the
+    // year clamped to the MXF `u16`, exactly as the old hand-rolled conversion did (not collapsed
+    // to the epoch — reviewer FredApps). `10_000_000_000_000` s → 318857-05-20 17:46:40.
+    let t = Timestamp::from_unix(10_000_000_000_000);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (65535, 5, 20, 17, 46, 40));
+    // Year 10000 (just past chrono's range) still fits the u16 field.
+    let t = Timestamp::from_unix(253_402_300_800);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (10000, 1, 1, 0, 0, 0));
+    // A negative year clamps to 0 but keeps its month/day/time.
+    let t = Timestamp::from_unix(-10_000_000_000_000);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (0, 8, 13, 6, 13, 20));
+    // The `i64` extremes the old code accepted.
+    let t = Timestamp::from_unix(i64::MAX);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (65535, 12, 4, 15, 30, 7));
+    let t = Timestamp::from_unix(i64::MIN);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (0, 1, 27, 8, 29, 52));
 }
 
 #[test]

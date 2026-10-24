@@ -65,8 +65,9 @@ fn atomic_write_new_with(path: &Path, write: impl FnOnce(&mut File) -> io::Resul
     #[cfg(unix)]
     let mut staged = {
         use std::os::unix::fs::PermissionsExt;
-        // Match ordinary file-creation permissions after the process umask.
-        tempfile::Builder::new().permissions(fs::Permissions::from_mode(0o666)).tempfile_in(&dir)?
+        // Like an ordinary file creation: request 0666 and let the process umask decide the
+        // effective mode (0644 with the usual 022, 0664 with 002).
+        tempfile::Builder::new().permissions(fs::Permissions::from_mode(0o666)).tempfile_in(&dir)? // NOSONAR
     };
     #[cfg(not(unix))]
     let mut staged = tempfile::NamedTempFile::new_in(&dir)?;

@@ -103,6 +103,8 @@ struct FrameJob {
     ref_info: [RefInfo; NUM_REF_FRAMES],
     /// Tile payloads (tile number, data).
     tiles: Vec<(usize, Vec<u8>)>,
+    /// Each tile may be supplied by exactly one tile group.
+    tile_covered: Vec<bool>,
     slot: Arc<FrameSlot>,
     /// The output picture, when the frame is shown.
     picture: Option<Arc<Slot<Arc<Picture>>>>,
@@ -531,12 +533,14 @@ impl Decoder {
         }
         let picture = fh.show_frame.then(Slot::new);
         let draft = self.draft && fh.show_frame && fh.refresh_frame_flags == 0;
+        let tile_count = fh.tile_info.cols.checked_mul(fh.tile_info.rows).ok_or(Error::Invalid("tile count overflows"))?;
         self.pending = Some(Box::new(FrameJob {
             seq,
             fh,
             refs: self.ref_frames.clone(),
             ref_info: self.refs.clone(),
             tiles: Vec::new(),
+            tile_covered: vec![false; tile_count],
             slot: Slot::new(),
             picture,
             pts: self.pts,
@@ -579,12 +583,19 @@ impl Decoder {
                 v + 1
             };
             let end = pos.checked_add(size).filter(|&e| e <= data.len()).ok_or(Error::Truncated)?;
+            if job.tile_covered.get(tile_num).copied() != Some(false) {
+                return Err(Error::Invalid("tile is covered by multiple tile groups"));
+            }
             job.tiles.push((tile_num, data[pos..end].to_vec()));
+            job.tile_covered[tile_num] = true;
             pos = end;
         }
         if tg_end != num_tiles - 1 {
             self.pending = Some(job);
             return Ok(None);
+        }
+        if job.tile_covered.iter().any(|&covered| !covered) {
+            return Err(Error::Invalid("frame is missing tile coverage"));
         }
         self.seen_frame_header = false;
         Ok(self.submit(job))

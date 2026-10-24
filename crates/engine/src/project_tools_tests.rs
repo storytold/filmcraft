@@ -307,6 +307,11 @@ fn media_properties_settings_and_scratch_disks() {
     assert!(s.execute("file.projectSettings.general", json!({"renderer": "quantum"})).is_err());
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.project.settings.renderer, crate::project_tools::RENDERER_GPU);
+    // Scratch Disks: a drive another system names is refused before the project has a folder
+    if cfg!(unix) {
+        assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": r"D:\Captured"})).is_err());
+        assert!(s.project.settings.scratch.captured.is_none());
+    }
     // Scratch Disks: previews follow the Video Previews folder once the project is saved
     let proj = dir.join("Show.fcproj").to_string_lossy().to_string();
     s.execute("file.saveAs", json!({"path": proj})).unwrap();

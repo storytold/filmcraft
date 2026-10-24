@@ -38,9 +38,15 @@ translated label and its English source, including Unicode capitals. Project con
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
 English. Ukrainian and Russian currently cover the core menus; they fall back to English elsewhere.
 
-Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders,
-literal/menu/registry coverage and UI behaviour; `cargo xtask ci` runs the workspace gates. Visual
-checks use the control channel to switch language and capture the resulting panels.
+A string a catalog lacks shows in English, so a missing translation never fails a test or a
+build. `cargo xtask i18n-report` prints each language's missing strings (menus, `tl!` literals and
+registry names) and its entries whose source the interface no longer has; `cargo xtask ci` prints
+the same report in its log.
+
+Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders
+and UI behaviour in other languages (switching, search, font coverage); `cargo xtask ci` runs the
+workspace gates. Visual checks use the control channel to switch language and capture the resulting
+panels.
 
 ## Source playback
 

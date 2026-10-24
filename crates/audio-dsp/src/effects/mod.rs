@@ -271,31 +271,37 @@ mod tests {
 
     #[test]
     fn extreme_settings_stay_finite_and_denormal_free() {
-        for e in effects() {
-            for setting in [0.0f32, 1.0] {
-                let mut fx = (e.create)(SR, 2);
-                for p in e.params {
-                    fx.set_param(p.id, if setting == 0.0 { p.min } else { p.max });
-                }
-                let mut l = noise(3, 24000, 4.0);
-                let mut r = noise(4, 24000, 4.0);
-                l[100] = 1e6;
-                r[200] = -1e6;
-                fx.process(&mut [&mut l, &mut r]);
-                assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{} setting {setting}", e.id);
-                // Long silence afterwards: output decays without denormals.
-                fx.reset();
-                let mut l = noise(3, 4800, 0.5);
-                let mut r = noise(4, 4800, 0.5);
-                fx.process(&mut [&mut l, &mut r]);
-                for _ in 0..40 {
-                    let mut l = vec![0.0f32; 48000];
-                    let mut r = vec![0.0f32; 48000];
-                    fx.process(&mut [&mut l, &mut r]);
-                    assert!(l.iter().chain(&r).all(|v| v.is_finite() && !v.is_subnormal()), "{} setting {setting}: denormal/NaN in tail", e.id);
-                }
+        // One thread per effect. The tail stays 40 s long: delays, reverbs and graphic EQs still
+        // produce output in its last second, some of it within 3x of the smallest normal f32.
+        std::thread::scope(|scope| {
+            for e in effects() {
+                scope.spawn(move || {
+                    for setting in [0.0f32, 1.0] {
+                        let mut fx = (e.create)(SR, 2);
+                        for p in e.params {
+                            fx.set_param(p.id, if setting == 0.0 { p.min } else { p.max });
+                        }
+                        let mut l = noise(3, 24000, 4.0);
+                        let mut r = noise(4, 24000, 4.0);
+                        l[100] = 1e6;
+                        r[200] = -1e6;
+                        fx.process(&mut [&mut l, &mut r]);
+                        assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{} setting {setting}", e.id);
+                        // Long silence afterwards: output decays without denormals.
+                        fx.reset();
+                        let mut l = noise(3, 4800, 0.5);
+                        let mut r = noise(4, 4800, 0.5);
+                        fx.process(&mut [&mut l, &mut r]);
+                        for _ in 0..40 {
+                            let mut l = vec![0.0f32; 48000];
+                            let mut r = vec![0.0f32; 48000];
+                            fx.process(&mut [&mut l, &mut r]);
+                            assert!(l.iter().chain(&r).all(|v| v.is_finite() && !v.is_subnormal()), "{} setting {setting}: denormal/NaN in tail", e.id);
+                        }
+                    }
+                });
             }
-        }
+        });
     }
 
     #[test]
