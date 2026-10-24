@@ -113,6 +113,19 @@ impl Ed<'_> {
         // keep showing the new value until the project catches up this frame
         self.drafts.insert(pid.to_string(), v);
     }
+    /// The end of a drag of `pids`: commit their drafts, or drop them when Escape ended the drag
+    /// (egui ends a drag on Escape, #580).
+    fn release(&mut self, ui: &egui::Ui, pids: &[&str]) {
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        for pid in pids {
+            if escape {
+                self.drafts.remove(*pid);
+            } else {
+                let v = self.v(pid);
+                self.commit(pid, v);
+            }
+        }
+    }
     fn auto(&mut self, id: String, r: Rect, label: &str) {
         self.autos.push((id, r, label.to_string()));
     }
@@ -144,7 +157,9 @@ impl Ed<'_> {
         if r.dragged() {
             self.drafts.insert(pid.to_string(), v);
         }
-        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+        if r.drag_stopped() {
+            self.release(ui, &[pid]);
+        } else if r.changed() && !r.dragged() {
             self.commit(pid, v);
         }
     }
@@ -324,12 +339,8 @@ fn parametric(ui: &mut egui::Ui, ed: &mut Ed) {
             }
         }
         if resp.drag_stopped() {
-            let fv = ed.v(&f_id);
-            ed.commit(&f_id, fv);
-            if gain {
-                let gv = ed.v(&g_id);
-                ed.commit(&g_id, gv);
-            }
+            let pids = if gain { vec![f_id.as_str(), g_id.as_str()] } else { vec![f_id.as_str()] };
+            ed.release(ui, &pids);
         }
         // scroll over a node changes its Q
         if gain && resp.hovered() {
@@ -393,8 +404,7 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
             ed.drafts.insert(pid.clone(), (db * 2.0).round() / 2.0);
         }
         if resp.drag_stopped() {
-            let nv = ed.v(&pid);
-            ed.commit(&pid, nv);
+            ed.release(ui, &[pid.as_str()]);
         }
         if resp.double_clicked() {
             ed.commit(&pid, 0.0);
@@ -472,8 +482,7 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
             ed.drafts.insert(pid.to_string(), fx_of(pos.x, r).clamp(lo, hi).round());
         }
         if resp.drag_stopped() {
-            let v = ed.v(pid);
-            ed.commit(pid, v);
+            ed.release(ui, &[pid]);
         }
     }
     ui.add_space(4.0);

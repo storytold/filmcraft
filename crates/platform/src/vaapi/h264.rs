@@ -333,7 +333,7 @@ impl<A: Accel> Front<A> {
         let fpoc = if mmco5 { 0 } else { p.poc.frame() };
         let meta = Arc::new(output_meta(&p.sps, p.pts, p.first.idr));
         let mut outs = Vec::new();
-        self.dpb.store_picture(&p.first, surface, fpoc, p.sps.max_frame_num(), p.sps.max_num_ref_frames as usize, meta, &mut outs);
+        self.dpb.store_picture(&p.first, surface, fpoc, p.sps.max_frame_num(), p.sps.max_num_ref_frames as usize, meta, &mut outs).map_err(decode_err)?;
         self.read_out(outs, frames)
     }
 }

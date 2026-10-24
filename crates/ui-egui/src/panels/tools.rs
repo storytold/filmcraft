@@ -1,5 +1,5 @@
-//! The vertical Tools panel. Grouped tools show a small flyout triangle; right-click (or long
-//! press) opens the group to pick another tool.
+//! The vertical Tools panel. Grouped tools show a small flyout triangle; right-click, a long
+//! press or pressing and dragging opens the group to pick another tool.
 
 use egui::{Rect, Sense, pos2, vec2};
 
@@ -23,7 +23,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         } else {
             format!("{} ({})", app.ui.language.tr(current.label()), current.shortcut())
         };
-        let resp = ui.interact(r, egui::Id::new(("tool", format!("{:?}", group[0]))), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::new(("tool", format!("{:?}", group[0]))), Sense::click_and_drag()).on_hover_text(tip);
         resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, resp.enabled(), app.ui.tool == current, current.label()));
         for tl in &group {
             if *tl == current {
@@ -58,7 +58,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(0.35 - seconds));
             }
-            let long_press = held_for.is_some_and(|seconds| seconds >= 0.35) && !held;
+            // dragging off the press (egui's few-point drag threshold) opens it at once, without
+            // waiting for the long press
+            let long_press = (held_for.is_some_and(|seconds| seconds >= 0.35) || resp.drag_started()) && !held;
             let command = if resp.secondary_clicked() || long_press {
                 if long_press {
                     ui.data_mut(|d| d.insert_temp(held_id, resp.id));
@@ -74,7 +76,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 for tl in &group {
                     let row = ui.selectable_label(app.ui.tool == *tl, format!("{}   {}", app.ui.language.tr(tl.label()), tl.shortcut()));
                     app.auto.add_response(&format!("tools.select.{tl:?}"), &row, tl.label());
-                    if row.clicked() {
+                    // letting go over a row of a flyout this press opened picks that tool
+                    let released_on = held && ui.input(|i| i.pointer.primary_released() && i.pointer.interact_pos().is_some_and(|p| row.rect.contains(p)));
+                    if row.clicked() || released_on {
                         app.ui.tool = *tl;
                         ui.close();
                     }
@@ -99,6 +103,72 @@ mod tests {
             |ui| show(app, ui, Rect::from_min_size(egui::Pos2::ZERO, vec2(42.0, 700.0))),
         );
         out.textures_delta.clear();
+    }
+
+    fn center_of(app: &FilmcraftApp, id: &str) -> Option<egui::Pos2> {
+        let [x, y, w, h] = app.auto.elements.iter().find(|w| w.id == id)?.rect;
+        Some(egui::pos2(x + w / 2.0, y + h / 2.0))
+    }
+
+    fn primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
+    }
+
+    /// The panel shown twice, then the button pressed on the Type tool group and dragged by `by`
+    /// within 0.1 s, well before a long press.
+    fn press_and_drag_type(by: egui::Vec2) -> (FilmcraftApp, egui::Context) {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        frame(&mut app, &ctx, 0.0, vec![]);
+        frame(&mut app, &ctx, 0.1, vec![]);
+        let at = center_of(&app, "tools.Type").unwrap();
+        frame(&mut app, &ctx, 1.0, vec![egui::Event::PointerMoved(at), primary(at, true)]);
+        frame(&mut app, &ctx, 1.05, vec![egui::Event::PointerMoved(at + by)]);
+        frame(&mut app, &ctx, 1.1, vec![]);
+        (app, ctx)
+    }
+
+    #[test]
+    fn dragging_off_a_grouped_tool_opens_its_flyout_and_letting_go_on_a_row_picks_it() {
+        let (mut app, ctx) = press_and_drag_type(vec2(-6.0, 3.0));
+        let row = center_of(&app, "tools.select.VerticalType").expect("the drag opened the flyout before a long press");
+        frame(&mut app, &ctx, 1.15, vec![egui::Event::PointerMoved(row)]);
+        frame(&mut app, &ctx, 1.2, vec![primary(row, false)]);
+        frame(&mut app, &ctx, 1.25, vec![]);
+        assert_eq!(app.ui.tool, Tool::VerticalType);
+        assert!(center_of(&app, "tools.select.VerticalType").is_none(), "picking a tool closes the flyout");
+    }
+
+    #[test]
+    fn letting_go_of_a_dragged_open_flyout_elsewhere_leaves_it_open() {
+        let (mut app, ctx) = press_and_drag_type(vec2(5.0, 5.0));
+        let away = pos2(600.0, 700.0);
+        frame(&mut app, &ctx, 1.15, vec![egui::Event::PointerMoved(away)]);
+        frame(&mut app, &ctx, 1.2, vec![primary(away, false)]);
+        frame(&mut app, &ctx, 1.25, vec![]);
+        assert_eq!(app.ui.tool, Tool::Selection);
+        let row = center_of(&app, "tools.select.VerticalType").expect("the flyout stays open, as after a long press");
+        // and a click on one of its rows still picks it
+        frame(&mut app, &ctx, 2.0, vec![egui::Event::PointerMoved(row), primary(row, true)]);
+        frame(&mut app, &ctx, 2.05, vec![primary(row, false)]);
+        assert_eq!(app.ui.tool, Tool::VerticalType);
+    }
+
+    #[test]
+    fn a_right_click_on_a_grouped_tool_still_opens_its_flyout() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        frame(&mut app, &ctx, 0.0, vec![]);
+        frame(&mut app, &ctx, 0.1, vec![]);
+        let at = center_of(&app, "tools.Type").unwrap();
+        let secondary = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() };
+        frame(&mut app, &ctx, 1.0, vec![egui::Event::PointerMoved(at), secondary(true)]);
+        frame(&mut app, &ctx, 1.05, vec![secondary(false)]);
+        frame(&mut app, &ctx, 1.1, vec![]);
+        assert!(center_of(&app, "tools.select.VerticalType").is_some());
+        assert_eq!(app.ui.tool, Tool::Selection);
     }
 
     #[test]

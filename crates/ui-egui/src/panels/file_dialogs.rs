@@ -28,7 +28,7 @@ fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: b
         .corner_radius(CornerRadius::same(15))
         .fill(if primary { t.accent } else { Color32::TRANSPARENT })
         .stroke(if primary { Stroke::NONE } else { Stroke::new(1.5, t.text_faint) });
-    let r = ui.add(b);
+    let r = ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand);
     app.auto.add(id, r.rect, label);
     r.clicked()
 }
@@ -130,7 +130,8 @@ pub fn show_revert(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             });
         });
     });
-    open && !r.should_close()
+    // (the modal's own close also fires on Escape: not while a drag is being cancelled, #580)
+    open && !(r.should_close() && !ctx.input(|i| i.pointer.any_down()))
 }
 
 /// Draw the dialog if it is one of ours; returns Some(still open).

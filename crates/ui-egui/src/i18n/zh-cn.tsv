@@ -225,6 +225,9 @@
 	Normalize Mix Track…	标准化混音轨道…
 	Offline File…	脱机文件…
 	Open Project…	打开项目…
+	Open Recent	打开最近文件
+	Clear Recent Files	清除最近文件
+	Recent	最近使用
 	Optical Flow	光流
 	Overwrite	覆盖
 	Paste	粘贴
@@ -277,6 +280,7 @@
 	Review	审阅
 	Right	右
 	Ripple Delete	波纹删除
+	Ripple Delete Head Frame	波纹删除头部帧
 	Ripple Sequence Markers	波纹序列标记
 	Rose	玫瑰红
 	Safe Margins	安全边距
@@ -799,6 +803,7 @@
 	Relink others automatically	自动重新链接其他项
 	Search in:	搜索位置：
 	Browse…	浏览…
+	A file dialog is already open	已有一个文件对话框处于打开状态
 	Exact name matches only	仅精确名称匹配
 	No candidates yet — Search a folder or Locate the file.	暂无候选项 — 请搜索文件夹或定位文件。
 	✔ same file	✔ 同一文件
@@ -1249,6 +1254,7 @@
 	59.94 fps Non Drop-Frame	59.94 fps 非掉帧
 	ASC CDL	ASC CDL
 	Accessible color contrast	无障碍颜色对比度
+	Animate zoom, scrolling and menus	缩放、滚动和菜单使用动画
 	Action-Safe Margin	动作安全边距
 	Active Monitor	活动监视器
 	Add	添加
@@ -2787,8 +2793,8 @@
 	Ignore Audio	忽略音频
 	Ignore Video	忽略视频
 	Apply a cut at each detected cut point	在每个检测到的切点应用剪切
-	Create a subclip for each detected cut point	为每个检测到的切点创建子剪辑
-	Generate clip markers at each detected cut point	在每个检测到的切点生成剪辑标记
+	Create a bin of subclips from each detected cut point	从每个检测到的切点创建子剪辑素材箱
+	Create a clip marker at each detected cut point	在每个检测到的切点创建剪辑标记
 	Sensitivity:	灵敏度：
 	Normalize Mix Track to:	将混音轨道标准化至：
 	Disabled clips	已禁用的剪辑
@@ -2904,6 +2910,10 @@
 	Sample Size	采样大小
 	16 bit	16 位
 	24 bit	24 位
+	32 bit	32 位
+	32 bit float	32 位浮点
+	FLAC stores whole-number samples only	FLAC 只能存储整数采样
+	MXF export writes integer PCM only	MXF 导出仅写入整数 PCM
 	Size / Opacity	大小 / 不透明度
 	Image Overlay	图像叠加
 	PNG or JPEG file	PNG 或 JPEG 文件
@@ -2963,6 +2973,12 @@
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 位
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF，立体声 48 kHz 16 位 PCM
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24 位
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC，立体声 48 kHz 24 位，无损
+	FLAC (lossless)	FLAC（无损）
+	Compression Level	压缩级别
+	0 fastest, 8 smallest	0 最快，8 最小
 	APV	APV
 	APV 422-10	APV 422-10
 	APV 422-12	APV 422-12
@@ -3406,6 +3422,7 @@
 	in	入
 	The language changed but could not be saved: {e}	语言已更改但无法保存：{e}
 	no Chinese font is installed on this system; the interface stays in English	此系统未安装中文字体；界面保持英文
+	no Korean font is installed on this system; the interface stays in English	此系统未安装韩文字体；界面保持英文
 	no Japanese font is installed on this system; the interface stays in English	此系统未安装日语字体；界面保持英文
 	Show	显示
 	Sort	排序
@@ -3471,6 +3488,7 @@
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	单击以选择，或在空白处单击并拖动以框选。使用 Shift、Alt 和 Ctrl 进行其他操作。
 	Click to zoom in; Alt-click to zoom out.	单击以放大；Alt-单击以缩小。
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	拖动：移动 · Alt-单击：平滑/拐角 · Ctrl-单击：删除
+	Drag inward to round the corners	向内拖动以使拐角变圆
 	Include Alpha Channel	包含 Alpha 通道
 	Sequence Settings	序列设置
 	Color Management	色彩管理
@@ -3540,3 +3558,37 @@
 	Delete Caption Track	删除字幕轨道
 	Delete Caption Tracks	删除多个字幕轨道
 	Delete Empty Caption Tracks	删除空字幕轨道
+
+	Appearance Settings…	外观设置…
+
+	Add to favorites	添加到收藏
+
+	Remove from favorites	从收藏中移除
+	Compression	压缩
+	ZIP (1 scan line)	ZIP（1 条扫描线）
+	ZIP (16 scan lines)	ZIP（16 条扫描线）
+	Safe graphics mode: {mode}	安全图形模式：{mode}
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	上次启动时默认图形模式失败。更新显卡驱动程序通常可以解决此问题。
+	Use Default Graphics	使用默认图形
+	The default graphics are used from the next start.	下次启动时将使用默认图形。
+	DirectX 12 only	仅 DirectX 12
+	software rendering	软件渲染
+	Label Color Presets	标签颜色预设
+	{name} (Modified)	{name}（已修改）
+	Revert to the preset's colors and names	恢复为预设的颜色和名称
+	Import a preset file…	导入预设文件…
+	Export the labels to a preset file…	将标签导出为预设文件…
+	Show the presets folder	显示预设文件夹
+	Delete this preset	删除此预设
+	Opens in your web browser: {url}	在网页浏览器中打开：{url}
+	Saves this session's log and shows it in your file manager.	保存本次会话的日志并在文件管理器中显示。
+	Shows a report on this computer.	显示本机的报告。
+	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
+	Couldn't open your web browser	无法打开网页浏览器
+	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+# View ▸ Reset Interface Zoom (#2253).
+	Reset Interface Zoom	重置界面缩放
+	Track Color	轨道颜色
+	Open a sequence to search its graphics	打开序列以搜索其中的图形
+	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
+	No matching text.	没有匹配的文本。

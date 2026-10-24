@@ -211,11 +211,12 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
     let mut warnings = Vec::new();
     let mut pos = 0u64;
     let mut found_any = false;
+    let mut recovery_budget = 64 << 20;
     let mut hdr = [0u8; 27 + 255];
     while pos + 27 <= len {
         src.read_at(pos, &mut hdr[..27])?;
         if &hdr[..4] != b"OggS" || hdr[4] != 0 {
-            match find_capture(src, pos + 1, len)? {
+            match find_capture(src, pos + 1, len, &mut recovery_budget)? {
                 Some(p) => {
                     if found_any {
                         warnings.push(format!("lost sync at byte {pos}; resumed at {p}"));
@@ -328,12 +329,13 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
     Ok(OggFile { streams, warnings })
 }
 
-fn find_capture(src: &(impl ByteSource + ?Sized), from: u64, len: u64) -> Result<Option<u64>> {
+fn find_capture(src: &(impl ByteSource + ?Sized), from: u64, len: u64, budget: &mut usize) -> Result<Option<u64>> {
     let mut at = from;
-    while at + 4 <= len {
-        let n = ((len - at) as usize).min(1 << 20);
+    while at + 4 <= len && *budget > 0 {
+        let n = ((len - at) as usize).min(1 << 20).min(*budget);
         let mut buf = vec![0u8; n];
         src.read_at(at, &mut buf)?;
+        *budget = budget.saturating_sub(n);
         if let Some(i) = buf.windows(4).position(|w| w == b"OggS") {
             return Ok(Some(at + i as u64));
         }

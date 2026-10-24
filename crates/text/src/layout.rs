@@ -544,10 +544,18 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
         let mut cluster_starts: Vec<usize> = extents.keys().copied().collect();
         cluster_starts.sort_unstable();
         let char_bytes: Vec<usize> = text[r.clone()].char_indices().map(|(b, _)| r.start + b).collect();
+        let mut first_member = 0usize;
         for (ci, &cs) in cluster_starts.iter().enumerate() {
             let (x0, x1, rtl) = extents[&cs];
             let next = cluster_starts.get(ci + 1).copied().unwrap_or(r.end);
-            let members: Vec<usize> = char_bytes.iter().copied().filter(|b| *b >= cs && *b < next).collect();
+            while first_member < char_bytes.len() && char_bytes[first_member] < cs {
+                first_member += 1;
+            }
+            let member_start = first_member;
+            while first_member < char_bytes.len() && char_bytes[first_member] < next {
+                first_member += 1;
+            }
+            let members = &char_bytes[member_start..first_member];
             let n = members.len().max(1) as f32;
             for (mi, b) in members.iter().enumerate() {
                 let f = mi as f32 / n;
@@ -682,7 +690,8 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
                 lay.underline_runs.push(*si);
             }
         } else if style.underline && pl.content > 0.0 {
-            lay.underlines.push([x, baseline + pm.underline_pos, x + pl.content, baseline + pm.underline_pos + pm.underline_thickness]);
+            let y = baseline - style.baseline_shift + pm.underline_pos;
+            lay.underlines.push([x, y, x + pl.content, y + pm.underline_thickness]);
             lay.underline_runs.push(0);
         }
         lay.lines.push(Line {
@@ -724,6 +733,7 @@ fn layout_vertical(text: &str, sty: &Styles, para: &ParagraphStyle, col_w: f32, 
     let row = (pm.ascent + pm.descent).max(style.size * 0.5) + style.tracking * style.size / 1000.0;
     let flat = ParagraphStyle { vertical: true, ..Default::default() };
     lay.vertical = true;
+    let rich = sty.rich();
     let mut base = 0usize;
     let mut ncols = 0usize;
     for (c, p) in text.split('\n').enumerate() {
@@ -761,6 +771,21 @@ fn layout_vertical(text: &str, sty: &Styles, para: &ParagraphStyle, col_w: f32, 
                 }
                 g
             }));
+            // Underline runs down the column, to the right of the cell (the "below" side of vertical-rl).
+            let y_top = baseline - pl.ascent;
+            if rich {
+                for (_x0, x1, si) in &pl.underlines {
+                    let st = sty.list[*si as usize];
+                    let um = fonts::face(sty.prim[*si as usize].face).metrics(st.size);
+                    let x = *x1 + shift - st.baseline_shift + um.underline_pos;
+                    lay.underlines.push([x, y_top, x + um.underline_thickness, y_top + row]);
+                    lay.underline_runs.push(*si);
+                }
+            } else if style.underline && pl.content > 0.0 {
+                let x = shift + pl.left_trim + pl.content + pm.underline_pos;
+                lay.underlines.push([x, y_top, x + pm.underline_thickness, y_top + row]);
+                lay.underline_runs.push(0);
+            }
             lay.lines.push(Line {
                 range: pl.range,
                 baseline,
@@ -996,6 +1021,23 @@ mod tests {
         // differs from horizontal layout in the cache
         let h = layout("abc\nde", &st(40.0), &ParagraphStyle::default());
         assert_eq!(h.lines.len(), 2);
+    }
+
+    #[test]
+    fn vertical_underline_runs_down_the_column() {
+        let s = TextStyle { underline: true, ..st(60.0) };
+        let h = layout("A", &s, &ParagraphStyle::default());
+        let v = layout("A", &s, &ParagraphStyle { vertical: true, ..Default::default() });
+        assert_eq!(h.underlines.len(), 1);
+        assert_eq!(v.underlines.len(), 1, "vertical cells get an underline");
+        let [hx0, hy0, hx1, hy1] = h.underlines[0];
+        let [vx0, vy0, vx1, vy1] = v.underlines[0];
+        assert!(hx1 - hx0 > hy1 - hy0, "horizontal underline is a wide strip");
+        assert!(vy1 - vy0 > vx1 - vx0, "vertical underline is a tall strip");
+        let runs = [StyleRun { range: 0..1, style: s.clone() }];
+        let rich = layout_rich("A", &st(60.0), &runs, &ParagraphStyle { vertical: true, ..Default::default() });
+        assert_eq!(rich.underlines.len(), 1);
+        assert_eq!(rich.underline_runs, vec![1]);
     }
 
     #[test]

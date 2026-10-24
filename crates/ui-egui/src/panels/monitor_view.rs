@@ -363,9 +363,10 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
     if ui.rect_contains_pointer(area)
         && let Some(p) = ctx.pointer_hover_pos()
     {
-        // as fast as the Timeline's own wheel zoom
+        // about 10% per wheel notch (40 points), exponential in the wheel travel so a notch out
+        // undoes a notch in exactly
         let wheel = crate::panels::timeline::wheel_input(&ctx);
-        let f = if (wheel.pinch - 1.0).abs() > 1e-4 { wheel.pinch } else { (1.0 + wheel.delta.y * 0.01).clamp(0.5, 2.0) };
+        let f = if (wheel.pinch - 1.0).abs() > 1e-4 { wheel.pinch } else { (wheel.delta.y * 1.1_f32.ln() / 40.0).exp().clamp(0.5, 2.0) };
         if (f - 1.0).abs() > 1e-4 && pic.width() > 0.0 && fw > 0.0 {
             let cur = pic.width() * ppp / fw;
             let z = (cur * f).clamp(ZOOMS[0].1, ZOOMS[ZOOMS.len() - 1].1);
@@ -512,7 +513,8 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
         if resp.hovered() {
             ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
-        if resp.drag_started() {
+        // the left button only, as for the other things dragged on the monitor
+        if resp.drag_started_by(egui::PointerButton::Primary) {
             ui.data_mut(|d| d.insert_temp(drag_id, NewGuide { vertical }));
         }
         let Some(ng) = ui.data(|d| d.get_temp::<NewGuide>(drag_id)).filter(|g| g.vertical == vertical) else { continue };
@@ -523,7 +525,8 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
         }
         if resp.drag_stopped() {
             ui.data_mut(|d| d.remove::<NewGuide>(drag_id));
-            if area.contains(pos) {
+            // egui ends a drag on Escape: that stop adds no guide (#580)
+            if area.contains(pos) && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 let position = if ng.vertical { ((pos.x - pic.min.x) / kx).round() } else { ((pos.y - pic.min.y) / ky).round() } as f64;
                 let v = view_mut(app, w);
                 v.guides.push(Guide { vertical: ng.vertical, position });
@@ -561,8 +564,23 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if g.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
+        let left = egui::PointerButton::Primary;
+        // egui ends a drag on Escape: that stop puts the guide back where it was (#580)
+        let before_id = egui::Id::new((pfx, "guide-before-drag", i));
+        if resp.drag_started_by(left) {
+            ui.data_mut(|d| d.insert_temp(before_id, g.position));
+        }
+        if resp.drag_stopped_by(left) {
+            let before = ui.data_mut(|d| d.remove_temp::<f64>(before_id));
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if let (Some(p0), Some(guide)) = (before, view_mut(app, w).guides.get_mut(i)) {
+                    guide.position = p0;
+                }
+                continue;
+            }
+        }
         if let Some(pos) = resp.interact_pointer_pos()
-            && (resp.dragged() || resp.drag_stopped())
+            && (resp.dragged_by(left) || resp.drag_stopped_by(left))
         {
             if !area.contains(pos) {
                 // outside the picture area: dropping here removes the guide
@@ -581,7 +599,8 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
 }
 
 /// The Source Monitor's audio waveform (Audio Waveform display mode, audio-only clips and the
-/// split view): click to move the source playhead.
+/// split view) over `shown`, the part of the clip the time ruler shows: click to move the source
+/// playhead.
 #[allow(clippy::too_many_arguments)]
 pub fn waveform(
     app: &mut FilmcraftApp,
@@ -589,17 +608,17 @@ pub fn waveform(
     area: Rect,
     item: ItemId,
     time: Tick,
-    duration: Tick,
+    shown: (Tick, Tick),
     mark_in: Option<Tick>,
     mark_out: Option<Tick>,
 ) {
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(area);
     p.rect_filled(area, 0.0, t.monitor_bg);
-    let dur = duration.0.max(1) as f64;
-    let xof = |tk: Tick| area.min.x + ((tk.0 as f64 / dur) as f32).clamp(0.0, 1.0) * area.width();
+    let dur = (shown.1 - shown.0).0.max(1) as f64;
+    let xof = |tk: Tick| area.min.x + (((tk - shown.0).0 as f64 / dur) as f32).clamp(0.0, 1.0) * area.width();
     if mark_in.is_some() || mark_out.is_some() {
-        let (a, b) = (xof(mark_in.unwrap_or(Tick::ZERO)), xof(mark_out.unwrap_or(duration)));
+        let (a, b) = (xof(mark_in.unwrap_or(shown.0)), xof(mark_out.unwrap_or(shown.1)));
         p.rect_filled(Rect::from_min_max(pos2(a, area.min.y), pos2(b, area.max.y)), 0.0, Color32::from_white_alpha(14));
     }
     let mid = area.center().y;
@@ -607,15 +626,12 @@ pub fn waveform(
     match crate::panels::timeline::request_peaks(app, item, 0) {
         Some(peaks) if !peaks.is_empty() => {
             let half = area.height() * 0.45;
-            let spp = 256.0 * TICKS_PER_SAMPLE_48K;
             let mut mesh = egui::Mesh::default();
             let col = Color32::from_rgb(0x4f, 0xc3, 0x7a);
             for x in (area.min.x.floor() as i32)..(area.max.x.ceil() as i32) {
                 let f0 = (x as f32 - area.min.x) / area.width();
                 let f1 = (x as f32 + 1.0 - area.min.x) / area.width();
-                let s0 = (dur * f0 as f64 / spp) as usize;
-                let s1 = ((dur * f1 as f64 / spp) as usize).max(s0 + 1);
-                let (lo, hi) = peaks.iter().skip(s0).take(s1 - s0).fold((0f32, 0f32), |(l, h), (a, b)| (l.min(*a), h.max(*b)));
+                let (lo, hi) = column_peak(&peaks, shown, f0 as f64, f1 as f64);
                 if hi - lo > 0.002 {
                     mesh.add_colored_rect(
                         Rect::from_min_max(pos2(x as f32, mid - hi.min(1.0) * half), pos2(x as f32 + 1.0, mid - lo.max(-1.0) * half + 1.0)),
@@ -647,8 +663,18 @@ pub fn waveform(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let f = ((pos.x - area.min.x) / area.width()).clamp(0.0, 1.0) as f64;
-        let _ = app.session.execute("source.setPlayhead", json!({"time": (f * dur) as i64}));
+        let _ = app.session.execute("source.setPlayhead", json!({"time": shown.0.0.saturating_add((f * dur) as i64)}));
     }
+}
+
+/// The lowest and highest sample of `peaks` under the waveform column from `f0` to `f1` (fractions
+/// of the shown range `shown`): the narrower the range, the fewer peak buckets a column covers.
+fn column_peak(peaks: &[(f32, f32)], shown: (Tick, Tick), f0: f64, f1: f64) -> (f32, f32) {
+    let spp = 256.0 * TICKS_PER_SAMPLE_48K;
+    let (start, len) = (shown.0.0.max(0) as f64, (shown.1 - shown.0).0.max(1) as f64);
+    let s0 = ((start + len * f0) / spp) as usize;
+    let s1 = (((start + len * f1) / spp) as usize).max(s0 + 1);
+    peaks.iter().skip(s0).take(s1 - s0).fold((0f32, 0f32), |(l, h), (a, b)| (l.min(*a), h.max(*b)))
 }
 
 /// Ticks per 48 kHz sample (the waveform peaks are 256-sample min/max pairs at 48 kHz).
@@ -775,8 +801,9 @@ fn push(e: &mut Elems, id: &str, r: &egui::Response, label: &str) {
 /// Add Guide… / Save Guides as Template… / Manage Guides… dialogs.
 pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.guide_dialog.clone() else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("guide-dialog-before-drag"), &mut d);
     let mut elems: Elems = Vec::new();
-    let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let mut close = crate::widgets::escape_closes(ctx);
     let mut act: Option<(String, Value)> = None;
     let templates: Vec<String> = app.session.prefs.guides.templates.iter().map(|t| t.name.clone()).collect();
     let (title, shown) = match &d {
@@ -784,9 +811,13 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         GuideDialog::SaveTemplate { .. } => ("Save Guides as Template", tl!("Save Guides as Template")),
         GuideDialog::Manage { .. } => ("Manage Guides", tl!("Manage Guides")),
     };
-    egui::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
-        ctx,
-        |ui| match &mut d {
+    egui::Window::new(shown)
+        .id(egui::Id::new(title))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| match &mut d {
             GuideDialog::Add { vertical, position, source } => {
                 let m = if *source { "source" } else { "program" };
                 ui.horizontal(|ui| {
@@ -804,7 +835,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
                 ui.horizontal(|ui| {
                     ui.label(tl!("Position:"));
-                    let r = ui.add(egui::DragValue::new(position).speed(1.0).suffix(" px"));
+                    let r = ui.add(crate::widgets::number_drag(position).speed(1.0).suffix(" px"));
                     push(&mut elems, "guides.add.position", &r, "Position");
                 });
                 ui.horizontal(|ui| {
@@ -874,8 +905,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     close |= r.clicked();
                 });
             }
-        },
-    );
+        });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -937,5 +967,22 @@ mod tests {
         v.paused_res = PlaybackRes::Quarter;
         assert_eq!(v.effective_res(true), PlaybackRes::Half);
         assert_eq!(v.effective_res(false), PlaybackRes::Quarter);
+    }
+
+    #[test]
+    fn zooming_in_resolves_the_waveform_in_finer_columns() {
+        // a square wave: four loud peak buckets, then four silent ones, 800 buckets in all
+        let peaks: Vec<(f32, f32)> = (0..800).map(|i| if (i / 4) % 2 == 0 { (-1.0, 1.0) } else { (0.0, 0.0) }).collect();
+        let bucket = 256.0 * TICKS_PER_SAMPLE_48K;
+        let at = |b: f64| Tick((b * bucket) as i64);
+        let silent = |shown: (Tick, Tick)| (0..100).filter(|x| column_peak(&peaks, shown, *x as f64 / 100.0, (*x + 1) as f64 / 100.0).1 == 0.0).count();
+        // the whole clip in 100 columns: 8 buckets each, every one with a loud part
+        assert_eq!(silent((at(0.0), at(800.0))), 0);
+        // an eighth of it: about one bucket a column (a column edge rounding down takes in its
+        // neighbour), and the silent half shows
+        let zoomed = silent((at(0.0), at(100.0)));
+        assert!((45..=50).contains(&zoomed), "{zoomed} silent columns");
+        // the zoomed part starts where the ruler does: a silent stretch is silent throughout
+        assert_eq!(silent((at(4.0), at(8.0))), 100);
     }
 }

@@ -8,11 +8,13 @@
 //! offsets (`123f`) at `ttp:frameRate` / `ttp:frameRateMultiplier`, which are exact; without
 //! one, and always for DFXP (for older players), times are clock times with milliseconds.
 //!
-//! **Reading** is namespace-agnostic (TTML1 2010, the 2006 `ttaf1` drafts and TTML2 all read):
+//! **Reading** accepts TTML1 2010, the 2006 `ttaf1` drafts and TTML2:
 //! clock times (`HH:MM:SS`, `.fraction`, `:FF` frames and `.subframes`), offset times (`h`, `m`,
-//! `s`, `ms`, `f`, `t` with `ttp:tickRate`), `begin` / `end` / `dur`, nested time containers
-//! (`body` / `div` begins add up), timed `<span>`s inside an untimed `<p>`, `<br/>`, whitespace
+//! `s`, `ms`, `f`, `t` with `ttp:tickRate`), `begin` / `end` / `dur`, nested `par` time
+//! containers (`body` / `div` begins add up and their ends clip what is inside), timed `<span>`s inside an untimed `<p>`, `<br/>`, whitespace
 //! collapsing, styles referenced by id (italic / bold / underline) and `ttm:agent` / `xml:id`.
+
+use std::collections::{HashMap, HashSet};
 
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 
@@ -31,8 +33,72 @@ const NS_TT: &str = "http://www.w3.org/ns/ttml";
 const NS_TTP: &str = "http://www.w3.org/ns/ttml#parameter";
 const NS_TTS: &str = "http://www.w3.org/ns/ttml#styling";
 const NS_TTM: &str = "http://www.w3.org/ns/ttml#metadata";
+const NS_TTM_DRAFT: &str = "http://www.w3.org/2006/10/ttaf1#metadata";
+const NS_TTM_DRAFT_APRIL: &str = "http://www.w3.org/2006/04/ttaf1#metadata";
+const NS_XML: &str = "http://www.w3.org/XML/1998/namespace";
 const IMSC1_TEXT: &str = "http://www.w3.org/ns/ttml/profile/imsc1/text";
 const DFXP_PROFILE: &str = "http://www.w3.org/ns/ttml/profile/dfxp-presentation";
+
+/// TTML is normally only a few containers deep. Keep the XML parser and our recursive content
+/// walkers safely below a native-stack-sized nesting level for untrusted caption files.
+const MAX_XML_DEPTH: usize = 128;
+
+/// Count XML element nesting without constructing an XML tree. This deliberately only decides
+/// where markup ends (respecting quoted attributes, comments, CDATA and processing instructions);
+/// `roxmltree` remains responsible for XML syntax and matching tags.
+fn check_xml_depth(text: &str) -> Result<()> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut depth = 0usize;
+    while let Some(relative) = text[i..].find('<') {
+        let start = i + relative;
+        let rest = &text[start..];
+        if rest.starts_with("<!--") {
+            let Some(end) = text[start + 4..].find("-->") else { return Ok(()) };
+            i = start + 4 + end + 3;
+            continue;
+        }
+        if rest.starts_with("<![CDATA[") {
+            let Some(end) = text[start + 9..].find("]]>") else { return Ok(()) };
+            i = start + 9 + end + 3;
+            continue;
+        }
+        if rest.starts_with("<?") {
+            let Some(end) = text[start + 2..].find("?>") else { return Ok(()) };
+            i = start + 2 + end + 2;
+            continue;
+        }
+
+        let mut j = start + 1;
+        let mut quote = None;
+        while j < bytes.len() {
+            match (bytes[j], quote) {
+                (b'\'' | b'\"', None) => quote = Some(bytes[j]),
+                (b, Some(q)) if b == q => quote = None,
+                (b'>', None) => break,
+                _ => {}
+            }
+            j += 1;
+        }
+        if j == bytes.len() {
+            return Ok(());
+        }
+
+        if rest.starts_with("</") {
+            depth = depth.checked_sub(1).ok_or_else(|| Error::Syntax { line: 1, msg: "unexpected XML closing tag".into() })?;
+        } else if !rest.starts_with("<!") {
+            let self_closing = bytes[start + 1..j].iter().rev().find(|b| !b.is_ascii_whitespace()) == Some(&b'/');
+            if !self_closing {
+                depth += 1;
+                if depth > MAX_XML_DEPTH {
+                    return Err(Error::Syntax { line: 1, msg: format!("TTML XML nesting exceeds {MAX_XML_DEPTH} elements") });
+                }
+            }
+        }
+        i = j + 1;
+    }
+    Ok(())
+}
 
 fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
@@ -65,7 +131,23 @@ fn time_expr(t: Tick, rate: Option<FrameRate>) -> String {
 /// Caption text (`\n` lines, `<i>`/`<b>`/`<u>` tags) → TTML inline content.
 fn inline(text: &str) -> String {
     let mut out = String::new();
-    let mut open: Vec<&str> = Vec::new();
+    // Keep the logical style state separate from what has been written. There are only three
+    // supported styles, so duplicate or crossing input tags cannot grow an unbounded span stack.
+    let mut active: Vec<&'static str> = Vec::new();
+    let mut emitted: Vec<&'static str> = Vec::new();
+    let sync = |out: &mut String, active: &[&'static str], emitted: &mut Vec<&'static str>| {
+        if *emitted != active {
+            for _ in emitted.drain(..) {
+                out.push_str("</span>");
+            }
+            for attr in active {
+                out.push_str("<span ");
+                out.push_str(attr);
+                out.push('>');
+                emitted.push(attr);
+            }
+        }
+    };
     let mut rest = text;
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix('<')
@@ -84,26 +166,16 @@ fn inline(text: &str) -> String {
             };
             if let Some(a) = attr {
                 if closing {
-                    if let Some(pos) = open.iter().rposition(|x| *x == a) {
-                        // close spans opened after it, then it, then reopen the inner ones
-                        let inner: Vec<&str> = open.drain(pos..).skip(1).collect();
-                        for _ in 0..=inner.len() {
-                            out.push_str("</span>");
-                        }
-                        for x in inner {
-                            out.push_str(&format!("<span {x}>"));
-                            open.push(x);
-                        }
-                    }
-                } else {
-                    out.push_str(&format!("<span {a}>"));
-                    open.push(a);
+                    active.retain(|style| *style != a);
+                } else if !active.contains(&a) {
+                    active.push(a);
                 }
             }
             rest = &after[end + 1..];
             continue;
         }
         let Some(ch) = rest.chars().next() else { break };
+        sync(&mut out, &active, &mut emitted);
         if ch == '\n' {
             out.push_str("<br/>");
         } else {
@@ -111,7 +183,7 @@ fn inline(text: &str) -> String {
         }
         rest = &rest[ch.len_utf8()..];
     }
-    for _ in open {
+    for _ in emitted {
         out.push_str("</span>");
     }
     out
@@ -120,6 +192,10 @@ fn inline(text: &str) -> String {
 fn is_ncname(s: &str) -> bool {
     let mut c = s.chars();
     c.next().is_some_and(|f| f.is_alphabetic() || f == '_') && c.all(|x| x.is_alphanumeric() || matches!(x, '_' | '-' | '.'))
+}
+
+fn cue_id(cue: &Cue, index: usize) -> String {
+    cue.id.as_deref().filter(|x| is_ncname(x)).map(str::to_string).unwrap_or_else(|| format!("c{}", index + 1))
 }
 
 /// Write `doc` as TTML. `rate` (IMSC1 only) makes times exact frame offsets; `lang` is the
@@ -140,13 +216,38 @@ pub fn write(doc: &Document, flavor: Flavor, rate: Option<FrameRate>, lang: &str
         }
     }
     o.push_str(&format!(" xml:lang=\"{}\">\n", esc(if lang.is_empty() { "en" } else { lang })));
+    // Keep agent identifiers distinct from the IDs already emitted for cues, style and region.
+    let mut ids: HashSet<String> = ["s1".into(), "r1".into()].into_iter().collect();
+    ids.extend(doc.cues.iter().enumerate().map(|(i, c)| cue_id(c, i)));
+    let mut speakers = Vec::new();
+    let mut speaker_ids = HashMap::new();
+    for speaker in doc.cues.iter().filter_map(|c| c.speaker.as_deref()) {
+        if speaker_ids.contains_key(speaker) {
+            continue;
+        }
+        let mut id = format!("agent{}", speakers.len() + 1);
+        // Each collision consumes a distinct reserved ID, so this is bounded by ids.len().
+        while ids.contains(&id) {
+            id.push('_');
+        }
+        ids.insert(id.clone());
+        speaker_ids.insert(speaker, id.clone());
+        speakers.push((speaker, id));
+    }
     o.push_str("  <head>\n");
+    for (speaker, id) in speakers {
+        o.push_str(&format!(
+            "    <ttm:agent xml:id=\"{id}\" type=\"other\"><ttm:name type=\"full\" xml:space=\"preserve\">{}</ttm:name></ttm:agent>\n",
+            // XML 1.0 §2.11 normalizes literal CR even with xml:space="preserve".
+            esc(speaker).replace('\r', "&#13;")
+        ));
+    }
     o.push_str("    <styling>\n      <style xml:id=\"s1\" tts:color=\"white\" tts:fontFamily=\"proportionalSansSerif\" tts:fontSize=\"100%\" tts:textAlign=\"center\"/>\n    </styling>\n");
     o.push_str("    <layout>\n      <region xml:id=\"r1\" tts:origin=\"10% 10%\" tts:extent=\"80% 80%\" tts:displayAlign=\"after\"/>\n    </layout>\n");
     o.push_str("  </head>\n  <body region=\"r1\" style=\"s1\">\n    <div>\n");
     for (i, c) in doc.cues.iter().enumerate() {
-        let id = c.id.as_deref().filter(|x| is_ncname(x)).map(str::to_string).unwrap_or_else(|| format!("c{}", i + 1));
-        let agent = c.speaker.as_deref().map(|s| format!(" ttm:role=\"x-speaker\" ttm:agent=\"{}\"", esc(&agent_id(s)))).unwrap_or_default();
+        let id = cue_id(c, i);
+        let agent = c.speaker.as_deref().and_then(|s| speaker_ids.get(s)).map(|id| format!(" ttm:role=\"x-speaker\" ttm:agent=\"{id}\"")).unwrap_or_default();
         o.push_str(&format!(
             "      <p xml:id=\"{}\" begin=\"{}\" end=\"{}\"{agent}>{}</p>\n",
             esc(&id),
@@ -157,12 +258,6 @@ pub fn write(doc: &Document, flavor: Flavor, rate: Option<FrameRate>, lang: &str
     }
     o.push_str("    </div>\n  </body>\n</tt>\n");
     o
-}
-
-/// `ttm:agent` refers to an agent id; we write the speaker name itself (made an NCName).
-fn agent_id(s: &str) -> String {
-    let v: String = s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect();
-    if v.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') { v } else { format!("_{v}") }
 }
 
 fn gcd(a: i64, b: i64) -> i64 {
@@ -181,7 +276,8 @@ struct Timing {
     /// Nominal frames per second for `HH:MM:SS:FF`.
     base: i64,
     sub_frame_rate: i64,
-    tick_rate: i64,
+    /// Ticks per second, rational when derived from the effective frame rate.
+    tick_rate: FrameRate,
 }
 
 fn positive_integer(s: &str) -> Option<i64> {
@@ -203,6 +299,90 @@ fn attr<'a>(n: roxmltree::Node<'a, '_>, local: &str) -> Option<&'a str> {
     n.attributes().find(|a| a.name() == local).map(|a| a.value())
 }
 
+fn metadata_namespace(namespace: Option<&str>) -> bool {
+    matches!(namespace, Some(NS_TTM) | Some(NS_TTM_DRAFT) | Some(NS_TTM_DRAFT_APRIL))
+}
+
+/// Significant TTML agents are children of head or of head's metadata children (TTML1 §12.1.5).
+fn speaker_names(root: roxmltree::Node) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let content_namespace = root.tag_name().namespace();
+    let Some(head) = root.children().find(|n| n.is_element() && n.tag_name().name() == "head" && n.tag_name().namespace() == content_namespace) else {
+        return out;
+    };
+    for agent in head.descendants().filter(|n| n.is_element() && n.tag_name().name() == "agent" && metadata_namespace(n.tag_name().namespace())) {
+        if !agent
+            .parent()
+            .is_some_and(|p| p == head || (p.tag_name().name() == "metadata" && p.tag_name().namespace() == content_namespace && p.parent() == Some(head)))
+        {
+            continue;
+        }
+        let id = if agent.tag_name().namespace() == Some(NS_TTM_DRAFT_APRIL) {
+            // The April 2006 draft defines an unqualified id, before TTML adopted xml:id.
+            agent.attributes().find(|a| a.name() == "id" && a.namespace().is_none()).map(|a| a.value())
+        } else {
+            agent.attribute((NS_XML, "id"))
+        };
+        let Some(id) = id else { continue };
+        let names: Vec<_> = agent
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "name" && metadata_namespace(n.tag_name().namespace()))
+            .map(|n| {
+                let kind = n.attributes().find(|a| a.name() == "type" && a.namespace().is_none()).map(|a| a.value());
+                (kind, n.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect::<String>())
+            })
+            .collect();
+        let name = names.iter().find(|(kind, _)| *kind == Some("full")).or_else(|| names.iter().find(|(_, text)| !text.is_empty())).or_else(|| names.first());
+        if let Some((_, name)) = name {
+            // An explicitly empty full name remains empty, including our own Some("") speakers.
+            out.insert(id.to_string(), name.clone());
+        }
+    }
+    out
+}
+
+fn speaker(n: roxmltree::Node, names: &HashMap<String, String>) -> Option<String> {
+    let refs = n.attributes().find(|a| a.name() == "agent" && metadata_namespace(a.namespace())).map(|a| a.value()).or_else(|| n.attribute("agent"));
+    refs.map(|refs| {
+        // The project stores one speaker label. Keep document-defined long names and repeated
+        // references from multiplying into an unbounded per-cue allocation.
+        const MAX_REFS: usize = 64;
+        const MAX_LABEL_BYTES: usize = 4096;
+        let mut out = String::new();
+        for id in refs.split_whitespace().take(MAX_REFS) {
+            if !out.is_empty() {
+                if out.len() + 2 > MAX_LABEL_BYTES {
+                    break;
+                }
+                out.push_str(", ");
+            }
+            let name = names.get(id).map(String::as_str).unwrap_or(id);
+            if names.contains_key(id) {
+                let room = MAX_LABEL_BYTES.saturating_sub(out.len());
+                let mut end = 0;
+                for (i, ch) in name.char_indices() {
+                    if i + ch.len_utf8() > room {
+                        break;
+                    }
+                    end = i + ch.len_utf8();
+                }
+                out.push_str(&name[..end]);
+            } else {
+                for ch in id.trim_start_matches('_').chars() {
+                    if out.len() + ch.len_utf8() > MAX_LABEL_BYTES {
+                        break;
+                    }
+                    out.push(if ch == '_' { ' ' } else { ch });
+                }
+            }
+            if out.len() == MAX_LABEL_BYTES {
+                break;
+            }
+        }
+        out
+    })
+}
+
 fn timing(root: roxmltree::Node) -> Result<Timing> {
     let invalid =
         |name: &str| Error::Syntax { line: root.document().text_pos_at(root.range().start).row as usize, msg: format!("invalid TTML timing parameter {name}") };
@@ -218,9 +398,10 @@ fn timing(root: roxmltree::Node) -> Result<Timing> {
     let rate = FrameRate::new(base.checked_mul(mn).ok_or_else(|| invalid("frameRateMultiplier"))?, md);
     let sub = integer("subFrameRate", 1)?;
     let tick_rate = match attr(root, "tickRate") {
-        Some(v) => positive_integer(v).ok_or_else(|| invalid("tickRate"))?,
-        None if attr(root, "frameRate").is_some() => base.checked_mul(sub).ok_or_else(|| invalid("subFrameRate"))?,
-        None => 1,
+        Some(v) => FrameRate::new(positive_integer(v).ok_or_else(|| invalid("tickRate"))?, 1),
+        // TTML1 §6.2.10: absent tickRate uses the effective frame rate times subFrameRate.
+        None if attr(root, "frameRate").is_some() => FrameRate::new(rate.num.checked_mul(sub).ok_or_else(|| invalid("subFrameRate"))?, rate.den),
+        None => FrameRate::new(1, 1),
     };
     Ok(Timing { rate, base, sub_frame_rate: sub, tick_rate })
 }
@@ -228,13 +409,13 @@ fn timing(root: roxmltree::Node) -> Result<Timing> {
 /// Seconds as an exact decimal string → ticks.
 fn decimal_ticks(int: &str, frac: &str, unit_ticks: i128) -> Option<i128> {
     let i: i128 = if int.is_empty() { 0 } else { int.parse().ok()? };
-    let mut t = i * unit_ticks;
+    let mut t = i.checked_mul(unit_ticks)?;
     if !frac.is_empty() {
         if frac.len() > 12 || !frac.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
         let f: i128 = frac.parse().ok()?;
-        t += f * unit_ticks / 10i128.pow(frac.len() as u32);
+        t = t.checked_add(f.checked_mul(unit_ticks)? / 10i128.pow(frac.len() as u32))?;
     }
     Some(t)
 }
@@ -276,7 +457,7 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
     let unit_start = s.find(|c: char| c.is_ascii_alphabetic())?;
     let (v, unit) = s.split_at(unit_start);
     let (vi, vf) = v.split_once('.').unwrap_or((v, ""));
-    if !vi.bytes().all(|b| b.is_ascii_digit()) || vi.len() > 15 {
+    if vi.is_empty() || !vi.bytes().all(|b| b.is_ascii_digit()) || vi.len() > 15 {
         return None;
     }
     let t = match unit {
@@ -294,10 +475,7 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
             }
             whole.0 as i128 + decimal_ticks("0", vf, fd)?
         }
-        "t" => {
-            let n: i128 = vi.parse().ok()?;
-            n * tps / tm.tick_rate.max(1) as i128
-        }
+        "t" => decimal_ticks(vi, vf, tps * i128::from(tm.tick_rate.den))? / i128::from(tm.tick_rate.num),
         _ => return None,
     };
     i64::try_from(t).ok().map(Tick)
@@ -405,12 +583,14 @@ fn clean(s: &str) -> String {
 }
 
 pub fn parse(text: &str) -> Result<Document> {
+    check_xml_depth(text)?;
     let xml = roxmltree::Document::parse(text).map_err(|_| Error::NotFormat("TTML"))?;
     let root = xml.root_element();
     if root.tag_name().name() != "tt" {
         return Err(Error::NotFormat("TTML"));
     }
     let tm = timing(root)?;
+    let speakers = speaker_names(root);
     let mut styles = std::collections::HashMap::new();
     for s in root.descendants().filter(|n| n.is_element() && n.tag_name().name() == "style") {
         if let Some(id) = s.attributes().find(|a| a.name() == "id").map(|a| a.value()) {
@@ -423,44 +603,84 @@ pub fn parse(text: &str) -> Result<Document> {
     let Some(body) = root.children().find(|n| n.is_element() && n.tag_name().name() == "body") else {
         return Ok(doc);
     };
-    walk(body, Tick::ZERO, &tm, &styles, Fmt::default(), &mut doc);
+    if root.descendants().any(|n| attr(n, "timeContainer").is_some_and(|v| v.trim() == "seq")) {
+        doc.warnings.push("timeContainer=\"seq\" is not supported; its children are timed as in a par container".into());
+    }
+    // the body is a time container like a div: its begin offsets, and its end clips, everything inside
+    let t = times(body, Scope { begin: Tick::ZERO, end: None }, tm, &mut doc);
+    walk(body, Scope { begin: t.begin.unwrap_or(Tick::ZERO), end: t.end }, &tm, &styles, &speakers, Fmt::default(), &mut doc);
     doc.cues.sort_by_key(|c| (c.start, c.end));
     Ok(doc)
 }
 
-/// Begin and end of a timed element relative to `parent` (None when it has no timing).
-fn times(n: roxmltree::Node, parent: Tick, tm: &Timing, doc: &mut Document) -> (Option<Tick>, Option<Tick>) {
-    let p = |k: &str, doc: &mut Document| -> Option<Tick> {
+/// The active interval of the enclosing time containers (`par`): child times are offsets from
+/// `begin`, and nothing inside outlasts `end` (None when no ancestor sets an end).
+#[derive(Clone, Copy)]
+struct Scope {
+    begin: Tick,
+    end: Option<Tick>,
+}
+
+/// Whether `n` has timing attributes of its own.
+fn has_timing(n: roxmltree::Node) -> bool {
+    ["begin", "end", "dur"].into_iter().any(|k| attr(n, k).is_some())
+}
+
+/// Timing of an element in its parent container.
+struct Times {
+    /// The begin, when the element sets one.
+    begin: Option<Tick>,
+    /// Its own end (`end`, or `begin` + `dur`, the earlier of the two) clipped to the parent's
+    /// end, else the parent's end.
+    end: Option<Tick>,
+    /// A timing attribute did not parse (and was warned about).
+    bad: bool,
+}
+
+fn times(n: roxmltree::Node, parent: Scope, tm: Timing, doc: &mut Document) -> Times {
+    let mut bad = false;
+    let mut p = |k: &str, doc: &mut Document| -> Option<Tick> {
         let v = attr(n, k)?;
-        let t = parse_time(v, *tm);
+        let t = parse_time(v, tm);
         if t.is_none() {
+            bad = true;
             doc.warnings.push(format!("bad time expression \"{v}\""));
         }
         t
     };
-    let begin = p("begin", doc).map(|b| parent + b);
-    let end = match (p("end", doc), p("dur", doc)) {
-        (Some(e), _) => Some(parent + e),
-        (None, Some(d)) => Some(begin.unwrap_or(parent) + d),
-        _ => None,
+    let begin = p("begin", doc).map(|b| parent.begin + b);
+    let own_end = match (p("end", doc).map(|e| parent.begin + e), p("dur", doc).map(|d| begin.unwrap_or(parent.begin) + d)) {
+        (Some(e), Some(d)) => Some(e.min(d)),
+        (e, d) => e.or(d),
     };
-    (begin, end)
+    let end = match (own_end, parent.end) {
+        (Some(e), Some(pe)) => Some(e.min(pe)),
+        (e, pe) => e.or(pe),
+    };
+    Times { begin, end, bad }
 }
 
-fn walk(n: roxmltree::Node, parent: Tick, tm: &Timing, styles: &std::collections::HashMap<String, Fmt>, fmt: Fmt, doc: &mut Document) {
+fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String, Fmt>, speakers: &HashMap<String, String>, fmt: Fmt, doc: &mut Document) {
     for c in n.children().filter(|c| c.is_element()) {
         let f = style_of(c, styles, fmt);
         match c.tag_name().name() {
             "div" => {
-                let (b, _) = times(c, parent, tm, doc);
-                walk(c, b.unwrap_or(parent), tm, styles, f, doc);
+                let t = times(c, parent, *tm, doc);
+                walk(c, Scope { begin: t.begin.unwrap_or(parent.begin), end: t.end }, tm, styles, speakers, f, doc);
             }
             "p" => {
-                let (b, e) = times(c, parent, tm, doc);
-                let speaker = attr(c, "agent").map(|a| a.trim().trim_start_matches('_').replace('_', " "));
+                let t = times(c, parent, *tm, doc);
+                if t.bad {
+                    continue;
+                }
+                let (b, e) = (t.begin.unwrap_or(parent.begin), t.end);
+                let cue_speaker = speaker(c, speakers);
                 let id = c.attributes().find(|a| a.name() == "id").map(|a| a.value().to_string());
-                match (b, e) {
-                    (Some(b), Some(e)) => {
+                let spans: Vec<roxmltree::Node> = c.children().filter(|x| x.is_element() && x.tag_name().name() == "span" && has_timing(*x)).collect();
+                // a timed paragraph, or one without timed spans in a container with an end, is one cue
+                let whole = if has_timing(c) || spans.is_empty() { e } else { None };
+                match whole {
+                    Some(e) => {
                         let mut o = Out { s: String::new(), pending: false };
                         let tags: Vec<&str> = [(f.italic, "i"), (f.bold, "b"), (f.underline, "u")].into_iter().filter(|x| x.0).map(|x| x.1).collect();
                         for t in &tags {
@@ -472,20 +692,27 @@ fn walk(n: roxmltree::Node, parent: Tick, tm: &Timing, styles: &std::collections
                         }
                         let text = clean(&o.s);
                         if e > b && !text.is_empty() {
-                            doc.cues.push(Cue { start: b, end: e, text, speaker, id, ..Default::default() });
+                            doc.cues.push(Cue { start: b, end: e, text, speaker: cue_speaker, id, ..Default::default() });
                         }
                     }
-                    _ => {
+                    None => {
                         // untimed paragraph: its timed spans are the cues
-                        let base = b.unwrap_or(parent);
-                        for sp in c.children().filter(|x| x.is_element() && x.tag_name().name() == "span") {
-                            let (sb, se) = times(sp, base, tm, doc);
-                            if let (Some(sb), Some(se)) = (sb, se) {
+                        let scope = Scope { begin: b, end: e };
+                        for sp in spans {
+                            let st = times(sp, scope, *tm, doc);
+                            let sb = st.begin.unwrap_or(scope.begin);
+                            if let (false, Some(se)) = (st.bad, st.end) {
                                 let mut o = Out { s: String::new(), pending: false };
                                 collect(sp, styles, style_of(sp, styles, f), &mut o);
                                 let text = clean(&o.s);
                                 if se > sb && !text.is_empty() {
-                                    doc.cues.push(Cue { start: sb, end: se, text, speaker: speaker.clone(), ..Default::default() });
+                                    doc.cues.push(Cue {
+                                        start: sb,
+                                        end: se,
+                                        text,
+                                        speaker: speaker(sp, speakers).or_else(|| cue_speaker.clone()),
+                                        ..Default::default()
+                                    });
                                 }
                             }
                         }
@@ -502,7 +729,7 @@ mod tests {
     use super::*;
 
     fn tm(rate: FrameRate) -> Timing {
-        Timing { rate, base: rate.timecode_base(), sub_frame_rate: 1, tick_rate: 1 }
+        Timing { rate, base: rate.timecode_base(), sub_frame_rate: 1, tick_rate: FrameRate::new(1, 1) }
     }
 
     #[test]
@@ -525,9 +752,17 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_ttml_is_rejected_before_xml_parsing() {
+        let xml = format!("<tt>{}<p begin=\"0s\" end=\"1s\">caption</p>{}</tt>", "<div>".repeat(MAX_XML_DEPTH), "</div>".repeat(MAX_XML_DEPTH));
+        assert!(matches!(parse(&xml), Err(Error::Syntax { msg, .. }) if msg.contains("nesting exceeds")));
+    }
+
+    #[test]
     fn missing_timing_parameters_keep_defaults() {
         for (params, begin, end) in [
             ("", "1s", "2s"),
+            (r#"ttp:frameRate="25" ttp:frameRateMultiplier="2 1""#, "50t", "100t"),
+            (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001" ttp:subFrameRate="1001""#, "30000t", "60000t"),
             (r#"ttp:frameRate="25""#, "25f", "50f"),
             (r#"ttp:frameRate="30" ttp:subFrameRate="2""#, "60t", "120t"),
             (r#"ttp:frameRate="30" ttp:subFrameRate="2" ttp:tickRate="10""#, "10t", "20t"),
@@ -544,6 +779,30 @@ mod tests {
     }
 
     #[test]
+    fn default_tick_rate_preserves_fractional_frame_rate() {
+        for format in [crate::Format::Ttml, crate::Format::Dfxp] {
+            for (params, begin, end, start, finish) in [
+                (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001""#, "30t", "60t", 1001000, 2002000),
+                (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001""#, "1.5t", "3t", 50050, 100100),
+                (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001" ttp:subFrameRate="2""#, "30t", "60t", 500500, 1001000),
+                (r#"ttp:frameRate="30" ttp:frameRateMultiplier="1000 1001" ttp:tickRate="10""#, "10t", "20t", 1000000, 2000000),
+                (r#"ttp:frameRateMultiplier="2 1" ttp:subFrameRate="2""#, "1t", "2t", 1000000, 2000000),
+            ] {
+                let xml = format!(
+                    r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" {params}><body><div><p begin="{begin}" end="{end}">Hello</p></div></body></tt>"#
+                );
+                let doc = crate::parse(xml.as_bytes(), format).unwrap();
+                assert_eq!(doc.cues.len(), 1, "{params}");
+                assert_eq!(doc.cues[0].start, Tick(start * (TICKS_PER_SECOND / 1_000_000)), "{params}");
+                assert_eq!(doc.cues[0].end, Tick(finish * (TICKS_PER_SECOND / 1_000_000)), "{params}");
+            }
+        }
+        let timing = Timing { tick_rate: FrameRate::new(1, i64::MAX), ..tm(FrameRate::FPS_25) };
+        assert_eq!(parse_time("999999999999999t", timing), None);
+        assert_eq!(parse_time("0.999999999999t", timing), None);
+    }
+
+    #[test]
     fn time_expressions() {
         let t = tm(FrameRate::FPS_25);
         let s = |v: f64| Tick((v * TICKS_PER_SECOND as f64).round() as i64);
@@ -556,7 +815,7 @@ mod tests {
         assert_eq!(parse_time("50f", t), Some(s(2.0)));
         let ntsc = tm(FrameRate::FPS_29_97);
         assert_eq!(parse_time("30f", ntsc), Some(FrameRate::FPS_29_97.tick_of(30)));
-        let ticks = Timing { tick_rate: 10_000_000, ..t };
+        let ticks = Timing { tick_rate: FrameRate::new(10_000_000, 1), ..t };
         assert_eq!(parse_time("15000000t", ticks), Some(s(1.5)));
         assert_eq!(parse_time("bogus", t), None);
         assert_eq!(parse_time("1:2", t), None);
@@ -588,6 +847,34 @@ mod tests {
         assert_eq!(doc.cues.len(), 1);
         assert_eq!(doc.cues[0].text, "Good");
         assert!(!doc.warnings.is_empty());
+    }
+
+    #[test]
+    fn fractional_tick_offsets_keep_exact_caption_times() {
+        for format in [crate::Format::Ttml, crate::Format::Dfxp] {
+            let xml = r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" ttp:tickRate="10"><body><div><p begin="1.5t" end="12.5t">Hello</p></div></body></tt>"#;
+            let doc = crate::parse(xml.as_bytes(), format).unwrap();
+            assert_eq!(doc.cues.len(), 1);
+            assert_eq!(doc.cues[0].start, Tick(TICKS_PER_SECOND * 3 / 20));
+            assert_eq!(doc.cues[0].end, Tick(TICKS_PER_SECOND * 5 / 4));
+            assert!(doc.warnings.is_empty());
+        }
+        let timing = Timing { tick_rate: FrameRate::new(3, 1), ..tm(FrameRate::FPS_25) };
+        assert_eq!(parse_time("0.5t", timing), Some(Tick(TICKS_PER_SECOND / 6)));
+        for expr in ["1.xt", "1.1234567890123t", "999999999999999.5t"] {
+            assert_eq!(parse_time(expr, timing), None, "{expr}");
+        }
+    }
+
+    #[test]
+    fn offset_time_without_integer_digits_is_rejected() {
+        let t = tm(FrameRate::FPS_25);
+        for expr in ["s", "ms", "h", "m", "t", "f", ".5s", ".5ms", ".s"] {
+            assert_eq!(parse_time(expr, t), None, "{expr}");
+        }
+        assert_eq!(parse_time("0s", t), Some(Tick(0)));
+        assert_eq!(parse_time("0.5s", t), Some(Tick(TICKS_PER_SECOND / 2)));
+        assert_eq!(parse_time("1ms", t), Some(Tick(TICKS_PER_SECOND / 1000)));
     }
 
     #[test]
@@ -636,5 +923,12 @@ mod tests {
         assert_eq!(back.cues[0].speaker.as_deref(), Some("Ann Lee"));
         let d = write(&doc, Flavor::Dfxp, Some(r), "en");
         assert!(d.contains(DFXP_PROFILE) && d.contains("begin=\"00:00:01.001\""), "{d}");
+    }
+
+    #[test]
+    fn duplicate_and_crossing_spans_have_bounded_output() {
+        let text = format!("{}x{}", "<i>".repeat(1_000), "</i>".repeat(1_000));
+        let out = inline(&text);
+        assert_eq!(out, "<span tts:fontStyle=\"italic\">x</span>");
     }
 }

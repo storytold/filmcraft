@@ -8,6 +8,7 @@
 //! (the demo project), Open Most Recent, or an empty project.
 //!
 //! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
+//! `FILMCRAFT_CONTROL_TOKEN` is required (see `docs/control-protocol.md`).
 //! see `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
 //! either source.
 //!
@@ -31,7 +32,6 @@ mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
 mod file_filters;
-#[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
 #[cfg(target_os = "macos")]
@@ -44,6 +44,8 @@ use filmcraft_engine::Session;
 use filmcraft_engine::autosave::{AutosaveConfig, default_data_dir};
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Reverse-DNS app id: Linux `.desktop` file, hicolor icon name and Wayland app id.
 const APP_ID: &str = "ai.storyteller.filmcraft";
@@ -80,7 +82,7 @@ fn main() -> eframe::Result {
     let logger = logging::install();
     // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored
     let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned());
-    let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir } = match args::parse(env_port, std::env::args().skip(1)) {
+    let launch = match args::parse(env_port, std::env::args_os().skip(1)) {
         Ok(Cli::Run(l)) => l,
         Ok(Cli::Help) => {
             tell(args::USAGE, false);
@@ -95,7 +97,8 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
-    let log_dir = data_dir.clone().or_else(default_data_dir).map(|d| d.join(logging::LOG_DIR));
+    let data_root = launch.data_dir.clone().or_else(default_data_dir);
+    let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
     log::info!("FilmCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
     // `--version` and usage errors leave no file behind. Records logged until now go in first.
@@ -118,165 +121,38 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
-    register_gpu_frame_renderer();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("FilmCraft")
-            .with_inner_size([1600.0, 980.0])
-            .with_min_inner_size([900.0, 560.0])
-            .with_drag_and_drop(true)
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false)
-            // Started for an agent (`--control`): open without taking the user's keyboard focus.
-            .with_active(control_port.is_none())
-            .with_icon(app_icon())
-            // Wayland matches the window to `packaging/linux/ai.storyteller.filmcraft.desktop`.
-            .with_app_id(APP_ID),
-        event_loop_builder: agent_event_loop(control_port.is_some()),
-        ..Default::default()
+    // Which graphics backends and adapter the window starts with: `--graphics`, else the saved
+    // mode, which moves on after starts that died before their window painted (a driver crash),
+    // see graphics.rs.
+    let backend_override = eframe::wgpu::Backends::from_env();
+    let mut graphics = graphics::GraphicsStart::begin(data_root.as_deref(), backend_override.is_some(), launch.graphics);
+    // The GPU export renderer creates its own wgpu instance with every backend; after a start
+    // fell back, that would load the driver that failed. Exports then composite on the CPU.
+    if graphics.mode() == graphics::Mode::Default {
+        register_gpu_frame_renderer();
+    }
+    let started = loop {
+        let mut options = native_options(launch.control_port.is_some());
+        // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
+        graphics::apply(&mut options, graphics.mode(), backend_override);
+        let app_created = Arc::new(AtomicBool::new(false));
+        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let app_created = app_created.load(Ordering::Relaxed);
+        match &result {
+            // wgpu reported the failure (no adapter, device creation failed) before the app
+            // existed: try the next mode in this process.
+            Err(e) if !app_created && graphics::is_graphics_failure(e) && graphics.step_down() => {
+                log::warn!("graphics start failed: {e}");
+                continue;
+            }
+            // Closed before the second frame: the window still came up.
+            Ok(()) if app_created => graphics.confirm(),
+            _ => {}
+        }
+        break result;
     };
-    // Before eframe creates the wgpu instance: leave OpenGL out on Windows (see graphics.rs).
-    #[cfg(target_os = "windows")]
-    let options = {
-        let mut options = options;
-        graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
-        options
-    };
-    let started = eframe::run_native(
-        "FilmCraft",
-        options,
-        Box::new(move |cc| {
-            let mut session = Session::default();
-            if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
-                let mut cfg = AutosaveConfig::new(dir);
-                cfg.local_offset = local_offset;
-                if let Err(e) = session.start_autosave(cfg) {
-                    log::warn!("auto-save and crash recovery unavailable: {e}");
-                }
-            }
-            // voice-over recording reads the microphone through cpal
-            session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
-            let project = files.iter().find(|f| f.ends_with(".fcproj")).cloned();
-            if let Some(p) = project {
-                if let Err(e) = session.execute("file.open", json!({"path": p})) {
-                    log::error!("{e}");
-                }
-            } else if !startup_flag && session.prefs.general.at_startup == "openMostRecent" {
-                // Settings ▸ General ▸ At Startup ▸ Open Most Recent
-                let recent = session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
-                match recent {
-                    Some(p) => {
-                        if let Err(e) = session.execute("file.open", json!({"path": p})) {
-                            log::error!("{e}");
-                        }
-                    }
-                    None => {
-                        let _ = session.execute("file.openDemoProject", json!({}));
-                    }
-                }
-            } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
-            } else if demo {
-                let _ = session.execute("file.openDemoProject", json!({}));
-            }
-            let media: Vec<String> = files.iter().filter(|f| !f.ends_with(".fcproj")).cloned().collect();
-            if !media.is_empty() {
-                let _ = session.execute("file.import", json!({"paths": media}));
-            }
-            if recover == Some(true) && !session.recovery_candidates().is_empty() {
-                let id = session.recovery_candidates()[0].id.clone();
-                match session.execute("file.recover", json!({"id": id})) {
-                    Ok(r) => log::info!("recovered {r}"),
-                    Err(e) => log::error!("recovery failed: {e}"),
-                }
-            }
-            let mut app = FilmcraftApp::new(session);
-            if recover == Some(false) {
-                app.dialog = None;
-            }
-            app.integrated_titlebar = cfg!(target_os = "macos");
-            if let Some(rs) = cc.wgpu_render_state.clone()
-                && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
-            {
-                app.set_wgpu(rs);
-            }
-            // Keep device selection available even when the default device is unavailable.
-            // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).
-            app.audio = Some(Box::new(audio::CpalOut::new()));
-            app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
-                rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
-                    .pick_files()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect()
-            }));
-            // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
-            app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], _hint| {
-                rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
-                    .pick_file()
-                    .map(|p| p.to_string_lossy().to_string())
-            }));
-            app.hooks.pick_save = Some(Box::new(|name: &str| {
-                rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
-                    .set_file_name(name)
-                    .save_file()
-                    .map(|p| p.to_string_lossy().to_string())
-            }));
-            app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
-                rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
-                    .set_file_name(name)
-                    .save_file()
-                    .map(|p| p.to_string_lossy().to_string())
-            }));
-            app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
-            app.hooks.pick_folder_at =
-                Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
-            app.hooks.open_path = Some(Box::new(open_path));
-            // Help menu, About and Discord links (#642): eframe is built without its `links`
-            // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
-            // that waits for the browser never freezes the UI.
-            app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
-            app.hooks.clipboard_media = Some(Box::new(clipboard_media));
-            // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
-            app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
-            app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
-            // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
-            // compositor reports no theme to winit (no polling: see appearance.rs).
-            app.hooks.system_theme = appearance::service();
-            app.hooks.raise_without_focus = Some(Box::new(|| {
-                window_raise::raise_without_focus();
-            }));
-            app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
-                rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
-                    .pick_file()
-                    .map(|p| p.to_string_lossy().to_string())
-            }));
-            app.hooks.pick_open_project = Some(Box::new(|| {
-                rfd::FileDialog::new()
-                    .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
-                    .pick_file()
-                    .map(|p| p.to_string_lossy().to_string())
-            }));
-            #[cfg(target_os = "macos")]
-            {
-                let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());
-                app.command_inbox = Some(rx);
-                app.hooks.shortcuts_changed = Some(update);
-                app.ui.show_menu_bar = false;
-            }
-            if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
-                app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
-            }
-            Ok(Box::new(app))
-        }),
-    );
+    // However it ended, this start no longer counts as one that died.
+    graphics.finish();
     // The window could not be created (no usable GPU / graphics driver, no display): say so
     // instead of exiting silently, and keep the reason in the crash log.
     if let Err(e) = &started {
@@ -286,6 +162,189 @@ fn main() -> eframe::Result {
         let _ = rfd::MessageDialog::new().set_title("FilmCraft").set_description(&msg).set_level(rfd::MessageLevel::Error).show();
     }
     started
+}
+
+/// The main window's options; built for each start attempt (they hold a one-shot hook).
+fn native_options(agent: bool) -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("FilmCraft")
+            .with_inner_size([1600.0, 980.0])
+            .with_min_inner_size([900.0, 560.0])
+            .with_drag_and_drop(true)
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+            // Started for an agent (`--control`): open without taking the user's keyboard focus.
+            .with_active(!agent)
+            .with_icon(app_icon())
+            // Wayland matches the window to `packaging/linux/ai.storyteller.filmcraft.desktop`.
+            .with_app_id(APP_ID),
+        event_loop_builder: agent_event_loop(agent),
+        ..Default::default()
+    }
+}
+
+/// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
+/// and confirms the graphics mode once two frames have painted.
+fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+    let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
+    Box::new(move |cc| {
+        created.store(true, Ordering::Relaxed);
+        // A fallback graphics mode says so in the window, with a button back to the default.
+        let notice = graphics.degraded().then(|| {
+            let start = graphics.clone();
+            filmcraft_ui_egui::graphics_notice::GraphicsNotice::new(graphics.mode().label(), Box::new(move || start.reset_to_default()))
+        });
+        let confirmed = AtomicBool::new(false);
+        cc.egui_ctx.on_end_pass(
+            "graphics-start",
+            Arc::new(move |ui| {
+                if ui.ctx().cumulative_frame_nr() >= 2 && !confirmed.swap(true, Ordering::Relaxed) {
+                    graphics.confirm();
+                }
+            }),
+        );
+        let mut session = Session::default();
+        if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
+            let mut cfg = AutosaveConfig::new(dir);
+            cfg.local_offset = local_offset;
+            if let Err(e) = session.start_autosave(cfg) {
+                log::warn!("auto-save and crash recovery unavailable: {e}");
+            }
+        }
+        // voice-over recording reads the microphone through cpal
+        session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
+        let (project, media) = args::project_and_media(&files);
+        if let Some(p) = project {
+            if let Err(e) = session.execute("file.open", json!({"path": p})) {
+                log::error!("{e}");
+            }
+        } else if !startup_flag && session.prefs.general.at_startup == "openMostRecent" {
+            // Settings ▸ General ▸ At Startup ▸ Open Most Recent
+            let recent = session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
+            match recent {
+                Some(p) => {
+                    if let Err(e) = session.execute("file.open", json!({"path": p})) {
+                        log::error!("{e}");
+                    }
+                }
+                None => {
+                    let _ = session.execute("file.openDemoProject", json!({}));
+                }
+            }
+        } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
+        } else if demo {
+            let _ = session.execute("file.openDemoProject", json!({}));
+        }
+        if !media.is_empty() {
+            let _ = session.execute("file.import", json!({"paths": media}));
+        }
+        if recover == Some(true) && !session.recovery_candidates().is_empty() {
+            let id = session.recovery_candidates()[0].id.clone();
+            match session.execute("file.recover", json!({"id": id})) {
+                Ok(r) => log::info!("recovered {r}"),
+                Err(e) => log::error!("recovery failed: {e}"),
+            }
+        }
+        let mut app = FilmcraftApp::new(session);
+        app.graphics_notice = notice;
+        if recover == Some(false) {
+            app.dialog = None;
+        }
+        app.integrated_titlebar = cfg!(target_os = "macos");
+        if let Some(rs) = cc.wgpu_render_state.clone()
+            && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
+        {
+            app.set_wgpu(rs);
+        }
+        // Keep device selection available even when the default device is unavailable.
+        // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).
+        app.audio = Some(Box::new(audio::CpalOut::new()));
+        app.hooks.pick_files = Some(Box::new(|exts: &[&str]| {
+            rfd::FileDialog::new()
+                .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
+                .pick_files()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect()
+        }));
+        // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: one path, not imported.
+        app.hooks.pick_file_for_relink = Some(Box::new(|exts: &[&str], _hint| {
+            rfd::FileDialog::new()
+                .add_filter(filmcraft_ui_egui::i18n::t("Media"), &file_filters::extensions(exts))
+                .pick_file()
+                .map(|p| p.to_string_lossy().to_string())
+        }));
+        app.hooks.pick_save = Some(Box::new(|name: &str| {
+            rfd::FileDialog::new()
+                .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
+                .set_file_name(name)
+                .save_file()
+                .map(|p| p.to_string_lossy().to_string())
+        }));
+        app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
+            // a full path (Quick Export, Export mode) opens the dialog in its folder
+            let path = std::path::Path::new(name);
+            let mut dialog = rfd::FileDialog::new()
+                .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
+                .set_file_name(path.file_name().map_or(name.into(), |n| n.to_string_lossy()));
+            if let Some(dir) = path.parent().filter(|d| d.is_dir()) {
+                dialog = dialog.set_directory(dir);
+            }
+            dialog.save_file().map(|p| p.to_string_lossy().to_string())
+        }));
+        app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
+        app.hooks.pick_folder_at =
+            Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
+        // Linux: the XDG portal call blocks until the user chooses, which would stop the frame
+        // loop (GNOME offers to force-quit the window after about five seconds, #260). Show the
+        // dialog on its own thread instead; the app keeps running and acts on the answer.
+        #[cfg(target_os = "linux")]
+        {
+            app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
+        }
+        app.hooks.open_path = Some(Box::new(open_path));
+        // Help menu, About and Discord links (#642): eframe is built without its `links`
+        // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
+        // that waits for the browser never freezes the UI.
+        app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
+        app.hooks.clipboard_media = Some(Box::new(clipboard_media));
+        // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
+        app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
+        app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
+        // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
+        // compositor reports no theme to winit (no polling: see appearance.rs).
+        app.hooks.system_theme = appearance::service();
+        app.hooks.raise_without_focus = Some(Box::new(|| {
+            window_raise::raise_without_focus();
+        }));
+        app.hooks.pick_open_file = Some(Box::new(|filter: &str, exts: &[&str]| {
+            rfd::FileDialog::new()
+                .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
+                .pick_file()
+                .map(|p| p.to_string_lossy().to_string())
+        }));
+        app.hooks.pick_open_project = Some(Box::new(|| {
+            rfd::FileDialog::new()
+                .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
+                .pick_file()
+                .map(|p| p.to_string_lossy().to_string())
+        }));
+        #[cfg(target_os = "macos")]
+        {
+            let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());
+            app.command_inbox = Some(rx);
+            app.hooks.menu_changed = Some(update);
+            app.ui.show_menu_bar = false;
+        }
+        if let Some(port) = control_port {
+            let rx = control_server::start(port, cc.egui_ctx.clone());
+            app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
+        }
+        Ok(Box::new(app))
+    })
 }
 
 /// Files copied in the file manager, else an image, on the system clipboard (Paste, #611).
@@ -319,6 +378,7 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
         }
         c
     } else {
+        // Linux file managers have no select-file flag: open the parent folder instead.
         let mut c = std::process::Command::new("xdg-open");
         let p = std::path::Path::new(path);
         c.arg(if reveal { p.parent().unwrap_or(p) } else { p });
@@ -379,6 +439,80 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     None
 }
 
+/// Show `dialog` with rfd on a worker thread and answer on the returned channel (#260). Filter
+/// names are translated here, on the UI thread (the interface language is per thread). A dialog
+/// thread that can't start or panics drops the sender: the app takes that as cancelled.
+#[cfg(target_os = "linux")]
+fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> std::sync::mpsc::Receiver<Vec<String>> {
+    use filmcraft_ui_egui::native_dialogs::FileDialog;
+    let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
+    let media = t("Media");
+    let project = t("FilmCraft Project");
+    let project_exts = project_patterns();
+    let dialog = prepare_dialog(dialog);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("file-dialog".into()).spawn(move || {
+        let shown = std::panic::catch_unwind(move || {
+            let path = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
+            match dialog {
+                FileDialog::OpenFiles { exts } => {
+                    rfd::FileDialog::new().add_filter(&media, &exts).pick_files().unwrap_or_default().into_iter().map(path).collect()
+                }
+                FileDialog::OpenFile { filter, exts } => rfd::FileDialog::new().add_filter(&filter, &exts).pick_file().map(path).into_iter().collect(),
+                FileDialog::Relink { exts, .. } => rfd::FileDialog::new().add_filter(&media, &exts).pick_file().map(path).into_iter().collect(),
+                FileDialog::OpenProject => rfd::FileDialog::new().add_filter(&project, &project_exts).pick_file().map(path).into_iter().collect(),
+                FileDialog::SaveProject { name } => {
+                    rfd::FileDialog::new().add_filter(&project, &project_exts).set_file_name(name).save_file().map(path).into_iter().collect()
+                }
+                FileDialog::SaveAs { filter, exts, name } => {
+                    rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(name).save_file().map(path).into_iter().collect()
+                }
+                FileDialog::Folder { at } => {
+                    let d = rfd::FileDialog::new();
+                    let d = match at {
+                        Some(dir) if !dir.is_empty() => d.set_directory(dir),
+                        _ => d,
+                    };
+                    d.pick_folder().map(path).into_iter().collect::<Vec<_>>()
+                }
+            }
+        });
+        match shown {
+            Ok(paths) => {
+                let _ = tx.send(paths);
+            }
+            Err(_) => log::warn!("the file dialog thread panicked; taken as cancelled"),
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("could not start the file dialog thread: {e}");
+    }
+    rx
+}
+
+/// A dialog as the Linux dialog thread shows it: filter names translated (here, on the UI thread:
+/// the interface language is per thread) and every extension list turned into the
+/// case-insensitive patterns the synchronous pickers use, so `CLIP.MP4` stays visible (#262).
+#[cfg(target_os = "linux")]
+fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> filmcraft_ui_egui::native_dialogs::FileDialog {
+    use filmcraft_ui_egui::native_dialogs::FileDialog;
+    let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
+    let patterns = |exts: Vec<String>| file_filters::extensions(&exts.iter().map(String::as_str).collect::<Vec<_>>());
+    match dialog {
+        FileDialog::OpenFiles { exts } => FileDialog::OpenFiles { exts: patterns(exts) },
+        FileDialog::OpenFile { filter, exts } => FileDialog::OpenFile { filter: t(&filter), exts: patterns(exts) },
+        FileDialog::SaveAs { filter, exts, name } => FileDialog::SaveAs { filter: t(&filter), exts: patterns(exts), name },
+        FileDialog::Relink { exts, hint } => FileDialog::Relink { exts: patterns(exts), hint },
+        other => other,
+    }
+}
+
+/// The project dialogs' filter patterns (`EDIT.FCPROJ` included).
+#[cfg(target_os = "linux")]
+fn project_patterns() -> Vec<String> {
+    file_filters::extensions(&["fcproj"])
+}
+
 #[cfg(test)]
 mod tests {
     /// Start-up registers the hardware decoders whether or not anything is logged (no logger is
@@ -391,5 +525,32 @@ mod tests {
         let expected = cfg!(any(target_os = "macos", target_os = "windows"))
             || (cfg!(target_os = "linux") && matches!(hardware, filmcraft_platform::Availability::Available(_)));
         assert_eq!(filmcraft_platform::registered(), expected, "{hardware:?}");
+    }
+
+    /// #262 on Linux: the dialogs shown off the UI thread (#260) filter with the same
+    /// case-insensitive patterns as the synchronous pickers, so upper- and mixed-case files show.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn off_thread_dialogs_keep_case_insensitive_filters() {
+        use filmcraft_ui_egui::RelinkHint;
+        use filmcraft_ui_egui::native_dialogs::FileDialog;
+        let mp4 = || vec!["mp4".to_string()];
+        let hint = RelinkHint { command: "media.relink".into(), params: serde_json::json!({}) };
+        for dialog in [
+            FileDialog::OpenFiles { exts: mp4() },
+            FileDialog::OpenFile { filter: "Media".into(), exts: mp4() },
+            FileDialog::SaveAs { filter: "Media".into(), exts: mp4(), name: "clip.mp4".into() },
+            FileDialog::Relink { exts: mp4(), hint },
+        ] {
+            let exts = match super::prepare_dialog(dialog) {
+                FileDialog::OpenFiles { exts } | FileDialog::OpenFile { exts, .. } | FileDialog::SaveAs { exts, .. } | FileDialog::Relink { exts, .. } => exts,
+                other => panic!("the dialog changed kind: {other:?}"),
+            };
+            assert_eq!(exts.first().map(String::as_str), Some("mp4"), "the literal extension stays first (save suffix)");
+            assert!(exts.iter().any(|e| e == "[mM][pP]4"), "{exts:?}");
+        }
+        let project = super::project_patterns();
+        assert_eq!(project.first().map(String::as_str), Some("fcproj"));
+        assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
     }
 }

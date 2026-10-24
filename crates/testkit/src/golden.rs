@@ -195,18 +195,31 @@ pub fn diff_image(a: &Rgba8, b: &Rgba8) -> Rgba8 {
 
 /// Today's date (UTC) as YYYY-MM-DD, for attribution sidecars.
 fn today() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    // civil-from-days (Howard Hinnant)
-    let z = (secs / 86_400) as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + (m <= 2) as i64;
-    format!("{y:04}-{m:02}-{d:02}")
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let (y, t) = utc_parts(since.as_secs());
+    // `{:04}` rather than `%Y`, which writes a `+` before years past 9999.
+    format!("{y:04}-{}", t.format("%m-%d"))
+}
+
+/// Unix seconds → (proleptic Gregorian year, the same wall-clock instant moved into chrono's range
+/// by whole 400-year cycles). The Gregorian calendar repeats every 400 years (146_097 days), so
+/// month and day come from chrono and only the year is carried, which keeps every input exact
+/// instead of collapsing out-of-range years to the epoch. `secs` is `u64` (the clock is clamped at
+/// the epoch before 1970), so `days` always fits an `i64`.
+fn utc_parts(secs: u64) -> (i64, chrono::NaiveDateTime) {
+    use chrono::Datelike;
+    let (days, sod) = ((secs / 86_400) as i64, (secs % 86_400) as i64);
+    let (cycles, rest) = (days.div_euclid(146_097), days.rem_euclid(146_097));
+    // `rest + 719_163` (1970-01-01 is CE day 719_163) is always a valid CE day, and `sod` < 86_400.
+    let date = i32::try_from(rest + 719_163).ok().and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
+    let time = u32::try_from(sod).ok().and_then(|s| chrono::NaiveTime::from_num_seconds_from_midnight_opt(s, 0));
+    match (date, time) {
+        (Some(d), Some(t)) => {
+            let y = i128::from(d.year()) + i128::from(cycles) * 400;
+            (i64::try_from(y).unwrap_or(i64::MAX), d.and_time(t))
+        }
+        _ => (1970, chrono::NaiveDateTime::default()), // unreachable
+    }
 }
 
 /// The attribution sidecar text for a generated golden image.
@@ -283,6 +296,23 @@ pub fn assert_golden(golden: &Path, actual: &Rgba8, tol: Tolerance, title: &str,
 mod tests {
     use super::*;
 
+    fn ymd(secs: u64) -> String {
+        let (y, t) = utc_parts(secs);
+        format!("{y:04}-{}", t.format("%m-%d"))
+    }
+
+    #[test]
+    fn utc_parts_preserves_out_of_range_years() {
+        // `today()` uses `utc_parts`. Years far outside chrono's own range are preserved (the old
+        // hand-rolled civil-from-days kept them) rather than collapsing to the epoch.
+        assert_eq!(ymd(0), "1970-01-01");
+        assert_eq!(ymd(1_790_775_907), "2026-09-30");
+        assert_eq!(ymd(951_782_400), "2000-02-29"); // 2000 is a leap year
+        assert_eq!(ymd(253_402_300_800), "10000-01-01"); // just past chrono's range
+        assert_eq!(ymd(10_000_000_000_000), "318857-05-20");
+        assert_eq!(ymd(u64::MAX), "584554051223-11-09");
+    }
+
     fn ramp(w: u32, h: u32, alpha: u8) -> Rgba8 {
         let px = (0..w * h).flat_map(|i| [(i % w * 255 / w) as u8, (i / w * 255 / h) as u8, 77, alpha]).collect();
         Rgba8::new(w, h, px)
@@ -318,8 +348,8 @@ mod tests {
         if blessing() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("filmcraft-testkit-golden-{}", std::process::id()));
-        let path = dir.join("ramp.png");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ramp.png");
         let img = ramp(32, 16, 255);
         write_png(&path, &img).unwrap();
         assert!(check_golden(&path, &img, Tolerance::EXACT, "t", "unit test").is_ok());
@@ -330,7 +360,7 @@ mod tests {
         far.px.iter_mut().step_by(4).for_each(|v| *v = 255 - *v);
         let e = check_golden(&path, &far, Tolerance::RENDER, "t", "unit test").unwrap_err();
         assert!(e.contains("PSNR"), "{e}");
-        assert!(check_golden(&dir.join("missing.png"), &img, Tolerance::RENDER, "t", "unit test").unwrap_err().contains("FILMCRAFT_BLESS"));
+        assert!(check_golden(&dir.path().join("missing.png"), &img, Tolerance::RENDER, "t", "unit test").unwrap_err().contains("FILMCRAFT_BLESS"));
     }
 
     #[test]

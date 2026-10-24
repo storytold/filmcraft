@@ -133,13 +133,18 @@ pub fn videotoolbox_encoder_factory(
         Ok(c) => c,
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
+            filmcraft_export::note_hw_encode_declined();
             return None;
         }
     };
     match VtEncoder::new(config) {
-        Ok(vt) => Some(Ok(Box::new(HardwareEncoder { vt, y: Vec::new(), u: Vec::new(), v: Vec::new(), decoded: 0 }))),
+        Ok(vt) => {
+            filmcraft_export::note_hw_encode_session();
+            Some(Ok(Box::new(HardwareEncoder { vt, y: Vec::new(), u: Vec::new(), v: Vec::new(), decoded: 0 })))
+        }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
+            filmcraft_export::note_hw_encode_declined();
             None
         }
     }
@@ -222,6 +227,7 @@ impl VideoEncoder for HardwareEncoder {
         }
         filmcraft_export::timed(filmcraft_export::Stage::Convert, || filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v));
         let packets = self.vt.encode(f.index, &self.y, &self.u, &self.v).map_err(ExportError::Encode)?;
+        filmcraft_export::note_hw_encode_frame();
         // the muxer needs the parameter sets after the first group of pictures
         if f.index == 0 {
             let params = self.vt.parameter_sets().ok_or_else(|| ExportError::Encode("VideoToolbox returned no parameter sets for the first frame".into()))?;

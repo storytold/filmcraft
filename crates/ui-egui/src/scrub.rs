@@ -41,6 +41,11 @@ impl ScrubAudio {
     pub fn is_open(&self) -> bool {
         self.open
     }
+
+    /// The output device was stopped under the stream: the next grain reopens it.
+    pub(crate) fn device_stopped(&mut self) {
+        self.open = false;
+    }
 }
 
 impl FilmcraftApp {

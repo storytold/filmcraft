@@ -278,9 +278,22 @@ impl FilmcraftMcp {
     }
 
     /// The project tree plus the active sequence (null when there is none).
+    ///
+    /// `project.inspect` and `sequence.inspect` are two separate calls (two lock scopes in
+    /// headless mode, two round trips to the app in bridge mode), so the active sequence can
+    /// change between them if another client, or the app's own UI, switches sequence tabs in
+    /// that window (#1477). Pinning `sequence.inspect` to the `activeSequence` id this
+    /// `project.inspect` just reported keeps the pair consistent: the returned `sequence`, when
+    /// not null, always describes the sequence the returned `project.activeSequence` names.
     async fn document(&self) -> Result<Value, AutomationError> {
         let project = self.run("project.inspect", json!({})).await?;
-        let sequence = self.run("sequence.inspect", json!({})).await.ok();
+        // `ItemId` is a u64 (`item_p` parses the `item` param with `u64_p`): read it as one too,
+        // not `as_i64`, so an id above `i64::MAX` is still looked up instead of silently going null.
+        let active = project.get("activeSequence").and_then(Value::as_u64);
+        let sequence = match active {
+            Some(id) => self.run("sequence.inspect", json!({"item": id})).await.ok(),
+            None => None,
+        };
         Ok(json!({"project": project, "sequence": sequence}))
     }
 
@@ -551,15 +564,21 @@ impl FilmcraftMcp {
 
 impl FilmcraftMcp {
     async fn screenshot(&self, b: &BridgeClient, panel: Option<String>, max: u32) -> Result<CallToolResult, McpError> {
-        let path = std::env::temp_dir().join(format!("filmcraft-mcp-{}.png", std::process::id()));
+        // The desktop bridge needs a pathname, so use a freshly-created,
+        // owner-only directory rather than exposing image bytes at a
+        // predictable shared-temp filename.
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(e) => return Ok(fail(format!("screenshot: {e}"))),
+        };
+        let path = dir.path().join("screenshot.png");
         if let Err(e) = b.call("ui.screenshot", json!({"path": path.to_string_lossy(), "panel": panel})).await {
             return Ok(fail(e));
         }
-        let bytes = match std::fs::read(&path) {
+        let bytes = match tokio::fs::read(&path).await {
             Ok(b) => b,
             Err(e) => return Ok(fail(format!("screenshot: {e}"))),
         };
-        let _ = std::fs::remove_file(&path);
         let bytes = match image::load_from_memory(&bytes) {
             Ok(img) => {
                 let rgba = img.to_rgba8();
@@ -997,5 +1016,74 @@ mod tests {
         assert!(v.is_object(), "{v}");
         let r = m.render_frame(Parameters(RenderParams { seconds: Some(0.5), max_side: Some(64) })).await.unwrap();
         assert_ne!(r.is_error, Some(true));
+    }
+
+    /// `doc_inspect` composes `project.inspect` and `sequence.inspect` as two separate round
+    /// trips to the app. If the active sequence changes between them (another client, or the
+    /// app's own UI, switching tabs in that window), an unscoped `sequence.inspect` answers for
+    /// whichever sequence is active *now*, not the one `project.inspect` just reported, so the
+    /// pair comes back inconsistent (#1477, reproduced with a real bridge client and a flipping
+    /// `sequence.open` in `race_test.py`: ~300/300 calls mismatched). Pinning the second call to
+    /// the id the first one reported keeps `sequence`, when not null, always describing the
+    /// sequence `project.activeSequence` names.
+    #[tokio::test]
+    async fn doc_inspect_pins_the_sequence_to_the_reported_active_id() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (s, _) = listener.accept().await.unwrap();
+            let (r, mut w) = s.into_split();
+            let mut lines = tokio::io::BufReader::new(r).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let result = match req["params"]["command"].as_str().unwrap_or_default() {
+                    "project.inspect" => json!({"activeSequence": 21}),
+                    // The app's own active sequence has since moved on to 54; only an explicit
+                    // `item` still gets 21's data (an unscoped call would wrongly answer for 54).
+                    "sequence.inspect" => json!({"id": req["params"]["params"]["item"].as_i64().unwrap_or(54)}),
+                    _ => Value::Null,
+                };
+                let line = format!("{}\n", json!({"id": req["id"], "ok": true, "result": result}));
+                w.write_all(line.as_bytes()).await.unwrap();
+            }
+        });
+        let m = FilmcraftMcp::bridge(&addr).unwrap();
+        let v = m.document().await.unwrap();
+        assert_eq!(v["project"]["activeSequence"], json!(21), "{v}");
+        assert_eq!(v["sequence"]["id"], json!(21), "sequence must describe the reported active id, not whatever is active now: {v}");
+    }
+
+    /// `activeSequence` is a `u64` (`ItemId`'s representation; `item_p` parses the `item` param
+    /// with `u64_p`), so an id above `i64::MAX` must still round-trip through `document()`:
+    /// reading it with `as_i64` would silently return `None` and make `sequence` go null instead
+    /// of inspecting the (valid) id project.inspect reported.
+    #[tokio::test]
+    async fn doc_inspect_handles_an_active_sequence_id_above_i64_max() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        const HUGE: u64 = i64::MAX as u64 + 1;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (s, _) = listener.accept().await.unwrap();
+            let (r, mut w) = s.into_split();
+            let mut lines = tokio::io::BufReader::new(r).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let result = match req["params"]["command"].as_str().unwrap_or_default() {
+                    "project.inspect" => json!({"activeSequence": HUGE}),
+                    // Echoes back whatever `item` it was actually asked for, so the test can
+                    // check that `document()` asked for `HUGE` rather than nothing at all.
+                    "sequence.inspect" => json!({"id": req["params"]["params"]["item"]}),
+                    _ => Value::Null,
+                };
+                let line = format!("{}\n", json!({"id": req["id"], "ok": true, "result": result}));
+                w.write_all(line.as_bytes()).await.unwrap();
+            }
+        });
+        let m = FilmcraftMcp::bridge(&addr).unwrap();
+        let v = m.document().await.unwrap();
+        assert_eq!(v["project"]["activeSequence"].as_u64(), Some(HUGE), "{v}");
+        assert_eq!(v["sequence"]["id"].as_u64(), Some(HUGE), "an id above i64::MAX must still be inspected, not dropped to a null sequence: {v}");
     }
 }

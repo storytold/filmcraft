@@ -31,7 +31,9 @@ use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, 
 use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, clips_p, has_seq, str_p, time_p, track_p, with_links};
+use crate::commands::{
+    CommandSpec, always, bad, bool_p, clips_p, has_seq, marker_color_p, sequence_time_p, source_mark_time, str_p, time_p, track_p, with_links,
+};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -64,7 +66,7 @@ pub(crate) fn splice(v: &mut Vec<CommandSpec>) {
     }
 }
 
-const SPLIT: &str = r#"{"time":ticks?,"target":"program|source"}"#;
+const SPLIT: &str = r#"{"time":ticks?,"frame":i64?,"seconds":f64?,"timecode":str?,"target":"program|source"}"#;
 
 fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
     vec![
@@ -206,10 +208,10 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?}"#,
                     has_seq,
                     |s, p| {
-                        let t = time_p(s, p, "").unwrap_or(s.playhead());
+                        let t = sequence_time_p(s, p, "", "markers.addChapter")?.unwrap_or(s.playhead());
                         let n = s.active_sequence().map(|q| q.markers.iter().filter(|m| m.kind == MarkerKind::Chapter).count()).unwrap_or(0) + 1;
                         let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Chapter {n}"));
-                        let id = add_marker(s, "Add Chapter Marker", t, Tick::ZERO, MarkerKind::Chapter, name, p)?;
+                        let id = add_marker(s, "markers.addChapter", "Add Chapter Marker", t, Tick::ZERO, MarkerKind::Chapter, name, p)?;
                         Ok(json!({"marker": id.0}))
                     },
                 ),
@@ -735,11 +737,12 @@ pub(crate) fn wants_new_track(p: &Value) -> bool {
 pub(crate) fn place_on_new_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "timeline.place";
     let item = crate::commands::item_p(p, "item").ok_or_else(|| bad(cmd, "need `item`"))?;
-    let pi = s.project.item(item).ok_or_else(|| bad(cmd, "no such item"))?;
+    s.project.item(item).ok_or_else(|| bad(cmd, "no such item"))?;
+    let (video, audio) = s.project.source_streams(item);
     let is_new = |k: &str| p.get(k).and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case("new"));
     let enabled = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(true);
-    let new_v = is_new("track") && pi.has_video() && enabled("video");
-    let new_a = is_new("audioTrack") && pi.has_audio() && enabled("audio");
+    let new_v = is_new("track") && video && enabled("video");
+    let new_a = is_new("audioTrack") && audio && enabled("audio");
     if !new_v && !new_a {
         return Err(bad(cmd, "no new track to add: the item has no picture or sound for it"));
     }
@@ -895,7 +898,7 @@ fn mark_split(s: &mut Session, p: &Value, side: Side) -> Result<Value> {
     let label = format!("Mark Split {}", side.label());
     if str_p(p, "target") == Some("source") {
         let item = s.state.source_item.ok_or_else(|| EngineError::Other("no clip in the Source monitor".into()))?;
-        let t = p.get("time").and_then(Value::as_i64).map(Tick).unwrap_or(s.state.source_playhead);
+        let t = source_mark_time(s, p, item);
         let split = s.edit(&label, |pr, _| {
             let it = pr.item_mut(item).ok_or_else(|| EngineError::Other("no such item".into()))?;
             side.set(&mut it.split, t);
@@ -962,9 +965,9 @@ pub fn ripple_markers(markers: &mut Vec<Marker>, from: Tick, shift: Tick) {
     markers.sort_by_key(|m| m.start);
 }
 
-fn add_marker(s: &mut Session, label: &str, t: Tick, dur: Tick, kind: MarkerKind, name: String, p: &Value) -> Result<MarkerId> {
+fn add_marker(s: &mut Session, cmd: &str, label: &str, t: Tick, dur: Tick, kind: MarkerKind, name: String, p: &Value) -> Result<MarkerId> {
     let comment = str_p(p, "comment").unwrap_or("").to_string();
-    let color = str_p(p, "color").and_then(Label::from_name).unwrap_or(Label::Green);
+    let color = marker_color_p(p, cmd)?.unwrap_or(Label::Green);
     s.edit_sequence(label, |q, ctx, _| {
         let id = MarkerId(ctx.alloc());
         q.markers.push(Marker { id, start: t, duration: dur, name, comment, kind, color });
@@ -977,7 +980,7 @@ fn add_marker(s: &mut Session, label: &str, t: Tick, dur: Tick, kind: MarkerKind
 /// `duration` say otherwise) at the playhead.
 fn add_range_marker(s: &mut Session, p: &Value) -> Result<Value> {
     let rate = s.sequence_rate();
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = sequence_time_p(s, p, "", "markers.addRange")?.unwrap_or(s.playhead());
     let dur = p
         .get("duration")
         .and_then(Value::as_i64)
@@ -988,7 +991,7 @@ fn add_range_marker(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("markers.addRange", "the duration must be positive"));
     }
     let name = str_p(p, "name").unwrap_or("").to_string();
-    let id = add_marker(s, "Add Range Marker", t, dur, MarkerKind::Comment, name, p)?;
+    let id = add_marker(s, "markers.addRange", "Add Range Marker", t, dur, MarkerKind::Comment, name, p)?;
     Ok(json!({"marker": id.0}))
 }
 
@@ -998,7 +1001,7 @@ fn add_range_marker_in_out(s: &mut Session, p: &Value) -> Result<Value> {
     let (Some(i), Some(o)) = (q.mark_in, q.mark_out) else { return Err(EngineError::Other("mark an In and an Out point first".into())) };
     let dur = o + q.settings.frame_rate.frame_duration() - i;
     let name = str_p(p, "name").unwrap_or("").to_string();
-    let id = add_marker(s, "Add Range Marker", i, dur, MarkerKind::Comment, name, p)?;
+    let id = add_marker(s, "markers.addRangeInOut", "Add Range Marker", i, dur, MarkerKind::Comment, name, p)?;
     Ok(json!({"marker": id.0}))
 }
 

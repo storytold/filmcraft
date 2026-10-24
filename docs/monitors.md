@@ -54,7 +54,7 @@ Commands: `source.playback.play`, `source.playback.stop`, `source.playback.toggl
 available through the UI command registry, CLI bridge and MCP. `playback.toggle`,
 `playback.forward`, `playback.reverse`, `playback.slowForward` and `playback.slowReverse` also
 accept `monitor: "source"|"program"` to override focus. `ui.inspect.sourcePlayback` reports playing,
-audioClock and playhead. Test: `cargo test --release -p filmcraft-ui-egui --test source_playback_ui`.
+audioClock and playhead. Test: `cargo test --release -p filmcraft-ui-egui --test it source_playback_ui::`.
 
 ## Drag a marked Source range to the timeline
 
@@ -75,7 +75,7 @@ Automation ids: `source.drag.video`, `source.drag.audio`, `source.drag.both`, `s
 and `source.waveform`. Placement dispatches `timeline.place` with `sourceIn`, `duration`, `video`
 and `audio`; the stream flags default to true for existing callers. Engine tests cover range
 bounds, stream choices, linked placement, invalid parameters and undo/redo. UI tests exercise
-actual drags: `cargo test --release -p filmcraft-ui-egui --test source_drag_ui`.
+actual drags: `cargo test --release -p filmcraft-ui-egui --test it source_drag_ui::`.
 
 Ctrl+Shift+X (Cmd+Shift+X on macOS) clears In/Out on the focused Source clip, including split
 points, and restores the implicit full span. It is undoable and leaves Program marks unchanged.
@@ -123,6 +123,20 @@ playhead-blue color and translucent gray band. Runtime review remains Windows-on
 The playhead has drag priority above the range band and trim handles, including a full-span
 selection. Drag it to scrub; the unoccupied upper ruler can also scrub. Drag the gray band away
 from the playhead to translate the marked range.
+
+## Zoom the time ruler
+
+Under each monitor's time ruler is a zoom scroll bar like the Timeline's. Its thumb is the part of
+the clip or sequence the ruler shows: drag a handle at either end to zoom in or out, drag the
+middle to scroll, or press beside the thumb to move it there. A thumb filling the bar shows the
+whole duration; the ruler zooms in as far as five frames. The playhead, markers, In/Out and ticks
+follow the part shown, and clicking or scrubbing the ruler sets a time within it; what lies
+outside it is not drawn. While the monitor plays, a zoomed ruler follows the playhead as the
+Timeline does (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling): it pages when the playhead
+runs off the right edge or jumps before the left one, or keeps the playhead in the middle with
+smooth scrolling, and keeps its width; scrubbing and clicking never move it. Each monitor keeps its own range in its view state (`time_zoom`: start
+and end as fractions of the duration, `null` for all of it). Automation ids: `<monitor>.zoomBar`
+(the thumb) and `<monitor>.zoomBar.track`.
 
 ## Export Frame
 

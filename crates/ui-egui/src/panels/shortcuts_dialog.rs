@@ -19,6 +19,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
+use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
 /// Key colours (our own palette): application-wide, panel-specific, unassigned, held modifier.
@@ -155,7 +156,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         .collapsible(false)
         .resizable(false)
         .fixed_size(size)
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .frame(egui::Frame::window(&ctx.global_style()).fill(t.panel_bg).inner_margin(14.0))
         .show(ctx, |ui| {
             ui.set_width(size.x);
@@ -234,26 +236,24 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             app.shortcut_editor.message = tlf!("Deleted preset “{active}”", active);
         }
         if small_button(app, ui, "shortcuts.export", tl!("Export…"), true) {
-            let picked = app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Keyboard Shortcuts"), &["json"], &format!("{active}.json")));
-            match picked {
+            app.pick_ui(FileDialog::save_as(tl!("Keyboard Shortcuts"), &["json"], &format!("{active}.json")), |app, paths| match paths.into_iter().next() {
                 Some(path) => {
                     if exec(app, "shortcuts.export", json!({"path": path})).is_some() {
                         app.shortcut_editor.message = tlf!("Exported to {path}", path);
                     }
                 }
                 None => app.shortcut_editor.message = tl!("Export: no file chosen (agents: shortcuts.export {path})").into(),
-            }
+            });
         }
         if small_button(app, ui, "shortcuts.import", tl!("Import…"), true) {
-            let picked = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Keyboard Shortcuts"), &["json"]));
-            match picked {
+            app.pick_ui(FileDialog::open_file(tl!("Keyboard Shortcuts"), &["json"]), |app, paths| match paths.into_iter().next() {
                 Some(path) => {
                     if let Some(r) = exec(app, "shortcuts.import", json!({"path": path})) {
                         app.shortcut_editor.message = tlf!("Imported “{name}”", name = r["name"].as_str().unwrap_or(""));
                     }
                 }
                 None => app.shortcut_editor.message = tl!("Import: no file chosen (agents: shortcuts.import {path})").into(),
-            }
+            });
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(RichText::new(if cfg!(target_os = "macos") { tl!("Keyboard: US (macOS)") } else { tl!("Keyboard: US") }).size(12.0).color(t.text_dim));
@@ -822,13 +822,17 @@ mod localization_tests {
     use super::*;
 
     #[test]
-    fn command_search_accepts_spanish_labels_ids_and_keys() {
-        crate::i18n::set_current(crate::i18n::Language::Es);
+    fn command_search_accepts_translated_labels_ids_and_keys() {
         let row = json!({"id": "edit.undo", "label": "Undo", "category": "Edit", "shortcuts": [{"keys": "Cmd+Z", "display": "Ctrl+Z"}]});
-        for query in ["deshacer", "undo", "edit.undo", "ctrl+z", "cmd+z"] {
-            assert!(matches_search(&row, query), "{query}");
+        for l in crate::i18n::Language::ALL {
+            crate::i18n::set_current(l);
+            let undo = l.tr("Undo").to_lowercase();
+            for query in [undo.as_str(), "undo", "edit.undo", "ctrl+z", "cmd+z"] {
+                assert!(matches_search(&row, query), "{}: {query}", l.code());
+            }
+            let redo = l.tr("Redo").to_lowercase();
+            assert!(!matches_search(&row, &redo), "{}: {redo}", l.code());
         }
-        assert!(!matches_search(&row, "rehacer"));
         crate::i18n::set_current(crate::i18n::Language::En);
     }
 }

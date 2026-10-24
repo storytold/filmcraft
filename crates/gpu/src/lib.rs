@@ -38,6 +38,7 @@ use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::{FramePlan, PlanLayer, PlanStep};
 
+pub mod adapter;
 pub mod export_renderer;
 pub mod fx;
 pub mod lut;
@@ -387,7 +388,23 @@ impl GpuCompositor {
             view_formats: &[],
         });
         let dummy = dummy_tex.create_view(&Default::default());
-        let fx = fx::FxStage::supported(device).then(|| fx::FxStage::new(device, &shader, &layer_bgl));
+        // The effect stage's pipelines can still be invalid on a device that passes the limits
+        // check (Rgba32Float is not renderable everywhere, e.g. software Vulkan/GL). Validation
+        // errors would panic, so they are captured: without the stage, effects render on the CPU.
+        let fx = fx::FxStage::supported(device)
+            .then(|| {
+                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let stage = fx::FxStage::new(device, &shader, &layer_bgl);
+                match poll_now(scope.pop()) {
+                    Some(None) => Some(stage),
+                    Some(Some(e)) => {
+                        log::warn!("GPU effects unavailable on this device, rendering them on the CPU: {e}");
+                        None
+                    }
+                    None => None,
+                }
+            })
+            .flatten();
         Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -586,10 +603,11 @@ impl GpuCompositor {
             chroma: up.chroma,
             size: (f.width, f.height),
             color: f.color,
+            input: None,
         })
     }
 
-    fn uniforms(src: &SrcInfo, m: &filmcraft_geom::Affine, opacity: f32, blend: Blend, out: (u32, u32)) -> [f32; 28] {
+    fn uniforms(src: &SrcInfo, m: &filmcraft_geom::Affine, opacity: f32, blend: Blend, out: (u32, u32)) -> [f32; UNIFORM_FLOATS] {
         let (kr, kb) = src.color.matrix.kr_kb();
         let bits_scale = src.code_levels / 256.0; // 2^(bits - 8), independent of texture encoding
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
@@ -609,7 +627,31 @@ impl GpuCompositor {
         let footprint = (1.0 / sx.min(sy).max(1e-6)) as f32;
         let taps = if footprint > 1.25 { footprint.ceil().min(4.0) } else { 1.0 };
         let _ = Matrix::Bt709;
-        [
+        // colour management (q0..q5), stage by stage as `InputTransform::apply`
+        let q = src.input.map_or([0.0; 24], |p| {
+            let curve = match p.curve {
+                filmcraft_color::GpuCurve::Sdr => 0.0,
+                filmcraft_color::GpuCurve::Linear => 1.0,
+                filmcraft_color::GpuCurve::Pq => 2.0,
+                filmcraft_color::GpuCurve::Hlg => 3.0,
+            };
+            let (hl, hk) = p.hlg.unwrap_or(([0.0; 3], 0.0));
+            let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+            let (sp, dp) = p.tone.unwrap_or((0.0, 0.0));
+            let dl = p.desaturate.unwrap_or([0.0; 3]);
+            let on = |b: bool| if b { 1.0 } else { 0.0 };
+            #[rustfmt::skip]
+            let q = [
+                1.0, curve, hk, filmcraft_color::REFERENCE_WHITE_NITS as f32,
+                hl[0], hl[1], hl[2], on(p.matrix.is_some()),
+                mx[0][0], mx[0][1], mx[0][2], on(p.tone.is_some()),
+                mx[1][0], mx[1][1], mx[1][2], sp,
+                mx[2][0], mx[2][1], mx[2][2], dp,
+                dl[0], dl[1], dl[2], on(p.desaturate.is_some()),
+            ];
+            q
+        });
+        let base = [
             m.a as f32,
             m.b as f32,
             m.c as f32,
@@ -638,10 +680,14 @@ impl GpuCompositor {
             src.alpha,
             0.0,
             0.0,
-        ]
+        ];
+        let mut u = [0.0; UNIFORM_FLOATS];
+        u[..28].copy_from_slice(&base);
+        u[28..].copy_from_slice(&q);
+        u
     }
 
-    fn uniform_buffer(&self, u: &[f32; 28]) -> wgpu::Buffer {
+    fn uniform_buffer(&self, u: &[f32; UNIFORM_FLOATS]) -> wgpu::Buffer {
         let bytes: Vec<u8> = u.iter().flat_map(|v| v.to_le_bytes()).collect();
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("layer-u"),
@@ -679,7 +725,8 @@ impl GpuCompositor {
                     },
                     None => VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px.clone()),
                 };
-                owned = [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None }];
+                owned =
+                    [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }];
                 (img.w as u32, img.h as u32, &owned[..])
             }
             FramePlan::Composite { width, height, steps } => return self.composite_steps(*width, *height, steps, prep),
@@ -736,7 +783,10 @@ impl GpuCompositor {
                 chroma: (1, 1),
                 size: (l.frame.width, l.frame.height),
                 color: l.frame.color,
+                input: None,
             });
+            // HDR / wide-gamut Y'CbCr: the planner's input transform, in the shader (#965)
+            let src = SrcInfo { input: l.input.as_ref().filter(|_| src.kind == 2).and_then(|t| t.gpu_params()), ..src };
             let views = self.uploads.get(k).map_or_else(|| std::array::from_fn(|_| self.dummy.clone()), |up| up.views.clone());
             let job = match &l.fx {
                 Some(lfx) => {
@@ -768,7 +818,8 @@ impl GpuCompositor {
             // what the layer draws: the effect result (linear premultiplied RGBA) or the frame
             let (u, tex) = match &job {
                 Some(j) => {
-                    let s = SrcInfo { kind: 1, code_scale: 1.0, code_levels: 1.0, alpha: 0.0, chroma: l.size(), size: l.size(), color: l.frame.color };
+                    let s =
+                        SrcInfo { kind: 1, code_scale: 1.0, code_levels: 1.0, alpha: 0.0, chroma: l.size(), size: l.size(), color: l.frame.color, input: None };
                     (Self::uniforms(&s, &l.matrix, l.opacity, l.blend, (w, h)), [j.result.clone(), self.dummy.clone(), self.dummy.clone(), self.dummy.clone()])
                 }
                 None => {
@@ -977,7 +1028,7 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        wait_mapped(&self.device)?;
         rx.recv().ok()?.ok()?;
         let data = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
@@ -1040,7 +1091,7 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        wait_mapped(&self.device)?;
         rx.recv().ok()?.ok()?;
         export_renderer::timing::add_map_wait(t.elapsed());
         let t = std::time::Instant::now();
@@ -1083,7 +1134,7 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        wait_mapped(&self.device)?;
         rx.recv().ok()?.ok()?;
         let data = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
@@ -1094,6 +1145,15 @@ impl GpuCompositor {
         buf.unmap();
         Some((*w, *h, out))
     }
+}
+
+/// Wait for the last submission and its `map_async` callbacks.
+///
+/// Export readback used `PollType::wait_indefinitely`. On radv that can never return after a
+/// failed hardware-encode attempt (#1058), so the export never finishes. Eight seconds is longer
+/// than a healthy map; a timeout returns `None` and the CPU renderer takes the frame.
+fn wait_mapped(device: &wgpu::Device) -> Option<()> {
+    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(8)) }).ok().map(|_| ())
 }
 
 /// Shader source: kind (0 RGBA8 sRGB, 1 linear premultiplied RGBA, 2 YUV), sampling scales, dimensions, color.
@@ -1108,6 +1168,21 @@ struct SrcInfo {
     chroma: (u32, u32),
     size: (u32, u32),
     color: filmcraft_color::ColorInfo,
+    /// Colour management beyond the default decode (a Y'CbCr layer's [`PlanLayer::input`]).
+    input: Option<filmcraft_color::GpuInputParams>,
+}
+
+/// Floats in a layer's uniform block (`U` in `composite.wgsl`: 13 vec4).
+const UNIFORM_FLOATS: usize = 52;
+
+/// Poll a future once: wgpu's native error scopes resolve immediately. `None` if it is still
+/// pending (then the caller assumes the worst).
+fn poll_now<F: std::future::Future>(f: F) -> Option<F::Output> {
+    let mut f = std::pin::pin!(f);
+    match f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+        std::task::Poll::Ready(v) => Some(v),
+        std::task::Poll::Pending => None,
+    }
 }
 
 /// A render pass drawing into the accumulator.

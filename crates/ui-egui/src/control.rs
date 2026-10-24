@@ -25,6 +25,17 @@ use std::sync::mpsc::Sender;
 
 use serde_json::{Value, json};
 
+const MAX_CLICK_COUNT: u64 = 10;
+const MAX_DRAG_STEPS: u64 = 1_024;
+
+fn bounded_repetitions(params: &Value, key: &str, default: u64, minimum: u64, maximum: u64) -> Result<u64, String> {
+    let value = params.get(key).map(|value| value.as_u64().ok_or_else(|| format!("`{key}` must be a non-negative integer"))).transpose()?.unwrap_or(default);
+    if value > maximum {
+        return Err(format!("`{key}` must not exceed {maximum}"));
+    }
+    Ok(value.max(minimum))
+}
+
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::state::{Mode, PlaybackRes, ThumbnailMode, Tool};
@@ -320,6 +331,15 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 Err(e) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 Err(e) => return err(e),
             };
+            // validate before queuing anything, so a refused count leaves no modifier held
+            let count = if req.method == "ui.click" {
+                match bounded_repetitions(p, "count", 1, 0, MAX_CLICK_COUNT) {
+                    Ok(count) => count,
+                    Err(error) => return err(error),
+                }
+            } else {
+                0
+            };
             let m = modifiers(p);
             app.synthetic.push(egui::Event::ModifiersChanged(m));
             app.synthetic.push(egui::Event::PointerMoved(pos));
@@ -329,7 +349,6 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Some("middle") => egui::PointerButton::Middle,
                     _ => egui::PointerButton::Primary,
                 };
-                let count = p.get("count").and_then(Value::as_u64).unwrap_or(1);
                 for _ in 0..count {
                     app.synthetic.push(egui::Event::PointerButton { pos, button, pressed: true, modifiers: m });
                     app.synthetic.push(egui::Event::PointerButton { pos, button, pressed: false, modifiers: m });
@@ -345,7 +364,10 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 (Err(e), _) | (_, Err(e)) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 (Err(e), _) | (_, Err(e)) => return err(e),
             };
-            let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(12).max(2);
+            let steps = match bounded_repetitions(p, "steps", 12, 2, MAX_DRAG_STEPS) {
+                Ok(steps) => steps,
+                Err(error) => return err(error),
+            };
             let m = modifiers(p);
             app.synthetic.push(egui::Event::ModifiersChanged(m));
             app.synthetic.push(egui::Event::PointerMoved(a));
@@ -622,10 +644,20 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod base64_tests {
+    use serde_json::json;
+
     #[test]
     fn rfc4648_vectors() {
         for (i, o) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
             assert_eq!(super::base64(i.as_bytes()), o);
         }
+    }
+
+    #[test]
+    fn synthetic_event_repetition_is_bounded() {
+        assert_eq!(super::bounded_repetitions(&json!({}), "count", 1, 0, super::MAX_CLICK_COUNT).unwrap(), 1);
+        assert_eq!(super::bounded_repetitions(&json!({"steps": 1}), "steps", 12, 2, super::MAX_DRAG_STEPS).unwrap(), 2);
+        assert!(super::bounded_repetitions(&json!({"count": u64::MAX}), "count", 1, 0, super::MAX_CLICK_COUNT).is_err());
+        assert!(super::bounded_repetitions(&json!({"steps": "many"}), "steps", 12, 2, super::MAX_DRAG_STEPS).is_err());
     }
 }

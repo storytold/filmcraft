@@ -1,9 +1,10 @@
-//! WebM alpha (#402): a VP9 track with `AlphaMode` 1 carries, in each block's `BlockAdditional`
-//! with `BlockAddID` 1, a second VP9 stream coded independently of the colour one. Its luma plane,
+//! WebM alpha (#402): a VP8 or VP9 track with `AlphaMode` 1 carries, in each block's
+//! `BlockAdditional` with `BlockAddID` 1, a second stream of the same codec coded independently of
+//! the colour one. Its luma plane,
 //! full range, is the frame's alpha (the WebM convention, as libvpx-based decoders read it).
 //!
 //! [`AlphaDecoder`] wraps the colour decoder: every sample it decodes, it also decodes that
-//! sample's alpha frame with a second (software) VP9 decoder and attaches the luma plane to the
+//! sample's alpha frame with a second (software) decoder and attaches the luma plane to the
 //! colour picture with the same timestamp, holding a colour picture back until its alpha is out. The alpha stream has key frames of its own, which need
 //! not coincide with the colour ones: after a seek (or any other break in the order samples are
 //! fed), the alpha decoder restarts from the nearest alpha key frame at or before the sample.
@@ -21,7 +22,7 @@ use crate::video::{DecodedFrame, VideoDecoder};
 /// How far back the alpha decoder looks for a key frame when it resynchronises.
 const MAX_RESYNC: usize = 600;
 /// Decoded alpha pictures waiting for their colour picture, and colour pictures waiting for their
-/// alpha (VP9 pictures come out in order, so a few are plenty; past that a picture goes out opaque
+/// alpha (VP8 / VP9 pictures come out in order, so a few are plenty; past that a picture goes out opaque
 /// rather than stall).
 const MAX_PENDING: usize = 8;
 
@@ -106,7 +107,7 @@ impl AlphaDecoder {
             self.alpha.reset();
             self.pending.clear();
             self.alpha_max = None;
-            let is_key = |k: usize| self.layer.read(k).is_some_and(|d| filmcraft_vp9::is_keyframe(&d));
+            let is_key = |k: usize| self.layer.read(k).is_some_and(|d| self.alpha.is_random_access(&d) == Some(true));
             let start = (i.saturating_sub(MAX_RESYNC)..=i).rev().find(|&k| is_key(k));
             if let Some(start) = start {
                 for k in start..i {

@@ -3,8 +3,8 @@
 //! Update Metadata, Automate to Sequence, Scene Edit Detection, Normalize Mix Track, Simplify
 //! Sequence, Transcribe Sequence, Save as Template, Add Flash Cue Marker and the System
 //! Compatibility Report; plus the frontend side of Edit Original / Reveal Log Files (the OS
-//! opener), Generate Audio Waveform (the timeline's peak cache), Import from Media Browser (the
-//! Media Browser selection) and View ▸ Dynamic Audio Waveforms.
+//! opener), Reveal in Finder, Generate Audio Waveform (the timeline's peak cache), Import from
+//! Media Browser (the Media Browser selection) and View ▸ Dynamic Audio Waveforms.
 //!
 //! The open dialog lives in `UiState::extras.dialog` (serde, like `clip_dialogs`): the engine
 //! command it runs and the parameters being edited, so agents open it from the menu, change
@@ -16,6 +16,7 @@
 //! `find.row.<n>.column|operator|text`; Project Settings tabs `projectSettings.tab.<general|scratchDisks|ingest>`,
 //! scratch rows `projectSettings.scratch.<key>` / `.browse` / `.same`.
 
+use crate::widgets::CenteredDialog as _;
 use egui::{Align2, RichText};
 use filmcraft_project::{FindOp, find::COLUMNS};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
+use crate::native_dialogs::FileDialog;
 use crate::state::ClipDialogDraft;
 
 /// Frontend state of the M3.11 menu items (`UiState::extras`).
@@ -185,11 +187,12 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             app.ui.extras.dialog = Some(ClipDialogDraft { command: id.into(), params: json!({}), info: report.clone(), error: String::new() });
             return Some(Ok(json!({"dialog": "systemReport", "report": report})));
         }
-        "edit.editOriginal" => {
+        "edit.editOriginal" | "file.reveal" => {
+            let reveal = id == "file.reveal";
             let r = app.session.execute(id, params.clone()).map_err(|e| e.to_string());
             return Some(r.and_then(|v| {
                 for p in v["paths"].as_array().cloned().unwrap_or_default() {
-                    open_path(app, ctx, p.as_str().unwrap_or_default(), false)?;
+                    open_path(app, ctx, p.as_str().unwrap_or_default(), reveal)?;
                 }
                 Ok(v)
             }));
@@ -214,26 +217,30 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             } else {
                 (tl!("FilmCraft Project"), "fcproj", tlf!("{name} Selection.fcproj", name = app.session.project.name))
             };
-            let Some(path) = app.hooks.pick_save_as.as_mut().and_then(|f| f(filter, &[ext], &name)) else {
-                return Some(Ok(Value::Null));
-            };
             let mut p = params.clone();
             if !p.is_object() {
                 p = json!({});
             }
-            p["path"] = json!(path);
-            return Some(app.session.execute(id, p).map_err(|e| e.to_string()));
+            let id = id.to_string();
+            return Some(app.pick(FileDialog::save_as(filter, &[ext], &name), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                p["path"] = json!(path);
+                app.session.execute(&id, p).map_err(|e| e.to_string())
+            }));
         }
         "file.mediaPropertiesFile" if params.get("path").is_none() => {
             let exts: Vec<&str> =
                 filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect();
-            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Media"), &exts)) else { return Some(Ok(Value::Null)) };
-            let r = app.session.execute(id, json!({"path": path})).map_err(|e| e.to_string());
-            if let Ok(v) = &r {
-                app.ui.extras.dialog =
-                    Some(ClipDialogDraft { command: "file.mediaProperties".into(), params: json!({}), info: json!([v]), error: String::new() });
-            }
-            return Some(r);
+            let id = id.to_string();
+            return Some(app.pick(FileDialog::open_file(tl!("Media"), &exts), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                let r = app.session.execute(&id, json!({"path": path})).map_err(|e| e.to_string());
+                if let Ok(v) = &r {
+                    app.ui.extras.dialog =
+                        Some(ClipDialogDraft { command: "file.mediaProperties".into(), params: json!({}), info: json!([v]), error: String::new() });
+                }
+                r
+            }));
         }
         _ => {}
     }
@@ -385,7 +392,7 @@ fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-        let r = ui.add(egui::DragValue::new(&mut v).range(range).suffix(suffix));
+        let r = ui.add(crate::widgets::number_drag(&mut v).range(range).suffix(suffix));
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
@@ -446,6 +453,7 @@ fn pairs(v: &[&str]) -> Vec<(String, String)> {
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.extras.dialog.clone() else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("menu-dialog-before-drag"), &mut d);
     let Some((title, pre, ok_text)) = meta(&d.command) else {
         app.ui.extras.dialog = None;
         return;
@@ -456,7 +464,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("menu-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
             "edit.find" => {
@@ -612,7 +620,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                                 ui.label(l);
                                 for (i, axis) in ["horizontal", "vertical"].iter().enumerate() {
                                     let mut v = p[k][i].as_f64().unwrap_or(0.0);
-                                    let r = ui.add(egui::DragValue::new(&mut v).range(0.0..=50.0).suffix(" %"));
+                                    let r = ui.add(crate::widgets::number_drag(&mut v).range(0.0..=50.0).suffix(" %"));
                                     push(&mut elems, format!("projectSettings.{k}.{axis}"), &r, format!("{l} {axis}"));
                                     p[k][i] = json!(v);
                                     ui.label(*axis);
@@ -707,8 +715,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             "clip.sceneEditDetection" => {
                 check(ui, &mut elems, pre, p, "applyCuts", tl!("Apply a cut at each detected cut point"));
-                check(ui, &mut elems, pre, p, "createSubclips", tl!("Create a subclip for each detected cut point"));
-                check(ui, &mut elems, pre, p, "generateMarkers", tl!("Generate clip markers at each detected cut point"));
+                check(ui, &mut elems, pre, p, "createSubclips", tl!("Create a bin of subclips from each detected cut point"));
+                check(ui, &mut elems, pre, p, "generateMarkers", tl!("Create a clip marker at each detected cut point"));
                 ui.horizontal(|ui| {
                     ui.label(tl!("Sensitivity:"));
                     let mut v = p["sensitivity"].as_f64().unwrap_or(50.0);
@@ -823,12 +831,18 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if let Some(k) = browse
-        && let Some(dir) = app.hooks.pick_folder.as_mut().and_then(|f| f())
-    {
-        d.params[k.as_str()] = json!(dir);
+    if let Some(k) = browse {
+        // into the dialog's parameters, if the same dialog is still open when the folder comes back
+        let command = d.command.clone();
+        app.pick_ui(FileDialog::Folder { at: None }, move |app, paths| {
+            if let (Some(dir), Some(d)) = (paths.into_iter().next(), app.ui.extras.dialog.as_mut())
+                && d.command == command
+            {
+                d.params[k.as_str()] = json!(dir);
+            }
+        });
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
     match action {

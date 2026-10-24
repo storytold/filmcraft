@@ -91,9 +91,12 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
 /// A mask path from JSON: the serialized [`MaskPath`] object, an array of vertices
 /// (`{"p":[x,y],"in":[x,y]?,"out":[x,y]?}`), or an array of `[x, y]` / `{"x","y"}` points.
 pub fn path_from_json(v: &Value) -> Option<MaskPath> {
-    if let Ok(p) = serde_json::from_value::<MaskPath>(v.clone()) {
-        return Some(p);
-    }
+    // The vertex forms first: serde also accepts `{"p","in","out"}` vertices (the `masks.list` /
+    // `masks.add` form) but silently drops the unknown `in` / `out` tangents.
+    vertex_path(v).or_else(|| serde_json::from_value::<MaskPath>(v.clone()).ok())
+}
+
+fn vertex_path(v: &Value) -> Option<MaskPath> {
     let arr = v.as_array().or_else(|| v.get("vertices").and_then(Value::as_array))?;
     let closed = v.get("closed").and_then(Value::as_bool).unwrap_or(true);
     let mut vertices = Vec::new();
@@ -244,6 +247,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         e.masks.push(Mask::new(name.clone(), path));
         let mi = e.masks.len() - 1;
         st.selected_mask = Some(MaskSel { clip, effect: ei, mask: mi });
+        st.selected_effect = None;
         Ok((ei, mi, name))
     })?;
     Ok(json!({"clip": clip.0, "effect": ei, "mask": mi, "name": name}))
@@ -508,6 +512,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("masks.select", format!("no mask {mi}")));
     }
     s.state.selected_mask = Some(MaskSel { clip, effect: ei, mask: mi });
+    s.state.selected_effect = None;
     Ok(Value::Null)
 }
 

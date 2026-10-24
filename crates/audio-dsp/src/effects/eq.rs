@@ -110,6 +110,57 @@ impl BandBank {
     pub(crate) fn process(&mut self, channels: &mut [&mut [f32]], out_gain: &mut Smoothed) {
         let n = block_len(channels);
         let nch = channels.len().min(self.state.len());
+        if n == 0 {
+            return;
+        }
+        if !out_gain.is_smoothing()
+            && self.bands.iter().all(|b| !b.dirty && !b.freq.is_smoothing() && !b.gain.is_smoothing() && !b.q.is_smoothing() && !b.mix.is_smoothing())
+        {
+            // Keep the exact per-sample arithmetic and recursive state; only the settled
+            // parameter/smoother bookkeeping is hoisted out of the hot loop.
+            let g = out_gain.value() as f64;
+            for (channel, state) in channels.iter_mut().take(nch).zip(&mut self.state) {
+                for (b, st) in self.bands.iter().zip(state.iter_mut()) {
+                    if b.mix.value() <= 0.0 {
+                        st.reset();
+                    }
+                }
+                // A settled unit transfer with zero state is exactly transparent for finite
+                // f32 input. Do not discard a tail or bypass a non-finite sample. Bounded
+                // coefficients also ensure intermediate f64 products cannot overflow.
+                let transparent = self.bands.iter().zip(state.iter()).all(|(b, st)| {
+                    b.mix.value() <= 0.0
+                        || (st.is_clear()
+                            && b.coeffs.b0 == 1.0
+                            && b.coeffs.b1 == b.coeffs.a1
+                            && b.coeffs.b2 == b.coeffs.a2
+                            && b.coeffs.b1.abs() <= 4.0
+                            && b.coeffs.b2.abs() <= 4.0)
+                });
+                if transparent && channel.iter().take(n).all(|x| x.is_finite()) {
+                    let active = self.bands.iter().any(|b| b.mix.value() > 0.0);
+                    for sample in channel.iter_mut().take(n) {
+                        let x = *sample as f64;
+                        // An active identity biquad adds +0, which normalizes negative zero.
+                        *sample = ((if active { x + 0.0 } else { x }) * g) as f32;
+                    }
+                    continue;
+                }
+                for sample in channel.iter_mut().take(n) {
+                    let mut x = *sample as f64;
+                    for (b, st) in self.bands.iter().zip(state.iter_mut()) {
+                        let m = b.mix.value() as f64;
+                        if m > 0.0 {
+                            let y = st.tick(&b.coeffs, x);
+                            x += m * (y - x);
+                        }
+                    }
+                    *sample = (x * g) as f32;
+                }
+            }
+            self.counter = (self.counter + (n % COEFF_INTERVAL as usize) as u32) % COEFF_INTERVAL;
+            return;
+        }
         for i in 0..n {
             if self.counter == 0 {
                 self.update_coeffs(false);
@@ -374,5 +425,121 @@ mod tests {
         let max_step = x.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
         assert!(max_step < 0.01, "step {max_step}");
         assert!((x[4799] - 0.5 * crate::db_to_gain(12.0)).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+impl BandBank {
+    fn process_reference(&mut self, channels: &mut [&mut [f32]], out_gain: &mut Smoothed) {
+        let n = block_len(channels);
+        let nch = channels.len().min(self.state.len());
+        for i in 0..n {
+            if self.counter == 0 {
+                self.update_coeffs(false);
+            }
+            self.counter = (self.counter + 1) % COEFF_INTERVAL;
+            for b in &mut self.bands {
+                b.freq.tick();
+                b.gain.tick();
+                b.q.tick();
+                if b.freq.is_smoothing() || b.gain.is_smoothing() || b.q.is_smoothing() {
+                    b.dirty = true;
+                }
+            }
+            let g = out_gain.tick();
+            // Tick the band mixes once per sample (shared by all channels).
+            let mut mixes = [0.0f32; MAX_BANDS];
+            for (m, b) in mixes.iter_mut().zip(self.bands.iter_mut()) {
+                *m = b.mix.tick();
+            }
+            for ch in 0..nch {
+                let mut x = channels[ch][i] as f64;
+                for (k, b) in self.bands.iter().enumerate() {
+                    let m = mixes[k] as f64;
+                    let st = &mut self.state[ch][k];
+                    if m > 0.0 {
+                        let y = st.tick(&b.coeffs, x);
+                        x += m * (y - x);
+                    } else {
+                        st.reset();
+                    }
+                }
+                channels[ch][i] = (x * g as f64) as f32;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod throughput_tests {
+    use super::*;
+    #[test]
+    fn flat_eq_fast_path_preserves_samples_and_filter_tails() {
+        let mut fast = BandBank::new(48000.0, 2, 1);
+        fast.set_band(0, true, FilterType::Peaking, 1000.0, 0.0, 0.7, true);
+        fast.reset();
+        let mut reference = fast.clone();
+        let mut gain = Smoothed::new(1.0, 0);
+        let mut ref_gain = gain;
+        for input in
+            [vec![-0.0, 0.0, f32::MIN_POSITIVE, f32::from_bits(1), f32::MAX, -f32::MAX, 0.7], vec![0.0; 100], vec![f32::INFINITY, f32::NEG_INFINITY, f32::NAN]]
+        {
+            let mut a = [input.clone(), input];
+            let mut b = a.clone();
+            let [al, ar] = &mut a;
+            let [bl, br] = &mut b;
+            fast.process(&mut [al, ar], &mut gain);
+            reference.process_reference(&mut [bl, br], &mut ref_gain);
+            for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
+                assert_eq!(a.to_bits(), b.to_bits());
+            }
+        }
+        // A newly flat filter must drain its old state, not drop the tail.
+        fast.reset();
+        fast.set_band(0, true, FilterType::Peaking, 1000.0, 12.0, 0.7, true);
+        fast.update_coeffs(true);
+        fast.process(&mut [&mut [0.5], &mut [0.5]], &mut gain);
+        fast.set_band(0, true, FilterType::Peaking, 1000.0, 0.0, 0.7, true);
+        fast.update_coeffs(true);
+        reference = fast.clone();
+        let mut a = [vec![0.0; 4096], vec![0.0; 4096]];
+        let mut b = a.clone();
+        let [al, ar] = &mut a;
+        let [bl, br] = &mut b;
+        fast.process(&mut [al, ar], &mut gain);
+        reference.process_reference(&mut [bl, br], &mut ref_gain);
+        assert_eq!(a, b);
+        assert!(a[0].iter().any(|x| *x != 0.0));
+    }
+    #[test]
+    fn settled_and_automated_eq_matches_original_loop() {
+        let mut fast = BandBank::new(48000.0, 2, 3);
+        fast.reset();
+        let mut reference = fast.clone();
+        let mut gain = Smoothed::with_ms(1.0, 48000.0, 20.0);
+        let mut ref_gain = gain;
+        for block in 0..500 {
+            if matches!(block, 2 | 90 | 180 | 270 | 360) {
+                let on = block != 180;
+                let db = if block == 270 { 0.0 } else { 9.0 };
+                for bank in [&mut fast, &mut reference] {
+                    bank.set_band(0, on, FilterType::Peaking, 1733.0, db, 0.7, false);
+                }
+                gain.set(if block == 360 { 1.0 } else { 0.8 });
+                ref_gain.set(gain.target());
+            }
+            let n = [0, 1, 17, 64, 513][block % 5];
+            let input: Vec<f32> = (0..n).map(|i| if block > 400 { 0.0 } else { ((i + block * 13) as f32 * 0.17).sin() * 0.3 }).collect();
+            let mut a = [input.clone(), input.clone()];
+            let mut b = a.clone();
+            let [al, ar] = &mut a;
+            let [bl, br] = &mut b;
+            fast.process(&mut [al, ar], &mut gain);
+            reference.process_reference(&mut [bl, br], &mut ref_gain);
+            for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
+                assert_eq!(a.to_bits(), b.to_bits(), "block {block}");
+            }
+            assert_eq!(fast.counter, reference.counter);
+        }
     }
 }

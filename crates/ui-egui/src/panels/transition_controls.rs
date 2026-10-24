@@ -65,12 +65,15 @@ fn timecode(frames: f64, rate: FrameRate, drop_frame: bool) -> String {
     filmcraft_time::format_timecode_frames(frames.round() as i64, rate, drop_frame)
 }
 
-/// A duration field in frames that reads and takes timecode (or a plain frame count).
+/// A duration field in frames that reads and takes timecode (or a frame count, or, when the text is
+/// neither, a calculation in frames such as `48/2`).
 fn duration_field(ui: &mut egui::Ui, frames: &mut i64, max: i64, rate: FrameRate, drop_frame: bool) -> egui::Response {
+    let current = *frames as f64;
     ui.add(egui::DragValue::new(frames).range(1..=max.max(1)).speed(0.25).custom_formatter(move |v, _| timecode(v, rate, drop_frame)).custom_parser(move |s| {
         match s.trim().parse::<i64>() {
             Ok(n) => Some(n as f64),
-            Err(_) => filmcraft_time::parse_timecode(s, rate, drop_frame, 0).ok().map(|n| n as f64),
+            // timecode first: `1.00` is a second there, not one
+            Err(_) => filmcraft_time::parse_timecode(s, rate, drop_frame, 0).ok().map(|n| n as f64).or_else(|| crate::calc::eval(s, current)),
         }
     }))
 }
@@ -403,7 +406,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
         (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
             let mut v = *v;
             let speed = ((soft_max - soft_min) / 200.0).max(0.001);
-            let r = ui.add(egui::DragValue::new(&mut v).range(*min..=*max).speed(speed).max_decimals(usize::from(*decimals)).suffix(*unit));
+            let r = ui.add(crate::widgets::number_drag(&mut v).range(*min..=*max).speed(speed).max_decimals(usize::from(*decimals)).suffix(*unit));
             elems.push((eid, r.rect, format!("{v}")));
             r.changed().then(|| {
                 let mut c = drag(&r);
@@ -413,7 +416,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
         }
         (ParamKind::Angle, ParamValue::Float(v)) => {
             let mut v = *v;
-            let r = ui.add(egui::DragValue::new(&mut v).speed(0.5).suffix("°"));
+            let r = ui.add(crate::widgets::number_drag(&mut v).speed(0.5).suffix("°"));
             elems.push((eid, r.rect, format!("{v}")));
             r.changed().then(|| {
                 let mut c = drag(&r);
@@ -459,8 +462,8 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
             let (mut px, mut py) = (if p.x.is_nan() { frame.0 / 2.0 } else { p.x }, if p.y.is_nan() { frame.1 / 2.0 } else { p.y });
             let mut out = None;
             ui.horizontal(|ui| {
-                let rx = ui.add(egui::DragValue::new(&mut px).speed(1.0).prefix("x "));
-                let ry = ui.add(egui::DragValue::new(&mut py).speed(1.0).prefix("y "));
+                let rx = ui.add(crate::widgets::number_drag(&mut px).speed(1.0).prefix("x "));
+                let ry = ui.add(crate::widgets::number_drag(&mut py).speed(1.0).prefix("y "));
                 elems.push((format!("{eid}.x"), rx.rect, format!("{px}")));
                 elems.push((format!("{eid}.y"), ry.rect, format!("{py}")));
                 for r in [&rx, &ry] {
@@ -504,7 +507,8 @@ pub fn duration_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         .collapsible(false)
         .resizable(false)
         .default_width(260.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(tl!("Duration:"));

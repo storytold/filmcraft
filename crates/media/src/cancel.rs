@@ -96,9 +96,63 @@ pub fn cancelled() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(Ordering::Relaxed)))
 }
 
+/// The hints of the work running on this thread ([`with_cancel`], [`with_catch_up`],
+/// [`with_draft`], [`with_background`]), to carry them to another thread doing part of that work.
+#[derive(Clone, Default)]
+pub struct Context {
+    cancel: Option<Arc<AtomicBool>>,
+    catch_up: Option<Tick>,
+    draft: bool,
+    background: bool,
+}
+
+impl Context {
+    /// This thread's hints.
+    pub fn current() -> Self {
+        Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft(), background: background() }
+    }
+
+    /// Run `f` with these hints, restoring this thread's however `f` ends (a pool thread must
+    /// not keep another job's hints after a panic).
+    pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
+        struct Restore(Context);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let prev = std::mem::take(&mut self.0);
+                CURRENT.with(|c| *c.borrow_mut() = prev.cancel);
+                CATCH_UP.with(|c| c.set(prev.catch_up));
+                DRAFT.with(|c| c.set(prev.draft));
+                BACKGROUND.with(|c| c.set(prev.background));
+            }
+        }
+        let _restore = Restore(Context::current());
+        CURRENT.with(|c| *c.borrow_mut() = self.cancel);
+        CATCH_UP.with(|c| c.set(self.catch_up));
+        DRAFT.with(|c| c.set(self.draft));
+        BACKGROUND.with(|c| c.set(self.background));
+        f()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_carries_the_hints_to_another_thread_and_restores_its_own() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let ctx = with_cancel(&flag, || with_draft(true, || with_background(true, || with_catch_up(Some(Tick(5)), Context::current))));
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let seen = with_draft(false, || ctx.clone().run(|| (cancelled(), draft(), background(), catch_up())));
+                assert_eq!(seen, (true, true, true, Some(Tick(5))));
+                // a panic inside leaves this thread's own hints in place
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.clone().run(|| panic!("job"))));
+                assert!(r.is_err());
+                assert_eq!((cancelled(), draft(), background(), catch_up()), (false, false, false, None));
+            });
+        });
+    }
 
     #[test]
     fn flag_is_scoped_to_the_closure() {

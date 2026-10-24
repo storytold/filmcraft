@@ -17,12 +17,14 @@ pub mod clip_ops;
 pub mod color;
 pub mod commands;
 pub mod demo;
+pub mod doc_path;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
+mod keyframe_move;
 mod marker_export;
 pub mod masks;
 pub mod media_browser;
@@ -100,6 +102,14 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// Publish a complete new file only when the final path is unoccupied. Publication must
+    /// reject a concurrent collision; a prior existence check alone is insufficient.
+    /// Return `ErrorKind::AlreadyExists` for an occupied final path so the importer can retry
+    /// with a numbered name; return other errors without publishing a partial file.
+    /// Hosts without this operation fail closed.
+    fn write_file_new(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "exclusive file creation is unavailable on this host"))
+    }
     /// Size of a file in bytes (an error when it is missing). Hosts should override this: the
     /// default reads the whole file.
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
@@ -157,6 +167,23 @@ impl Services for FsServices {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
         filmcraft_format::atomic_write(std::path::Path::new(path), data)
     }
+    fn write_file_new(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        let path = std::path::Path::new(path);
+        let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(dir).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                std::io::Error::new(std::io::ErrorKind::NotADirectory, format!("{} is not a directory: {error}", dir.display()))
+            } else {
+                error
+            }
+        })?;
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => return Err(std::io::ErrorKind::AlreadyExists.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        filmcraft_format::atomic_write_new(path, data)
+    }
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
         let m = std::fs::metadata(path)?;
         if m.is_file() { Ok(m.len()) } else { Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{path} is not a file"))) }
@@ -191,6 +218,10 @@ impl Services for FsServices {
         Ok(out)
     }
 }
+
+/// A point in the undo history (its top step), from [`Session::undo_mark`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UndoMark(Option<usize>);
 
 /// Undo history of whole-project snapshots.
 #[derive(Clone, Default)]
@@ -228,6 +259,29 @@ pub struct Targeting {
 pub struct GapSelection {
     pub track: TrackId,
     pub range: TimeRange,
+}
+
+/// An effect of a clip (`effects.select`): its id and which of the clip's effects with that id it
+/// is (0 = the first). Not its index, which applying an effect shifts (standard effects go first).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectSel {
+    pub clip: ClipId,
+    pub effect: String,
+    pub instance: usize,
+}
+
+impl EffectSel {
+    /// The selection of `effects[index]` of `clip`.
+    pub fn of(clip: ClipId, effects: &[filmcraft_project::EffectInstance], index: usize) -> Option<Self> {
+        let id = &effects.get(index)?.effect;
+        let instance = effects.iter().take(index).filter(|e| &e.effect == id).count();
+        Some(Self { clip, effect: id.clone(), instance })
+    }
+
+    /// Where the selected effect is in the clip's `effects`.
+    pub fn index(&self, effects: &[filmcraft_project::EffectInstance]) -> Option<usize> {
+        effects.iter().enumerate().filter(|(_, e)| e.effect == self.effect).nth(self.instance).map(|(i, _)| i)
+    }
 }
 
 /// Editing state that commands depend on (not project data, but headless-relevant).
@@ -291,6 +345,11 @@ pub struct EditorState {
     /// The mask being edited on the Program monitor (Effect Controls selection).
     #[serde(default)]
     pub selected_mask: Option<masks::MaskSel>,
+    /// The effect selected in Effect Controls (its header or one of its properties): Motion and
+    /// Transform show their handles on the Program monitor. Selecting a mask clears it, and
+    /// selecting an effect clears the mask selection.
+    #[serde(default)]
+    pub selected_effect: Option<EffectSel>,
     /// Multi-Camera Audio Follows Video: switching a multi-camera clip's angle switches its linked
     /// audio clips too.
     #[serde(default)]
@@ -357,6 +416,9 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Background jobs (exports, render previews…).
     pub jobs: Vec<Job>,
+    /// Export job → the offline items it drew the slate for, filled when the export finishes
+    /// (#1054; `offlineMedia` in `file.exportMedia` and queue results).
+    pub export_offline: std::collections::HashMap<u64, Arc<std::sync::Mutex<Vec<media_pool::OfflineMedia>>>>,
     /// User preferences (`prefs.*` commands) and where they persist (None = not persisted).
     pub prefs: autosave::Preferences,
     pub prefs_path: Option<std::path::PathBuf>,
@@ -476,6 +538,7 @@ impl Session {
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),
+            export_offline: Default::default(),
             prefs: Default::default(),
             prefs_path: None,
             persistence: None,
@@ -833,6 +896,77 @@ impl Session {
         Ok(r)
     }
 
+    /// Run several undoable edits as one undo step labelled `label`. If `f` fails, every edit it made
+    /// is rolled back and the history is as before.
+    pub fn edit_group<R>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
+        let (project, state, undo, redo, limit) =
+            (self.project.clone(), self.state.clone(), self.history.undo.len(), self.history.redo.clone(), self.history.limit);
+        // keep every step the group makes, however many, so the first one can be found afterwards
+        self.history.limit = usize::MAX;
+        // a panic inside the group must not leave the history unlimited: restore, then let it go on
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.history.limit = limit;
+        let first = self.history.undo.get(undo).map(|e| e.1.clone());
+        let rolled_back = |s: &mut Session| {
+            s.history.undo.truncate(undo);
+            s.history.redo = redo.clone();
+            s.history.merge_key = None;
+            s.project = project.clone();
+            s.state = state.clone();
+            s.bump();
+        };
+        match (r, first) {
+            (Ok(Ok(v)), Some(first)) => {
+                self.history.undo.truncate(undo);
+                self.history.undo.push((label.to_string(), first));
+                if self.history.undo.len() > limit {
+                    self.history.undo.remove(0);
+                }
+                self.history.merge_key = None;
+                Ok(v)
+            }
+            (Ok(Ok(v)), None) => Ok(v),
+            (Ok(Err(e)), _) => {
+                rolled_back(self);
+                Err(e)
+            }
+            (Err(panic), _) => {
+                rolled_back(self);
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+
+    /// Where the undo history stands now, for [`Session::revert_to`].
+    pub fn undo_mark(&self) -> UndoMark {
+        UndoMark(self.history.undo.last().map(|u| Arc::as_ptr(&u.1) as usize))
+    }
+
+    /// Take back every edit made since `mark` (a gesture cancelled with Escape, #580), merged or
+    /// not: the project returns to how it was at `mark`, and neither undo nor redo keeps them.
+    /// Nothing happens when `mark` has left the history. Returns how many steps were taken back.
+    pub fn revert_to(&mut self, mark: UndoMark) -> usize {
+        if let UndoMark(Some(p)) = mark
+            && !self.history.undo.iter().any(|u| Arc::as_ptr(&u.1) as usize == p)
+        {
+            return 0;
+        }
+        let mut earliest = None;
+        let mut n = 0;
+        while self.undo_mark() != mark {
+            let Some((_, prev)) = self.history.undo.pop() else { break };
+            earliest = Some(prev);
+            n += 1;
+        }
+        if let Some(prev) = earliest {
+            self.project = prev;
+            self.history.merge_key = None;
+            self.fix_state();
+            self.bump();
+        }
+        n
+    }
+
     /// Edit the active sequence with the edit-algebra context.
     pub fn edit_sequence<R>(&mut self, label: &str, f: impl FnOnce(&mut Sequence, &mut EditCtx, &mut EditorState) -> Result<R>) -> Result<R> {
         self.edit_sequence_as(label, None, f)
@@ -901,6 +1035,11 @@ impl Session {
             if !ok {
                 self.state.selected_mask = None;
             }
+        }
+        if let Some(e) = &self.state.selected_effect
+            && self.active_sequence().and_then(|q| q.find_item(e.clip)).and_then(|(_, it)| e.index(&it.effects)).is_none()
+        {
+            self.state.selected_effect = None;
         }
         if let Some(s) = self.state.active_sequence
             && p.sequence(s).is_none()
@@ -1024,11 +1163,22 @@ impl Session {
 
     /// [`Session::render_program_at`], with the reason when nothing can be rendered.
     pub fn try_render_program_at(&self, scale: f32, t: Tick) -> Result<filmcraft_render::Image> {
+        self.render_program_with(scale, t, &self.media.provider(self.project.clone(), self.services.clone()))
+    }
+
+    /// [`Session::try_render_program_at`], also naming the offline items the frame drew the slate
+    /// for (#1054).
+    pub fn try_render_program_with_offline_at(&self, scale: f32, t: Tick) -> Result<(filmcraft_render::Image, Vec<media_pool::OfflineMedia>)> {
+        let provider = self.media.provider(self.project.clone(), self.services.clone()).recording();
+        let img = self.render_program_with(scale, t, &provider)?;
+        Ok((img, provider.offline_used()))
+    }
+
+    fn render_program_with(&self, scale: f32, t: Tick, provider: &dyn filmcraft_render::SourceProvider) -> Result<filmcraft_render::Image> {
         let seq = self.renderable_sequence(scale)?;
         let t = self.sequence_rate().snap(t.max(Tick::ZERO));
-        let provider = self.media.provider(self.project.clone(), self.services.clone());
         let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
-        Ok(filmcraft_render::render_sequence(&self.project, seq, t, opts, &provider))
+        Ok(filmcraft_render::render_sequence(&self.project, seq, t, opts, provider))
     }
 
     /// The active sequence, if a frame of it at `scale` is within the image size limits.
@@ -1086,11 +1236,15 @@ const MAX_SUBCLIP_CHAIN: usize = 16;
 #[cfg(test)]
 mod aaf_omf_tests;
 #[cfg(test)]
+mod animated_image_tests;
+#[cfg(test)]
 mod audio_effects_tests;
 #[cfg(test)]
 mod audio_placement_tests;
 #[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod avi_import_tests;
 #[cfg(test)]
 mod clip_ops_tests;
 #[cfg(test)]
@@ -1108,11 +1262,15 @@ mod gap_selection_tests;
 #[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]
+mod individual_selection_tests;
+#[cfg(test)]
 mod interchange_auto_points_tests;
 #[cfg(test)]
 mod keyboard_tests;
 #[cfg(test)]
 mod linked_speed_tests;
+#[cfg(test)]
+mod locked_clip_edits_tests;
 #[cfg(test)]
 mod masks_tests;
 #[cfg(test)]
@@ -1140,6 +1298,8 @@ mod par_tests;
 #[cfg(test)]
 mod paste_media_tests;
 #[cfg(test)]
+mod place_items_tests;
+#[cfg(test)]
 mod presets_tests;
 #[cfg(test)]
 mod previews_tests;
@@ -1156,6 +1316,10 @@ mod remix_tests;
 #[cfg(test)]
 mod ripple_delete_tests;
 #[cfg(test)]
+mod ripple_head_tests;
+#[cfg(test)]
+mod roll_linked_tests;
+#[cfg(test)]
 mod scopes_tests;
 #[cfg(test)]
 mod sequence_inspect_tests;
@@ -1169,6 +1333,8 @@ mod settings_tests;
 mod shortcuts_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
+#[cfg(test)]
+mod stored_paths_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -190,6 +190,14 @@ fn nudge_slip_and_slide_the_selection_with_undo() {
     s.execute("timeline.nudgeDown", json!({})).unwrap();
     assert_eq!(track_of(&s, last.0), v1_id);
     assert!(s.execute("timeline.nudgeDown", json!({})).is_err(), "there is no track below V1");
+    // a linked video+audio selection: the video goes up, the audio (already on the outermost
+    // track in that direction) stays, instead of the whole nudge failing (#1368)
+    s.execute("timeline.select", json!({"clips": [last.0]})).unwrap();
+    assert!(s.state.selection.len() > 1, "the linked audio is selected too");
+    s.execute("timeline.nudgeUp", json!({})).unwrap();
+    assert_eq!(track_of(&s, last.0), s.active_sequence().unwrap().video_tracks[1].id);
+    s.execute("timeline.nudgeDown", json!({})).unwrap();
+    assert_eq!(track_of(&s, last.0), v1_id);
     // slip: the source In moves, the clip stays
     let mid = v1[1];
     s.execute("timeline.select", json!({"clips": [mid.0]})).unwrap();

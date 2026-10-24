@@ -84,6 +84,47 @@ fn apply_default_transitions_to_selected_clips() {
 }
 
 #[test]
+fn apply_video_transition_goes_to_the_selection_not_the_playhead() {
+    // #1124: ⌘D with a clip selected adds the transition at its free edges wherever the playhead is
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let c = q.video_tracks[0].items[2].clone();
+    let before_v = q.video_tracks[0].transitions.len();
+    let before_a = q.audio_tracks[0].transitions.len();
+    s.execute("playhead.set", json!({"time": (c.start + Tick(c.duration.0 / 2)).0})).unwrap();
+    assert!(s.execute("sequence.applyVideoTransition", json!({})).is_err(), "no selection, no edit point at the playhead");
+    s.execute("timeline.select", json!({"clips": [c.id.0]})).unwrap();
+    let n_undo = s.history.undo.len();
+    let r = s.execute("sequence.applyVideoTransition", json!({"effect": "wipe", "frames": 4})).unwrap();
+    assert_eq!(r["transitions"].as_array().map(Vec::len), Some(1), "{r}");
+    assert_eq!(s.history.undo.len(), n_undo + 1, "one undo step");
+    assert_eq!(s.history.undo.last().unwrap().0, "Apply Video Transition");
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].transitions.len(), before_v + 1, "the out edge keeps its dip to black");
+    let t = q.video_tracks[0].transitions.iter().find(|t| t.to == Some(c.id)).expect("transition at the in point");
+    assert_eq!(t.effect.effect, "wipe");
+    assert_eq!(t.duration, s.sequence_rate().tick_of(4));
+    assert_eq!(q.audio_tracks[0].transitions.len(), before_a, "video only, though the linked audio is selected");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].transitions.len(), before_v);
+
+    // a selected edit point gets the transition at that edge only
+    s.execute("trim.selectEditPoint", json!({"clip": c.id.0, "edge": "in"})).unwrap();
+    s.execute("sequence.applyVideoTransition", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].transitions.len(), before_v + 1);
+    assert!(q.video_tracks[0].transitions.iter().any(|t| t.to == Some(c.id) && t.effect.effect == "cross_dissolve"));
+
+    // ⇧⌘D with the clip selected: audio only
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("timeline.select", json!({"clips": [c.id.0]})).unwrap();
+    s.execute("sequence.applyAudioTransition", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].transitions.len(), before_v);
+    assert!(q.audio_tracks[0].transitions.len() > before_a);
+}
+
+#[test]
 fn normalize_mix_track_hits_the_target_peak() {
     let mut s = demo();
     let before = crate::sequence_extras::mix_peak_db(&s).unwrap();
@@ -234,4 +275,41 @@ fn flash_cue_markers_round_trip() {
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.active_sequence().unwrap().markers.iter().all(|m| m.kind != MarkerKind::FlashCue));
+}
+
+/// Apply Video Transition (Cmd+D) at both ends of an adjustment layer with Lumetri Color fades the
+/// grade in and out, as on a clip: halfway through each dissolve the picture is about halfway
+/// between the original and the graded frame, not the original with a hard cut after it.
+#[test]
+fn cmd_d_on_an_adjustment_layer_fades_its_effects_in_and_out() {
+    let mut s = demo();
+    let item = s.execute("file.newAdjustmentLayer", json!({"seconds": 4})).unwrap()["item"].as_u64().unwrap();
+    let layer = s.execute("timeline.place", json!({"item": item, "track": "V3", "seconds": 1.5})).unwrap()["clips"][0].as_u64().unwrap();
+    s.execute("effects.apply", json!({"clips": [layer], "effect": "lumetri"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": layer, "effect": "lumetri", "param": "exposure", "value": 2.0})).unwrap();
+    s.execute("timeline.select", json!({"clips": [layer]})).unwrap();
+    for edge in ["in", "out"] {
+        s.execute("sequence.applyVideoTransition", json!({"clip": layer, "edge": edge, "frames": 24})).unwrap();
+    }
+    let transitions: Vec<_> = s.active_sequence().unwrap().video_tracks[2].transitions.clone();
+    assert_eq!(transitions.len(), 2, "a dissolve at each end");
+    let mean = |s: &Session, t: Tick| {
+        let img = s.render_program_at(0.25, t).unwrap();
+        img.px.chunks(4).map(|c| f64::from(c[0] + c[1] + c[2])).sum::<f64>() / (img.w * img.h) as f64
+    };
+    for tr in &transitions {
+        let mid = tr.start + Tick(tr.duration.0 / 2);
+        let mf = mean(&s, mid);
+        // the original frame: the layer switched off; the graded frame: without the dissolves
+        s.execute("clip.enable", json!({"clips": [layer]})).unwrap();
+        let m0 = mean(&s, mid);
+        s.execute("edit.undo", json!({})).unwrap();
+        let ids: Vec<u64> = transitions.iter().map(|t| t.id.0).collect();
+        s.execute("sequence.removeTransition", json!({"transitions": ids})).unwrap();
+        let m1 = mean(&s, mid);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(m1 > m0 * 1.2, "the grade brightens the frame: {m0} → {m1}");
+        let k = (mf - m0) / (m1 - m0);
+        assert!((0.25..0.75).contains(&k), "halfway through the dissolve the grade is about half on: {k:.3}");
+    }
 }

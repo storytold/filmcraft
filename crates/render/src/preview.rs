@@ -39,7 +39,7 @@
 //! size and rate match the sequence. Green (a valid preview exists) is decided by the preview
 //! store, which knows which hashes have files.
 
-use filmcraft_project::{ClipId, ItemId, ItemKind, Project, Sequence, TrackItem, Transition};
+use filmcraft_project::{ClipId, ItemId, ItemKind, Project, Sequence, TrackItem, TrackKind, Transition};
 use filmcraft_time::{FrameRate, Tick};
 use serde::Serialize;
 
@@ -166,7 +166,7 @@ pub fn video_segments(project: &Project, seq_id: ItemId) -> Vec<Segment> {
             match l {
                 Layer::Item(ti, it) => {
                     h.json(&("item", ti));
-                    hash_item(&mut h, project, it, t, 0);
+                    hash_item(&mut h, project, it, t, TrackKind::Video, 0);
                     absolute |= prints_time(it);
                     clips.push(it.id);
                 }
@@ -180,7 +180,7 @@ pub fn video_segments(project: &Project, seq_id: ItemId) -> Vec<Segment> {
                     for side in [a, b] {
                         match side {
                             Some(it) => {
-                                hash_item(&mut h, project, it, t, 0);
+                                hash_item(&mut h, project, it, t, TrackKind::Video, 0);
                                 absolute |= prints_time(it);
                                 clips.push(it.id);
                             }
@@ -277,7 +277,7 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
                 for side in [x.from, x.to] {
                     match side.and_then(|id| tr.item(id)).filter(|i| i.enabled) {
                         Some(it) => {
-                            hash_item(&mut h, project, it, t, 0);
+                            hash_item(&mut h, project, it, t, TrackKind::Audio, 0);
                             heard = true;
                         }
                         None => h.json(&"none"),
@@ -285,7 +285,7 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
                 }
             } else if let Some(it) = tr.item_at(t).filter(|i| i.enabled) {
                 h.json(&("item", ti));
-                hash_item(&mut h, project, it, t, 0);
+                hash_item(&mut h, project, it, t, TrackKind::Audio, 0);
                 heard = true;
             }
         }
@@ -300,7 +300,9 @@ fn prints_time(it: &TrackItem) -> bool {
     it.effects.iter().any(|e| e.enabled && e.effect == "timecode")
 }
 
-fn hash_item(h: &mut Fnv128, project: &Project, it: &TrackItem, origin: Tick, depth: u32) {
+/// Hash a clip and its source as heard (`kind` Audio) or seen (`kind` Video): a nested sequence
+/// contributes only the tracks of that kind, so editing its picture keeps its sound's previews.
+fn hash_item(h: &mut Fnv128, project: &Project, it: &TrackItem, origin: Tick, kind: TrackKind, depth: u32) {
     let mut c = it.clone();
     c.id = Default::default();
     c.start -= origin;
@@ -312,10 +314,10 @@ fn hash_item(h: &mut Fnv128, project: &Project, it: &TrackItem, origin: Tick, de
         c.name.clear();
     }
     h.json(&c);
-    hash_source(h, project, it.item, depth);
+    hash_source(h, project, it.item, kind, depth);
 }
 
-fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, depth: u32) {
+fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, kind: TrackKind, depth: u32) {
     let Some(pi) = project.item(id) else {
         h.json(&"missing");
         return;
@@ -338,18 +340,34 @@ fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, depth: u32) {
         }
         ItemKind::Subclip { parent, range, .. } => {
             h.json(&("subclip", range));
-            hash_source(h, project, *parent, depth + 1);
+            hash_source(h, project, *parent, kind, depth + 1);
         }
         ItemKind::AdjustmentLayer { .. } => h.json(&("adjustment", &pi.kind)),
         ItemKind::Graphic { .. } => h.json(&("graphic", &pi.kind)),
         ItemKind::Sequence(s) => {
             h.json(&("sequence", &s.settings));
+            if kind == TrackKind::Audio {
+                // the nest's sound is the nested sequence's whole mix (see `audio_segments`)
+                h.json(&("mix", s.master_volume_db, &s.master_effects, &s.master_mixer, &s.submix_tracks, &s.multicam));
+                for (ti, tr) in s.audio_tracks.iter().enumerate() {
+                    h.json(&("track", ti, tr.muted, tr.solo, tr.volume_db, tr.pan, tr.channels, &tr.effects, &tr.mixer, tr.items.len()));
+                    for it in &tr.items {
+                        hash_item(h, project, it, Tick::ZERO, kind, depth + 1);
+                    }
+                    for x in &tr.transitions {
+                        let mut xc = x.clone();
+                        xc.id = Default::default();
+                        h.json(&xc);
+                    }
+                }
+                return;
+            }
             // a nested sequence's captions are drawn into its picture
             h.json(&("captions", &s.caption_tracks));
             for (ti, tr) in s.video_tracks.iter().enumerate() {
                 h.json(&("track", ti, tr.enabled, tr.items.len()));
                 for it in &tr.items {
-                    hash_item(h, project, it, Tick::ZERO, depth + 1);
+                    hash_item(h, project, it, Tick::ZERO, kind, depth + 1);
                 }
                 for x in &tr.transitions {
                     let mut xc = x.clone();

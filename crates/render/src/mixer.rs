@@ -635,14 +635,24 @@ fn run_inserts(chain: &mut [Box<dyn AudioEffect>], ins: &[Insert], buf: &mut Bus
         return;
     }
     let n = buf[0].len();
+    // Reapply constant settings once per request (so live edits are picked up), not at every
+    // 64-sample boundary. Animated inserts keep the absolute-grid evaluation below.
+    let refresh: Vec<bool> = ins
+        .iter()
+        .map(|e| {
+            !matches!(e.effect.effect.as_str(), "parametric_eq" | "dynamics" | "studio_reverb") || e.effect.params.values().any(|p| !p.keyframes.is_empty())
+        })
+        .collect();
     let mut i = 0usize;
     while i < n {
         let pos = x0 + i as i64;
         let end = (((pos.div_euclid(PARAM_BLOCK) + 1) * PARAM_BLOCK - x0) as usize).min(n);
         // parameters of the whole grid block (also when a request starts mid-block)
         let t = Tick::from_units(pos.div_euclid(PARAM_BLOCK) * PARAM_BLOCK - lat as i64, sr as i64);
-        for (d, e) in chain.iter_mut().zip(ins) {
-            (e.map.apply)(d.as_mut(), &e.effect, t);
+        for ((d, e), refresh) in chain.iter_mut().zip(ins).zip(&refresh) {
+            if i == 0 || *refresh {
+                (e.map.apply)(d.as_mut(), &e.effect, t);
+            }
         }
         let mut ch: Vec<&mut [f32]> = buf.iter_mut().map(|c| &mut c[i..end]).collect();
         for d in chain.iter_mut() {

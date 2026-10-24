@@ -9,8 +9,10 @@
 //!
 //! - **Apply a cut at each detected cut point**: the clip (and its linked audio) is cut at the
 //!   first frame of each new shot;
-//! - **Create a subclip for each cut**: one subclip per shot, in a new bin "<clip> Scenes";
-//! - **Generate clip markers**: a marker on the clip's master clip (media time) at each cut.
+//! - **Create a bin of subclips from each detected cut point**: one subclip per shot, in a new
+//!   bin "<clip> Scenes";
+//! - **Create a clip marker at each detected cut point**: a marker on the clip's master clip
+//!   (media time) at each cut.
 
 use std::sync::{Arc, Mutex};
 

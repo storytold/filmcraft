@@ -43,12 +43,12 @@ reference) is used only as an external test oracle.
 
 ## Accuracy
 
-`tests/oracle_intra.rs` encodes all-intra streams with ffmpeg's libsvtav1 (with and without the
+`tests/it/oracle_intra.rs` encodes all-intra streams with ffmpeg's libsvtav1 (with and without the
 in-loop filters; 64×64 and 128×128 superblocks; intra edge filter on and off) and compares every
 decoded frame with libdav1d: **bit-exact** on all 13 fixtures (8- and 10-bit 4:2:0; 128×128 to
 1280×720 including odd sizes; testsrc2, mandelbrot, gradients and noise; presets 1–8).
 
-`tests/conformance.rs` downloads libaom's conformance test vectors on first use
+`tests/it/conformance.rs` downloads libaom's conformance test vectors on first use
 (storage.googleapis.com/aom-test-data) and compares with libdav1d: `av1-1-b8-02-allintra`
 (39 frames, deblocking + CDEF + self-guided restoration), `05-mv`, `06-mfmv`, `24-monochrome`
 and `b10-23-film_grain-50` are **bit-exact** in the default run. The ignored
@@ -58,8 +58,8 @@ and `b10-23-film_grain-50` are **bit-exact** in the default run. The ignored
 with scaled inter-layer prediction), `24-monochrome` (8 and 10-bit) and
 `16-intra_only-intrabc-extreme-dv` (1080p intra block copy), `23-film_grain-50` (8 and 10-bit).
 
-`tests/oracle_inter.rs` also checks draft mode: every unflagged frame stays bit-exact with
-libdav1d and only flagged frames differ, with 1 and 4 threads. `tests/oracle_inter.rs` encodes SVT-AV1 GOPs (hierarchical references, compound prediction,
+`tests/it/oracle_inter.rs` also checks draft mode: every unflagged frame stays bit-exact with
+libdav1d and only flagged frames differ, with 1 and 4 threads. `tests/it/oracle_inter.rs` encodes SVT-AV1 GOPs (hierarchical references, compound prediction,
 OBMC / warped motion, motion-field projection, all loop filters; presets 3–8, 8- and 10-bit, odd
 sizes), plus super-resolution (denominator 12) and film-grain streams, and compares every frame
 with libdav1d: **bit-exact** on all 6 fixtures.
@@ -70,16 +70,19 @@ with libdav1d: **bit-exact** on all 6 fixtures.
 wasm32, or without the default `threads` feature, everything runs on the calling thread). Headers are parsed in order; each frame is
 then decoded by a frame worker once the reference frames it reads are finished, so independent
 frames (hierarchical GOP layers) decode concurrently; tiles of a frame decode in parallel into
-private buffers that are merged afterwards. Results never depend on scheduling (the oracle tests
-compare 1 thread, many threads and libdav1d). With frame threads, pictures may be returned by a
+private buffers that are merged afterwards; the in-loop filters (deblocking, CDEF, loop
+restoration) each run in parallel bands of 64 rows (`postfilter.rs` explains why the bands are
+independent). Results never depend on scheduling (the oracle tests compare 1 thread, many threads
+and libdav1d). With frame threads, pictures may be returned by a
 later `decode_pts` call or by `flush`; each carries the `pts` of the temporal unit that showed it.
 
-`tests/perf.rs` (ignored) prints single-threaded fps (thread CPU time), per-stage ms/frame
-(`Decoder::stats()`) and all-core fps for 1080p fixtures. The hot loops (sub-pixel filters,
+`tests/it/perf.rs` (ignored) prints single-threaded fps (thread CPU time), per-stage ms/frame
+(`Decoder::stats()`) and all-core fps with its per-stage ms/frame for 1080p fixtures (key frames,
+GOPs, tiles, low delay) and a single-tile 2160p GOP; `AV1_PERF_ONLY=a,b` picks fixtures. The hot loops (sub-pixel filters,
 CDEF, inverse transforms, deblocking, entropy decoding) are written for auto-vectorisation.
 
 Measured 2026-10-01 on a 14-core Apple Silicon Mac (release build, SVT-AV1 preset 8 1080p
-fixtures from `tests/perf.rs`), before (`31f8b3d`: hot loops only, no threading) and after tile / frame /
+fixtures from `tests/it/perf.rs`), before (`31f8b3d`: hot loops only, no threading) and after tile / frame /
 post-filter threading. The machine was heavily loaded by other builds during both runs (load
 average 200–400), so the all-core wall figures understate what an idle machine reaches and are
 noisy; single-threaded figures use thread CPU time and are comparable.
@@ -121,6 +124,13 @@ frames whose `refresh_frame_flags` is 0 — no reference slot keeps them, so nei
 motion vectors nor CDFs reach another frame — skip deblocking, CDEF and loop restoration
 (super-resolution still runs, it sets the output size) and are flagged `Picture::draft`. In
 SVT-AV1's hierarchical GOPs that is the top layer, half of the frames.
+
+## Limits
+
+Frames beyond the AV1 level 6.x limits (Annex A: at most 16384 wide, 8704 high and 35 651 584 luma samples
+in total, so 16384 x 2176 or 8192 x 4352 at most) are refused with `Error::Invalid("frame size")`. The sequence
+header can code up to 65536 x 65536, which would ask for gigabytes of buffers from a few bytes of hostile input;
+no real stream comes close to level 6.3, the highest defined level.
 
 ## API
 

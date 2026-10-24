@@ -347,11 +347,16 @@ impl Bench {
             }
         }
         for r in &recs {
-            rep.latency.push(ms(r.finished - r.queued));
-            rep.service.push(ms(r.finished - r.started));
-            rep.job_cpu.push(ms(r.cpu));
-            rep.src_wall.push(ms(r.source_wall));
-            rep.src_cpu.push(ms(r.source_cpu));
+            // Preroll jobs run before the play clock; counting them as on-clock latency made
+            // the LongGOP seek look like a mid-play stall (`lat.max` ≈ `preroll_ms`).
+            let on_clock = r.queued >= anchor && due_at.contains_key(&r.key.frame) && r.key.target == target;
+            if on_clock {
+                rep.latency.push(ms(r.finished - r.queued));
+                rep.service.push(ms(r.finished - r.started));
+                rep.job_cpu.push(ms(r.cpu));
+                rep.src_wall.push(ms(r.source_wall));
+                rep.src_cpu.push(ms(r.source_cpu));
+            }
             if !due_at.contains_key(&r.key.frame) || r.key.target != target {
                 rep.wasted_jobs += 1;
             }

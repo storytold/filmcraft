@@ -1,6 +1,7 @@
 //! Intra sample prediction (8.4.4.2): reference substitution, filtering (incl. strong intra
 //! smoothing), planar, DC and the 33 angular modes.
 
+use crate::picture::Sample;
 use crate::spec_tables::{INTRA_PRED_ANGLE, INV_ANGLE};
 
 /// Reference samples of an nTbS block: `left[0]` = `top[0]` = p[-1][-1], `left[1 + y]` = p[-1][y],
@@ -100,7 +101,7 @@ pub fn filter(r: &mut Refs, mode: u32, n: usize, strong_enabled: bool, is_luma: 
 
 /// Predict an n x n block with `mode` into `out` (stride `os`). `edge_filters`: DC / horizontal /
 /// vertical boundary smoothing (luma blocks smaller than 32x32).
-pub fn predict(r: &Refs, mode: u32, n: usize, edge_filters: bool, bit_depth: u32, out: &mut [u16], os: usize) {
+pub fn predict<S: Sample>(r: &Refs, mode: u32, n: usize, edge_filters: bool, bit_depth: u32, out: &mut [S], os: usize) {
     let max = (1i32 << bit_depth) - 1;
     match mode {
         0 => {
@@ -113,7 +114,7 @@ pub fn predict(r: &Refs, mode: u32, n: usize, edge_filters: bool, bit_depth: u32
                 for x in 0..n {
                     let t = r.top[1 + x] as i32;
                     let v = ((n - 1 - x) as i32 * l + (x as i32 + 1) * tr + (n - 1 - y) as i32 * t + (y as i32 + 1) * bl + n as i32) >> (log2 + 1);
-                    out[y * os + x] = v as u16;
+                    out[y * os + x] = S::from_i32(v);
                 }
             }
         }
@@ -121,17 +122,18 @@ pub fn predict(r: &Refs, mode: u32, n: usize, edge_filters: bool, bit_depth: u32
             let log2 = n.trailing_zeros();
             let sum: u32 = r.top[1..=n].iter().map(|&v| v as u32).sum::<u32>() + r.left[1..=n].iter().map(|&v| v as u32).sum::<u32>();
             let dc = ((sum + n as u32) >> (log2 + 1)) as u16;
+            let dcs = S::from_u16(dc);
             for y in 0..n {
-                out[y * os..y * os + n].fill(dc);
+                out[y * os..y * os + n].fill(dcs);
             }
             if edge_filters && n < 32 {
                 let d = dc as u32;
-                out[0] = ((r.left[1] as u32 + 2 * d + r.top[1] as u32 + 2) >> 2) as u16;
+                out[0] = S::from_i32(((r.left[1] as u32 + 2 * d + r.top[1] as u32 + 2) >> 2) as i32);
                 for x in 1..n {
-                    out[x] = ((r.top[1 + x] as u32 + 3 * d + 2) >> 2) as u16;
+                    out[x] = S::from_i32(((r.top[1 + x] as u32 + 3 * d + 2) >> 2) as i32);
                 }
                 for y in 1..n {
-                    out[y * os] = ((r.left[1 + y] as u32 + 3 * d + 2) >> 2) as u16;
+                    out[y * os] = S::from_i32(((r.left[1 + y] as u32 + 3 * d + 2) >> 2) as i32);
                 }
             }
         }
@@ -167,9 +169,9 @@ pub fn predict(r: &Refs, mode: u32, n: usize, edge_filters: bool, bit_depth: u32
                     let k = (base + i as i32 + idx + 1) as usize;
                     let v = if fact != 0 { ((32 - fact) * refa[k] + fact * refa[k + 1] + 16) >> 5 } else { refa[k] };
                     if horizontal {
-                        out[i * os + j] = v as u16;
+                        out[i * os + j] = S::from_i32(v);
                     } else {
-                        out[j * os + i] = v as u16;
+                        out[j * os + i] = S::from_i32(v);
                     }
                 }
             }
@@ -177,12 +179,12 @@ pub fn predict(r: &Refs, mode: u32, n: usize, edge_filters: bool, bit_depth: u32
                 if mode == 26 {
                     for y in 0..n {
                         let v = r.top[1] as i32 + ((r.left[1 + y] as i32 - r.left[0] as i32) >> 1);
-                        out[y * os] = v.clamp(0, max) as u16;
+                        out[y * os] = S::from_i32(v.clamp(0, max));
                     }
                 } else if mode == 10 {
                     for x in 0..n {
                         let v = r.left[1] as i32 + ((r.top[1 + x] as i32 - r.top[0] as i32) >> 1);
-                        out[x] = v.clamp(0, max) as u16;
+                        out[x] = S::from_i32(v.clamp(0, max));
                     }
                 }
             }

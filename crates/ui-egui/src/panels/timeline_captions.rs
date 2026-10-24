@@ -148,10 +148,11 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
             }
             if r.width() > 14.0 {
                 let text = filmcraft_project::plain_text(&c.text).replace('\n', " ");
-                p.with_clip_rect(r.shrink2(vec2(4.0, 0.0)).intersect(lane)).text(
-                    pos2(r.min.x + 5.0, r.center().y),
-                    Align2::LEFT_CENTER,
-                    text,
+                // in reading order; Arabic and Hebrew start at the block's right edge
+                crate::rtl::paint_line(
+                    &p.with_clip_rect(r.shrink2(vec2(4.0, 0.0)).intersect(lane)),
+                    Rect::from_min_max(pos2(r.min.x + 5.0, r.min.y), pos2(r.max.x - 5.0, r.max.y)),
+                    &text,
                     Tokens::ui(11.0),
                     if tr.enabled { Color32::WHITE } else { t.text_dim },
                 );
@@ -259,7 +260,8 @@ fn interact_block(
         && id == c.id.0
     {
         ctx.data_mut(|dd| dd.remove::<(u64, u8, i64)>(drag_id()));
-        if d != 0 {
+        // egui ends a drag on Escape: that stop abandons it (#580)
+        if d != 0 && !ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             match g {
                 0 => {
                     let sel: Vec<u64> = if app.session.state.caption_selection.contains(&ClipId(id)) {

@@ -520,3 +520,11 @@ fn surround_sequence_settings_and_panner_lanes() {
     assert!(s.execute("file.newSequence", json!({"mix": "7.1"})).is_err());
     s.execute("file.newSequence", json!({"trackType": "Standard"})).unwrap();
 }
+
+#[test]
+fn audio_transition_schema_lists_edge_params_and_reverse() {
+    let params = find_command("sequence.applyAudioTransition").unwrap().params;
+    for key in ["\"edge\"", "\"params\"", "\"reverse\"", "constant_power"] {
+        assert!(params.contains(key), "schema `{params}` is missing {key}");
+    }
+}

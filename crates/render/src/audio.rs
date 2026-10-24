@@ -109,9 +109,11 @@ pub(crate) fn track_input_at(
         if !tr.range().overlaps(&range) {
             continue;
         }
-        // Re-mix: recompute the covered samples with crossfade gains.
-        let from = tr.from.and_then(|id| track.item(id));
-        let to = tr.to.and_then(|id| track.item(id));
+        // Re-mix: recompute the covered samples with crossfade gains. Both sides play over the
+        // whole transition, into their handles as the picture does, so a transition centred on a
+        // cut overlaps the two clips instead of only fading each on its own side of the cut.
+        let from = tr.from.and_then(|id| track.item(id)).map(|i| with_handles(i, tr.start, tr.end()));
+        let to = tr.to.and_then(|id| track.item(id)).map(|i| with_handles(i, tr.start, tr.end()));
         let s0 = tr.start.to_units_floor(sr as i64).max(start);
         let s1 = tr.end().to_units_floor(sr as i64).min(start + frames as i64);
         if s1 <= s0 {
@@ -124,10 +126,10 @@ pub(crate) fn track_input_at(
         }
         let mut a = AudioBuffer::silence(sr, w, n);
         let mut b = AudioBuffer::silence(sr, w, n);
-        if let Some(f) = from {
+        if let Some(f) = &from {
             mix_item(project, f, s0, n, sr, sources, &mut a, 1.0, &live);
         }
-        if let Some(tt) = to {
+        if let Some(tt) = &to {
             mix_item(project, tt, s0, n, sr, sources, &mut b, 1.0, &live);
         }
         let dur = (tr.end() - tr.start).to_units_floor(sr as i64).max(1) as f32;
@@ -141,6 +143,25 @@ pub(crate) fn track_input_at(
         }
     }
     tbuf
+}
+
+/// `item` lengthened to cover `[t0, t1)` with its media timing unchanged: the part before its in
+/// point and after its out point plays the source's handles (silent where the source has none).
+/// Remixed clips have no linear media to extend and stay as they are.
+fn with_handles(item: &TrackItem, t0: Tick, t1: Tick) -> TrackItem {
+    let mut ext = item.clone();
+    if crate::remix::is_remixed(item) {
+        return ext;
+    }
+    let head = (item.start - t0).max(Tick::ZERO);
+    let tail = (t1 - item.end()).max(Tick::ZERO);
+    ext.start = item.start - head;
+    ext.duration = item.duration + head + tail;
+    // forward media time is source_in + (t - start)·speed; reversed it counts down from the out
+    // point, so the extra head (forward) or tail (reverse) moves source_in back
+    let shift = if item.reverse { tail } else { head };
+    ext.source_in = item.source_in - Tick((shift.0 as f64 * item.speed.abs()).round() as i64);
+    ext
 }
 
 /// Held Clip Mixer controls of one track.
@@ -351,7 +372,8 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
 }
 
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
-/// (2: stereo, mono sources on both sides; 6: 5.1), with silence outside the clip.
+/// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
+/// the clip.
 fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0f32; len]; w];
     let item_s0 = item.start.to_units_floor(sr as i64);
@@ -394,6 +416,17 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         return out;
     }
     if w == 2 {
+        // a 5.1 source (or a six-channel pick) folds down with ITU-R BS.775, as the Mix and the
+        // Source Monitor do: picking its first two channels would drop C (dialogue) and surrounds
+        if let Some(six) = source_51_fold(item, buf.channel_count()) {
+            let picked: Vec<&[f32]> = six.iter().filter_map(|&c| buf.channels.get(c).map(Vec::as_slice)).collect();
+            let conv = chans::convert(&picked, Layout::Surround51, Layout::Stereo, Mixdown::FrontRear);
+            for (dst, ch) in out.iter_mut().zip(&conv) {
+                let m = n.min(ch.len());
+                dst[off..off + m].copy_from_slice(&ch[..m]);
+            }
+            return out;
+        }
         let (left, right) = source_pair(item, buf.channel_count());
         for (c, dst) in out.iter_mut().enumerate() {
             let ch = &buf.channels[if c == 0 { left } else { right }];
@@ -428,6 +461,17 @@ pub fn source_51(item: &TrackItem, available: usize) -> Vec<usize> {
         1 => vec![ok(item.source_channels[0])],
         2..=5 => vec![ok(item.source_channels[0]), ok(item.source_channels[1])],
         _ => item.source_channels.iter().take(6).map(|&c| ok(c)).collect(),
+    }
+}
+
+/// The six source channels (L, R, C, LFE, Ls, Rs) a clip on a stereo track folds down: a six-channel
+/// pick (Modify ▸ Audio Channels), else all of a six-channel source. `None` plays [`source_pair`]
+/// (sources with another channel count have no known 5.1 layout).
+fn source_51_fold(item: &TrackItem, available: usize) -> Option<Vec<usize>> {
+    match item.source_channels.len() {
+        0 if available == 6 => Some((0..6).collect()),
+        6.. => Some(source_51(item, available)),
+        _ => None,
     }
 }
 

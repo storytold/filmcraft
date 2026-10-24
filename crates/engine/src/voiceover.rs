@@ -396,8 +396,10 @@ pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> String {
     if let Some(d) = str_p(p, "dir") {
         return d.to_string();
     }
-    if let Some(d) = s.project.settings.scratch.captured.clone().filter(|d| !d.is_empty()) {
-        return d;
+    if let Some(d) =
+        crate::project_tools::trusted_scratch(s.project.settings.scratch.captured.as_deref(), s.path.as_deref(), &s.prefs.auto_save.scratch_folders)
+    {
+        return d.to_string_lossy().into_owned();
     }
     if let Some(d) = s.path.as_deref().and_then(|x| std::path::Path::new(x).parent()).filter(|d| !d.as_os_str().is_empty()) {
         return d.to_string_lossy().into_owned();

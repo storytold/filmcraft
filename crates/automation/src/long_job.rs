@@ -72,6 +72,7 @@ impl FilmcraftMcp {
                 rep.report(done, total, j["status"].as_str().unwrap_or_default()).await;
             }
             if finished {
+                let offline = state.as_ref().and_then(|j| j.get("offlineMedia").cloned());
                 let result = state.map(|j| j["result"].clone()).unwrap_or(Value::Null);
                 if let Some(e) = result.get("error").and_then(Value::as_str) {
                     return CallToolResult::error(vec![Content::text(format!("export failed: {e}"))]);
@@ -79,6 +80,9 @@ impl FilmcraftMcp {
                 let mut out = start;
                 if let Some(o) = out.as_object_mut() {
                     o.insert("result".into(), result);
+                    if let Some(off) = offline {
+                        o.insert("offlineMedia".into(), off);
+                    }
                 }
                 return CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap_or_default())]);
             }

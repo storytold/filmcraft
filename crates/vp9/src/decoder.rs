@@ -12,7 +12,12 @@ use crate::tables::*;
 use crate::tile::{FrameShared, RefUse, Strip, TileDecoder};
 use crate::{ColorInfo, Picture, Plane};
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
+
+/// Maximum luma samples accepted for one decoded reference frame: 8192x8192, above level 6.2's
+/// 8192x4352 (35 651 584 samples).
+const MAX_LUMA_SAMPLES: u64 = 1 << 26;
 
 /// Counters describing what the decoder has seen (useful to check test coverage).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -71,8 +76,9 @@ pub struct Decoder {
     pending: VecDeque<Pending>,
     #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
     jobs: VecDeque<std::thread::JoinHandle<()>>,
+    /// Tile columns and the loop filter wavefront of post jobs run on it.
     #[cfg(feature = "threads")]
-    pool: Option<rayon::ThreadPool>,
+    pool: Option<Arc<rayon::ThreadPool>>,
 }
 
 impl Default for Decoder {
@@ -109,7 +115,7 @@ impl Decoder {
     pub fn with_threads(threads: usize) -> Self {
         #[cfg(feature = "threads")]
         let pool = if threads > 1 && cfg!(not(target_arch = "wasm32")) {
-            rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("vp9-{i}")).build().ok()
+            rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("vp9-{i}")).build().ok().map(Arc::new)
         } else {
             None
         };
@@ -255,6 +261,12 @@ impl Decoder {
             return Ok(());
         }
         ensure!(h.width <= 16384 && h.height <= 16384, "frame size {}x{} too large", h.width, h.height);
+        ensure!(
+            u64::from(h.width).checked_mul(u64::from(h.height)).is_some_and(|n| n <= MAX_LUMA_SAMPLES),
+            "frame size {}x{} exceeds the decoder memory limit",
+            h.width,
+            h.height
+        );
         let (mi_rows, mi_cols) = (h.mi_rows as usize, h.mi_cols as usize);
         // compute_image_size semantics (7.2.6).
         let size = (h.width, h.height);
@@ -277,6 +289,7 @@ impl Decoder {
         let off = h.uncompressed_size;
         let hs = h.header_size_in_bytes as usize;
         ensure!(off + hs <= data.len(), "compressed header exceeds frame data");
+        ensure!(off + hs < data.len(), "frame has no tile data");
         let mut fc = self.st.contexts[h.frame_context_idx as usize].clone();
         parse_compressed(&data[off..off + hs], &mut h, &mut fc)?;
         self.count_frame(&h);
@@ -339,6 +352,7 @@ impl Decoder {
                     ensure!(s <= data.len() - pos, "tile size {s} beyond frame data");
                     s
                 };
+                ensure!(sz > 0, "empty tile payload");
                 td.push(&data[pos..pos + sz]);
                 pos += sz;
             }
@@ -414,7 +428,16 @@ impl Decoder {
         self.stats.draft_frames += draft as u64;
         let lf = (self.st.lf.level > 0 && !draft)
             .then(|| LfFrame::new(&self.st.lf, &seg, mi_rows, mi_cols, h.color.subsampling_x, h.color.subsampling_y, h.color.bit_depth));
-        let job = PostJob { frame: frame.clone(), strips, mi: mi.clone(), lf, out: h.show_frame.then_some((pts, draft)), pools: self.bufs.clone() };
+        let job = PostJob {
+            frame: frame.clone(),
+            strips,
+            mi: mi.clone(),
+            lf,
+            out: h.show_frame.then_some((pts, draft)),
+            pools: self.bufs.clone(),
+            #[cfg(feature = "threads")]
+            pool: self.pool.clone(),
+        };
         self.run_post(job);
         // refresh_probs (6.1.2).
         if counting {
@@ -558,9 +581,19 @@ fn recycle_strips(strips: Vec<Strip>, pools: &Pools) {
     }
 }
 
-/// The post stage of one frame: build each band from the tile column strips, loop filter it
-/// (superblocks in raster order, so the result is the specification's), publish it once the
-/// next band's filtering can no longer change it, and copy it into the output picture.
+/// The post stage of one frame: build each band from the tile column strips, loop filter it,
+/// publish it once no later filtering can change it, and copy the frame into the output picture.
+///
+/// The specification filters superblock by superblock in raster order (8.8.1). Superblock (r, c)
+/// changes samples of (r, c - 1) (the vertical edges on its left) and of (r - 1, c) (the
+/// horizontal edges on its top reach 7 rows up), and the last superblock before it to change the
+/// bottom rows of (r - 1, c) is (r - 1, c + 1). So row r may filter superblock c once row r - 1
+/// has filtered superblock c + 1: rows run as a wavefront, each two superblocks behind the row
+/// above, with the specification's result. Every row filters its own band: before superblock
+/// c it copies the bottom rows of band r - 1 in that superblock column (shared by row r - 1 once
+/// final for it) into its scratch rows, and once done it writes them back into band r - 1, which
+/// is then final and published. The post thread takes rows in order and helpers on the
+/// decoder's pool join in; with one thread the rows run one after the other, as before.
 struct PostJob {
     frame: Arc<Frame>,
     strips: Vec<Strip>,
@@ -569,9 +602,11 @@ struct PostJob {
     /// (pts, draft) when the frame is shown.
     out: Option<(i64, bool)>,
     pools: Arc<Pools>,
+    #[cfg(feature = "threads")]
+    pool: Option<Arc<rayon::ThreadPool>>,
 }
 
-/// Publishes placeholder bands if a post job dies, so that waiting frames cannot hang.
+/// Publishes placeholder bands if a post job dies or fails, so that waiting frames cannot hang.
 struct PublishGuard<'a>(&'a Frame);
 
 impl Drop for PublishGuard<'_> {
@@ -589,64 +624,295 @@ impl PostJob {
         let f = &*self.frame;
         let _guard = PublishGuard(f);
         let mut pic = self.out.map(|(pts, draft)| PictureBuilder::new(f, pts, draft));
-        let sb_rows = f.sb_rows();
-        let mut held: Option<Band> = None;
-        for r in 0..sb_rows {
-            let mut band = f.new_band();
+        let Some(lf) = self.lf else {
+            // Without the loop filter every band is final as built.
+            for r in 0..f.sb_rows() {
+                let band = build_band(f, &self.strips, r);
+                if let Some(pic) = &mut pic {
+                    pic.add(f, r, &band);
+                }
+                f.publish(r, band);
+            }
+            recycle_strip_planes(self.strips, &self.pools);
+            return pic.map(PictureBuilder::finish);
+        };
+        let wave = Arc::new(Wave::new(self.frame.clone(), self.strips, self.mi, lf, self.pools, pic));
+        #[cfg(feature = "threads")]
+        if let Some(pool) = &self.pool {
+            // Rows that can be filtered at the same time, the post thread being one of them.
+            let rows = wave.sb_rows.min(wave.sb_cols.div_ceil(2)).min(pool.current_num_threads() + 1);
+            for _ in 1..rows {
+                let w = wave.clone();
+                pool.spawn(move || w.work());
+            }
+        }
+        wave.work();
+        if !wave.wait_done() {
+            return None;
+        }
+        // Every row is done, so no helper reads the strips any more.
+        let strips = std::mem::take(&mut *wave.strips.write().unwrap_or_else(std::sync::PoisonError::into_inner));
+        recycle_strip_planes(strips, &wave.pools);
+        lock(&wave.pic).take().map(PictureBuilder::finish)
+    }
+}
+
+fn recycle_strip_planes(strips: Vec<Strip>, pools: &Pools) {
+    for s in strips {
+        for p in s.planes {
+            pools.samples.put(p);
+        }
+    }
+}
+
+/// Band `r` of a frame from the tile column strips, before the loop filter.
+fn build_band(f: &Frame, strips: &[Strip], r: usize) -> Band {
+    let mut band = f.new_band();
+    for p in 0..3 {
+        let (fs, bh) = (f.strides[p], f.band_h[p]);
+        let dst = &mut band.planes[p];
+        for s in strips {
+            let ss = s.strides[p];
+            let x0 = s.x_off[p];
+            let w = ss.min(fs.saturating_sub(x0));
+            for k in 0..bh {
+                let y = r * bh + k;
+                let d = (BAND_PAD + k) * fs + x0;
+                if let (Some(d), Some(s)) = (dst.get_mut(d..d + w), s.planes[p].get(y * ss..y * ss + w)) {
+                    d.copy_from_slice(s);
+                }
+            }
+        }
+    }
+    band
+}
+
+/// Progress of one superblock row of the wavefront.
+struct RowProgress {
+    /// Superblocks filtered; `sb_cols` once the row is done (and band r - 1 published).
+    done: AtomicUsize,
+    /// Threads waiting on `cv` (so that progress without a waiter costs no wake-up call).
+    waiters: AtomicUsize,
+    lock: Mutex<()>,
+    cv: Condvar,
+    /// The bottom `BAND_PAD` rows of the band of each plane, shared superblock column by column
+    /// once final for this row, for the row below.
+    bottom: Mutex<[Vec<u16>; 3]>,
+    /// The band once the row is done, until the row below has written its scratch rows back.
+    band: Mutex<Option<Band>>,
+}
+
+/// The shared state of a frame's loop filter wavefront (see [`PostJob`]). No lock is held while
+/// a superblock is filtered: each row filters its own band and shares only copies.
+struct Wave {
+    frame: Arc<Frame>,
+    strips: RwLock<Vec<Strip>>,
+    mi: Arc<MiGrid>,
+    lf: LfFrame,
+    pools: Arc<Pools>,
+    sb_rows: usize,
+    sb_cols: usize,
+    rows: Vec<RowProgress>,
+    /// The next row to take.
+    next: AtomicUsize,
+    failed: AtomicBool,
+    /// The output picture (shown frames), filled band by band as bands are published.
+    pic: Mutex<Option<PictureBuilder>>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Wave {
+    fn new(frame: Arc<Frame>, strips: Vec<Strip>, mi: Arc<MiGrid>, lf: LfFrame, pools: Arc<Pools>, pic: Option<PictureBuilder>) -> Wave {
+        let sb_rows = frame.sb_rows();
+        let sb_cols = lf.mi_cols.div_ceil(8);
+        let rows = (0..sb_rows)
+            .map(|_| RowProgress {
+                done: AtomicUsize::new(0),
+                waiters: AtomicUsize::new(0),
+                lock: Mutex::new(()),
+                cv: Condvar::new(),
+                bottom: Mutex::new(std::array::from_fn(|p| pools.bands.take_any(BAND_PAD * frame.strides[p], 0))),
+                band: Mutex::new(None),
+            })
+            .collect();
+        Wave {
+            frame,
+            strips: RwLock::new(strips),
+            mi,
+            lf,
+            pools,
+            sb_rows,
+            sb_cols,
+            rows,
+            next: AtomicUsize::new(0),
+            failed: AtomicBool::new(false),
+            pic: Mutex::new(pic),
+        }
+    }
+
+    /// Take rows and filter them until none is left. A row is only taken by a running thread, so
+    /// a row waiting for the one above always waits for a thread that is making progress.
+    fn work(&self) {
+        while !self.failed.load(Ordering::Acquire) {
+            let r = self.next.fetch_add(1, Ordering::Relaxed);
+            if r >= self.sb_rows {
+                return;
+            }
+            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.row(r))).unwrap_or(false);
+            if !ok {
+                self.fail();
+                return;
+            }
+        }
+    }
+
+    /// Wait until every row is done (false if one failed).
+    fn wait_done(&self) -> bool {
+        self.sb_rows.checked_sub(1).is_none_or(|last| self.wait(last, self.sb_cols))
+    }
+
+    /// Wait until row `r` has filtered `need` superblocks (false if a row failed).
+    fn wait(&self, r: usize, need: usize) -> bool {
+        let Some(row) = self.rows.get(r) else { return false };
+        if row.done.load(Ordering::SeqCst) >= need {
+            return true;
+        }
+        let mut g = lock(&row.lock);
+        row.waiters.fetch_add(1, Ordering::SeqCst);
+        let ok = loop {
+            if row.done.load(Ordering::SeqCst) >= need {
+                break true;
+            }
+            if self.failed.load(Ordering::SeqCst) {
+                break false;
+            }
+            g = row.cv.wait(g).unwrap_or_else(std::sync::PoisonError::into_inner);
+        };
+        row.waiters.fetch_sub(1, Ordering::SeqCst);
+        ok
+    }
+
+    fn set_done(&self, r: usize, n: usize) {
+        if let Some(row) = self.rows.get(r) {
+            // A waiter registers under the lock before it checks `done`, so either it sees the
+            // new value or it is counted here and woken.
+            row.done.store(n, Ordering::SeqCst);
+            if row.waiters.load(Ordering::SeqCst) > 0 {
+                let _g = lock(&row.lock);
+                row.cv.notify_all();
+            }
+        }
+    }
+
+    /// Stop the wavefront: waiting rows give up, the post job publishes placeholders.
+    fn fail(&self) {
+        self.failed.store(true, Ordering::SeqCst);
+        for row in &self.rows {
+            let _g = lock(&row.lock);
+            row.cv.notify_all();
+        }
+    }
+
+    /// Publish final band `r` and copy it into the output picture.
+    fn publish(&self, r: usize, band: Band) {
+        if let Some(pic) = lock(&self.pic).as_mut() {
+            pic.add(&self.frame, r, &band);
+        }
+        self.frame.publish(r, band);
+    }
+
+    /// Share the bottom rows of superblock column `c` of row `r`'s band (final for this row).
+    fn share_bottom(&self, r: usize, band: &Band, c: usize) {
+        let Some(row) = self.rows.get(r) else { return };
+        let mut bottom = lock(&row.bottom);
+        for (p, dst) in bottom.iter_mut().enumerate() {
+            copy_column(&self.frame, p, c, self.sb_cols, &band.planes[p], self.frame.band_h[p], dst, 0);
+        }
+    }
+
+    /// Build and filter row `r`; publish band r - 1 (and the last band) when done.
+    fn row(&self, r: usize) -> bool {
+        let f = &*self.frame;
+        let sb_cols = self.sb_cols;
+        let mut band = build_band(f, &self.strips.read().unwrap_or_else(std::sync::PoisonError::into_inner), r);
+        let above = r.checked_sub(1).and_then(|a| self.rows.get(a));
+        for c in 0..sb_cols {
+            if let Some(above) = above {
+                // Superblock c + 1 of the row above is filtered: the bottom rows of its column c
+                // are final for that row and go into our scratch rows.
+                if !self.wait(r - 1, (c + 2).min(sb_cols)) {
+                    return false;
+                }
+                let bottom = lock(&above.bottom);
+                for (p, src) in bottom.iter().enumerate() {
+                    copy_column(f, p, c, sb_cols, src, 0, &mut band.planes[p], 0);
+                }
+            }
+            let [a, b, d] = &mut band.planes;
+            let mut views = [band_view(f, a, 0, r), band_view(f, b, 1, r), band_view(f, d, 2, r)];
+            filter_superblock(&mut views, &self.mi, &self.lf, r * 8, c * 8);
+            // Superblock c filtered the left edge of column c, so column c - 1 is final here.
+            if c > 0 {
+                self.share_bottom(r, &band, c - 1);
+            }
+            if c + 1 < sb_cols {
+                self.set_done(r, c + 1);
+            }
+        }
+        self.share_bottom(r, &band, sb_cols.saturating_sub(1));
+        if let Some(above) = above {
+            // The scratch rows now hold the final bottom rows of band r - 1.
+            let Some(mut pb) = lock(&above.band).take() else { return false };
             for p in 0..3 {
                 let (fs, bh) = (f.strides[p], f.band_h[p]);
-                let dst = &mut band.planes[p];
-                for s in &self.strips {
-                    let ss = s.strides[p];
-                    let x0 = s.x_off[p];
-                    let w = ss.min(fs - x0);
-                    for k in 0..bh {
-                        let y = r * bh + k;
-                        let d = (BAND_PAD + k) * fs + x0;
-                        dst[d..d + w].copy_from_slice(&s.planes[p][y * ss..y * ss + w]);
-                    }
+                if let (Some(d), Some(s)) = (pb.planes[p].get_mut(bh * fs..(bh + BAND_PAD) * fs), band.planes[p].get(..BAND_PAD * fs)) {
+                    d.copy_from_slice(s);
                 }
             }
-            if let Some(lf) = &self.lf {
-                if let Some(prev) = &held {
-                    // The bottom rows of the previous band, which this row's filter may change.
-                    for p in 0..3 {
-                        let (fs, bh) = (f.strides[p], f.band_h[p]);
-                        band.planes[p][..BAND_PAD * fs].copy_from_slice(&prev.planes[p][bh * fs..(bh + BAND_PAD) * fs]);
-                    }
-                }
-                let [a, b, c] = &mut band.planes;
-                let mut views = [band_view(f, a, 0, r), band_view(f, b, 1, r), band_view(f, c, 2, r)];
-                for c in 0..lf.mi_cols.div_ceil(8) {
-                    filter_superblock(&mut views, &self.mi, lf, r * 8, c * 8);
-                }
-                if let Some(prev) = &mut held {
-                    for p in 0..3 {
-                        let (fs, bh) = (f.strides[p], f.band_h[p]);
-                        prev.planes[p][bh * fs..(bh + BAND_PAD) * fs].copy_from_slice(&band.planes[p][..BAND_PAD * fs]);
-                    }
-                }
-            }
-            if let Some(prev) = held.take() {
-                if let Some(pic) = &mut pic {
-                    pic.add(f, r - 1, &prev);
-                }
-                f.publish(r - 1, prev);
-            }
-            held = Some(band);
+            self.publish(r - 1, pb);
         }
-        if let Some(last) = held {
-            if let Some(pic) = &mut pic {
-                pic.add(f, sb_rows - 1, &last);
-            }
-            f.publish(sb_rows - 1, last);
+        if r + 1 == self.sb_rows {
+            self.publish(r, band);
+        } else if let Some(row) = self.rows.get(r) {
+            *lock(&row.band) = Some(band);
         }
-        for s in self.strips {
-            for p in s.planes {
-                self.pools.samples.put(p);
+        self.set_done(r, sb_cols);
+        true
+    }
+}
+
+impl Drop for Wave {
+    fn drop(&mut self) {
+        recycle_strip_planes(std::mem::take(self.strips.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner)), &self.pools);
+        for row in &self.rows {
+            for p in std::mem::take(&mut *lock(&row.bottom)) {
+                self.pools.bands.put(p);
+            }
+            if let Some(b) = lock(&row.band).take() {
+                for p in b.planes {
+                    self.pools.bands.put(p);
+                }
             }
         }
-        pic.map(PictureBuilder::finish)
+    }
+}
+
+/// Copy `BAND_PAD` rows of superblock column `c` of plane `p` (the last column takes the rest of
+/// the stride) from row `src_row` of `src` to row `dst_row` of `dst`, both `strides[p]` wide.
+#[allow(clippy::too_many_arguments)]
+fn copy_column(f: &Frame, p: usize, c: usize, sb_cols: usize, src: &[u16], src_row: usize, dst: &mut [u16], dst_row: usize) {
+    let fs = f.strides[p];
+    let cw = fs / sb_cols.max(1);
+    let x0 = c * cw;
+    let x1 = if c + 1 >= sb_cols { fs } else { x0 + cw };
+    for k in 0..BAND_PAD {
+        let (s, d) = ((src_row + k) * fs, (dst_row + k) * fs);
+        if let (Some(d), Some(s)) = (dst.get_mut(d + x0..d + x1), src.get(s + x0..s + x1)) {
+            d.copy_from_slice(s);
+        }
     }
 }
 

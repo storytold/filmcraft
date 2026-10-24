@@ -10,4 +10,5 @@ Terminal=false
 StartupNotify=true
 StartupWMClass=ai.storyteller.filmcraft
 Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=application/x-filmcraft;video/mp4;video/x-m4v;video/quicktime;video/x-matroska;video/webm;video/vnd.avi;video/x-msvideo;application/mxf;video/mp2t;video/mpeg;video/3gpp;
 Keywords=video;editor;film;timeline;color;grading;nle;

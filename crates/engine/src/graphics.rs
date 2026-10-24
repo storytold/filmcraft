@@ -514,8 +514,79 @@ fn union_box(boxes: &[(usize, Vec2, [f64; 4])]) -> [f64; 4] {
     boxes.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |a, b| [a[0].min(b.2[0]), a[1].min(b.2[1]), a[2].max(b.2[2]), a[3].max(b.2[3])])
 }
 
-/// Graphics ▸ Align to Video Frame / Align to Video Frame as Group / Align to Selection.
+/// Video clips (not graphics) the align commands move by their Motion ▸ Position (#1081): `clip`,
+/// else the selected ones. Empty when a graphic clip is named or selected: its layers align.
+fn align_target_clips(s: &Session, p: &Value) -> Vec<ClipId> {
+    let Some(seq) = s.active_sequence() else { return Vec::new() };
+    let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video)) && !is_graphic(s, seq, *c);
+    match u64_p(p, "clip").map(ClipId) {
+        Some(c) => [c].into_iter().filter(video).collect(),
+        None if s.state.selection.iter().any(|c| is_graphic(s, seq, *c)) => Vec::new(),
+        None => s.state.selection.iter().copied().filter(video).collect(),
+    }
+}
+
+fn has_graphic_or_clip(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if align_target_clips(s, &Value::Null).is_empty() { has_graphic(s).map_err(|_| "select a graphic or video clip".into()) } else { Ok(()) }
+}
+
+/// Align video clips to the frame (each, as a group, or to their union) by moving Motion ▸
+/// Position only, from the clip's scaled and rotated bounds at the playhead. Position gets a
+/// keyframe there only when it is already animated, as typing a value would.
+fn align_clips(s: &mut Session, clips: &[ClipId], how: &str, mode: AlignTo) -> Result<Value> {
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let t = s.playhead();
+    let at = |it: &filmcraft_project::TrackItem| it.source_time_at(t.min(it.end() - Tick(1)).max(it.start));
+    let frame = [0.0, 0.0, seq.settings.width as f64, seq.settings.height as f64];
+    let mut boxes = Vec::new();
+    for (i, &c) in clips.iter().enumerate() {
+        let Some((_, it)) = seq.find_item(c) else { continue };
+        let Some(src) = s.project.source_size(it.item) else { continue };
+        let Some(motion) = it.effect("motion") else { continue };
+        let mt = at(it);
+        let m = filmcraft_render::motion_matrix(seq, it, src, s.project.source_par(it.item), mt);
+        let (w, h) = (src.0 as f64, src.1 as f64);
+        let corners = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|(x, y)| m.apply(Vec2::new(x, y)));
+        let b = corners.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)]);
+        let pos = motion.vec2_at("position", mt);
+        let pos = if pos.x.is_nan() { Vec2::new(frame[2] / 2.0, frame[3] / 2.0) } else { pos };
+        boxes.push((i, pos, b));
+    }
+    if boxes.is_empty() {
+        return Err(bad("graphics.align", "the selected clips have no picture to align"));
+    }
+    let union = union_box(&boxes);
+    let group = align_delta(how, frame, union)?;
+    let mut moves = Vec::new();
+    for (i, pos, b) in &boxes {
+        let (dx, dy) = match mode {
+            AlignTo::Frame => align_delta(how, frame, *b)?,
+            AlignTo::FrameGroup => group,
+            AlignTo::Selection => align_delta(how, union, *b)?,
+        };
+        moves.extend(clips.get(*i).map(|c| (*c, Vec2::new(pos.x + dx, pos.y + dy))));
+    }
+    s.edit_sequence("Align Clips", |q, _, _| {
+        for (c, pos) in &moves {
+            let Some((_, it)) = q.find_item_mut(*c) else { continue };
+            let mt = at(it);
+            if let Some(prm) = it.effects.iter_mut().find(|e| e.effect == "motion").and_then(|e| e.params.get_mut("position")) {
+                prm.set_at(mt, ParamValue::Vec2(*pos));
+            }
+        }
+        Ok(())
+    })?;
+    Ok(json!({"clips": moves.iter().map(|(c, _)| c.0).collect::<Vec<_>>()}))
+}
+
+/// Graphics ▸ Align to Video Frame / Align to Video Frame as Group / Align to Selection. With video
+/// clips selected instead of a graphic, the clips align (#1081).
 fn align_layers(s: &mut Session, p: &Value, how: &str, mode: AlignTo) -> Result<Value> {
+    let clips = align_target_clips(s, p);
+    if !clips.is_empty() {
+        return align_clips(s, &clips, how, mode);
+    }
     let clip = target_clip(s, p).ok_or_else(|| bad("graphics.align", "no graphic clip"))?;
     let layers = layers_p(s, clip, p)?;
     let (boxes, size) = layer_boxes(s, clip, &layers)?;
@@ -669,7 +740,7 @@ fn has_graphics_in_seq(s: &Session) -> std::result::Result<(), String> {
     if graphic_clips(s).is_empty() { Err("the sequence has no graphics".into()) } else { Ok(()) }
 }
 
-const ALIGN_PARAMS: &str = r#"{"clip":id?,"layers":[n]? (default: the selected layers)}"#;
+const ALIGN_PARAMS: &str = r#"{"clip":id?,"layers":[n]? (default: the selected layers; selected video clips move by Motion Position)}"#;
 
 macro_rules! align_cmd {
     ($id:literal, $label:literal, $menu:expr, $how:literal, $mode:expr, $en:expr) => {
@@ -787,12 +858,12 @@ fn menu_commands() -> Vec<CommandSpec> {
                 Ok(json!({"clip": clip.0, "item": item.0}))
             },
         ),
-        align_cmd!("graphics.alignFrame.left", "Left", F, "left", AlignTo::Frame, has_graphic),
-        align_cmd!("graphics.alignFrame.hcenter", "Center Horizontally", F, "hcenter", AlignTo::Frame, has_graphic),
-        align_cmd!("graphics.alignFrame.right", "Right", F, "right", AlignTo::Frame, has_graphic),
-        align_cmd!("graphics.alignFrame.top", "Top", F, "top", AlignTo::Frame, has_graphic),
-        align_cmd!("graphics.alignFrame.vcenter", "Center Vertically", F, "vcenter", AlignTo::Frame, has_graphic),
-        align_cmd!("graphics.alignFrame.bottom", "Bottom", F, "bottom", AlignTo::Frame, has_graphic),
+        align_cmd!("graphics.alignFrame.left", "Left", F, "left", AlignTo::Frame, has_graphic_or_clip),
+        align_cmd!("graphics.alignFrame.hcenter", "Center Horizontally", F, "hcenter", AlignTo::Frame, has_graphic_or_clip),
+        align_cmd!("graphics.alignFrame.right", "Right", F, "right", AlignTo::Frame, has_graphic_or_clip),
+        align_cmd!("graphics.alignFrame.top", "Top", F, "top", AlignTo::Frame, has_graphic_or_clip),
+        align_cmd!("graphics.alignFrame.vcenter", "Center Vertically", F, "vcenter", AlignTo::Frame, has_graphic_or_clip),
+        align_cmd!("graphics.alignFrame.bottom", "Bottom", F, "bottom", AlignTo::Frame, has_graphic_or_clip),
         align_cmd!("graphics.alignGroup.left", "Left", G, "left", AlignTo::FrameGroup, has_two_layers),
         align_cmd!("graphics.alignGroup.hcenter", "Center Horizontally", G, "hcenter", AlignTo::FrameGroup, has_two_layers),
         align_cmd!("graphics.alignGroup.right", "Right", G, "right", AlignTo::FrameGroup, has_two_layers),

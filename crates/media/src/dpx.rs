@@ -1,16 +1,23 @@
 //! DPX (`.dpx`) stills, decoded clean-room from SMPTE ST 268 (Digital Picture Exchange).
 //!
-//! The first image element is decoded: luma, RGB, RGBA or ABGR, 8, 10, 12 or 16 bits per
-//! component, big-endian (`SDPX`) or little-endian (`XPDS`) files. 10-bit components are filled into
-//! 32-bit words (packing 1, method A: two padding bits at the bottom; packing 2, method B: at the
-//! top), 12-bit components fill 16-bit words the same two ways. Scan lines start on a 32-bit
-//! boundary and may carry end-of-line padding. Orientations 0–3 (either scan direction, either line
-//! order) are honoured. Code values map linearly onto 8 bits (full range); a logarithmic (printing
-//! density) transfer is shown as stored, without a film-log conversion.
+//! The first image element is decoded: luma, RGB, RGBA, ABGR, or Y'CbCr (CbYCrY 4:2:2, CbYACrYA
+//! 4:2:2:4, CbYCr 4:4:4, CbYCrA 4:4:4:4), 8, 10, 12 or 16 bits per component, big-endian (`SDPX`) or
+//! little-endian (`XPDS`) files. 10-bit components are filled into 32-bit words (packing 1, method
+//! A: two padding bits at the bottom; packing 2, method B: at the top), 12-bit components fill
+//! 16-bit words the same two ways; packed 10/12-bit components (packing 0) follow each other with no
+//! padding, the first in the low bits of a 32-bit word, a component crossing into the next word
+//! continuing in its low bits. Scan lines start on a 32-bit boundary and may carry end-of-line
+//! padding. Orientations 0–3 (either scan direction, either line order) are honoured. RGB and luma
+//! code values map linearly onto 8 bits (full range); a logarithmic (printing density) transfer is
+//! shown as stored, without a film-log conversion. Y'CbCr is converted with the matrix the
+//! colorimetric field names (BT.709, or BT.601 for the 601 and composite video codes; by picture
+//! size when unspecified), in video range unless the reference low / high data codes span the
+//! whole code range; 4:2:2 chroma is shared by the two pixels of a pair.
 //!
-//! Not decoded (an "unsupported" error): run-length encoded elements, the 10/12-bit "packed"
-//! layout (packing 0), Y'CbCr descriptors, 1-bit and floating-point components, transposed
-//! orientations.
+//! Not decoded (an "unsupported" error): run-length encoded elements, 1-bit and floating-point
+//! components, transposed orientations.
+
+use filmcraft_color::{Matrix, Range, normalize_c, normalize_y, ycbcr_to_rgb};
 
 use crate::{MediaError, Result, still::Raster};
 
@@ -63,6 +70,8 @@ enum Packing {
     Words { shift: u32 },
     /// Three 10-bit components per 32-bit word, the first in the high bits, above `pad` bits.
     Ten { pad: u32 },
+    /// `bits`-bit components back to back in 32-bit words, low bits first (packing 0).
+    Packed { bits: u32 },
 }
 
 impl Packing {
@@ -73,6 +82,7 @@ impl Packing {
             Packing::Bytes => comps,
             Packing::Words { .. } => comps.checked_mul(2)?,
             Packing::Ten { .. } => comps.div_ceil(3).checked_mul(4)?,
+            Packing::Packed { bits } => comps.checked_mul(bits as usize)?.div_ceil(32).checked_mul(4)?,
         };
         raw.checked_next_multiple_of(4)
     }
@@ -93,6 +103,69 @@ impl Packing {
                     }
                 }
             }
+            Packing::Packed { bits } => {
+                let mask = (1u64 << bits) - 1;
+                for i in 0..comps {
+                    let bit = i * bits as usize;
+                    let at = bit / 32 * 4;
+                    let pair = u64::from(order.u32(line, at)) | (u64::from(order.u32(line, at + 4)) << 32);
+                    out.push(((pair >> (bit % 32)) & mask) as u16);
+                }
+            }
+        }
+    }
+}
+
+/// What the stored components of a pixel are.
+#[derive(Clone, Copy)]
+enum Components {
+    /// `n` components per pixel; the indices of R, G, B and A among them (alpha `None`: opaque).
+    Rgb { n: usize, map: [Option<usize>; 4] },
+    /// `n` components per pixel: Cb (4:2:2: Cb on even pixels, Cr on odd ones), Y', then Cr (4:4:4
+    /// only), then alpha when `alpha`.
+    YCbCr { n: usize, sub: bool, alpha: bool, matrix: Matrix, range: Range },
+}
+
+impl Components {
+    fn per_pixel(self) -> usize {
+        match self {
+            Components::Rgb { n, .. } | Components::YCbCr { n, .. } => n,
+        }
+    }
+
+    fn has_alpha(self) -> bool {
+        match self {
+            Components::Rgb { map, .. } => map[3].is_some(),
+            Components::YCbCr { alpha, .. } => alpha,
+        }
+    }
+
+    /// RGBA8 of pixel `x` from the unpacked component values of its scan line (`bits` per value).
+    fn pixel(self, line: &[u16], x: usize, bits: u32) -> [u8; 4] {
+        let max = (1u32 << bits) - 1;
+        let to8 = |v: u32| ((v.min(max) * 255 + max / 2) / max) as u8;
+        let get = |i: usize| line.get(i).map(|&v| u32::from(v));
+        match self {
+            Components::Rgb { n, map } => map.map(|slot| match slot {
+                Some(i) => get(x * n + i).map_or(0, to8),
+                None => 255,
+            }),
+            Components::YCbCr { n, sub, alpha, matrix, range } => {
+                let base = x * n;
+                let (cb, cr) = if sub {
+                    let pair = (x & !1) * n;
+                    (get(pair), get(pair + n))
+                } else {
+                    (get(base), get(base + 2))
+                };
+                // a missing Cr (odd width, 4:2:2) is neutral
+                let mid = 1u32 << (bits - 1);
+                let y = normalize_y(get(base + 1).unwrap_or(0), bits, range);
+                let rgb = ycbcr_to_rgb(y, normalize_c(cb.unwrap_or(mid), bits, range), normalize_c(cr.unwrap_or(mid), bits, range), matrix);
+                let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let a = if alpha { get(base + n - 1).map_or(0, to8) } else { 255 };
+                [c(rgb[0]), c(rgb[1]), c(rgb[2]), a]
+            }
         }
     }
 }
@@ -110,7 +183,10 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     let orientation = order.u16(bytes, 768);
     let (w, h) = (order.u32(bytes, 772) as usize, order.u32(bytes, 776) as usize);
     let el = ELEMENT;
+    let low_code = order.u32(bytes, el + 4);
+    let high_code = order.u32(bytes, el + 12);
     let descriptor = bytes.get(el + 20).copied().unwrap_or(0);
+    let colorimetric = bytes.get(el + 22).copied().unwrap_or(0);
     let bits = bytes.get(el + 23).copied().unwrap_or(0);
     let packing = order.u16(bytes, el + 24);
     let encoding = order.u16(bytes, el + 26);
@@ -120,14 +196,6 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         return Err(err(name, "empty picture"));
     }
     let pixels = w.checked_mul(h).filter(|&n| n <= MAX_PIXELS).ok_or_else(|| err(name, "picture too large"))?;
-    // component order per pixel: indices of R, G, B, A (None: opaque) in the stored components
-    let (n, map): (usize, [Option<usize>; 4]) = match descriptor {
-        6 => (1, [Some(0), Some(0), Some(0), None]),
-        50 => (3, [Some(0), Some(1), Some(2), None]),
-        51 => (4, [Some(0), Some(1), Some(2), Some(3)]),
-        52 => (4, [Some(3), Some(2), Some(1), Some(0)]),
-        d => return Err(unsupported(name, format!("descriptor {d}"))),
-    };
     if encoding != 0 {
         return Err(unsupported(name, "run-length encoding".into()));
     }
@@ -138,6 +206,7 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         (10, 2) => Packing::Ten { pad: 0 },
         (12, 1) => Packing::Words { shift: 4 },
         (12, 2) => Packing::Words { shift: 0 },
+        (10 | 12, 0) => Packing::Packed { bits: u32::from(bits) },
         (b, p) => return Err(unsupported(name, format!("{b}-bit components with packing {p}"))),
     };
     let (flip_x, flip_y) = match orientation {
@@ -147,6 +216,27 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         3 => (true, true),
         o => return Err(unsupported(name, format!("orientation {o}"))),
     };
+    let max = (1u32 << bits) - 1;
+    // video range unless the reference codes span every code value
+    let range = if low_code == 0 && high_code == max { Range::Full } else { Range::Limited };
+    let matrix = match colorimetric {
+        5 | 6 => Matrix::Bt709,
+        7..=10 => Matrix::Bt601,
+        _ => filmcraft_frame::default_matrix(w as u32, h as u32),
+    };
+    let ycbcr = |n, sub, alpha| Components::YCbCr { n, sub, alpha, matrix, range };
+    let components = match descriptor {
+        6 => Components::Rgb { n: 1, map: [Some(0), Some(0), Some(0), None] },
+        50 => Components::Rgb { n: 3, map: [Some(0), Some(1), Some(2), None] },
+        51 => Components::Rgb { n: 4, map: [Some(0), Some(1), Some(2), Some(3)] },
+        52 => Components::Rgb { n: 4, map: [Some(3), Some(2), Some(1), Some(0)] },
+        100 => ycbcr(2, true, false),
+        101 => ycbcr(3, true, true),
+        102 => ycbcr(3, false, false),
+        103 => ycbcr(4, false, true),
+        d => return Err(unsupported(name, format!("descriptor {d}"))),
+    };
+    let n = components.per_pixel();
     let comps = w.checked_mul(n).ok_or_else(|| err(name, "picture too large"))?;
     let pad = if eol_padding == UNDEFINED { 0 } else { eol_padding as usize };
     let stride = layout.line_bytes(comps).and_then(|l| l.checked_add(pad)).ok_or_else(|| err(name, "picture too large"))?;
@@ -157,8 +247,7 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     // the last line needs no end-of-line padding
     let size = stride.checked_mul(h - 1).and_then(|s| s.checked_add(stride - pad)).ok_or_else(|| err(name, "picture too large"))?;
     let data = offset.checked_add(size).and_then(|end| bytes.get(offset..end)).ok_or_else(|| err(name, "truncated image data"))?;
-    let max = (1u32 << bits) - 1;
-    let to8 = |v: u16| ((u32::from(v).min(max) * 255 + max / 2) / max) as u8;
+    let bits = u32::from(bits);
     let mut rgba = vec![0u8; pixels * 4];
     let mut line = Vec::with_capacity(comps);
     for y in 0..h {
@@ -168,19 +257,12 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         for x in 0..w {
             let dx = if flip_x { w - 1 - x } else { x };
             let o = (dy * w + dx) * 4;
-            let Some(px) = rgba.get_mut(o..o + 4) else { continue };
-            for (c, slot) in map.iter().enumerate() {
-                let v = match slot {
-                    Some(i) => line.get(x * n + i).map_or(0, |&v| to8(v)),
-                    None => 255,
-                };
-                if let Some(d) = px.get_mut(c) {
-                    *d = v;
-                }
+            if let Some(px) = rgba.get_mut(o..o + 4) {
+                px.copy_from_slice(&components.pixel(&line, x, bits));
             }
         }
     }
-    let has_alpha = map[3].is_some() && rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255);
+    let has_alpha = components.has_alpha() && rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255);
     Ok(Raster { width: w as u32, height: h as u32, rgba, has_alpha })
 }
 
@@ -250,14 +332,84 @@ mod tests {
         assert_eq!(r.rgba, [255, 0, 0, 128]);
     }
 
+    /// Packing 0: components back to back, low bits first, each line on a 32-bit boundary.
+    fn packed(lines: &[&[u32]], bits: u32, big: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        for line in lines {
+            let (mut acc, mut n) = (0u64, 0u32);
+            for &v in *line {
+                acc |= u64::from(v) << n;
+                n += bits;
+                while n >= 32 {
+                    let w = acc as u32;
+                    out.extend_from_slice(&if big { w.to_be_bytes() } else { w.to_le_bytes() });
+                    acc >>= 32;
+                    n -= 32;
+                }
+            }
+            if n > 0 {
+                let w = acc as u32;
+                out.extend_from_slice(&if big { w.to_be_bytes() } else { w.to_le_bytes() });
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn packed_ten_and_twelve_bit_components_cross_words() {
+        // 2 × 2 RGB 10-bit: 6 components (60 bits) per line, the fourth straddles two words
+        let lines: [&[u32]; 2] = [&[1023, 0, 512, 4, 1019, 1023], &[0, 1023, 0, 1023, 1023, 1023]];
+        for big in [true, false] {
+            let r = decode("a.dpx", &file(big, 2, 2, 50, 10, 0, 0, &packed(&lines, 10, big))).unwrap();
+            assert_eq!(r.rgba, [255, 0, 128, 255, 1, 254, 255, 255, 0, 255, 0, 255, 255, 255, 255, 255]);
+        }
+        // 3 × 1 RGB 12-bit: 9 components, 108 bits in 4 words
+        let line: [&[u32]; 1] = [&[4095, 0, 2048, 16, 4079, 0, 0, 0, 4095]];
+        let r = decode("a.dpx", &file(true, 3, 1, 50, 12, 0, 0, &packed(&line, 12, true))).unwrap();
+        assert_eq!(r.rgba, [255, 0, 128, 255, 1, 254, 0, 255, 0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn ycbcr_descriptors_convert_to_rgb() {
+        // 8-bit CbYCrY, video range, BT.709 (colorimetric 6): black, white, then a red pixel pair
+        // (the 709 code triple of red is rounded, hence green 1)
+        let mut f = file(true, 4, 1, 100, 8, 0, 0, &[128, 16, 128, 235, 102, 63, 240, 63]);
+        f[ELEMENT + 22] = 6;
+        let r = decode("a.dpx", &f).unwrap();
+        assert_eq!(r.rgba, [0, 0, 0, 255, 255, 255, 255, 255, 255, 1, 0, 255, 255, 1, 0, 255]);
+        assert!(!r.has_alpha);
+        // red in BT.601 (colorimetric 7): the 601 code triple, rounded
+        let mut f = file(true, 2, 1, 100, 8, 0, 0, &[90, 81, 240, 81]);
+        f[ELEMENT + 22] = 7;
+        assert_eq!(decode("a.dpx", &f).unwrap().rgba, [254, 0, 0, 255, 254, 0, 0, 255]);
+        // 10-bit CbYCr filled (method A), full range from the reference codes: mid grey
+        let word = |a: u32, b: u32, c: u32| ((a << 22) | (b << 12) | (c << 2)).to_be_bytes();
+        let mut f = file(true, 1, 1, 102, 10, 1, 0, &word(512, 512, 512));
+        f[ELEMENT + 4..ELEMENT + 8].copy_from_slice(&0u32.to_be_bytes());
+        f[ELEMENT + 12..ELEMENT + 16].copy_from_slice(&1023u32.to_be_bytes());
+        assert_eq!(decode("a.dpx", &f).unwrap().rgba, [128, 128, 128, 255]);
+        // 16-bit CbYCrA: white at half opacity
+        let v = |x: u16| x.to_be_bytes();
+        let data: Vec<u8> = [v(32768), v(60160), v(32768), v(32768)].concat();
+        let r = decode("a.dpx", &file(true, 1, 1, 103, 16, 0, 0, &data)).unwrap();
+        assert_eq!(r.rgba, [255, 255, 255, 128]);
+        assert!(r.has_alpha);
+        // 8-bit CbYACrYA, 3 pixels: the last pixel has no Cr and is neutral
+        let r = decode("a.dpx", &file(true, 3, 1, 101, 8, 0, 0, &[128, 235, 255, 128, 16, 0, 128, 235, 255, 0, 0, 0])).unwrap();
+        assert_eq!(r.rgba, [255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255]);
+        assert!(r.has_alpha);
+    }
+
     #[test]
     fn hostile_headers_fail_cleanly() {
         // huge dimensions with no data, truncated data, unsupported layouts
         assert!(decode("a.dpx", &file(true, u32::MAX, u32::MAX, 50, 10, 1, 0, &[])).is_err());
         assert!(decode("a.dpx", &file(true, 4096, 4096, 50, 10, 1, 0, &[0; 64])).is_err());
         assert!(decode("a.dpx", &file(true, 2, 2, 50, 10, 1, 0, &[0; 12])).is_err());
-        assert!(decode("a.dpx", &file(true, 1, 1, 100, 8, 0, 0, &[0; 4])).is_err());
-        assert!(decode("a.dpx", &file(true, 1, 1, 50, 10, 0, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 1, 150, 8, 0, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 1, 50, 10, 3, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 1, 50, 16, 0, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 3, 3, 100, 12, 0, 0, &[0; 20])).is_err());
         assert!(decode("a.dpx", &file(true, 1, 1, 50, 32, 0, 0, &[0; 16])).is_err());
         assert!(decode("a.dpx", &file(true, 1, 1, 50, 8, 0, 5, &[0; 4])).is_err());
         assert!(decode("a.dpx", &file(true, 0, 1, 50, 8, 0, 0, &[0; 4])).is_err());

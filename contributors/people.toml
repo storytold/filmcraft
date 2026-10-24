@@ -70,7 +70,21 @@ sync_github_name = false
 [people.ossini]
 sync_github_name = true
 
+[people.opentechnepal]
+sync_github_name = true
+
 [people.vangel76]
 real_name = "Valentin Klein"
 display_name = "Valentin Klein"
 sync_github_name = false
+
+[people.n-delic]
+display_name = "n-delic"
+sync_github_name = false
+
+[people.Silvertree2010]
+display_name = "Netter"
+sync_github_name = false
+
+[people.webdevtodayjason]
+display_name = "Jason Brashear"

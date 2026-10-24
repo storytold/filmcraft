@@ -337,7 +337,7 @@ pub fn noise(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let colored = bv(e, "color");
     let clip = bv(e, "clip");
     let grain = (fv(e, "grain_size", cx).max(1.0) * cx.px_scale).max(1.0);
-    let frame = (cx.seconds * 30.0) as u64;
+    let frame = crate::effects::noise_frame_seed(cx);
     let w = img.w;
     img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         for x in 0..w {
