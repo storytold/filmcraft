@@ -1377,7 +1377,7 @@ fn build() -> Vec<CommandSpec> {
                                 Err(e) => errors.push(format!("{path}: {e}")),
                             }
                         } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt) {
+                            match crate::interchange::import(s, &path, &b, fmt, bin) {
                                 Ok(r) => {
                                     sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
                                     reports.push(r);
@@ -1489,7 +1489,9 @@ fn build() -> Vec<CommandSpec> {
             has_seq,
             |s, p| crate::aaf_omf::export_omf(s, p)
         ),
-        cmd!("file.importAaf", "Import AAF…", [], None, r#"{"path":str}"#, always, |s, p| crate::aaf_omf::import_document(s, p, "file.importAaf")),
+        cmd!("file.importAaf", "Import AAF…", [], None, r#"{"path":str,"bin":binId?}"#, always, |s, p| {
+            crate::aaf_omf::import_document(s, p, "file.importAaf")
+        }),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;
             write_project(s, &path, true)
