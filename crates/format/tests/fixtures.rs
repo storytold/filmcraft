@@ -79,10 +79,15 @@ fn hostile_audio_stream_counts_and_indices_are_repaired_not_rejected() {
     let loaded = decode(&encode(&p, false)).unwrap().project;
     assert_eq!(loaded.sequence(seq).unwrap().audio_tracks[0].items[0].audio_stream, filmcraft_media::MAX_AUDIO_STREAMS - 1, "in range: kept");
     let media = p.item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+    media.info.audio_streams[0].sample_rate = u32::MAX;
+    media.info.audio_streams[0].channels = u32::MAX;
     let stream = media.info.audio_streams[0].clone();
     media.info.audio_streams.resize(filmcraft_media::MAX_AUDIO_STREAMS + 1, stream);
     let loaded = decode(&encode(&p, false)).unwrap().project;
-    assert_eq!(loaded.item(ItemId(5)).unwrap().as_media().unwrap().info.audio_streams.len(), filmcraft_media::MAX_AUDIO_STREAMS);
+    let streams = &loaded.item(ItemId(5)).unwrap().as_media().unwrap().info.audio_streams;
+    assert_eq!(streams.len(), filmcraft_media::MAX_AUDIO_STREAMS);
+    assert!(streams.iter().all(|s| s.channels == filmcraft_media::MAX_AUDIO_CHANNELS));
+    assert!(streams.iter().all(|s| s.sample_rate == filmcraft_media::MAX_AUDIO_SAMPLE_RATE));
 }
 
 /// Schema 8 (before M3.10): no time interpolation / Hold Filters / Field Options / source channels

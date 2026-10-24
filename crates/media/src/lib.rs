@@ -82,6 +82,51 @@ pub struct VideoStreamInfo {
 
 /// Most audio streams a source reports (the count comes from the file: never trusted).
 pub const MAX_AUDIO_STREAMS: usize = 64;
+/// Maximum channels accepted from persisted or container metadata.
+pub const MAX_AUDIO_CHANNELS: u32 = 64;
+/// Highest source rate the realtime audio pipeline accepts. 384 kHz covers PCM/DXD delivery
+/// formats while preventing hostile container metadata from multiplying an ordinary render window
+/// into an impractical scratch allocation.
+pub const MAX_AUDIO_SAMPLE_RATE: u32 = 384_000;
+/// Largest single planar floating-point audio buffer an adapter may allocate (64 MiB).
+pub const MAX_AUDIO_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+
+/// Clamp dimensions read from a container or persisted project. Zero is not a valid audio
+/// dimension, and values above the realtime engine's supported limits must never reach an
+/// allocator.
+pub fn bounded_audio_dimensions(sample_rate: u32, channels: u32) -> (u32, u32) {
+    (sample_rate.clamp(1, MAX_AUDIO_SAMPLE_RATE), channels.clamp(1, MAX_AUDIO_CHANNELS))
+}
+
+/// Check an adapter-owned planar `f32` audio allocation before constructing it.
+pub fn validate_audio_buffer_shape(channels: usize, frames: usize) -> Result<()> {
+    if channels == 0 || channels > MAX_AUDIO_CHANNELS as usize {
+        return Err(MediaError::Decode(format!("unsupported audio channel count {channels}")));
+    }
+    let bytes = channels
+        .checked_mul(frames)
+        .and_then(|samples| samples.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| MediaError::Decode("audio buffer dimensions overflow".into()))?;
+    if bytes > MAX_AUDIO_BUFFER_BYTES {
+        return Err(MediaError::Decode(format!("audio buffer of {bytes} bytes exceeds the {} byte limit", MAX_AUDIO_BUFFER_BYTES)));
+    }
+    Ok(())
+}
+
+/// Number of source frames needed to resample `frames` output frames. Arithmetic is checked so
+/// corrupted rates cannot wrap into a small allocation.
+pub fn resample_source_frames(frames: usize, source_rate: u32, output_rate: u32) -> Result<usize> {
+    if output_rate == 0 {
+        return Err(MediaError::Decode("zero requested audio sample rate".into()));
+    }
+    let source = usize::try_from(source_rate).map_err(|_| MediaError::Decode("invalid source sample rate".into()))?;
+    let output = usize::try_from(output_rate).map_err(|_| MediaError::Decode("invalid output sample rate".into()))?;
+    frames
+        .checked_mul(source)
+        .and_then(|n| n.checked_add(output.saturating_sub(1)))
+        .map(|n| n / output)
+        .ok_or_else(|| MediaError::Decode("resampled audio window overflows".into()))
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AudioStreamInfo {
@@ -256,5 +301,14 @@ mod importable_tests {
             assert!(is_importable(Path::new(name)), "{name}");
         }
         assert!(!is_importable(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn hostile_audio_dimensions_are_bounded_before_adapters_allocate() {
+        assert_eq!(bounded_audio_dimensions(0, 0), (1, 1));
+        assert_eq!(bounded_audio_dimensions(u32::MAX, u32::MAX), (MAX_AUDIO_SAMPLE_RATE, MAX_AUDIO_CHANNELS));
+        assert!(validate_audio_buffer_shape(MAX_AUDIO_CHANNELS as usize, MAX_AUDIO_BUFFER_BYTES / 4 / MAX_AUDIO_CHANNELS as usize).is_ok());
+        assert!(validate_audio_buffer_shape(MAX_AUDIO_CHANNELS as usize, MAX_AUDIO_BUFFER_BYTES / 4 / MAX_AUDIO_CHANNELS as usize + 1).is_err());
+        assert!(resample_source_frames(usize::MAX, MAX_AUDIO_SAMPLE_RATE, 1).is_err());
     }
 }

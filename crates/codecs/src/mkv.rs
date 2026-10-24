@@ -418,6 +418,7 @@ impl MkvSource {
                     rate = crate::audio::OPUS_RATE;
                     channels = h.channels as u32;
                 }
+                (rate, channels) = filmcraft_media::bounded_audio_dimensions(rate, channels);
                 AudioStreamInfo { sample_rate: rate, channels, codec: codec_label(&t.codec), bits_per_sample: a.bit_depth.map(|b| b as u32) }
             })
             .collect();
@@ -628,15 +629,19 @@ impl MediaSource for MkvSource {
         let ainfo = self.info.audio_streams.get(stream).ok_or(MediaError::NoStream("audio"))?;
         let src_rate = ainfo.sample_rate;
         let ch = ainfo.channels.max(1) as usize;
+        let source_frames = filmcraft_media::resample_source_frames(frames, src_rate, sample_rate)?;
+        let need = source_frames.checked_add(2).ok_or_else(|| MediaError::Decode("audio source window overflows".into()))?;
+        filmcraft_media::validate_audio_buffer_shape(ch, need)?;
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
         let ratio = src_rate as f64 / sample_rate as f64;
         let s0 = (start as f64 * ratio).floor() as i64;
-        let need = (frames as f64 * ratio).ceil() as i64 + 2;
-        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
+        let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
+        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut i = a.starts.partition_point(|&x| x <= s0).saturating_sub(1);
         while i < n_packets {
             let Some(&pk_start) = a.starts.get(i) else { break };
-            if pk_start >= s0 + need {
+            if pk_start >= s0.saturating_add(need_i64) {
                 break;
             }
             let pk = self.audio_packet(a, ainfo, &mut st, i)?;
