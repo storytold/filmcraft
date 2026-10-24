@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (G16: Program playback on a source slower than real time drops frames instead of freezing (#2696)) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -272,7 +272,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   CDEF and loop restoration in parallel 64-row bands, bit-exact (#847; 1080p GOP 1.16–1.30×,
   low delay 1.28×, 2160p 1.14× at 16 threads). VP9 software decode loop-filters a frame as a
   wavefront over superblock rows on the decoder's pool instead of on one thread, bit-identical,
-  1.2–1.5× faster with 16 threads (#980).
+  1.2–1.5× faster with 16 threads (#980). A source that decodes slower than real time (4K50 HEVC at
+  26–28 ms a picture) no longer freezes the Program monitor: playback keeps a three-frame queue
+  while one decoder cannot make the frame rate and shows the newest picture the source has, so it
+  drops frames instead and a click on the timeline is not stuck behind queued jobs (#2696).
 - **Estimate:** 30–60 h. Doc: [performance.md](performance.md).
 
 ## G17. Audio device and playback reliability
@@ -323,3 +326,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
+| 2026-10-24 | minor | G16: Program playback on a source slower than real time drops frames instead of freezing (#2696) |

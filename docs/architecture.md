@@ -343,7 +343,14 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `filmcraft_media::cancel`) jobs for frames the playhead has passed; a new on-screen frame
   replaces the one asked for before (scrubbing); Stop cancels the prefetch. When frames cost more
   than the workers can render in real time (CPU effects), it starts only frames that can still be
-  on time and spaces them evenly (`playback_plan`). When decoding is what falls behind, each job
+  on time and spaces them evenly (`playback_plan`). When one decoder cannot produce the frame rate (a
+  slow 4K source; `source_cannot_keep_up`, estimated from the source time of the recent jobs that
+  fetched from the source being played), playback
+  asks for only the next `SOURCE_BOUND_AHEAD` (3) frames, because the decoder is the serialized
+  stage and a longer queue only adds latency, and the monitor shows the newest picture the source
+  has (`plan_lookback`: behind the playhead in the play direction by the measured picture latency,
+  at most one second) instead of
+  freezing on one. When decoding is what falls behind, each job
   tells its sources which frames are already late (`filmcraft_media::cancel::with_catch_up`: the
   playhead's distance, two seconds for a scrubbed-to frame), and the GOP cache skips
   non-reference pictures of late frames on the way (`VideoDecoder::is_disposable`, H.264

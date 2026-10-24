@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use filmcraft_engine::Session;
 use filmcraft_project::{ItemId, ParamValue, Project, SequenceSettings, TrackKind, find_effect, resolve_auto_points};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
-use filmcraft_ui_egui::frames::{FrameKey, FrameServer, JobRecord, PREROLL_TIMEOUT_S, PlaybackMeter, Target, process_cpu_time, thread_cpu_time};
+use filmcraft_ui_egui::frames::{FrameKey, FrameServer, JobRecord, Lookback, PREROLL_TIMEOUT_S, PlaybackMeter, Target, process_cpu_time, thread_cpu_time};
 use serde_json::{Value, json};
 
 use crate::fixtures::fixture;
@@ -147,7 +147,7 @@ impl Display {
         if let Some((comp, dev)) = self.gpu.as_mut() {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
-            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, 6))
+            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, Lookback::backward(6)))
                 && self.last != Some(k)
             {
                 let before = comp.uploaded_bytes;
