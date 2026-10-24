@@ -1389,7 +1389,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 let rounds = if step == 1 { 1 + p.subpel_rounds as usize } else { 1 };
                 for _ in 0..rounds {
                     let c = best;
-                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)] {
+                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
                         let m = Mv::new(c.x as i32 + dx * step, c.y as i32 + dy * step);
                         if !self.mv_ok(bx, by, w, h, m) {
                             continue;
