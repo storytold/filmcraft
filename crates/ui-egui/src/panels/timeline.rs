@@ -161,6 +161,9 @@ pub enum Drag {
         last: Pos2,
         start_scroll: f64,
         start_v: f32,
+        /// #2536: the drag started in the audio half (below the split), so vertical movement
+        /// scrolls the audio tracks; otherwise the video tracks. As the mouse wheel already does.
+        audio: bool,
     },
     /// Box selection, shown live: `before` is the selection when the drag began, which Shift or
     /// Ctrl (`add`) keep; the release commits one `timeline.select`.
@@ -2396,10 +2399,16 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             // `pressed`, so the pan starts from where the button went down
             _ if resp.drag_started_by(egui::PointerButton::Middle) => {
                 let last = ctx.input(|i| i.pointer.press_origin()).unwrap_or(p);
-                Some(Drag::Pan { last, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll })
+                let audio = last.y >= layout.split_y;
+                let start_v = if audio { app.ui.timeline.a_scroll } else { app.ui.timeline.v_scroll };
+                Some(Drag::Pan { last, start_scroll: app.ui.timeline.target_scroll, start_v, audio })
             }
             (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
-            (Tool::Hand, _) => Some(Drag::Pan { last: p, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll }),
+            (Tool::Hand, _) => {
+                let audio = p.y >= layout.split_y;
+                let start_v = if audio { app.ui.timeline.a_scroll } else { app.ui.timeline.v_scroll };
+                Some(Drag::Pan { last: p, start_scroll: app.ui.timeline.target_scroll, start_v, audio })
+            }
             (Tool::Zoom, _) => {
                 if resp.clicked() {
                     let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
@@ -2567,11 +2576,15 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                         let _ = app.session.execute("edit.undo", json!({}));
                     }
                 }
-                Drag::Pan { start_scroll, start_v, .. } => {
+                Drag::Pan { start_scroll, start_v, audio, .. } => {
                     let v = &mut app.ui.timeline;
                     v.target_scroll = start_scroll;
                     v.scroll = start_scroll;
-                    v.v_scroll = start_v;
+                    if audio {
+                        v.a_scroll = start_v;
+                    } else {
+                        v.v_scroll = start_v;
+                    }
                 }
                 // the live box (#1028) already changed the selection: put back the one the drag began with
                 Drag::Marquee { before, .. } => {
@@ -2601,13 +2614,18 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 app.session.set_playhead(tt);
                 Some(Drag::Scrub { initial })
             }
-            Drag::Pan { last, start_scroll, start_v } => {
+            Drag::Pan { last, start_scroll, start_v, audio } => {
                 let dx = p.x - last.x;
                 let v = &mut app.ui.timeline;
                 v.target_scroll = (v.target_scroll - dx as f64 / v.pps).max(0.0);
                 v.scroll = v.target_scroll;
-                app.ui.timeline.v_scroll += p.y - last.y;
-                Some(Drag::Pan { last: p, start_scroll, start_v })
+                // #2536: vertical drag scrolls the half the drag started in, as the wheel does
+                if audio {
+                    v.a_scroll -= p.y - last.y;
+                } else {
+                    v.v_scroll += p.y - last.y;
+                }
+                Some(Drag::Pan { last: p, start_scroll, start_v, audio })
             }
             Drag::Move { clips, grab_tick, start_track, .. } => {
                 let raw = rate.snap_nearest(t_here - grab_tick);
