@@ -281,7 +281,9 @@ own process under `/usr/bin/time` so peak RSS is per section: `decode` (every fr
 (the real app under `egui_kittest` with a 1000-clip / 20-track sequence: update, tessellation and
 wgpu render ms per frame), `export` (H.264 + AAC and ProRes) and `project` (save / open 5000 clips).
 Options: `--sections decode,scrub`, `--only <substring>` (fixture or scenario), `--repeat N`,
-`--quick`, `--cpu`, `--hw auto|off` (Settings ▸ Playback ▸ Hardware decoding; default `auto`, as the app), `--label NAME` (output `target/bench/bench-<label>.{json,md}`),
+`--quick`, `--cpu`, `--hw auto|off` (hardware decode/encode; default `auto`, as the app),
+`--gpu-rendering auto|off` (export compositor, default follows `--hw`),
+`--label NAME` (output `target/bench/bench-<label>.{json,md}`),
 `--section NAME --json FILE` (one section in-process, e.g. under a profiler). Fixtures are made
 with ffmpeg in `target/fixtures/playback/` (or `$FILMCRAFT_FIXTURES/playback`). The suite's
 `playback` section plays `h264-1080`, `stack3` and `stack3-blend` at Full, `h264-2160` at Full, 1/2 and 1/4 and with

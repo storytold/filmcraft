@@ -551,7 +551,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         let frame = rate.frame_at(time);
         // a revision of its own, so this render never replaces what the monitor caches
         let revision = app.session.revision ^ 0x5eed_d70b_0000_0000 ^ armed.clip.rotate_left(17) ^ armed.effect as u64;
-        let key = FrameKey { target, frame, size: (EYEDROPPER_SCALE * 1000.0) as u32, revision, draft: false };
+        let key = FrameKey { target: Target::Sequence(seq), frame, size: (EYEDROPPER_SCALE * 1000.0) as u32, revision, draft: false };
         ctx.data_mut(|d| d.insert_temp(pending_id, EyedropperPick { uv, key, time: rate.tick_of(frame), project: std::sync::Arc::new(project) }));
     }
     let Some(pick) = ctx.data(|d| d.get_temp::<EyedropperPick>(pending_id)) else { return };

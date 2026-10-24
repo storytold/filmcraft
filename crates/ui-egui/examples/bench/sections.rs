@@ -29,6 +29,21 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
         ) -> Option<filmcraft_render::Image> {
             self.0.render(project, seq, t, opts, sources)
         }
+
+        fn render_for_export(
+            &mut self,
+            project: &filmcraft_project::Project,
+            seq: ItemId,
+            t: Tick,
+            opts: filmcraft_render::RenderOptions,
+            sources: &dyn filmcraft_render::SourceProvider,
+            prefer_rgba8: bool,
+        ) -> Option<filmcraft_export::ExportFrame> {
+            self.0.render_for_export(project, seq, t, opts, sources, prefer_rgba8).map(|frame| match frame {
+                filmcraft_gpu::export_renderer::ExportRender::Linear(image) => filmcraft_export::ExportFrame::Linear(image),
+                filmcraft_gpu::export_renderer::ExportRender::Rgba8 { width, height, pixels } => filmcraft_export::ExportFrame::Rgba8 { width, height, pixels },
+            })
+        }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
 }
@@ -500,9 +515,13 @@ pub fn export(o: &Opts) -> Vec<Value> {
             filmcraft_export::reset_export_lock_wait();
             filmcraft_gpu::export_renderer::timing::reset();
             let (t0, c0) = (Instant::now(), cpu_now());
-            // `--hw auto`: the hardware encoder too (NVENC H.264 on Windows); `--hw off`: ours
+            // Keep encoder choice (`--hw`) separate from compositor choice (`--gpu-rendering`) so
+            // CPU/GPU export measurements can use the same encoder on both paths.
             let hardware = if o.hw == "off" { "off" } else { "auto" };
-            let r = s.execute("file.exportMedia", json!({"path": out.to_string_lossy(), "format": format, "hardwareEncoding": hardware, "gpuRendering": if o.hw == "off" { "off" } else { "auto" }, "wait": true}));
+            let r = s.execute(
+                "file.exportMedia",
+                json!({"path": out.to_string_lossy(), "format": format, "hardwareEncoding": hardware, "gpuRendering": o.gpu_rendering, "wait": true}),
+            );
             let dt = t0.elapsed().as_secs_f64();
             if let Err(e) = r {
                 eprintln!("export {format}: {e}");

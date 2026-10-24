@@ -36,6 +36,8 @@ pub struct Opts {
     pub only: Option<String>,
     /// Settings ▸ Playback ▸ Hardware decoding: `auto` (default, as the app) or `off`.
     pub hw: String,
+    /// Export ▸ GPU Rendering: `auto` or `off`. Can be varied independently of encoding.
+    pub gpu_rendering: String,
 }
 
 impl Opts {
@@ -52,17 +54,20 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "bench [--sections {}] [--repeat N] [--quick] [--cpu] [--only SUBSTRING] [--hw auto|off] [--label NAME] [--out DIR]\n       bench --section NAME [--json FILE]   (one section in this process)",
+            "bench [--sections {}] [--repeat N] [--quick] [--cpu] [--only SUBSTRING] [--hw auto|off] [--gpu-rendering auto|off] [--label NAME] [--out DIR]\n       bench --section NAME [--json FILE]   (one section in this process)",
             SECTIONS.join(",")
         );
         return;
     }
+    let hw = arg_value(&args, "--hw").unwrap_or_else(|| "auto".into());
+    let gpu_rendering = arg_value(&args, "--gpu-rendering").unwrap_or_else(|| if hw == "off" { "off" } else { "auto" }.into());
     let opts = Opts {
         repeat: arg_value(&args, "--repeat").and_then(|v| v.parse().ok()).unwrap_or(1).max(1),
         quick: args.iter().any(|a| a == "--quick"),
         gpu: !args.iter().any(|a| a == "--cpu"),
         only: arg_value(&args, "--only"),
-        hw: arg_value(&args, "--hw").unwrap_or_else(|| "auto".into()),
+        hw,
+        gpu_rendering,
     };
     // as the desktop app: OS hardware decoders in front of ours, unless Hardware decoding is Off
     filmcraft_platform::register();
@@ -121,6 +126,7 @@ fn orchestrate(args: &[String], o: &Opts) {
             cmd.args(["--only", only]);
         }
         cmd.args(["--hw", &o.hw]);
+        cmd.args(["--gpu-rendering", &o.gpu_rendering]);
         eprintln!("== {name} (load {})", playback::load_avg());
         let output = cmd.stderr(std::process::Stdio::piped()).output().expect("run section");
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -139,7 +145,7 @@ fn orchestrate(args: &[String], o: &Opts) {
         println!("{}", section_markdown(&v));
         results.push(v);
     }
-    let doc = json!({"label": label, "machine": machine, "repeat": o.repeat, "quick": o.quick, "gpu": o.gpu, "hw": o.hw, "sections": results});
+    let doc = json!({"label": label, "machine": machine, "repeat": o.repeat, "quick": o.quick, "gpu": o.gpu, "gpu_rendering": o.gpu_rendering, "hw": o.hw, "sections": results});
     let jp = out.join(format!("bench-{label}.json"));
     let mp = out.join(format!("bench-{label}.md"));
     std::fs::write(&jp, serde_json::to_string_pretty(&doc).unwrap_or_default()).expect("write json");

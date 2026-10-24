@@ -222,14 +222,17 @@ mod embedded_audio_tests {
     #[test]
     fn virtual_extraction_keeps_existing_media() {
         let files = Arc::new(VirtualFiles::default());
-        files.0.lock().unwrap().insert("/files/cut Audio.wav".into(), b"first".to_vec());
-        files.0.lock().unwrap().insert("/files/cut Audio (2).wav".into(), b"second".to_vec());
+        let original = std::path::Path::new("/files").join("cut Audio.wav").to_string_lossy().into_owned();
+        let second = std::path::Path::new(&original).with_file_name("cut Audio (2).wav").to_string_lossy().into_owned();
+        let third = std::path::Path::new(&original).with_file_name("cut Audio (3).wav").to_string_lossy().into_owned();
+        files.0.lock().unwrap().insert(original.clone(), b"first".to_vec());
+        files.0.lock().unwrap().insert(second.clone(), b"second".to_vec());
         let session = Session::new(files.clone());
-        let path = write_embedded_audio(&session, "/files/cut Audio.wav", b"new audio").unwrap();
-        assert_eq!(path, "/files/cut Audio (3).wav");
+        let path = write_embedded_audio(&session, &original, b"new audio").unwrap();
+        assert_eq!(path, third);
         let stored = files.0.lock().unwrap();
-        assert_eq!(stored["/files/cut Audio.wav"], b"first");
-        assert_eq!(stored["/files/cut Audio (2).wav"], b"second");
-        assert_eq!(stored["/files/cut Audio (3).wav"], b"new audio");
+        assert_eq!(stored[&original], b"first");
+        assert_eq!(stored[&second], b"second");
+        assert_eq!(stored[&third], b"new audio");
     }
 }

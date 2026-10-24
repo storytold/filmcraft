@@ -3,13 +3,17 @@
 //! `GpuRendering::Off` (CPU reference) frames within the GPU-vs-CPU parity tolerance — p99 of the
 //! per-pixel max RGB difference over black ≤ 6 and mean < 1.5 (the golden-test criterion).
 
-use filmcraft_export::{ExportSettings, Format, FrameRenderer, GpuRenderStats, GpuRendering, Progress, export, register_frame_renderer};
+use filmcraft_export::{
+    ExportFrame, ExportSettings, Format, FrameRenderer, GpuRenderStats, GpuRendering, HardwareEncoding, Progress, export, register_frame_renderer,
+};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{Generator, MediaSource};
 use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
 use filmcraft_render::SourceMap;
 use filmcraft_time::{TICKS_PER_SECOND, TimeRange};
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The same wrapper the app and CLI register: `filmcraft-gpu`'s renderer behind
 /// `filmcraft_export`'s trait.
@@ -25,6 +29,21 @@ impl FrameRenderer for GpuFrameRenderer {
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
+    }
+
+    fn render_for_export(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+        prefer_rgba8: bool,
+    ) -> Option<ExportFrame> {
+        self.0.render_for_export(project, seq, t, opts, sources, prefer_rgba8).map(|frame| match frame {
+            filmcraft_gpu::export_renderer::ExportRender::Linear(image) => ExportFrame::Linear(image),
+            filmcraft_gpu::export_renderer::ExportRender::Rgba8 { width, height, pixels } => ExportFrame::Rgba8 { width, height, pixels },
+        })
     }
 }
 
@@ -108,8 +127,36 @@ fn assert_parity(cpu_png: &[u8], gpu_png: &[u8], what: &str) {
     assert!(p99 <= 6 && mean < 1.5, "{what}: GPU parity p99 {p99}, mean {mean:.3}");
 }
 
+static GPU_FACTORY_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+static GPU_FACTORY_CREATED: AtomicUsize = AtomicUsize::new(0);
+static EXPORT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn gpu_renderer_factory() -> Option<Box<dyn FrameRenderer>> {
+    GPU_FACTORY_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    let renderer = filmcraft_gpu::ExportRenderer::new()?;
+    GPU_FACTORY_CREATED.fetch_add(1, Ordering::Relaxed);
+    Some(Box::new(GpuFrameRenderer(renderer)))
+}
+
+fn register_gpu_renderer_factory() {
+    GPU_FACTORY_ATTEMPTS.store(0, Ordering::Relaxed);
+    GPU_FACTORY_CREATED.store(0, Ordering::Relaxed);
+    register_frame_renderer(gpu_renderer_factory);
+}
+
+fn renderer_factory_unavailable(test_name: &str) -> bool {
+    let attempts = GPU_FACTORY_ATTEMPTS.load(Ordering::Relaxed);
+    assert!(attempts > 0, "the GPU export pipeline did not request a renderer during {test_name}");
+    if GPU_FACTORY_CREATED.load(Ordering::Relaxed) == 0 {
+        eprintln!("SKIPPED ({test_name}): no renderer could initialize for the pool");
+        return true;
+    }
+    false
+}
+
 #[test]
 fn gpu_export_matches_cpu_and_counts() {
+    let _serial = EXPORT_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(_) = filmcraft_gpu::ExportRenderer::new() else {
         eprintln!("SKIPPED (gpu export pipeline): no adapter");
         return;
@@ -119,7 +166,8 @@ fn gpu_export_matches_cpu_and_counts() {
     export_png("off-auto", GpuRendering::Auto, (320, 180));
     assert_eq!(png("off-cpu", "img000.png"), png("off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
 
-    register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present")))));
+    let before_frames = filmcraft_export::gpu_render_stats().frames;
+    register_gpu_renderer_factory();
     let sizes = [(320u32, 180u32), (17, 13), (1, 1), (257, 129)];
     for (i, size) in sizes.into_iter().enumerate() {
         export_png("cpu", GpuRendering::Off, size);
@@ -129,6 +177,39 @@ fn gpu_export_matches_cpu_and_counts() {
         }
         let _ = i;
     }
+    if renderer_factory_unavailable("gpu export pipeline") {
+        return;
+    }
     let GpuRenderStats { frames, .. } = filmcraft_export::gpu_render_stats();
-    assert!(frames >= 8, "gpu frames counted across the parity exports: {frames}");
+    let rendered = frames.saturating_sub(before_frames);
+    assert!(rendered >= 8, "gpu frames counted across the parity exports: {rendered}");
+}
+
+#[test]
+fn opaque_sdr_video_export_uses_direct_rgba8_frames() {
+    let _serial = EXPORT_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(_) = filmcraft_gpu::ExportRenderer::new() else {
+        eprintln!("SKIPPED (gpu direct export): no adapter");
+        return;
+    };
+    register_gpu_renderer_factory();
+    let (p, seq, m) = project(320, 180);
+    let path = std::env::temp_dir().join("fc-gpu-export-direct-rgba8.mov");
+    let mut s = ExportSettings {
+        format: Format::Mjpeg,
+        path: path.to_string_lossy().into_owned(),
+        include_audio: false,
+        hardware_encoding: HardwareEncoding::Off,
+        gpu_rendering: GpuRendering::Auto,
+        ..Default::default()
+    };
+    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
+    let before = filmcraft_gpu::export_renderer::timing::rgba8_frames();
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    if renderer_factory_unavailable("gpu direct export") {
+        return;
+    }
+    let after = filmcraft_gpu::export_renderer::timing::rgba8_frames();
+    assert!(after >= before.saturating_add(2), "both opaque SDR frames should use direct RGBA8: {before} → {after}");
+    assert!(std::fs::metadata(&path).is_ok_and(|m| m.len() > 0), "M-JPEG export file should be written");
 }

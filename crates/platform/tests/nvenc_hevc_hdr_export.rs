@@ -345,11 +345,15 @@ fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     }
     packets += ten.flush().unwrap().len();
     assert_eq!(packets, 4);
-    // the sample entry of the HDR encoder carries colr + mdcv + clli, the SDR one nothing HDR
+    // HDR carries colr + mdcv + clli. SDR still carries its colour description, but no HDR boxes.
     let e = ten.sample_entry();
     let v = e.video.as_ref().unwrap();
     assert!(v.color.is_some() && v.mastering_display.is_some() && v.content_light == Some((0, 0)));
-    assert!(eight.sample_entry().video.as_ref().unwrap().color.is_none());
+    let sdr = eight.sample_entry();
+    let sdr = sdr.video.as_ref().unwrap();
+    assert!(sdr.color.is_some());
+    assert!(sdr.mastering_display.is_none());
+    assert!(sdr.content_light.is_none());
     // HLG: colr only
     let Some(Ok(hlg)) = factory(Format::Hevc, w, h, rate, &ExportSettings { signal: ColorSignal::HLG, ..sdr_settings.clone() }) else {
         panic!("an HLG encoder")
