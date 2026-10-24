@@ -4,7 +4,7 @@
 //! Automation ids: `recovery.item.<n>`, `recovery.recover`, `recovery.discard`, `recovery.later`;
 //! `revert.yes`, `revert.no`.
 
-use egui::{Color32, CornerRadius, Frame, Margin, RichText, Stroke, Ui, vec2};
+use egui::{Frame, Margin, RichText, Ui};
 use serde_json::json;
 
 use crate::theme::Tokens;
@@ -17,17 +17,11 @@ pub struct FileDialogState {
 }
 
 fn modal_frame(t: &Tokens) -> Frame {
-    Frame::new().fill(t.panel_bg).stroke(Stroke::new(1.0, t.separator)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(0))
+    crate::dialog_style::frame(t)
 }
 
 fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
-    let t = app.tokens;
-    let text = RichText::new(label).size(13.0).color(if primary { Color32::WHITE } else { t.text });
-    let b = egui::Button::new(text)
-        .min_size(vec2(88.0, 30.0))
-        .corner_radius(CornerRadius::same(15))
-        .fill(if primary { t.accent } else { Color32::TRANSPARENT })
-        .stroke(if primary { Stroke::NONE } else { Stroke::new(1.5, t.text_faint) });
+    let b = if primary { crate::dialog_style::primary(&app.tokens, label) } else { crate::dialog_style::secondary(&app.tokens, label) };
     let r = ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand);
     app.auto.add(id, r.rect, label);
     r.clicked()
@@ -44,8 +38,8 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut open = true;
     egui::Modal::new(egui::Id::new("recovery-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(520.0);
+        crate::dialog_style::header(ui, &t, tl!("Recover Unsaved Changes"), 520.0);
         Frame::new().inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
-            ui.label(RichText::new(tl!("Recover Unsaved Changes")).size(18.0).strong().color(t.text));
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
@@ -110,21 +104,21 @@ pub fn show_revert(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut open = true;
     let r = egui::Modal::new(egui::Id::new("revert-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(460.0);
+        crate::dialog_style::header(ui, &t, tl!("Revert"), 460.0);
         Frame::new().inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
-            ui.label(RichText::new(tl!("Revert")).size(18.0).strong().color(t.text));
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
             ui.label(RichText::new(tlf!("Are you sure you want to discard your changes to '{file}'?", file)).size(13.5).color(t.text));
             ui.add_space(18.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::dialog_style::actions(ui, |ui| {
+                if button(app, ui, "revert.no", tl!("No"), false) {
+                    open = false;
+                }
                 if button(app, ui, "revert.yes", tl!("Yes"), true) {
                     if let Err(e) = app.session.execute("file.revert", json!({})) {
                         app.ui.status = e.to_string();
                     }
-                    open = false;
-                }
-                if button(app, ui, "revert.no", tl!("No"), false) {
                     open = false;
                 }
             });

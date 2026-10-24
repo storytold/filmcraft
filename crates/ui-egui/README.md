@@ -100,3 +100,20 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Shared application dialogs
+
+Application dialogs use `dialog_style::Window` with the current `Tokens`, or the shared
+frame/header helpers for custom and blocking containers. Headers follow `header_bg` and
+`text_dim`; bodies and secondary buttons use the active theme surfaces, and primary buttons
+follow the user's accent with a contrasting foreground. Corners remain rounded. The helper
+only paints the window's title/body frames; it never swaps Context styles, including during
+popup rendering or unwinding.
+
+Action groups are right-aligned. The explicit visual order is primary action then Cancel
+(or Save, Don't Save, Cancel), keeping the established Export Frame and Windows prompt order
+consistent across these dialogs. Recovery and Preferences preserve their separate auxiliary
+actions. Floating Project/bin panels and operating-system file pickers retain their own chrome.
+
+The modal styling PR contains UI-only changes. Earlier NVENC/i18n prerequisites are already
+upstream and are not part of this contribution's diff. No importer or private media is included.

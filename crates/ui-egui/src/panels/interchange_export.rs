@@ -7,7 +7,6 @@
 //! `<p>.audioFormat.<wav|aiff|mxf>` (mxf: AAF only), `<p>.sampleRate.<rate>`, `<p>.bitDepth.<16|24>`, `<p>.trimAudio`,
 //! `<p>.handles` (frames), `<p>.renderAudioEffects`, `<p>.title` (OMF), `<p>.ok`, `<p>.cancel`.
 
-use crate::widgets::CenteredDialog as _;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -71,7 +70,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let title = if d.omf { "OMF Export Settings" } else { "AAF Export Settings" };
     let shown = if d.omf { tl!("OMF Export Settings") } else { tl!("AAF Export Settings") };
-    egui::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
+    crate::dialog_style::Window::new(&app.tokens, shown).id(egui::Id::new(title)).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         ui.set_min_width(380.0);
         egui::Grid::new("interchange-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             if d.omf {
@@ -155,13 +154,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.end_row();
         });
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            let c = ui.button(tl!("Cancel"));
+        crate::dialog_style::actions(ui, |ui| {
+            let c = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
             elems.push((format!("{p}.cancel"), c.rect, "Cancel".into()));
             if c.clicked() {
                 close = true;
             }
-            let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+            let o = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
             elems.push((format!("{p}.ok"), o.rect, "OK".into()));
             if o.clicked() {
                 apply = true;

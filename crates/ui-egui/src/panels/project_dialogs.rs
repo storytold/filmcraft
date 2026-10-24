@@ -3,7 +3,6 @@
 //! and Save Arrangement…. Drafts live in `UiState::project_panel.dialog` (serde, so agents fill
 //! them with `ui.set`); OK runs one engine command.
 
-use crate::widgets::CenteredDialog as _;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -25,7 +24,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ProjectDialog::FreeformOptions { .. } => tl!("Freeform View Options"),
         ProjectDialog::SaveArrangement { .. } => tl!("Save Arrangement"),
     };
-    let mut win = egui::Window::new(title).id(egui::Id::new("project-dialog")).collapsible(false).resizable(false).centered(ctx);
+    let mut win = crate::dialog_style::Window::new(&app.tokens, title).id(egui::Id::new("project-dialog")).collapsible(false).resizable(false).centered(ctx);
     // a fixed size keeps the two-list dialog from shifting while its lists settle
     if matches!(d, ProjectDialog::MetadataDisplay { .. }) {
         win = win.fixed_size(egui::vec2(480.0, 470.0));
@@ -107,13 +106,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 fn ok_cancel(app: &mut FilmcraftApp, ui: &mut egui::Ui, close: &mut bool) -> bool {
     ui.separator();
     let mut ok = false;
-    ui.horizontal(|ui| {
-        let r = ui.button(tl!("Cancel"));
+    crate::dialog_style::actions(ui, |ui| {
+        let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
         push(app, "projectDialog.cancel", &r, "Cancel");
         if r.clicked() {
             *close = true;
         }
-        let r = ui.button(tl!("OK"));
+        let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
         push(app, "projectDialog.ok", &r, "OK");
         ok = r.clicked();
     });

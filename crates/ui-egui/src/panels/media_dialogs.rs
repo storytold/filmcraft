@@ -155,12 +155,11 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut keep = true;
     let mut action: Option<&str> = None;
-    let accent = app.tokens.accent;
     let sel_path = d.candidate.and_then(|c| d.candidates.get(c)).map(|c| c.0.clone());
     let preview = sel_path.as_deref().and_then(|p| preview_texture(app, ctx, p));
     let rows_max_h = (ctx.content_rect().height() * 0.3).clamp(90.0, 320.0);
     let width = (ctx.content_rect().width() - 40.0).clamp(1.0, 760.0);
-    egui::Window::new(tl!("Link Media"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Link Media"))
         .id(egui::Id::new("Link Media"))
         .collapsible(false)
         .resizable(false)
@@ -286,7 +285,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         action = Some(id);
                     }
                 }
-                let r = ui.add_enabled(d.candidate.is_some(), egui::Button::new(RichText::new(tl!("Link")).color(Color32::WHITE)).fill(accent));
+                let r = ui.add_enabled(d.candidate.is_some(), crate::dialog_style::primary(&app.tokens, tl!("Link")));
                 push(&mut elems, "linkMedia.link", &r, "Link");
                 if r.clicked() {
                     action = Some("link");
@@ -370,7 +369,7 @@ fn make_offline(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut keep = true;
     let mut ok = false;
     let n = app.session.state.project_selection.len();
-    egui::Window::new(tl!("Make Offline"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Make Offline"))
         .id(egui::Id::new("Make Offline"))
         .collapsible(false)
         .resizable(false)
@@ -388,11 +387,11 @@ fn make_offline(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if r.clicked() {
                 delete = true;
             }
-            ui.horizontal(|ui| {
-                let r = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                 push(&mut elems, "makeOffline.cancel", &r, "Cancel");
                 keep &= !r.clicked();
-                let r = ui.button(tl!("OK"));
+                let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
                 push(&mut elems, "makeOffline.ok", &r, "OK");
                 ok = r.clicked();
             });
@@ -415,7 +414,7 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut keep = true;
     let mut ok = false;
     let mut browse = false;
-    egui::Window::new(tl!("Create Proxies"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Create Proxies"))
         .id(egui::Id::new("Create Proxies"))
         .collapsible(false)
         .resizable(false)
@@ -443,11 +442,11 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 browse = r.clicked();
             });
             ui.label(RichText::new(tl!("Proxies are made in the background and attached when done. Export always uses full-resolution media.")).weak());
-            ui.horizontal(|ui| {
-                let r = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                 push(&mut elems, "proxies.cancel", &r, "Cancel");
                 keep &= !r.clicked();
-                let r = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(app.tokens.accent));
+                let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
                 push(&mut elems, "proxies.ok", &r, "OK");
                 ok = r.clicked();
             });
@@ -495,7 +494,7 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut keep = true;
     let (mut ok, mut calc, mut browse) = (false, false, false);
     let seqs: Vec<(u64, String)> = app.session.project.sequences().map(|i| (i.id.0, i.name.clone())).collect();
-    egui::Window::new(tl!("Project Manager"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Project Manager"))
         .id(egui::Id::new("Project Manager"))
         .collapsible(false)
         .resizable(false)
@@ -575,14 +574,11 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if !d.message.is_empty() {
                 ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
             }
-            ui.horizontal(|ui| {
-                let r = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                 push(&mut elems, "pm.cancel", &r, "Cancel");
                 keep &= !r.clicked();
-                let r = ui.add_enabled(
-                    !d.destination.is_empty() && !d.sequences.is_empty(),
-                    egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(app.tokens.accent),
-                );
+                let r = ui.add_enabled(!d.destination.is_empty() && !d.sequences.is_empty(), crate::dialog_style::primary(&app.tokens, tl!("OK")));
                 push(&mut elems, "pm.ok", &r, "OK");
                 ok = r.clicked();
             });

@@ -811,7 +811,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         GuideDialog::SaveTemplate { .. } => ("Save Guides as Template", tl!("Save Guides as Template")),
         GuideDialog::Manage { .. } => ("Manage Guides", tl!("Manage Guides")),
     };
-    egui::Window::new(shown)
+    crate::dialog_style::Window::new(&app.tokens, shown)
         .id(egui::Id::new(title))
         .collapsible(false)
         .resizable(false)
@@ -838,11 +838,11 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     let r = ui.add(crate::widgets::number_drag(position).speed(1.0).suffix(" px"));
                     push(&mut elems, "guides.add.position", &r, "Position");
                 });
-                ui.horizontal(|ui| {
-                    let r = ui.button(tl!("Cancel"));
+                crate::dialog_style::actions(ui, |ui| {
+                    let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                     push(&mut elems, "guides.add.cancel", &r, "Cancel");
                     close |= r.clicked();
-                    let r = ui.button(tl!("OK"));
+                    let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
                     push(&mut elems, "guides.add.ok", &r, "OK");
                     if r.clicked() {
                         act = Some((
@@ -859,11 +859,11 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     let r = ui.text_edit_singleline(name);
                     push(&mut elems, "guides.save.name", &r, "Name");
                 });
-                ui.horizontal(|ui| {
-                    let r = ui.button(tl!("Cancel"));
+                crate::dialog_style::actions(ui, |ui| {
+                    let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                     push(&mut elems, "guides.save.cancel", &r, "Cancel");
                     close |= r.clicked();
-                    let r = ui.button(tl!("OK"));
+                    let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
                     push(&mut elems, "guides.save.ok", &r, "OK");
                     if r.clicked() {
                         act = Some(("view.guideTemplates.save".into(), json!({"monitor": m, "name": name.clone()})));
@@ -885,7 +885,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.separator();
                 ui.horizontal(|ui| {
                     let sel = selected.and_then(|i| templates.get(i)).cloned();
-                    let r = ui.add_enabled(sel.is_some(), egui::Button::new(tl!("Apply")));
+                    let r = ui.add_enabled(sel.is_some(), crate::dialog_style::primary(&app.tokens, tl!("Apply")));
                     push(&mut elems, "guides.manage.apply", &r, "Apply");
                     if r.clicked()
                         && let Some(n) = &sel

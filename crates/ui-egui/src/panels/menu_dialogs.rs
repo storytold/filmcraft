@@ -16,7 +16,6 @@
 //! `find.row.<n>.column|operator|text`; Project Settings tabs `projectSettings.tab.<general|scratchDisks|ingest>`,
 //! scratch rows `projectSettings.scratch.<key>` / `.browse` / `.same`.
 
-use crate::widgets::CenteredDialog as _;
 use egui::{Align2, RichText};
 use filmcraft_project::{FindOp, find::COLUMNS};
 use serde::{Deserialize, Serialize};
@@ -464,7 +463,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("menu-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
+    crate::dialog_style::Window::new(&app.tokens, title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
             "edit.find" => {
@@ -813,15 +812,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
         }
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        crate::dialog_style::actions(ui, |ui| {
             if !info_only {
-                let r = ui.button(if d.command == "edit.find" { tl!("Done") } else { tl!("Cancel") });
+                let r = ui.add(crate::dialog_style::secondary(&app.tokens, if d.command == "edit.find" { tl!("Done") } else { tl!("Cancel") }));
                 push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
                 if r.clicked() {
                     action = Some("cancel");
                 }
             }
-            let r = ui.button(ok_text);
+            let r = ui.add(crate::dialog_style::primary(&app.tokens, ok_text));
             push(&mut elems, format!("{pre}.ok"), &r, ok_text);
             if r.clicked() {
                 action = Some(if info_only { "cancel" } else { "ok" });

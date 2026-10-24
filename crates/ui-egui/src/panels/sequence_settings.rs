@@ -473,7 +473,6 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         (q.settings.clone(), name)
     };
     let audio_samples = app.session.project.settings.audio_display_samples;
-    let accent = app.tokens.accent;
     let mut d = app.ui.sequence_settings.clone();
     crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("sequence-settings-before-drag"), &mut d);
     let mut keep = true;
@@ -486,7 +485,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     } else {
         &[("general", "General"), ("color", "Color Management"), ("vr", "VR Properties")]
     };
-    egui::Window::new(title)
+    crate::dialog_style::Window::new(&app.tokens, title)
         .id(egui::Id::new("Sequence Settings"))
         .collapsible(false)
         .resizable(false)
@@ -512,16 +511,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 _ => general(ui, &mut d, &cur, audio_samples, &mut elems),
             });
             ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(accent));
-                elems.push(("sequenceSettings.ok".into(), o.rect, "OK".into()));
-                if o.clicked() {
-                    apply = true;
-                }
-                let c = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let c = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                 elems.push(("sequenceSettings.cancel".into(), c.rect, "Cancel".into()));
                 if c.clicked() {
                     keep = false;
+                }
+                let o = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
+                elems.push(("sequenceSettings.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
                 }
             });
         });

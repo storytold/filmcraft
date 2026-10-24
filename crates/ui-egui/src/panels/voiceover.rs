@@ -11,7 +11,6 @@
 //! `voiceover.ok`, `voiceover.cancel`; the countdown overlay is `voiceover.countdown.overlay`.
 //! UI commands: `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`.
 
-use crate::widgets::CenteredDialog as _;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use filmcraft_engine::voiceover::VoiceOverPrefs;
 use filmcraft_project::TrackId;
@@ -237,10 +236,9 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut close = false;
     let mut apply = false;
     let mut discard = false;
-    let accent = app.tokens.accent;
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new("voiceover-settings");
-    egui::Window::new(tl!("Voice-Over Record Settings")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
+    crate::dialog_style::Window::new(&app.tokens, tl!("Voice-Over Record Settings")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         egui::Grid::new("voiceover-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label(tl!("Name:"));
             let r = ui.add(egui::TextEdit::singleline(&mut d.prefs.name).desired_width(220.0));
@@ -312,16 +310,18 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     discard = true;
                 }
             }
-            let c = ui.button(tl!("Cancel"));
-            elems.push(("voiceover.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                close = true;
-            }
-            let o = ui.add(egui::Button::new(RichText::new(tl!("OK")).color(Color32::WHITE)).fill(accent));
-            elems.push(("voiceover.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
+            crate::dialog_style::actions(ui, |ui| {
+                let c = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
+                elems.push(("voiceover.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    close = true;
+                }
+                let o = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
+                elems.push(("voiceover.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
+            });
         });
     });
     for (id, r, l) in elems {

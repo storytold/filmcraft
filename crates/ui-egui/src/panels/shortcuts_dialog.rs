@@ -149,7 +149,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let size = vec2((screen.width() - 40.0).clamp(760.0, 1320.0), (screen.height() - 60.0).clamp(560.0, 900.0));
     let mut close: Option<bool> = None; // Some(true) = OK, Some(false) = Cancel
     let mut open = true;
-    egui::Window::new(tl!("Keyboard Shortcuts"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Keyboard Shortcuts"))
         .id(egui::Id::new("Keyboard Shortcuts"))
         .id(egui::Id::new("keyboard-shortcuts"))
         .open(&mut open)
@@ -784,17 +784,15 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool>
             app.auto.add("shortcuts.message", r.rect, &msg);
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let ok = ui.add(
-                egui::Button::new(RichText::new(tl!("OK")).size(13.0).color(Color32::WHITE)).fill(t.accent).min_size(vec2(72.0, 28.0)).corner_radius(14.0),
-            );
-            app.auto.add("shortcuts.ok", ok.rect, "OK");
-            if ok.clicked() {
-                close = Some(true);
-            }
-            let cancel = ui.add(egui::Button::new(RichText::new(tl!("Cancel")).size(13.0)).min_size(vec2(72.0, 28.0)).corner_radius(14.0));
+            let cancel = ui.add(crate::dialog_style::secondary(t, tl!("Cancel")));
             app.auto.add("shortcuts.cancel", cancel.rect, "Cancel");
             if cancel.clicked() {
                 close = Some(false);
+            }
+            let ok = ui.add(crate::dialog_style::primary(t, tl!("OK")));
+            app.auto.add("shortcuts.ok", ok.rect, "OK");
+            if ok.clicked() {
+                close = Some(true);
             }
             ui.add_space(16.0);
             let sel = app.shortcut_editor.selected.clone();

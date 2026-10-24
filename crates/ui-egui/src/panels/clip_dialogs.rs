@@ -30,7 +30,6 @@
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
 //!   `quit.save`, `quit.dontSave`, `quit.cancel`.
 
-use crate::widgets::CenteredDialog as _;
 use egui::RichText;
 use filmcraft_project::{AudioChannelMap, AudioChannels, ItemKind, TrackKind};
 use serde_json::{Value, json};
@@ -312,7 +311,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some();
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("clip-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
+    crate::dialog_style::Window::new(&app.tokens, title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
@@ -542,18 +541,18 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             "file.closeProject" | "app.quit" => {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let r = ui.button(tl!("Cancel"));
+                crate::dialog_style::actions(ui, |ui| {
+                    let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                     push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
                     if r.clicked() {
                         action = Some("cancel");
                     }
-                    let r = ui.button(tl!("Don't Save"));
+                    let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Don't Save")));
                     push(&mut elems, format!("{pre}.dontSave"), &r, "Don't Save");
                     if r.clicked() {
                         action = Some("dontSave");
                     }
-                    let r = ui.add_enabled(can_save, egui::Button::new(tl!("Save")));
+                    let r = ui.add_enabled(can_save, crate::dialog_style::primary(&app.tokens, tl!("Save")));
                     push(&mut elems, format!("{pre}.save"), &r, "Save");
                     if r.clicked() {
                         action = Some("save");
@@ -567,13 +566,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
         }
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let r = ui.button(tl!("Cancel"));
+        crate::dialog_style::actions(ui, |ui| {
+            let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
             push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
             if r.clicked() {
                 action = Some("cancel");
             }
-            let r = ui.button(tl!("OK"));
+            let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
             push(&mut elems, format!("{pre}.ok"), &r, "OK");
             if r.clicked() {
                 action = Some("ok");

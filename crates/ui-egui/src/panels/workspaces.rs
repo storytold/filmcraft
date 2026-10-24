@@ -180,7 +180,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         WorkspaceDialog::SaveAs { .. } => ("New Workspace", tl!("New Workspace")),
         WorkspaceDialog::Edit { .. } => ("Edit Workspaces", tl!("Edit Workspaces")),
     };
-    egui::Window::new(shown)
+    crate::dialog_style::Window::new(&app.tokens, shown)
         .id(egui::Id::new(title))
         .collapsible(false)
         .resizable(false)
@@ -193,11 +193,11 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     let r = ui.text_edit_singleline(name);
                     push("workspaces.save.name", &r, "Name");
                 });
-                ui.horizontal(|ui| {
-                    let r = ui.button(tl!("Cancel"));
+                crate::dialog_style::actions(ui, |ui| {
+                    let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                     push("workspaces.save.cancel", &r, "Cancel");
                     close |= r.clicked();
-                    let r = ui.button(tl!("OK"));
+                    let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
                     push("workspaces.save.ok", &r, "OK");
                     if r.clicked() {
                         act = Some(("window.workspace.saveAs", json!({"name": name.clone()})));

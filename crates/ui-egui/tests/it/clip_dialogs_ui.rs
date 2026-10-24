@@ -466,3 +466,45 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+#[test]
+fn save_project_actions_are_right_aligned_and_cancel_preserves_work() {
+    let mut d = Driver::new();
+    // A saved project path enables Save; Cancel must never touch the filesystem.
+    d.app().session.path = Some("dialog.fcproj".into());
+    d.exec("file.newBin", json!({"name":"Unsaved change"}));
+    let before = d.app().session.project.to_json();
+    let style = d.harness.ctx.global_style();
+    d.menu("file.closeProject");
+    let elements = d.ok("ui.elements", json!({"prefix":"closeProject."}));
+    let rect = |id: &str| {
+        let e = elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap();
+        let r = &e["rect"];
+        egui::Rect::from_min_size(
+            egui::pos2(r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32),
+            egui::vec2(r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32),
+        )
+    };
+    let (save, discard, cancel) = (rect("closeProject.save"), rect("closeProject.dontSave"), rect("closeProject.cancel"));
+    assert!(save.right() <= discard.left() && discard.right() <= cancel.left());
+    let window = d.harness.ctx.memory(|m| m.area_rect(egui::Id::new(("clip-dialog", "closeProject")))).unwrap();
+    assert!((window.right() - cancel.right()).abs() < 20.0, "action group stays at the right edge: {window:?} {cancel:?}");
+    assert_eq!(d.harness.ctx.global_style().visuals.override_text_color, style.visuals.override_text_color);
+    d.click("closeProject.cancel");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.is_dirty());
+    assert_eq!(d.app().session.project.to_json(), before);
+}
+
+/// Shared dialog actions keep the dismissive action at the same edge across containers.
+#[test]
+fn common_dialog_actions_put_cancel_to_the_right_of_ok() {
+    let mut d = Driver::new();
+    for (command, prefix) in [("app.settings.general", "settings"), ("sequence.settings", "sequenceSettings")] {
+        d.menu(command);
+        let elements = d.ok("ui.elements", json!({"prefix": format!("{prefix}.")}));
+        let left = |suffix: &str| elements.as_array().unwrap().iter().find(|e| e["id"] == format!("{prefix}.{suffix}")).unwrap()["rect"][0].as_f64().unwrap();
+        assert!(left("ok") < left("cancel"), "{command} reverses the common action order");
+        d.click(&format!("{prefix}.cancel"));
+    }
+}

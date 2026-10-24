@@ -12,7 +12,7 @@
 //! `settings.page` (the category's page), `settings.help`, `settings.reset`, `settings.cancel`,
 //! `settings.ok`.
 
-use egui::{Align, Align2, Color32, CornerRadius, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, Ui, vec2};
+use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, Ui, vec2};
 use filmcraft_engine::settings::{self, DeviceList, Field, Kind, Row};
 use filmcraft_project::Label;
 use serde::{Deserialize, Serialize};
@@ -365,17 +365,11 @@ fn diff(prefix: &str, old: &Value, new: &Value, out: &mut Map<String, Value>) {
 }
 
 fn modal_frame(t: &Tokens) -> Frame {
-    Frame::new().fill(t.panel_bg).stroke(Stroke::new(1.0, t.separator)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(0))
+    crate::dialog_style::frame(t)
 }
 
 fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
-    let t = app.tokens;
-    let text = RichText::new(label).size(13.0).color(if primary { Color32::WHITE } else { t.text });
-    let b = egui::Button::new(text)
-        .min_size(vec2(82.0, 30.0))
-        .corner_radius(CornerRadius::same(15))
-        .fill(if primary { t.accent } else { Color32::TRANSPARENT })
-        .stroke(if primary { Stroke::NONE } else { Stroke::new(1.5, t.text_faint) });
+    let b = if primary { crate::dialog_style::primary(&app.tokens, label) } else { crate::dialog_style::secondary(&app.tokens, label) };
     let r = ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand);
     app.auto.add(id, r.rect, label);
     r.clicked()
@@ -852,9 +846,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let resp = egui::Modal::new(egui::Id::new("settings-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(W);
         // title bar (Premiere keeps "Preferences" as the window title)
-        let (bar, _) = ui.allocate_exact_size(vec2(W, 30.0), Sense::hover());
-        ui.painter().rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, t.header_bg);
-        ui.painter().text(bar.center(), Align2::CENTER_CENTER, tl!("Preferences"), Tokens::semibold(13.0), t.text_dim);
+        let bar = crate::dialog_style::header(ui, &t, tl!("Preferences"), W);
         app.auto.add("settings.window", bar, "Preferences");
         ui.add_space(14.0);
         ui.horizontal_top(|ui| {
@@ -918,11 +910,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(20.0);
-                if button(app, ui, "settings.ok", tl!("OK"), true) {
-                    apply = true;
-                }
                 if button(app, ui, "settings.cancel", tl!("Cancel"), false) {
                     close = true;
+                }
+                if button(app, ui, "settings.ok", tl!("OK"), true) {
+                    apply = true;
                 }
             });
         });
