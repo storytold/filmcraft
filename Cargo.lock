@@ -2211,7 +2211,11 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "raw-window-handle",
+ "wayland-backend",
+ "wayland-client",
  "windows 0.62.2",
+ "x11rb",
 ]
 
 [[package]]

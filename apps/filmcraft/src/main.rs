@@ -31,6 +31,8 @@ mod audio_in;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
+#[cfg(target_os = "linux")]
+mod display;
 mod file_filters;
 mod graphics;
 mod logging;
@@ -180,7 +182,7 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
             .with_icon(app_icon())
             // Wayland matches the window to `packaging/linux/ai.storyteller.filmcraft.desktop`.
             .with_app_id(APP_ID),
-        event_loop_builder: agent_event_loop(agent),
+        event_loop_builder: event_loop_hook(agent),
         ..Default::default()
     }
 }
@@ -313,6 +315,18 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
+        // Linux file drags from a file manager. X11 reports no pointer during one, so ask the X
+        // server where it is; winit 0.30 reports no Wayland drops at all, so receive them ourselves.
+        #[cfg(target_os = "linux")]
+        if *display::current() == display::Choice::X11 {
+            app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::x11_cursor_screen_position));
+        } else {
+            let ctx = cc.egui_ctx.clone();
+            match filmcraft_platform::wayland_dnd::WaylandDrops::start(cc, Box::new(move || ctx.request_repaint())) {
+                Ok(drops) => app.hooks.os_file_drags = Some(Box::new(move || drops.poll().into_iter().map(os_file_drag).collect())),
+                Err(e) => log::info!("Wayland file drops unavailable: {e}"),
+            }
+        }
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
         // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
         // compositor reports no theme to winit (no polling: see appearance.rs).
@@ -420,14 +434,28 @@ fn register_hardware_decoders() -> filmcraft_platform::Availability {
     hardware
 }
 
+/// A Wayland file drag as the UI takes it.
+#[cfg(target_os = "linux")]
+fn os_file_drag(event: filmcraft_platform::wayland_dnd::DragEvent) -> filmcraft_ui_egui::OsFileDrag {
+    use filmcraft_platform::wayland_dnd::DragEvent;
+    use filmcraft_ui_egui::OsFileDrag;
+    let at = |x: f64, y: f64| egui::pos2(x as f32, y as f32);
+    match event {
+        DragEvent::Hover { x, y } => OsFileDrag::Hover(at(x, y)),
+        DragEvent::Leave => OsFileDrag::Leave,
+        DragEvent::Drop { x, y, paths } => OsFileDrag::Drop(at(x, y), paths),
+    }
+}
+
 /// Local UTC offset at a unix time (auto-save file names and recovery times use local time).
 fn local_offset(unix: i64) -> i32 {
     chrono::Local.timestamp_opt(unix, 0).single().map(|d| d.offset().local_minus_utc()).unwrap_or(0)
 }
 
-/// Driven by an agent (`--control`): don't activate the app on launch, so the user's keyboard
-/// focus stays where it is (macOS; winit activates ignoring other apps by default).
-fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
+/// Event-loop options. Driven by an agent (`--control`): don't activate the app on launch, so the
+/// user's keyboard focus stays where it is (macOS; winit activates ignoring other apps by default).
+/// On Linux, start on X11 when `display` says so.
+fn event_loop_hook(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     #[cfg(target_os = "macos")]
     if agent {
         return Some(Box::new(|b| {
@@ -436,6 +464,21 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
         }));
     }
     let _ = agent;
+    #[cfg(target_os = "linux")]
+    match display::current() {
+        display::Choice::X11 => {
+            return Some(Box::new(|b| {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                b.with_x11();
+            }));
+        }
+        display::Choice::Default => {}
+        display::Choice::None => {
+            // winit's own error says little to someone who started FilmCraft from a console.
+            log::error!("no display: DISPLAY and WAYLAND_DISPLAY are not set");
+            eprintln!("FilmCraft needs a graphical session: neither DISPLAY nor WAYLAND_DISPLAY is set.");
+        }
+    }
     None
 }
 

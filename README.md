@@ -385,6 +385,11 @@ The tarball installer places FilmCraft, its command-line tool and desktop integr
 `~/.local`, without administrator permissions. For all users, run
 `sudo ./install.sh --prefix /usr/local` instead. Running the installer again updates the installation.
 
+**Wayland:** FilmCraft runs as a native Wayland client, and files dragged in from a file manager
+can be dropped into the Project panel (into the bin under the pointer) and onto the Timeline, also
+in the Flatpak. Drops onto detached floating panel windows are not received on Wayland yet. Set
+`FILMCRAFT_X11=1` to run through Xwayland instead.
+
 **Gentoo (community-maintained):** the [::snakebyte overlay](https://github.com/switch87/snakebyte-overlay)
 packages the Linux release as `media-video/filmcraft-bin`. It is maintained by the community, not by the
 FilmCraft team, so report packaging problems to the overlay:

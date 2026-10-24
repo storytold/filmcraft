@@ -23,6 +23,10 @@
 //! Pictures are the software decoder's: same planes (bit-exact on the parity fixtures), colour,
 //! pixel aspect, pts and presentation order, so the two are interchangeable.
 //!
+//! It also makes the window-system calls winit does not provide: files dropped on the window on
+//! Wayland ([`wayland_dnd`]) and the cursor during a Windows drop ([`cursor`])
+//! (docs/adr/0002-platform-window-system.md).
+//!
 //! This is the one crate allowed to use `unsafe` (OS FFI), and only in its FFI modules
 //! (docs/adr/0001-platform-ffi.md).
 
@@ -44,6 +48,9 @@ pub mod media_foundation;
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 pub mod nvenc;
+// Used by `wayland_dnd` on Linux; compiled everywhere so its tests run on every system.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod uri_list;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod vaapi;
 #[cfg(target_os = "macos")]
@@ -52,6 +59,8 @@ pub mod videotoolbox;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox_encode;
+#[cfg(target_os = "linux")]
+pub mod wayland_dnd;
 
 pub use hybrid::HybridDecoder;
 

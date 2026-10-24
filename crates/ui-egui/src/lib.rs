@@ -122,12 +122,27 @@ pub struct AudioDevices {
     pub output_channels: u16,
 }
 
+/// A file drag from the OS that the host receives itself, where eframe reports none (Wayland).
+/// Positions are in the window's logical pixels (physical pixels / the window's scale factor).
+#[derive(Clone, Debug, PartialEq)]
+pub enum OsFileDrag {
+    /// Files are being dragged over the window, now at this position.
+    Hover(egui::Pos2),
+    /// The drag left the window or was cancelled.
+    Leave,
+    /// These files were dropped at this position.
+    Drop(egui::Pos2, Vec<std::path::PathBuf>),
+}
+
 /// Host hooks for native file dialogs etc.
 #[derive(Default)]
 pub struct HostHooks {
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
     /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
     pub cursor_screen_position: Option<Box<dyn Fn() -> Option<(i32, i32)>>>,
+    /// File drags the host received since the last call, oldest first, where eframe reports none
+    /// (Wayland). They reach the app as egui's own hovered / dropped files and pointer moves.
+    pub os_file_drags: Option<Box<dyn FnMut() -> Vec<OsFileDrag>>>,
     pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
     /// Save dialog with a filter: (filter name, extensions, suggested file name) → path. The
@@ -368,6 +383,15 @@ pub struct FilmcraftApp {
     pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2)>,
     /// Files being dragged over the window from the OS (count, pointer): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2)>,
+    /// Where a drag from `hooks.os_file_drags` is over the window, in points; `None` when none is.
+    os_file_drag_at: Option<egui::Pos2>,
+    /// Where files dragged in from the OS are over the window this frame (any platform), for the
+    /// Project panel to find the bin under them.
+    os_drop_at: Option<egui::Pos2>,
+    /// Where the Project panel showed bins while files hovered (screen rect, bin, is a bin row rather
+    /// than a view's space), recorded while drawing; a drop in the next frame imports into the bin
+    /// at the drop position, so a release right after the last move still finds its bin.
+    os_drop_targets: std::cell::RefCell<Vec<(egui::Rect, u64, bool)>>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
@@ -599,6 +623,9 @@ impl FilmcraftApp {
             timeline_view_of: None,
             pending_timeline_drop: None,
             file_drag_hover: None,
+            os_file_drag_at: None,
+            os_drop_at: None,
+            os_drop_targets: std::cell::RefCell::new(Vec::new()),
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
@@ -1473,9 +1500,12 @@ impl FilmcraftApp {
     fn handle_drops(&mut self, ctx: &egui::Context) {
         // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
         let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        self.os_drop_at = if hovering > 0 { self.drop_pointer(ctx) } else { None };
+        // The bins the Project panel showed in the last frame (it draws after this).
+        let targets = self.os_drop_targets.take();
         self.file_drag_hover = if hovering > 0 && self.session.prefs.timeline.drop_import_to_timeline {
             ctx.request_repaint();
-            self.drop_pointer(ctx).map(|p| (hovering, p))
+            self.os_drop_at.map(|p| (hovering, p))
         } else {
             None
         };
@@ -1489,7 +1519,8 @@ impl FilmcraftApp {
         }
         if !paths.is_empty() {
             let pointer = self.drop_pointer(ctx);
-            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+            let bin = pointer.and_then(|p| drop_target(&targets, p)).unwrap_or(self.import_bin().0);
+            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": bin}));
             if let Ok(v) = imported
                 && let Some(pos) = pointer
                 && self.session.prefs.timeline.drop_import_to_timeline
@@ -2089,8 +2120,10 @@ fn synthesize_mac_ctrl_click(armed: &mut bool, raw_input: &mut egui::RawInput) {
 }
 
 impl eframe::App for FilmcraftApp {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.native_window_focused = Some(raw_input.focused);
+        let drags = self.hooks.os_file_drags.as_mut().map(|poll| poll()).unwrap_or_default();
+        apply_os_file_drags(&mut self.os_file_drag_at, drags, ctx.zoom_factor(), raw_input);
         #[cfg(target_os = "macos")]
         if !self.control_input_only {
             synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
@@ -2905,6 +2938,63 @@ mod voiceover_playback_tests {
     }
 }
 
+/// A file dropped through `HostHooks::os_file_drags`, as egui's integration hands one over.
+#[derive(Debug)]
+struct OsDroppedFile(std::path::PathBuf);
+
+impl egui::DroppedFile for OsDroppedFile {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn bytes_async(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + '_>> {
+        Box::pin(std::future::ready(Err("no local files on the web".to_string())))
+    }
+}
+
+/// Turns file drags the host received (`HostHooks::os_file_drags`) into the input eframe gives on
+/// other platforms: `hovered_files` every frame while a drag is over the window, `dropped_files`
+/// on a drop, and the pointer where the drag is (eframe sees no pointer during an OS drag).
+/// `at` keeps the drag's position in points between frames; `zoom` is egui's zoom factor.
+fn apply_os_file_drags(at: &mut Option<egui::Pos2>, drags: Vec<OsFileDrag>, zoom: f32, raw: &mut egui::RawInput) {
+    let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
+    let points = |p: egui::Pos2| egui::pos2(p.x / zoom, p.y / zoom);
+    for drag in drags {
+        match drag {
+            OsFileDrag::Hover(p) => {
+                *at = Some(points(p));
+                raw.events.push(egui::Event::PointerMoved(points(p)));
+            }
+            OsFileDrag::Leave => {
+                if at.take().is_some() {
+                    raw.events.push(egui::Event::PointerGone);
+                }
+            }
+            OsFileDrag::Drop(p, paths) => {
+                *at = None;
+                raw.events.push(egui::Event::PointerMoved(points(p)));
+                raw.dropped_files.extend(paths.into_iter().map(|path| std::sync::Arc::new(OsDroppedFile(path)) as egui::DroppedFileHandle));
+            }
+        }
+    }
+    if at.is_some() {
+        raw.hovered_files.push(egui::HoveredFile::default());
+    }
+}
+
+/// The bin of `targets` (see `FilmcraftApp::os_drop_targets`) at `p`: a bin row before the view
+/// around it.
+fn drop_target(targets: &[(egui::Rect, u64, bool)], p: egui::Pos2) -> Option<u64> {
+    let at = |row: bool| targets.iter().rev().find(|(r, _, is_row)| *is_row == row && r.contains(p)).map(|(_, bin, _)| *bin);
+    at(true).or_else(|| at(false))
+}
+
 /// A physical-pixel screen position as a point in the window's UI space, given the window's content origin in points.
 ///
 /// Assumes the whole virtual screen uses the window's `pixels_per_point`: with monitors of mixed
@@ -2929,6 +3019,46 @@ mod screen_px_tests {
         for ppp in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             let p = screen_px_to_ui((10, 20), ppp, egui::pos2(0.0, 0.0));
             assert!(p.x.is_finite() && p.y.is_finite());
+        }
+    }
+}
+
+#[cfg(test)]
+mod os_file_drag_tests {
+    use super::{OsFileDrag, apply_os_file_drags};
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_wayland_drag_reads_as_egui_hovered_then_dropped_files_at_the_pointer() {
+        let mut at = None;
+        let mut raw = egui::RawInput::default();
+        apply_os_file_drags(&mut at, vec![OsFileDrag::Hover(egui::pos2(300.0, 200.0))], 2.0, &mut raw);
+        assert_eq!(raw.hovered_files.len(), 1);
+        assert!(raw.events.contains(&egui::Event::PointerMoved(egui::pos2(150.0, 100.0))));
+        // Still hovering in the next frame with no new event.
+        let mut raw = egui::RawInput::default();
+        apply_os_file_drags(&mut at, vec![], 2.0, &mut raw);
+        assert_eq!(raw.hovered_files.len(), 1);
+        let mut raw = egui::RawInput::default();
+        let paths = vec![PathBuf::from("/tmp/a.mp4"), PathBuf::from("/tmp/b c.mov")];
+        apply_os_file_drags(&mut at, vec![OsFileDrag::Drop(egui::pos2(40.0, 60.0), paths.clone())], 2.0, &mut raw);
+        assert!(raw.hovered_files.is_empty());
+        assert_eq!(raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect::<Vec<_>>(), paths);
+        assert!(raw.events.contains(&egui::Event::PointerMoved(egui::pos2(20.0, 30.0))));
+        assert_eq!(at, None);
+    }
+
+    #[test]
+    fn leave_ends_the_hover_and_a_hostile_zoom_stays_finite() {
+        let mut at = None;
+        let mut raw = egui::RawInput::default();
+        apply_os_file_drags(&mut at, vec![OsFileDrag::Hover(egui::pos2(10.0, 10.0)), OsFileDrag::Leave], f32::NAN, &mut raw);
+        assert!(raw.hovered_files.is_empty());
+        assert!(raw.events.contains(&egui::Event::PointerGone));
+        for zoom in [0.0, -1.0, f32::INFINITY] {
+            let mut raw = egui::RawInput::default();
+            apply_os_file_drags(&mut at, vec![OsFileDrag::Hover(egui::pos2(10.0, 10.0))], zoom, &mut raw);
+            assert!(raw.events.iter().all(|e| !matches!(e, egui::Event::PointerMoved(p) if !p.x.is_finite() || !p.y.is_finite())));
         }
     }
 }

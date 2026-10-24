@@ -2,7 +2,10 @@
 
 OS media integration for FilmCraft (layer L5): hardware video decoding through the operating
 system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 and H.265 (HEVC)
-encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
+encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and, under
+[ADR 0002](../../docs/adr/0002-platform-window-system.md), the window-system calls winit does not
+provide: files dropped on the window on Wayland (`wayland_dnd`, with `uri_list`) and the cursor
+position during a Windows drop (`cursor`). Nothing else.
 It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
 [ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
 

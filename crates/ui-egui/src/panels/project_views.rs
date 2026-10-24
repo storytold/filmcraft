@@ -369,6 +369,7 @@ pub fn clear_params(selection: &[filmcraft_project::ItemId], selected_bin: Optio
 /// Drop project items dragged onto a bin: move them (the selection when the dragged item is in it).
 /// A dragged bin nests in it, unless that would put the bin inside itself.
 fn accept_bin_drop(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, bin: u64, actions: &mut Actions) -> bool {
+    note_os_file_drop(app, ui, r, bin, true);
     let items: Vec<u64> = if let Some(item) = crate::panels::dragged_project_item(ui) {
         let sel = &app.session.state.project_selection;
         if sel.contains(&item) { sel.iter().map(|i| i.0).collect() } else { vec![item.0] }
@@ -390,6 +391,23 @@ fn accept_bin_drop(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, bin: u64, actions
         crate::panels::clear_drag(ui);
     }
     true
+}
+
+/// While files are dragged in from the OS: record where a bin row (`row`) or a view showing `bin`
+/// is, so a drop imports into the bin under it (`FilmcraftApp::handle_drops`), and outline the row
+/// under the pointer.
+fn note_os_file_drop(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, bin: u64, row: bool) {
+    let Some(p) = app.os_drop_at else { return };
+    let visible = ui.clip_rect().intersect(r);
+    if !visible.is_positive() {
+        return;
+    }
+    if let Ok(mut targets) = app.os_drop_targets.try_borrow_mut() {
+        targets.push((visible, bin, row));
+    }
+    if row && visible.contains(p) {
+        ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, app.tokens.accent), StrokeKind::Inside);
+    }
 }
 
 /// A bin dropped on empty space moves into the bin the view shows (out of the bin it was nested in).
@@ -586,6 +604,7 @@ fn empty_space(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bg: &egui::R
     app.auto.add(&format!("{}.empty", v.prefix), r.intersect(ui.clip_rect()), "Empty area");
     marquee(app, ui, v, bg, ui.max_rect().min, actions);
     accept_view_drop(app, ui, r, v, actions);
+    note_os_file_drop(app, ui, ui.clip_rect(), v.bin.0, false);
     if bg.clicked() {
         app.ui.project_panel.selected_bin = None;
         actions.push(("project.select".into(), json!({"items": []})));

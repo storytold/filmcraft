@@ -57,6 +57,14 @@ windows = { version = "0.62", features = [
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8"
+# The cursor position during an X11 file drag (`cursor.rs`): pure-Rust X11 protocol (MIT OR
+# Apache-2.0; already in the lockfile through winit).
+x11rb = { version = "0.13", default-features = false }
+# Files dropped on the window on Wayland (`wayland_dnd.rs`, ADR 0002): the window's own libwayland
+# connection, shared as egui's clipboard does (MIT; already in the lockfile through winit).
+raw-window-handle = "0.6"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
