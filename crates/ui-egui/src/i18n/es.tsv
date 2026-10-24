@@ -3617,3 +3617,7 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	Stop Returns to Start	Detener vuelve al inicio
+	Play/Stop, Other Way	Reproducir/Detener, al otro modo
+	Stop returns the playhead to where playback started	La parada vuelve al punto donde empezó la reproducción
+	Toggle Stop Returns to Start	Alternar: la parada vuelve al inicio

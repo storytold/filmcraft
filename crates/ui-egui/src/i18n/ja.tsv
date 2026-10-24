@@ -3616,3 +3616,7 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Stop Returns to Start	停止で再生開始位置に戻る
+	Play/Stop, Other Way	再生/停止（反対の動作）
+	Stop returns the playhead to where playback started	停止すると再生を始めた位置に再生ヘッドを戻す
+	Toggle Stop Returns to Start	停止で開始位置に戻るを切り替え

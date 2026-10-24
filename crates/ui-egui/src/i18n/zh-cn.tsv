@@ -3592,3 +3592,7 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Stop Returns to Start	停止时返回起点
+	Play/Stop, Other Way	播放/停止（相反方式）
+	Stop returns the playhead to where playback started	停止时将播放头移回开始播放的位置
+	Toggle Stop Returns to Start	切换停止时返回起点

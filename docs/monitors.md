@@ -50,6 +50,15 @@ than normal forward play without sound, and backward playback stops on the first
 sequences are not yet supported and report an explanatory error. A failed audio device leaves
 the picture advancing with a status message; a decoding error stops Source.
 
+**Where a stop goes.** Play remembers the playhead it started from. Settings ▸ Playback ▸ "Stop
+returns the playhead to where playback started" (off by default; also a checkbox in the Program
+Monitor's, the Source Monitor's and the Timeline's settings menus) decides what Space, K, the
+transport button, the end of a marked range and the end of the sequence do: stay where playback got
+to, or go back to where it began. Ctrl+Shift+Space (`playback.toggleOther`) plays and stops like
+Space but stops the other way, so either is always one key away; changing speed with J / L or
+looping keeps the start position. A voice-over or multi-camera take stops where it was stopped.
+`playback.toggleStopReturn` switches the setting (no default key). Both monitors follow it.
+
 Commands: `source.playback.play`, `source.playback.stop`, `source.playback.toggle` (no parameters),
 available through the UI command registry, CLI bridge and MCP. `playback.toggle`,
 `playback.forward`, `playback.reverse`, `playback.slowForward` and `playback.slowReverse` also

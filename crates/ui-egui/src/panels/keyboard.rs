@@ -314,6 +314,8 @@ fn play_range(app: &mut FilmcraftApp, preroll: bool) -> Result<Value, String> {
     let rest_at = if preroll { None } else { Some(seq.mark_out.unwrap_or((end - fd).max(filmcraft_time::Tick::ZERO))) };
     app.session.set_playhead(start);
     app.play(1.0);
+    // a range start: a stop goes back to it, even when it cut into playback
+    app.playback.origin = app.session.playhead();
     app.playback.stop_at = Some(stop);
     app.playback.rest_at = rest_at;
     Ok(json!({"from": start.0, "to": stop.0}))

@@ -3584,3 +3584,7 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+	Stop Returns to Start	L'arrêt revient au début
+	Play/Stop, Other Way	Lecture/Arrêt, dans l'autre sens
+	Stop returns the playhead to where playback started	L'arrêt remet la tête de lecture là où la lecture a commencé
+	Toggle Stop Returns to Start	Basculer : l'arrêt revient au début
