@@ -97,6 +97,22 @@ fn ripple_delete_of_a_straight_cut_clip_is_unchanged() {
     assert_eq!((range(&s, picture3), range(&s, sound3)), ((f48, f96), (f48, f96)));
 }
 
+#[test]
+fn ripple_delete_moves_playhead_to_the_resulting_cut() {
+    let mut s = Session::default();
+    let [_, (picture2, sound2), (picture3, sound3), _] = four_clips(&mut s);
+    let rate = s.sequence_rate();
+    let (cut_point, old_playhead) = (rate.tick_of(48), rate.tick_of(72));
+
+    s.state.selection = vec![picture2, sound2];
+    s.set_playhead(old_playhead);
+    s.execute("edit.rippleDelete", json!({})).unwrap();
+
+    assert_eq!(s.playhead(), cut_point);
+    assert_eq!(range(&s, picture3).0, cut_point);
+    assert_eq!(range(&s, sound3).0, cut_point);
+}
+
 /// Two neighbours deleted together, with a split edit between them (the first one's sound runs 12
 /// frames under the second picture): one gap closes, the size of both clips.
 #[test]

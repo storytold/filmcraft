@@ -1667,7 +1667,7 @@ fn build() -> Vec<CommandSpec> {
                 return crate::captions::delete(s, &caps, true);
             }
             let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
-            s.edit_sequence("Ripple Delete", |q, _, st| {
+            let cut_point = s.edit_sequence("Ripple Delete", |q, _, st| {
                 let spans = edit::ripple_delete_items(q, &sel)?;
                 if st.ripple_sequence_markers {
                     for r in spans.iter().rev() {
@@ -1675,8 +1675,11 @@ fn build() -> Vec<CommandSpec> {
                     }
                 }
                 st.selection.clear();
-                Ok(())
+                Ok(spans.iter().map(|span| span.start).min())
             })?;
+            if let Some(cut_point) = cut_point {
+                s.set_playhead(cut_point);
+            }
             Ok(Value::Null)
         }),
         cmd!("edit.rippleDeleteHead", "Ripple Delete Head Frame", ["Edit"], None, r#"{"clips":[id]?,"clip":id?}"#, has_selection, |s, p| {
