@@ -338,7 +338,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     }
     let tex = match app.frames.get(&key) {
         Some(img) => Some(app.texture_for(&ctx, "monitor-multicam", key, &img)),
-        None => match app.frames.nearest(key.target, frame, key.size, key.revision, 6) {
+        None => match app.frames.nearest(key.target, frame, key.size, key.revision, crate::frames::LATE_GRACE) {
             Some(img) => Some(app.texture_for(&ctx, "monitor-multicam", FrameKey { frame: frame - 1, ..key }, &img)),
             None => app.texture_existing("monitor-multicam").map(|(id, _)| id),
         },

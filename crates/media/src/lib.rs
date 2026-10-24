@@ -155,10 +155,38 @@ impl FrameRequest {
     }
 }
 
+/// How a source delivers video frames, for playback scheduling ([`MediaSource::frame_delivery`]).
+///
+/// Playback asks for every frame while the source keeps up. A source that cannot (a 6K camera
+/// RAW decoder at 25 fps under a 59.94 fps sequence) gets every frame requested, delivers each
+/// one after the playhead has passed it, and shows nothing. With `independent` set, playback
+/// asks only for the frames the source can finish in time, evenly spaced and early enough.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameDelivery {
+    /// Frames decode independently of each other (camera RAW through a pipelined decoder,
+    /// intra-only codecs): leaving a frame out saves its whole cost. Off (the default) for GOP
+    /// codecs, whose decoder decodes every picture on its way to a later one, so skipping saves
+    /// nothing and playback must not try.
+    pub independent: bool,
+    /// Frames per second the source has been delivering lately, when it measures that itself (a
+    /// decoder process answering several requests at once knows its own throughput). `None`:
+    /// unknown; playback measures what it gets.
+    pub rate: Option<f64>,
+    /// `rate` was measured within the last couple of seconds. A source that measures itself at
+    /// saturation keeps its last reading through a lull, and a sparse playback plan is a lull:
+    /// playback may then try for more than a stale reading allows.
+    pub fresh: bool,
+}
+
 pub trait MediaSource: Send + Sync {
     fn info(&self) -> &MediaInfo;
     /// The frame displayed at media time `req.time`.
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>>;
+    /// How this source delivers frames (see [`FrameDelivery`]); the default says nothing, which
+    /// playback treats as a GOP decoder. Wrappers forward it to the source that decodes.
+    fn frame_delivery(&self) -> FrameDelivery {
+        FrameDelivery::default()
+    }
     /// `frames` audio frames starting at sample index `start` (at `sample_rate`, media time).
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer>;
     /// Like [`audio`](Self::audio) for audio stream `stream` (an index into

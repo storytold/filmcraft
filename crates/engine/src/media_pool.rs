@@ -14,10 +14,10 @@
 //! - Paths that came from a document (the project file, a template, an interchange file) are
 //!   opened through [`crate::doc_path`] ([`MediaPool::follow`]); a refused one renders as missing.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::generators::GeneratorSource;
@@ -54,6 +54,10 @@ pub struct MediaPool {
     use_proxies: AtomicBool,
     /// Per item: video frames that failed in a row in the monitors (see [`Self::monitor_source`]).
     failures: Arc<Mutex<HashMap<ItemId, u32>>>,
+    /// Items a thread is opening right now, and the wake-up when one finishes (see
+    /// [`Self::claim_open`]).
+    opening: Mutex<HashSet<ItemId>>,
+    opened: Condvar,
     /// Openers tried before the built-in ones (MP4/MOV + codecs register here).
     pub openers: RwLock<Vec<Opener>>,
     /// Media and proxy paths that came from a document, with that document's path (see
@@ -69,6 +73,8 @@ impl Default for MediaPool {
             proxies: RwLock::new(HashMap::new()),
             offline: Arc::new(RwLock::new(HashMap::new())),
             use_proxies: AtomicBool::new(false),
+            opening: Mutex::new(HashSet::new()),
+            opened: Condvar::new(),
             failures: Arc::default(),
             openers: RwLock::new(filmcraft_codecs::openers()),
             stored: RwLock::default(),
@@ -324,6 +330,12 @@ impl MediaPool {
         {
             return Some(s.clone());
         }
+        // One open per item at a time: the frame workers all miss together at start-up, and a
+        // source whose decoder costs a process or GPU memory must not be opened six times.
+        let _opening = match self.claim_open(item, &key) {
+            Claimed::Mine(guard) => guard,
+            Claimed::Opened(s) => return Some(s),
+        };
         let src: SharedSource = match &m.media {
             MediaRef::Generator(g) => {
                 let v = m.info.video.as_ref();
@@ -359,6 +371,30 @@ impl MediaPool {
         };
         self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src.clone()));
         Some(src)
+    }
+
+    /// Claim the opening of `item` for this thread, or wait for the thread that is opening it
+    /// and take its source. A thread that waited but found no source (the opener gave up, or
+    /// the host is still fetching the bytes) claims the open itself.
+    fn claim_open(&self, item: ItemId, key: &str) -> Claimed<'_> {
+        let cached = || {
+            let sources = self.sources.read().unwrap_or_else(|e| e.into_inner());
+            sources.get(&item).filter(|(k, _)| k.is_empty() || k == key).map(|(_, s)| s.clone())
+        };
+        let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+        // an opener may have finished between the caller's look at the cache and this lock
+        // (openers store their source before they give up the claim)
+        if let Some(s) = cached() {
+            return Claimed::Opened(s);
+        }
+        while opening.contains(&item) {
+            opening = self.opened.wait(opening).unwrap_or_else(|e| e.into_inner());
+            if let Some(s) = cached() {
+                return Claimed::Opened(s);
+            }
+        }
+        opening.insert(item);
+        Claimed::Mine(OpenGuard { pool: self, item })
     }
 
     fn set_offline(&self, item: ItemId, reason: OfflineReason, path: &str, error: &str) {
@@ -518,6 +554,9 @@ impl MediaSource for UnsupportedAsSlate {
     fn info(&self) -> &MediaInfo {
         self.inner.info()
     }
+    fn frame_delivery(&self) -> filmcraft_media::FrameDelivery {
+        self.inner.frame_delivery()
+    }
     fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
         match self.inner.video_frame(req) {
             Err(MediaError::Unsupported(why)) => {
@@ -535,6 +574,26 @@ impl MediaSource for UnsupportedAsSlate {
     }
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)
+    }
+}
+
+/// The outcome of [`MediaPool::claim_open`].
+enum Claimed<'a> {
+    /// This thread opens the item; the guard releases the claim however the open ends.
+    Mine(OpenGuard<'a>),
+    /// Another thread opened it meanwhile.
+    Opened(SharedSource),
+}
+
+struct OpenGuard<'a> {
+    pool: &'a MediaPool,
+    item: ItemId,
+}
+
+impl Drop for OpenGuard<'_> {
+    fn drop(&mut self) {
+        self.pool.opening.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.item);
+        self.pool.opened.notify_all();
     }
 }
 
@@ -557,6 +616,9 @@ struct DamagedAsSlate {
 impl MediaSource for DamagedAsSlate {
     fn info(&self) -> &MediaInfo {
         self.inner.info()
+    }
+    fn frame_delivery(&self) -> filmcraft_media::FrameDelivery {
+        self.inner.frame_delivery()
     }
     fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
         let r = self.inner.video_frame(req);
@@ -599,6 +661,10 @@ pub struct ProxySource {
 impl MediaSource for ProxySource {
     fn info(&self) -> &MediaInfo {
         &self.info
+    }
+    /// The proxy decodes the pictures, so its delivery is what playback sees.
+    fn frame_delivery(&self) -> filmcraft_media::FrameDelivery {
+        self.proxy.frame_delivery()
     }
     fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
         let full = self.info.video.as_ref().ok_or(MediaError::NoStream("video"))?;
@@ -757,6 +823,82 @@ mod tests {
         // linking the item to another file forgets the reason
         pool.insert_file(item, "/media/cam/b.mov", src.clone());
         assert!(pool.offline_status(item).is_none());
+    }
+
+    /// The frame workers all miss the cache together at start-up: the item is opened once and
+    /// the others wait for that source, instead of each starting a decoder of its own (some
+    /// decoders cost a process or a gigabyte of GPU memory per open).
+    #[test]
+    fn concurrent_cold_misses_open_an_item_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Slow(Arc<[u8]>, AtomicUsize);
+        impl Services for Slow {
+            fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+                Err(std::io::Error::other(format!("{path}: read whole")))
+            }
+            fn write_file(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn reader(&self, _path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+                self.1.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                Some(Ok(Arc::new(filmcraft_media::reader::MemReader(self.0.clone()))))
+            }
+        }
+        let wav: Arc<[u8]> = filmcraft_media::wav::write_wav16(&[0.0, 0.5, -0.5, 0.25], 2, 48_000).into();
+        let services = Slow(wav.clone(), AtomicUsize::new(0));
+        let info = MediaPool::default().open_file("a.wav", &ReaderOnly(wav)).unwrap().info().clone();
+        let mut project = Project::new("single-flight");
+        let item = project.add_item(
+            "a.wav",
+            filmcraft_project::Label::Caribbean,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: "a.wav".into() },
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        let pool = MediaPool::default();
+        let sources: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..6).map(|_| scope.spawn(|| pool.source_for(&project, item, &services))).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(services.1.load(Ordering::Relaxed), 1, "opened once");
+        let first = sources[0].as_ref().unwrap();
+        assert!(sources.iter().all(|s| s.as_ref().is_some_and(|s| Arc::ptr_eq(s, first))));
+        assert_eq!(pool.open_sources(), 1);
+        // the claim is released: a later miss (the file relinked) opens again
+        pool.clear();
+        assert!(pool.source_for(&project, item, &services).is_some());
+        assert_eq!(services.1.load(Ordering::Relaxed), 2);
+    }
+
+    /// A thread that missed the cache while another was opening the item, and asks for the claim
+    /// only after that opener stored its source and let the claim go, takes that source: it used
+    /// to find no claim, claim one itself and open the item a second time.
+    #[test]
+    fn a_claim_after_the_opener_finished_takes_its_source() {
+        let info = GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.0; 4] }, 16, 8, Default::default(), filmcraft_time::Tick(100))
+            .info()
+            .clone();
+        let pool = MediaPool::default();
+        let item = ItemId(1);
+        // the opener's work, as it leaves the pool: source stored, no claim held
+        pool.insert_file(item, "/media/a.mov", Arc::new(PartlyDecodable(info)));
+        let stored = pool.cached(item).unwrap();
+        match pool.claim_open(item, "file:/media/a.mov") {
+            Claimed::Opened(s) => assert!(Arc::ptr_eq(&s, &stored)),
+            Claimed::Mine(_) => panic!("claimed a second open of a source already stored"),
+        }
+        // a source stored under another key (the file relinked) is not taken
+        assert!(matches!(pool.claim_open(item, "file:/media/b.mov"), Claimed::Mine(_)));
     }
 
     /// A source whose video decodes (`OK`) or fails as its mode says, switchable at run time.

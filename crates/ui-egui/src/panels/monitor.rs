@@ -214,7 +214,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 .frames
                 .get_plan(&key)
                 .map(|p| (key, p))
-                .or_else(|| app.frames.nearest_plan(key, 6))
+                .or_else(|| app.frames.nearest_plan(key, crate::frames::LATE_GRACE))
                 .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))));
             match found {
                 Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
