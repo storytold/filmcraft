@@ -13,6 +13,7 @@
 //! - Markers on primary-storyline elements become sequence markers; markers on connected clips stay
 //!   clip markers. Transitions are supported on the primary storyline (and read from secondary
 //!   storylines); transitions elsewhere are reported.
+//! - `<title>` elements import as graphic clips with one editable text layer (see `Imp::title`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,7 +21,7 @@ use filmcraft_geom::Vec2;
 use filmcraft_media::MediaKind;
 use filmcraft_project::{
     BinId, ItemId, ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, Param, ParamValue, Project, Sequence, TrackItem, TrackKind, Transition,
-    TransitionAlign, TransitionId, effect::find_effect_by_name,
+    TransitionAlign, TransitionId, effect::find_effect_by_name, graphic,
 };
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use roxmltree::Node;
@@ -408,7 +409,16 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 Some((item, tc, true, self.b.p.sequence(item).is_some_and(|s| s.audio_tracks.iter().any(|t| !t.items.is_empty()))))
             }),
             "gap" => None,
-            "title" | "video" | "audio" | "sync-clip" | "mc-clip" | "live-drawing" => {
+            "title" => {
+                if dur > Tick::ZERO {
+                    vclip = self.title(seq, ctx, el, t0, dur, lane, local_start, primary);
+                } else {
+                    let name = el.attribute("name").unwrap_or("Title");
+                    self.report.warn(format!("title \"{name}\" has no duration and was skipped"));
+                }
+                None
+            }
+            "video" | "audio" | "sync-clip" | "mc-clip" | "live-drawing" => {
                 self.report.warn(format!("FCPXML <{tag}> elements are not supported and were skipped"));
                 None
             }
@@ -485,6 +495,140 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let _ = placed;
         (t0 + dur, vclip)
+    }
+
+    /// A `<title>` (Final Cut Pro titles, DaVinci Resolve's Text and Text+) as a graphic clip with
+    /// one text layer (#2194): the text of its `<text>` runs, styled with the first run's
+    /// `text-style-def` (font, size, face, colour, bold / italic, alignment, stroke, shadow), at the
+    /// title's `Position` parameter, with `adjust-transform` / `adjust-blend` on the clip. The
+    /// template's own animation and look are not carried; the report says so once per title.
+    #[allow(clippy::too_many_arguments)]
+    fn title(
+        &mut self,
+        seq: &mut Sequence,
+        ctx: &Ctx,
+        el: Node<'a, 'i>,
+        t0: Tick,
+        dur: Tick,
+        lane: i32,
+        local_start: Tick,
+        primary: bool,
+    ) -> Option<filmcraft_project::ClipId> {
+        let name = el.attribute("name").unwrap_or("Title").to_string();
+        if lane < 0 {
+            self.report.warn(format!("title \"{name}\" sits on an audio lane and was skipped"));
+            return None;
+        }
+        let runs: Vec<Node> = child(el, "text").map(|t| children(t, "text-style").collect()).unwrap_or_default();
+        let text: String = runs.iter().map(|r| r.descendants().filter(|d| d.is_text()).filter_map(|d| d.text()).collect::<String>()).collect();
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if text.trim().is_empty() {
+            self.report.warn(format!("title \"{name}\" has no text and was skipped"));
+            return None;
+        }
+        // the style of the first run; a run's text-style-def is usually inside the title, but may be
+        // anywhere in the document
+        let defs = |r: &str| el.descendants().chain(el.document().descendants()).find(|d| d.has_tag_name("text-style-def") && d.attribute("id") == Some(r));
+        let style = runs.iter().find_map(|r| r.attribute("ref")).and_then(defs).and_then(|d| child(d, "text-style"));
+        let distinct_refs = runs.iter().filter_map(|r| r.attribute("ref")).collect::<std::collections::BTreeSet<_>>().len();
+        if distinct_refs > 1 {
+            self.report.warn(format!("title \"{name}\": its runs have different styles; the first run's style was used for all of the text"));
+        }
+        let (fw, fh) = (ctx.frame.0.max(1), ctx.frame.1.max(1));
+        // title templates are authored at 1080 lines and scale with the frame
+        let k = fh as f64 / 1080.0;
+        let attr = |n: &str| style.and_then(|s| s.attribute(n));
+        let num = |n: &str| attr(n).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite());
+        let size = num("fontSize").unwrap_or(63.0).clamp(1.0, 2000.0) * k;
+        let lines = text.lines().count().max(1) as f64;
+        // the Position parameter: pixels from the frame centre, y up
+        let (px, py) = children(el, "param")
+            .find(|p| p.attribute("name").is_some_and(|n| n.eq_ignore_ascii_case("Position")))
+            .and_then(|p| p.attribute("value"))
+            .map(pair)
+            .unwrap_or((0.0, 0.0));
+        let (px, py) = (if px.is_finite() { px } else { 0.0 }, if py.is_finite() { py } else { 0.0 });
+        // centred on the position: the first baseline sits so the block's middle is there
+        let line_h = size * 1.21;
+        let baseline = fh as f64 / 2.0 - py * k - (lines - 1.0) * line_h / 2.0 + size * 0.35;
+        let mut layer = graphic::new_text_layer(&text, Vec2::new(fw as f64 / 2.0 + px * k, baseline), size);
+        let set = |e: &mut filmcraft_project::EffectInstance, key: &str, v: ParamValue| {
+            e.params.insert(key.into(), Param::new(v));
+        };
+        if let Some(font) = attr("font").filter(|f| !f.trim().is_empty()) {
+            set(&mut layer, "font", ParamValue::Text(font.trim().into()));
+        }
+        if let Some(face) = attr("fontFace").filter(|f| !f.trim().is_empty()) {
+            set(&mut layer, "font_style", ParamValue::Text(face.trim().into()));
+        }
+        if let Some(c) = attr("fontColor").and_then(rgba) {
+            set(&mut layer, "fill_color", ParamValue::Color(c));
+        }
+        if attr("bold").is_some_and(|v| v == "1") {
+            set(&mut layer, "faux_bold", ParamValue::Bool(true));
+        }
+        if attr("italic").is_some_and(|v| v == "1") {
+            set(&mut layer, "faux_italic", ParamValue::Bool(true));
+        }
+        let align = match attr("alignment").map(str::trim) {
+            Some("left") => Some(0),
+            Some("center") => Some(1),
+            Some("right") => Some(2),
+            Some("justified") => Some(3),
+            _ => None,
+        };
+        // FCP's titles are centred unless the style says otherwise
+        set(&mut layer, "align", ParamValue::Choice(align.unwrap_or(1)));
+        if let (Some(c), Some(w)) = (attr("strokeColor").and_then(rgba), num("strokeWidth"))
+            && w != 0.0
+        {
+            set(&mut layer, "stroke", ParamValue::Bool(true));
+            set(&mut layer, "stroke_color", ParamValue::Color(c));
+            set(&mut layer, "stroke_width", ParamValue::Float((w.abs() * k).min(1000.0)));
+        }
+        if let Some(c) = attr("shadowColor").and_then(rgba)
+            && c[3] > 0.0
+        {
+            // shadowOffset is "distance angle", the angle counter-clockwise from +x with y up
+            // (315 = down and to the right); Premiere's angle is 90 minus it
+            let (distance, angle) = attr("shadowOffset").map(pair).unwrap_or((5.0, 315.0));
+            let (distance, angle) = (if distance.is_finite() { distance } else { 5.0 }, if angle.is_finite() { angle } else { 315.0 });
+            set(&mut layer, "shadow", ParamValue::Bool(true));
+            set(&mut layer, "shadow_color", ParamValue::Color([c[0], c[1], c[2], 1.0]));
+            set(&mut layer, "shadow_opacity", ParamValue::Float(c[3] as f64 * 100.0));
+            set(&mut layer, "shadow_angle", ParamValue::Float((90.0 - angle).rem_euclid(360.0)));
+            set(&mut layer, "shadow_distance", ParamValue::Float((distance.abs() * k).min(1000.0)));
+            set(&mut layer, "shadow_blur", ParamValue::Float((num("shadowBlurRadius").unwrap_or(0.0).abs() * k).min(1000.0)));
+        }
+        let item = self.graphic_item(fw, fh, ctx.seq_rate);
+        let mut ti = self.b.clip(item, TrackKind::Video, &name, t0, dur, Tick::ZERO);
+        ti.effects.push(layer);
+        for e in &mut ti.effects {
+            filmcraft_project::resolve_auto_points(e, (fw, fh), (fw, fh));
+        }
+        ti.enabled = flag(el, "enabled").unwrap_or(true);
+        if let Some(l) = el.attribute("label").and_then(Label::from_name) {
+            ti.label = l;
+        }
+        self.adjustments(&mut ti, el, local_start, Tick::ZERO, 1.0, ctx, TrackKind::Video);
+        if !primary {
+            ti.markers = self.markers(el, local_start, Tick::ZERO, 1.0, ctx.seq_rate);
+        }
+        let template = el.attribute("ref").and_then(|r| self.effects.get(r).cloned()).filter(|n| !n.is_empty()).unwrap_or_else(|| "title".into());
+        self.report.info(format!("title \"{name}\" ({template}) was imported as editable text; the template's animation and look were not carried"));
+        let id = ti.id;
+        self.b.place(seq, TrackKind::Video, lane.max(0) as usize, ti);
+        Some(id)
+    }
+
+    /// The graphic item text clips of a `w`×`h` sequence play (one per frame size and rate).
+    fn graphic_item(&mut self, w: u32, h: u32, rate: FrameRate) -> ItemId {
+        if let Some((id, _)) =
+            self.b.p.items.iter().find(|(_, i)| matches!(i.kind, ItemKind::Graphic { width, height, rate: r } if width == w && height == h && r == rate))
+        {
+            return *id;
+        }
+        self.b.p.add_item("Graphic", Label::Rose, ItemKind::Graphic { width: w, height: h, rate }, None)
     }
 
     fn markers(&mut self, el: Node, local_start: Tick, src_in: Tick, speed: f64, rate: FrameRate) -> Vec<Marker> {
@@ -601,6 +745,16 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             }
         }
         Some(p)
+    }
+}
+
+/// An FCPXML colour, `"r g b a"` (or `"r g b"`) with components from 0 to 1.
+fn rgba(v: &str) -> Option<[f32; 4]> {
+    let c: Vec<f32> = v.split_whitespace().map(|s| s.parse::<f32>().ok().filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 1.0))).collect::<Option<_>>()?;
+    match c.as_slice() {
+        [r, g, b] => Some([*r, *g, *b, 1.0]),
+        [r, g, b, a] => Some([*r, *g, *b, *a]),
+        _ => None,
     }
 }
 

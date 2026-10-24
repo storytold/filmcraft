@@ -81,6 +81,13 @@ none of the exports brings one back. Each such clip is named in the export `Repo
 | EDL | an ordinary event with the reel the reel mode gives | an ordinary clip |
 | AAF | a gap | nothing |
 
+FCPXML `<title>` elements (Final Cut Pro titles, DaVinci Resolve's Text and Text+) import as a
+graphic clip with one editable text layer: the text of the title's runs in the first run's style
+(font, size scaled from 1080 lines, face, colour, bold / italic, alignment, stroke and shadow from
+its `text-style-def`), at the title's `Position` parameter, with `adjust-transform` and
+`adjust-blend` on the clip. The template's animation and look are not carried; the import report
+says so once per title.
+
 OMF carries no video at all.
 
 ## Tests
