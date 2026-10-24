@@ -40,6 +40,9 @@ fn frame_export_selects_the_correct_monitor_time_and_original_media() {
     let preview_provider = s.media.provider(s.project.clone(), s.services.clone());
     let preview = filmcraft_render::render_item(&s.project, item, s.state.source_playhead, 1.0, &preview_provider).unwrap().to_rgba8();
     assert_ne!(preview, expected_source, "the preview really uses the red proxy");
+    let full_audio = s.media.full_res_source(&s.project, item, &*s.services).unwrap().audio(4096, 128, 48_000).unwrap();
+    let preview_audio = s.source(item).unwrap().audio(4096, 128, 48_000).unwrap();
+    assert_eq!(preview_audio.channels, full_audio.channels, "a picture-only proxy keeps the generated source's audio");
     let seq = s.state.active_sequence.unwrap();
     let expected_program =
         filmcraft_render::render_sequence(&s.project, seq, s.playhead(), filmcraft_render::RenderOptions { captions: true, ..Default::default() }, &provider)
