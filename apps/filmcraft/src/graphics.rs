@@ -439,6 +439,14 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
     // Pro: the device is lost and the window never opens. `WGPU_VALIDATION_INDIRECT_CALL=1` turns
     // the check back on.
     create.instance_descriptor.flags = create.instance_descriptor.flags.difference(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL).with_env();
+    // the compositor's optional features (16-bit normalized textures: 10-bit video uploads as
+    // its codes) wherever the adapter has them
+    let device_descriptor = create.device_descriptor.clone();
+    create.device_descriptor = Arc::new(move |adapter| {
+        let mut d = device_descriptor(adapter);
+        d.required_features |= filmcraft_gpu::optional_features(adapter);
+        d
+    });
     match mode {
         // eframe's default (`WGPU_BACKEND`, else PRIMARY | GL), except on Windows: there it
         // includes GL. Creating that backend can crash inside AMD's atio6axx.dll before adapter

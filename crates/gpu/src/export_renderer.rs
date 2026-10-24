@@ -11,7 +11,7 @@
 //! the CPU renderer; a `FramePlan::Image` plan (HDR / wide gamut / anything the plan sends to the
 //! CPU) is returned unchanged — it already is the CPU image.
 
-use crate::{GpuCompositor, prepare};
+use crate::{GpuCompositor, prepare_with};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::plan::{FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
@@ -113,7 +113,8 @@ impl ExportRenderer {
                 }
                 let instance = wgpu::Instance::default();
                 let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                let desc = wgpu::DeviceDescriptor { required_features: crate::optional_features(&adapter), ..Default::default() };
+                let (device, queue) = pollster::block_on(adapter.request_device(&desc)).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
@@ -140,7 +141,8 @@ impl ExportRenderer {
                 if device_failed() {
                     return None;
                 }
-                let prep = prepare(&plan);
+                // 10-bit planes as their codes where the device takes 16-bit normalized textures
+                let prep = prepare_with(&plan, self.compositor.uploads_raw_16bit());
                 let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {

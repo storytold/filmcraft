@@ -165,6 +165,9 @@ struct Shared {
     workers: usize,
     /// Always-on counters for `perf.stats`.
     stats: Mutex<FrameStats>,
+    /// The GPU compositor uploads 16-bit planes as they are: plans leave them unconverted
+    /// ([`filmcraft_gpu::prepare_with`]).
+    raw16: AtomicBool,
     /// Set (under the queue lock) when the [`FrameServer`] is dropped: the workers return.
     stop: AtomicBool,
 }
@@ -477,6 +480,7 @@ impl FrameServer {
             render_cost: Mutex::new(0.0),
             workers: workers.max(1),
             stats: Mutex::new(FrameStats::default()),
+            raw16: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
@@ -505,6 +509,12 @@ impl FrameServer {
             let ctx = ctx.clone();
             *g = Some(Box::new(move || ctx.request_repaint()));
         }
+    }
+
+    /// Whether the GPU compositor showing the plans uploads 16-bit planes as they are
+    /// ([`filmcraft_gpu::GpuCompositor::uploads_raw_16bit`]).
+    pub fn set_raw_16bit(&self, on: bool) {
+        self.shared.raw16.store(on, Ordering::Relaxed);
     }
 
     /// Collect a [`JobRecord`] per finished job (benchmarks); `take_records` drains them.
@@ -915,7 +925,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let prepared = filmcraft_gpu::prepare(&plan);
+                            let prepared = filmcraft_gpu::prepare_with(&plan, sh.raw16.load(Ordering::Relaxed));
                             sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
                         }
                         pv

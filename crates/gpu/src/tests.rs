@@ -6,7 +6,7 @@ use filmcraft_render::plan::execute_cpu;
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features: optional_features(&adapter), ..Default::default() })).ok()
 }
 
 #[test]
@@ -37,6 +37,50 @@ fn yuv_code_range_uniforms() {
         }
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+/// 10-bit 4:2:0 with an alpha plane uploads as its codes (`R16Unorm`) where the device has 16-bit
+/// normalized textures, with the same picture as the half-float upload and the CPU; plans
+/// prepared for such a compositor leave those planes unconverted.
+#[test]
+fn raw_16bit_planes_match_half_floats() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut raw = GpuCompositor::new(&dev, &q);
+    if !raw.uploads_raw_16bit() {
+        eprintln!("no 16-bit normalized textures on this adapter; skipping");
+        return;
+    }
+    let (w, h) = (64u32, 16u32);
+    let (cw, ch) = (w / 2, h / 2);
+    let y: Vec<u16> = (0..w * h).map(|i| (64 + (i % w) * 876 / w) as u16).collect();
+    // (gentle chroma ramps: the shader's bilinear chroma vs the CPU's differ on steep ones)
+    let u: Vec<u16> = (0..cw * ch).map(|i| (448 + (i / cw) * 64 / ch) as u16).collect();
+    let v: Vec<u16> = (0..cw * ch).map(|i| (600 - (i % cw) * 64 / cw) as u16).collect();
+    let a: Vec<u16> = (0..w * h).map(|i| ((i / w) * 1023 / (h - 1)) as u16).collect();
+    let frame = Arc::new(VideoFrame {
+        width: w,
+        height: h,
+        data: PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: Chroma::C420, bits: 10, alpha: Some(Arc::new(a)) },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+    let skipped = prepare_with(&plan, true);
+    assert!(skipped.layers.iter().all(Option::is_none), "raw 16-bit planes are not converted");
+    raw.composite_prepared(&plan, Some(&skipped));
+    let (_, _, raw_px) = raw.read_output().expect("raw readback");
+    let mut half = GpuCompositor::new(&dev, &q);
+    half.composite_prepared(&plan, Some(&prepare(&plan)));
+    let (_, _, half_px) = half.read_output().expect("half-float readback");
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    let max = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+    assert!(max(&raw_px, &half_px) <= 1, "raw vs half floats: {}", max(&raw_px, &half_px));
+    let (p99, mean, _) = super::blend_tests::stats8(&cpu, &raw_px, &vec![true; (w * h) as usize]);
+    assert!(p99 <= 6 && mean < 1.5, "raw vs CPU: p99 {p99}, mean {mean}");
 }
 
 #[test]
@@ -295,16 +339,26 @@ fn prepared_upload_matches_inline_conversion() {
         ],
     };
     let image = FramePlan::Image(filmcraft_render::Image { w: w as usize, h: h as usize, px: f32_layer });
+    // Both upload modes: half floats (forced, so devices with 16-bit normalized textures cover it
+    // too) and the codes as they are where the device has them. A plan is prepared for the mode
+    // of the compositor that draws it, as the frame workers do (`prepare_with` with
+    // `uploads_raw_16bit`); mixing the modes is a different picture by up to a level, which
+    // `raw_16bit_planes_match_half_floats` bounds (it is exact on some GPUs, not on lavapipe).
+    let modes: &[bool] = if GpuCompositor::new(&dev, &q).uploads_raw_16bit() { &[false, true] } else { &[false] };
     for plan in [layers, image] {
-        let mut a = GpuCompositor::new(&dev, &q);
-        a.composite(&plan);
-        let inline = a.read_output().expect("readback");
-        let mut b = GpuCompositor::new(&dev, &q);
-        let prep = prepare(&plan);
-        assert!(prep.bytes() > 0);
-        b.composite_prepared(&plan, Some(&prep));
-        let prepared = b.read_output().expect("readback");
-        assert!(inline == prepared, "prepared upload differs");
+        for &raw16 in modes {
+            let mut a = GpuCompositor::new(&dev, &q);
+            a.raw16 = raw16;
+            a.composite(&plan);
+            let inline = a.read_output().expect("readback");
+            let mut b = GpuCompositor::new(&dev, &q);
+            b.raw16 = raw16;
+            let prep = prepare_with(&plan, raw16);
+            assert!(prep.bytes() > 0);
+            b.composite_prepared(&plan, Some(&prep));
+            let prepared = b.read_output().expect("readback");
+            assert!(inline == prepared, "prepared upload differs (raw 16-bit uploads: {raw16})");
+        }
     }
 }
 

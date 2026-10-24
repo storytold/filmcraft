@@ -177,6 +177,8 @@ impl FilmcraftApp {
                 self.session.previews.clone(),
                 FrameServer::default_workers(),
             ));
+            // a new server starts with raw 16-bit planes off: keep what the live compositor takes
+            self.frames.set_raw_16bit(self.gpu.as_ref().is_some_and(|g| g.compositor.uploads_raw_16bit()));
             self.textures.clear();
             self.thumb_used.clear();
             self.tl.reset_media_caches();

@@ -2187,6 +2187,7 @@ dependencies = [
 name = "filmcraft-gpu"
 version = "0.13.0"
 dependencies = [
+ "bytemuck",
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",

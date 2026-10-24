@@ -23,6 +23,7 @@ impl FilmcraftApp {
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
+                self.frames.set_raw_16bit(compositor.uploads_raw_16bit());
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }
             _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
@@ -32,6 +33,7 @@ impl FilmcraftApp {
     /// Drop the GPU compositor after a GPU error; the monitors composite on the CPU from then on.
     fn disable_gpu(&mut self, why: &str) {
         log::error!("GPU compositor disabled: {why}");
+        self.frames.set_raw_16bit(false);
         if let Some(g) = self.gpu.take()
             && let Some(id) = g.texture
         {
