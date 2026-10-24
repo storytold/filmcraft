@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 
 use filmcraft_geom::Vec2;
-use filmcraft_media::{DemoScene, Generator, MediaKind};
+use filmcraft_media::{AudioStreamInfo, DemoScene, Generator, MAX_AUDIO_STREAMS, MediaKind};
 use filmcraft_project::{
     BinId, ClipId, EffectInstance, Interpolation, ItemId, ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, Param, ParamValue, Project, Sequence,
     TrackItem, TrackKind, Transition, TransitionAlign, TransitionId, effect::find_effect_by_name, find_effect,
@@ -114,6 +114,41 @@ struct Imp<'a, 'i, 'r> {
     /// `(sequence key, file key)` pairs where some audio clip item of that file uses `sourcetrack/trackindex` > 1,
     /// i.e. the file's channels are split onto mono tracks in that sequence (#463).
     split_files: HashSet<(String, String)>,
+    error: Option<Error>,
+}
+
+/// File-level sibling audio elements describe separate source streams, not timeline tracks.
+fn file_audio_streams(file: Node) -> Result<Vec<AudioStreamInfo>> {
+    let mut streams = Vec::new();
+    let Some(media) = child(file, "media") else { return Ok(streams) };
+    for audio in children(media, "audio") {
+        if streams.len() >= MAX_AUDIO_STREAMS {
+            return Err(Error::parse(Format::Fcp7Xml, "too many source audio streams"));
+        }
+        let number = |n, key, default, max| -> Result<u32> {
+            let value = match child_text(n, key) {
+                Some(text) => text.parse::<u32>().ok().filter(|v| *v > 0 && *v <= max),
+                None => Some(default),
+            };
+            value.ok_or_else(|| Error::parse(Format::Fcp7Xml, format!("invalid audio {key}")))
+        };
+        let sc = child(audio, "samplecharacteristics").unwrap_or(audio);
+        streams.push(AudioStreamInfo {
+            sample_rate: number(sc, "samplerate", 48_000, 384_000)?,
+            channels: number(audio, "channelcount", 2, 64)?,
+            bits_per_sample: child_text(sc, "depth").map(|_| number(sc, "depth", 16, 64)).transpose()?,
+            codec: String::new(),
+        });
+    }
+    Ok(streams)
+}
+
+fn exploded_audio_track(c: Node) -> bool {
+    c.parent_element().is_some_and(|t| {
+        t.has_tag_name("track")
+            && t.attribute("currentExplodedTrackIndex").and_then(|v| v.parse::<u32>().ok()).is_some()
+            && t.attribute("totalExplodedTrackCount").and_then(|v| v.parse::<u32>().ok()).is_some_and(|n| n > 1)
+    })
 }
 
 /// The `(sequence key, file key)` an audio clip item belongs to, if it references a file.
@@ -156,6 +191,7 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
         links: Vec::new(),
         xml_clip_ids: HashMap::new(),
         split_files: HashSet::new(),
+        error: None,
     };
     for n in root.descendants().filter(|n| n.is_element()) {
         match n.tag_name().name() {
@@ -174,6 +210,9 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
         }
     }
     imp.walk_container(root, None, true);
+    if let Some(error) = imp.error {
+        return Err(error);
+    }
     imp.resolve_links();
     if imp.b.p.items.is_empty() {
         return Err(Error::Empty);
@@ -256,15 +295,18 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let name = child_text(def, "name").filter(|s| !s.is_empty()).or(fallback_name).unwrap_or("Untitled").to_string();
         let rate = read_rate(def);
         let video = child(def, "media").and_then(|m| child(m, "video"));
-        let audio = child(def, "media").and_then(|m| child(m, "audio"));
+        let audio_streams = match file_audio_streams(def) {
+            Ok(streams) => streams,
+            Err(error) => {
+                self.error.get_or_insert(error);
+                return None;
+            }
+        };
         let dims = video.map(|v| {
             let sc = child(v, "samplecharacteristics").unwrap_or(v);
             (child_i64(sc, "width").unwrap_or(1920) as u32, child_i64(sc, "height").unwrap_or(1080) as u32)
         });
-        let aud = audio.map(|a| {
-            let sc = child(a, "samplecharacteristics").unwrap_or(a);
-            (child_i64(sc, "samplerate").unwrap_or(48_000) as u32, child_i64(a, "channelcount").unwrap_or(2) as u32)
-        });
+        let aud = audio_streams.first().map(|a| (a.sample_rate, a.channels));
         let r = rate.unwrap_or_default();
         let path = child_text(def, "pathurl").filter(|s| !s.is_empty());
         let mut spec = MediaSpec {
@@ -284,10 +326,12 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
             }
         }
-        let id = match path {
+        let (id, created) = match path {
             Some(url) => {
                 let p = resolve_path(url, self.opts.base_dir.as_deref());
-                self.b.file_media(&format!("file:{p}"), &name, &p, &spec, bin)
+                let media_key = format!("file:{p}");
+                let created = self.b.find_media(&media_key).is_none();
+                (self.b.file_media(&media_key, &name, &p, &spec, bin), created)
             }
             None => {
                 self.report.warn(format!("file \"{name}\" has no pathurl; imported offline"));
@@ -296,9 +340,15 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 if let Some(m) = self.b.p.item_mut(id).and_then(|i| i.as_media_mut()) {
                     m.offline = true;
                 }
-                id
+                (id, true)
             }
         };
+        if created
+            && !audio_streams.is_empty()
+            && let Some(m) = self.b.p.item_mut(id).and_then(|i| i.as_media_mut())
+        {
+            m.info.audio_streams = audio_streams;
+        }
         self.file_items.insert(key, id);
         Some(id)
     }
@@ -512,13 +562,25 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if let Some(l) = path_text(c, &["labels", "label2"]).and_then(label_from) {
             ti.label = l;
         }
-        // `sourcetrack/trackindex` (1-based) picks the source channel of a mono track split off a multichannel file (#463).
+        // With several declared streams, trackindex selects a stream (#2872). Explicit Premiere
+        // exploded tracks retain channel semantics. With one stream, it picks a split channel (#463).
         // Index 1 is also what a stereo clip on a stereo track carries, so it means channel 0 only when another clip
         // item of the same file in this sequence uses a higher index (the file is split); otherwise it keeps the
         // default (empty) channel mapping.
-        if kind == TrackKind::Audio
+        let multi_stream = self.b.p.item(item).and_then(|i| i.as_media()).is_some_and(|m| m.info.audio_streams.len() > 1);
+        let exploded = exploded_audio_track(c);
+        if kind == TrackKind::Audio && multi_stream && !exploded {
+            let text = child(c, "sourcetrack").and_then(|s| child_text(s, "trackindex")).unwrap_or("1");
+            let index = text.parse::<usize>().ok().and_then(|v| v.checked_sub(1));
+            let count = self.b.p.item(item).and_then(|i| i.as_media()).map_or(0, |m| m.info.audio_streams.len());
+            let Some(index) = index.filter(|i| *i < count) else {
+                self.report.warn(format!("clip \"{name}\" selects an invalid source audio stream; skipped"));
+                return None;
+            };
+            ti.audio_stream = index;
+        } else if kind == TrackKind::Audio
             && let Some(idx) = audio_track_index(c)
-            && (idx > 1 || (idx == 1 && clip_seq_file(c).is_some_and(|k| self.split_files.contains(&k))))
+            && (idx > 1 || (idx == 1 && (exploded || clip_seq_file(c).is_some_and(|k| self.split_files.contains(&k)))))
             && let Ok(ch) = u16::try_from(idx - 1)
         {
             ti.source_channels = vec![ch];
@@ -799,6 +861,7 @@ struct Exp<'a, 'r> {
     writing: HashSet<ItemId>,
     written_seqs: HashSet<ItemId>,
     next_clip: usize,
+    error: Option<Error>,
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
@@ -814,12 +877,16 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
         writing: HashSet::new(),
         written_seqs: HashSet::new(),
         next_clip: 1,
+        error: None,
     };
     let v = if opts.xmeml_version == 5 { "5" } else { "4" };
     x.w.open("xmeml", &[("version", v)]);
     x.write_master_clips(seq_id);
     x.write_sequence(seq_id, true);
     x.w.close();
+    if let Some(error) = x.error {
+        return Err(error);
+    }
     Ok(x.w.finish())
 }
 
@@ -1027,6 +1094,15 @@ impl Exp<'_, '_> {
                 .warn(format!("{clip} has no Final Cut Pro 7 XML equivalent: it is written as a clip item without media and is not read back on import"));
         }
         let base = base_item(self.p, c.item);
+        if kind == TrackKind::Audio
+            && let Some(media) = item_media(self.p, base)
+            && ((!media.info.audio_streams.is_empty() && c.audio_stream >= media.info.audio_streams.len())
+                || (media.info.audio_streams.len() > 1 && !c.source_channels.is_empty()))
+        {
+            self.error
+                .get_or_insert_with(|| Error::Other(format!("clip \"{}\": source audio stream/channel mapping cannot be represented in FCP7 XML", c.name)));
+            return;
+        }
         let generator = crate::common::generator_of(self.p, base).cloned();
         let is_seq = matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_)));
         let tag = if generator.is_some() { "generatoritem" } else { "clipitem" };
@@ -1063,7 +1139,12 @@ impl Exp<'_, '_> {
         if kind == TrackKind::Audio {
             self.w.open("sourcetrack", &[]);
             self.w.text("mediatype", "audio");
-            self.w.text("trackindex", c.source_channels.first().map_or(1, |ch| u32::from(*ch).saturating_add(1)));
+            let index = if item_media(self.p, base).is_some_and(|m| m.info.audio_streams.len() > 1) {
+                c.audio_stream.saturating_add(1)
+            } else {
+                c.source_channels.first().map_or(1, |ch| usize::from(*ch).saturating_add(1))
+            };
+            self.w.text("trackindex", index);
             self.w.close();
         }
         if let Some(blend) = param(c, "opacity", "blend").and_then(|p| p.value.as_f64()).map(|v| v as u32).filter(|v| *v != 0) {
@@ -1133,6 +1214,16 @@ impl Exp<'_, '_> {
             self.w.empty("file", &[("id", &fid)]);
             return;
         };
+        if m.info.audio_streams.len() > MAX_AUDIO_STREAMS {
+            self.error.get_or_insert_with(|| Error::Other("too many source audio streams for FCP7 XML".into()));
+            return;
+        }
+        if m.info.audio_streams.iter().any(|a| {
+            !(1..=384_000).contains(&a.sample_rate) || !(1..=64).contains(&a.channels) || a.bits_per_sample.is_some_and(|depth| !(1..=64).contains(&depth))
+        }) {
+            self.error.get_or_insert_with(|| Error::Other("invalid audio stream metadata for FCP7 XML".into()));
+            return;
+        }
         let name = self.p.item(item).map(|i| i.name.clone()).unwrap_or_default();
         let frate = m.info.video.as_ref().map(|v| m.interpret.frame_rate.unwrap_or(v.frame_rate)).unwrap_or(seq_rate);
         self.w.open("file", &[("id", &fid)]);
@@ -1160,7 +1251,7 @@ impl Exp<'_, '_> {
             self.w.close();
             self.w.close();
         }
-        if let Some(a) = m.info.audio() {
+        for a in &m.info.audio_streams {
             self.w.open("audio", &[]);
             self.w.open("samplecharacteristics", &[]);
             self.w.text("depth", a.bits_per_sample.unwrap_or(16));
