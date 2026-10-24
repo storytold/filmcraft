@@ -102,7 +102,25 @@ fn update(group: &mut Group, points: &[Point], pos: Pos2, shift: bool, playhead:
     }
 }
 
+/// Where a ruler scrub with Shift held lands: on the nearest of `targets` within 8 px, like a keyframe
+/// dragged with Shift (#2441). Otherwise `tick` unchanged.
+pub(crate) fn snap_scrub(tick: Tick, targets: &[Tick], pixels_per_tick: f64) -> Tick {
+    let mut best: Option<(f64, Tick)> = None;
+    for target in targets {
+        let distance = ((*target - tick).0 as f64 * pixels_per_tick).abs();
+        if distance <= 8.0 && best.is_none_or(|b| distance < b.0) {
+            best = Some((distance, *target));
+        }
+    }
+    best.map_or(tick, |b| b.1)
+}
+
 impl Interaction {
+    /// The timeline times of the keyframes drawn this frame, which a Shift scrub snaps to.
+    pub(crate) fn key_times(&self) -> Vec<Tick> {
+        self.points.iter().map(|p| p.time).collect()
+    }
+
     pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64) -> Self {
         let mut state = ui.data(|d| d.get_temp::<State>(state_id())).unwrap_or_default();
         if state.clip != clip {
@@ -265,6 +283,15 @@ pub(crate) fn paint(painter: &egui::Painter, rect: Rect, interp: Interpolation, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shift_scrub_snaps_to_a_keyframe_within_reach_only() {
+        let keys = [Tick(1000), Tick(5000)];
+        assert_eq!(snap_scrub(Tick(1030), &keys, 0.1), Tick(1000));
+        assert_eq!(snap_scrub(Tick(1200), &keys, 0.1), Tick(1200));
+        assert_eq!(snap_scrub(Tick(4950), &keys, 0.1), Tick(5000));
+        assert_eq!(snap_scrub(Tick(3000), &[], 0.1), Tick(3000));
+    }
+
     #[test]
     fn keyframe_timeline_coordinates_follow_trim_speed_and_reverse() {
         let mut session = filmcraft_engine::Session::default();

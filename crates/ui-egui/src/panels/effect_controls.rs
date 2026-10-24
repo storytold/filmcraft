@@ -312,7 +312,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some(pos) = sresp.interact_pointer_pos()
     {
         let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
-        let tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64));
+        let mut tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64));
+        // Shift snaps the playhead to the clip's keyframes, as it does for a dragged keyframe (#2441)
+        if ui.input(|i| i.modifiers.shift) {
+            let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
+            tk = selection::snap_scrub(tk, &keys.key_times(), pixels_per_tick);
+        }
         app.stop();
         app.session.set_playhead(tk);
     }
