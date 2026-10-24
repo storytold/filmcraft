@@ -326,6 +326,72 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     assert_eq!(scale(&s), (0, 100.0));
 }
 
+/// A clip with a Frame Hold (Hold Filters off) still animates its effects through the hold, so
+/// Add/Remove Keyframe at two playhead positions gives two keyframes, and a value set at the second
+/// one changes only that one (#1675: they all landed on the held frame, and the second click
+/// removed the first keyframe).
+#[test]
+fn keyframes_on_a_frame_hold_go_where_the_playhead_is() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("clip.frameHoldOptions", json!({"clips": [c], "holdOn": "in", "holdFilters": false})).unwrap();
+    let scale = |s: &Session, t: Tick| {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+        assert!(it.frame_hold.is_some() && !it.hold_filters);
+        let p = &it.effect("motion").unwrap().params["scale"];
+        (p.keyframes.len(), p.f64_at(it.effect_time_at(t)))
+    };
+    let key = json!({"clip": c, "effect": "motion", "param": "scale"});
+    s.execute("playhead.set", json!({"seconds": 0.5})).unwrap();
+    let first = s.playhead();
+    s.execute("effects.addKeyframe", key.clone()).unwrap();
+    s.execute("playhead.set", json!({"seconds": 2.5})).unwrap();
+    let second = s.playhead();
+    s.execute("effects.addKeyframe", key).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 50.0})).unwrap();
+    assert_eq!(scale(&s, first), (2, 100.0));
+    assert_eq!(scale(&s, second), (2, 50.0));
+}
+
+/// A mask changed at the playhead on a Frame Hold clip with Hold Filters off is keyed there, where
+/// the Program monitor shows it, not on the held frame, where the clip already has a keyframe.
+#[test]
+fn values_changed_on_a_frame_hold_are_keyed_where_the_playhead_is() {
+    use filmcraft_project::{Keyframe, Param, TrackItem};
+    #[derive(Debug)]
+    enum At {
+        MaskFeather,
+    }
+    fn param<'a>(it: &'a mut TrackItem, at: &At) -> &'a mut Param {
+        match at {
+            At::MaskFeather => &mut it.effect_mut("opacity").unwrap().masks[0].feather,
+        }
+    }
+    let cases = [(At::MaskFeather, "masks.set", json!({"feather": 30}))];
+    for (at, command, params) in cases {
+        let mut s = demo();
+        let c = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+        s.execute("timeline.select", json!({"clips": [c.0]})).unwrap();
+        s.execute("masks.add", json!({"clip": c.0, "effect": "opacity", "shape": "ellipse"})).unwrap();
+        s.execute("clip.frameHoldOptions", json!({"clips": [c.0], "holdOn": "in", "holdFilters": false})).unwrap();
+        let seq = s.state.active_sequence.unwrap();
+        let it = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().find_item_mut(c).unwrap().1;
+        // keyed at both ends, so a value keyed at the held frame (the In) adds no keyframe
+        let (a, b) = (it.moving_source_time_at(it.start), it.moving_source_time_at(it.end() - Tick(1)));
+        let p = param(it, &at);
+        p.keyframes = vec![Keyframe::new(a, p.value.clone()), Keyframe::new(b, p.value.clone())];
+        let mid = it.start + Tick(it.duration.0 / 2);
+        s.execute("playhead.set", json!({"time": mid.0})).unwrap();
+        let ph = s.playhead();
+        s.execute(command, params).unwrap();
+        let it = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().find_item_mut(c).unwrap().1;
+        assert!(it.frame_hold == Some(a) && !it.hold_filters, "{at:?} {command}");
+        let now = it.effect_time_at(ph);
+        let times: Vec<Tick> = param(it, &at).keyframes.iter().map(|k| k.time).collect();
+        assert_eq!(times, vec![a, now, b], "{at:?} {command}: keyed at the playhead");
+    }
+}
+
 /// `effects.setParam` writes a keyframe only on an animated parameter. An agent that sends a value
 /// with a `time` to a parameter that is not animated gets a static value (the result says so:
 /// 0 keyframes); `"keyframe": true` is the stopwatch and the value in one step.

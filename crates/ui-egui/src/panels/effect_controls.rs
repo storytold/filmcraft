@@ -193,7 +193,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let (hr, _) = bui.allocate_exact_size(vec2(body.width(), 18.0), Sense::hover());
             let heading = if *kind == TrackKind::Video { tl!("Video") } else { tl!("Audio") };
             bui.painter().text(pos2(hr.min.x + 8.0, hr.center().y), Align2::LEFT_CENTER, heading, Tokens::semibold(11.5), t.text_dim);
-            let mt_now = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+            let mt_now = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
             // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
             let mut order: Vec<usize> = (0..it.effects.len()).collect();
             order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
@@ -782,7 +782,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let e = it.effects[idx].clone();
     let Some(def) = e.def() else { return };
     let ph = app.session.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions = Vec::new();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut bui, |ui| {
         let mut groups: Vec<&str> = Vec::new();
@@ -848,7 +848,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let ph = app.session.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 8.0))).id_salt("props"));
     // header: clip name + menu
@@ -981,7 +981,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             && section(bui, app, "Audio", it.effects.iter().position(|e| e.effect == "volume").map(|i| (i, clip.0)), &mut actions)
         {
             let clip = *clip;
-            let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+            let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
             let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
             let r = row(bui, tl!("Level"));
             let mut vui = bui.new_child(
@@ -1659,5 +1659,102 @@ mod graph_drag_tests {
         assert!(new.x > old.x, "dragging the X keyframe up raises X: {old:?} -> {new:?}");
         assert_eq!(new.y, old.y);
         assert_eq!(changed.keyframes[1], before.keyframes[1]);
+    }
+}
+
+#[cfg(test)]
+mod frame_hold_tests {
+    //! #1675: on a Frame Hold clip with Hold Filters off the effects keep animating through the
+    //! hold, so the panels that show effect values read them where the render does, as Effect
+    //! Controls does, and not on the held frame.
+    use super::*;
+    use crate::panels::audio_fx_editor::FxTarget;
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::{Keyframe, Param};
+
+    #[derive(Clone, Copy, Debug)]
+    enum Panel {
+        Lumetri,
+        Masks,
+        TransformHandles,
+        AudioFxEditor,
+    }
+
+    fn animate(it: &mut TrackItem, effect: &str, param: &str, from: ParamValue, to: ParamValue) {
+        let (a, b) = (it.moving_source_time_at(it.start), it.moving_source_time_at(it.end() - Tick(1)));
+        let e = it.effects.iter_mut().find(|e| e.effect == effect).unwrap();
+        e.params.insert(param.into(), Param { value: from.clone(), keyframes: vec![Keyframe::new(a, from), Keyframe::new(b, to)] });
+    }
+
+    /// A V1 clip and an A1 clip under the playhead, their effects animated from
+    /// their In to their Out, each held on its In (`Some(hold_filters)`) or not held.
+    fn app(hold: Option<bool>) -> FilmcraftApp {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let v = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+        // away from the In, where the held and the moving times meet
+        let ph = v.start + Tick(v.duration.0 / 2);
+        s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+        let a = s.active_sequence().unwrap().audio_tracks.iter().find_map(|t| t.item_at(ph)).unwrap().id;
+        s.execute("effects.apply", json!({"clips": [v.id.0], "effect": "lumetri"})).unwrap();
+        s.execute("effects.apply", json!({"clips": [a.0], "effect": "parametric_eq"})).unwrap();
+        s.execute("timeline.select", json!({"clips": [v.id.0]})).unwrap();
+        s.execute("masks.add", json!({"clip": v.id.0, "effect": "opacity", "shape": "ellipse"})).unwrap();
+        s.execute("effects.select", json!({"clip": v.id.0, "effect": "motion"})).unwrap();
+        if let Some(hold_filters) = hold {
+            s.execute("clip.frameHoldOptions", json!({"clips": [v.id.0], "holdOn": "in", "holdFilters": hold_filters})).unwrap();
+        }
+        let seq = s.state.active_sequence.unwrap();
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        let it = q.find_item_mut(v.id).unwrap().1;
+        animate(it, "motion", "position", ParamValue::Vec2(Vec2::new(400.0, 300.0)), ParamValue::Vec2(Vec2::new(800.0, 500.0)));
+        animate(it, "lumetri", "saturation", ParamValue::Float(50.0), ParamValue::Float(150.0));
+        let it = q.find_item_mut(a).unwrap().1;
+        animate(it, "parametric_eq", "b1_gain", ParamValue::Float(-12.0), ParamValue::Float(12.0));
+        // Frame Hold Options takes video clips; an imported edit list can hold an audio clip
+        if let Some(hold_filters) = hold {
+            (it.frame_hold, it.hold_filters) = (Some(it.source_in), hold_filters);
+        }
+        let index = it.effects.iter().position(|e| e.effect == "parametric_eq").unwrap();
+        let mut app = FilmcraftApp::new(s);
+        app.ui.audio_fx_editors.push(FxTarget::Clip { clip: a.0, index });
+        app
+    }
+
+    /// What `panel` draws, after a few frames (the editor window sizes itself on the first one).
+    fn observe(mut app: FilmcraftApp, panel: Panel) -> String {
+        let q = app.session.active_sequence().unwrap();
+        let frame = (q.settings.width, q.settings.height);
+        let pic = Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 360.0));
+        // a selected mask and a selected effect exclude each other
+        if let Panel::Masks = panel {
+            let clip = app.session.state.selection[0];
+            app.session.execute("masks.select", json!({"clip": clip.0, "effect": "opacity", "mask": 0})).unwrap();
+        }
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        let mut shapes = String::new();
+        for i in 0..3 {
+            app.auto.begin_frame();
+            let mut out = ctx.run_ui(egui::RawInput { time: Some(f64::from(i) * 0.1), ..Default::default() }, |ui| match panel {
+                Panel::Lumetri => crate::panels::lumetri::show(&mut app, ui, Rect::from_min_size(pos2(0.0, 0.0), vec2(360.0, 900.0))),
+                Panel::Masks => crate::panels::masks::monitor_overlay(&mut app, ui, pic, frame),
+                Panel::TransformHandles => crate::panels::transform_handles::monitor_overlay(&mut app, ui, pic, frame),
+                Panel::AudioFxEditor => crate::panels::audio_fx_editor::show(&mut app, ui.ctx()),
+            });
+            out.textures_delta.clear();
+            shapes = format!("{:?}", out.shapes);
+        }
+        shapes
+    }
+
+    #[test]
+    fn panels_show_effect_values_where_the_render_takes_them_on_a_frame_hold() {
+        for panel in [Panel::Lumetri, Panel::Masks, Panel::TransformHandles, Panel::AudioFxEditor] {
+            let moving = observe(app(None), panel);
+            let held = observe(app(Some(true)), panel);
+            assert!(moving != held, "{panel:?}: with Hold Filters on it shows the held frame's values");
+            assert!(observe(app(Some(false)), panel) == moving, "{panel:?}: with Hold Filters off it shows the values it shows without the hold");
+        }
     }
 }

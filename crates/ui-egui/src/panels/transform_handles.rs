@@ -199,7 +199,7 @@ fn selected_placement(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u
     let index = sel.index(&it.effects)?;
     let e = it.effects.get(index).filter(|e| e.enabled)?;
     let def = e.def().filter(|d| d.id == "motion" || d.id == "transform")?;
-    let pl = placement(app, it, e, it.source_time_at(ph), pic, reach, frame)?;
+    let pl = placement(app, it, e, it.effect_time_at(ph), pic, reach, frame)?;
     Some(((sel.clip, index), def, pl))
 }
 
@@ -386,7 +386,7 @@ fn clip_under(app: &FilmcraftApp, pic: Rect, frame: (u32, u32), p: Pos2) -> Opti
     let project = &app.session.project;
     seq.video_tracks.iter().rev().filter(|tr| tr.enabled).filter_map(|tr| tr.item_at(t)).filter(|it| it.enabled).find_map(|it| {
         let size = filmcraft_render::source_size(project, it.item).unwrap_or(frame);
-        let m = view.then_apply(&filmcraft_render::motion_matrix(seq, it, size, filmcraft_render::source_par(project, it.item), it.source_time_at(t)));
+        let m = view.then_apply(&filmcraft_render::motion_matrix(seq, it, size, filmcraft_render::source_par(project, it.item), it.effect_time_at(t)));
         inside(&quad_of(&m, size), p).then_some(it.id)
     })
 }
