@@ -24,6 +24,7 @@ rayon = { workspace = true }
 [dev-dependencies]
 pollster = "0.4"
 filmcraft-export = { workspace = true }
+filmcraft-codecs = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = { version = "30", features = ["wgsl", "metal", "vulkan", "dx12", "gles"] }
 filmcraft-media = { workspace = true }

@@ -20,6 +20,7 @@ neural-voices = ["filmcraft-engine/neural-voices"]
 [dependencies]
 filmcraft-engine = { workspace = true }
 filmcraft-export = { workspace = true }
+filmcraft-frame = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }

@@ -139,6 +139,30 @@ CPU. GPU rendering is nevertheless **Off by default** (opt-in per export) until 
 measured on Windows and macOS: the GPU result matches the CPU within the compositor's parity
 tolerance, not bit for bit, and Off keeps exports byte-reproducible on every machine. (The 4K row used the same scene with the sequence, clip and positions scaled to 4K.)
 
+## Results (GPU export as 4:2:0: colour conversion on the GPU, #30)
+
+With GPU Rendering on, an export whose frames need no CPU work after compositing (no letterbox,
+pillarbox or resample into the frame size, overlays, video limiter, HDR or alpha; a size change the
+render scale makes by itself is fine) asks the GPU renderer for the encoder's input
+directly: `crates/gpu/src/yuv.wgsl` converts the linear accumulator to 8-bit BT.709 limited 4:2:0
+with `Image::over_black_rgba8`'s table and `rgba_to_yuv420_8`'s formulas (within ±1 code; 100 % of
+bytes exact on solids and odd sizes, 99.97 % on a ramp across every table entry), and only the
+planes are read back (1.5 bytes a pixel instead of the accumulator's 8). Encoders opt in with
+`VideoEncoder::takes_yuv420` (the built-in H.264 encoder; VA-API H.264 on top of #1256). Linux,
+Ryzen 7 5700X (16 threads) + Radeon RX 9060 XT (Mesa 26.2.4), 2026-10-12, release desktop app over
+the control channel: a 40 s 4K30 sequence (20 s H.264 + 20 s HEVC, both decoded through VA-API),
+H.264 High 20 Mb/s, GPU Rendering on, every frame through the 4:2:0 path (`perf.stats`
+`export.gpu.yuvFrames`), no fallbacks:
+
+| encoder | RGBA path (before) | **4:2:0 from the GPU** |
+|---|---|---|
+| built-in H.264 | 84.8 s, 11.3 CPU cores | **53.3 s**, 11.9 cores |
+| VA-API H.264 (#1256) | 47.1 s, 6.8 cores | **19.9 s, 0.8 cores** |
+
+`over_black_rgba8` (46 % of the CPU time before) and `rgba_to_yuv420_8` (29 %) no longer run;
+what is left with VA-API is copying (the hardware decoders' read-back and the NV12 upload) and AAC.
+The files are the same quality (PSNR against the source 24.82 dB either way).
+
 ### Memory after an export
 
 The recycled images stay on the shelves of `filmcraft_frame::pool` (up to 320 MiB of them, and

@@ -153,6 +153,30 @@ impl ExportRenderer {
             FramePlan::Composite { .. } => None,
         }
     }
+
+    /// [`render`](Self::render) for encoders that take 8-bit BT.709 limited 4:2:0
+    /// ([`GpuCompositor::render_export_yuv420`]). None for plans the CPU renders (images,
+    /// transitions), after a device error, or when the pass cannot run: the caller takes `render`.
+    pub fn render_yuv420(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_frame::VideoFrame> {
+        let plan = plan_frame(project, seq, t, opts, sources);
+        if !matches!(plan, FramePlan::Layers { .. }) || device_failed() {
+            return None;
+        }
+        let prep = prepare(&plan);
+        let f = self.compositor.render_export_yuv420(&plan, Some(&prep))?;
+        if device_failed() {
+            return None;
+        }
+        timing::add_frame();
+        Some(f)
+    }
 }
 
 #[cfg(test)]
@@ -309,5 +333,37 @@ mod tests {
         for v in [0.0f32, 1.0, 0.5, 2.0, 1e-3, 65504.0, -1.0, -0.25] {
             assert!((f16_to_f32(f32_to_f16(v)) - v).abs() <= EPS * v.abs().max(1.0), "f16 {v}");
         }
+    }
+
+    /// The YUV output equals what the pipeline makes of the same renderer's f32 output, ±1.
+    fn assert_yuv_parity(r: &mut ExportRenderer, p: &Project, seq: ItemId, t: Tick, m: &SourceMap, what: &str) {
+        let img = r.render(p, seq, t, RenderOptions::default(), m).expect("GPU rendered the frame");
+        let rgba = img.over_black_rgba8();
+        let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+        filmcraft_export::rgba_to_yuv420_8(&rgba, img.w, img.h, &mut y, &mut u, &mut v);
+        let f = r.render_yuv420(p, seq, t, RenderOptions::default(), m).expect("GPU YUV output");
+        assert_eq!((f.width as usize, f.height as usize), (img.w, img.h), "{what}: size");
+        let filmcraft_frame::PixelData::Yuv8 { planes, chroma, alpha } = &f.data else { panic!("{what}: not Yuv8") };
+        assert!(matches!(chroma, filmcraft_frame::Chroma::C420), "{what}: chroma");
+        assert!(alpha.is_none());
+        assert_eq!(f.color.range, filmcraft_color::Range::Limited);
+        assert_eq!(f.color.matrix, filmcraft_color::Matrix::Bt709);
+        for (k, (got, want)) in planes.iter().zip([&y, &u, &v]).enumerate() {
+            assert_eq!(got.len(), want.len(), "{what}: plane {k}");
+            let worst = got.iter().zip(want.iter()).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            assert!(worst <= 1, "{what}: plane {k} differs by {worst}");
+        }
+    }
+
+    #[test]
+    fn yuv_output_matches_the_pipeline_conversion() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu yuv export): no adapter");
+            return;
+        };
+        let (p, seq, m) = project(false);
+        assert_yuv_parity(&mut r, &p, seq, Tick::ZERO, &m, "solid");
+        let (p, seq, m) = project(true);
+        assert_yuv_parity(&mut r, &p, seq, filmcraft_time::FrameRate::FPS_24.tick_of(10), &m, "transformed, 70% opacity");
     }
 }
