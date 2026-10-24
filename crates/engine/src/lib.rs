@@ -421,6 +421,8 @@ pub enum Event {
     OpenSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),
+    /// File ▸ Close Project left no project open (the frontend shows its Home screen).
+    ProjectClosed,
 }
 
 pub struct Session {
@@ -448,6 +450,9 @@ pub struct Session {
     /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
     /// save over it keeps a backup of the original).
     pub loaded_schema: u32,
+    /// The project's thumbnail (Home ▸ Recent Projects): the one read from the file, replaced by
+    /// the Program Monitor frame at each save. Not part of the project: never dirty, never undone.
+    pub thumbnail: Option<filmcraft_format::Thumbnail>,
     /// Render preview files + render-bar segments (shared with the frontend's frame workers).
     pub previews: Arc<previews::PreviewStore>,
     /// Audio Track Mixer automation pass in progress.
@@ -564,6 +569,7 @@ impl Session {
             prefs_path: None,
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
+            thumbnail: None,
             previews: Arc::new(previews::PreviewStore::temp()),
             mixrec: Default::default(),
             mcrec: Default::default(),
@@ -658,7 +664,7 @@ impl Session {
             return;
         }
         if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+            p.send_dirty(self.project.clone(), self.revision, self.path.clone(), self.thumbnail.clone());
         } else {
             p.send_clean();
         }

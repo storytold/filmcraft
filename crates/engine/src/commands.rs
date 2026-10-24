@@ -1151,6 +1151,7 @@ fn build() -> Vec<CommandSpec> {
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
+            s.thumbnail = None;
             if s.path.take().is_some() {
                 s.previews.reset_temp();
             }
@@ -1165,6 +1166,7 @@ fn build() -> Vec<CommandSpec> {
             s.history = Default::default();
             s.history.limit = 200;
             s.state = crate::Session::default().state;
+            s.thumbnail = None;
             s.state.active_sequence = Some(seq);
             s.state.open_sequences = vec![seq];
             s.state.playheads.insert(seq, FrameRate::FPS_23_976.tick_of(4 * 24 + 6));
@@ -4457,7 +4459,14 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     }
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
-    let bytes = filmcraft_format::encode_with_view(&s.project, Some(&view), false);
+    // and a thumbnail of what the Program Monitor shows; without one (nothing open, nothing could
+    // be rendered) the file keeps the thumbnail it was opened with
+    let t_thumb = web_time::Instant::now();
+    if let Some(thumb) = project_thumbnail(s) {
+        s.thumbnail = Some(thumb);
+    }
+    let thumb_ms = t_thumb.elapsed().as_secs_f64() * 1000.0;
+    let bytes = filmcraft_format::encode_with_view_and_thumbnail(&s.project, Some(&view), s.thumbnail.as_ref(), false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -4476,7 +4485,35 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
         s.saved_revision = s.revision;
         s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     }
-    Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
+    let thumbnail = s.thumbnail.as_ref().map(|t| json!({"width": t.width, "height": t.height, "bytes": t.data.len(), "ms": thumb_ms}));
+    Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup, "thumbnail": thumbnail}))
+}
+
+/// The Program Monitor frame of the active sequence at its playhead, rendered straight at
+/// thumbnail size (proxies when they are on), or `None` when there is no sequence or the frame
+/// cannot be rendered now. Never an error: a save never fails over its thumbnail.
+fn project_thumbnail(s: &Session) -> Option<filmcraft_format::Thumbnail> {
+    let id = s.state.active_sequence?;
+    let seq = s.project.sequence(id)?;
+    let longest = seq.settings.width.max(seq.settings.height);
+    if longest == 0 {
+        return None;
+    }
+    // at least a pixel or two on the short side, at most the sequence's own size
+    let scale = (filmcraft_format::thumbnail::THUMBNAIL_SIDE as f32 / longest as f32).min(1.0);
+    let t = s.state.playheads.get(&id).copied().unwrap_or_default().max(Tick::ZERO);
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
+    let _ = filmcraft_media::pending::take();
+    let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_render::render_sequence(&s.project, id, t, opts, &provider)))
+        .map_err(|_| log::warn!("rendering the project thumbnail panicked; saving without a new one"))
+        .ok()?;
+    // web: a frame still loading would make a blank or partial thumbnail; keep the old one
+    if filmcraft_media::pending::take() {
+        return None;
+    }
+    let (w, h) = (u32::try_from(img.w).ok()?, u32::try_from(img.h).ok()?);
+    filmcraft_format::Thumbnail::from_rgba8(w, h, &img.over_black_rgba8()).map_err(|e| log::warn!("{e}")).ok()
 }
 
 fn schema_backup_path(path: &str, schema: u32) -> String {
@@ -4508,6 +4545,7 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
+    s.thumbnail = None;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     crate::project_tools::warn_untrusted_scratch(s);
 }
@@ -4517,6 +4555,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     install_project(s, loaded.project, Some(path.to_string()), true);
+    s.thumbnail = loaded.thumbnail;
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
     }

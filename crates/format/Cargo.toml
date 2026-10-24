@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-format"
-description = "FilmCraft .fcproj files: schema versions + migrations, atomic saves, auto-save naming and rotation"
+description = "FilmCraft .fcproj files: schema versions + migrations, atomic saves, auto-save naming and rotation, project thumbnails"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 filmcraft-project = { workspace = true }
 filmcraft-media = { workspace = true }
 log = { workspace = true }
@@ -17,6 +18,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
+# project thumbnails: JPEG written, JPEG or PNG read (pure Rust, MIT OR Apache-2.0; already used by export and media)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tempfile = "3.27"

@@ -344,13 +344,15 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     d.menu("file.openRecent.1");
     assert_eq!(d.app().session.path.as_deref(), Some(a.as_str()));
     assert_eq!(d.app().session.prefs.general.recent_projects, [a.clone(), b.clone()]);
-    // Home lists them too, newest first, and a click opens one
+    // Home lists them too, newest first, and a click opens one in Edit
     d.click("header.home");
-    let rows = d.ok("ui.elements", json!({"prefix": "import.recent."}));
+    assert_eq!(d.app().ui.mode, filmcraft_ui_egui::state::Mode::Home);
+    let rows = d.ok("ui.elements", json!({"prefix": "home.recent."}));
     let rows: Vec<&str> = rows.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap()).collect();
     assert_eq!(rows, ["first cut.fcproj", "second cut.fcproj"]);
-    d.click("import.recent.1");
+    d.click("home.recent.1");
     assert_eq!(d.app().session.path.as_deref(), Some(b.as_str()));
+    assert_eq!(d.app().ui.mode, filmcraft_ui_egui::state::Mode::Edit);
     // Clear Recent Files empties both lists
     d.menu("file.clearRecent");
     assert!(d.app().session.prefs.general.recent_projects.is_empty());
@@ -359,4 +361,154 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     assert_eq!(clear["enabled"], false);
     assert!(!menus.as_array().unwrap().iter().any(|m| m["id"].as_str().is_some_and(|id| id.starts_with("file.openRecent."))));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Home's Recent Projects show each project's thumbnail: the open one's from the session at once,
+/// the others read from their files in the background. A project saved with no open sequence
+/// has none and keeps the icon.
+#[test]
+fn home_recent_projects_show_their_thumbnails() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-recent-thumbs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let demo = dir.join("demo.fcproj").to_string_lossy().to_string();
+    let empty = dir.join("empty.fcproj").to_string_lossy().to_string();
+    // saved with no sequence open, so without a thumbnail
+    Session::default().execute("file.saveAs", json!({"path": empty})).unwrap();
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": demo}));
+    d.exec("file.open", json!({"path": empty}));
+    d.click("header.home");
+    // with the empty one open, the demo's is read from its file off the UI thread
+    let mut shown = false;
+    for _ in 0..200 {
+        if d.has("home.thumbnail.1") {
+            shown = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
+    assert!(shown, "the demo's thumbnail appears");
+    assert!(!d.has("home.thumbnail.0"), "a project saved with nothing open has no thumbnail");
+    // reopened and saved at another frame, the demo's comes from the session at once
+    d.click("home.recent.1");
+    let seq = d.app().session.state.active_sequence.unwrap();
+    let before = d.app().session.thumbnail.clone().unwrap();
+    d.app().session.state.playheads.insert(seq, filmcraft_time::Tick(254_016_000_000 * 4));
+    d.exec("file.save", json!({}));
+    assert_ne!(d.app().session.thumbnail.as_ref(), Some(&before), "a later frame makes a new thumbnail");
+    d.click("header.home");
+    assert!(d.has("home.thumbnail.0"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Home (the header's Home button): New Project and Open, the size cards, and the Community
+/// links. A size card adds a sequence of that size to the open project and goes to Edit, so the
+/// project's work is kept; New Project starts an empty one in Edit.
+#[test]
+fn home_starts_sequences_at_common_sizes_and_new_projects() {
+    use filmcraft_ui_egui::state::Mode;
+    let mut d = Driver::new();
+    let before = d.app().session.project.items.len();
+    d.click("header.home");
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    for id in ["home.new", "home.open", "home.link.discord", "home.link.github"] {
+        assert!(d.has(id), "{id} on Home");
+    }
+    let cards = d.ok("ui.elements", json!({"prefix": "home.sequence."}));
+    let cards: Vec<&str> = cards.as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        cards,
+        [
+            "home.sequence.1920x1080",
+            "home.sequence.3840x2160",
+            "home.sequence.1080x1920",
+            "home.sequence.2160x3840",
+            "home.sequence.1080x1350",
+            "home.sequence.1080x1080"
+        ]
+    );
+    // Vertical 4:5 is a new 1080 × 1350 sequence beside the demo's
+    d.click("home.sequence.1080x1350");
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    assert!(d.app().session.project.items.len() > before, "the demo project is kept");
+    let seq = d.app().session.active_sequence().map(|q| (q.settings.width, q.settings.height));
+    assert_eq!(seq, Some((1080, 1350)));
+    assert_eq!(d.app().session.state.active_sequence.map(|s| s.0), Some(d.item_named("Vertical 4:5")));
+    // Opening the Home screen and editing there doesn't leave it; New Project does
+    d.click("header.home");
+    d.exec("file.newBin", json!({"name": "Stays on Home"}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    d.click("home.new");
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    assert!(d.app().session.active_sequence().is_none(), "a new, empty project");
+}
+
+/// A project opened from outside Home (File ▸ Open, an agent's `file.open`) replaces Home with Edit.
+#[test]
+fn opening_a_project_leaves_home() {
+    use filmcraft_ui_egui::state::Mode;
+    let dir = std::env::temp_dir().join(format!("fc-ui-home-open-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cut.fcproj").to_string_lossy().to_string();
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": path}));
+    d.ok("engine.execute", json!({"command": "mode.home", "params": {}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    d.exec("file.open", json!({"path": path}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Closing the project (File ▸ Close Project) shows Home instead of empty panels.
+#[test]
+fn closing_the_project_shows_home() {
+    use filmcraft_ui_egui::state::Mode;
+    let mut d = Driver::new();
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    d.exec("file.closeProject", json!({"force": true}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    // New Project from there goes back to Edit
+    d.click("home.new");
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+}
+
+/// Home lists the recent projects that still exist: when the newest entries are gone, an older
+/// project beyond Home's six rows is listed (At Startup ▸ Show Home chooses Home because of it).
+#[test]
+fn home_lists_recent_projects_that_still_exist() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-home-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let kept = dir.join("kept.fcproj").to_string_lossy().to_string();
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": kept}));
+    let mut recent: Vec<String> = (0..9).map(|i| dir.join(format!("gone {i}.fcproj")).to_string_lossy().to_string()).collect();
+    recent.push(kept.clone());
+    d.app().session.prefs.general.recent_projects = recent;
+    d.click("header.home");
+    let rows = d.ok("ui.elements", json!({"prefix": "home.recent."}));
+    let rows: Vec<&str> = rows.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap()).collect();
+    assert_eq!(rows, ["kept.fcproj"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Home scrolls, so a Community link below the window has no automation element: `ui.click` must
+/// not resolve a point outside the window from its full rectangle.
+#[test]
+fn home_registers_only_visible_community_links() {
+    let mut d = Driver::new();
+    d.harness.set_size(egui::vec2(1600.0, 420.0));
+    d.frames(3);
+    d.click("header.home");
+    assert!(d.has("home.new"));
+    let all = d.ok("ui.elements", json!({"prefix": "home."}));
+    for e in all.as_array().unwrap() {
+        let bottom = e["rect"][1].as_f64().unwrap() + e["rect"][3].as_f64().unwrap();
+        assert!(bottom <= 420.0, "{} is registered below the window: {e}", e["id"]);
+    }
+    assert!(!d.has("home.link.discord"), "the Discord link is scrolled out of view");
 }
