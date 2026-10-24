@@ -44,6 +44,8 @@ use selection::{current_line, select_line, selected_range, take_by_id};
 #[serde(default)]
 pub struct ScriptUi {
     pub item: Option<u64>,
+    #[serde(skip)]
+    pub(crate) text_paste_revision: Option<u64>,
     /// Two stable line IDs, inclusive; order records the anchor and extension direction.
     pub selected_lines: Option<(u64, u64)>,
     pub selected_slate: Option<u64>,
@@ -153,6 +155,7 @@ enum Action {
     CueThumbnail { source: ItemId, time: Option<Tick> },
     SplitLine { line: u64, text: String, at: usize },
     MergeWithPrevious { line: u64, text: String },
+    PasteText { line: u64, text: String, start: usize, end: usize },
     AddMarkAtSelection,
     ToggleOffscreenSelection,
     FinishSlateDrag,
@@ -287,6 +290,114 @@ pub(crate) fn copy_paste_section(app: &mut FilmcraftApp, copy: bool) -> Result<V
     }
 }
 
+/// Plain text mirrors the OS clipboard representation of a copied Script section.
+pub(crate) fn copied_plain_text(app: &FilmcraftApp) -> Option<String> {
+    let rows = app.ui.script.section_clipboard.as_ref()?.get("lines")?.as_array()?;
+    let text: Option<Vec<_>> = rows.iter().map(|line| line.get("text")?.as_str()).collect();
+    Some(text?.join("\n"))
+}
+
+pub(crate) fn paste_plain_text(app: &mut FilmcraftApp, text: &str) -> Result<Value, String> {
+    if text.len() > ScriptDocument::MAX_TEXT_BYTES {
+        return Err(tl!("Pasted text exceeds the 4 MiB limit.").into());
+    }
+    if text.is_empty() {
+        return Ok(Value::Null);
+    }
+    if copied_plain_text(app).as_deref() == Some(text) && app.ui.script.item.is_some() {
+        return copy_paste_section(app, false);
+    }
+    let result = if let Some(item) = app.ui.script.item {
+        let doc = app.session.project.item(ItemId(item)).and_then(|item| item.as_script()).ok_or("open a script first")?;
+        let after = selected_range(doc, app.ui.script.selected_lines).map(|(_, last)| doc.lines[last].id.0);
+        app.session.execute("script.pasteText", json!({"item":item,"text":text,"afterLine":after})).map_err(|e| e.to_string())?
+    } else {
+        let result = app
+            .session
+            .execute("script.importText", json!({"name":tl!("Untitled Script"),"text":text.replace("\r\n", "\n").replace('\r', "\n")}))
+            .map_err(|e| e.to_string())?;
+        app.ui.script.open_document(result["item"].as_u64());
+        result
+    };
+    app.ui.script.clear_object_selection();
+    if let (Some(first), Some(last)) = (result["startLine"].as_u64(), result["endLine"].as_u64()) {
+        app.ui.script.selected_lines = Some((first, last));
+        app.ui.script.scroll_to_line = Some(first);
+    }
+    Ok(result)
+}
+
+/// Finish Script fields before another panel/tab can hide them. Plain canvas clicks
+/// do not necessarily focus a new egui widget, so explicitly release the old field.
+pub(crate) fn finish_edit_on_click_away(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    // Opening an editor and giving it keyboard focus are separate egui events.
+    // The editor must also close if it never received focus or already lost it.
+    let editor = app
+        .ui
+        .script
+        .edit_line
+        .map(|line| format!("script.line.{line}.edit"))
+        .or_else(|| app.ui.script.edit_scene.map(|line| format!("script.scene.{line}.edit")))
+        .or_else(|| app.ui.script.edit_page.map(|line| format!("script.page.{line}.edit")));
+    let id = editor
+        .as_deref()
+        .and_then(|editor| app.auto.find(editor))
+        .and_then(|element| element.response_id)
+        .or_else(|| (app.ui.focused == PanelKind::Script && ctx.text_edit_focused()).then(|| ctx.memory(|memory| memory.focused())).flatten());
+    let Some(id) = id else { return };
+    let Some(response) = ctx.read_response(id) else { return };
+    let outside = ctx.input(|input| input.pointer.primary_pressed() && input.pointer.interact_pos().is_some_and(|pos| !response.interact_rect.contains(pos)));
+    if !outside {
+        return;
+    }
+    let params = app.ui.script.item.and_then(|item| {
+        let doc = app.session.project.item(ItemId(item))?.as_script()?;
+        if let Some(line) = app.ui.script.edit_line {
+            let row = doc.lines.iter().find(|row| row.id.0 == line)?;
+            return (row.text != app.ui.script.edit_text).then(|| ("script.editLine", json!({"item":item,"line":line,"text":app.ui.script.edit_text})));
+        }
+        if let Some(line) = app.ui.script.edit_scene.or(app.ui.script.edit_page) {
+            let row = doc.lines.iter().find(|row| row.id.0 == line)?;
+            let label = if app.ui.script.edit_scene.is_some() { app.ui.script.scene_text.trim() } else { app.ui.script.page_text.trim() };
+            let label = (!label.is_empty()).then_some(label);
+            let (scene, page) = if app.ui.script.edit_scene.is_some() { (label, row.page.as_deref()) } else { (row.scene.as_deref(), label) };
+            return (scene != row.scene.as_deref() || page != row.page.as_deref())
+                .then(|| ("script.setLabel", json!({"item":item,"line":line,"scene":scene,"page":page})));
+        }
+        None
+    });
+    if let Some((command, params)) = params
+        && let Err(error) = app.session.execute(command, params)
+    {
+        app.ui.status = error.to_string();
+        return;
+    }
+    app.ui.script.edit_line = None;
+    app.ui.script.edit_caret = None;
+    app.ui.script.edit_scene = None;
+    app.ui.script.edit_page = None;
+    ctx.memory_mut(|memory| memory.surrender_focus(id));
+}
+
+pub(crate) fn has_text_paste_undo(app: &FilmcraftApp) -> bool {
+    app.ui.script.edit_line.is_some() && app.ui.script.text_paste_revision == Some(app.session.revision)
+}
+
+pub(crate) fn undo_text_paste(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String> {
+    let result = app.session.execute("edit.undo", json!({})).map_err(|error| error.to_string())?;
+    app.ui.script.text_paste_revision = None;
+    app.ui.script.edit_line = None;
+    app.ui.script.edit_text.clear();
+    app.ui.script.edit_caret = None;
+    app.ui.script.selected_lines = None;
+    ctx.memory_mut(|memory| {
+        if let Some(id) = memory.focused() {
+            memory.surrender_focus(id);
+        }
+    });
+    Ok(result)
+}
+
 fn command(app: &mut FilmcraftApp, id: &str, params: Value) -> Option<Value> {
     match app.session.execute(id, params) {
         Ok(value) => Some(value),
@@ -399,6 +510,38 @@ fn run_actions(app: &mut FilmcraftApp, actions: Vec<Action>) {
                     }
                 }
             }
+            Action::PasteText { line, text, start, end } => {
+                if text.len() > ScriptDocument::MAX_TEXT_BYTES {
+                    app.ui.status = tl!("Pasted text exceeds the 4 MiB limit.").into();
+                    continue;
+                }
+                // Keep typing before this paste as its own edit, so one Undo removes
+                // only the paste instead of also discarding the pending typed text.
+                let pending = app
+                    .ui
+                    .script
+                    .item
+                    .and_then(|item| app.session.project.item(ItemId(item)))
+                    .and_then(|item| item.as_script())
+                    .and_then(|doc| doc.lines.iter().find(|row| row.id.0 == line))
+                    .is_some_and(|row| row.text != app.ui.script.edit_text);
+                if pending && command(app, "script.editLine", json!({"item":app.ui.script.item,"line":line,"text":app.ui.script.edit_text})).is_none() {
+                    continue;
+                }
+                if let Some(value) = command(
+                    app,
+                    "script.pasteText",
+                    json!({"item":app.ui.script.item,"line":line,"baseText":app.ui.script.edit_text,"text":text,"start":start,"end":end}),
+                ) && let (Some(last), Some(text), Some(at)) = (value["endLine"].as_u64(), value["text"].as_str(), value["at"].as_u64())
+                {
+                    app.ui.script.text_paste_revision = Some(app.session.revision);
+                    app.ui.script.edit_line = Some(last);
+                    app.ui.script.edit_text = text.to_owned();
+                    app.ui.script.edit_caret = usize::try_from(at).ok();
+                    app.ui.script.selected_lines = Some((last, last));
+                    app.ui.script.scroll_to_line = Some(last);
+                }
+            }
             Action::MergeWithPrevious { line, text } => {
                 if let Some(value) = command(app, "script.mergeWithPrevious", json!({"item": app.ui.script.item, "line": line, "text": text}))
                     && let (Some(previous), Some(merged), Some(caret)) = (value["line"].as_u64(), value["text"].as_str(), value["at"].as_u64())
@@ -484,18 +627,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut doc = document(app);
     let item_before_header = app.ui.script.item;
     let mut actions = Vec::new();
-    let header_rect = Rect::from_min_size(rect.min, vec2(rect.width(), 72.0));
-    toolbar::header(app, ui, header_rect, &scripts, doc.as_ref(), &mut actions);
+    let body_top = toolbar::header(app, ui, rect, &scripts, doc.as_ref(), &mut actions);
     // The document chooser can change the active script during this frame.
     if app.ui.script.item != item_before_header {
         doc = document(app);
     }
     if let Some(doc) = doc.as_ref() {
         toolbar::coverage_hotkeys(app, ui, doc, &mut actions);
-        let body = Rect::from_min_max(pos2(rect.min.x, header_rect.max.y), rect.max);
-        canvas::content(app, ui, body, doc, &mut actions);
+        let body = Rect::from_min_max(pos2(rect.min.x, body_top), rect.max);
+        if body.is_positive() {
+            canvas::content(app, ui, body, doc, &mut actions);
+        }
     } else {
-        getting_started(app, ui, Rect::from_min_max(pos2(rect.min.x, header_rect.max.y), rect.max));
+        getting_started(app, ui, Rect::from_min_max(pos2(rect.min.x, body_top), rect.max));
     }
     run_actions(app, actions);
     rebind_confirmation(app, ui.ctx());

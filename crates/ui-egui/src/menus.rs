@@ -295,8 +295,35 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if matches!(id, "script.thumbnailBack" | "script.thumbnailForward") {
         return crate::panels::script::shuttle_thumbnail(app, ctx, if id == "script.thumbnailBack" { -1 } else { 1 });
     }
+    if app.ui.focused == PanelKind::Script && id == "edit.undo" && crate::panels::script::has_text_paste_undo(app) {
+        return crate::panels::script::undo_text_paste(app, ctx);
+    }
     if app.ui.focused == PanelKind::Script && params.as_object().is_none_or(|map| map.is_empty()) && matches!(id, "edit.copy" | "edit.paste") {
-        return crate::panels::script::copy_paste_section(app, id == "edit.copy");
+        if ctx.text_edit_focused() {
+            if id == "edit.copy" {
+                app.synthetic.push(egui::Event::Copy);
+            } else if let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+                app.synthetic.push(egui::Event::Paste(text));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
+            return Ok(Value::Null);
+        }
+        if id == "edit.copy" {
+            let result = crate::panels::script::copy_paste_section(app, true)?;
+            if let Some(text) = crate::panels::script::copied_plain_text(app) {
+                ctx.copy_text(text);
+            }
+            return Ok(result);
+        }
+        if let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+            return crate::panels::script::paste_plain_text(app, &text);
+        }
+        if app.ui.script.section_clipboard.is_some() {
+            return crate::panels::script::copy_paste_section(app, false);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+        return Ok(Value::Null);
     }
     if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
         return r;

@@ -173,6 +173,8 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Plain text for native menu Paste; web/keyboard hosts can supply Event::Paste directly.
+    pub clipboard_text: Option<Box<dyn FnMut() -> Option<String>>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
@@ -1551,6 +1553,38 @@ impl FilmcraftApp {
             self.bindings = menus::bindings(self);
             self.bindings_rev = self.session.shortcuts.revision;
         }
+        if self.ui.focused == PanelKind::Script
+            && panels::script::has_text_paste_undo(self)
+            && ctx.text_edit_focused()
+            && ctx.input_mut(|input| !input.modifiers.shift && !input.modifiers.alt && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z))
+        {
+            if let Err(error) = panels::script::undo_text_paste(self, ctx) {
+                self.ui.status = error;
+            }
+            return;
+        }
+        if self.ui.focused == PanelKind::Script && !ctx.text_edit_focused() && self.dialog.is_none() {
+            let pasted = ctx.input_mut(|input| {
+                let mut pasted = Vec::new();
+                input.events.retain(|event| {
+                    if let egui::Event::Paste(text) = event {
+                        pasted.push(text.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                pasted
+            });
+            if !pasted.is_empty() {
+                for text in pasted {
+                    if let Err(error) = panels::script::paste_plain_text(self, &text) {
+                        self.ui.status = error;
+                    }
+                }
+                return;
+            }
+        }
         // A pane divider or floating-panel grip keeps focus after a pointer drag so arrows can
         // nudge it, but it takes no other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
@@ -1856,6 +1890,7 @@ impl FilmcraftApp {
             }
             self.command_inbox = Some(rx);
         }
+        panels::script::finish_edit_on_click_away(self, &ctx);
         self.begin_press(&ctx);
         self.handle_shortcuts(&ctx);
         self.sync_native_menu();

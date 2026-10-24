@@ -131,6 +131,138 @@ fn switching_scripts_discards_pending_edits_and_rebinds_from_the_previous_docume
 }
 
 #[test]
+fn clipboard_text_creates_script_and_inserts_rows_without_using_timeline_paste() {
+    let mut driver = Driver::new();
+    driver.ok("ui.menu.invoke", json!({"id":"window.panel.Script"}));
+    driver.harness.input_mut().events.push(egui::Event::Paste("  First\r\n\r\nLast".into()));
+    driver.frames(6);
+    let item = driver.harness.state().ui.script.item.expect("pasted script");
+    let before = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    assert_eq!(before["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(), ["  First", "", "Last"]);
+    let first = before["lines"][0]["id"].as_u64().unwrap();
+    driver.harness.state_mut().ui.script.selected_lines = Some((first, first));
+    driver.harness.input_mut().events.push(egui::Event::Paste("Inserted\nAnother".into()));
+    driver.frames(6);
+    let after = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    assert_eq!(
+        after["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["  First", "Inserted", "Another", "", "Last"]
+    );
+    driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], before);
+    driver.snapshot("pasted-script");
+}
+
+#[test]
+fn multiline_clipboard_paste_at_editor_caret_creates_one_row_per_break() {
+    let mut driver = Driver::new();
+    let item = driver.exec("script.importText", json!({"name":"Caret paste","text":"café tail\nLater"}))["item"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+    let before = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    let first = before["lines"][0]["id"].as_u64().unwrap();
+    driver.double_click(&format!("script.line.{first}"));
+    driver.ok("ui.click", json!({"id":format!("script.line.{first}.edit")}));
+    driver.ok("ui.key", json!({"key":"Home"}));
+    for _ in 0..4 {
+        driver.ok("ui.key", json!({"key":"ArrowRight"}));
+    }
+    driver.harness.input_mut().events.push(egui::Event::Paste(" A\r\n\r\nB".into()));
+    driver.frames(6);
+    let after = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    assert_eq!(after["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(), ["café A", "", "B tail", "Later"]);
+    driver.ok("ui.key", json!({"key":"Z","command":true}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], before);
+    driver.snapshot("paste-at-caret");
+}
+
+#[test]
+fn paste_undo_keeps_preceding_typing_and_native_menu_paste_uses_editor_selection() {
+    let mut driver = Driver::new();
+    let item = driver.exec("script.importText", json!({"name":"Typing","text":"Before\nAfter"}))["item"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+    let mut expected = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    let row = expected["lines"][0]["id"].as_u64().unwrap();
+    driver.double_click(&format!("script.line.{row}"));
+    driver.ok("ui.click", json!({"id":format!("script.line.{row}.edit")}));
+    driver.ok("ui.key", json!({"key":"End"}));
+    driver.ok("ui.type", json!({"text":" typed"}));
+    driver.harness.state_mut().hooks.clipboard_text = Some(Box::new(|| Some(" A\r\nB".into())));
+    driver.ok("ui.menu.invoke", json!({"id":"edit.paste"}));
+    driver.frames(6);
+    let after = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    assert_eq!(after["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(), ["Before typed A", "B", "After"]);
+    driver.ok("ui.key", json!({"key":"Z","command":true}));
+    expected["lines"][0]["text"] = json!("Before typed");
+    assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], expected);
+}
+
+#[test]
+fn clicking_away_closes_a_row_editor_even_before_it_receives_keyboard_focus() {
+    for target in ["same-row-margin", "another-row", "next-row-margin", "canvas", "other-panel", "help"] {
+        let mut driver = Driver::new();
+        let item = driver.exec("script.importText", json!({"name":"Click away","text":"First\nLast"}))["item"].as_u64().unwrap();
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+        let doc = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+        let first = doc["lines"][0]["id"].as_u64().unwrap();
+        let last = doc["lines"][1]["id"].as_u64().unwrap();
+        driver.double_click(&format!("script.line.{first}"));
+        assert_eq!(driver.harness.state().ui.script.edit_line, Some(first));
+        let revision = driver.harness.state().session.revision;
+        let target = match target {
+            "same-row-margin" => json!({"id":format!("script.line.{first}"),"fx":0.98}),
+            "another-row" => json!({"id":format!("script.line.{last}")}),
+            "next-row-margin" => json!({"id":format!("script.line.{last}"),"fx":0.98}),
+            "canvas" => json!({"id":"script.emptyCanvas","fy":0.98}),
+            "other-panel" => json!({"id":"project.search"}),
+            _ => json!({"id":"script.help"}),
+        };
+        driver.ok("ui.click", target);
+        driver.frames(3);
+        assert_eq!(driver.harness.state().ui.script.edit_line, None);
+        assert_eq!(driver.harness.state().session.revision, revision, "unchanged blur must not add an edit");
+        driver.harness.input_mut().events.push(egui::Event::Text(" accidental".into()));
+        driver.frames(3);
+        assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], doc);
+        driver.snapshot("unfocused-row-click-away");
+    }
+}
+
+#[test]
+fn clicking_away_finishes_script_text_and_later_typing_does_not_edit_it() {
+    for target in ["canvas", "another-row", "next-row-margin", "other-panel", "help"] {
+        let mut driver = Driver::new();
+        let item = driver.exec("script.importText", json!({"name":"Click away","text":"First\nLast"}))["item"].as_u64().unwrap();
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+        let doc = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+        let first = doc["lines"][0]["id"].as_u64().unwrap();
+        let last = doc["lines"][1]["id"].as_u64().unwrap();
+        driver.double_click(&format!("script.line.{first}"));
+        driver.ok("ui.click", json!({"id":format!("script.line.{first}.edit")}));
+        driver.ok("ui.key", json!({"key":"End"}));
+        driver.ok("ui.type", json!({"text":" edited"}));
+        let target = match target {
+            "canvas" => json!({"id":"script.emptyCanvas","fy":0.98}),
+            "another-row" => json!({"id":format!("script.line.{last}")}),
+            "next-row-margin" => json!({"id":format!("script.line.{last}"),"fx":0.98}),
+            "other-panel" => json!({"id":"project.search"}),
+            _ => json!({"id":"script.help"}),
+        };
+        driver.ok("ui.click", target);
+        driver.frames(2);
+        assert_eq!(driver.harness.state().ui.script.edit_line, None);
+        let after = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+        assert_eq!(after["lines"][0]["text"], "First edited");
+        driver.harness.input_mut().events.push(egui::Event::Text(" accidental".into()));
+        driver.frames(3);
+        assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], after);
+    }
+}
+
+#[test]
 fn toolbar_switch_discards_document_local_state_without_applying_old_edits() {
     let mut driver = Driver::new();
     let first = driver.exec("script.importText", json!({"name":"First","text":"First line"}))["item"].as_u64().unwrap();
@@ -1580,6 +1712,65 @@ fn search_steps_through_repeated_terms_and_wraps() {
     }
     driver.ok("ui.click", json!({"id":"script.search.previous"}));
     assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((matches[2], matches[2])));
+}
+
+#[test]
+fn script_toolbar_wraps_controls_and_keeps_search_above_the_document() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let item = driver.exec("script.importText", json!({"name":"Toolbar wrap","text":"First\nLast"}))["item"].as_u64().unwrap();
+    let first = driver.exec("script.inspect", json!({"item":item}))["document"]["lines"][0]["id"].as_u64().unwrap();
+    let take = driver.exec("script.addTake", json!({"item":item,"source":source,"startLine":first,"endLine":first}))["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+    driver.harness.state_mut().ui.script.selected_take = Some(take);
+    driver.harness.state_mut().ui.script.selected_lines = Some((first, first));
+    let mut wrapped = false;
+    for width in [1600.0, 1100.0, 800.0] {
+        driver.harness.set_size(egui::vec2(width, 980.0));
+        driver.frames(4);
+        let [x, y, w, h] = driver.rect("script.toolbar");
+        let search = driver.rect("script.search");
+        let document = driver.rect("script.document");
+        let help = driver.rect("script.help");
+        let settings = driver.rect("script.settings");
+        assert!((help[1] - settings[1]).abs() <= 0.5, "help must align with the first row of buttons");
+        let mut controls = Vec::new();
+        for id in [
+            "script.document",
+            "script.settings",
+            "script.new",
+            "script.import",
+            "script.color.apply",
+            "script.scene.add",
+            "script.page.add",
+            "script.scene.combo",
+            "script.page.combo",
+            "script.mark.add",
+            "script.offscreen.toggle",
+            "script.help",
+        ] {
+            let r = driver.rect(id);
+            assert!(r[0] >= x && r[0] + r[2] <= x + w + 0.5, "{id} must fit within toolbar at width {width}: {r:?}");
+            assert!(r[1] >= y && r[1] + r[3] <= search[1], "{id} must stay above search at width {width}");
+            if id != "script.help" {
+                wrapped |= r[1] > document[1] + document[3];
+            }
+            controls.push((id, r));
+        }
+        let controls_bottom = controls.iter().map(|(_, r)| r[1] + r[3]).fold(y, f64::max);
+        // The shorter search field is vertically centered within its 24pt row.
+        assert!(search[1] - controls_bottom <= 9.0, "search spacing must stay compact whether the toolbar wraps or not");
+        for (i, (a, r)) in controls.iter().enumerate() {
+            for (b, s) in controls.iter().skip(i + 1) {
+                assert!(r[0] + r[2] <= s[0] || s[0] + s[2] <= r[0] || r[1] + r[3] <= s[1] || s[1] + s[3] <= r[1], "{a} overlaps {b}");
+            }
+        }
+        assert!(search[1] + search[3] <= y + h);
+        assert!(driver.rect(&format!("script.line.{first}"))[1] >= y + h, "canvas must begin below wrapped toolbar");
+        driver.snapshot(&format!("toolbar-wrap-{width}"));
+    }
+    assert!(wrapped, "narrow toolbar should wrap instead of scrolling");
 }
 
 #[test]

@@ -201,6 +201,84 @@ fn paste_section(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"startLine":first,"endLine":last}))
 }
 
+/// Paste plain text either into a row's character selection or after selected rows.
+/// Stable IDs keep later rows and their editorial annotations attached while rows shift.
+fn paste_text(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "script.pasteText";
+    let item = item(p, cmd)?;
+    let pasted = text(p, "text", cmd, ScriptDocument::MAX_TEXT_BYTES)?.replace("\r\n", "\n").replace('\r', "\n");
+    if pasted.is_empty() {
+        return Err(bad(cmd, "there is no text to paste"));
+    }
+    let line = p.get("line").filter(|v| !v.is_null()).map(|_| id(p, "line", cmd).map(ScriptLineId)).transpose()?;
+    let after = p.get("afterLine").filter(|v| !v.is_null()).map(|_| id(p, "afterLine", cmd).map(ScriptLineId)).transpose()?;
+    if line.is_some() && after.is_some() {
+        return Err(bad(cmd, "choose an edited row or an insertion row, not both"));
+    }
+    let mut draft = script(&s.project, item, cmd)?.clone();
+    let (insert_at, rows, caret, original) = if let Some(line) = line {
+        let index = draft.line_index(line).ok_or_else(|| bad(cmd, "line does not exist"))?;
+        let base = text(p, "baseText", cmd, ScriptDocument::MAX_LINE_BYTES)?;
+        let offset = |key| p.get(key).and_then(Value::as_u64).and_then(|v| usize::try_from(v).ok()).ok_or_else(|| bad(cmd, "need character selection offsets"));
+        let start = offset("start")?;
+        let end = offset("end")?;
+        if start > end || end > base.chars().count() {
+            return Err(bad(cmd, "paste selection is outside the edited line"));
+        }
+        let byte = |at| base.char_indices().nth(at).map_or(base.len(), |(byte, _)| byte);
+        let combined_size = base.len().checked_add(pasted.len()).ok_or_else(|| bad(cmd, "paste size overflow"))?;
+        if combined_size > ScriptDocument::MAX_TEXT_BYTES {
+            return Err(bad(cmd, "pasted text exceeds the 4 MiB limit"));
+        }
+        let combined = format!("{}{}{}", &base[..byte(start)], pasted, &base[byte(end)..]);
+        let caret = pasted.rsplit('\n').next().map_or(0, |last| last.chars().count()) + if pasted.contains('\n') { 0 } else { start };
+        (index, combined, caret, Some(line))
+    } else {
+        let index = match after {
+            Some(line) => draft.line_index(line).ok_or_else(|| bad(cmd, "paste row does not exist"))?.saturating_add(1),
+            None => draft.lines.len(),
+        };
+        (index, pasted, 0, None)
+    };
+    let count = rows.split('\n').count();
+    let added = count.saturating_sub(usize::from(original.is_some()));
+    if draft.lines.len().saturating_add(added) > ScriptDocument::MAX_LINES {
+        return Err(bad(cmd, "pasted text exceeds the 50,000-line limit"));
+    }
+    let mut created = Vec::with_capacity(count);
+    for (index, row) in rows.split('\n').enumerate() {
+        if row.len() > ScriptDocument::MAX_LINE_BYTES {
+            return Err(bad(cmd, "a pasted script line exceeds the 16 KiB limit"));
+        }
+        let id = if index == 0
+            && let Some(id) = original
+        {
+            id
+        } else {
+            ScriptLineId(draft.alloc_id().map_err(|e| bad(cmd, e))?)
+        };
+        let old = (index == 0).then(|| original.and_then(|id| draft.lines.iter().find(|line| line.id == id))).flatten();
+        created.push(ScriptLine { id, text: row.to_owned(), scene: old.and_then(|line| line.scene.clone()), page: old.and_then(|line| line.page.clone()) });
+    }
+    let first = created.first().ok_or_else(|| bad(cmd, "there is no text to paste"))?.id;
+    let last = created.last().ok_or_else(|| bad(cmd, "there is no text to paste"))?;
+    let result = json!({"startLine":first.0,"endLine":last.id.0,"text":last.text,"at":caret,"addedRows":added});
+    if let Some(original) = original {
+        for take in draft.slates.iter_mut().flat_map(|slate| &mut slate.takes) {
+            if take.end_line == original {
+                take.end_line = last.id;
+            }
+        }
+    }
+    draft.lines.splice(insert_at..insert_at.saturating_add(usize::from(original.is_some())), created);
+    draft.validate().map_err(|error| bad(cmd, error))?;
+    s.edit("Paste Script Text", |project, _| {
+        *script_mut(project, item, cmd)? = draft;
+        Ok(())
+    })?;
+    Ok(result)
+}
+
 fn edit_line(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "script.editLine";
     let item = item(p, cmd)?;
@@ -950,6 +1028,13 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("script.importText", "Import Script Text", r#"{"name":str,"text":str,"bin":id?}"#, |s, p| create(s, p, true), true),
         spec("script.inspect", "Inspect Script", r#"{"item":id}"#, inspect, false),
         spec("script.copySection", "Copy Script Section", r#"{"item":id,"startLine":id,"endLine":id,"slates":[id]}"#, copy_section, false),
+        spec(
+            "script.pasteText",
+            "Paste Script Text",
+            r#"{"item":id,"text":str,"afterLine":id?,"line":id?,"baseText":str?,"start":number?,"end":number?}"#,
+            paste_text,
+            true,
+        ),
         spec("script.pasteSection", "Paste Script Section", r#"{"item":id,"afterLine":id?,"section":object}"#, paste_section, true),
         spec("script.editLine", "Edit Script Line", r#"{"item":id,"line":id,"text":str}"#, edit_line, true),
         spec("script.splitLine", "Split Script Line", r#"{"item":id,"line":id,"text":str,"at":number}"#, split_line, true),
@@ -1010,6 +1095,62 @@ mod tests {
             }),
             None,
         )
+    }
+
+    #[test]
+    fn text_paste_splits_at_unicode_caret_shifts_rows_and_preserves_annotations() {
+        let mut s = Session::default();
+        let media = source(&mut s, "clip", 10);
+        let item = s.execute("script.importText", json!({"name":"Paste","text":"café tail\nLater\nLast"})).unwrap()["item"].as_u64().unwrap();
+        let before_doc = s.project.item(ItemId(item)).unwrap().as_script().unwrap().clone();
+        let rows: Vec<_> = before_doc.lines.iter().map(|line| line.id.0).collect();
+        let take = s.execute("script.addTake", json!({"item":item,"source":media.0,"startLine":rows[1],"endLine":rows[2]})).unwrap()["take"].as_u64().unwrap();
+        s.execute("script.addMark", json!({"item":item,"take":take,"line":rows[2],"sourceTime":100})).unwrap();
+        s.execute("script.setTakeStyle", json!({"item":item,"take":take,"color":"Blue","offscreenLines":[rows[1]]})).unwrap();
+        let before = s.project.clone();
+        let result =
+            s.execute("script.pasteText", json!({"item":item,"line":rows[0],"baseText":"café tail","start":4,"end":4,"text":" A\r\n\r\n  B\r"})).unwrap();
+        assert_eq!(result["addedRows"], 3, "CRLF counts as one break; empty and terminal rows are retained");
+        assert_eq!(result["at"], 0);
+        let doc = s.project.item(ItemId(item)).unwrap().as_script().unwrap();
+        assert_eq!(doc.lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(), ["café A", "", "  B", " tail", "Later", "Last"]);
+        assert_eq!(doc.lines[0].id.0, rows[0]);
+        assert_eq!(doc.lines[4..], before_doc.lines[1..]);
+        assert_eq!(doc.slates, before.item(ItemId(item)).unwrap().as_script().unwrap().slates);
+        let after = s.project.clone();
+        let reopened = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap();
+        assert_eq!(&reopened.project, s.project.as_ref());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project.as_ref(), before.as_ref());
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(s.project.as_ref(), after.as_ref());
+    }
+
+    #[test]
+    fn text_paste_rejects_invalid_offsets_and_limits_without_partial_edits() {
+        let mut s = Session::default();
+        let item = s.execute("script.importText", json!({"name":"Paste limits","text":"café\nAfter"})).unwrap()["item"].as_u64().unwrap();
+        let row = s.project.item(ItemId(item)).unwrap().as_script().unwrap().lines[0].id.0;
+        let before = s.project.clone();
+        for extra in [json!({"start":5,"end":5}), json!({"start":3,"end":1}), json!({"start":-1,"end":0}), json!({"start":0,"end":999999})] {
+            let mut p = json!({"item":item,"line":row,"baseText":"café","text":"A\nB"});
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            assert!(s.execute("script.pasteText", p).is_err());
+            assert_eq!(s.project.as_ref(), before.as_ref());
+        }
+        for text in [
+            "".to_owned(),
+            "A".repeat(ScriptDocument::MAX_LINE_BYTES + 1),
+            "\n".repeat(ScriptDocument::MAX_LINES),
+            "A".repeat(ScriptDocument::MAX_TEXT_BYTES + 1),
+        ] {
+            assert!(s.execute("script.pasteText", json!({"item":item,"afterLine":row,"text":text})).is_err());
+            assert_eq!(s.project.as_ref(), before.as_ref());
+        }
+        let result = s.execute("script.pasteText", json!({"item":item,"afterLine":row,"text":"  One\n\nTwo"})).unwrap();
+        assert_eq!(result["addedRows"], 3);
+        let doc = s.project.item(ItemId(item)).unwrap().as_script().unwrap();
+        assert_eq!(doc.lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(), ["café", "  One", "", "Two", "After"]);
     }
 
     #[test]

@@ -9,6 +9,17 @@ Before a script is created or imported, the Script panel shows a short getting-s
 text import, Project clip drops, candle coverage and Source playback, and frame-linked marks.
 The guide wraps and scrolls in small panels and disappears when a script is open. A ? button at the
 right of the Script toolbar opens the same guide in a scrollable help popover at any time.
+Toolbar controls wrap onto additional rows when the panel is narrow, keeping Scene/Page labels
+with their menus and placing search and the document below the measured toolbar height.
+
+Plain text copied from another app can be pasted directly into Script. With no script open,
+paste creates a script; otherwise it inserts rows after the selected range (or appends).
+While editing a row, paste replaces the text selection at the caret. Each hard line break
+adds a row, including blank and terminal rows, with CRLF treated as one break. Later rows
+retain stable IDs, labels, candles and marks. A single Undo removes the paste while keeping
+text typed beforehand. Clicking outside a Script text field commits the edit and releases input
+focus, including clicks into blank canvas or another panel. Oversized text, lines and invalid
+offsets fail before any paste edit.
 
 Trimming a take candle hides annotations outside its coverage while preserving their line IDs,
 mark IDs and source times. Expanding coverage restores marks, row colors and off-screen passages.

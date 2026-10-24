@@ -740,8 +740,24 @@ fn row_view(
     let text_x = left.min.x + text_inset;
     if app.ui.script.edit_line == Some(line.id.0) {
         let edit_rect = Rect::from_min_max(pos2(text_x, left.min.y + 2.0), pos2(left.max.x, left.max.y - 2.0));
-        let response = ui.put(edit_rect, egui::TextEdit::singleline(&mut app.ui.script.edit_text).desired_width(edit_rect.width()));
+        let edit_id = ui.id().with(("script.line.edit", line.id.0));
+        let pasted = if ui.memory(|memory| memory.has_focus(edit_id)) {
+            ui.input_mut(|input| {
+                let index = input.events.iter().position(|event| matches!(event, egui::Event::Paste(_)))?;
+                match input.events.remove(index) {
+                    egui::Event::Paste(text) => Some(text),
+                    _ => None,
+                }
+            })
+        } else {
+            None
+        };
+        let paste_cursor = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|state| state.cursor.char_range());
+        let response = ui.put(edit_rect, egui::TextEdit::singleline(&mut app.ui.script.edit_text).id(edit_id).desired_width(edit_rect.width()));
         app.auto.add_response(&format!("script.line.{}.edit", line.id.0), &response, "Edit script line");
+        if response.changed() {
+            app.ui.script.text_paste_revision = None;
+        }
         if let Some(at) = app.ui.script.edit_caret.take()
             && let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), response.id)
         {
@@ -750,7 +766,20 @@ fn row_view(
             response.request_focus();
         }
         let cursor = egui::text_edit::TextEditState::load(ui.ctx(), response.id).and_then(|state| state.cursor.char_range());
-        if response.has_focus()
+        if let Some(text) = pasted {
+            let (start, end) = paste_cursor.map_or_else(
+                || {
+                    let end = app.ui.script.edit_text.chars().count();
+                    (end, end)
+                },
+                |range| {
+                    let a = usize::from(range.primary.index);
+                    let b = usize::from(range.secondary.index);
+                    (a.min(b), a.max(b))
+                },
+            );
+            actions.push(Action::PasteText { line: line.id.0, text, start, end });
+        } else if response.has_focus()
             && index > 0
             && ui.input(|input| input.key_pressed(egui::Key::Backspace))
             && cursor.is_some_and(|range| usize::from(range.primary.index) == 0 && usize::from(range.secondary.index) == 0)
@@ -761,7 +790,9 @@ fn row_view(
             actions.push(Action::SplitLine { line: line.id.0, text: app.ui.script.edit_text.clone(), at });
             app.ui.script.edit_line = None;
         } else if response.lost_focus() {
-            actions.push(Action::Command("script.editLine", json!({"item": app.ui.script.item, "line": line.id.0, "text": app.ui.script.edit_text})));
+            if app.ui.script.edit_text != line.text {
+                actions.push(Action::Command("script.editLine", json!({"item": app.ui.script.item, "line": line.id.0, "text": app.ui.script.edit_text})));
+            }
             app.ui.script.edit_line = None;
         }
     } else {
