@@ -25,7 +25,7 @@ reference) is used only as an external test oracle.
 | Tiles and tile groups (uniform and explicit spacing, tile size bytes) | 5.11 | done (tiles decoded in parallel) |
 | Intra frame mode info: partitions, skip, segment id, CDEF index, delta q / lf, y / uv modes, angle deltas, CfL alphas, palette (colors, cache, color index map), filter intra, tx size (incl. var-tx syntax) | 5.11 | done, bit-exact |
 | Coefficients (all_zero, eob, base / br levels, Golomb, dc sign, tx type sets, scans) | 5.11.39 | done, bit-exact |
-| Dequantisation incl. quantiser matrices | 7.12 | done (qmatrix not yet oracle-tested) |
+| Dequantisation incl. quantiser matrices | 7.12 | done |
 | Inverse transforms: DCT 4–64, ADST 4/8/16, flip ADST, identity 4–32, WHT (lossless), rectangular | 7.13 | done, bit-exact |
 | Intra prediction: DC, V/H + directional with edge filter and upsampling, smooth (3), Paeth, recursive filter intra, CfL, palette | 7.11.2, 7.11.4, 7.11.5 | done, bit-exact |
 | Inter mode info: segment id prediction, skip mode, reference frames (single / compound, uni / bi), modes, DRL, MV coding, inter-intra, motion mode, compound type, interpolation filters | 5.11.18–5.11.32 | done, bit-exact |

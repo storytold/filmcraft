@@ -87,7 +87,8 @@ pub(crate) struct TileDecoder<'a, 'f> {
     pub b: Block,
     pub mvs: crate::mvpred::MvStack,
     pub nb: crate::inter_info::Neighbours,
-    /// Quant[] for the current transform block (raster order, stride per Adjusted size).
+    /// Quant[] for the current transform block (raster order, stride per Adjusted size); all
+    /// zero between transform blocks (`reconstruct` clears what it reads).
     quant: Vec<i32>,
     dequant: Vec<i32>,
     residual: Vec<i32>,
@@ -1659,8 +1660,6 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         let h4 = TX_HEIGHT[tx_sz] as usize >> 2;
         let tx_sz_ctx = (TX_SIZE_SQR[tx_sz] as usize + TX_SIZE_SQR_UP[tx_sz] as usize + 1) >> 1;
         let ptype = (plane > 0) as usize;
-        let seg_eob = if tx_sz == TX_16X64 || tx_sz == TX_64X16 { 512 } else { 1024.min(TX_WIDTH[tx_sz] as usize * TX_HEIGHT[tx_sz] as usize) };
-        self.quant[..seg_eob].iter_mut().for_each(|q| *q = 0);
         let mut eob = 0usize;
         let mut cul_level = 0u32;
         let mut dc_category = 0u8;
@@ -1907,10 +1906,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
 
     /// Reconstruct process (7.12.3).
     fn reconstruct(&mut self, plane: usize, x: usize, y: usize, tx_sz: usize) {
-        let dq_denom: i64 = match tx_sz {
-            TX_32X32 | TX_16X32 | TX_32X16 | TX_16X64 | TX_64X16 => 2,
-            TX_64X64 | TX_32X64 | TX_64X32 => 4,
-            _ => 1,
+        // dqDenom (7.12.3) is 1, 2 or 4 and the dividend is non-negative.
+        let dq_shift = match tx_sz {
+            TX_32X32 | TX_16X32 | TX_32X16 | TX_16X64 | TX_64X16 => 1,
+            TX_64X64 | TX_32X64 | TX_64X32 => 2,
+            _ => 0,
         };
         let log2w = TX_WIDTH_LOG2[tx_sz] as u32;
         let log2h = TX_HEIGHT_LOG2[tx_sz] as u32;
@@ -1941,7 +1941,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         }
         for i in 0..th {
             for j in 0..tw {
-                let qv = self.quant[i * tw + j];
+                let qv = std::mem::take(&mut self.quant[i * tw + j]);
                 if qv == 0 {
                     continue;
                 }
@@ -1953,7 +1953,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                     q
                 };
                 let dq = qv as i64 * q2;
-                let mag = (dq.abs() & 0xFFFFFF) / dq_denom;
+                let mag = (dq.abs() & 0xFFFFFF) >> dq_shift;
                 let dq2 = if dq < 0 { -mag } else { mag };
                 self.dequant[i * 64 + j] = dq2.clamp(-lim, lim - 1) as i32;
             }
