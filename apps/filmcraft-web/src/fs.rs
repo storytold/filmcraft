@@ -99,6 +99,23 @@ pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
     })
 }
 
+/// Register a browser `Blob` at exactly `path`, replacing what was there: files a host page hands
+/// over keep the path they have there (`host`), so projects refer to them by it.
+pub fn put_blob(path: &str, blob: web_sys::Blob) {
+    let size = blob.size() as u64;
+    FS.with(|fs| {
+        let mut fs = fs.borrow_mut();
+        let id = fs.next_id;
+        fs.next_id += 1;
+        fs.blobs.insert(id, blob);
+        if let Some(Entry::Blob { id: old, .. }) = fs.entries.insert(path.to_string(), Entry::Blob { id, size }) {
+            fs.blobs.remove(&old);
+            fs.chunks.retain(|(blob, _), _| *blob != old);
+        }
+        fs.recount();
+    });
+}
+
 /// Put bytes at a path (no download).
 pub fn put(path: &str, data: Vec<u8>) {
     FS.with(|fs| fs.borrow_mut().entries.insert(path.to_string(), Entry::Mem(data.into())));
