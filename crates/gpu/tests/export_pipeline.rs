@@ -1,32 +1,13 @@
-//! End-to-end GPU export parity: the registered `filmcraft-gpu` frame renderer drives the full
-//! export pipeline (`filmcraft_export::export` → PNG sequence) and its frames must match the
-//! `GpuRendering::Off` (CPU reference) frames within the GPU-vs-CPU parity tolerance — p99 of the
-//! per-pixel max RGB difference over black ≤ 6 and mean < 1.5 (the golden-test criterion).
+//! Auto export fails closed. The separate strict renderer API returns resident GPU frames without
+//! readback; explicit Off remains the CPU reference export path.
 
-use filmcraft_export::{ExportSettings, Format, FrameRenderer, GpuRenderStats, GpuRendering, Progress, export, register_frame_renderer};
+use filmcraft_export::{ExportSettings, Exporter, Format, GpuRendering, HardwareEncoding, Progress, export};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{Generator, MediaSource};
 use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
 use filmcraft_render::SourceMap;
 use filmcraft_time::{TICKS_PER_SECOND, TimeRange};
 use std::sync::Arc;
-
-/// The same wrapper the app and CLI register: `filmcraft-gpu`'s renderer behind
-/// `filmcraft_export`'s trait.
-struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
-
-impl FrameRenderer for GpuFrameRenderer {
-    fn render(
-        &mut self,
-        project: &filmcraft_project::Project,
-        seq: filmcraft_project::ItemId,
-        t: filmcraft_time::Tick,
-        opts: filmcraft_render::RenderOptions,
-        sources: &dyn filmcraft_render::SourceProvider,
-    ) -> Option<filmcraft_render::Image> {
-        self.0.render(project, seq, t, opts, sources)
-    }
-}
 
 fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcraft_project::ItemId, SourceMap) {
     let mut p = filmcraft_project::Project::new("x");
@@ -70,12 +51,6 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
     (Arc::new(p), seq, m)
 }
 
-fn png(dir: &str, name: &str) -> Vec<u8> {
-    // image_sequence_path flattens the path stem: <stem><index>.png in the temp dir itself.
-    let index: u64 = name.trim_start_matches("img").trim_end_matches(".png").parse().unwrap_or(0);
-    std::fs::read(std::env::temp_dir().join(format!("fc-gpu-export-{dir}{index:03}.png"))).unwrap()
-}
-
 fn export_png(dir: &str, gpu: GpuRendering, (w, h): (u32, u32)) {
     let (p, seq, m) = project(w, h);
     let mut s = ExportSettings {
@@ -88,47 +63,50 @@ fn export_png(dir: &str, gpu: GpuRendering, (w, h): (u32, u32)) {
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
 }
 
-fn assert_parity(cpu_png: &[u8], gpu_png: &[u8], what: &str) {
-    let a = image::load_from_memory(cpu_png).unwrap().to_rgba8();
-    let b = image::load_from_memory(gpu_png).unwrap().to_rgba8();
-    assert_eq!(a.dimensions(), b.dimensions(), "{what}: size mismatch");
-    let d: Vec<u32> = a
-        .as_raw()
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(b.as_raw().as_chunks::<4>().0)
-        .map(|(x, y)| (0..3).map(|k| (x[k] as u32).abs_diff(y[k] as u32)).max().unwrap_or(0))
-        .collect();
-    let mut d = d;
-    d.sort_unstable();
-    let p99 = d[d.len() * 99 / 100];
-    let mean = d.iter().sum::<u32>() as f64 / d.len() as f64;
-    eprintln!("{what}: GPU vs CPU p99 {p99}, mean {mean:.3}");
-    assert!(p99 <= 6 && mean < 1.5, "{what}: GPU parity p99 {p99}, mean {mean:.3}");
-}
-
 #[test]
-fn gpu_export_matches_cpu_and_counts() {
-    let Some(_) = filmcraft_gpu::ExportRenderer::new() else {
-        eprintln!("SKIPPED (gpu export pipeline): no adapter");
-        return;
-    };
-    // Clean registry first: Auto with no factory must be byte-equal to Off.
-    export_png("off-cpu", GpuRendering::Off, (320, 180));
-    export_png("off-auto", GpuRendering::Auto, (320, 180));
-    assert_eq!(png("off-cpu", "img000.png"), png("off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
+fn gpu_auto_fails_closed_and_strict_renderer_stays_resident() {
+    let (p, seq, sources) = project(320, 180);
+    let auto_path = std::env::temp_dir().join("fc-auto-must-fail.png").to_string_lossy().into_owned();
+    let auto = ExportSettings { format: Format::PngSequence, path: auto_path.clone(), gpu_rendering: GpuRendering::Auto, ..Default::default() };
+    let progress = Progress::default();
+    // PNG is not a stepped export: it goes through `export`, which refuses GPU Auto before any work.
+    let error = export(&p, seq, &auto, &sources, &progress).expect_err("GPU Auto must fail closed");
+    assert!(error.to_string().contains("GPU-resident renderer and VA-API encoder path"), "{error}");
+    assert_eq!(progress.total.load(std::sync::atomic::Ordering::Relaxed), 0, "Auto must fail before frame work");
+    assert!(!std::path::Path::new(&auto_path).exists(), "Auto must fail before output creation");
+    let h264 = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Auto, ..auto };
+    let error = Exporter::new(p, seq, &h264, &progress).err().expect("GPU Auto must not use software encoder");
+    assert!(error.to_string().contains("GPU-resident renderer and VA-API encoder path"), "{error}");
 
-    register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present")))));
-    let sizes = [(320u32, 180u32), (17, 13), (1, 1), (257, 129)];
-    for (i, size) in sizes.into_iter().enumerate() {
-        export_png("cpu", GpuRendering::Off, size);
-        export_png("gpu", GpuRendering::Auto, size);
-        for f in ["000", "001"] {
-            assert_parity(&png("cpu", &format!("img{f}.png")), &png("gpu", &format!("img{f}.png")), &format!("{:?} frame {f}", size));
+    let mut renderer = match filmcraft_gpu::ExportRenderer::new_required() {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            let unavailable = matches!(
+                &error.reason,
+                filmcraft_render::plan::EligibilityFailure::UnsupportedAdapter { .. }
+                    | filmcraft_render::plan::EligibilityFailure::UnsupportedDeviceRequirement {
+                        requirement: filmcraft_render::plan::DeviceRequirement::PhysicalGpu | filmcraft_render::plan::DeviceRequirement::DeviceAvailable,
+                    }
+            );
+            if unavailable {
+                eprintln!("SKIPPED strict GPU runtime (required AMD adapter/device unavailable): {error}");
+                return;
+            }
+            panic!("strict GPU renderer setup failed on eligible hardware: {error}");
         }
-        let _ = i;
+    };
+    let sizes = [(320u32, 180u32), (17, 13), (1, 1), (257, 129)];
+    for size in sizes {
+        // The strict renderer never materializes a generator on the CPU: it must refuse it, at any size.
+        let (project, seq, sources) = project(size.0, size.1);
+        let error = renderer
+            .render_required(&project, seq, filmcraft_time::Tick::ZERO, filmcraft_render::RenderOptions::default(), &sources)
+            .err()
+            .unwrap_or_else(|| panic!("strict render of a generator source must fail closed for {size:?}"));
+        assert!(
+            matches!(&error.reason, filmcraft_render::plan::EligibilityFailure::CpuFallbackRequired { id: Some(id) } if id == "generator"),
+            "strict render refuses CPU-materialized generators for {size:?}: {error}"
+        );
+        export_png(&format!("off-{}x{}", size.0, size.1), GpuRendering::Off, size);
     }
-    let GpuRenderStats { frames, .. } = filmcraft_export::gpu_render_stats();
-    assert!(frames >= 8, "gpu frames counted across the parity exports: {frames}");
 }

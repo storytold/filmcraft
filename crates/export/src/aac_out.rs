@@ -108,6 +108,7 @@ pub(crate) fn export(
     sources: &dyn SourceProvider,
     progress: &Progress,
 ) -> Result<(u64, u64)> {
+    crate::check_runtime_ram_ceiling()?;
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let mut a = AudioOut::new(project.clone(), seq, settings, range)?;
     let mut enc: Box<dyn AudioEncoder> = audio_factories()
@@ -140,7 +141,9 @@ pub(crate) fn export(
         let track = mux.add_track(track).map_err(|e| ExportError::Io(e.to_string()))?;
         Sink::Mp4 { mux, track, frame: enc.frame_size() }
     };
-    while let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) {
+    loop {
+        crate::check_runtime_ram_ceiling()?;
+        let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) else { break };
         if cancelled() {
             return Err(ExportError::Cancelled);
         }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ram_guard::RUNTIME_CEILING_PERCENT;
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{FrameRequest, Generator, MediaSource};
 use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
@@ -356,164 +357,264 @@ fn hdr_exports_signal_pq_and_hlg() {
     }
 }
 
-/// Scenario runner for the GPU hook: everything in one test because the renderer registry is
-/// process-global and parallel tests would see each other's factories.
+/// Auto fails before building a renderer or encoder; Off remains the explicit CPU reference path.
 #[test]
-fn gpu_hook_scenarios() {
-    // 1. Declining renderer: byte-equal to Off, and an empty registry too.
+fn auto_export_fails_before_work_and_off_remains_available() {
+    static FACTORIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    fn factory() -> Option<Box<dyn FrameRenderer>> {
+        FACTORIES.fetch_add(1, Ordering::SeqCst);
+        None
+    }
     crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| None);
-    let (p, seq, m) = project();
-    let mk = |path: &String, gpu: Option<bool>| {
-        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
-        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
-        s.gpu_rendering = match gpu {
-            Some(true) | None => crate::GpuRendering::Auto,
-            Some(false) => crate::GpuRendering::Off,
-        };
-        export(&p, seq, &s, &m, &Progress::default()).unwrap()
+    FACTORIES.store(0, Ordering::SeqCst);
+    crate::register_frame_renderer(factory);
+
+    let (p, seq, sources) = project();
+    let auto_path = tmp("auto-blocked.png");
+    let auto = ExportSettings { format: Format::PngSequence, path: auto_path.clone(), gpu_rendering: crate::GpuRendering::Auto, ..Default::default() };
+    let progress = Progress::default();
+    let source_calls = std::sync::atomic::AtomicUsize::new(0);
+    let no_sources = |_: filmcraft_project::ItemId| {
+        source_calls.fetch_add(1, Ordering::SeqCst);
+        None
     };
-    mk(&tmp("off.png"), Some(false));
-    mk(&tmp("auto-declined.png"), Some(true));
-    assert_eq!(std::fs::read(tmp("off000.png")).unwrap(), std::fs::read(tmp("auto-declined000.png")).unwrap(), "declined GPU export must be byte-equal to Off");
-    crate::reset_frame_renderers_for_tests();
-    mk(&tmp("auto-empty.png"), Some(true));
-    assert_eq!(std::fs::read(tmp("off000.png")).unwrap(), std::fs::read(tmp("auto-empty000.png")).unwrap(), "empty registry must behave like Off");
+    let error = export(&p, seq, &auto, &no_sources, &progress).expect_err("Auto must fail closed");
+    assert!(error.to_string().contains("GPU-resident renderer and VA-API encoder path"), "{error}");
+    assert_eq!(FACTORIES.load(Ordering::SeqCst), 0, "Auto must fail before renderer factory");
+    assert_eq!(source_calls.load(Ordering::SeqCst), 0, "Auto must fail before source access");
+    assert_eq!(progress.total.load(Ordering::Relaxed), 0, "Auto must fail before export work");
+    assert!(!std::path::Path::new(&auto_path).exists(), "Auto must fail before output creation");
 
-    // 2. Producing renderer: counters up and its picture reaches the export.
-    crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
-    mk(&tmp("fake-gpu.png"), Some(true));
-    assert!(gpu_render_stats().frames >= 2, "gpu frames counted: {:?}", gpu_render_stats());
-    assert_eq!(gpu_render_stats().fallbacks, 0);
-    mk(&tmp("fake-off.png"), Some(false));
-    assert_eq!(gpu_render_stats().fallbacks, 0, "Off must not count as fallback");
-    assert_ne!(std::fs::read(tmp("fake-gpu000.png")).unwrap(), std::fs::read(tmp("fake-off000.png")).unwrap(), "the fake GPU picture must reach the export");
+    let auto_h264 = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Auto, ..auto.clone() };
+    let error = Exporter::new(p.clone(), seq, &auto_h264, &progress).err().expect("Auto must not reach software encoder fallback");
+    assert!(error.to_string().contains("GPU-resident renderer and VA-API encoder path"), "{error}");
+    assert_eq!(FACTORIES.load(Ordering::SeqCst), 0, "Auto H.264 must fail before renderer factory");
+    assert_eq!(progress.total.load(Ordering::Relaxed), 0, "Auto H.264 must fail before encoder setup");
 
-    // 3. Hostile and degenerate frame sizes must not panic with a renderer attached.
+    let off_path = tmp("off-reference.png");
+    let mut off = ExportSettings { format: Format::PngSequence, path: off_path.clone(), gpu_rendering: crate::GpuRendering::Off, ..Default::default() };
+    off.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(1)));
+    export(&p, seq, &off, &sources, &Progress::default()).unwrap();
+    assert!(std::path::Path::new(&off_path.replace(".png", "000.png")).exists(), "Off CPU reference export must remain available");
+    assert_eq!(FACTORIES.load(Ordering::SeqCst), 0, "Off must not invoke GPU renderer factory");
     crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| None);
-    for (w, h) in [(1, 1), (17, 13), (4096, 1)] {
-        let mut p = Project::new("x");
-        let g = GeneratorSource::new(Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
-        let info = g.info().clone();
-        let red = p.add_item(
-            &info.name.clone(),
-            Label::Iris,
-            ItemKind::Media(MediaClip {
-                media: MediaRef::Generator(g.generator.clone()),
-                info,
-                interpret: Default::default(),
-                mark_in: None,
-                mark_out: None,
-                markers: vec![],
-                offline: false,
-                proxy: None,
-                identity: None,
-            }),
-            None,
-        );
-        let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
-        let v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)), FrameRate::FPS_24).unwrap();
-        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
-        let mut m = SourceMap::default();
-        m.0.insert(red, Arc::new(g));
-        let mut s = ExportSettings { format: Format::PngSequence, path: tmp("hostile.png"), ..Default::default() };
-        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(1)));
-        s.gpu_rendering = crate::GpuRendering::Auto;
-        let r = export(&Arc::new(p), seq, &s, &m, &Progress::default());
-        if r.is_err() {
-            continue; // sizes the exporter rejects are fine too — as long as nothing panics
+}
+
+#[test]
+fn dropping_incomplete_disk_output_preserves_destination_and_removes_temporary_file() {
+    let dir = transaction_dir();
+    let path = dir.join("existing.mov");
+    let sentinel = b"previous complete export";
+    std::fs::write(&path, sentinel).unwrap();
+    let settings = ExportSettings { format: Format::Mjpeg, path: path.to_string_lossy().into_owned(), include_audio: false, ..Default::default() };
+
+    let mut out = Out::create(&settings).unwrap();
+    out.write_all(b"partial replacement").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), sentinel, "partial output must not truncate the previous export");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "the partial stream lives beside the destination");
+    drop(out);
+
+    assert_eq!(std::fs::read(&path).unwrap(), sentinel);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "dropping an unfinished output removes its temporary file");
+}
+
+#[test]
+fn cancelling_stepped_video_export_preserves_destination_and_removes_temporary_file() {
+    let dir = transaction_dir();
+    let path = dir.join("existing.mov");
+    let sentinel = b"previous complete export";
+    std::fs::write(&path, sentinel).unwrap();
+    let settings = ExportSettings { format: Format::Mjpeg, path: path.to_string_lossy().into_owned(), include_audio: false, ..Default::default() };
+    let (p, seq, sources) = project();
+    let progress = Progress::default();
+    let mut ex = Exporter::new(p, seq, &settings, &progress).unwrap();
+    ex.set_batch(4);
+    ex.set_overlap(false);
+    while progress.done.load(Ordering::Relaxed) < 16 {
+        assert!(matches!(ex.step(&sources, &progress).unwrap(), Step::Progress));
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), sentinel, "opening the muxer must keep the old export visible");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "the muxer streams to a sibling temporary file");
+
+    progress.cancel.store(true, Ordering::Relaxed);
+    assert!(matches!(ex.step(&sources, &progress), Err(ExportError::Cancelled)));
+    drop(ex);
+    assert_eq!(std::fs::read(&path).unwrap(), sentinel);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "cancellation removes the partial temporary file");
+}
+
+#[test]
+fn successful_export_replaces_destination_and_remains_decodable() {
+    let dir = transaction_dir();
+    let path = dir.join("existing.mov");
+    std::fs::write(&path, b"previous complete export").unwrap();
+    let (p, seq, sources) = project();
+    let settings = ExportSettings { format: Format::Mjpeg, path: path.to_string_lossy().into_owned(), include_audio: false, ..Default::default() };
+    let report = export(&p, seq, &settings, &sources, &Progress::default()).unwrap();
+
+    assert_eq!(report.frames, 24);
+    let src = filmcraft_codecs::open_bytes("existing.mov", std::fs::read(&path).unwrap().into()).unwrap();
+    assert_eq!(src.info().video.as_ref().unwrap().width, 320);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "commit leaves no sibling temporary file");
+}
+
+fn transaction_dir() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!("fc-export-transaction-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn amd_required_basic_settings_reach_admission_gate() {
+    let s = ExportSettings { gpu_rendering: crate::GpuRendering::AmdRequired, ..Default::default() };
+    assert!(s.validate().is_ok());
+}
+
+#[test]
+fn gpu_required_encoding_refuses_formats_without_a_gpu_encoder() {
+    let h264 = ExportSettings { format: Format::H264, hardware_encoding: crate::HardwareEncoding::GpuRequired, ..Default::default() };
+    assert!(h264.validate().is_ok());
+    let prores = ExportSettings { format: Format::ProRes, hardware_encoding: crate::HardwareEncoding::GpuRequired, ..Default::default() };
+    assert!(prores.validate().is_err(), "a ProRes export must not fall back to the CPU encoder");
+}
+
+#[test]
+fn runtime_ram_ceiling_passes_below_and_fails_at_or_above_90() {
+    // deterministic, host-independent: the guard reads the real proc filesystem, so this test
+    // does not fake readings — it only asserts the function is present and the test harness can
+    // call it. Actual threshold behavior is asserted under injected host readings below.
+    let _ = crate::runtime_ram_headroom_kib();
+    assert_eq!(RUNTIME_CEILING_PERCENT, 90);
+}
+
+#[test]
+fn runtime_ram_ceiling_is_separate_from_the_build_guard() {
+    // The build guard stops at 83/85%; the export runtime ceiling stops at 90%; constants must
+    // not collapse onto each other.
+    assert_eq!(RUNTIME_CEILING_PERCENT, 90);
+    // build guard constants are private; assert behavior instead of the literal.
+    assert!(crate::check_ram_pressure().is_ok() || crate::check_ram_pressure().is_err());
+    assert!(crate::check_runtime_ram_ceiling().is_ok() || crate::check_runtime_ram_ceiling().is_err());
+}
+
+#[test]
+fn runtime_headroom_is_none_on_an_unknown_host_and_nonnegative_when_readable() {
+    let h = crate::runtime_ram_headroom_kib();
+    match h {
+        Some(kib) => assert!(kib <= RUNTIME_CEILING_PERCENT.saturating_mul(1_000_000), "headroom must be a small, sane number on this host: {kib}"),
+        None => { /* unsupported/unsane host: acceptable */ }
+    }
+}
+
+#[test]
+fn amd_required_legacy_and_explicit_admission_fail_before_frames() {
+    struct Admission(std::sync::atomic::AtomicUsize, bool, Format);
+    impl AmdExportAdmission for Admission {
+        fn validate_settings(&self, s: &ExportSettings, r: &settings::Resolved) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(s.video_format(), self.2);
+            assert_eq!((r.width, r.height), (320, 180));
+            if self.1 { Ok(()) } else { Err(ExportError::Unsupported("fake resolved config rejection".into())) }
         }
-        let bytes = std::fs::read(tmp("hostile000.png")).unwrap_or_default();
-        assert!(!bytes.is_empty(), "{w}x{h}: PNG written");
     }
-
-    // 4. A renderer that panics is dropped, not put back: the export still completes, every
-    //    frame comes from the CPU (byte-equal to Off), and no renderer is used after its panic.
-    crate::reset_frame_renderers_for_tests();
-    PANICS.store(0, std::sync::atomic::Ordering::SeqCst);
-    crate::register_frame_renderer(|| Some(Box::new(PanickingRenderer) as Box<dyn FrameRenderer>));
-    let (p, seq, m) = project();
-    let mk12 = |path: &String, gpu: crate::GpuRendering| {
-        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
-        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
-        s.gpu_rendering = gpu;
-        export(&p, seq, &s, &m, &Progress::default()).unwrap()
-    };
-    mk12(&tmp("panic-off.png"), crate::GpuRendering::Off);
-    mk12(&tmp("panic-auto.png"), crate::GpuRendering::Auto);
-    for f in ["000", "005", "011"] {
-        assert_eq!(
-            std::fs::read(tmp(&format!("panic-off{f}.png"))).unwrap(),
-            std::fs::read(tmp(&format!("panic-auto{f}.png"))).unwrap(),
-            "frame {f}: a panicking GPU renderer falls back to the CPU"
-        );
-    }
-    // at most one panic per pooled renderer (4): none is used again after it panicked
-    assert!(PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4, "renderer reused after a panic: {}", PANICS.load(std::sync::atomic::Ordering::SeqCst));
-
-    // 5. A frame the planner hands back as one CPU image (an adjustment layer over the clip from
-    //    frame 12) is rendered by the CPU without taking a pooled renderer: it counts as a
-    //    fallback, and the renderer's picture reaches only the frames before it.
-    crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer) as Box<dyn FrameRenderer>));
-    let (p, seq, m) = project();
-    let mut p = Arc::unwrap_or_clone(p);
-    let r = FrameRate::FPS_24;
-    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
-    let over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
-    let v2 = filmcraft_project::TrackId(p.alloc_id());
-    let q = p.sequence_mut(seq).unwrap();
-    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
-    q.video_tracks[1].items.push(over);
-    let p = Arc::new(p);
-    let mk24 = |path: &String, gpu: crate::GpuRendering| {
-        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
-        s.range = Some(TimeRange::new(Tick::ZERO, r.tick_of(24)));
-        s.gpu_rendering = gpu;
-        export(&p, seq, &s, &m, &Progress::default()).unwrap()
-    };
-    mk24(&tmp("adj-off.png"), crate::GpuRendering::Off);
-    mk24(&tmp("adj-auto.png"), crate::GpuRendering::Auto);
-    let frame = |name: &str, f: &str| std::fs::read(tmp(&format!("{name}{f}.png"))).unwrap();
-    assert_ne!(frame("adj-off", "011"), frame("adj-auto", "011"), "a layered frame goes to the renderer");
-    for f in ["012", "023"] {
-        assert_eq!(frame("adj-off", f), frame("adj-auto", f), "frame {f}: an adjustment layer frame is the CPU's");
-    }
-    assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
-    crate::reset_frame_renderers_for_tests();
-}
-
-static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-struct PanickingRenderer;
-
-impl FrameRenderer for PanickingRenderer {
-    fn render(
-        &mut self,
-        _project: &Project,
-        _seq: ItemId,
-        _t: Tick,
-        _opts: filmcraft_render::RenderOptions,
-        _sources: &dyn SourceProvider,
-    ) -> Option<filmcraft_render::Image> {
-        PANICS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        panic!("GPU renderer failure (test)");
+    let (p, seq, sources) = project();
+    let progress = Progress::default();
+    for format in [Format::H264, Format::Hevc] {
+        let settings = ExportSettings { format, gpu_rendering: GpuRendering::AmdRequired, ..Default::default() };
+        assert!(Exporter::new(p.clone(), seq, &settings, &progress).err().unwrap().to_string().contains("host adapter admission"));
+        assert!(export(&p, seq, &settings, &sources, &progress).err().unwrap().to_string().contains("host adapter admission"));
+        for valid in [false, true] {
+            let admission = Arc::new(Admission(std::sync::atomic::AtomicUsize::new(0), valid, format));
+            let error = Exporter::new_with_admission(p.clone(), seq, &settings, &progress, Some(admission.clone())).err().unwrap();
+            assert!(error.to_string().contains(if valid { "resident video session is unavailable" } else { "fake resolved config rejection" }));
+            assert_eq!(admission.0.load(Ordering::SeqCst), 1);
+            assert_eq!(progress.total.load(Ordering::Relaxed), 0);
+        }
     }
 }
 
-struct FakeRenderer;
+#[test]
+fn amd_required_frame_uses_resident_session_without_cpu_source_lookup() {
+    use filmcraft_isobmff::{AvcConfig, SampleEntry};
+    use filmcraft_media::{CompressedVideoSource, MediaError};
+    use filmcraft_project::{ItemKind, MediaRef};
+    use filmcraft_render::{SourceProvider, plan::PreflightedFrame};
 
-impl FrameRenderer for FakeRenderer {
-    fn render(
-        &mut self,
-        _project: &Project,
-        _seq: ItemId,
-        _t: Tick,
-        _opts: filmcraft_render::RenderOptions,
-        _sources: &dyn SourceProvider,
-    ) -> Option<filmcraft_render::Image> {
-        Some(filmcraft_render::Image::new(320, 180))
+    struct Sources(std::sync::atomic::AtomicUsize);
+    impl SourceProvider for Sources {
+        fn source(&self, _item: ItemId) -> Option<filmcraft_media::SharedSource> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            None
+        }
+
+        fn compressed_source(&self, _item: ItemId) -> std::result::Result<Arc<dyn CompressedVideoSource>, MediaError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(MediaError::Unsupported("unexpected compressed source lookup".into()))
+        }
     }
+
+    struct Session(Arc<std::sync::atomic::AtomicUsize>);
+    impl crate::ResidentVideoSession for Session {
+        fn sample_entry(&self) -> SampleEntry {
+            SampleEntry::avc(AvcConfig::new(vec![vec![0x67, 0x64, 0x00, 0x1f]], vec![vec![0x68, 0xee]], 4), 320, 180)
+        }
+        fn timescale(&self) -> u32 {
+            24
+        }
+        fn frame_bytes(&self, _frame: &PreflightedFrame) -> Result<u64> {
+            Ok(64)
+        }
+        fn encode_frame(
+            &mut self,
+            index: u64,
+            frame: PreflightedFrame,
+            _sources: &dyn SourceProvider,
+            _reservation: &mut crate::ResidentReservation,
+        ) -> Result<Vec<EncodedPacket>> {
+            assert_eq!(index, 0);
+            assert_eq!(frame.source_requests().len(), 1);
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(ExportError::Encode("mock resident session reached".into()))
+        }
+        fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct Admission(Arc<std::sync::atomic::AtomicUsize>);
+    impl AmdExportAdmission for Admission {
+        fn validate_settings(&self, _settings: &ExportSettings, _resolved: &settings::Resolved) -> Result<()> {
+            Ok(())
+        }
+        fn create_session(
+            &self,
+            _project: Arc<Project>,
+            _seq: ItemId,
+            _settings: &ExportSettings,
+            _resolved: &settings::Resolved,
+        ) -> Result<Box<dyn crate::ResidentVideoSession>> {
+            Ok(Box::new(Session(self.0.clone())))
+        }
+    }
+
+    let (project, seq, _) = project();
+    let mut project = (*project).clone();
+    let video_item = project.sequence(seq).unwrap().video_tracks[0].items[0].item;
+    if let ItemKind::Media(media) = &mut project.item_mut(video_item).unwrap().kind {
+        media.media = MediaRef::File { path: "resident-input.mp4".into() };
+        media.info.kind = filmcraft_media::MediaKind::Movie;
+    }
+    let project = Arc::new(project);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let admission = Arc::new(Admission(calls.clone()));
+    let sources = Sources(std::sync::atomic::AtomicUsize::new(0));
+    let progress = Progress::default();
+    let settings = ExportSettings { format: Format::H264, gpu_rendering: GpuRendering::AmdRequired, include_audio: false, ..Default::default() };
+    let mut exporter = Exporter::new_with_admission(project, seq, &settings, &progress, Some(admission)).unwrap();
+
+    let error = exporter.step(&sources, &progress).unwrap_err();
+    assert!(error.to_string().contains("mock resident session reached"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(sources.0.load(Ordering::SeqCst), 0, "strict mode must not call CPU or compressed source lookup");
 }

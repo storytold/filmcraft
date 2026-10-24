@@ -47,12 +47,10 @@
 //!   the prefetch is not started once it is set.
 //! * **Panics.** The prefetch runs under `catch_unwind` and becomes an [`ExportError`]; a panic of
 //!   the encode side unwinds the calling thread as before (the job guard turns it into an error).
-//! * **Memory.** Two batches are in flight instead of one, so the batch is capped by
+//! * **Memory.** Two batches are in flight instead of one, capped at two frames each and by
 //!   [`IN_FLIGHT_BUDGET`]: `2 * batch * frame_bytes <= budget`, at least one frame
-//!   ([`overlap_batch`]). A batch never grows over what it was without overlap, so the peak is the
-//!   old peak plus at most the finished frames of the batch being encoded (half the budget,
-//!   256 MiB); a 4K HDR export (100 MB a frame) runs 2-frame batches and 4K SDR 8-frame ones instead of 16. Frames are
-//!   dropped as soon as they are encoded.
+//!   ([`overlap_batch`]). Sequential batches cap at four frames. A frame larger than its budget
+//!   share still runs alone; frames are dropped as soon as they are encoded.
 //! * **Two-pass** exports overlap in the analysis pass (encode only) and in the real pass; the
 //!   prefetch never runs past the end of a pass.
 //! * **Timers.** `Render` and `Encode` are wall times of work that now runs at the same time, so
@@ -65,7 +63,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use filmcraft_isobmff::{Brand, Mp4Writer, PcmConfig, SampleEntry, TrackConfig, WriteSample, WriterOptions};
 use filmcraft_project::{ItemId, Project};
-use filmcraft_render::SourceProvider;
+use filmcraft_render::{RenderOptions, SourceProvider, plan::preflight_frame_required};
 use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
@@ -74,8 +72,8 @@ use crate::mxf_out::{MxfMux, MxfSetup};
 use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode};
 use crate::{
-    AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, Progress, Report, Result, Stage, VideoEncoder,
-    audio_factories, export_range, frame_span, note_stage, timed, video_factories,
+    AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, Progress, Report, ResidentReservation,
+    ResidentVideoSession, Result, Stage, VideoEncoder, audio_factories, export_range, frame_span, note_stage, timed, video_factories,
 };
 
 /// Output frames per interleaved group: the video packets of these frames, then the audio up to
@@ -86,6 +84,7 @@ pub const INTERLEAVE: i64 = 16;
 /// Most bytes of rendered frames an overlapped export keeps in flight (the batch being encoded and
 /// the one being rendered), see [`overlap_batch`].
 pub const IN_FLIGHT_BUDGET: u64 = 1 << 29;
+const MAX_IN_FLIGHT_FRAMES: i64 = 4;
 
 /// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats.
 type Frame = (Vec<u8>, Vec<f32>);
@@ -110,22 +109,86 @@ struct Ahead {
     frames: Vec<Frame>,
 }
 
+enum VideoPath {
+    Cpu { pipe: Arc<Pipeline>, encoder: Box<dyn VideoEncoder> },
+    Resident { session: Box<dyn ResidentVideoSession>, width: u32, height: u32, rate: FrameRate, hdr_out: bool },
+}
+
+impl VideoPath {
+    fn width(&self) -> u32 {
+        match self {
+            Self::Cpu { pipe, .. } => pipe.w,
+            Self::Resident { width, .. } => *width,
+        }
+    }
+
+    fn height(&self) -> u32 {
+        match self {
+            Self::Cpu { pipe, .. } => pipe.h,
+            Self::Resident { height, .. } => *height,
+        }
+    }
+
+    fn rate(&self) -> FrameRate {
+        match self {
+            Self::Cpu { pipe, .. } => pipe.rate,
+            Self::Resident { rate, .. } => *rate,
+        }
+    }
+
+    fn hdr_out(&self) -> bool {
+        match self {
+            Self::Cpu { pipe, .. } => pipe.hdr_out,
+            Self::Resident { hdr_out, .. } => *hdr_out,
+        }
+    }
+
+    fn sample_entry(&self) -> SampleEntry {
+        match self {
+            Self::Cpu { encoder, .. } => encoder.sample_entry(),
+            Self::Resident { session, .. } => session.sample_entry(),
+        }
+    }
+
+    fn timescale(&self) -> u32 {
+        match self {
+            Self::Cpu { encoder, .. } => encoder.timescale(),
+            Self::Resident { session, .. } => session.timescale(),
+        }
+    }
+
+    fn media_start(&self) -> Option<i64> {
+        match self {
+            Self::Cpu { encoder, .. } => encoder.media_start(),
+            Self::Resident { session, .. } => session.media_start(),
+        }
+    }
+
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        match self {
+            Self::Cpu { encoder, .. } => encoder.flush(),
+            Self::Resident { session, .. } => session.flush(),
+        }
+    }
+}
+
 /// Render frames `f..end` in parallel. `None` when a source was not ready for one of them (the
 /// pending flag, taken after every frame because it is per thread): the batch is incomplete and
 /// must be rendered again.
-fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Option<Vec<Frame>> {
+fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Result<Option<Vec<Frame>>> {
     let pending = AtomicBool::new(false);
-    let frames: Vec<Frame> = (f..end)
+    let frames: Result<Vec<Frame>> = (f..end)
         .into_par_iter()
         .map(|fi| {
-            let frame = pipe.frame(fi, sources);
+            let frame = pipe.frame(fi, sources)?;
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
             }
-            frame
+            Ok(frame)
         })
         .collect();
-    (!pending.load(Ordering::Relaxed)).then_some(frames)
+    let frames = frames?;
+    Ok((!pending.load(Ordering::Relaxed)).then_some(frames))
 }
 
 /// What encoding a batch came to.
@@ -148,7 +211,7 @@ pub enum Step {
 
 /// An export of an encoded-video format, advanced one batch at a time.
 pub struct Exporter {
-    pipe: Arc<Pipeline>,
+    video: VideoPath,
     settings: ExportSettings,
     f0: i64,
     f1: i64,
@@ -164,7 +227,6 @@ pub struct Exporter {
     /// Steps that rendered a batch alongside the encoding of the previous one.
     overlapped_steps: u64,
     brand: Brand,
-    venc: Box<dyn VideoEncoder>,
     aenc: Option<Box<dyn AudioEncoder>>,
     audio: Option<AudioOut>,
     /// The loudness pass ran (or is not needed).
@@ -216,10 +278,28 @@ fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Resu
 impl Exporter {
     /// Set up an export (encoder, output size, colour signalling); sets `progress.total`.
     pub fn new(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, progress: &Progress) -> Result<Self> {
-        timed(Stage::Setup, || Self::set_up(project, seq, settings, progress))
+        Self::new_with_admission(project, seq, settings, progress, None)
     }
 
-    fn set_up(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, progress: &Progress) -> Result<Self> {
+    /// Set up with capability admission from the host session.
+    pub fn new_with_admission(
+        project: Arc<Project>,
+        seq: ItemId,
+        settings: &ExportSettings,
+        progress: &Progress,
+        admission: Option<Arc<dyn crate::AmdExportAdmission>>,
+    ) -> Result<Self> {
+        timed(Stage::Setup, || Self::set_up(project, seq, settings, progress, admission))
+    }
+
+    fn set_up(
+        project: Arc<Project>,
+        seq: ItemId,
+        settings: &ExportSettings,
+        progress: &Progress,
+        admission: Option<Arc<dyn crate::AmdExportAdmission>>,
+    ) -> Result<Self> {
+        crate::check_runtime_ram_ceiling()?;
         if !stepped(settings.format) {
             return Err(ExportError::Unsupported(format!("{} is not a stepped export", settings.format.label())));
         }
@@ -228,30 +308,54 @@ impl Exporter {
         // HDR sequences export HDR (H.264 / ProRes / DNxHR / APV, and H.265 where a registered encoder
         // writes Main 10) unless SDR is asked for; elsewhere H.265 is tone-mapped 8-bit SDR
         let pipe = q.settings.color;
-        let hdr_out = hdr_output(pipe.working.is_hdr(), settings.sdr, settings.video_format(), crate::hdr_available);
+        let hdr_out = if settings.gpu_rendering == crate::GpuRendering::AmdRequired {
+            pipe.working.is_hdr() && !settings.sdr
+        } else {
+            hdr_output(pipe.working.is_hdr(), settings.sdr, settings.video_format(), crate::hdr_available)
+        };
         let mut settings = settings.clone();
         settings.signal = match (hdr_out, pipe.working) {
             (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
             (true, _) => ColorSignal::HLG,
             _ => ColorSignal::default(),
         };
-        // bake the derived bitrate / keyframe values in for the encoder factories
+        // Bake derived bitrate and keyframe values in for both encoder paths.
         let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
         settings.bitrate_kbps = r.target_kbps;
         settings.max_bitrate_kbps = Some(r.max_kbps);
         settings.keyframe_distance = Some(r.keyint);
         settings.adaptive_bitrate = None;
         let two_pass = settings.video_format() == Format::H264 && settings.bitrate_mode == BitrateMode::Vbr2Pass;
+        if settings.gpu_rendering == crate::GpuRendering::AmdRequired {
+            let admission = admission.as_ref().ok_or_else(|| ExportError::Unsupported("AMD required export needs host adapter admission".into()))?;
+            admission.validate_settings(&settings, &r)?;
+            if settings.burn_captions || settings.effects.any_video() {
+                return Err(ExportError::Unsupported("AMD resident export does not support export captions or video overlays".into()));
+            }
+            if settings.scale != 1.0 || settings.frame_size.is_some() {
+                return Err(ExportError::Unsupported("AMD resident export requires native sequence dimensions".into()));
+            }
+            if two_pass {
+                return Err(ExportError::Unsupported("AMD resident export does not support two-pass encoding".into()));
+            }
+        }
         settings.h264_pass = if two_pass { H264Pass::First } else { H264Pass::Single };
         let range = export_range(&project, seq, &settings)?;
-        let pipe = Arc::new(Pipeline::new(project.clone(), seq, &settings, hdr_out)?);
-        let (f0, f1) = frame_span(pipe.rate, range);
+        let video = if settings.gpu_rendering == crate::GpuRendering::AmdRequired {
+            let admission = admission.as_ref().ok_or_else(|| ExportError::Unsupported("AMD required export needs host adapter admission".into()))?;
+            let session = admission.create_session(project.clone(), seq, &settings, &r)?;
+            VideoPath::Resident { session, width: r.width, height: r.height, rate: r.rate, hdr_out }
+        } else {
+            let pipe = Arc::new(Pipeline::new(project.clone(), seq, &settings, hdr_out)?);
+            let encoder = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
+            VideoPath::Cpu { pipe, encoder }
+        };
+        let (f0, f1) = frame_span(video.rate(), range);
         let nframes = (f1 - f0) as u64;
         if !settings.part_of_batch {
             progress.total.store(nframes * if two_pass { 2 } else { 1 }, Ordering::Relaxed);
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
-        let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
         let brand = if settings.format.is_mp4_with(settings.multiplexer) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
@@ -265,7 +369,7 @@ impl Exporter {
         };
         let measured = !settings.effects.loudness.enabled || audio.is_none();
         Ok(Self {
-            pipe,
+            video,
             f0,
             f1,
             next: f0,
@@ -275,7 +379,6 @@ impl Exporter {
             ahead: None,
             overlapped_steps: 0,
             brand,
-            venc,
             aenc,
             audio,
             measured,
@@ -335,13 +438,16 @@ impl Exporter {
     }
 
     /// Frames in the next batch, bounded before Rayon can steal nested frame tasks.
-    fn batch_len(&self) -> i64 {
-        let batch = self.pipe.render_batch_limit(self.batch);
-        if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch }
+    pub(crate) fn batch_len(&self) -> i64 {
+        let VideoPath::Cpu { pipe, .. } = &self.video else { return 1 };
+        let batch = pipe.render_batch_limit(self.batch);
+        let overlap = self.overlapping();
+        let batch = if overlap { overlap_batch(batch, frame_bytes(pipe.w, pipe.h, pipe.hdr_out), self.budget) } else { batch };
+        batch.min(if overlap { MAX_IN_FLIGHT_FRAMES / 2 } else { MAX_IN_FLIGHT_FRAMES })
     }
 
     fn sample_at_frame(&self, f: i64, sr: u32) -> i64 {
-        self.pipe.rate.tick_of(f).to_units_floor(sr as i64)
+        self.video.rate().tick_of(f).to_units_floor(sr as i64)
     }
 
     fn write_audio(&mut self, planar: Option<Vec<Vec<f32>>>) -> Result<()> {
@@ -393,14 +499,14 @@ impl Exporter {
             let q = self.project.sequence(self.seq).ok_or(ExportError::NoSequence)?;
             // start timecode of the first exported frame, at the output rate
             let seq_rate = q.settings.frame_rate;
-            let start = self.pipe.rate.frame_at(seq_rate.tick_of(q.start_timecode)) + self.f0;
+            let start = self.video.rate().frame_at(seq_rate.tick_of(q.start_timecode)) + self.f0;
             let name = self.project.item(self.seq).map(|i| i.name.clone()).unwrap_or_default();
             self.mxf = Some(MxfMux::new(MxfSetup {
                 settings: &self.settings,
                 name,
-                width: self.pipe.w,
-                height: self.pipe.h,
-                rate: self.pipe.rate,
+                width: self.video.width(),
+                height: self.video.height(),
+                rate: self.video.rate(),
                 audio: self.audio.as_ref().map(|a| (a.sr, a.channels)),
                 timecode: (start, q.settings.drop_frame),
             })?);
@@ -410,8 +516,8 @@ impl Exporter {
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
         let mut mux = Mp4Writer::new(file, opts).map_err(|e| ExportError::Io(e.to_string()))?;
-        let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
-        vcfg.media_start = self.venc.media_start();
+        let mut vcfg = TrackConfig::new(self.video.sample_entry(), self.video.timescale());
+        vcfg.media_start = self.video.media_start();
         self.vt = mux.add_track(vcfg).map_err(|e| ExportError::Io(e.to_string()))?;
         self.at = match (&self.audio, &self.aenc) {
             (None, _) => None,
@@ -439,6 +545,7 @@ impl Exporter {
 
     /// Render, encode and mux the next batch (or finish the file).
     pub fn step(&mut self, sources: &dyn SourceProvider, progress: &Progress) -> Result<Step> {
+        crate::check_runtime_ram_ceiling()?;
         if progress.cancel.load(Ordering::Relaxed) {
             self.ahead = None;
             return Err(ExportError::Cancelled);
@@ -467,10 +574,17 @@ impl Exporter {
         self.ahead = None;
         if self.first_pass {
             // end of the analysis pass: encode for real with its statistics
-            let _ = self.venc.flush()?;
-            let stats = self.venc.pass_stats().ok_or_else(|| ExportError::Encode("two-pass statistics missing".into()))?;
+            let stats = match &mut self.video {
+                VideoPath::Cpu { encoder, .. } => {
+                    let _ = encoder.flush()?;
+                    encoder.pass_stats().ok_or_else(|| ExportError::Encode("two-pass statistics missing".into()))?
+                }
+                VideoPath::Resident { .. } => return Err(ExportError::Unsupported("AMD resident export does not support two-pass encoding".into())),
+            };
             self.settings.h264_pass = H264Pass::Second(stats);
-            self.venc = make_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?;
+            let pipe = Arc::new(Pipeline::new(self.project.clone(), self.seq, &self.settings, self.video.hdr_out())?);
+            let encoder = make_venc(&self.settings, pipe.w, pipe.h, pipe.rate)?;
+            self.video = VideoPath::Cpu { pipe, encoder };
             self.first_pass = false;
             self.next = self.f0;
             return Ok(Step::Progress);
@@ -484,7 +598,7 @@ impl Exporter {
             self.open_mux()?;
         }
         let mut tail = std::mem::take(&mut self.queued);
-        tail.extend(self.venc.flush()?);
+        tail.extend(self.video.flush()?);
         self.write_video(tail)?;
         self.write_audio(mixed)?;
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
@@ -527,12 +641,17 @@ impl Exporter {
 
     /// Encode (and mux) the batch starting at `self.next`, rendering the one after it meanwhile.
     fn step_batch(&mut self, sources: &dyn SourceProvider, progress: &Progress) -> Result<Step> {
+        if matches!(&self.video, VideoPath::Resident { .. }) {
+            return self.step_resident(sources, progress);
+        }
         let (f, frames) = match self.ahead.take() {
             Some(a) if a.first == self.next => (a.first, a.frames),
             _ => {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
-                let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, f, end, sources)) {
+                let VideoPath::Cpu { pipe, .. } = &self.video else {
+                    return Err(ExportError::Encode("internal: CPU pipeline unavailable".into()));
+                };
+                match timed(Stage::Render, || render_batch(pipe, f, end, sources))? {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -555,8 +674,11 @@ impl Exporter {
                 }
             };
         };
-        let pipe = self.pipe.clone();
-        let mut slot: Option<std::thread::Result<Option<Vec<Frame>>>> = None;
+        let VideoPath::Cpu { pipe, .. } = &self.video else {
+            return Err(ExportError::Encode("internal: CPU pipeline unavailable".into()));
+        };
+        let pipe = pipe.clone();
+        let mut slot: Option<std::thread::Result<Result<Option<Vec<Frame>>>>> = None;
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
@@ -577,9 +699,10 @@ impl Exporter {
                 progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
                 self.next = end;
                 match slot {
-                    Some(Ok(Some(frames))) => self.ahead = Some(Ahead { first: a, frames }),
+                    Some(Ok(Ok(Some(frames)))) => self.ahead = Some(Ahead { first: a, frames }),
                     // a source was not ready: the next step renders this batch again
-                    Some(Ok(None)) | None => {}
+                    Some(Ok(Ok(None))) | None => {}
+                    Some(Ok(Err(e))) => return Err(e),
                     Some(Err(_)) => return Err(ExportError::Encode("internal error while rendering a frame (the panic was logged by the panic hook)".into())),
                 }
                 Ok(Step::Progress)
@@ -634,17 +757,79 @@ impl Exporter {
         Ok(Encoded::Done)
     }
 
+    fn step_resident(&mut self, sources: &dyn SourceProvider, progress: &Progress) -> Result<Step> {
+        let f = self.next;
+        let end = f.checked_add(1).ok_or_else(|| ExportError::Encode("resident frame index overflow".into()))?;
+        let mixed = timed(Stage::Audio, || {
+            if let Some(sr) = self.audio.as_ref().map(|audio| audio.sr) {
+                let until = self.sample_at_frame(end, sr);
+                self.audio.as_mut().and_then(|audio| audio.pull(until, sources))
+            } else {
+                None
+            }
+        });
+        if filmcraft_media::pending::take() {
+            return Ok(Step::Pending);
+        }
+
+        let frame = timed(Stage::Render, || {
+            preflight_frame_required(
+                &self.project,
+                self.seq,
+                self.video.rate().tick_of(f),
+                RenderOptions { scale: self.settings.scale, captions: self.settings.burn_captions, working_output: self.video.hdr_out(), ..Default::default() },
+            )
+        })
+        .map_err(|error| ExportError::Unsupported(format!("resident frame plan rejected: {error}")))?;
+        let (frame_width, frame_height) = frame.size();
+        if u32::try_from(frame_width).ok() != Some(self.video.width()) || u32::try_from(frame_height).ok() != Some(self.video.height()) {
+            return Err(ExportError::Unsupported("resident frame plan dimensions do not match export dimensions".into()));
+        }
+        let frame_bytes = match &self.video {
+            VideoPath::Resident { session, .. } => session.frame_bytes(&frame)?,
+            VideoPath::Cpu { .. } => return Err(ExportError::Encode("internal: resident video session unavailable".into())),
+        };
+        let host_headroom_bytes = crate::runtime_ram_headroom_kib().and_then(|kib| kib.checked_mul(1024));
+        let mut reservation = ResidentReservation::try_acquire(host_headroom_bytes, None, 0, frame_bytes)?;
+        let packets = match &mut self.video {
+            VideoPath::Resident { session, .. } => session.encode_frame((f - self.f0) as u64, frame, sources, &mut reservation)?,
+            VideoPath::Cpu { .. } => return Err(ExportError::Encode("internal: resident video session unavailable".into())),
+        };
+        let packet_bytes = packets
+            .iter()
+            .try_fold(0_u64, |total, packet| total.checked_add(u64::try_from(packet.data.len()).ok()?))
+            .ok_or_else(|| ExportError::MemoryPressure("resident packet byte count overflow".into()))?;
+        let packet_hold = if packet_bytes == 0 { None } else { Some(reservation.take(packet_bytes)?) };
+        self.queued.extend(packets);
+        timed(Stage::Mux, || -> Result<()> {
+            if self.mux.is_none() && self.mxf.is_none() {
+                self.open_mux()?;
+            }
+            let packets = std::mem::take(&mut self.queued);
+            self.write_video(packets)
+        })?;
+        drop(packet_hold);
+        drop(reservation);
+        timed(Stage::Audio, || self.write_audio(mixed))?;
+        progress.done.fetch_add(1, Ordering::Relaxed);
+        self.next = end;
+        Ok(Step::Progress)
+    }
+
     fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
         let mut packets = Vec::new();
         for (k, (rgba, hdr)) in frames.iter().enumerate() {
             let fr = EncoderFrame {
-                width: self.pipe.w,
-                height: self.pipe.h,
+                width: self.video.width(),
+                height: self.video.height(),
                 rgba,
-                hdr: self.pipe.hdr_out.then_some(hdr.as_slice()),
+                hdr: self.video.hdr_out().then_some(hdr.as_slice()),
                 index: (f - self.f0) as u64 + k as u64,
             };
-            packets.extend(self.venc.encode(&fr)?);
+            let VideoPath::Cpu { encoder, .. } = &mut self.video else {
+                return Err(ExportError::Encode("internal: CPU encoder unavailable".into()));
+            };
+            packets.extend(encoder.encode(&fr)?);
         }
         Ok(packets)
     }
@@ -653,6 +838,7 @@ impl Exporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HardwareEncoding;
 
     const MIB: u64 = 1 << 20;
 
@@ -667,7 +853,7 @@ mod tests {
     #[test]
     fn the_overlap_batch_fits_the_memory_budget() {
         let budget = IN_FLIGHT_BUDGET;
-        // 1080p keeps the full 16 frames, 4K SDR (33 MB a frame) 8 + 8 in flight (2 x 8 x 33 MB = 512 MiB)
+        // Byte-only candidates before `batch_len` applies the four-frame pipeline cap.
         assert_eq!(overlap_batch(16, frame_bytes(1920, 1080, false), budget), 16);
         assert_eq!(overlap_batch(16, frame_bytes(3840, 2160, false), budget), 8);
         // 4K HDR (100 MB a frame): 256 MiB per batch is 2 frames, not 16
@@ -692,5 +878,74 @@ mod tests {
                 assert!(n == 1 || 2 * n * fb <= budget, "batch {batch}, frame {fb}: {n}");
             }
         }
+    }
+
+    struct Fake(u32);
+
+    impl VideoEncoder for Fake {
+        fn sample_entry(&self) -> SampleEntry {
+            SampleEntry::jpeg(1, 1)
+        }
+        fn timescale(&self) -> u32 {
+            self.0
+        }
+        fn encode(&mut self, _: &EncoderFrame) -> crate::Result<Vec<EncodedPacket>> {
+            Ok(Vec::new())
+        }
+        fn flush(&mut self) -> crate::Result<Vec<EncodedPacket>> {
+            Ok(Vec::new())
+        }
+    }
+
+    // Fake hardware encoders: each answers one size no other test uses, and whether its device is
+    // "present" is a process flag this test sets per scenario. Time scales 9001 / 9002 name them.
+    const MATRIX_SIZE: (u32, u32) = (98, 62);
+    static NVIDIA_PRESENT: AtomicBool = AtomicBool::new(false);
+    static AMD_PRESENT: AtomicBool = AtomicBool::new(false);
+
+    fn nvenc_fake(format: Format, w: u32, h: u32, _: FrameRate, s: &ExportSettings) -> Option<crate::Result<Box<dyn VideoEncoder>>> {
+        let present = NVIDIA_PRESENT.load(Ordering::SeqCst);
+        (present && format == Format::H264 && (w, h) == MATRIX_SIZE && s.hardware_encoding == HardwareEncoding::Auto)
+            .then(|| Ok(Box::new(Fake(9001)) as Box<dyn VideoEncoder>))
+    }
+
+    fn vaapi_fake(format: Format, w: u32, h: u32, _: FrameRate, s: &ExportSettings) -> Option<crate::Result<Box<dyn VideoEncoder>>> {
+        let present = AMD_PRESENT.load(Ordering::SeqCst);
+        let codec = matches!(format, Format::H264 | Format::Hevc);
+        (present && codec && (w, h) == MATRIX_SIZE && s.hardware_encoding == HardwareEncoding::Auto).then(|| Ok(Box::new(Fake(9002)) as Box<dyn VideoEncoder>))
+    }
+
+    /// The time scale of the encoder `make_venc` picks, or its error text.
+    fn chosen(format: Format) -> std::result::Result<u32, String> {
+        let settings = ExportSettings { format, hardware_encoding: HardwareEncoding::Auto, ..Default::default() };
+        make_venc(&settings, MATRIX_SIZE.0, MATRIX_SIZE.1, FrameRate::FPS_24).map(|e| e.timescale()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn encoder_matrix_selects_expected_backend() {
+        // VA-API first, NVENC registered after it: as in `filmcraft_platform::register`, NVENC is tried first.
+        crate::register_encoder(vaapi_fake);
+        crate::register_encoder(nvenc_fake);
+        // (scenario, NVIDIA present, AMD present, H.264 expectation, H.265 expectation)
+        // H.264 `None` = software encoder; H.265 `None` = no encoder at all.
+        for (label, nvidia, amd, h264, hevc) in [
+            ("amd only", false, true, Some(9002), Some(9002)),
+            ("nvidia only", true, false, Some(9001), None),
+            ("hybrid", true, true, Some(9001), Some(9002)),
+            ("none", false, false, None, None),
+        ] {
+            NVIDIA_PRESENT.store(nvidia, Ordering::SeqCst);
+            AMD_PRESENT.store(amd, Ordering::SeqCst);
+            match h264 {
+                Some(tag) => assert_eq!(chosen(Format::H264), Ok(tag), "{label}: H.264"),
+                None => assert!(matches!(chosen(Format::H264), Ok(t) if t != 9001 && t != 9002), "{label}: H.264 must fall back to software"),
+            }
+            match hevc {
+                Some(tag) => assert_eq!(chosen(Format::Hevc), Ok(tag), "{label}: HEVC"),
+                None => assert!(chosen(Format::Hevc).is_err_and(|e| e.contains("not available")), "{label}: HEVC has no encoder"),
+            }
+        }
+        NVIDIA_PRESENT.store(false, Ordering::SeqCst);
+        AMD_PRESENT.store(false, Ordering::SeqCst);
     }
 }

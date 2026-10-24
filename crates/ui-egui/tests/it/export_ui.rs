@@ -141,7 +141,7 @@ fn export_mode_settings_and_summary() {
         "export.section.multiplexer",
         "export.video.matchSize",
         "export.video.bitrateMode",
-        "export.video.hardwareEncoding",
+        "export.video.cpuExport",
         "export.video.maxQuality",
         "export.audio.sampleRate",
         "export.range",
@@ -226,7 +226,7 @@ fn h265_shows_the_h264_family_controls_without_the_h264_only_ones() {
     d.ok("ui.set", json!({"mode": "export"}));
     d.frames(4);
     // H.264, the default: profile, level and the hardware checkbox
-    for id in ["export.video.profile", "export.video.level", "export.video.hardwareEncoding", "export.video.bitrateMode"] {
+    for id in ["export.video.profile", "export.video.level", "export.video.cpuExport", "export.video.bitrateMode"] {
         assert!(d.has(id), "H.264: {id}");
     }
     d.app().ui.export.settings = ExportSettings { format: Format::Hevc, ..Default::default() };
@@ -242,13 +242,61 @@ fn h265_shows_the_h264_family_controls_without_the_h264_only_ones() {
     ] {
         assert!(d.has(id), "H.265: {id}");
     }
-    // Main is its only profile, the level is the encoder's choice, and hardware is the only encoder
-    for id in ["export.video.profile", "export.video.level", "export.video.hardwareEncoding"] {
+    // Main is its only profile and the level is the encoder's choice; H.265 keeps the GPU route, so the CPU checkbox stays
+    for id in ["export.video.profile", "export.video.level"] {
         assert!(!d.has(id), "H.265 has no {id}");
     }
+    assert!(d.has("export.video.cpuExport"), "H.265 keeps the CPU checkbox");
     let sum = d.ok("ui.elements", json!({"prefix": "export.summary"}))[0]["label"].as_str().unwrap().to_string();
     assert!(sum.contains("HEVC Main") && sum.contains("Target 20.00 Mbps"), "{sum}");
     d.snapshot("export-h265");
+}
+
+#[test]
+fn cpu_export_checkbox_picks_the_export_route() {
+    use filmcraft_engine::export::presets::DEFAULT_PRESET;
+    use filmcraft_engine::export::{ExportSettings, Format, GpuRendering, HardwareEncoding, MxfVideoCodec};
+    use filmcraft_ui_egui::panels::export_mode::{ExportUi, apply_preset, export_params};
+    let mut d = Driver::new("cpu-export");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    assert!(d.has("export.video.cpuExport"), "CPU checkbox");
+    assert!(!d.has("export.video.hardwareEncoding"), "the old hardware id is gone");
+    // (gpu, hardware encoding) that the export params carry
+    let route = |d: &mut Driver| {
+        let s: ExportSettings = serde_json::from_value(export_params(d.app())["settings"].clone()).unwrap();
+        (s.gpu_rendering, s.hardware_encoding)
+    };
+    let gpu = (GpuRendering::AmdRequired, HardwareEncoding::AmdRequired);
+    let cpu = (GpuRendering::Off, HardwareEncoding::Off);
+    // unchecked (the default): H.264 exports on the GPU
+    assert_eq!(d.app().ui.export.settings.format, Format::H264);
+    assert!(!d.app().ui.export.cpu_export);
+    assert_eq!(route(&mut d), gpu);
+    // checked: the CPU renders
+    d.app().ui.export.cpu_export = true;
+    assert_eq!(route(&mut d), cpu);
+    // a format without a GPU route is CPU whatever the checkbox says
+    d.app().ui.export.cpu_export = false;
+    d.app().ui.export.settings.format = Format::ProRes;
+    assert_eq!(route(&mut d), cpu);
+    // H.264 inside MXF has no resident GPU route.
+    d.app().ui.export.settings.mxf_video_codec = MxfVideoCodec::H264;
+    for format in [Format::MxfOp1a, Format::MxfOpAtom] {
+        d.app().ui.export.settings.format = format;
+        assert_eq!(route(&mut d), cpu, "{format:?}");
+        assert!(!d.app().ui.export.cpu_export, "automatic CPU routing preserves the manual choice");
+    }
+    d.app().ui.export.settings.format = Format::H264;
+    assert_eq!(route(&mut d), gpu);
+    // loading a preset leaves the checkbox alone
+    d.app().ui.export.cpu_export = true;
+    assert!(apply_preset(d.app(), DEFAULT_PRESET));
+    assert!(d.app().ui.export.cpu_export, "a preset does not change the CPU choice");
+    // the field round-trips through serde as `cpuExport`
+    let ui: ExportUi = serde_json::from_value(json!({"cpuExport": true})).unwrap();
+    assert!(ui.cpu_export);
+    assert_eq!(serde_json::to_value(ExportUi::default()).unwrap()["cpuExport"], json!(false));
 }
 
 #[test]
@@ -345,6 +393,19 @@ fn queue_panel_send_reorder_cancel_start_retry() {
     d.frames(2);
     d.click("export.queue.clear");
     assert!(d.queue().is_empty());
+}
+
+#[test]
+fn a_finished_export_is_announced_in_the_status_bar() {
+    let mut d = Driver::new("announce");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 24-bit", "location": loc, "fileName": "announced", "range": "custom", "customStart": 0.0, "customEnd": 0.5}}));
+    d.frames(2);
+    d.click("export.button");
+    let out = d.path("announced.wav");
+    d.wait_until("the export outcome", |d| d.app().ui.status.starts_with("Exported to"));
+    assert!(d.app().ui.status.contains(&out), "the status names the written file: {}", d.app().ui.status);
 }
 
 #[test]

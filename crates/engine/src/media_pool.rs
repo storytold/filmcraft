@@ -22,8 +22,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource, Opener, SharedSource};
-use filmcraft_project::{ItemId, MediaClip, MediaRef, Project};
+use filmcraft_project::{ItemId, ItemKind, MediaClip, MediaRef, Project};
 use filmcraft_render::offline::OfflineReason;
+use filmcraft_time::TimeRange;
 
 use crate::Services;
 
@@ -44,6 +45,28 @@ pub struct OfflineMedia {
     pub path: String,
     pub status: &'static str,
     pub error: String,
+}
+
+/// Authorized, full-resolution compressed H.264 input for a resident export path.
+/// Owns the random-access reader through `Mp4Source`; contains no decoded frames.
+pub struct FullResH264Source {
+    /// Timeline/source item requested by the caller (may be a subclip).
+    pub requested_item: ItemId,
+    /// Underlying media item after `Project::resolve_media`.
+    pub media_item: ItemId,
+    /// Resolved subclip range in source time, if the request names a subclip.
+    pub subclip_range: Option<TimeRange>,
+    /// Source mark range from the underlying media clip.
+    pub source_marks: (Option<filmcraft_time::Tick>, Option<filmcraft_time::Tick>),
+    sample_count: usize,
+    timescale: u32,
+    source: filmcraft_codecs::mp4::Mp4Source,
+}
+
+impl FullResH264Source {
+    pub fn source(&self) -> &filmcraft_codecs::mp4::Mp4Source {
+        &self.source
+    }
 }
 
 pub struct MediaPool {
@@ -146,6 +169,38 @@ fn file_name(path: &str) -> String {
 }
 
 impl MediaPool {
+    /// Open an authorized full-resolution MP4/MOV H.264 source for a resident path. This bypasses
+    /// decoded `SharedSource` caches and proxies by design; it requires the host's random-access
+    /// reader and never falls back to `read_file` or a decoded frame.
+    pub fn open_full_res_h264_source(&self, project: &Project, requested_item: ItemId, services: &dyn Services) -> crate::Result<FullResH264Source> {
+        let (media_item, media, subclip_range) =
+            project.resolve_media(requested_item).ok_or_else(|| crate::EngineError::Other("item does not resolve to media".into()))?;
+        let project_item = project.item(media_item).ok_or_else(|| crate::EngineError::Other("resolved media item is missing".into()))?;
+        if !matches!(&project_item.kind, ItemKind::Media(_)) {
+            return Err(crate::EngineError::Other("resolved item is not media".into()));
+        }
+        if media.offline {
+            return Err(MediaError::Offline("media is marked offline".into()).into());
+        }
+        if !media.info.has_video() || media.info.kind != filmcraft_media::MediaKind::Movie {
+            return Err(MediaError::Unsupported("resident input requires movie video".into()).into());
+        }
+        let MediaRef::File { path } = &media.media else {
+            return Err(MediaError::Unsupported("resident input does not accept generators".into()).into());
+        };
+        let followed = self.follow(path).map_err(|why| MediaError::Offline(format!("{path} is not opened: {why}")))?;
+        let reader = services.reader(&followed).ok_or_else(|| MediaError::Unsupported("host has no random-access reader for resident input".into()))?.map_err(
+            |error| {
+                if error.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(error.to_string()) } else { MediaError::Io(error.to_string()) }
+            },
+        )?;
+        let source = filmcraft_codecs::mp4::Mp4Source::open_reader(&file_name(&followed), reader)
+            .map_err(|error| MediaError::Unsupported(format!("cannot open resident H.264 source: {error}")))?;
+        let sample_count = source.h264_sample_count().map_err(|error| MediaError::Unsupported(error.to_string()))?;
+        let timescale = source.h264_timescale().map_err(|error| MediaError::Unsupported(error.to_string()))?;
+        Ok(FullResH264Source { requested_item, media_item, subclip_range, source_marks: (media.mark_in, media.mark_out), sample_count, timescale, source })
+    }
+
     pub fn register_opener(&self, o: Opener) {
         self.openers.write().unwrap_or_else(|e| e.into_inner()).push(o);
     }
@@ -457,6 +512,61 @@ impl filmcraft_render::SourceProvider for PoolProvider {
         }
         if self.full_res { self.pool.full_res_source(&self.project, item, &*self.services) } else { self.pool.source_for(&self.project, item, &*self.services) }
     }
+
+    fn compressed_source(&self, item: ItemId) -> filmcraft_media::Result<Arc<dyn filmcraft_media::CompressedVideoSource>> {
+        if !self.full_res {
+            return Err(MediaError::Unsupported("compressed input requires full-resolution provider".into()));
+        }
+        let source = self.pool.open_full_res_h264_source(&self.project, item, &*self.services).map_err(|error| MediaError::Unsupported(error.to_string()))?;
+        Ok(Arc::new(source))
+    }
+}
+
+impl filmcraft_media::CompressedVideoSource for FullResH264Source {
+    fn source_range(&self) -> Option<TimeRange> {
+        self.subclip_range.or_else(|| {
+            (self.source.info().duration > filmcraft_time::Tick::ZERO).then(|| TimeRange::new(filmcraft_time::Tick::ZERO, self.source.info().duration))
+        })
+    }
+
+    fn source_marks(&self) -> (Option<filmcraft_time::Tick>, Option<filmcraft_time::Tick>) {
+        self.source_marks
+    }
+
+    fn timescale(&self) -> u32 {
+        self.timescale
+    }
+
+    fn sample_count(&self) -> usize {
+        self.sample_count
+    }
+
+    fn sample_metadata(&self, index: usize) -> filmcraft_media::Result<filmcraft_media::CompressedVideoSample> {
+        let sample = self.source.h264_sample_metadata(index).map_err(|error| MediaError::Unsupported(error.to_string()))?;
+        Ok(filmcraft_media::CompressedVideoSample {
+            index: sample.index,
+            offset: sample.offset,
+            size: sample.size,
+            dts: sample.dts,
+            pts: sample.pts,
+            presentation_pts: sample.presentation_pts,
+            duration: sample.duration,
+            is_sync: sample.is_sync,
+            description_index: sample.description_index,
+        })
+    }
+
+    fn sample_entry(&self, index: usize) -> filmcraft_media::Result<&filmcraft_isobmff::SampleEntry> {
+        self.source.h264_sample_entry(index).map_err(|error| MediaError::Unsupported(error.to_string()))
+    }
+
+    fn seek(&self, time: filmcraft_time::Tick) -> filmcraft_media::Result<Option<usize>> {
+        self.source.h264_sample_at(time).map_err(|error| MediaError::Unsupported(error.to_string()))
+    }
+
+    fn read_sample(&self, index: usize) -> filmcraft_media::Result<Vec<u8>> {
+        self.source.read_h264_sample(index).map_err(|error| MediaError::Unsupported(error.to_string()))
+    }
 }
 
 /// The offline slate as a media source: video frames are the slate at the requested scale of the
@@ -633,6 +743,7 @@ impl MediaSource for ProxySource {
 mod tests {
     use super::*;
     use filmcraft_project::ItemKind;
+    use filmcraft_render::SourceProvider as _;
 
     /// A host whose whole-file read fails: opening must go through the reader.
     struct ReaderOnly(Arc<[u8]>);
@@ -646,6 +757,61 @@ mod tests {
         fn reader(&self, _path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
             Some(Ok(Arc::new(filmcraft_media::reader::MemReader(self.0.clone()))))
         }
+    }
+
+    fn h264_mov() -> Arc<[u8]> {
+        use filmcraft_isobmff::{AvcConfig, Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+        let cfg = AvcConfig::new(vec![vec![0x67, 0x42, 0, 0x1e]], vec![vec![0x68, 0xce]], 4);
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+        let track = mux.add_track(TrackConfig::new(SampleEntry::avc(cfg, 64, 48), 25)).expect("track");
+        let data = [0, 0, 0, 1, 0x65];
+        mux.write_sample(track, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
+        mux.finish().expect("finish").into_inner().into()
+    }
+
+    #[test]
+    fn full_res_h264_source_keeps_subclip_identity_and_reads_compressed_sample() {
+        let bytes = h264_mov();
+        let info = filmcraft_codecs::mp4::Mp4Source::open("fixture.mov", bytes.clone()).expect("fixture source").info().clone();
+        let mut project = Project::new("resident source fixture");
+        let parent = project.add_item(
+            "source",
+            filmcraft_project::Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: "fixture.mov".into() },
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: Some(MediaRef::File { path: "proxy.mov".into() }),
+                identity: None,
+            }),
+            None,
+        );
+        let span = TimeRange::new(filmcraft_time::Tick::from_rational(1, 1, 25), filmcraft_time::Tick::from_rational(1, 1, 25));
+        let requested = project.add_item("subclip", filmcraft_project::Label::Iris, ItemKind::Subclip { parent, range: span, restrict_trims: false }, None);
+        let pool = Arc::new(MediaPool::default());
+        pool.set_use_proxies(true);
+        let services: Arc<dyn Services> = Arc::new(ReaderOnly(bytes));
+        let opened = pool.open_full_res_h264_source(&project, requested, &*services).expect("resident source");
+        assert_eq!(opened.requested_item, requested);
+        assert_eq!(opened.media_item, parent);
+        assert_eq!(opened.subclip_range, Some(span));
+        let compressed: &dyn filmcraft_media::CompressedVideoSource = &opened;
+        assert_eq!(compressed.source_range(), Some(span));
+        assert_eq!(compressed.source_marks(), (None, None));
+        assert_eq!(compressed.sample_count(), 1);
+        assert_eq!(compressed.timescale(), 25);
+        assert_eq!(compressed.sample_metadata(0).expect("metadata").size, 5);
+        assert!(compressed.sample_entry(0).is_ok());
+        assert_eq!(compressed.seek(filmcraft_time::Tick::ZERO).expect("seek"), Some(0));
+        assert_eq!(compressed.read_sample(0).expect("sample"), [0, 0, 0, 1, 0x65]);
+        let project = Arc::new(project);
+        assert!(pool.provider(project.clone(), services.clone()).compressed_source(requested).is_err());
+        let provider = pool.full_res_provider(project, services).compressed_source(requested).expect("full-res provider");
+        assert_eq!(provider.read_sample(0).expect("provider sample"), [0, 0, 0, 1, 0x65]);
     }
 
     #[test]

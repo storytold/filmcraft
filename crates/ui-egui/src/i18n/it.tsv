@@ -339,6 +339,7 @@
 	Tools	Strumenti
 	Top	In alto
 	Transcribe Sequence…	Trascrivi sequenza…
+	Transcribe again	Trascrivi di nuovo
 	Transcribe…	Trascrivi…
 	Transcript	Trascrizione
 	Transparent Video…	Video trasparente…
@@ -3556,7 +3557,6 @@
 	Gradient Angle	Angolo sfumatura
 	Linear Gradient	Sfumatura lineare
 	Solid	Pieno
-	GPU Rendering	Rendering GPU
 	Composite on the GPU when available	Composizione sulla GPU quando disponibile
 	Text to Speech	Sintesi vocale
 	Edit Narration	Modifica narrazione
@@ -3608,3 +3608,18 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+	Export via CPU (manual)	Esporta tramite CPU (manuale)
+	Off: GPU export (AMD GPU + same-node VA-API required; fails if unavailable). On: CPU reference renderer.	Disattivato: esportazione GPU (richiede GPU AMD e VA-API sullo stesso nodo; non riesce se non disponibili). Attivato: renderer di riferimento CPU.
+	This format exports only via CPU	Questo formato viene esportato solo tramite CPU
+	CPU compositing explicitly enabled	Composizione CPU attivata esplicitamente
+	Export preview unavailable in GPU-only mode; CPU fallback is disabled	Anteprima di esportazione non disponibile in modalità solo GPU; il fallback CPU è disattivato
+	GPU channel display is unsupported; CPU fallback is disabled	La visualizzazione dei canali GPU non è supportata; il fallback CPU è disattivato
+	GPU compositor failed to initialise; preview unavailable	Inizializzazione del compositor GPU non riuscita; anteprima non disponibile
+	GPU preview compositor panicked; CPU fallback is disabled	Il compositor dell'anteprima GPU è andato in panic; il fallback CPU è disattivato
+	GPU preview exceeds the device texture limit	L'anteprima GPU supera il limite di texture del dispositivo
+	GPU preview failed; CPU fallback is disabled	Anteprima GPU non riuscita; il fallback CPU è disattivato
+	GPU preview unavailable; CPU fallback is disabled	Anteprima GPU non disponibile; il fallback CPU è disattivato
+	Reference Monitor unavailable in GPU-only preview; CPU fallback is disabled	Monitor di riferimento non disponibile nell'anteprima solo GPU; il fallback CPU è disattivato
+	Reference view unavailable in GPU-only preview; CPU fallback is disabled	Vista di riferimento non disponibile nell'anteprima solo GPU; il fallback CPU è disattivato
+	Scopes unavailable in GPU-only preview; CPU fallback is disabled	Scope non disponibili nell'anteprima solo GPU; il fallback CPU è disattivato
+	no supported AMD GPU adapter; preview unavailable	Nessun adattatore GPU AMD compatibile; anteprima non disponibile

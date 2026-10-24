@@ -17,6 +17,242 @@ use rayon::prelude::*;
 use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text};
 use crate::image::Image;
 
+#[path = "gpufx_filters.rs"]
+mod filters;
+#[path = "gpufx_legacy_wipes.rs"]
+mod legacy_wipes;
+#[path = "gpufx_procedural.rs"]
+mod procedural;
+#[path = "gpufx_spatial.rs"]
+mod spatial;
+#[path = "gpufx_stylize.rs"]
+mod stylize;
+
+pub use filters::FilterOp;
+pub use legacy_wipes::LegacyWipeOp;
+pub use procedural::ProceduralOp;
+pub use spatial::SpatialOp;
+pub use stylize::StylizeOp;
+
+/// Independent references for catalog operations whose original CPU implementation lives in
+/// `effects.rs`, outside the `vfx` dispatcher. Keep these test-only so parity checks do not call
+/// the `FxOp` implementation they are checking.
+#[cfg(test)]
+pub(crate) fn legacy_cpu_oracle(img: &mut Image, e: &EffectInstance, cx: &FxCtx<'_>) -> bool {
+    match e.effect.as_str() {
+        "replicate" => {
+            let n = f(e, "count", cx).clamp(1.0, 16.0) as usize;
+            let src = img.clone();
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    let u = (x * n) % img.w;
+                    let v = (y * n) % img.h;
+                    let sample = src.sample_bilinear_clamped((u as f32 + 0.5) + (n as f32 - 1.0) * 0.5 / n as f32, v as f32 + 0.5);
+                    let i = (y * img.w + x) * 4;
+                    img.px[i..i + 4].copy_from_slice(&sample);
+                }
+            }
+            true
+        }
+        "twirl" | "twirl_legacy" => {
+            let mut base = e.clone();
+            base.effect = "twirl".into();
+            let center = point(&base, "center", cx, img);
+            let angle = (f(&base, "angle", cx) as f64).to_radians();
+            let radius = f(&base, "radius", cx) as f64 / 100.0 * img.w.min(img.h) as f64;
+            crate::effects::warp(img, |x, y| {
+                let (dx, dy) = (x - center.x, y - center.y);
+                let distance = (dx * dx + dy * dy).sqrt();
+                if distance >= radius {
+                    return (x, y);
+                }
+                let a = angle * (1.0 - distance / radius).powi(2);
+                let (sin, cos) = a.sin_cos();
+                (center.x + dx * cos - dy * sin, center.y + dx * sin + dy * cos)
+            });
+            true
+        }
+        "lens_distortion" => {
+            let k = f(e, "curvature", cx) as f64 / 100.0;
+            let (center_x, center_y) = (
+                img.w as f64 / 2.0 + f(e, "h_decentering", cx) as f64 / 100.0 * img.w as f64 / 2.0,
+                img.h as f64 / 2.0 + f(e, "v_decentering", cx) as f64 / 100.0 * img.h as f64 / 2.0,
+            );
+            let norm = (img.w as f64 / 2.0).hypot(img.h as f64 / 2.0);
+            crate::effects::warp(img, |x, y| {
+                let (dx, dy) = ((x - center_x) / norm, (y - center_y) / norm);
+                let scale = 1.0 - k * (dx * dx + dy * dy);
+                (center_x + dx * scale * norm, center_y + dy * scale * norm)
+            });
+            true
+        }
+        "wave_warp" => {
+            let height = f(e, "height", cx) as f64 * cx.px_scale as f64;
+            let width = (f(e, "width", cx) as f64 * cx.px_scale as f64).max(1.0);
+            let direction = (f(e, "direction", cx) as f64).to_radians();
+            let phase = cx.seconds * f(e, "speed", cx) as f64 * std::f64::consts::TAU;
+            let (ux, uy) = (direction.sin(), -direction.cos());
+            crate::effects::warp(img, |x, y| {
+                let offset = height * ((x * ux + y * uy) / width * std::f64::consts::TAU - phase).sin();
+                (x - uy * offset, y + ux * offset)
+            });
+            true
+        }
+        "grid" => {
+            let size = (f(e, "size", cx) * cx.px_scale).max(1.0);
+            let border = f(e, "border", cx) * cx.px_scale;
+            let color = dec({
+                let c = color(e, "color", cx);
+                [c[0], c[1], c[2]]
+            });
+            let opacity = f(e, "opacity", cx) / 100.0;
+            let (w, h) = (img.w as f32, img.h as f32);
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    let dx = (x as f32 - w / 2.0).rem_euclid(size);
+                    let dy = (y as f32 - h / 2.0).rem_euclid(size);
+                    let distance = dx.min(size - dx).min(dy.min(size - dy));
+                    let a = (border * 0.5 - distance + 0.5).clamp(0.0, 1.0) * opacity;
+                    if a > 0.0 {
+                        let i = (y * img.w + x) * 4;
+                        for c in 0..3 {
+                            img.px[i + c] = color[c] * a + img.px[i + c] * (1.0 - a);
+                        }
+                        img.px[i + 3] = a + img.px[i + 3] * (1.0 - a);
+                    }
+                }
+            }
+            true
+        }
+        "circle" => {
+            let center = point(e, "center", cx, img);
+            let radius = f(e, "radius", cx) * cx.px_scale;
+            let raw = color(e, "color", cx);
+            let color = dec([raw[0], raw[1], raw[2]]);
+            let opacity = f(e, "opacity", cx) / 100.0;
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    let distance = ((x as f64 + 0.5 - center.x).hypot(y as f64 + 0.5 - center.y)) as f32;
+                    let a = (radius - distance + 0.5).clamp(0.0, 1.0) * opacity;
+                    if a > 0.0 {
+                        let i = (y * img.w + x) * 4;
+                        for c in 0..3 {
+                            img.px[i + c] = color[c] * a + img.px[i + c] * (1.0 - a);
+                        }
+                        img.px[i + 3] = a + img.px[i + 3] * (1.0 - a);
+                    }
+                }
+            }
+            true
+        }
+        "ramp" => {
+            let start = point(e, "start", cx, img);
+            let end = point(e, "end", cx, img);
+            let start_color = color(e, "start_color", cx);
+            let end_color = color(e, "end_color", cx);
+            let radial = choice(e, "shape") == 1;
+            let blend = f(e, "blend", cx) / 100.0;
+            let (vx, vy) = (end.x - start.x, end.y - start.y);
+            let len2 = (vx * vx + vy * vy).max(1e-9);
+            crate::effects::fill_over(img, 1.0 - blend, |x, y| {
+                let t = if radial {
+                    ((x as f64 - start.x).hypot(y as f64 - start.y) / len2.sqrt()) as f32
+                } else {
+                    (((x as f64 - start.x) * vx + (y as f64 - start.y) * vy) / len2) as f32
+                }
+                .clamp(0.0, 1.0);
+                dec([
+                    start_color[0] + (end_color[0] - start_color[0]) * t,
+                    start_color[1] + (end_color[1] - start_color[1]) * t,
+                    start_color[2] + (end_color[2] - start_color[2]) * t,
+                ])
+            });
+            true
+        }
+        "four_color_gradient" => {
+            let colors = ["c1", "c2", "c3", "c4"].map(|id| color(e, id, cx));
+            let opacity = f(e, "opacity", cx) / 100.0;
+            let (w, h) = (img.w as f32, img.h as f32);
+            let points = [(0.25 * w, 0.25 * h), (0.75 * w, 0.25 * h), (0.25 * w, 0.75 * h), (0.75 * w, 0.75 * h)];
+            let exponent = 1.0 + f(e, "blend", cx) / 100.0;
+            crate::effects::fill_over(img, opacity, |x, y| {
+                let mut acc = [0.0; 3];
+                let mut sum = 0.0;
+                for (index, point) in points.iter().enumerate() {
+                    let weight = 1.0 / ((x - point.0).powi(2) + (y - point.1).powi(2)).sqrt().max(1.0).powf(exponent);
+                    for channel in 0..3 {
+                        acc[channel] += colors[index][channel] * weight;
+                    }
+                    sum += weight;
+                }
+                dec(acc.map(|value| value / sum))
+            });
+            true
+        }
+        "emboss" => {
+            let direction = (f(e, "direction", cx) as f64).to_radians();
+            let relief = f(e, "relief", cx) * cx.px_scale.max(0.25);
+            let contrast = f(e, "contrast", cx) / 100.0;
+            let blend = f(e, "blend", cx) / 100.0;
+            let (dx, dy) = ((direction.cos() as f32) * relief, (-direction.sin() as f32) * relief);
+            let src = img.clone();
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    let a = src.sample_bilinear_clamped(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
+                    let b = src.sample_bilinear_clamped(x as f32 + 0.5 - dx, y as f32 + 0.5 - dy);
+                    let value = filmcraft_color::srgb_to_linear(
+                        (0.5 + (filmcraft_color::luma709(a[0], a[1], a[2]) - filmcraft_color::luma709(b[0], b[1], b[2])) * contrast * 2.0).clamp(0.0, 1.0),
+                    );
+                    let i = (y * img.w + x) * 4;
+                    for c in 0..3 {
+                        img.px[i + c] = value * src.px[i + 3] * (1.0 - blend) + src.px[i + c] * blend;
+                    }
+                }
+            }
+            true
+        }
+        "find_edges" => {
+            let invert = b(e, "invert");
+            let blend = f(e, "blend", cx) / 100.0;
+            let src = img.clone();
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    let luma = |dx: isize, dy: isize| {
+                        let p = src.get_clamped(x as isize + dx, y as isize + dy);
+                        filmcraft_color::luma709(p[0], p[1], p[2])
+                    };
+                    let gx = luma(1, -1) + 2.0 * luma(1, 0) + luma(1, 1) - luma(-1, -1) - 2.0 * luma(-1, 0) - luma(-1, 1);
+                    let gy = luma(-1, 1) + 2.0 * luma(0, 1) + luma(1, 1) - luma(-1, -1) - 2.0 * luma(0, -1) - luma(1, -1);
+                    let mut m = (gx * gx + gy * gy).sqrt().min(1.0);
+                    if !invert {
+                        m = 1.0 - m;
+                    }
+                    let i = (y * img.w + x) * 4;
+                    let alpha = src.px[i + 3];
+                    for c in 0..3 {
+                        img.px[i + c] = m * alpha * (1.0 - blend) + src.px[i + c] * blend;
+                    }
+                }
+            }
+            true
+        }
+        "strobe" => {
+            let period = f(e, "period", cx).max(0.001) as f64;
+            let duration = f(e, "duration", cx) as f64;
+            if cx.seconds % period < duration {
+                let raw = color(e, "color", cx);
+                let color = dec([raw[0], raw[1], raw[2]]);
+                let blend = f(e, "blend", cx) / 100.0;
+                img.map_rgb(|orig, _, _| {
+                    [color[0] + (orig[0] - color[0]) * blend, color[1] + (orig[1] - color[1]) * blend, color[2] + (orig[2] - color[2]) * blend]
+                });
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
 /// magnification or mild minification: no mip pre-filter).
 #[derive(Clone, Debug, PartialEq)]
@@ -87,6 +323,43 @@ pub enum FxOp {
         soft: f32,
         invert: bool,
     },
+    ColorKey {
+        key_ycc: [f32; 3],
+        tol: f32,
+        soft: f32,
+    },
+    LogoCutout {
+        background: [f32; 3],
+        threshold: f32,
+        softness: f32,
+        unmultiply: bool,
+        invert: bool,
+    },
+    LumaKey {
+        threshold: f32,
+        cutoff: f32,
+    },
+    Cineon {
+        mode: u32,
+        black: f32,
+        white: f32,
+        ib: f32,
+        iw: f32,
+        gamma: f32,
+        roll: f32,
+    },
+    Noise {
+        amount: f32,
+        grain: f32,
+        seed: u64,
+        colored: bool,
+        clip: bool,
+    },
+    Spatial(SpatialOp),
+    Procedural(ProceduralOp),
+    Filter(FilterOp),
+    Stylize(StylizeOp),
+    LegacyWipe(LegacyWipeOp),
     Invert {
         channel: u32,
         blend: f32,
@@ -98,6 +371,12 @@ pub enum FxOp {
     Gaussian {
         rx: Vec<u32>,
         ry: Vec<u32>,
+        repeat: bool,
+    },
+    /// Independent per-channel Gaussian blur radii (red, green, blue, alpha).
+    ChannelBlur {
+        rx: [Vec<u32>; 4],
+        ry: [Vec<u32>; 4],
         repeat: bool,
     },
     /// `steps` bilinear (edge-clamped) taps along `(dx, dy)` centred on the pixel.
@@ -112,6 +391,25 @@ pub enum FxOp {
         ry: Vec<u32>,
         amount: f32,
         threshold: f32,
+    },
+    DropShadow {
+        dx: f64,
+        dy: f64,
+        color: [f32; 3],
+        opacity: f32,
+        rx: Vec<u32>,
+        ry: Vec<u32>,
+        only: bool,
+    },
+    AlphaGlow {
+        start: [f32; 3],
+        end: [f32; 3],
+        brightness: f32,
+        use_end: bool,
+        fade: bool,
+        enabled: bool,
+        rx: Vec<u32>,
+        ry: Vec<u32>,
     },
     /// Crop / Edge Feather: alpha falloff `feather` px inside the rectangle (0: half-pixel AA).
     Crop {
@@ -209,6 +507,56 @@ pub const GPU_EFFECTS: &[&str] = &[
     "leave_color",
     "change_to_color",
     "color_pass",
+    "color_key",
+    "luma_key",
+    "cineon_converter",
+    "noise",
+    "noise_legacy",
+    "mosaic",
+    "mosaic_legacy",
+    "replicate",
+    "magnify",
+    "magnify_legacy",
+    "twirl",
+    "twirl_legacy",
+    "spherize",
+    "corner_pin",
+    "rotate_3d",
+    "basic_3d",
+    "turbulent_displace",
+    "lens_distortion",
+    "wave_warp",
+    "rounded_crop",
+    "rgb_split",
+    "checkerboard",
+    "grid",
+    "circle",
+    "ellipse",
+    "ramp",
+    "gradient",
+    "four_color_gradient",
+    "cell_pattern",
+    "emboss",
+    "color_emboss",
+    "find_edges",
+    "strobe",
+    "lens_flare",
+    "median",
+    "grow",
+    "shrink",
+    "move",
+    "spin",
+    "wiggle",
+    "camera_shake",
+    "bevel_alpha",
+    "block_dissolve",
+    "linear_wipe_legacy",
+    "logo_cutout",
+    "vr_chromatic_aberrations",
+    "vr_color_gradients",
+    "vr_projection",
+    "vr_rotate_sphere",
+    "vr_plane_to_sphere",
     "gamma_correction",
     "levels",
     "extract",
@@ -235,7 +583,85 @@ pub const GPU_EFFECTS: &[&str] = &[
     "vignette",
     "video_limiter",
     "lumetri",
+    "reduce_interlace_flicker",
+    "alpha_glow",
+    "channel_blur",
+    "drop_shadow",
 ];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EffectGpuFailure {
+    UnknownId,
+    UnsupportedOperation,
+    InvalidParameter { parameter: String },
+    MissingResource { resource: crate::plan::ResourceKind },
+    UnsupportedCase,
+}
+
+/// An explicit classification; an absent operation never implies a successful no-op.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EffectGpuOutcome {
+    Disabled,
+    Eligible(FxOp),
+    Ineligible(EffectGpuFailure),
+}
+
+/// Dependencies required by the oracle, including effects without a GPU route yet.
+pub fn effect_requirements(e: &EffectInstance) -> crate::plan::ResourceRequirements {
+    if !e.enabled {
+        return crate::plan::ResourceRequirements::default();
+    }
+    let history = matches!(e.effect.as_str(), "echo" | "posterize_time" | "auto_reframe" | "warp_stabilizer" | "time_remap");
+    let track = matches!(e.effect.as_str(), "track_matte" | "compound_blur" | "gradient_wipe_legacy");
+    let lut = e.effect == "lumetri" && (on(e, "basic_on") && !text(e, "input_lut").is_empty() || on(e, "creative_on") && !text(e, "look_lut").is_empty());
+    crate::plan::ResourceRequirements {
+        sampled_inputs: if track { 2 } else { 1 },
+        history,
+        mask: !e.masks.is_empty() || e.effect == "track_matte",
+        lut,
+        ..Default::default()
+    }
+}
+
+/// Classifies every live video ID while retaining the exact existing evaluated operation.
+/// Canonical identity stays in `e.effect`; unknown and non-video IDs fail closed.
+pub fn evaluate_gpu_effect(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize) -> EffectGpuOutcome {
+    use EffectGpuFailure as Failure;
+    use EffectGpuOutcome as Outcome;
+    use filmcraft_project::{EffectKind, ParamValue};
+    if !e.enabled {
+        return Outcome::Disabled;
+    }
+    let Some(def) = e.def().filter(|d| d.kind == EffectKind::Video) else {
+        return Outcome::Ineligible(Failure::UnknownId);
+    };
+    // Check evaluated inputs before the oracle's casts/clamps can erase NaN or infinity.
+    for param in &def.params {
+        let value = e.param(param.id).map(|p| p.value_at(cx.t)).unwrap_or_else(|| param.default.clone());
+        let finite = match value {
+            ParamValue::Float(v) => v.is_finite(),
+            // NaN point coordinates are the model's documented automatic-centre sentinel.
+            ParamValue::Vec2(v) => !v.x.is_infinite() && !v.y.is_infinite(),
+            ParamValue::Color(v) => v.iter().all(|v| v.is_finite()),
+            ParamValue::Curve(v) => v.iter().flatten().all(|v| v.is_finite()),
+            _ => true,
+        };
+        if !finite {
+            return Outcome::Ineligible(Failure::InvalidParameter { parameter: param.id.into() });
+        }
+    }
+    if !e.masks.is_empty() {
+        return Outcome::Ineligible(Failure::MissingResource { resource: crate::plan::ResourceKind::Mask });
+    }
+    // effects::apply dispatches the seven-sample shutter oracle before FxOp::eval.
+    if e.effect == "transform" && crate::vfx::bv(e, "shutter_override") && crate::vfx::fv(e, "shutter_angle", cx) > 0.5 {
+        return Outcome::Ineligible(Failure::UnsupportedOperation);
+    }
+    let Some(op) = FxOp::eval(e, cx, w, h) else {
+        return Outcome::Ineligible(Failure::UnsupportedOperation);
+    };
+    if op.gpu_ok() { Outcome::Eligible(op) } else { Outcome::Ineligible(Failure::UnsupportedCase) }
+}
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
 fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
@@ -246,6 +672,30 @@ fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
     let x0 = (b.x.floor().max(0.0) as usize).min(w);
     let x1 = (b.right().ceil().max(0.0) as usize).min(w);
     Resample { inv: Some(inv), rect: [x0 as u32, x1 as u32, y0.min(y1) as u32, y1 as u32], opacity }
+}
+
+fn cineon_value(v: f32, mode: u32, black: f32, white: f32, ib: f32, iw: f32, gamma: f32, roll: f32) -> f32 {
+    let k = 0.002 / 0.6;
+    let offset = 10f32.powf((black - white) * k);
+    match mode {
+        0 => {
+            let code = v * 1023.0;
+            let linv = ((10f32.powf((code - white) * k) - offset) / (1.0 - offset)).max(0.0);
+            let mut out = ib + linv.powf(1.0 / gamma) * (iw - ib);
+            let r0 = 1.0 - roll;
+            if roll > 1e-4 && out > r0 {
+                out = r0 + roll * (1.0 - (-(out - r0) / roll).exp());
+            }
+            out.clamp(0.0, 1.0)
+        }
+        1 => {
+            let d = ((v - ib) / (iw - ib).max(1e-4)).clamp(0.0, 1.0);
+            let linv = d.powf(gamma);
+            let code = white + (linv * (1.0 - offset) + offset).max(1e-6).log10() / k;
+            (code / 1023.0).clamp(0.0, 1.0)
+        }
+        _ => (((v * 1023.0 - black) / (white - black)) * 590.0 + 95.0) / 1023.0,
+    }
 }
 
 /// Whether `Image::transformed` would take its mip (downsample) path for `m` on a `w`×`h` image.
@@ -331,6 +781,105 @@ impl FxOp {
                     invert: b(e, "invert"),
                 }
             }
+            "color_key" => {
+                let key = color(e, "color", cx);
+                FxOp::ColorKey {
+                    key_ycc: filmcraft_color::rgb_to_ycbcr(key[0], key[1], key[2], filmcraft_color::Matrix::Bt709),
+                    tol: f(e, "tolerance", cx) / 255.0 * 0.6 + 0.01,
+                    soft: f(e, "feather", cx) / 50.0 * 0.2 + 0.01,
+                }
+            }
+            "logo_cutout" => {
+                let bg = match choice(e, "background") {
+                    0 => [1.0; 3],
+                    1 => [0.0; 3],
+                    _ => {
+                        let c = color(e, "color", cx);
+                        [c[0], c[1], c[2]]
+                    }
+                };
+                FxOp::LogoCutout {
+                    background: bg,
+                    threshold: f(e, "threshold", cx) / 100.0,
+                    softness: (f(e, "softness", cx) / 100.0).max(1e-3),
+                    unmultiply: b(e, "unmultiply"),
+                    invert: b(e, "invert"),
+                }
+            }
+            "luma_key" => FxOp::LumaKey { threshold: f(e, "threshold", cx) / 100.0, cutoff: f(e, "cutoff", cx) / 100.0 },
+            "cineon_converter" => {
+                use crate::vfx::fv;
+                let black = fv(e, "black10", cx);
+                FxOp::Cineon {
+                    mode: choice(e, "conversion"),
+                    black,
+                    white: fv(e, "white10", cx).max(black + 1.0),
+                    ib: fv(e, "black_internal", cx) / 255.0,
+                    iw: fv(e, "white_internal", cx) / 255.0,
+                    gamma: fv(e, "gamma", cx).max(0.1),
+                    roll: fv(e, "rolloff", cx) / 255.0,
+                }
+            }
+            "noise" | "noise_legacy" => {
+                use crate::vfx::{bv, fv};
+                let grain = (fv(e, "grain_size", cx).max(1.0) * cx.px_scale).max(1.0);
+                FxOp::Noise {
+                    amount: fv(e, "amount", cx) / 100.0,
+                    grain,
+                    seed: crate::effects::noise_frame_seed(cx),
+                    colored: bv(e, "color"),
+                    clip: bv(e, "clip"),
+                }
+            }
+            "mosaic"
+            | "mosaic_legacy"
+            | "replicate"
+            | "magnify"
+            | "magnify_legacy"
+            | "twirl"
+            | "twirl_legacy"
+            | "spherize"
+            | "lens_distortion"
+            | "wave_warp"
+            | "corner_pin"
+            | "rotate_3d"
+            | "basic_3d"
+            | "turbulent_displace"
+            | "rounded_crop"
+            | "rgb_split"
+            | "vr_chromatic_aberrations"
+            | "vr_color_gradients"
+            | "vr_projection"
+            | "vr_rotate_sphere"
+            | "vr_plane_to_sphere" => {
+                let op = SpatialOp::eval(e, cx, w, h)?;
+                if !op.gpu_ok() {
+                    return None;
+                }
+                FxOp::Spatial(op)
+            }
+            "checkerboard"
+            | "grid"
+            | "circle"
+            | "ellipse"
+            | "ramp"
+            | "gradient"
+            | "four_color_gradient"
+            | "cell_pattern"
+            | "emboss"
+            | "color_emboss"
+            | "find_edges"
+            | "strobe"
+            | "lens_flare" => {
+                let op = ProceduralOp::eval(e, cx, w, h)?;
+                if !op.gpu_ok() {
+                    return None;
+                }
+                FxOp::Procedural(op)
+            }
+            "median" => FxOp::Filter(FilterOp::eval(e, cx, w, h)?),
+            "block_dissolve" | "linear_wipe_legacy" => FxOp::LegacyWipe(LegacyWipeOp::eval(e, cx, w, h)?),
+            "grow" | "shrink" | "move" | "spin" | "wiggle" | "camera_shake" | "bevel_alpha" => FxOp::Stylize(StylizeOp::eval(e, cx, w, h)?),
             "invert" => FxOp::Invert { channel: choice(e, "channel"), blend: f(e, "blend", cx) / 100.0 },
             "posterize" => FxOp::Posterize { n: f(e, "levels", cx).max(2.0) - 1.0 },
             "gaussian_blur" | "gaussian_blur_legacy" => {
@@ -343,6 +892,20 @@ impl FxOp {
                 let r = f(e, "percent", cx) * cx.px_scale * 0.3;
                 let (rx, ry) = gaussian_boxes(w, h, r, r);
                 FxOp::Gaussian { rx, ry, repeat: true }
+            }
+            "reduce_interlace_flicker" => {
+                let sigma = f(e, "softness", cx) * cx.px_scale.max(0.25);
+                let (_, ry) = gaussian_boxes(w, h, 0.0, sigma);
+                FxOp::Gaussian { rx: Vec::new(), ry, repeat: true }
+            }
+            "channel_blur" => {
+                let dimensions = choice(e, "dimensions");
+                let radii = ["red", "green", "blue", "alpha"].map(|id| {
+                    let sigma = f(e, id, cx) * cx.px_scale * 0.5;
+                    gaussian_boxes(w, h, if dimensions == 2 { 0.0 } else { sigma }, if dimensions == 1 { 0.0 } else { sigma })
+                });
+                let [(red_x, red_y), (green_x, green_y), (blue_x, blue_y), (alpha_x, alpha_y)] = radii;
+                FxOp::ChannelBlur { rx: [red_x, green_x, blue_x, alpha_x], ry: [red_y, green_y, blue_y, alpha_y], repeat: b(e, "repeat_edge") }
             }
             "directional_blur" | "directional_blur_legacy" => {
                 let len = f(e, "length", cx) * cx.px_scale * 2.0;
@@ -365,6 +928,38 @@ impl FxOp {
                 let r = f(e, "radius", cx) * cx.px_scale;
                 let (rx, ry) = gaussian_boxes(w, h, r, r);
                 FxOp::Unsharp { rx, ry, amount: f(e, "amount", cx) / 100.0, threshold: f(e, "threshold", cx) / 255.0 }
+            }
+            "drop_shadow" => {
+                let c = color(e, "color", cx);
+                let direction = (f(e, "direction", cx) as f64).to_radians();
+                let distance = f(e, "distance", cx) as f64 * cx.px_scale as f64;
+                let softness = f(e, "softness", cx) * cx.px_scale * 0.5;
+                let (rx, ry) = gaussian_boxes(w, h, softness, softness);
+                FxOp::DropShadow {
+                    dx: direction.sin() * distance,
+                    dy: -direction.cos() * distance,
+                    color: dec([c[0], c[1], c[2]]),
+                    opacity: f(e, "opacity", cx) / 100.0,
+                    rx,
+                    ry,
+                    only: b(e, "only"),
+                }
+            }
+            "alpha_glow" => {
+                let radius = f(e, "glow", cx) * cx.px_scale * 0.5;
+                let (rx, ry) = if radius > 0.3 { gaussian_boxes(w, h, radius, radius) } else { (Vec::new(), Vec::new()) };
+                let start = color(e, "start_color", cx);
+                let end = color(e, "end_color", cx);
+                FxOp::AlphaGlow {
+                    start: dec([start[0], start[1], start[2]]),
+                    end: dec([end[0], end[1], end[2]]),
+                    brightness: f(e, "brightness", cx) / 255.0,
+                    use_end: b(e, "use_end"),
+                    fade: b(e, "fade_out"),
+                    enabled: radius > 0.3,
+                    rx,
+                    ry,
+                }
             }
             "crop" => {
                 let l = f(e, "left", cx) / 100.0;
@@ -601,11 +1196,26 @@ impl FxOp {
             FxOp::Gamma { g } => g.is_finite(),
             FxOp::Levels { ib, iw, ob, ow, g } => fin(&[*ib, *iw, *ob, *ow, *g]),
             FxOp::Extract { lo, hi, soft, .. } => fin(&[*lo, *hi, *soft]),
+            FxOp::ColorKey { key_ycc, tol, soft } => fin(key_ycc) && fin(&[*tol, *soft]),
+            FxOp::LogoCutout { background, threshold, softness, .. } => fin(background) && fin(&[*threshold, *softness]),
+            FxOp::LumaKey { threshold, cutoff } => fin(&[*threshold, *cutoff]),
+            FxOp::Cineon { black, white, ib, iw, gamma, roll, .. } => fin(&[*black, *white, *ib, *iw, *gamma, *roll]),
+            FxOp::Noise { amount, grain, .. } => amount.is_finite() && grain.is_finite() && *grain >= 1.0,
+            FxOp::Spatial(op) => op.gpu_ok(),
+            FxOp::Procedural(op) => op.gpu_ok(),
+            FxOp::Filter(op) => op.gpu_ok(),
+            FxOp::Stylize(op) => op.gpu_ok(),
+            FxOp::LegacyWipe(op) => op.gpu_ok(),
             FxOp::Invert { blend, .. } => blend.is_finite(),
             FxOp::Posterize { n } => n.is_finite(),
             FxOp::Gaussian { .. } => true,
+            FxOp::ChannelBlur { .. } => true,
             FxOp::DirectionalBlur { dx, dy, .. } => fin(&[*dx, *dy]),
             FxOp::Unsharp { amount, threshold, .. } => fin(&[*amount, *threshold]),
+            FxOp::DropShadow { dx, dy, color, opacity, .. } => {
+                dx.is_finite() && dy.is_finite() && dx.abs() <= f32::MAX as f64 && dy.abs() <= f32::MAX as f64 && opacity.is_finite() && fin(color)
+            }
+            FxOp::AlphaGlow { start, end, brightness, .. } => fin(start) && fin(end) && brightness.is_finite(),
             FxOp::Crop { x0, x1, y0, y1, feather } => fin(&[*x0, *x1, *y0, *y1, *feather]),
             FxOp::Resample(r) => {
                 r.rect[0] != u32::MAX
@@ -747,6 +1357,109 @@ impl FxOp {
                     [v, v, v]
                 });
             }
+            FxOp::ColorKey { key_ycc, tol, soft } => {
+                let (key, tol, soft) = (*key_ycc, *tol, *soft);
+                img.px.par_chunks_mut(4).for_each(|p| {
+                    if p[3] <= 0.0 {
+                        return;
+                    }
+                    let c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
+                    let y = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
+                    let d = ((y[1] - key[1]).powi(2) + (y[2] - key[2]).powi(2)).sqrt() + (y[0] - key[0]).abs() * 0.15;
+                    let a = ((d - tol) / soft).clamp(0.0, 1.0);
+                    let lo = dec(c);
+                    let a = p[3] * a;
+                    p[0] = lo[0] * a;
+                    p[1] = lo[1] * a;
+                    p[2] = lo[2] * a;
+                    p[3] = a;
+                });
+            }
+            FxOp::LumaKey { threshold, cutoff } => {
+                let (threshold, cutoff) = (*threshold, *cutoff);
+                img.px.par_chunks_mut(4).for_each(|p| {
+                    if p[3] <= 0.0 {
+                        return;
+                    }
+                    let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+                    let a = if l <= cutoff {
+                        0.0
+                    } else if l >= threshold.max(cutoff + 1e-3) {
+                        1.0
+                    } else {
+                        (l - cutoff) / (threshold - cutoff).max(1e-3)
+                    };
+                    for v in p {
+                        *v *= a;
+                    }
+                });
+            }
+            FxOp::Cineon { mode, black, white, ib, iw, gamma, roll } => {
+                img.map_rgb(|c, _, _| dec(enc(c).map(|v| cineon_value(v, *mode, *black, *white, *ib, *iw, *gamma, *roll))));
+            }
+            FxOp::Noise { amount, grain, seed, colored, clip } => {
+                if *amount <= 0.0 {
+                    return;
+                }
+                let (amount, grain, seed, colored, clip) = (*amount, *grain, *seed, *colored, *clip);
+                let w = img.w;
+                img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+                    for x in 0..w {
+                        let p = &mut row[x * 4..x * 4 + 4];
+                        let a = p[3];
+                        if a <= 0.0 {
+                            continue;
+                        }
+                        let (gx, gy) = ((x as f32 / grain) as usize, (y as f32 / grain) as usize);
+                        let hash = |z| crate::effects::hash3(gx, gy, z) - 0.5;
+                        let n0 = hash(seed);
+                        let noise = if colored { [n0, hash(seed.wrapping_add(7777)), hash(seed.wrapping_add(99_991))] } else { [n0; 3] };
+                        let c = enc([p[0] / a, p[1] / a, p[2] / a]);
+                        let mut out = [c[0] + noise[0] * amount, c[1] + noise[1] * amount, c[2] + noise[2] * amount];
+                        if clip {
+                            out = out.map(|v| v.clamp(0.0, 1.0));
+                        }
+                        let out = dec(out);
+                        p[0] = out[0] * a;
+                        p[1] = out[1] * a;
+                        p[2] = out[2] * a;
+                    }
+                });
+            }
+            FxOp::Spatial(op) => op.apply(img),
+            FxOp::Procedural(op) => op.apply(img),
+            FxOp::Filter(op) => op.apply(img),
+            FxOp::Stylize(op) => op.apply(img),
+            FxOp::LegacyWipe(op) => op.apply(img),
+            FxOp::LogoCutout { background, threshold, softness, unmultiply, invert } => {
+                img.px.par_chunks_mut(4).for_each(|p| {
+                    if p[3] <= 1e-6 {
+                        return;
+                    }
+                    let v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
+                    let mut a0 = 0.0f32;
+                    for k in 0..3 {
+                        let d = v[k] - background[k];
+                        let room = if d >= 0.0 { 1.0 - background[k] } else { background[k] };
+                        if room > 1e-6 {
+                            a0 = a0.max(d.abs() / room);
+                        }
+                    }
+                    let a0 = a0.clamp(0.0, 1.0);
+                    let mut a = ((a0 - threshold) / ((1.0 - threshold).max(1e-3) * softness)).clamp(0.0, 1.0);
+                    if *invert {
+                        a = 1.0 - a;
+                    }
+                    let col = if *unmultiply && a0 > 1e-4 && !*invert {
+                        std::array::from_fn(|k| (background[k] + (v[k] - background[k]) / a0).clamp(0.0, 1.0))
+                    } else {
+                        v
+                    };
+                    let l = dec(col);
+                    let na = a * p[3];
+                    p.copy_from_slice(&[l[0] * na, l[1] * na, l[2] * na, na]);
+                });
+            }
             FxOp::Invert { channel, blend } => {
                 let (ch, blend) = (*channel, *blend);
                 if ch == 4 {
@@ -777,8 +1490,58 @@ impl FxOp {
                 img.map_rgb(|c, _, _| dec(enc(c).map(|v| (v * n).round() / n)));
             }
             FxOp::Gaussian { rx, ry, repeat } => crate::effects::box_blur(img, rx, ry, *repeat),
+            FxOp::ChannelBlur { rx, ry, repeat } => {
+                for channel in 0..4 {
+                    let mut plane = Image { w: img.w, h: img.h, px: img.px.as_chunks::<4>().0.iter().flat_map(|p| [p[channel], 0.0, 0.0, 0.0]).collect() };
+                    crate::effects::box_blur(&mut plane, &rx[channel], &ry[channel], *repeat);
+                    img.px.par_chunks_mut(4).zip(plane.px.par_chunks(4)).for_each(|(p, q)| p[channel] = q[0]);
+                }
+            }
             FxOp::DirectionalBlur { dx, dy, steps } => crate::effects::directional_taps(img, *dx, *dy, *steps as usize),
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
+            FxOp::DropShadow { dx, dy, color, opacity, rx, ry, only } => {
+                let mut shadow = img.transformed(img.w, img.h, &Affine::translate(*dx, *dy));
+                shadow.px.par_chunks_mut(4).for_each(|p| {
+                    let alpha = p[3] * opacity;
+                    p[..3].copy_from_slice(&[color[0] * alpha, color[1] * alpha, color[2] * alpha]);
+                    p[3] = alpha;
+                });
+                crate::effects::box_blur(&mut shadow, rx, ry, false);
+                if !only {
+                    crate::blend::composite(&mut shadow, img, 1.0, crate::blend::Blend::Normal);
+                }
+                *img = shadow;
+            }
+            FxOp::AlphaGlow { start, end, brightness, use_end, fade, enabled, rx, ry } => {
+                if !enabled {
+                    return;
+                }
+                let mut plane = Image { w: img.w, h: img.h, px: img.px.as_chunks::<4>().0.iter().flat_map(|p| [0.0, 0.0, 0.0, p[3]]).collect() };
+                crate::effects::box_blur(&mut plane, rx, ry, false);
+                img.px.par_chunks_mut(4).zip(plane.px.as_chunks::<4>().0.par_iter()).for_each(|(p, q)| {
+                    let gv = (q[3] * 2.0).min(1.0);
+                    let k = if *fade {
+                        gv * brightness
+                    } else if gv > 0.02 {
+                        *brightness
+                    } else {
+                        0.0
+                    };
+                    if k <= 0.0 || p[3] >= 1.0 {
+                        return;
+                    }
+                    let col = if *use_end {
+                        [end[0] + (start[0] - end[0]) * gv, end[1] + (start[1] - end[1]) * gv, end[2] + (start[2] - end[2]) * gv]
+                    } else {
+                        *start
+                    };
+                    let a = 1.0 - p[3];
+                    p[0] += col[0] * k * a;
+                    p[1] += col[1] * k * a;
+                    p[2] += col[2] * k * a;
+                    p[3] += k * a;
+                });
+            }
             FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
             FxOp::Resample(r) => {
                 let out = match (&r.inv, r.rect[0]) {
@@ -1105,6 +1868,471 @@ mod tests {
     use filmcraft_project::{ParamValue, find_effect};
     use filmcraft_time::Tick;
 
+    fn catalog_context() -> FxCtx<'static> {
+        FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        }
+    }
+
+    #[test]
+    fn catalog_classifies_every_live_video_id_without_claiming_gpu_coverage() {
+        // Test-only inventory: adding a registry ID requires a deliberate route review.
+        let unsupported = [
+            "auto_align",
+            "auto_reframe",
+            "bokeh_blur",
+            "brush_strokes",
+            "clip_name",
+            "clone",
+            "compound_blur",
+            "echo",
+            "echo_glow",
+            "edge_glow",
+            "graphic_shape",
+            "graphic_text",
+            "focus_blur",
+            "glint",
+            "gradient_wipe_legacy",
+            "light_leaks",
+            "lighting_effects",
+            "lightning",
+            "long_shadow",
+            "metadata_burnin",
+            "motion",
+            "opacity",
+            "paint_bucket",
+            "posterize_time",
+            "roughen_edges",
+            "simple_text",
+            "spacer",
+            "stroke",
+            "time_remap",
+            "timecode",
+            "track_matte",
+            "ultra_key",
+            "volumetric_rays",
+            "vr_blur",
+            "vr_denoise",
+            "vr_digital_glitch",
+            "vr_fractal_noise",
+            "vr_glow",
+            "vr_sharpen",
+            "warp_stabilizer",
+            "wonder_glow",
+            "write_on",
+        ];
+        let expected: std::collections::BTreeSet<_> = GPU_EFFECTS.iter().copied().chain(unsupported).collect();
+        let live: std::collections::BTreeSet<_> =
+            filmcraft_project::effect_defs().iter().filter(|d| d.kind == filmcraft_project::EffectKind::Video).map(|d| d.id).collect();
+        assert_eq!(live, expected, "review classification when the live video registry changes");
+        for def in filmcraft_project::effect_defs().iter().filter(|d| d.kind == filmcraft_project::EffectKind::Video) {
+            let outcome = evaluate_gpu_effect(&def.instance(), &catalog_context(), 9, 7);
+            match outcome {
+                EffectGpuOutcome::Eligible(op) => assert!(op.gpu_ok(), "{}", def.id),
+                EffectGpuOutcome::Ineligible(EffectGpuFailure::UnsupportedOperation) => {
+                    // the clip-timed ops need the clip envelope, which this context lacks: they refuse the GPU route
+                    assert!(!GPU_EFFECTS.contains(&def.id) || matches!(def.id, "grow" | "shrink" | "spin" | "move"), "{} lost its existing GPU route", def.id);
+                }
+                EffectGpuOutcome::Ineligible(EffectGpuFailure::UnsupportedCase) => {
+                    assert!(matches!(def.id, "lumetri" | "transform"), "{}", def.id);
+                }
+                other => panic!("{} default has unexpected classification: {other:?}", def.id),
+            }
+        }
+    }
+
+    #[test]
+    fn cineon_fxop_matches_vfx_oracle_for_all_conversion_modes() {
+        for mode in 0..3 {
+            let mut e = find_effect("cineon_converter").unwrap().instance();
+            e.params.get_mut("conversion").unwrap().value = ParamValue::Choice(mode);
+            e.params.get_mut("white10").unwrap().value = ParamValue::Float(700.0);
+            e.params.get_mut("black_internal").unwrap().value = ParamValue::Float(8.0);
+            e.params.get_mut("white_internal").unwrap().value = ParamValue::Float(240.0);
+            e.params.get_mut("rolloff").unwrap().value = ParamValue::Float(80.0);
+            let cx = catalog_context();
+            let mut expected = Image { w: 4, h: 1, px: vec![0.0, 0.0, 0.0, 1.0, 0.04, 0.15, 0.3, 0.5, 0.8, 0.4, 0.1, 1.0, 1.5, 1.2, 0.6, 1.0] };
+            let mut actual = expected.clone();
+            assert!(crate::vfx::apply(&mut expected, &e, &cx));
+            let op = FxOp::eval(&e, &cx, 4, 1).unwrap();
+            assert!(op.gpu_ok());
+            op.apply(&mut actual);
+            for (a, b) in expected.px.iter().zip(actual.px.iter()) {
+                assert!((a - b).abs() <= 1e-6, "mode {mode}: {a} != {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn noise_fxop_matches_vfx_oracle_for_current_and_legacy_ids() {
+        for id in ["noise", "noise_legacy"] {
+            for colored in [false, true] {
+                let mut e = find_effect(id).unwrap().instance();
+                e.params.get_mut("amount").unwrap().value = ParamValue::Float(47.0);
+                e.params.get_mut("color").unwrap().value = ParamValue::Bool(colored);
+                e.params.get_mut("clip").unwrap().value = ParamValue::Bool(false);
+                if id == "noise" {
+                    e.params.get_mut("grain_size").unwrap().value = ParamValue::Float(2.5);
+                }
+                let cx = FxCtx { t: Tick(-7), px_scale: 0.5, ..catalog_context() };
+                let input = Image {
+                    w: 5,
+                    h: 2,
+                    px: vec![
+                        0.0, 0.0, 0.0, 0.0, 0.01, 0.02, 0.03, 1e-8, 0.1, 0.2, 0.3, 0.5, 1.5, 0.9, 0.5, 1.0, 0.8, 0.2, 0.1, 1.0, 0.4, 0.6, 0.9, 0.25, 0.2, 0.1,
+                        0.05, 0.75, 0.9, 0.9, 0.9, 1.0, 0.3, 0.6, 0.9, 0.4, 1.2, 0.8, 0.1, 1.0,
+                    ],
+                };
+                let mut expected = input.clone();
+                let mut actual = input;
+                assert!(crate::vfx::apply(&mut expected, &e, &cx));
+                let op = FxOp::eval(&e, &cx, 5, 2).unwrap();
+                assert!(op.gpu_ok());
+                op.apply(&mut actual);
+                for (a, b) in expected.px.iter().zip(&actual.px) {
+                    assert!((a - b).abs() <= 1e-6, "{id}, colored={colored}: {a} != {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spatial_and_procedural_fxops_match_vfx_oracle_defaults() {
+        let ids = [
+            "mosaic",
+            "mosaic_legacy",
+            "magnify",
+            "magnify_legacy",
+            "replicate",
+            "twirl",
+            "twirl_legacy",
+            "spherize",
+            "corner_pin",
+            "turbulent_displace",
+            "lens_distortion",
+            "wave_warp",
+            "rounded_crop",
+            "rgb_split",
+            "vr_chromatic_aberrations",
+            "vr_color_gradients",
+            "vr_projection",
+            "vr_rotate_sphere",
+            "vr_plane_to_sphere",
+            "checkerboard",
+            "grid",
+            "circle",
+            "ellipse",
+            "ramp",
+            "gradient",
+            "four_color_gradient",
+            "cell_pattern",
+            "emboss",
+            "color_emboss",
+            "find_edges",
+            "strobe",
+        ];
+        let mut pixels = Vec::new();
+        for i in 0..(17 * 11) {
+            let a = match i % 5 {
+                0 => 0.0,
+                1 => 0.5,
+                2 => 1e-8,
+                _ => 1.0,
+            };
+            let x = (i % 17) as f32 / 16.0;
+            let y = (i / 17) as f32 / 10.0;
+            pixels.extend_from_slice(&[x * a, y * a, (1.0 - x) * a, a]);
+        }
+        for id in ids {
+            let e = find_effect(id).unwrap().instance();
+            let cx = FxCtx { seconds: 0.0, ..catalog_context() };
+            let mut expected = Image { w: 17, h: 11, px: pixels.clone() };
+            let mut actual = expected.clone();
+            if !legacy_cpu_oracle(&mut expected, &e, &cx) {
+                assert!(crate::vfx::apply(&mut expected, &e, &cx), "{id}: missing CPU oracle");
+            }
+            let op = FxOp::eval(&e, &cx, 17, 11).unwrap_or_else(|| panic!("{id}: missing GPU op"));
+            assert!(op.gpu_ok(), "{id}: default route disabled");
+            op.apply(&mut actual);
+            for (a, b) in expected.px.iter().zip(&actual.px) {
+                assert!((a - b).abs() <= 1e-6, "{id}: {a} != {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn grid_cpu_op_matches_integer_coordinate_reference_for_default_and_custom_settings() {
+        for custom in [false, true] {
+            let mut effect = find_effect("grid").unwrap().instance();
+            if custom {
+                effect.params.get_mut("size").unwrap().value = ParamValue::Float(3.0);
+                effect.params.get_mut("border").unwrap().value = ParamValue::Float(1.0);
+                effect.params.get_mut("opacity").unwrap().value = ParamValue::Float(73.0);
+            }
+            let cx = catalog_context();
+            let input = Image {
+                w: 7,
+                h: 5,
+                px: (0..35)
+                    .flat_map(|i| {
+                        let alpha = if i % 3 == 0 { 0.35 } else { 1.0 };
+                        [0.08 * alpha, 0.16 * alpha, 0.24 * alpha, alpha]
+                    })
+                    .collect(),
+            };
+            let mut expected = input.clone();
+            let mut actual = input;
+            assert!(legacy_cpu_oracle(&mut expected, &effect, &cx));
+            let op = FxOp::eval(&effect, &cx, 7, 5).unwrap();
+            op.apply(&mut actual);
+            for (a, b) in expected.px.iter().zip(&actual.px) {
+                assert!((a - b).abs() <= 1e-6, "custom={custom}: {a} != {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn catalog_distinguishes_disabled_unknown_and_unsupported() {
+        let mut effect = find_effect("echo").unwrap().instance();
+        assert_eq!(evaluate_gpu_effect(&effect, &catalog_context(), 9, 7), EffectGpuOutcome::Ineligible(EffectGpuFailure::UnsupportedOperation));
+        effect.enabled = false;
+        assert_eq!(evaluate_gpu_effect(&effect, &catalog_context(), 9, 7), EffectGpuOutcome::Disabled);
+        effect.effect = "unknown_effect".into();
+        effect.enabled = true;
+        assert_eq!(evaluate_gpu_effect(&effect, &catalog_context(), 9, 7), EffectGpuOutcome::Ineligible(EffectGpuFailure::UnknownId));
+    }
+
+    #[test]
+    fn vr_chromatic_op_matches_oracle_for_each_view_layout() {
+        for layout in 0..=2 {
+            let mut effect = find_effect("vr_chromatic_aberrations").unwrap().instance();
+            for (key, value) in [
+                ("red", ParamValue::Float(31.0)),
+                ("green", ParamValue::Float(-23.0)),
+                ("blue", ParamValue::Float(47.0)),
+                ("center_x", ParamValue::Float(37.0)),
+                ("center_y", ParamValue::Float(-19.0)),
+                ("falloff", ParamValue::Float(73.0)),
+                ("inverse", ParamValue::Bool(true)),
+                ("frame_layout", ParamValue::Choice(layout)),
+            ] {
+                effect.params.get_mut(key).unwrap().value = value;
+            }
+            let cx = catalog_context();
+            let mut expected = Image::new(17, 11);
+            for y in 0..expected.h {
+                for x in 0..expected.w {
+                    let a = if (x + y) % 4 == 0 {
+                        0.0
+                    } else if x % 3 == 0 {
+                        0.45
+                    } else {
+                        1.0
+                    };
+                    let i = (y * expected.w + x) * 4;
+                    expected.px[i..i + 4].copy_from_slice(&[x as f32 / 17.0 * a, y as f32 / 11.0 * a, 0.8 * a, a]);
+                }
+            }
+            let mut actual = expected.clone();
+            assert!(crate::vfx::apply(&mut expected, &effect, &cx));
+            let op = FxOp::eval(&effect, &cx, 17, 11).unwrap();
+            assert!(op.gpu_ok());
+            op.apply(&mut actual);
+            for (a, b) in expected.px.iter().zip(actual.px.iter()) {
+                assert!((a - b).abs() <= 2e-5, "layout={layout}: {a} != {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn vr_color_gradients_op_matches_oracle_for_all_modes_and_view_layouts() {
+        for layout in 0..=2 {
+            for mode in 0..=4 {
+                let mut effect = find_effect("vr_color_gradients").unwrap().instance();
+                for (key, value) in [
+                    ("c1", ParamValue::Color([0.85, 0.2, 0.1, 1.0])),
+                    ("p1_lon", ParamValue::Float(-115.0)),
+                    ("p1_lat", ParamValue::Float(25.0)),
+                    ("c2", ParamValue::Color([0.1, 0.8, 0.2, 1.0])),
+                    ("p2_lon", ParamValue::Float(8.0)),
+                    ("p2_lat", ParamValue::Float(-33.0)),
+                    ("c3", ParamValue::Color([0.15, 0.3, 0.9, 1.0])),
+                    ("p3_lon", ParamValue::Float(126.0)),
+                    ("p3_lat", ParamValue::Float(18.0)),
+                    ("blend", ParamValue::Float(73.0)),
+                    ("opacity", ParamValue::Float(61.0)),
+                    ("mode", ParamValue::Choice(mode)),
+                    ("frame_layout", ParamValue::Choice(layout)),
+                ] {
+                    effect.params.get_mut(key).unwrap().value = value;
+                }
+                let cx = catalog_context();
+                let mut expected = Image::new(17, 11);
+                for y in 0..expected.h {
+                    for x in 0..expected.w {
+                        let a = if (x + y) % 4 == 0 {
+                            0.0
+                        } else if x % 3 == 0 {
+                            0.45
+                        } else {
+                            1.0
+                        };
+                        let i = (y * expected.w + x) * 4;
+                        expected.px[i..i + 4].copy_from_slice(&[x as f32 / 17.0 * a, y as f32 / 11.0 * a, 0.8 * a, a]);
+                    }
+                }
+                let mut actual = expected.clone();
+                assert!(crate::vfx::apply(&mut expected, &effect, &cx));
+                let op = FxOp::eval(&effect, &cx, 17, 11).unwrap();
+                assert!(op.gpu_ok());
+                op.apply(&mut actual);
+                for (a, b) in expected.px.iter().zip(actual.px.iter()) {
+                    assert!((a - b).abs() <= 2e-5, "layout={layout}, mode={mode}: {a} != {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vr_projection_and_sphere_rotation_match_oracle_for_all_view_layouts() {
+        for (id, stretch) in [("vr_projection", false), ("vr_projection", true), ("vr_rotate_sphere", false)] {
+            for layout in 0..=2 {
+                let mut effect = find_effect(id).unwrap().instance();
+                for (key, value) in [
+                    ("tilt", ParamValue::Float(-23.0)),
+                    ("pan", ParamValue::Float(41.0)),
+                    ("roll", ParamValue::Float(17.0)),
+                    ("frame_layout", ParamValue::Choice(layout)),
+                ] {
+                    effect.params.get_mut(key).unwrap().value = value;
+                }
+                if id == "vr_projection" {
+                    effect.params.get_mut("fov").unwrap().value = ParamValue::Float(235.0);
+                    effect.params.get_mut("stretch").unwrap().value = ParamValue::Bool(stretch);
+                }
+                let cx = catalog_context();
+                let mut expected = Image::new(17, 11);
+                for y in 0..expected.h {
+                    for x in 0..expected.w {
+                        let a = if (x + y) % 4 == 0 {
+                            0.0
+                        } else if x % 3 == 0 {
+                            0.45
+                        } else {
+                            1.0
+                        };
+                        let i = (y * expected.w + x) * 4;
+                        expected.px[i..i + 4].copy_from_slice(&[x as f32 / 17.0 * a, y as f32 / 11.0 * a, 0.8 * a, a]);
+                    }
+                }
+                let mut actual = expected.clone();
+                assert!(crate::vfx::apply(&mut expected, &effect, &cx));
+                let op = FxOp::eval(&effect, &cx, 17, 11).unwrap();
+                assert!(op.gpu_ok());
+                op.apply(&mut actual);
+                for (a, b) in expected.px.iter().zip(actual.px.iter()) {
+                    assert!((a - b).abs() <= 2e-5, "{id}, layout={layout}, stretch={stretch}: {a} != {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vr_plane_to_sphere_matches_oracle_for_all_view_layouts_and_feather() {
+        for layout in 0..=2 {
+            for feather in [0.0, 35.0] {
+                let mut effect = find_effect("vr_plane_to_sphere").unwrap().instance();
+                for (key, value) in [
+                    ("scale", ParamValue::Float(105.0)),
+                    ("tilt", ParamValue::Float(19.0)),
+                    ("pan", ParamValue::Float(-31.0)),
+                    ("roll", ParamValue::Float(12.0)),
+                    ("feather", ParamValue::Float(feather)),
+                    ("frame_layout", ParamValue::Choice(layout)),
+                ] {
+                    effect.params.get_mut(key).unwrap().value = value;
+                }
+                let cx = catalog_context();
+                let mut expected = Image::new(17, 11);
+                for y in 0..expected.h {
+                    for x in 0..expected.w {
+                        let a = if (x + y) % 4 == 0 {
+                            0.0
+                        } else if x % 3 == 0 {
+                            0.45
+                        } else {
+                            1.0
+                        };
+                        let i = (y * expected.w + x) * 4;
+                        expected.px[i..i + 4].copy_from_slice(&[x as f32 / 17.0 * a, y as f32 / 11.0 * a, 0.8 * a, a]);
+                    }
+                }
+                let mut actual = expected.clone();
+                assert!(crate::vfx::apply(&mut expected, &effect, &cx));
+                let op = FxOp::eval(&effect, &cx, 17, 11).unwrap();
+                assert!(op.gpu_ok());
+                op.apply(&mut actual);
+                for (a, b) in expected.px.iter().zip(actual.px.iter()) {
+                    assert!((a - b).abs() <= 2e-5, "layout={layout}, feather={feather}: {a} != {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn median_radius_above_exact_gpu_kernel_is_ineligible() {
+        let mut effect = find_effect("median").unwrap().instance();
+        effect.params.get_mut("radius").unwrap().value = ParamValue::Float(2.0);
+        assert_eq!(evaluate_gpu_effect(&effect, &catalog_context(), 9, 7), EffectGpuOutcome::Ineligible(EffectGpuFailure::UnsupportedCase));
+    }
+
+    #[test]
+    fn catalog_rejects_nonfinite_evaluated_parameters_before_clamping() {
+        let mut effect = find_effect("gaussian_blur").unwrap().instance();
+        effect.params.get_mut("blurriness").unwrap().value = ParamValue::Float(f64::NAN);
+        assert_eq!(
+            evaluate_gpu_effect(&effect, &catalog_context(), 9, 7),
+            EffectGpuOutcome::Ineligible(EffectGpuFailure::InvalidParameter { parameter: "blurriness".into() }),
+        );
+    }
+
+    #[test]
+    fn catalog_requirements_describe_history_track_mask_and_lut_inputs() {
+        let echo = find_effect("echo").unwrap().instance();
+        assert!(effect_requirements(&echo).history);
+        let matte = find_effect("track_matte").unwrap().instance();
+        assert_eq!(effect_requirements(&matte).sampled_inputs, 2);
+        assert!(effect_requirements(&matte).mask);
+        let mut lumetri = find_effect("lumetri").unwrap().instance();
+        lumetri.params.get_mut("input_lut").unwrap().value = ParamValue::Text("input.cube".into());
+        assert!(effect_requirements(&lumetri).lut);
+        lumetri.params.get_mut("basic_on").unwrap().value = ParamValue::Bool(false);
+        assert!(!effect_requirements(&lumetri).lut);
+    }
+
+    #[test]
+    fn catalog_preserves_the_existing_evaluated_operation() {
+        let effect = find_effect("brightness_contrast").unwrap().instance();
+        let expected = FxOp::eval(&effect, &catalog_context(), 9, 7).unwrap();
+        assert_eq!(evaluate_gpu_effect(&effect, &catalog_context(), 9, 7), EffectGpuOutcome::Eligible(expected));
+    }
+
+    #[test]
+    fn catalog_transform_shutter_does_not_claim_plain_resample_parity() {
+        let mut effect = find_effect("transform").unwrap().instance();
+        effect.params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(true);
+        effect.params.get_mut("shutter_angle").unwrap().value = ParamValue::Float(180.0);
+        assert_eq!(evaluate_gpu_effect(&effect, &catalog_context(), 9, 7), EffectGpuOutcome::Ineligible(EffectGpuFailure::UnsupportedOperation));
+    }
+
     #[test]
     fn extract_zero_softness_has_no_fractional_edge() {
         let cx = FxCtx {
@@ -1149,5 +2377,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn color_key_clamps_hdr_and_negative_rgb_like_legacy_oracle() {
+        let cx = catalog_context();
+        let e = find_effect("color_key").unwrap().instance();
+        let input = Image { w: 2, h: 1, px: vec![2.0, -0.1, 0.5, 0.5, 0.125, 0.25, 0.375, 0.0] };
+        let mut expected = input.clone();
+        crate::effects::key(&mut expected, &e, &cx);
+        let mut actual = input;
+        FxOp::eval(&e, &cx, 2, 1).unwrap().apply(&mut actual);
+        assert_eq!(actual.px, expected.px);
     }
 }

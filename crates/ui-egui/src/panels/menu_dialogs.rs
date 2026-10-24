@@ -107,10 +107,9 @@ pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
     (id == "view.dynamicAudioWaveforms").then_some(app.ui.extras.dynamic_waveforms)
 }
 
-/// Project Settings ▸ General ▸ Renderer is "Software Only": the Program monitor composites on
-/// the CPU.
+/// CPU compositing was explicitly selected by the host or in Project Settings.
 pub fn software_renderer(app: &FilmcraftApp) -> bool {
-    app.session.project.settings.renderer == filmcraft_engine::project_tools::RENDERER_SOFTWARE
+    app.cpu_composite_explicit || app.session.project.settings.renderer == filmcraft_engine::project_tools::RENDERER_SOFTWARE
 }
 
 /// Hand a path to the operating system (open it in its default application, or reveal it in the
@@ -158,8 +157,13 @@ pub fn system_report(app: &FilmcraftApp) -> Value {
     });
     let ok = gpu.is_some();
     r["gpu"] = gpu.unwrap_or(Value::Null);
-    let detail =
-        if ok { r["gpu"]["name"].as_str().unwrap_or("wgpu adapter").to_string() } else { tl!("no GPU adapter: the CPU compositor is used").to_string() };
+    let detail = if ok {
+        r["gpu"]["name"].as_str().unwrap_or("wgpu adapter").to_string()
+    } else if software_renderer(app) {
+        tl!("CPU compositing explicitly enabled").to_string()
+    } else {
+        tl!("no supported AMD GPU adapter; preview unavailable").to_string()
+    };
     if let Some(c) = r["checks"].as_array_mut() {
         c.push(json!({"name": "GPU acceleration", "ok": ok, "detail": detail}));
     }

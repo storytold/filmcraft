@@ -16,16 +16,860 @@
 //! the canvas of the lower tracks, which is preserved for the blends above it. [`execute_cpu`]
 //! runs the same steps on the CPU and is the reference.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
+use filmcraft_color::InputTransform;
 use filmcraft_frame::VideoFrame;
 use filmcraft_geom::Affine;
 use filmcraft_media::FrameRequest;
-use filmcraft_project::{ItemId, ItemKind, Project, Sequence, TrackItem};
+use filmcraft_project::{ItemId, ItemKind, MediaRef, Project, Sequence, TrackItem};
 use filmcraft_time::Tick;
 
 use crate::gpufx::FxOp;
 use crate::{Blend, RenderOptions, SourceProvider, motion_matrix, output_size};
+
+/// Backend-neutral resources checked before strict GPU dispatch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResourceRequirements {
+    pub sampled_inputs: u8,
+    pub history: bool,
+    pub mask: bool,
+    pub lut: bool,
+    pub textures: Vec<TextureRequirement>,
+    pub compute: Option<ComputeRequirement>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextureFormatRequirement {
+    Rgba16Float,
+    Rgba32Float,
+    R8Unorm,
+    Rg8Unorm,
+    R16Unorm,
+    Rg16Unorm,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextureRequirement {
+    pub format: TextureFormatRequirement,
+    pub sampled: bool,
+    pub storage: bool,
+    pub render_attachment: bool,
+    pub extent: (u32, u32),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComputeRequirement {
+    pub workgroup_size: [u32; 3],
+    pub storage_buffers: u32,
+    pub storage_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResourceKind {
+    Source,
+    History,
+    Mask,
+    Lut,
+    SampledInput,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FrameRequirement {
+    MissingSequence,
+    MissingItem,
+    NestedCycle,
+    NestedDepth,
+    NestedComposite,
+    NestedPlacement,
+    ColorPipeline,
+    InvalidDimensions,
+    InvalidSourceData,
+    InvalidScale,
+    InvalidMotion,
+    InterpolatedMedia,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceRequirement {
+    PhysicalGpu,
+    TextureDimension { required: u32 },
+    SampledTextures { required: u32 },
+    TextureFormat { format: TextureFormatRequirement },
+    ComputeLimits,
+    DeviceAvailable,
+    StrictAdmission,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EligibilityFailure {
+    UnknownId { id: String },
+    UnsupportedOperation { id: String },
+    UnsupportedFrameStructure { detail: FrameRequirement },
+    InvalidParameter { id: String, parameter: String },
+    MissingResource { id: String, resource: ResourceKind },
+    UnsupportedAdapter { vendor: u32 },
+    UnsupportedDeviceRequirement { requirement: DeviceRequirement },
+    CpuFallbackRequired { id: Option<String> },
+    RuntimeFailure { stage: &'static str, detail: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuPlanError {
+    pub item_id: Option<ItemId>,
+    pub id: Option<String>,
+    pub reason: EligibilityFailure,
+}
+
+/// Stable only within one preflight receipt; transport as `(frame_index, id)` outside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResidentSourceId(u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentSourceRequest {
+    pub id: ResidentSourceId,
+    pub item_id: ItemId,
+    pub source_time: Tick,
+    pub expected_size: (u32, u32),
+    pub kind: ResidentSourceKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentSourceKind {
+    Decoded,
+    Demo(filmcraft_media::DemoScene),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentFrameMetadata {
+    pub id: ResidentSourceId,
+    pub item_id: ItemId,
+    pub width: u32,
+    pub height: u32,
+    pub color: filmcraft_color::ColorInfo,
+}
+
+impl std::fmt::Display for GpuPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "strict GPU plan rejected item {:?}, operation {:?}: {:?}", self.item_id, self.id, self.reason)
+    }
+}
+impl std::error::Error for GpuPlanError {}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlannedGpuOp {
+    Effect { id: String, op: FxOp, requirements: ResourceRequirements },
+    Transition { id: String, op: crate::transitions::gpu_plan::TransitionOp, progress: f32, scale: f32, requirements: ResourceRequirements },
+}
+
+/// Provenance survives materialization; callers cannot mint or alter evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PixelOrigin {
+    DecodedMediaSource,
+    CpuGenerated { kind: &'static str },
+    GpuGenerated { route: &'static str },
+}
+
+#[derive(Clone, Debug)]
+pub struct PlanNodeEvidence {
+    item_id: ItemId,
+    registry_id: Option<String>,
+    origin: PixelOrigin,
+    operations: Vec<PlannedGpuOp>,
+}
+impl PlanNodeEvidence {
+    pub fn item_id(&self) -> ItemId {
+        self.item_id
+    }
+    pub fn registry_id(&self) -> Option<&str> {
+        self.registry_id.as_deref()
+    }
+    pub fn origin(&self) -> &PixelOrigin {
+        &self.origin
+    }
+    pub fn operations(&self) -> &[PlannedGpuOp] {
+        &self.operations
+    }
+}
+
+struct PreflightLayer {
+    evidence: PlanNodeEvidence,
+    project: Project,
+    item: TrackItem,
+    time: Tick,
+    source_time: Tick,
+    source_id: ResidentSourceId,
+    source_kind: ResidentSourceKind,
+    size: (u32, u32),
+    matrix: Affine,
+    opacity: f32,
+    blend: Blend,
+    color: filmcraft_color::ColorPipeline,
+}
+
+enum PreflightStep {
+    Layers(Vec<PreflightLayer>),
+    Transition { inputs: [Vec<PreflightLayer>; 2], evidence: PlanNodeEvidence },
+}
+
+/// Opaque whole-chain receipt. No source provider or pixel allocation is used to mint it.
+pub struct PreflightedFrame {
+    width: usize,
+    height: usize,
+    steps: Vec<PreflightStep>,
+    source_requests: Vec<ResidentSourceRequest>,
+}
+impl PreflightedFrame {
+    pub fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    pub fn source_requests(&self) -> &[ResidentSourceRequest] {
+        &self.source_requests
+    }
+    pub fn nodes(&self) -> impl Iterator<Item = &PlanNodeEvidence> {
+        self.steps.iter().flat_map(|step| match step {
+            PreflightStep::Layers(layers) => layers.iter().map(|layer| &layer.evidence).collect::<Vec<_>>(),
+            PreflightStep::Transition { inputs, evidence } => inputs.iter().flatten().map(|layer| &layer.evidence).chain(std::iter::once(evidence)).collect(),
+        })
+    }
+}
+
+/// A decoded leaf bound to its original opaque provenance.
+pub struct RequiredLayer {
+    layer: PlanLayer,
+    evidence: PlanNodeEvidence,
+}
+impl RequiredLayer {
+    pub fn layer(&self) -> &PlanLayer {
+        &self.layer
+    }
+    pub fn evidence(&self) -> &PlanNodeEvidence {
+        &self.evidence
+    }
+}
+
+pub enum RequiredStep {
+    Layers(Vec<RequiredLayer>),
+    Transition { inputs: [Vec<RequiredLayer>; 2], evidence: PlanNodeEvidence },
+}
+
+/// Strict typed materialization. There is deliberately no whole-frame image variant.
+pub struct RequiredFramePlan {
+    width: usize,
+    height: usize,
+    steps: Vec<RequiredStep>,
+}
+impl RequiredFramePlan {
+    pub fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+    pub fn steps(&self) -> &[RequiredStep] {
+        &self.steps
+    }
+    pub fn nodes(&self) -> impl Iterator<Item = &PlanNodeEvidence> {
+        self.steps.iter().flat_map(|step| match step {
+            RequiredStep::Layers(layers) => layers.iter().map(|layer| &layer.evidence).collect::<Vec<_>>(),
+            RequiredStep::Transition { inputs, evidence } => inputs.iter().flatten().map(|layer| &layer.evidence).chain(std::iter::once(evidence)).collect(),
+        })
+    }
+    pub fn layers(&self) -> impl Iterator<Item = &RequiredLayer> {
+        self.steps.iter().flat_map(|step| match step {
+            RequiredStep::Layers(layers) => layers.iter().collect::<Vec<_>>(),
+            RequiredStep::Transition { inputs, .. } => inputs.iter().flatten().collect(),
+        })
+    }
+}
+
+/// Resident source layer containing metadata only; pixel and GPU resources remain caller-owned.
+pub struct ResidentRequiredLayer {
+    source_id: ResidentSourceId,
+    source_kind: ResidentSourceKind,
+    source_time: Tick,
+    width: u32,
+    height: u32,
+    color: filmcraft_color::ColorInfo,
+    matrix: Affine,
+    opacity: f32,
+    blend: Blend,
+    fx: Option<Arc<LayerFx>>,
+    input: Option<Arc<InputTransform>>,
+    evidence: PlanNodeEvidence,
+}
+impl ResidentRequiredLayer {
+    pub fn source_id(&self) -> ResidentSourceId {
+        self.source_id
+    }
+    pub fn source_kind(&self) -> ResidentSourceKind {
+        self.source_kind
+    }
+    pub fn demo_time_seconds(&self) -> Option<f32> {
+        matches!(self.source_kind, ResidentSourceKind::Demo(_)).then(|| self.source_time.seconds() as f32)
+    }
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+    pub fn color(&self) -> filmcraft_color::ColorInfo {
+        self.color
+    }
+    pub fn matrix(&self) -> &Affine {
+        &self.matrix
+    }
+    pub fn opacity(&self) -> f32 {
+        self.opacity
+    }
+    pub fn blend(&self) -> Blend {
+        self.blend
+    }
+    pub fn fx(&self) -> Option<&Arc<LayerFx>> {
+        self.fx.as_ref()
+    }
+    pub fn input(&self) -> Option<&Arc<InputTransform>> {
+        self.input.as_ref()
+    }
+    pub fn evidence(&self) -> &PlanNodeEvidence {
+        &self.evidence
+    }
+}
+
+pub enum ResidentRequiredStep {
+    Layers(Vec<ResidentRequiredLayer>),
+    Transition { inputs: [Vec<ResidentRequiredLayer>; 2], evidence: PlanNodeEvidence },
+}
+
+/// Strict plan whose layers reference caller-owned NV12 textures only by receipt-local ID.
+pub struct ResidentRequiredFramePlan {
+    width: usize,
+    height: usize,
+    steps: Vec<ResidentRequiredStep>,
+}
+impl ResidentRequiredFramePlan {
+    pub fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+    pub fn steps(&self) -> &[ResidentRequiredStep] {
+        &self.steps
+    }
+    pub fn nodes(&self) -> impl Iterator<Item = &PlanNodeEvidence> {
+        self.steps.iter().flat_map(|step| match step {
+            ResidentRequiredStep::Layers(layers) => layers.iter().map(|layer| &layer.evidence).collect::<Vec<_>>(),
+            ResidentRequiredStep::Transition { inputs, evidence } => {
+                inputs.iter().flatten().map(|layer| &layer.evidence).chain(std::iter::once(evidence)).collect()
+            }
+        })
+    }
+    pub fn layers(&self) -> impl Iterator<Item = &ResidentRequiredLayer> {
+        self.steps.iter().flat_map(|step| match step {
+            ResidentRequiredStep::Layers(layers) => layers.iter().collect::<Vec<_>>(),
+            ResidentRequiredStep::Transition { inputs, .. } => inputs.iter().flatten().collect(),
+        })
+    }
+}
+
+fn rejected(item_id: Option<ItemId>, id: Option<String>, reason: EligibilityFailure) -> GpuPlanError {
+    GpuPlanError { item_id, id, reason }
+}
+/// The clip span the effects may read (grow, shrink, spin and move animate over it).
+fn clip_timing(seq: &Sequence, item: &TrackItem, t: Tick, source: (u32, u32)) -> crate::vfx::ClipTiming {
+    crate::vfx::ClipTiming {
+        clip_seconds: item.duration.seconds(),
+        clip_offset: (t - item.start).seconds(),
+        frame_rate: seq.settings.frame_rate.as_f64(),
+        sequence_size: (seq.settings.width, seq.settings.height),
+        source_size: source,
+    }
+}
+
+fn structure(item_id: ItemId, detail: FrameRequirement) -> GpuPlanError {
+    rejected(Some(item_id), None, EligibilityFailure::UnsupportedFrameStructure { detail })
+}
+fn cpu_required(item_id: ItemId, id: Option<String>) -> GpuPlanError {
+    rejected(Some(item_id), id.clone(), EligibilityFailure::CpuFallbackRequired { id })
+}
+
+/// Validate the entire active frame using only project metadata, before any decode or rasterization.
+pub fn preflight_frame_required(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions) -> Result<PreflightedFrame, GpuPlanError> {
+    if !opts.scale.is_finite() || opts.scale <= 0.0 {
+        return Err(structure(seq_id, FrameRequirement::InvalidScale));
+    }
+    let seq = project.sequence(seq_id).ok_or_else(|| structure(seq_id, FrameRequirement::MissingSequence))?;
+    let (width, height) = output_size(seq, opts.scale);
+    let mut path = Vec::new();
+    let mut steps = preflight_sequence(project, seq_id, seq, t, opts, &mut path)?;
+    let source_requests = assign_resident_source_ids(&mut steps)?;
+    Ok(PreflightedFrame { width, height, steps, source_requests })
+}
+
+fn assign_resident_source_ids(steps: &mut [PreflightStep]) -> Result<Vec<ResidentSourceRequest>, GpuPlanError> {
+    fn assign(layers: &mut [PreflightLayer], requests: &mut Vec<ResidentSourceRequest>) -> Result<(), GpuPlanError> {
+        for layer in layers {
+            let id = ResidentSourceId(u32::try_from(requests.len()).map_err(|_| structure(layer.evidence.item_id, FrameRequirement::InvalidSourceData))?);
+            layer.source_id = id;
+            requests.push(ResidentSourceRequest {
+                id,
+                item_id: layer.evidence.item_id,
+                source_time: layer.source_time,
+                expected_size: layer.size,
+                kind: layer.source_kind,
+            });
+        }
+        Ok(())
+    }
+    let mut requests = Vec::new();
+    for step in steps {
+        match step {
+            PreflightStep::Layers(layers) => assign(layers, &mut requests)?,
+            PreflightStep::Transition { inputs, .. } => {
+                for layers in inputs {
+                    assign(layers, &mut requests)?;
+                }
+            }
+        }
+    }
+    Ok(requests)
+}
+
+fn preflight_sequence(
+    project: &Project,
+    seq_id: ItemId,
+    seq: &Sequence,
+    t: Tick,
+    opts: RenderOptions,
+    path: &mut Vec<ItemId>,
+) -> Result<Vec<PreflightStep>, GpuPlanError> {
+    if path.contains(&seq_id) {
+        return Err(structure(seq_id, FrameRequirement::NestedCycle));
+    }
+    if path.len() >= crate::MAX_NEST_DEPTH as usize {
+        return Err(structure(seq_id, FrameRequirement::NestedDepth));
+    }
+    if !seq.settings.color.is_plain() {
+        return Err(structure(seq_id, FrameRequirement::ColorPipeline));
+    }
+    if seq.settings.width == 0 || seq.settings.height == 0 {
+        return Err(structure(seq_id, FrameRequirement::InvalidDimensions));
+    }
+    if opts.captions && seq.caption_tracks.iter().any(|track| track.enabled && track.captions.iter().any(|caption| caption.range().contains(t))) {
+        return Err(cpu_required(seq_id, Some("captions".into())));
+    }
+    path.push(seq_id);
+    let result = (|| {
+        let mut steps = Vec::new();
+        for track in seq.video_tracks.iter().filter(|track| track.enabled) {
+            if let Some(transition) = track.transitions.iter().find(|transition| transition.range().contains(t)) {
+                let planned = crate::transitions::gpu_plan::evaluate(&transition.effect, transition.progress(t) as f32, opts.scale)
+                    .map_err(|error| transition_error(seq_id, error))?;
+                let mut inputs = [Vec::new(), Vec::new()];
+                for (slot, id) in inputs.iter_mut().zip([transition.from, transition.to]) {
+                    if let Some(id) = id {
+                        let item = track.item(id).ok_or_else(|| structure(seq_id, FrameRequirement::MissingItem))?;
+                        if item.enabled {
+                            *slot = preflight_item(project, seq, item, t, opts, Some(Blend::Normal), path)?;
+                        }
+                    }
+                }
+                let progress = if transition.reverse {
+                    inputs.swap(0, 1);
+                    1.0 - planned.progress
+                } else {
+                    planned.progress
+                };
+                let evidence = PlanNodeEvidence {
+                    item_id: seq_id,
+                    registry_id: Some(planned.id.clone()),
+                    origin: PixelOrigin::GpuGenerated { route: "transition" },
+                    operations: vec![PlannedGpuOp::Transition {
+                        id: planned.id,
+                        op: planned.op,
+                        progress,
+                        scale: planned.scale,
+                        requirements: planned.requirements,
+                    }],
+                };
+                steps.push(PreflightStep::Transition { inputs, evidence });
+            } else if let Some(item) = track.item_at(t).filter(|item| item.enabled) {
+                steps.push(PreflightStep::Layers(preflight_item(project, seq, item, t, opts, None, path)?));
+            }
+        }
+        Ok(steps)
+    })();
+    path.pop();
+    result
+}
+
+fn transition_error(item: ItemId, error: crate::transitions::gpu_plan::TransitionPlanError) -> GpuPlanError {
+    use crate::transitions::gpu_plan::TransitionPlanError;
+    let (id, reason) = match error {
+        TransitionPlanError::UnknownId { id } => (id.clone(), EligibilityFailure::UnknownId { id }),
+        TransitionPlanError::UnsupportedOperation { id } => (id.clone(), EligibilityFailure::UnsupportedOperation { id }),
+        TransitionPlanError::InvalidParameter { id, parameter } => (id.clone(), EligibilityFailure::InvalidParameter { id, parameter: parameter.into() }),
+    };
+    rejected(Some(item), Some(id), reason)
+}
+
+fn preflight_item(
+    project: &Project,
+    seq: &Sequence,
+    item: &TrackItem,
+    t: Tick,
+    opts: RenderOptions,
+    override_blend: Option<Blend>,
+    path: &mut Vec<ItemId>,
+) -> Result<Vec<PreflightLayer>, GpuPlanError> {
+    let source = project.item(item.item).ok_or_else(|| structure(item.item, FrameRequirement::MissingItem))?;
+    if item.has_opacity_masks() {
+        return Err(cpu_required(item.item, Some("opacity".into())));
+    }
+    for effect in item.effects.iter().filter(|effect| effect.enabled && (opts.effects || effect.def().is_some_and(|def| def.intrinsic))) {
+        let Some(def) = filmcraft_project::find_effect(&effect.effect).filter(|def| def.kind == filmcraft_project::EffectKind::Video) else {
+            return Err(rejected(Some(item.item), Some(effect.effect.clone()), EligibilityFailure::UnknownId { id: effect.effect.clone() }));
+        };
+        if (opts.effects || def.intrinsic) && effect.masks.iter().any(|mask| mask.mode != filmcraft_project::MaskMode::None) {
+            return Err(cpu_required(item.item, Some(effect.effect.clone())));
+        }
+    }
+    let mt = item.effect_time_at(t);
+    let (opacity, own_blend) = crate::opacity_blend(item, mt);
+    let blend = override_blend.unwrap_or(own_blend);
+    if !opacity.is_finite() {
+        return Err(structure(item.item, FrameRequirement::InvalidMotion));
+    }
+    if let ItemKind::Sequence(nested) = &source.kind {
+        let ft = item.source_time_at(t);
+        // Nested isolated composites need a GPU subpass; never flatten them on the CPU.
+        let nested_opts = RenderOptions { captions: true, ..opts };
+        let nested_steps = preflight_sequence(project, item.item, nested, ft, nested_opts, path)?;
+        if item.multicam_angle(nested).is_some()
+            || (opts.effects && item.has_standard_effects())
+            || blend != Blend::Normal
+            || opacity < 1.0 - 1e-6
+            || !near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
+            || !nest_is_plain(project, seq, nested, ft)
+        {
+            return Err(structure(item.item, FrameRequirement::NestedPlacement));
+        }
+        return nested_steps.into_iter().try_fold(Vec::new(), |mut layers, step| match step {
+            PreflightStep::Layers(mut next) => {
+                layers.append(&mut next);
+                Ok(layers)
+            }
+            PreflightStep::Transition { .. } => Err(structure(item.item, FrameRequirement::NestedComposite)),
+        });
+    }
+    if !matches!(source.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }) {
+        return Err(cpu_required(item.item, None));
+    }
+    let (_, media, _) = project.resolve_media(item.item).ok_or_else(|| structure(item.item, FrameRequirement::MissingItem))?;
+    let source_kind = match &media.media {
+        MediaRef::File { .. } => ResidentSourceKind::Decoded,
+        MediaRef::Generator(filmcraft_media::Generator::Demo(scene)) => ResidentSourceKind::Demo(*scene),
+        MediaRef::Generator(_) => return Err(cpu_required(item.item, Some("generator".into()))),
+    };
+    if media.offline {
+        return Err(rejected(Some(item.item), None, EligibilityFailure::MissingResource { id: item.item.0.to_string(), resource: ResourceKind::Source }));
+    }
+    let source_rate = media.info.frame_rate();
+    let raw_source_time = crate::video_source_time(item, t, source_rate);
+    let source_time = if let ResidentSourceKind::Demo(_) = source_kind {
+        let time = source_rate.tick_of(source_rate.frame_at(raw_source_time.max(Tick::ZERO)));
+        let seconds = time.seconds() as f32;
+        if !seconds.is_finite() || time >= media.info.duration || seconds >= 18.0 {
+            return Err(structure(item.item, FrameRequirement::InvalidSourceData));
+        }
+        if media.interpret.color_space.is_some() {
+            return Err(structure(item.item, FrameRequirement::ColorPipeline));
+        }
+        time
+    } else {
+        raw_source_time
+    };
+    if crate::interpolation_blend(item, t, media.info.frame_rate()).is_some() {
+        return Err(structure(item.item, FrameRequirement::InterpolatedMedia));
+    }
+    let size =
+        crate::source_size(project, item.item).filter(|(w, h)| *w > 0 && *h > 0).ok_or_else(|| structure(item.item, FrameRequirement::InvalidDimensions))?;
+    let motion = motion_matrix(seq, item, size, crate::source_par(project, item.item), mt);
+    if ![motion.a, motion.b, motion.c, motion.d, motion.e, motion.f].iter().all(|x| x.is_finite()) {
+        return Err(structure(item.item, FrameRequirement::InvalidMotion));
+    }
+    let timing = clip_timing(seq, item, t, size);
+    let cx = crate::effects::FxCtx {
+        t: mt,
+        px_scale: 1.0,
+        seconds: (t - item.start).seconds(),
+        timecode: "",
+        clip_name: &item.name,
+        project: Some(project),
+        env: Some(&timing),
+        frame_rate: seq.settings.frame_rate.as_f64(),
+        working: seq.settings.color.working,
+    };
+    let mut operations = Vec::new();
+    if opts.effects {
+        for effect in item.effects.iter().filter(|effect| effect.enabled && effect.def().is_some_and(|def| !def.intrinsic)) {
+            let requirements = crate::gpufx::effect_requirements(effect);
+            let missing = if requirements.history {
+                Some(ResourceKind::History)
+            } else if requirements.mask {
+                Some(ResourceKind::Mask)
+            } else if requirements.lut {
+                Some(ResourceKind::Lut)
+            } else if requirements.sampled_inputs > 1 {
+                Some(ResourceKind::SampledInput)
+            } else {
+                None
+            };
+            if let Some(resource) = missing {
+                return Err(rejected(
+                    Some(item.item),
+                    Some(effect.effect.clone()),
+                    EligibilityFailure::MissingResource { id: effect.effect.clone(), resource },
+                ));
+            }
+            use crate::gpufx::{EffectGpuFailure, EffectGpuOutcome};
+            match crate::gpufx::evaluate_gpu_effect(effect, &cx, size.0 as usize, size.1 as usize) {
+                EffectGpuOutcome::Eligible(op) => operations.push(PlannedGpuOp::Effect { id: effect.effect.clone(), op, requirements }),
+                EffectGpuOutcome::Disabled => {}
+                EffectGpuOutcome::Ineligible(reason) => {
+                    let id = effect.effect.clone();
+                    let reason = match reason {
+                        EffectGpuFailure::UnknownId => EligibilityFailure::UnknownId { id: id.clone() },
+                        EffectGpuFailure::InvalidParameter { parameter } => EligibilityFailure::InvalidParameter { id: id.clone(), parameter },
+                        EffectGpuFailure::MissingResource { resource } => EligibilityFailure::MissingResource { id: id.clone(), resource },
+                        EffectGpuFailure::UnsupportedOperation | EffectGpuFailure::UnsupportedCase => {
+                            EligibilityFailure::UnsupportedOperation { id: id.clone() }
+                        }
+                    };
+                    return Err(rejected(Some(item.item), Some(id), reason));
+                }
+            }
+        }
+    }
+    let origin = match source_kind {
+        ResidentSourceKind::Decoded => PixelOrigin::DecodedMediaSource,
+        ResidentSourceKind::Demo(_) => PixelOrigin::GpuGenerated { route: "demo_source" },
+    };
+    let evidence = PlanNodeEvidence { item_id: item.item, registry_id: None, origin, operations };
+    Ok(vec![PreflightLayer {
+        evidence,
+        project: project.clone(),
+        item: item.clone(),
+        time: t,
+        source_time,
+        source_id: ResidentSourceId(0),
+        source_kind,
+        size,
+        matrix: Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion),
+        opacity,
+        blend,
+        color: seq.settings.color,
+    }])
+}
+
+/// Consume the receipt before obtaining any source. Errors never omit a layer or enter CPU rendering.
+pub fn materialize_frame_required(receipt: PreflightedFrame, sources: &dyn SourceProvider) -> Result<RequiredFramePlan, GpuPlanError> {
+    if let Some(request) = receipt.source_requests.iter().find(|request| matches!(request.kind, ResidentSourceKind::Demo(_))) {
+        return Err(cpu_required(request.item_id, Some("GPU-generated demo source requires resident materialization".into())));
+    }
+    let mut steps = Vec::new();
+    for step in receipt.steps {
+        steps.push(match step {
+            PreflightStep::Layers(layers) => {
+                RequiredStep::Layers(layers.into_iter().map(|layer| materialize_required_layer(layer, sources)).collect::<Result<_, _>>()?)
+            }
+            PreflightStep::Transition { inputs: [a, b], evidence } => RequiredStep::Transition {
+                inputs: [
+                    a.into_iter().map(|layer| materialize_required_layer(layer, sources)).collect::<Result<_, _>>()?,
+                    b.into_iter().map(|layer| materialize_required_layer(layer, sources)).collect::<Result<_, _>>()?,
+                ],
+                evidence,
+            },
+        });
+    }
+    Ok(RequiredFramePlan { width: receipt.width, height: receipt.height, steps })
+}
+
+/// Strict plan for a frame whose sources are all GPU-generated demo scenes: nothing is decoded or
+/// read from the CPU, so the metadata is fixed (generated frames are always full-range sRGB).
+pub fn materialize_frame_required_demo(receipt: PreflightedFrame) -> Result<ResidentRequiredFramePlan, GpuPlanError> {
+    let frames: Vec<ResidentFrameMetadata> = receipt
+        .source_requests
+        .iter()
+        .map(|request| ResidentFrameMetadata {
+            id: request.id,
+            item_id: request.item_id,
+            width: request.expected_size.0,
+            height: request.expected_size.1,
+            color: filmcraft_color::ColorInfo::SRGB_FULL,
+        })
+        .collect();
+    materialize_frame_required_resident(receipt, &frames)
+}
+
+/// Materialize a strict resident plan from metadata only. This route never accepts decoded pixels.
+pub fn materialize_frame_required_resident(receipt: PreflightedFrame, frames: &[ResidentFrameMetadata]) -> Result<ResidentRequiredFramePlan, GpuPlanError> {
+    if frames.len() != receipt.source_requests.len() {
+        return Err(rejected(
+            None,
+            Some("resident NV12 source bindings".into()),
+            EligibilityFailure::InvalidParameter { id: "resident NV12 source bindings".into(), parameter: "exact receipt source coverage".into() },
+        ));
+    }
+    let mut by_id = HashMap::with_capacity(frames.len());
+    for frame in frames {
+        if by_id.insert(frame.id, frame).is_some() {
+            return Err(rejected(
+                Some(frame.item_id),
+                Some("resident NV12 source".into()),
+                EligibilityFailure::InvalidParameter { id: "resident NV12 source".into(), parameter: "duplicate receipt source id".into() },
+            ));
+        }
+    }
+    for request in &receipt.source_requests {
+        let frame = by_id.get(&request.id).ok_or_else(|| {
+            rejected(Some(request.item_id), None, EligibilityFailure::MissingResource { id: request.id.0.to_string(), resource: ResourceKind::Source })
+        })?;
+        if frame.item_id != request.item_id || (frame.width, frame.height) != request.expected_size {
+            return Err(structure(request.item_id, FrameRequirement::InvalidDimensions));
+        }
+        if frame.width == 0
+            || frame.height == 0
+            || (request.kind == ResidentSourceKind::Decoded && (!frame.width.is_multiple_of(2) || !frame.height.is_multiple_of(2)))
+        {
+            return Err(structure(request.item_id, FrameRequirement::InvalidSourceData));
+        }
+        if matches!(request.kind, ResidentSourceKind::Demo(_)) && frame.color != filmcraft_color::ColorInfo::SRGB_FULL {
+            return Err(structure(request.item_id, FrameRequirement::ColorPipeline));
+        }
+    }
+
+    fn layer(planned: PreflightLayer, metadata: &ResidentFrameMetadata) -> Result<ResidentRequiredLayer, GpuPlanError> {
+        let item_id = planned.evidence.item_id;
+        if planned.source_kind == ResidentSourceKind::Decoded && planned.evidence.origin != PixelOrigin::DecodedMediaSource {
+            return Err(structure(item_id, FrameRequirement::InvalidSourceData));
+        }
+        if matches!(planned.source_kind, ResidentSourceKind::Demo(_)) && planned.evidence.origin != (PixelOrigin::GpuGenerated { route: "demo_source" }) {
+            return Err(structure(item_id, FrameRequirement::InvalidSourceData));
+        }
+        let generated = matches!(planned.source_kind, ResidentSourceKind::Demo(_));
+        let source_space = crate::colorman::source_space_from_info(&planned.project, item_id, metadata.color);
+        let input = if !generated && crate::colorman::needs_management_from_info(&planned.color, source_space, metadata.color) {
+            Some(
+                crate::colorman::gpu_input_nv12(&planned.project, item_id, &planned.color, source_space, metadata.color)
+                    .ok_or_else(|| structure(item_id, FrameRequirement::ColorPipeline))?,
+            )
+        } else {
+            None
+        };
+        let ops = planned
+            .evidence
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                PlannedGpuOp::Effect { op, .. } => Some(op.clone()),
+                PlannedGpuOp::Transition { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let fx = (!ops.is_empty()).then(|| Arc::new(LayerFx { size: planned.size, decimation: 1, ops }));
+        Ok(ResidentRequiredLayer {
+            source_id: planned.source_id,
+            source_kind: planned.source_kind,
+            source_time: planned.source_time,
+            width: metadata.width,
+            height: metadata.height,
+            color: metadata.color,
+            matrix: planned.matrix,
+            opacity: planned.opacity,
+            blend: planned.blend,
+            fx,
+            input,
+            evidence: planned.evidence,
+        })
+    }
+
+    fn take_layer(planned: PreflightLayer, metadata: &HashMap<ResidentSourceId, &ResidentFrameMetadata>) -> Result<ResidentRequiredLayer, GpuPlanError> {
+        let id = planned.source_id;
+        let frame = metadata.get(&id).ok_or_else(|| {
+            rejected(Some(planned.evidence.item_id), None, EligibilityFailure::MissingResource { id: id.0.to_string(), resource: ResourceKind::Source })
+        })?;
+        layer(planned, frame)
+    }
+
+    let mut steps = Vec::with_capacity(receipt.steps.len());
+    for step in receipt.steps {
+        steps.push(match step {
+            PreflightStep::Layers(layers) => ResidentRequiredStep::Layers(layers.into_iter().map(|layer| take_layer(layer, &by_id)).collect::<Result<_, _>>()?),
+            PreflightStep::Transition { inputs: [a, b], evidence } => ResidentRequiredStep::Transition {
+                inputs: [
+                    a.into_iter().map(|layer| take_layer(layer, &by_id)).collect::<Result<_, _>>()?,
+                    b.into_iter().map(|layer| take_layer(layer, &by_id)).collect::<Result<_, _>>()?,
+                ],
+                evidence,
+            },
+        });
+    }
+    Ok(ResidentRequiredFramePlan { width: receipt.width, height: receipt.height, steps })
+}
+
+fn materialize_required_layer(planned: PreflightLayer, sources: &dyn SourceProvider) -> Result<RequiredLayer, GpuPlanError> {
+    let id = planned.evidence.item_id;
+    let src = sources
+        .source(id)
+        .ok_or_else(|| rejected(Some(id), None, EligibilityFailure::MissingResource { id: id.0.to_string(), resource: ResourceKind::Source }))?;
+    let time = crate::video_source_time(&planned.item, planned.time, src.info().frame_rate());
+    let frame = src
+        .video_frame(FrameRequest { time, scale: 1.0 })
+        .map_err(|error| rejected(Some(id), None, EligibilityFailure::RuntimeFailure { stage: "decode", detail: error.to_string() }))?;
+    if (frame.width, frame.height) != planned.size {
+        return Err(structure(id, FrameRequirement::InvalidDimensions));
+    }
+    // Validate buffer metadata before the upload boundary; never inspect or rewrite pixels.
+    let pixels = (frame.width as usize).checked_mul(frame.height as usize).ok_or_else(|| structure(id, FrameRequirement::InvalidSourceData))?;
+    let valid = match &frame.data {
+        filmcraft_frame::PixelData::Rgba8(data) => pixels.checked_mul(4) == Some(data.len()),
+        filmcraft_frame::PixelData::RgbaF32(data) => pixels.checked_mul(4) == Some(data.len()),
+        filmcraft_frame::PixelData::Yuv8 { planes, chroma, alpha } => {
+            let (x, y) = chroma.shifts();
+            let chroma_pixels = (frame.width.div_ceil(1 << x) as usize).checked_mul(frame.height.div_ceil(1 << y) as usize);
+            planes[0].len() == pixels
+                && chroma_pixels == Some(planes[1].len())
+                && chroma_pixels == Some(planes[2].len())
+                && alpha.as_ref().is_none_or(|data| data.len() == pixels)
+        }
+        filmcraft_frame::PixelData::Yuv16 { planes, chroma, bits, alpha } => {
+            let (x, y) = chroma.shifts();
+            let chroma_pixels = (frame.width.div_ceil(1 << x) as usize).checked_mul(frame.height.div_ceil(1 << y) as usize);
+            (9..=16).contains(bits)
+                && planes[0].len() == pixels
+                && chroma_pixels == Some(planes[1].len())
+                && chroma_pixels == Some(planes[2].len())
+                && alpha.as_ref().is_none_or(|data| data.len() == pixels)
+        }
+    };
+    if !valid {
+        return Err(structure(id, FrameRequirement::InvalidSourceData));
+    }
+    let cs = crate::colorman::source_space(&planned.project, id, &frame);
+    let input = if crate::colorman::needs_management(&planned.color, cs, &frame) {
+        Some(crate::colorman::gpu_input(&planned.project, id, &planned.color, cs, &frame).ok_or_else(|| structure(id, FrameRequirement::ColorPipeline))?)
+    } else {
+        None
+    };
+    let ops = planned
+        .evidence
+        .operations
+        .iter()
+        .filter_map(|op| match op {
+            PlannedGpuOp::Effect { op, .. } => Some(op.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let fx = (!ops.is_empty()).then(|| Arc::new(LayerFx { size: planned.size, decimation: 1, ops }));
+    Ok(RequiredLayer {
+        layer: PlanLayer { frame, matrix: planned.matrix, opacity: planned.opacity, blend: planned.blend, fx, input },
+        evidence: planned.evidence,
+    })
+}
 
 /// A GPU frame plan retains every resolved source frame. Nested sequences may share the same
 /// child sequence many times, so recursion depth alone does not bound this expansion.
@@ -197,7 +1041,7 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
 }
 
 fn simple_transition(id: &str) -> bool {
-    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
+    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white" | "blur_dissolve" | "flare")
 }
 
 /// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
@@ -310,7 +1154,7 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
             let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             match trn.effect.effect.as_str() {
-                "push" => {
+                "push" | "blur_dissolve" | "flare" => {
                     let mut inputs = [Vec::new(), Vec::new()];
                     for (slot, item) in inputs.iter_mut().zip([a, b]) {
                         if let Some(item) = item {
@@ -483,6 +1327,7 @@ fn push_item(
             let (lw, lh) = ((frame.width as usize / n).max(1), (frame.height as usize / n).max(1));
             let px_scale = lw as f32 / size.0.max(1) as f32;
             let tc = "";
+            let timing = clip_timing(seq, item, t, size);
             let cx = crate::effects::FxCtx {
                 t: mt,
                 px_scale,
@@ -490,7 +1335,7 @@ fn push_item(
                 timecode: tc,
                 clip_name: &item.name,
                 project: Some(project),
-                env: None,
+                env: Some(&timing),
                 frame_rate: seq.settings.frame_rate.as_f64(),
                 working: seq.settings.color.working,
             };
@@ -605,6 +1450,307 @@ fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn resident_plan() -> (PreflightedFrame, ResidentFrameMetadata) {
+        use filmcraft_media::{MediaInfo, MediaKind, VideoStreamInfo};
+        use filmcraft_project::{Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
+
+        let mut project = Project::new("resident");
+        let seq = project.new_sequence("sequence", SequenceSettings { width: 8, height: 8, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+        let item_id = project.add_item(
+            "source.mov",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: "source.mov".into() },
+                info: MediaInfo {
+                    name: "source.mov".into(),
+                    kind: MediaKind::Movie,
+                    duration: Tick(TICKS_PER_SECOND),
+                    video: Some(VideoStreamInfo {
+                        width: 8,
+                        height: 8,
+                        frame_rate: FrameRate::FPS_24,
+                        par: (1, 1),
+                        codec: "h264".into(),
+                        pixel_format: "nv12".into(),
+                        color: filmcraft_color::ColorInfo::REC709,
+                        has_alpha: false,
+                        bitrate: None,
+                        hdr: None,
+                    }),
+                    audio_streams: Vec::new(),
+                    container: "MOV".into(),
+                    start_timecode: None,
+                    file_size: None,
+                },
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: Vec::new(),
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        let clip = project
+            .make_track_item(item_id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24)
+            .expect("test clip");
+        project.sequence_mut(seq).expect("test sequence").video_tracks[0].items.push(clip);
+        let receipt = preflight_frame_required(&project, seq, Tick::ZERO, RenderOptions::default()).expect("metadata preflight");
+        let request = *receipt.source_requests().first().expect("one visible source");
+        let metadata = ResidentFrameMetadata { id: request.id, item_id: request.item_id, width: 8, height: 8, color: filmcraft_color::ColorInfo::REC709 };
+        (receipt, metadata)
+    }
+
+    #[test]
+    fn resident_plan_uses_exact_receipt_id_and_metadata_without_cpu_source() {
+        let (receipt, metadata) = resident_plan();
+        let request = *receipt.source_requests().first().expect("one source request");
+        assert_eq!(request.id, ResidentSourceId(0));
+        assert_eq!(request.item_id, metadata.item_id);
+        assert_eq!(request.expected_size, (8, 8));
+        let plan = materialize_frame_required_resident(receipt, &[metadata]).expect("resident plan");
+        assert_eq!(plan.size(), (8, 8));
+        let layers: Vec<_> = plan.layers().collect();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].source_id(), request.id);
+        assert_eq!(layers[0].size(), (8, 8));
+        assert!(layers[0].input().is_none());
+    }
+
+    #[test]
+    fn resident_plan_rejects_missing_duplicate_wrong_and_odd_metadata() {
+        let (receipt, _metadata) = resident_plan();
+        assert!(materialize_frame_required_resident(receipt, &[]).is_err());
+
+        let (receipt, metadata) = resident_plan();
+        assert!(materialize_frame_required_resident(receipt, &[metadata, metadata]).is_err());
+
+        let (receipt, mut metadata) = resident_plan();
+        metadata.id = ResidentSourceId(u32::MAX);
+        assert!(materialize_frame_required_resident(receipt, &[metadata]).is_err());
+
+        let (receipt, mut metadata) = resident_plan();
+        metadata.item_id = ItemId(u64::MAX);
+        assert!(materialize_frame_required_resident(receipt, &[metadata]).is_err());
+
+        let (receipt, mut metadata) = resident_plan();
+        metadata.width = 7;
+        assert!(materialize_frame_required_resident(receipt, &[metadata]).is_err());
+
+        let (receipt, mut metadata) = resident_plan();
+        metadata.width = 6;
+        metadata.height = 6;
+        assert!(materialize_frame_required_resident(receipt, &[metadata]).is_err());
+    }
+
+    #[test]
+    fn strict_resident_plan_accepts_only_demo_generators_as_generated_sources() {
+        use filmcraft_media::{DemoScene, Generator, MediaSource};
+        use filmcraft_project::{Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
+
+        let scene = DemoScene::Aurora;
+        let source = filmcraft_media::generators::GeneratorSource::demo(scene);
+        let mut project = Project::new("generated resident");
+        let seq = project.new_sequence("sequence", SequenceSettings { width: 8, height: 7, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+        let item_id = project.add_item(
+            "Aurora",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::Generator(Generator::Demo(scene)),
+                info: source.info().clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: Vec::new(),
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        let clip = project
+            .make_track_item(item_id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(20 * TICKS_PER_SECOND)), FrameRate::FPS_24)
+            .expect("test clip");
+        project.sequence_mut(seq).expect("test sequence").video_tracks[0].items.push(clip);
+        let requested_time = Tick(TICKS_PER_SECOND + 7);
+        let receipt = preflight_frame_required(&project, seq, requested_time, RenderOptions::default()).expect("demo preflight");
+        let request = *receipt.source_requests().first().expect("one visible source");
+        assert_eq!(request.kind, ResidentSourceKind::Demo(scene));
+        let rate = source.info().frame_rate();
+        let quantized_time = rate.tick_of(rate.frame_at(requested_time));
+        assert_eq!(request.source_time, quantized_time);
+        assert_eq!(request.expected_size, (1920, 1080));
+        assert_eq!(receipt.nodes().next().map(PlanNodeEvidence::origin), Some(&PixelOrigin::GpuGenerated { route: "demo_source" }));
+
+        let metadata = ResidentFrameMetadata {
+            id: request.id,
+            item_id: request.item_id,
+            width: request.expected_size.0,
+            height: request.expected_size.1,
+            color: filmcraft_color::ColorInfo::SRGB_FULL,
+        };
+        let plan = materialize_frame_required_resident(receipt, &[metadata]).expect("metadata-only demo materialization");
+        let layers: Vec<_> = plan.layers().collect();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].size(), request.expected_size);
+        assert_eq!(layers[0].demo_time_seconds(), Some(quantized_time.seconds() as f32));
+        assert_eq!(layers[0].evidence().origin(), &PixelOrigin::GpuGenerated { route: "demo_source" });
+
+        let receipt = preflight_frame_required(&project, seq, requested_time, RenderOptions::default()).expect("second demo preflight");
+        let no_cpu_source = |_item| -> Option<filmcraft_media::SharedSource> { panic!("resident demo must not ask CPU provider") };
+        assert!(materialize_frame_required(receipt, &no_cpu_source).is_err());
+        if let ItemKind::Media(media) = &mut project.item_mut(item_id).expect("demo project item").kind {
+            media.info.duration = Tick(TICKS_PER_SECOND / 2);
+        }
+        assert!(preflight_frame_required(&project, seq, requested_time, RenderOptions::default()).is_err());
+    }
+
+    #[test]
+    fn strict_resident_demo_metadata_rejects_wrong_color_and_other_generators_remain_closed() {
+        use filmcraft_media::{DemoScene, Generator, MediaSource};
+        use filmcraft_project::{Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
+
+        let source = filmcraft_media::generators::GeneratorSource::demo(DemoScene::Forest);
+        let mut project = Project::new("generated resident");
+        let seq = project.new_sequence("sequence", SequenceSettings { width: 8, height: 8, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+        let item_id = project.add_item(
+            "Forest",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::Generator(Generator::Demo(DemoScene::Forest)),
+                info: source.info().clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: Vec::new(),
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        let clip = project
+            .make_track_item(item_id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24)
+            .expect("test clip");
+        project.sequence_mut(seq).expect("test sequence").video_tracks[0].items.push(clip);
+        let receipt = preflight_frame_required(&project, seq, Tick::ZERO, RenderOptions::default()).expect("demo preflight");
+        let request = *receipt.source_requests().first().expect("one visible source");
+        let metadata = ResidentFrameMetadata {
+            id: request.id,
+            item_id: request.item_id,
+            width: request.expected_size.0,
+            height: request.expected_size.1,
+            color: filmcraft_color::ColorInfo::REC709,
+        };
+        assert!(materialize_frame_required_resident(receipt, &[metadata]).is_err());
+        if let ItemKind::Media(media) = &mut project.item_mut(item_id).expect("demo project item").kind {
+            media.interpret.color_space = Some(filmcraft_color::ColorSpace::Rec709);
+        }
+        assert!(preflight_frame_required(&project, seq, Tick::ZERO, RenderOptions::default()).is_err());
+
+        let mut bars = Project::new("bars");
+        let bars_seq = bars.new_sequence("sequence", SequenceSettings { width: 8, height: 8, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+        let bars_source = filmcraft_media::generators::GeneratorSource::new(Generator::BarsAndTone, 8, 8, FrameRate::FPS_24, Tick(TICKS_PER_SECOND));
+        let bars_id = bars.add_item(
+            "Bars",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::Generator(Generator::BarsAndTone),
+                info: bars_source.info().clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: Vec::new(),
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        let bars_clip = bars
+            .make_track_item(bars_id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24)
+            .expect("test clip");
+        bars.sequence_mut(bars_seq).expect("test sequence").video_tracks[0].items.push(bars_clip);
+        assert!(preflight_frame_required(&bars, bars_seq, Tick::ZERO, RenderOptions::default()).is_err());
+    }
+
+    #[test]
+    fn required_preflight_accepts_empty_frame_without_source_provider() {
+        let mut project = Project::new("strict");
+        let seq = project.new_sequence("sequence", Default::default(), 1, 0, None);
+        let receipt = preflight_frame_required(&project, seq, Tick::ZERO, RenderOptions::default()).unwrap();
+        assert_eq!(receipt.nodes().count(), 0);
+    }
+
+    #[test]
+    fn required_preflight_reports_missing_sequence() {
+        let project = Project::new("strict");
+        let mut other = Project::new("other");
+        let seq = other.new_sequence("missing", Default::default(), 1, 0, None);
+        let error = preflight_frame_required(&project, seq, Tick::ZERO, RenderOptions::default()).err().unwrap();
+        assert_eq!(error.item_id, Some(seq));
+        assert!(matches!(error.reason, EligibilityFailure::UnsupportedFrameStructure { .. }));
+    }
+
+    #[test]
+    fn disabled_unknown_ordinary_effect_is_not_preflighted() {
+        let mut project = Project::new("strict");
+        let seq_id = project.new_sequence("sequence", Default::default(), 1, 0, None);
+        let graphic = project.add_item(
+            "graphic",
+            filmcraft_project::Label::Iris,
+            ItemKind::Graphic { width: 1920, height: 1080, rate: filmcraft_time::FrameRate::FPS_24 },
+            None,
+        );
+        let mut item = project
+            .make_track_item(
+                graphic,
+                filmcraft_project::TrackKind::Video,
+                Tick::ZERO,
+                filmcraft_time::TimeRange::new(Tick::ZERO, Tick(1_000_000)),
+                filmcraft_time::FrameRate::FPS_24,
+            )
+            .unwrap();
+        let mut effect = filmcraft_project::find_effect("brightness_contrast").unwrap().instance();
+        effect.effect = "stale-ordinary-effect".into();
+        item.effects.push(effect);
+        let sequence = project.sequence(seq_id).unwrap();
+
+        let error =
+            preflight_item(&project, sequence, &item, Tick::ZERO, RenderOptions { effects: false, ..Default::default() }, None, &mut Vec::new()).err().unwrap();
+        assert!(!matches!(error.reason, EligibilityFailure::UnknownId { .. }));
+        assert!(matches!(error.reason, EligibilityFailure::CpuFallbackRequired { .. }));
+    }
+
+    #[test]
+    fn required_preflight_rejects_graphics_before_materialization() {
+        let mut project = Project::new("strict");
+        let seq = project.new_sequence("sequence", Default::default(), 1, 0, None);
+        let graphic = project.add_item(
+            "graphic",
+            filmcraft_project::Label::Iris,
+            ItemKind::Graphic { width: 1920, height: 1080, rate: filmcraft_time::FrameRate::FPS_24 },
+            None,
+        );
+        let item = project
+            .make_track_item(
+                graphic,
+                filmcraft_project::TrackKind::Video,
+                Tick::ZERO,
+                filmcraft_time::TimeRange::new(Tick::ZERO, Tick(1_000_000)),
+                filmcraft_time::FrameRate::FPS_24,
+            )
+            .unwrap();
+        project.sequence_mut(seq).unwrap().video_tracks[0].items.push(item);
+        let error = preflight_frame_required(&project, seq, Tick::ZERO, RenderOptions::default()).err().unwrap();
+        assert_eq!(error.item_id, Some(graphic));
+        assert!(matches!(error.reason, EligibilityFailure::CpuFallbackRequired { .. }));
+    }
 
     #[test]
     fn flattening_an_operation_preserves_its_picture() {

@@ -542,7 +542,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
         app.auto.add("text.transcript.generate", r, "Transcribe");
         if resp.clicked() {
-            actions.push(("transcript.generate".into(), json!({})));
+            actions.push(("transcript.generate".into(), json!({"background":true,"language":"auto"})));
         }
         run(app, ui, actions);
         return;
@@ -559,11 +559,20 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let highlights = app.transcript_cache.highlights(&app.ui.transcript_search);
     let mut x = bar.min.x + sw + 10.0;
     let range = sel.map(|(a, b)| json!({"from": a.min(b), "to": a.max(b)}));
-    let tools: [(Icon, &str, &str, bool, &str, Value); 4] = [
+    let items: std::collections::BTreeSet<_> = words.iter().map(|word| word.item.0).collect();
+    let tools: [(Icon, &str, &str, bool, &str, Value); 5] = [
         (Icon::Razor, "text.transcript.extract", tl!("Extract selected text"), sel.is_some(), "transcript.extract", range.clone().unwrap_or_default()),
         (Icon::Trash, "text.transcript.lift", tl!("Lift selected text"), sel.is_some(), "transcript.lift", range.unwrap_or_default()),
         (Icon::Link, "text.transcript.removeFillers", tl!("Remove filler words"), true, "transcript.removeFillers", json!({})),
         (Icon::Captions, "text.transcript.createCaptions", tl!("Create captions"), true, "transcript.createCaptions", json!({})),
+        (
+            Icon::Redo,
+            "text.transcript.retranscribe",
+            tl!("Transcribe again"),
+            filmcraft_speech_available(app),
+            "transcript.generate",
+            json!({"items":items,"language":"auto","background":true}),
+        ),
     ];
     for (icon, id, label, enabled, cmd, params) in tools {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
@@ -571,7 +580,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             break;
         }
         if tool_button(app, ui, r, icon, id, label, enabled) {
-            if cmd.ends_with("extract") || cmd.ends_with("lift") {
+            if cmd.ends_with("extract") || cmd.ends_with("lift") || cmd == "transcript.generate" {
                 app.ui.transcript_sel = None;
             }
             actions.push((cmd.into(), params));

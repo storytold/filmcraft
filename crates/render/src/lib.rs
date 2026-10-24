@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use filmcraft_frame::{PixelData, VideoFrame, pool};
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_media::{FrameRequest, SharedSource};
+use filmcraft_media::{CompressedVideoSource, FrameRequest, MediaError, SharedSource};
 use filmcraft_project::{ItemId, ItemKind, ParamValue, Project, Sequence, TrackItem};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
 
@@ -48,6 +48,11 @@ pub use image::Image;
 /// Resolves project items to media sources (the engine owns the media pool).
 pub trait SourceProvider: Sync {
     fn source(&self, item: ItemId) -> Option<SharedSource>;
+
+    /// Open authorized full-resolution compressed input for resident export.
+    fn compressed_source(&self, _item: ItemId) -> Result<Arc<dyn CompressedVideoSource>, MediaError> {
+        Err(MediaError::Unsupported("compressed video source is unavailable".into()))
+    }
 }
 
 impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {
@@ -280,6 +285,14 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
     let (w, h) = (below.w, below.h);
     let mt = item.effect_time_at(t);
     let mut adj = below.clone();
+    // grow, shrink, spin and move read the layer's span from here (they froze without it)
+    let timing = vfx::ClipTiming {
+        clip_seconds: item.duration.seconds(),
+        clip_offset: (t - item.start).seconds(),
+        frame_rate: seq.settings.frame_rate.as_f64(),
+        sequence_size: (seq.settings.width, seq.settings.height),
+        source_size: (u32::try_from(w).unwrap_or(u32::MAX), u32::try_from(h).unwrap_or(u32::MAX)),
+    };
     let cx = effects::FxCtx {
         t: mt,
         px_scale: opts.scale,
@@ -287,7 +300,7 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
         timecode: tc,
         clip_name: &item.name,
         project: Some(project),
-        env: None,
+        env: Some(&timing),
         frame_rate: seq.settings.frame_rate.as_f64(),
         working: seq.settings.color.working,
     };

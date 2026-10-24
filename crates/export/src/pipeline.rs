@@ -100,7 +100,7 @@ impl RendererPool {
     /// Admitting more frame tasks than renderers could then deadlock this condition variable
     /// against the suspended outer frame's renderer. `None` once a renderer has
     /// panicked: the panicking renderer is dropped (its state can't be trusted) and so are the
-    /// others as they come back, so the caller falls back to the CPU for the rest of the export.
+    /// others as they come back. GPU-selected exports must propagate failure, never use CPU.
     fn with<R>(&self, f: impl FnOnce(&mut dyn FrameRenderer) -> R) -> Option<R> {
         use std::sync::atomic::Ordering;
         let mut free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -141,6 +141,7 @@ pub(crate) struct Pipeline {
     /// The registered frame renderers (GPU compositors) when the setting allows and factories
     /// provide them; pooled because `frame` runs on several export threads at once.
     renderer: Option<RendererPool>,
+    required_gpu: bool,
     pub seq: ItemId,
     /// Output frame rate (frame `f` is at `rate.tick_of(f)`).
     pub rate: FrameRate,
@@ -190,6 +191,17 @@ impl Pipeline {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         q.settings.validate().map_err(ExportError::Unsupported)?;
         settings.validate()?;
+        if settings.gpu_rendering == GpuRendering::Auto {
+            return Err(ExportError::Unsupported(
+                "GPU export is unavailable until a GPU-resident renderer and VA-API encoder path are connected; choose Off for the explicit CPU reference mode"
+                    .into(),
+            ));
+        }
+        if settings.gpu_rendering == GpuRendering::AmdRequired {
+            return Err(ExportError::Unsupported(
+                "AMD GPU-resident export is unavailable until VA-API/Vulkan frame sharing is connected to the export encoder".into(),
+            ));
+        }
         let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
         filmcraft_project::validate_frame_size(r.width, r.height).map_err(ExportError::Unsupported)?;
         let geom = Geometry::new(settings, q.settings.width, q.settings.height, r.width, r.height);
@@ -227,8 +239,13 @@ impl Pipeline {
             }
             RendererPool::new(list)
         };
+        let required_gpu = settings.gpu_rendering == GpuRendering::AmdRequired;
+        if required_gpu && renderer.is_none() {
+            return Err(ExportError::Unsupported("AMD GPU frame renderer is unavailable".into()));
+        }
         Ok(Pipeline {
             renderer,
+            required_gpu,
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
@@ -249,15 +266,15 @@ impl Pipeline {
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
-    /// R'G'B' floats (3 per pixel).
-    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
+    /// R'G'B' floats (3 per pixel). `Off` uses CPU reference renderer. GPU-selected modes fail closed.
+    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> Result<(Vec<u8>, Vec<f32>)> {
         let t = self.rate.tick_of(f);
-        // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
-        // draw, any internal error) falls back to the CPU reference renderer below. A frame the
-        // planner hands back as one CPU image anyway (an adjustment layer, a complex transition,
-        // HDR) does not take a pooled renderer: it would render on the CPU inside the pool, as
-        // many frames at a time as there are renderers instead of one per export thread.
-        let pool = self.renderer.as_ref().filter(|_| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t));
+        let required = self.required_gpu;
+        let cpu_frame = filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t);
+        if required && cpu_frame {
+            return Err(ExportError::Unsupported("AMD GPU rendering does not support this frame plan".into()));
+        }
+        let pool = self.renderer.as_ref().filter(|_| !cpu_frame);
         let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();
@@ -275,6 +292,9 @@ impl Pipeline {
                 img
             }
             None => {
+                if required {
+                    return Err(ExportError::Unsupported("AMD GPU frame renderer failed".into()));
+                }
                 if self.renderer.is_some() {
                     note_gpu_fallback();
                 }
@@ -296,7 +316,7 @@ impl Pipeline {
             }
             // the float image is not needed any more: its buffer serves the next frame's layers
             filmcraft_frame::pool::recycle_f32(img.px);
-            return (Vec::new(), out);
+            return Ok((Vec::new(), out));
         }
         let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         // the float image is not needed any more: its buffer serves the next frame's layers
@@ -304,7 +324,7 @@ impl Pipeline {
         if lim.enabled {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }
-        (rgba, Vec::new())
+        Ok((rgba, Vec::new()))
     }
 
     /// Fit the rendered picture into the output frame.

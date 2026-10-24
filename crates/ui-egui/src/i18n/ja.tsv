@@ -343,6 +343,7 @@
 	Tools	ツール
 	Top	上
 	Transcribe Sequence…	シーケンスを文字起こし…
+	Transcribe again	再度文字起こし
 	Transcribe…	文字起こし…
 	Transcript	文字起こし
 	Transparent Video…	透明ビデオ…
@@ -3550,7 +3551,9 @@
 	Gradient Angle	グラデーションの角度
 	Linear Gradient	線形グラデーション
 	Solid	べた塗り
-	GPU Rendering	GPU レンダリング
+	Export via CPU (manual)	CPU 経由でエクスポート（手動）
+	Off: GPU export (AMD GPU + same-node VA-API required; fails if unavailable). On: CPU reference renderer.	オフ: GPU エクスポート（AMD GPU と同一ノード上の VA-API が必要。利用できない場合は失敗します）。オン: CPU リファレンスレンダラー。
+	This format exports only via CPU	この形式は CPU 経由でのみエクスポートされます
 	Composite on the GPU when available	利用可能な場合は GPU で合成
 	Text to Speech	テキスト読み上げ
 	Edit Narration	ナレーションを編集
@@ -3616,3 +3619,18 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	CPU compositing explicitly enabled	CPU 合成を明示的に有効化しました
+	Export preview unavailable in GPU-only mode; CPU fallback is disabled	GPU 専用モードでは書き出しプレビューを利用できません。CPU フォールバックは無効です
+	GPU channel display is unsupported; CPU fallback is disabled	GPU チャンネル表示は未対応です。CPU フォールバックは無効です
+	GPU compositor failed to initialise; preview unavailable	GPU コンポジターを初期化できませんでした。プレビューは利用できません
+	GPU preview compositor panicked; CPU fallback is disabled	GPU プレビューのコンポジターがパニックしました。CPU フォールバックは無効です
+	GPU preview exceeds the device texture limit	GPU プレビューがデバイスのテクスチャ上限を超えています
+	GPU preview failed; CPU fallback is disabled	GPU プレビューに失敗しました。CPU フォールバックは無効です
+	GPU preview unavailable; CPU fallback is disabled	GPU プレビューを利用できません。CPU フォールバックは無効です
+	Reference Monitor unavailable in GPU-only preview; CPU fallback is disabled	GPU 専用プレビューではリファレンスモニターを利用できません。CPU フォールバックは無効です
+	Reference view unavailable in GPU-only preview; CPU fallback is disabled	GPU 専用プレビューではリファレンスビューを利用できません。CPU フォールバックは無効です
+	Scopes unavailable in GPU-only preview; CPU fallback is disabled	GPU 専用プレビューではスコープを利用できません。CPU フォールバックは無効です
+	no supported AMD GPU adapter; preview unavailable	対応する AMD GPU アダプターがありません。プレビューは利用できません
+	Whisper large-v3 (GPU + vocal isolation)	Whisper large-v3（GPU + ボーカル分離）
+	Whisper large-v3 Q5_0 (multilingual, 1.08 GB)	Whisper large-v3 Q5_0（多言語、1.08 GB）
+	Whisper large-v3 Turbo (multilingual, 809 M, faster)	Whisper large-v3 Turbo（多言語、809 M、高速）

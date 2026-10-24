@@ -2131,6 +2131,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",
+ "filmcraft-isobmff",
  "filmcraft-testkit",
  "filmcraft-time",
  "image",
@@ -2192,12 +2193,15 @@ dependencies = [
 name = "filmcraft-platform"
 version = "0.12.0"
 dependencies = [
+ "ash",
  "filmcraft-bitstream",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
+ "filmcraft-gpu",
  "filmcraft-h264",
+ "filmcraft-h264enc",
  "filmcraft-hevc",
  "filmcraft-isobmff",
  "filmcraft-media",
@@ -2211,6 +2215,9 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "pollster 0.4.0",
+ "wgpu",
+ "wgpu-hal",
  "windows 0.62.2",
 ]
 
@@ -2363,6 +2370,7 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-scopes",
+ "filmcraft-speech",
  "filmcraft-text",
  "filmcraft-time",
  "filmcraft-tts",
@@ -6086,6 +6094,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

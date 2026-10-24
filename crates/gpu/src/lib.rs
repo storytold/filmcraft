@@ -36,14 +36,25 @@ use rayon::prelude::*;
 use filmcraft_color::{Matrix, Range, Transfer};
 use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::Blend;
-use filmcraft_render::plan::{FramePlan, PlanLayer, PlanStep};
+use filmcraft_render::plan::{
+    EligibilityFailure, FramePlan, GpuPlanError, PixelOrigin, PlanLayer, PlanStep, RequiredFramePlan, RequiredStep, ResidentRequiredFramePlan,
+    ResidentRequiredStep,
+};
 
 pub mod adapter;
+mod blur_transition;
+pub mod demo_source;
 pub mod export_renderer;
 pub mod fx;
 pub mod lut;
 pub mod mask;
+pub mod nv12_repack;
+pub mod resident;
+mod timeline_transition;
 mod transition;
+mod transition_blur_stage;
+pub mod transition_catalog;
+pub mod yuv_output;
 pub use export_renderer::ExportRenderer;
 pub use lut::GpuLut;
 pub use mask::GpuMask;
@@ -52,6 +63,190 @@ pub use mask::GpuMask;
 /// shader applies the sRGB encoding.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Transitions whose GPU result matched the CPU oracle on the AMD adapter (`transition_catalog`
+/// `per_id_parity_report`, 23/10/2026: 82 of 108 pass; the f32 run allows 1e-3 and the f16 run
+/// 2e-3, the compositor's own budget). Regenerate it from that report.
+pub const TRANSITION_AMD_PARITY: &[&str] = &[
+    "burn_alpha",
+    "frame",
+    "grunge",
+    "radial_wipe",
+    "spin_motion",
+    "star_wipe",
+    "vr_iris_wipe",
+    "blur_dissolve",
+    "whip_legacy",
+    "spinback_3d",
+    "cross_dissolve",
+    "cross_dissolve_legacy",
+    "additive_dissolve",
+    "additive_dissolve_legacy",
+    "film_dissolve",
+    "film_dissolve_legacy",
+    "dip_to_black",
+    "dip_to_black_legacy",
+    "dip_to_white",
+    "dip_to_white_legacy",
+    "push",
+    "flare",
+    "linear_wipe",
+    "soft_wipe",
+    "wipe",
+    "dip_to_color",
+    "luma_fade",
+    "non_additive_dissolve",
+    "venetian_blinds",
+    "checker_wipe",
+    "gradient_wipe",
+    "panel_wipe",
+    "barn_doors",
+    "inset",
+    "iris_round",
+    "iris_box",
+    "iris_diamond",
+    "iris_cross",
+    "stretch_wipe",
+    "neon_wipe",
+    "mosaic_transition",
+    "shape_flow",
+    "vr_gradient_wipe",
+    "burn_chroma",
+    "chroma_leak",
+    "directional_blur_transition",
+    "flash",
+    "lens_blur",
+    "light_leak",
+    "light_sweep",
+    "phosphor",
+    "radial_blur",
+    "solarize",
+    "stripe",
+    "glow",
+    "ray",
+    "motion_camera",
+    "roll",
+    "stretch",
+    "slide",
+    "split",
+    "motion_tween",
+    "spring_motion",
+    "push_legacy",
+    "slide_legacy",
+    "page_turn",
+    "wave",
+    "louver",
+    "mirror_transition",
+    "typewriter",
+    "pull_motion",
+    "vr_random_blocks",
+    "flicker",
+    "kaleidoscope",
+    "liquid_distortion",
+    "earthquake",
+    "glass",
+    "glitch",
+    "vhs_damage",
+    "vr_chroma_leaks",
+    "vr_light_leaks",
+    "vr_spherical_blur",
+];
+
+/// Effects with recorded CPU parity on the AMD adapter (22/10/2026, 0.10): every case of
+/// `fx_tests::gpu_effects_match_cpu_exactly` before its harness stops at `replicate`, plus the
+/// `fx_tests::gpu_effect_catalog_family_parity_requires_adapter` families that match (block_dissolve
+/// and the vr_chromatic_aberrations/vr_projection/vr_rotate_sphere cases still diverge), plus
+/// gaussian_blur_legacy, directional_blur_legacy, reduce_interlace_flicker, wiggle, camera_shake,
+/// rotate_3d, basic_3d and lens_flare (perspective > 0 only: perspective 0 puts the camera 1e7 px away and the f32
+/// coefficients would lose precision, so it fails closed) (cases added to `gpu_effects_match_cpu_exactly` on 23/10/2026 against the real CPU effect: max rel
+/// diff <= 6e-6; camera_shake only without motion blur, the blurred form fails closed).
+/// The strict resident export has no CPU fallback, so it refuses every effect not listed here.
+const RESIDENT_FX_PARITY: &[&str] = &[
+    "alpha_adjust",
+    "alpha_glow",
+    "asc_cdl",
+    "basic_3d",
+    "bevel_alpha",
+    "black_white",
+    "brightness_contrast",
+    "camera_blur",
+    "camera_shake",
+    "cell_pattern",
+    "change_to_color",
+    "channel_blur",
+    "channel_mix",
+    "checkerboard",
+    "cineon_converter",
+    "circle",
+    "color_balance",
+    "color_emboss",
+    "color_key",
+    "color_pass",
+    "color_replace",
+    "corner_pin",
+    "crop",
+    "directional_blur",
+    "directional_blur_legacy",
+    "drop_shadow",
+    "edge_feather",
+    "ellipse",
+    "emboss",
+    "extract",
+    "find_edges",
+    "four_color_gradient",
+    "gamma_correction",
+    "gaussian_blur",
+    "gaussian_blur_legacy",
+    "gradient",
+    "grid",
+    "grow",
+    "horizontal_flip",
+    "invert",
+    "leave_color",
+    "lens_distortion",
+    "lens_flare",
+    "levels",
+    "linear_wipe_legacy",
+    "logo_cutout",
+    "luma_key",
+    "lumetri",
+    "magnify",
+    "magnify_legacy",
+    "median",
+    "mirror",
+    "mosaic",
+    "mosaic_legacy",
+    "move",
+    "noise",
+    "noise_legacy",
+    "offset",
+    "posterize",
+    "proc_amp",
+    "ramp",
+    "reduce_interlace_flicker",
+    "replicate",
+    "rgb_split",
+    "rotate_3d",
+    "rounded_crop",
+    "sharpen",
+    "shrink",
+    "spherize",
+    "spin",
+    "strobe",
+    "tint",
+    "transform",
+    "turbulent_displace",
+    "twirl",
+    "twirl_legacy",
+    "unsharp_mask",
+    "vertical_flip",
+    "video_limiter",
+    "vignette",
+    "vr_color_gradients",
+    "vr_plane_to_sphere",
+    "wave_warp",
+    "wiggle",
+];
 
 struct Uploaded {
     /// Y, Cb, Cr (or the RGBA texture) and the alpha plane (the dummy texture when there is none).
@@ -82,13 +277,19 @@ pub struct GpuCompositor {
     backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
+    nv12_output: yuv_output::Nv12Output,
+    demo_source: Option<demo_source::DemoSource>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
     dummy: wgpu::TextureView,
     /// The effect stage (None on devices without compute shaders or storage textures: layers
     /// with effects are then rendered on the CPU here).
     fx: Option<fx::FxStage>,
+    fx_unavailable_reason: Option<String>,
+    strict_transition: Option<transition_catalog::TransitionCatalogStage>,
     transition: transition::PushStage,
+    flare_transition: timeline_transition::FlareStage,
+    blur_transition: Option<blur_transition::BlurDissolveStage>,
     transition_inputs: [Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>; 2],
     pub gpu_transitions: u64,
     pub cpu_transitions: u64,
@@ -389,22 +590,45 @@ impl GpuCompositor {
         });
         let dummy = dummy_tex.create_view(&Default::default());
         // The effect stage's pipelines can still be invalid on a device that passes the limits
-        // check (Rgba32Float is not renderable everywhere, e.g. software Vulkan/GL). Validation
-        // errors would panic, so they are captured: without the stage, effects render on the CPU.
-        let fx = fx::FxStage::supported(device)
-            .then(|| {
-                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                let stage = fx::FxStage::new(device, &shader, &layer_bgl);
-                match poll_now(scope.pop()) {
-                    Some(None) => Some(stage),
-                    Some(Some(e)) => {
-                        log::warn!("GPU effects unavailable on this device, rendering them on the CPU: {e}");
-                        None
-                    }
-                    None => None,
+        // check (Rgba32Float is not renderable everywhere, e.g. software Vulkan/GL). Capture
+        // validation errors; legacy calls may render effects on CPU, while strict calls fail.
+        let (fx, fx_unavailable_reason) = if fx::FxStage::supported(device) {
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let stage = fx::FxStage::new(device, &shader, &layer_bgl);
+            match poll_now(scope.pop()) {
+                Some(None) => (Some(stage), None),
+                Some(Some(e)) => {
+                    log::warn!("GPU effect stage unavailable; legacy calls may use CPU rendering, strict calls fail: {e}");
+                    (None, Some(e.to_string()))
                 }
-            })
-            .flatten();
+                None => {
+                    let reason = "GPU FX validation scope remained pending after nonblocking poll".to_owned();
+                    log::warn!("GPU effect stage unavailable; legacy calls may use CPU rendering, strict calls fail: {reason}");
+                    (None, Some(reason))
+                }
+            }
+        } else {
+            let reason = "adapter lacks required GPU FX capabilities".to_owned();
+            log::warn!("GPU effect stage unavailable; legacy calls may use CPU rendering, strict calls fail: {reason}");
+            (None, Some(reason))
+        };
+        let strict_transition = if fx.is_some() {
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let stage = transition_catalog::TransitionCatalogStage::new(device, ACCUM_FORMAT);
+            match poll_now(scope.pop()) {
+                Some(None) => Some(stage),
+                Some(Some(error)) => {
+                    log::warn!("GPU transition stage unavailable: {error}");
+                    None
+                }
+                None => {
+                    log::warn!("GPU transition validation did not complete; transition rendering unavailable");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -418,11 +642,17 @@ impl GpuCompositor {
             backdrop: None,
             output: None,
             accum_readback_buf: None,
+            nv12_output: yuv_output::Nv12Output::new(device),
+            demo_source: None,
             uploads: HashMap::new(),
             clock: 0,
             dummy,
             fx,
+            fx_unavailable_reason,
+            strict_transition,
             transition: transition::PushStage::new(device),
+            flare_transition: timeline_transition::FlareStage::new(device),
+            blur_transition: blur_transition::BlurDissolveStage::new(device),
             transition_inputs: [None, None],
             gpu_transitions: 0,
             cpu_transitions: 0,
@@ -611,8 +841,8 @@ impl GpuCompositor {
         let (kr, kb) = src.color.matrix.kr_kb();
         let bits_scale = src.code_levels / 256.0; // 2^(bits - 8), independent of texture encoding
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
-            (Range::Limited, 2) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
-            (Range::Full, 2) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
+            (Range::Limited, 2 | 3) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
+            (Range::Full, 2 | 3) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
             _ => (0.0, 1.0, 0.0, 1.0),
         };
         let transfer = match src.color.transfer {
@@ -711,10 +941,34 @@ impl GpuCompositor {
     }
 
     fn render_plan(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>, clear: bool, resolve: bool) -> (wgpu::TextureView, (u32, u32)) {
+        // The legacy policy cannot produce a strict rejection.
+        self.render_plan_checked(plan, prep, clear, resolve, false).map(|(view, size, _)| (view, size)).unwrap_or_else(|_| (self.dummy.clone(), (1, 1)))
+    }
+
+    fn render_plan_checked(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&PreparedPlan>,
+        clear: bool,
+        resolve: bool,
+        strict: bool,
+    ) -> Result<(wgpu::TextureView, (u32, u32), wgpu::SubmissionIndex), GpuPlanError> {
+        let fx_failure_detail = self.fx_unavailable_reason.as_ref().map_or_else(
+            || "GPU effect stage unavailable or failed to create the complete job".to_owned(),
+            |reason| format!("GPU effect stage unavailable: {reason}"),
+        );
+        let failure = || GpuPlanError {
+            item_id: None,
+            id: None,
+            reason: EligibilityFailure::RuntimeFailure { stage: "strict compositor", detail: fx_failure_detail.clone() },
+        };
         let owned;
         let (w, h, layers): (u32, u32, &[PlanLayer]) = match plan {
             FramePlan::Layers { width, height, layers } => (*width as u32, *height as u32, layers.as_slice()),
             FramePlan::Image(img) => {
+                if strict {
+                    return Err(failure());
+                }
                 let frame = match prep.and_then(|p| p.image.as_ref()) {
                     // The texels come from `prep`; the frame only carries size and colour.
                     Some(_) => VideoFrame {
@@ -729,7 +983,14 @@ impl GpuCompositor {
                     [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }];
                 (img.w as u32, img.h as u32, &owned[..])
             }
-            FramePlan::Composite { width, height, steps } => return self.composite_steps(*width, *height, steps, prep),
+            FramePlan::Composite { width, height, steps } => {
+                if strict {
+                    return Err(failure());
+                }
+                let (view, size) = self.composite_steps(*width, *height, steps, prep, clear, resolve);
+                let submission = self.queue.submit([]);
+                return Ok((view, size, submission));
+            }
         };
         let (w, h) = (w.max(1), h.max(1));
         let accum_view = Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::COPY_SRC);
@@ -742,6 +1003,9 @@ impl GpuCompositor {
         // Layers whose effects the GPU stage can't run (no stage on this device, or a working image
         // larger than a texture) are rendered on the CPU here and drawn as plain RGBA layers.
         let max_side = self.device.limits().max_texture_dimension_2d;
+        if strict && layers.iter().any(|layer| layer.fx.as_ref().is_some_and(|fx| self.fx.is_none() || fx.size.0.max(fx.size.1) > max_side)) {
+            return Err(failure());
+        }
         let cpu_fx: Vec<Option<PlanLayer>> = layers
             .iter()
             .map(|l| {
@@ -774,8 +1038,13 @@ impl GpuCompositor {
             f.begin_frame();
         }
         for (l, k) in layers.iter().zip(&keys) {
-            // (every frame was just uploaded; a missing upload draws transparent texels)
-            let src = self.src_info(&l.frame, *k).unwrap_or(SrcInfo {
+            // Strict rendering must never turn a failed upload into transparent pixels.
+            let missing_upload = || GpuPlanError {
+                item_id: None,
+                id: None,
+                reason: EligibilityFailure::RuntimeFailure { stage: "strict source upload", detail: "uploaded source texture metadata is missing".into() },
+            };
+            let fallback_src = SrcInfo {
                 kind: 1,
                 code_scale: 1.0,
                 code_levels: 1.0,
@@ -784,10 +1053,19 @@ impl GpuCompositor {
                 size: (l.frame.width, l.frame.height),
                 color: l.frame.color,
                 input: None,
-            });
+            };
+            let src = match self.src_info(&l.frame, *k) {
+                Some(src) => src,
+                None if strict => return Err(missing_upload()),
+                None => fallback_src,
+            };
             // HDR / wide-gamut Y'CbCr: the planner's input transform, in the shader (#965)
             let src = SrcInfo { input: l.input.as_ref().filter(|_| src.kind == 2).and_then(|t| t.gpu_params()), ..src };
-            let views = self.uploads.get(k).map_or_else(|| std::array::from_fn(|_| self.dummy.clone()), |up| up.views.clone());
+            let views = match self.uploads.get(k) {
+                Some(up) => up.views.clone(),
+                None if strict => return Err(missing_upload()),
+                None => std::array::from_fn(|_| self.dummy.clone()),
+            };
             let job = match &l.fx {
                 Some(lfx) => {
                     // the source drawn onto the working image (box-decimated by n, as the CPU decodes)
@@ -815,6 +1093,9 @@ impl GpuCompositor {
                 }
                 None => None,
             };
+            if strict && l.fx.is_some() && job.is_none() {
+                return Err(failure());
+            }
             // what the layer draws: the effect result (linear premultiplied RGBA) or the frame
             let (u, tex) = match &job {
                 Some(j) => {
@@ -927,18 +1208,458 @@ impl GpuCompositor {
             pass.set_bind_group(0, &final_bg, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([enc.finish()]);
-        (if resolve { out_view } else { accum_view }, (w, h))
+        let submission = self.queue.submit([enc.finish()]);
+        Ok((if resolve { out_view } else { accum_view }, (w, h), submission))
     }
 
-    fn composite_steps(&mut self, width: usize, height: usize, steps: &[PlanStep], prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
-        if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push")) {
+    /// Composite resident layers directly from borrowed decoded NV12 views or GPU-generated demo textures. Per-layer typed
+    /// effects run through the shared effect stage and typed transitions through the strict catalog
+    /// stage; destination-reading blends remain rejected. Never reads pixels back. Work before a
+    /// transition is submitted in order (the catalog stage submits its own), the rest is returned.
+    pub(crate) fn composite_resident_flat(
+        &mut self,
+        plan: &ResidentRequiredFramePlan,
+        sources: &[resident::ResidentNv12Binding<'_>],
+    ) -> Result<(wgpu::TextureView, (u32, u32), wgpu::CommandEncoder), GpuPlanError> {
+        Self::validate_resident_required_routes(plan.nodes())?;
+        resident::validate_plan_bindings(plan, sources)?;
+        let (width, height) = plan.size();
+        let (w, h) = (
+            u32::try_from(width).map_err(|_| Self::resident_runtime_error(None, "canvas width exceeds GPU range"))?,
+            u32::try_from(height).map_err(|_| Self::resident_runtime_error(None, "canvas height exceeds GPU range"))?,
+        );
+        if w == 0 || h == 0 || w.max(h) > self.device.limits().max_texture_dimension_2d {
+            return Err(Self::resident_runtime_error(None, "resident canvas exceeds GPU texture limits"));
+        }
+        for layer in plan.layers() {
+            for operation in layer.evidence().operations() {
+                let id = match operation {
+                    filmcraft_render::plan::PlannedGpuOp::Effect { id, .. } if RESIDENT_FX_PARITY.contains(&id.as_str()) => continue,
+                    filmcraft_render::plan::PlannedGpuOp::Effect { id, .. } | filmcraft_render::plan::PlannedGpuOp::Transition { id, .. } => id.clone(),
+                };
+                return Err(GpuPlanError {
+                    item_id: Some(layer.evidence().item_id()),
+                    id: Some(id.clone()),
+                    reason: EligibilityFailure::UnsupportedOperation { id },
+                });
+            }
+            if layer.blend().reads_destination() {
+                let id = layer.evidence().registry_id().unwrap_or("resident blend").to_owned();
+                return Err(GpuPlanError {
+                    item_id: Some(layer.evidence().item_id()),
+                    id: Some(id.clone()),
+                    reason: EligibilityFailure::UnsupportedOperation { id },
+                });
+            }
+        }
+        let canvas = Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::COPY_SRC);
+        if let Some(fx) = self.fx.as_mut() {
+            fx.begin_frame();
+        }
+        let encoded = self.composite_resident_steps(plan, sources, &canvas, (w, h));
+        if let Some(fx) = self.fx.as_mut() {
+            fx.end_frame();
+        }
+        Ok((canvas, (w, h), encoded?))
+    }
+
+    fn composite_resident_steps(
+        &mut self,
+        plan: &ResidentRequiredFramePlan,
+        sources: &[resident::ResidentNv12Binding<'_>],
+        canvas: &wgpu::TextureView,
+        size: (u32, u32),
+    ) -> Result<wgpu::CommandEncoder, GpuPlanError> {
+        let new_encoder =
+            |device: &wgpu::Device| device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-resident-nv12-composite") });
+        let mut encoder = new_encoder(&self.device);
+        let mut cleared = false;
+        for step in plan.steps() {
+            match step {
+                ResidentRequiredStep::Layers(layers) => {
+                    self.draw_resident_layers(&mut encoder, canvas, &layers.iter().collect::<Vec<_>>(), sources, size, !cleared)?;
+                    cleared = true;
+                }
+                ResidentRequiredStep::Transition { inputs, evidence } => {
+                    if !cleared {
+                        drop(accum_pass(&mut encoder, canvas, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)));
+                        cleared = true;
+                    }
+                    let mut views = [self.dummy.clone(), self.dummy.clone()];
+                    for (index, input) in inputs.iter().enumerate() {
+                        let slot = self
+                            .transition_inputs
+                            .get_mut(index)
+                            .ok_or_else(|| Self::resident_runtime_error(Some(evidence.item_id()), "resident transition input slot is missing"))?;
+                        let view = Self::target(&self.device, slot, size.0, size.1, ACCUM_FORMAT, wgpu::TextureUsages::COPY_SRC);
+                        self.draw_resident_layers(&mut encoder, &view, &input.iter().collect::<Vec<_>>(), sources, size, true)?;
+                        if let Some(slot) = views.get_mut(index) {
+                            *slot = view;
+                        }
+                    }
+                    // The catalog stage submits its own commands: everything recorded so far goes first.
+                    self.queue.submit([std::mem::replace(&mut encoder, new_encoder(&self.device)).finish()]);
+                    for operation in evidence.operations() {
+                        if let filmcraft_render::plan::PlannedGpuOp::Transition { id, op, progress, scale, requirements } = operation {
+                            let error = |detail: String| GpuPlanError {
+                                item_id: Some(evidence.item_id()),
+                                id: Some(id.clone()),
+                                reason: EligibilityFailure::RuntimeFailure { stage: "typed transition", detail },
+                            };
+                            let stage = self.strict_transition.as_ref().ok_or_else(|| error("strict transition stage unavailable".into()))?;
+                            let planned = filmcraft_render::transitions::gpu_plan::PlannedTransition {
+                                id: id.clone(),
+                                op: op.clone(),
+                                progress: *progress,
+                                scale: *scale,
+                                requirements: requirements.clone(),
+                            };
+                            stage
+                                .draw(&self.device, &self.queue, canvas, [&views[0], &views[1]], size, &planned)
+                                .map_err(|reason| error(format!("{reason:?}")))?;
+                            self.gpu_transitions += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if !cleared {
+            drop(accum_pass(&mut encoder, canvas, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)));
+        }
+        Ok(encoder)
+    }
+
+    /// Record `layers` into `target`: one pass per run of layers, with each layer's effects recorded
+    /// right before it is drawn (pooled working textures are reused by the next layer with effects).
+    fn draw_resident_layers(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        layers: &[&filmcraft_render::plan::ResidentRequiredLayer],
+        sources: &[resident::ResidentNv12Binding<'_>],
+        size: (u32, u32),
+        clear: bool,
+    ) -> Result<(), GpuPlanError> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let groups = self.resident_layer_groups(encoder, layers, sources, size);
+        let groups = match (groups, poll_now(scope.pop())) {
+            (Err(error), _) => return Err(error),
+            (Ok(_), Some(Some(error))) => {
+                return Err(Self::resident_runtime_error(None, &format!("resident source bind group rejected: {error}")));
+            }
+            (Ok(_), None) => return Err(Self::resident_runtime_error(None, "resident source validation scope remained pending")),
+            (Ok(groups), Some(None)) => groups,
+        };
+        if groups.is_empty() && clear {
+            drop(accum_pass(encoder, target, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)));
+        }
+        let mut cleared = !clear;
+        let mut start = 0;
+        while start < groups.len() {
+            if let (Some((_, Some(job))), Some(fx)) = (groups.get(start), self.fx.as_ref()) {
+                fx.record(encoder, job);
+            }
+            let end = (start + 1..groups.len()).find(|index| groups.get(*index).is_some_and(|(_, job)| job.is_some())).unwrap_or(groups.len());
+            let load = if cleared { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) };
+            cleared = true;
+            let mut pass = accum_pass(encoder, target, load);
+            pass.set_pipeline(&self.layer_pipeline);
+            for (bind_group, _) in groups.get(start..end).unwrap_or_default() {
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
+            drop(pass);
+            start = end;
+        }
+        Ok(())
+    }
+
+    /// One bind group per resident layer, plus the effect job of a layer with effects: its source
+    /// is drawn from the borrowed NV12 views onto the working image, and the layer then draws the
+    /// effect result (linear premultiplied RGBA) instead of the frame.
+    fn resident_layer_groups(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        layers: &[&filmcraft_render::plan::ResidentRequiredLayer],
+        sources: &[resident::ResidentNv12Binding<'_>],
+        (w, h): (u32, u32),
+    ) -> Result<Vec<(wgpu::BindGroup, Option<fx::FxJob>)>, GpuPlanError> {
+        let mut groups = Vec::with_capacity(layers.len());
+        for layer in layers {
+            let item_id = layer.evidence().item_id();
+            let (source_w, source_h) = layer.size();
+            let (source, views) = match layer.source_kind() {
+                filmcraft_render::plan::ResidentSourceKind::Decoded => {
+                    let binding = sources
+                        .iter()
+                        .find(|source| source.id == layer.source_id())
+                        .ok_or_else(|| Self::resident_runtime_error(Some(item_id), "resident source binding disappeared after validation"))?;
+                    let y_view = binding.y.create_view(&Default::default());
+                    let uv_view = binding.uv.create_view(&Default::default());
+                    let source = SrcInfo {
+                        kind: 3,
+                        code_scale: 255.0,
+                        code_levels: 256.0,
+                        alpha: 0.0,
+                        chroma: (source_w.div_ceil(2), source_h.div_ceil(2)),
+                        size: (source_w, source_h),
+                        color: layer.color(),
+                        input: None,
+                    };
+                    (source, [y_view, uv_view.clone(), uv_view.clone(), uv_view])
+                }
+                filmcraft_render::plan::ResidentSourceKind::Demo(scene) => {
+                    let time = layer.demo_time_seconds().ok_or_else(|| Self::resident_runtime_error(Some(item_id), "resident demo source time is missing"))?;
+                    if self.demo_source.is_none() {
+                        self.demo_source = Some(demo_source::DemoSource::new(&self.device));
+                    }
+                    let source =
+                        self.demo_source.as_ref().ok_or_else(|| Self::resident_runtime_error(Some(item_id), "resident demo source stage is unavailable"))?;
+                    let frame = source
+                        .record(&self.device, encoder, scene, source_w, source_h, time, ())
+                        .map_err(|detail| Self::resident_runtime_error(Some(item_id), &detail))?;
+                    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+                        format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+                        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+                        ..Default::default()
+                    });
+                    let source = SrcInfo {
+                        kind: 0,
+                        code_scale: 1.0,
+                        code_levels: 1.0,
+                        alpha: 0.0,
+                        chroma: (source_w, source_h),
+                        size: (source_w, source_h),
+                        color: layer.color(),
+                        input: None,
+                    };
+                    (source, [view, self.dummy.clone(), self.dummy.clone(), self.dummy.clone()])
+                }
+            };
+            let input = match layer.input() {
+                Some(transform) => Some(transform.gpu_params().ok_or_else(|| GpuPlanError {
+                    item_id: Some(item_id),
+                    id: layer.evidence().registry_id().map(str::to_owned),
+                    reason: EligibilityFailure::UnsupportedFrameStructure { detail: filmcraft_render::plan::FrameRequirement::ColorPipeline },
+                })?),
+                None => None,
+            };
+            let source = SrcInfo { input, ..source };
+            let job = match layer.fx() {
+                Some(lfx) => {
+                    let n = f64::from(lfx.decimation.max(1));
+                    let mut uniform =
+                        Self::uniforms(&source, &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (lfx.size.0.max(1), lfx.size.1.max(1)));
+                    uniform[26] = n as f32;
+                    let buffer = self.uniform_buffer(&uniform);
+                    let source_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("resident-fx-source"),
+                        layout: &self.layer_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
+                            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                        ],
+                    });
+                    let job = match self.fx.as_mut() {
+                        Some(stage) => stage.job(&self.device, &self.queue, lfx, source_bg, &self.dummy),
+                        None => None,
+                    };
+                    Some(job.ok_or_else(|| {
+                        Self::resident_runtime_error(Some(item_id), "resident effect stage unavailable or working image exceeds texture limits")
+                    })?)
+                }
+                None => None,
+            };
+            let (uniform, views) = match (&job, layer.fx()) {
+                (Some(job), Some(lfx)) => {
+                    let placed =
+                        SrcInfo { kind: 1, code_scale: 1.0, code_levels: 1.0, alpha: 0.0, chroma: lfx.size, size: lfx.size, color: layer.color(), input: None };
+                    (
+                        Self::uniforms(&placed, layer.matrix(), layer.opacity(), layer.blend(), (w, h)),
+                        [job.result.clone(), self.dummy.clone(), self.dummy.clone(), self.dummy.clone()],
+                    )
+                }
+                _ => (Self::uniforms(&source, layer.matrix(), layer.opacity(), layer.blend(), (w, h)), views),
+            };
+            let buffer = self.uniform_buffer(&uniform);
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("resident-nv12-layer"),
+                layout: &self.layer_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                ],
+            });
+            groups.push((bind_group, job));
+        }
+        Ok(groups)
+    }
+
+    fn resident_runtime_error(item_id: Option<filmcraft_project::ItemId>, detail: &str) -> GpuPlanError {
+        GpuPlanError {
+            item_id,
+            id: Some("resident NV12 compositor".into()),
+            reason: EligibilityFailure::RuntimeFailure { stage: "resident compositor", detail: detail.into() },
+        }
+    }
+
+    /// Validate all typed routes before dispatching any branch. (The resident export runs this after
+    /// it has decoded its sources, so a refused route still costs that decode.)
+    pub(crate) fn validate_required_routes<'a>(nodes: impl Iterator<Item = &'a filmcraft_render::plan::PlanNodeEvidence>) -> Result<(), GpuPlanError> {
+        Self::validate_routes(nodes, false)
+    }
+
+    fn validate_resident_required_routes<'a>(nodes: impl Iterator<Item = &'a filmcraft_render::plan::PlanNodeEvidence>) -> Result<(), GpuPlanError> {
+        Self::validate_routes(nodes, true)
+    }
+
+    fn validate_routes<'a>(nodes: impl Iterator<Item = &'a filmcraft_render::plan::PlanNodeEvidence>, allow_demo_source: bool) -> Result<(), GpuPlanError> {
+        for node in nodes {
+            let supported = matches!(node.origin(), PixelOrigin::DecodedMediaSource | PixelOrigin::GpuGenerated { route: "transition" })
+                || (allow_demo_source && matches!(node.origin(), PixelOrigin::GpuGenerated { route: "demo_source" }));
+            if !supported {
+                return Err(GpuPlanError {
+                    item_id: Some(node.item_id()),
+                    id: node.registry_id().map(str::to_owned),
+                    reason: EligibilityFailure::CpuFallbackRequired { id: node.registry_id().map(str::to_owned) },
+                });
+            }
+            for operation in node.operations() {
+                if let filmcraft_render::plan::PlannedGpuOp::Transition { id, op, progress, scale, requirements } = operation {
+                    // Only transitions with recorded AMD parity are admitted by the strict compositors.
+                    if !TRANSITION_AMD_PARITY.contains(&id.as_str()) {
+                        return Err(GpuPlanError {
+                            item_id: Some(node.item_id()),
+                            id: Some(id.clone()),
+                            reason: EligibilityFailure::UnsupportedOperation { id: id.clone() },
+                        });
+                    }
+                    let planned = filmcraft_render::transitions::gpu_plan::PlannedTransition {
+                        id: id.clone(),
+                        op: op.clone(),
+                        progress: *progress,
+                        scale: *scale,
+                        requirements: requirements.clone(),
+                    };
+                    transition_catalog::TransitionCatalogStage::validate(&planned).map_err(|error| GpuPlanError {
+                        item_id: Some(node.item_id()),
+                        id: Some(id.clone()),
+                        reason: match error {
+                            transition_catalog::TransitionCatalogError::Unsupported { .. } => EligibilityFailure::UnsupportedOperation { id: id.clone() },
+                            _ => EligibilityFailure::InvalidParameter { id: id.clone(), parameter: "typed transition plan".into() },
+                        },
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Dispatch opaque strict evidence into a resident accumulator; errors never become CPU pixels,
+    /// transparent layers, or a dummy texture. Never reads pixels back.
+    pub fn composite_required(&mut self, plan: &RequiredFramePlan) -> Result<(wgpu::TextureView, (u32, u32), wgpu::SubmissionIndex), GpuPlanError> {
+        Self::validate_required_routes(plan.nodes())?;
+        let (width, height) = plan.size();
+        let empty = FramePlan::Layers { width, height, layers: Vec::new() };
+        let (canvas, dims, _) = self.render_plan_checked(&empty, None, true, false, true)?;
+        for step in plan.steps() {
+            match step {
+                RequiredStep::Layers(next) => {
+                    let layers = next.iter().map(|layer| layer.layer().clone()).collect();
+                    self.render_plan_checked(&FramePlan::Layers { width, height, layers }, None, false, false, true)
+                        .map_err(|error| Self::required_layer_error(error, next))?;
+                }
+                RequiredStep::Transition { inputs, evidence } => {
+                    let mut views = [self.dummy.clone(), self.dummy.clone()];
+                    for (index, input) in inputs.iter().enumerate() {
+                        let layers = input.iter().map(|layer| layer.layer().clone()).collect();
+                        std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
+                        let rendered = self.render_plan_checked(&FramePlan::Layers { width, height, layers }, None, true, false, true);
+                        std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
+                        views[index] = rendered.map_err(|error| Self::required_layer_error(error, input))?.0;
+                    }
+                    for operation in evidence.operations() {
+                        if let filmcraft_render::plan::PlannedGpuOp::Transition { id, op, progress, scale, requirements } = operation {
+                            let error = |detail: String| GpuPlanError {
+                                item_id: Some(evidence.item_id()),
+                                id: Some(id.clone()),
+                                reason: EligibilityFailure::RuntimeFailure { stage: "typed transition", detail },
+                            };
+                            let stage = self.strict_transition.as_ref().ok_or_else(|| error("strict transition stage unavailable".into()))?;
+                            let planned = filmcraft_render::transitions::gpu_plan::PlannedTransition {
+                                id: id.clone(),
+                                op: op.clone(),
+                                progress: *progress,
+                                scale: *scale,
+                                requirements: requirements.clone(),
+                            };
+                            stage
+                                .draw(&self.device, &self.queue, &canvas, [&views[0], &views[1]], dims, &planned)
+                                .map_err(|reason| error(format!("{reason:?}")))?;
+                            self.gpu_transitions += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let (_, _, submission) = self.render_plan_checked(&empty, None, false, false, true)?;
+        Ok((canvas, dims, submission))
+    }
+
+    /// Resolve a required preview to gamma-encoded RGBA8 for egui, keeping the resident API linear.
+    pub fn composite_required_display(&mut self, plan: &RequiredFramePlan) -> Result<(wgpu::TextureView, (u32, u32), wgpu::SubmissionIndex), GpuPlanError> {
+        self.composite_required(plan)?;
+        let (width, height) = plan.size();
+        self.render_plan_checked(&FramePlan::Layers { width, height, layers: Vec::new() }, None, false, true, true)
+    }
+
+    /// Resolve a strict resident plan that has no decoded sources (GPU-generated demo scenes only)
+    /// to gamma-encoded RGBA8 for egui. The scenes are generated on the GPU; nothing is read back.
+    pub fn composite_demo_display(&mut self, plan: &ResidentRequiredFramePlan) -> Result<(wgpu::TextureView, (u32, u32), wgpu::SubmissionIndex), GpuPlanError> {
+        let (_, _, encoder) = self.composite_resident_flat(plan, &[])?;
+        self.queue.submit([encoder.finish()]);
+        let (width, height) = plan.size();
+        self.render_plan_checked(&FramePlan::Layers { width, height, layers: Vec::new() }, None, false, true, true)
+    }
+
+    fn required_layer_error(mut error: GpuPlanError, layers: &[filmcraft_render::plan::RequiredLayer]) -> GpuPlanError {
+        if error.item_id.is_none()
+            && let Some(layer) = layers.iter().find(|layer| !layer.evidence().operations().is_empty())
+        {
+            error.item_id = Some(layer.evidence().item_id());
+            error.id = layer.evidence().operations().first().map(|operation| match operation {
+                filmcraft_render::plan::PlannedGpuOp::Effect { id, .. } | filmcraft_render::plan::PlannedGpuOp::Transition { id, .. } => id.clone(),
+            });
+        }
+        error
+    }
+
+    fn composite_steps(
+        &mut self,
+        width: usize,
+        height: usize,
+        steps: &[PlanStep],
+        prep: Option<&PreparedPlan>,
+        clear: bool,
+        resolve: bool,
+    ) -> (wgpu::TextureView, (u32, u32)) {
+        let unsupported =
+            steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if !matches!(effect.effect.as_str(), "push" | "flare" | "blur_dissolve")));
+        let unavailable =
+            steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect == "blur_dissolve") && self.blur_transition.is_none());
+        if unsupported || unavailable {
             self.cpu_transitions += 1;
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
-            return self.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None);
+            return self.render_plan(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, clear, resolve);
         }
         let empty = FramePlan::Layers { width, height, layers: Vec::new() };
-        let (canvas, dims) = self.render_plan(&empty, None, true, false);
+        let (canvas, dims) = self.render_plan(&empty, None, clear, false);
         let mut children = prep.map(|p| p.children.iter());
         for step in steps {
             match step {
@@ -946,7 +1667,7 @@ impl GpuCompositor {
                     let p = children.as_mut().and_then(Iterator::next);
                     self.render_plan(&FramePlan::Layers { width, height, layers: layers.clone() }, p, false, false);
                 }
-                PlanStep::Transition { inputs, effect, progress, .. } => {
+                PlanStep::Transition { inputs, effect, progress, scale } => {
                     let mut views = [self.dummy.clone(), self.dummy.clone()];
                     for (index, layers) in inputs.iter().enumerate() {
                         let p = children.as_mut().and_then(Iterator::next);
@@ -956,21 +1677,27 @@ impl GpuCompositor {
                         std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
                         views[index] = view;
                     }
-                    self.transition.draw(&self.device, &self.queue, &canvas, [&views[0], &views[1]], dims, effect, *progress);
+                    match effect.effect.as_str() {
+                        "push" => self.transition.draw(&self.device, &self.queue, &canvas, [&views[0], &views[1]], dims, effect, *progress),
+                        "flare" => self.flare_transition.draw(&self.device, &self.queue, &canvas, [&views[0], &views[1]], dims, effect, *progress),
+                        "blur_dissolve" => {
+                            if let Some(stage) = self.blur_transition.as_mut() {
+                                stage.draw(&self.device, &self.queue, &canvas, [&views[0], &views[1]], dims, effect, *progress, *scale);
+                            }
+                        }
+                        _ => continue,
+                    }
                     self.gpu_transitions += 1;
                 }
             }
         }
-        self.render_plan(&empty, None, false, true)
+        self.render_plan(&empty, None, false, resolve)
     }
 
     /// Export rendering: `plan` composited into the linear float accumulator and read back as
     /// premultiplied RGBA f32 (the sRGB resolve is skipped). None for a plan the export path does
     /// not run on the GPU (transitions: the caller renders those on the CPU) or a failed read-back.
     pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
-        if matches!(plan, FramePlan::Composite { .. }) {
-            return None;
-        }
         let t = std::time::Instant::now();
         self.render_plan(plan, prep, true, false);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
@@ -978,6 +1705,36 @@ impl GpuCompositor {
         self.queue.submit([enc.finish()]);
         export_renderer::timing::add_submit(t.elapsed());
         self.map_accumulator(size)
+    }
+
+    /// Convert a composited export frame into a caller-owned resident NV12 buffer.
+    /// Returns the buffer, 256-byte-pitched layout, and conversion submission to wait on.
+    pub fn render_nv12_buffer(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&PreparedPlan>,
+        output: wgpu::Buffer,
+    ) -> Option<(wgpu::Buffer, yuv_output::Nv12Layout, wgpu::SubmissionIndex)> {
+        self.render_nv12_buffer_coded(plan, prep, output, None)
+    }
+
+    /// Convert an export frame to NV12 with an optional coded size, replicating visible edges.
+    pub fn render_nv12_buffer_coded(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&PreparedPlan>,
+        output: wgpu::Buffer,
+        coded_size: Option<(u32, u32)>,
+    ) -> Option<(wgpu::Buffer, yuv_output::Nv12Layout, wgpu::SubmissionIndex)> {
+        if !output.usage().contains(wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC) {
+            return None;
+        }
+        let (accum, (width, height)) = self.render_plan(plan, prep, true, false);
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-nv12-export") });
+        let (coded_width, coded_height) = coded_size.unwrap_or((width, height));
+        let layout = self.nv12_output.record_coded(&self.device, &mut encoder, &accum, &output, width, height, coded_width, coded_height)?;
+        let submission = self.queue.submit([encoder.finish()]);
+        Some((output, layout, submission))
     }
 
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
@@ -1028,8 +1785,10 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
-        rx.recv().ok()?.ok()?;
+        if wait_mapped(&self.device).is_none() || rx.recv_timeout(MAP_TIMEOUT).ok().and_then(Result::ok).is_none() {
+            buf.unmap();
+            return None;
+        }
         let data = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
@@ -1091,8 +1850,10 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
-        rx.recv().ok()?.ok()?;
+        if wait_mapped(&self.device).is_none() || rx.recv_timeout(MAP_TIMEOUT).ok().and_then(Result::ok).is_none() {
+            buf.unmap();
+            return None;
+        }
         export_renderer::timing::add_map_wait(t.elapsed());
         let t = std::time::Instant::now();
         let (width, row) = (w as usize, row as usize);
@@ -1134,8 +1895,10 @@ impl GpuCompositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device)?;
-        rx.recv().ok()?.ok()?;
+        if wait_mapped(&self.device).is_none() || rx.recv_timeout(MAP_TIMEOUT).ok().and_then(Result::ok).is_none() {
+            buf.unmap();
+            return None;
+        }
         let data = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..*h {
@@ -1152,8 +1915,10 @@ impl GpuCompositor {
 /// Export readback used `PollType::wait_indefinitely`. On radv that can never return after a
 /// failed hardware-encode attempt (#1058), so the export never finishes. Eight seconds is longer
 /// than a healthy map; a timeout returns `None` and the CPU renderer takes the frame.
+const MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
 fn wait_mapped(device: &wgpu::Device) -> Option<()> {
-    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(8)) }).ok().map(|_| ())
+    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).ok().map(|_| ())
 }
 
 /// Shader source: kind (0 RGBA8 sRGB, 1 linear premultiplied RGBA, 2 YUV), sampling scales, dimensions, color.

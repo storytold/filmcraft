@@ -945,7 +945,7 @@ fn gpu_effect_chains_match_cpu_render() {
         let fx = l.fx.as_ref().unwrap_or_else(|| panic!("V{}: not a GPU effect layer", i + 1));
         assert!(!fx.ops.is_empty());
     }
-    assert!(layers[4].fx.is_none(), "Emboss is rendered on the CPU");
+    assert!(layers[4].fx.is_some(), "Emboss has a GPU procedural route; the GPU-vs-CPU diff below covers it");
     let Some((dev, q)) = device("gpu effect parity", true) else {
         return;
     };

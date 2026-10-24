@@ -23,8 +23,8 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec,
-    Placement, SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes,
+    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, Format, GpuRendering, H264Profile, Multiplexer, MxfVideoCodec, Placement,
+    SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,8 @@ pub struct ExportUi {
     /// The preset the settings came from ("Custom" once edited).
     pub preset: String,
     pub settings: ExportSettings,
+    /// Export on the CPU (manual). Unchecked, the export uses the GPU where the format has a route.
+    pub cpu_export: bool,
     /// File name without extension, and the folder.
     pub file_name: String,
     pub location: String,
@@ -67,6 +69,7 @@ impl Default for ExportUi {
         ExportUi {
             preset: DEFAULT_PRESET.into(),
             settings: preset,
+            cpu_export: false,
             file_name: String::new(),
             location: String::new(),
             range: "entire".into(),
@@ -113,6 +116,18 @@ fn settings_json(s: &ExportSettings) -> Value {
     serde_json::to_value(s).unwrap_or_default()
 }
 
+/// Whether the format has a GPU route (VA-API H.264 or H.265).
+fn gpu_capable(s: &ExportSettings) -> bool {
+    matches!(s.format, Format::H264 | Format::Hevc)
+}
+
+/// The settings an export runs with: the GPU unless the CPU is picked by hand or the format has no GPU route.
+pub fn effective_settings(ex: &ExportUi) -> ExportSettings {
+    let mut s = ex.settings.clone();
+    s.set_hardware_export(!ex.cpu_export && gpu_capable(&s));
+    s
+}
+
 /// Apply a preset by name (from the engine's library).
 pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
     match app.session.export_presets.find(name) {
@@ -139,7 +154,7 @@ pub fn output_path(ex: &ExportUi) -> String {
 /// Engine params for the current settings (`file.exportMedia` / `export.queue.add`).
 pub fn export_params(app: &FilmcraftApp) -> Value {
     let ex = &app.ui.export;
-    let mut p = json!({"path": output_path(ex), "settings": settings_json(&ex.settings), "range": ex.range});
+    let mut p = json!({"path": output_path(ex), "settings": settings_json(&effective_settings(ex)), "range": ex.range});
     if ex.range == "custom" {
         p["startSeconds"] = json!(ex.custom_start);
         p["endSeconds"] = json!(ex.custom_end);
@@ -572,7 +587,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.add_space(8.0);
         let s = &mut ex.settings;
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
-            video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
+            video_section(ui, &mut reg, s, &mut ex.cpu_export, &t, seq_w, seq_h, seq_hdr);
         }
         if (s.has_audio()
             || !s.has_video()
@@ -664,7 +679,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
+fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, cpu: &mut bool, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();
     row(ui, t, tl!("Frame Size"), |ui| {
@@ -810,18 +825,6 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     *k = v as u32;
                 }
             });
-            // The system's hardware encoder where there is one (VideoToolbox on macOS, NVENC on NVIDIA
-            // GPUs on Windows, VA-API on Linux); everything it does not take (two-pass, HDR, MXF) and
-            // every machine without one keeps the built-in encoder.
-            // H.265 and AV1 have only hardware encoders: choosing the format is the opt-in.
-            if !hevc {
-                row(ui, t, "Hardware Encoding", |ui| {
-                    let mut on = s.hardware_encoding == HardwareEncoding::Auto;
-                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
-                        s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
-                    }
-                });
-            }
         }
         Format::ProRes => {
             row(ui, t, tl!("Profile"), |ui| {
@@ -878,12 +881,22 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         _ => {}
     }
-    // Composite the picture on the GPU (filmcraft-gpu) instead of the CPU reference renderer;
-    // Auto falls back to the CPU wherever the GPU cannot render the frame.
-    row(ui, t, tl!("GPU Rendering"), |ui| {
-        let mut on = s.gpu_rendering == GpuRendering::Auto;
-        if check(ui, reg, "export.gpuRendering", &mut on, tl!("Composite on the GPU when available")) {
-            s.gpu_rendering = if on { GpuRendering::Auto } else { GpuRendering::Off };
+    row(ui, t, "", |ui| {
+        // a format without a GPU route (not H.264 or H.265) exports on the CPU whatever the checkbox says
+        let gpu = gpu_capable(s);
+        let mut on = *cpu || !gpu;
+        let label = tl!("Export via CPU (manual)");
+        let r = ui.add_enabled(gpu, egui::Checkbox::new(&mut on, label));
+        reg.add("export.video.cpuExport", r.rect, label);
+        let changed = r.changed();
+        let hover = if gpu {
+            tl!("Off: GPU export (AMD GPU + same-node VA-API required; fails if unavailable). On: CPU reference renderer.")
+        } else {
+            tl!("This format exports only via CPU")
+        };
+        r.on_hover_text(hover);
+        if changed && gpu {
+            *cpu = on;
         }
     });
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, tl!("Render at Maximum Depth")));
@@ -1068,22 +1081,26 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     let pic = crate::panels::monitor::fit(pv_area, r.width as f32, r.height as f32);
     ui.painter().rect_filled(pic, 0.0, Color32::BLACK);
     if app.ui.export.settings.has_video() {
-        let frame = rate.frame_at(app.session.playhead());
-        let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 500, revision: app.session.revision, draft: false };
-        let project = app.session.project.clone();
-        app.frames.request(key, rate.tick_of(frame), 0.5, &project, 0);
-        if let Some(img) = app.frames.get(&key) {
-            let ctx = ui.ctx().clone();
-            let tex = app.texture_for(&ctx, "export-preview", key, &img);
-            let inner = match app.ui.export.settings.scaling {
-                Scaling::StretchToFill => pic,
-                Scaling::ScaleToFit => crate::panels::monitor::fit(pic, q.settings.width as f32, q.settings.height as f32),
-                Scaling::ScaleToFill => {
-                    let s = (pic.width() / q.settings.width as f32).max(pic.height() / q.settings.height as f32);
-                    Rect::from_center_size(pic.center(), vec2(q.settings.width as f32 * s, q.settings.height as f32 * s))
-                }
-            };
-            ui.painter().with_clip_rect(pic).image(tex, inner, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        if effective_settings(&app.ui.export).gpu_rendering == GpuRendering::Off {
+            let frame = rate.frame_at(app.session.playhead());
+            let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 500, revision: app.session.revision, draft: false };
+            let project = app.session.project.clone();
+            app.frames.request(key, rate.tick_of(frame), 0.5, &project, 0);
+            if let Some(img) = app.frames.get(&key) {
+                let ctx = ui.ctx().clone();
+                let tex = app.texture_for(&ctx, "export-preview", key, &img);
+                let inner = match app.ui.export.settings.scaling {
+                    Scaling::StretchToFill => pic,
+                    Scaling::ScaleToFit => crate::panels::monitor::fit(pic, q.settings.width as f32, q.settings.height as f32),
+                    Scaling::ScaleToFill => {
+                        let s = (pic.width() / q.settings.width as f32).max(pic.height() / q.settings.height as f32);
+                        Rect::from_center_size(pic.center(), vec2(q.settings.width as f32 * s, q.settings.height as f32 * s))
+                    }
+                };
+                ui.painter().with_clip_rect(pic).image(tex, inner, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            }
+        } else {
+            app.ui.status = tl!("Export preview unavailable in GPU-only mode; CPU fallback is disabled").into();
         }
     } else {
         ui.painter().text(pic.center(), Align2::CENTER_CENTER, tl!("Audio only"), Tokens::ui(13.0), t.text_dim);
@@ -1297,7 +1314,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new(tl!("Save")));
                 reg.add("presetManager.save", r.rect, "Save");
                 if r.clicked() {
-                    cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&app.ui.export.settings)})));
+                    cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&effective_settings(&app.ui.export))})));
                     m.selected = m.save_name.trim().to_string();
                 }
             });

@@ -349,7 +349,7 @@ pub fn noise(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let (gx, gy) = ((x as f32 / grain) as usize, (y as f32 / grain) as usize);
             let h = |z: u64| crate::effects::hash3(gx, gy, z) - 0.5;
             let n0 = h(frame);
-            let ns = if colored { [n0, h(frame + 7777), h(frame + 99_991)] } else { [n0; 3] };
+            let ns = if colored { [n0, h(frame.wrapping_add(7777)), h(frame.wrapping_add(99_991))] } else { [n0; 3] };
             let c = enc([p[0] / a, p[1] / a, p[2] / a]);
             let mut o = [c[0] + ns[0] * amt, c[1] + ns[1] * amt, c[2] + ns[2] * amt];
             if clip {

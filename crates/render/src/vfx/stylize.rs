@@ -348,9 +348,11 @@ pub fn block_dissolve(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let fe = fv(e, "feather", cx) / 100.0 * 0.5;
     let soft = bv(e, "soft");
     let w = img.w;
+    // Multiply by reciprocals (as the GPU route does): f32 `/` is not correctly rounded on GPUs.
+    let (iw, ih) = (1.0f32 / bw, 1.0f32 / bh);
     img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         for x in 0..w {
-            let r = hash01((x as f32 / bw) as i64, (y as f32 / bh) as i64, 0, 41);
+            let r = hash01((x as f32 * iw) as i64, (y as f32 * ih) as i64, 0, 41);
             let a = if soft && fe > 0.0 {
                 smoothstep(c - fe, c + fe, r)
             } else if r >= c {

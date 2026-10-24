@@ -24,6 +24,7 @@ mod pace;
 mod pcm;
 mod pipeline;
 pub mod presets;
+mod ram_guard;
 mod raster;
 pub mod settings;
 pub mod still;
@@ -35,11 +36,11 @@ pub use pipeline::limit_rgba8;
 pub use presets::{ExportPreset, builtin_presets};
 pub use settings::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 
 use filmcraft_isobmff::SampleEntry;
 use filmcraft_project::{ItemId, Project};
-use filmcraft_render::SourceProvider;
+use filmcraft_render::{SourceProvider, plan::PreflightedFrame};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -56,9 +57,578 @@ pub enum ExportError {
     Encode(String),
     #[error("cancelled")]
     Cancelled,
+    #[error("export stopped by RAM pressure: {0}")]
+    MemoryPressure(String),
 }
 
 pub type Result<T> = std::result::Result<T, ExportError>;
+
+struct ResidentLedger {
+    slots: usize,
+    bytes: u64,
+}
+
+fn resident_ledger() -> &'static Mutex<ResidentLedger> {
+    static LEDGER: OnceLock<Mutex<ResidentLedger>> = OnceLock::new();
+    LEDGER.get_or_init(|| Mutex::new(ResidentLedger { slots: 0, bytes: 0 }))
+}
+
+struct ResidentFrameState {
+    total_bytes: u64,
+    status: Mutex<ResidentFrameStatus>,
+}
+
+struct ResidentFrameStatus {
+    remaining_bytes: u64,
+    allocations: usize,
+    parent_released: bool,
+    ledger_released: bool,
+}
+
+impl ResidentFrameState {
+    fn release_ledger_if_idle(&self, status: &mut ResidentFrameStatus) {
+        if status.parent_released && status.allocations == 0 && !status.ledger_released {
+            status.ledger_released = true;
+            let mut ledger = resident_ledger().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.slots = ledger.slots.saturating_sub(1);
+            ledger.bytes = ledger.bytes.saturating_sub(self.total_bytes);
+        }
+    }
+}
+
+/// One frame's global three-slot and byte reservation. Keep it alive through the frame callback;
+/// `take` divides its fixed byte budget into move-only allocation holds. Dropping allocation holds
+/// never replenishes this frame's budget, preventing repeated allocations from reusing bytes.
+pub struct ResidentReservation {
+    state: Arc<ResidentFrameState>,
+}
+
+impl ResidentReservation {
+    /// Reserve the entire resident frame before any platform or GPU allocation. Headroom inputs
+    /// exclude `persistent_bytes` and other caller-owned reservations; global outstanding frames
+    /// are subtracted internally. Unknown host headroom denies work. Unknown heap headroom uses
+    /// half of host headroom as a conservative shared-UMA allowance.
+    pub fn try_acquire(host_headroom_bytes: Option<u64>, heap_headroom_bytes: Option<u64>, persistent_bytes: u64, frame_bytes: u64) -> Result<Self> {
+        let Some(host) = host_headroom_bytes else {
+            return Err(ExportError::MemoryPressure("resident frame admission needs current host RAM headroom".into()));
+        };
+        if frame_bytes == 0 {
+            return Err(ExportError::MemoryPressure("resident frame reservation must be nonzero".into()));
+        }
+        let mut ledger = resident_ledger().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.slots >= 3 || ram_guard::admissible_slots(Some(host), heap_headroom_bytes, persistent_bytes, ledger.bytes, frame_bytes) == 0 {
+            return Err(ExportError::MemoryPressure("resident export is at its three-slot or RAM/heap budget limit".into()));
+        }
+        let Some(bytes) = ledger.bytes.checked_add(frame_bytes) else {
+            return Err(ExportError::MemoryPressure("resident frame byte reservation overflow".into()));
+        };
+        ledger.slots += 1;
+        ledger.bytes = bytes;
+        Ok(Self {
+            state: Arc::new(ResidentFrameState {
+                total_bytes: frame_bytes,
+                status: Mutex::new(ResidentFrameStatus { remaining_bytes: frame_bytes, allocations: 0, parent_released: false, ledger_released: false }),
+            }),
+        })
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.state.total_bytes
+    }
+
+    pub fn remaining_bytes(&self) -> u64 {
+        self.state.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remaining_bytes
+    }
+
+    /// Take a one-use allocation hold before allocating native/GPU memory. Dropping the hold
+    /// releases it only after the caller's owning resource drops; its byte allowance stays spent.
+    pub fn take(&mut self, bytes: u64) -> Result<ResidentAllocation> {
+        if bytes == 0 {
+            return Err(ExportError::MemoryPressure("resident allocation reservation must be nonzero".into()));
+        }
+        let mut status = self.state.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(remaining_bytes) = status.remaining_bytes.checked_sub(bytes) else {
+            return Err(ExportError::MemoryPressure("resident frame allocation exceeds its reserved byte budget".into()));
+        };
+        let Some(allocations) = status.allocations.checked_add(1) else {
+            return Err(ExportError::MemoryPressure("resident allocation hold count overflow".into()));
+        };
+        status.remaining_bytes = remaining_bytes;
+        status.allocations = allocations;
+        Ok(ResidentAllocation { state: self.state.clone(), bytes })
+    }
+}
+
+impl Drop for ResidentReservation {
+    fn drop(&mut self) {
+        let mut status = self.state.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        status.parent_released = true;
+        self.state.release_ledger_if_idle(&mut status);
+    }
+}
+
+/// Move-only byte hold to store beside the exact allocation it budgets.
+pub struct ResidentAllocation {
+    state: Arc<ResidentFrameState>,
+    bytes: u64,
+}
+
+impl ResidentAllocation {
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
+
+impl Drop for ResidentAllocation {
+    fn drop(&mut self) {
+        let mut status = self.state.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        status.allocations = status.allocations.saturating_sub(1);
+        self.state.release_ledger_if_idle(&mut status);
+    }
+}
+
+struct ResidentEnvelope<T> {
+    index: u64,
+    pts: Tick,
+    payload: T,
+    reservation: ResidentReservation,
+}
+
+/// Error that returns both payload and reservation, so failed enqueue cannot lose frame ownership.
+pub struct ResidentSendError<T> {
+    pub error: ExportError,
+    pub payload: T,
+    pub reservation: ResidentReservation,
+}
+
+pub struct ResidentProducer<T: Send> {
+    tx: mpsc::SyncSender<ResidentEnvelope<T>>,
+    cancelled: Arc<AtomicBool>,
+    last_index: Option<u64>,
+}
+
+pub struct ResidentConsumer<T: Send> {
+    rx: mpsc::Receiver<ResidentEnvelope<T>>,
+    pending: Option<ResidentEnvelope<T>>,
+    failed: bool,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// Bounded handoff: at most three frames across queued envelopes, active callbacks, and allocation
+/// holds. Acquire `ResidentReservation` before import or allocation. Submit work only inside
+/// `process_next`; pre-submitted payloads must quarantine their resource and allocation hold on drop.
+pub fn resident_queue<T: Send>() -> (ResidentProducer<T>, ResidentConsumer<T>) {
+    let (tx, rx) = mpsc::sync_channel(3);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    (ResidentProducer { tx, cancelled: cancelled.clone(), last_index: None }, ResidentConsumer { rx, pending: None, failed: false, cancelled })
+}
+
+impl<T: Send> ResidentProducer<T> {
+    /// Enqueue a reserved, not-yet-submitted frame. Frame indexes must be consecutive and increasing.
+    /// Queued payloads drop normally when the receiver closes. Pre-submitted work must quarantine
+    /// its resource and allocation hold through retirement.
+    pub fn send_reserved(
+        &mut self,
+        frame_index: u64,
+        pts: Tick,
+        reservation: ResidentReservation,
+        payload: T,
+    ) -> std::result::Result<(), ResidentSendError<T>> {
+        let error = if self.cancelled.load(Ordering::Acquire) {
+            Some(ExportError::Cancelled)
+        } else if self.last_index.is_some_and(|last| last.checked_add(1) != Some(frame_index)) {
+            Some(ExportError::Encode("resident queue requires consecutive frame indexes".into()))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            return Err(ResidentSendError { error, payload, reservation });
+        }
+        match self.tx.send(ResidentEnvelope { index: frame_index, pts, payload, reservation }) {
+            Ok(()) => {
+                self.last_index = Some(frame_index);
+                Ok(())
+            }
+            Err(error) => Err(ResidentSendError { error: ExportError::Cancelled, payload: error.0.payload, reservation: error.0.reservation }),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
+impl<T: Send> ResidentConsumer<T> {
+    /// Poll oldest frame. Return `Ok` only after the platform and GPU consumers have retired it.
+    /// Failure or panic stops admission and retains pending frame plus reservation; no retry occurs.
+    pub fn process_next<E>(
+        &mut self,
+        process: impl FnOnce(u64, Tick, &mut T, &mut ResidentReservation) -> std::result::Result<(), E>,
+    ) -> std::result::Result<bool, E> {
+        if self.failed || self.cancelled.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        if self.pending.is_none() {
+            self.pending = match self.rx.try_recv() {
+                Ok(envelope) => Some(envelope),
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return Ok(false),
+            };
+        }
+        let processed = {
+            let Some(envelope) = self.pending.as_mut() else { return Ok(false) };
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process(envelope.index, envelope.pts, &mut envelope.payload, &mut envelope.reservation)))
+        };
+        let processed = match processed {
+            Ok(processed) => processed,
+            Err(panic) => {
+                self.failed = true;
+                self.cancelled.store(true, Ordering::Release);
+                std::panic::resume_unwind(panic);
+            }
+        };
+        if let Err(error) = processed {
+            self.failed = true;
+            self.cancelled.store(true, Ordering::Release);
+            return Err(error);
+        }
+        drop(self.pending.take());
+        Ok(true)
+    }
+}
+
+impl<T: Send> Drop for ResidentConsumer<T> {
+    fn drop(&mut self) {
+        if let Some(envelope) = self.pending.take() {
+            // One process-lifetime leak per uncertain pending frame; global ledger caps total at three.
+            // Callback may have submitted work before failing or unwinding; retain payload and budget.
+            std::mem::forget(envelope);
+        }
+    }
+}
+
+#[cfg(test)]
+mod resident_reservation_tests {
+    use super::{ResidentReservation, resident_queue};
+    use crate::Tick;
+    use std::sync::{Mutex, OnceLock};
+
+    fn lock_ledger() -> std::sync::MutexGuard<'static, ()> {
+        static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn ledger_snapshot() -> (usize, u64) {
+        let ledger = super::resident_ledger().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (ledger.slots, ledger.bytes)
+    }
+
+    fn restore_ledger_for_test(snapshot: (usize, u64)) {
+        let mut ledger = super::resident_ledger().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (ledger.slots, ledger.bytes) = snapshot;
+    }
+
+    struct RestoreLedgerOnDrop((usize, u64));
+
+    impl Drop for RestoreLedgerOnDrop {
+        fn drop(&mut self) {
+            restore_ledger_for_test(self.0);
+        }
+    }
+
+    struct DropSentinel(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Drop for DropSentinel {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn frame_budget_is_single_use_and_slot_lives_with_child_allocation() {
+        let _guard = lock_ledger();
+        assert!(ResidentReservation::try_acquire(None, Some(1_000), 0, 10).is_err());
+        assert!(ResidentReservation::try_acquire(Some(1_000), None, 0, 501).is_err());
+        assert!(ResidentReservation::try_acquire(Some(1_000), Some(1_000), 901, 100).is_err());
+        let held = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("budget fits");
+        assert!(ResidentReservation::try_acquire(Some(150), Some(150), 0, 100).is_err(), "new lower headroom must shrink admission");
+        drop(held);
+
+        let (mut producer, mut consumer) = resident_queue();
+        let reservation = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("budget fits");
+        assert!(producer.send_reserved(0, Tick::ZERO, reservation, String::from("frame")).is_ok());
+        let mut imported_copy = None;
+        assert!(
+            consumer
+                .process_next(|index, pts, payload, budget| {
+                    assert_eq!((index, pts, payload.as_str()), (0, Tick::ZERO, "frame"));
+                    imported_copy = Some(budget.take(40)?);
+                    assert_eq!(budget.remaining_bytes(), 60);
+                    assert!(budget.take(61).is_err());
+                    Ok::<(), crate::ExportError>(())
+                })
+                .is_ok()
+        );
+
+        let allocation = imported_copy.expect("allocation hold returned from callback");
+        let second = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("second slot");
+        let third = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("third slot");
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_err());
+        drop((second, third, allocation));
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_ok());
+    }
+
+    #[test]
+    fn concurrent_parent_and_last_child_drop_release_one_ledger_charge() {
+        let _guard = lock_ledger();
+        let baseline = ledger_snapshot();
+        let _restore = RestoreLedgerOnDrop(baseline);
+
+        for _ in 0..128 {
+            let mut reservation = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 1).expect("budget fits");
+            let allocation = reservation.take(1).expect("child allocation fits");
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let parent_gate = gate.clone();
+            let child_gate = gate.clone();
+            let parent = std::thread::spawn(move || {
+                parent_gate.wait();
+                drop(reservation);
+            });
+            let child = std::thread::spawn(move || {
+                child_gate.wait();
+                drop(allocation);
+            });
+            gate.wait();
+            parent.join().expect("parent drop thread");
+            child.join().expect("allocation drop thread");
+            assert_eq!(ledger_snapshot(), baseline, "concurrent final drops must release exactly once");
+        }
+    }
+
+    #[test]
+    fn failed_retirement_quarantines_and_unsubmitted_cancellation_releases() {
+        let _guard = lock_ledger();
+        let baseline = ledger_snapshot();
+        let _restore = RestoreLedgerOnDrop(baseline);
+        let (mut producer, mut consumer) = resident_queue();
+        let reservation = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("budget fits");
+        assert!(producer.send_reserved(0, Tick::ZERO, reservation, ()).is_ok());
+        assert!(consumer.process_next::<&str>(|_, _, _, _| Err("retirement failed")).is_err());
+        assert!(!consumer.process_next(|_, _, _, _| Ok::<(), ()>(())).unwrap_or(false));
+
+        let second = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("second slot");
+        let third = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("third slot");
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_err());
+        drop(consumer);
+        drop((second, third));
+        assert_eq!(ledger_snapshot(), (baseline.0 + 1, baseline.1 + 100), "consumer drop must keep failed work charged");
+        let slot_a = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("second slot remains available");
+        let slot_b = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("third slot remains available");
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_err(), "quarantine must retain one of three slots");
+        drop((slot_a, slot_b));
+        restore_ledger_for_test(baseline);
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_ok());
+
+        let (mut producer, mut consumer) = resident_queue::<()>();
+        let reservation = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("budget fits");
+        assert!(producer.send_reserved(0, Tick::ZERO, reservation, ()).is_ok());
+        producer.cancel();
+        let mut called = false;
+        assert!(
+            !consumer
+                .process_next(|_, _, _, _| {
+                    called = true;
+                    Ok::<(), ()>(())
+                })
+                .unwrap_or(false)
+        );
+        assert!(!called);
+        let second = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("second slot");
+        let third = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("third slot");
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_err());
+        drop(consumer);
+        drop((second, third));
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_ok());
+    }
+
+    #[test]
+    fn failed_cancelled_pending_payload_and_budget_survive_consumer_drop() {
+        let _guard = lock_ledger();
+        let baseline = ledger_snapshot();
+        let _restore = RestoreLedgerOnDrop(baseline);
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut producer, mut consumer) = resident_queue();
+        let reservation = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("budget fits");
+        assert!(producer.send_reserved(0, Tick::ZERO, reservation, DropSentinel(dropped.clone())).is_ok());
+        assert!(
+            consumer
+                .process_next(|_, _, _, _| {
+                    producer.cancel();
+                    Err::<(), _>("submitted but retirement not confirmed")
+                })
+                .is_err()
+        );
+        drop(consumer);
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Acquire), 0, "uncertain payload must stay quarantined");
+        assert!(ResidentReservation::try_acquire(Some(150), Some(150), 0, 100).is_err(), "quarantined bytes must remain charged");
+        let second = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("second slot");
+        let third = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("third slot");
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_err(), "quarantine must retain one of three slots");
+        drop((second, third));
+        assert_eq!(ledger_snapshot(), (baseline.0 + 1, baseline.1 + 100));
+        restore_ledger_for_test(baseline);
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Acquire), 0, "pending payload remains retained");
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_ok());
+    }
+    #[test]
+    fn successful_retirement_drops_payload_and_releases_reservation() {
+        let _guard = lock_ledger();
+        let baseline = ledger_snapshot();
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut producer, mut consumer) = resident_queue();
+        let reservation = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("budget fits");
+        assert!(producer.send_reserved(0, Tick::ZERO, reservation, DropSentinel(dropped.clone())).is_ok());
+        assert!(consumer.process_next(|_, _, _, _| Ok::<(), ()>(())).unwrap_or(false));
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Acquire), 1);
+        assert_eq!(ledger_snapshot(), baseline, "confirmed retirement releases aggregate reservation");
+    }
+
+    #[test]
+    fn unwinding_callback_is_terminal_and_keeps_pending_payload_and_budget() {
+        let _guard = lock_ledger();
+        let baseline = ledger_snapshot();
+        let _restore = RestoreLedgerOnDrop(baseline);
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut producer, mut consumer) = resident_queue();
+        let reservation = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("budget fits");
+        assert!(producer.send_reserved(0, Tick::ZERO, reservation, DropSentinel(dropped.clone())).is_ok());
+        let mut calls = 0;
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = consumer.process_next(|_, _, _, _| -> std::result::Result<(), ()> {
+                calls += 1;
+                panic!("simulated panic after submit")
+            });
+        }));
+        assert!(unwind.is_err());
+        assert_eq!(calls, 1);
+        assert!(
+            !consumer
+                .process_next(|_, _, _, _| {
+                    calls += 1;
+                    Ok::<(), ()>(())
+                })
+                .unwrap_or(false)
+        );
+        assert_eq!(calls, 1, "caught panic must not retry uncertain work");
+        assert!(matches!(
+            producer.send_reserved(
+                1,
+                Tick::ZERO,
+                ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("another slot remains available"),
+                DropSentinel(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0))),
+            ),
+            Err(error) if matches!(error.error, super::ExportError::Cancelled)
+        ));
+        drop(consumer);
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Acquire), 0);
+        assert_eq!(ledger_snapshot(), (baseline.0 + 1, baseline.1 + 100));
+        restore_ledger_for_test(baseline);
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn resident_queue_bounds_in_flight_to_three() {
+        let _guard = lock_ledger();
+        let baseline = ledger_snapshot();
+        let _restore = RestoreLedgerOnDrop(baseline);
+        let (mut producer, mut consumer) = resident_queue::<u32>();
+        for index in 0..3u64 {
+            let reservation = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("slot fits");
+            assert!(producer.send_reserved(index, Tick::ZERO, reservation, index as u32).is_ok());
+        }
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_err(), "a fourth frame waits while three are in flight");
+        assert_eq!(ledger_snapshot().0, baseline.0 + 3);
+        assert!(consumer.process_next(|_, _, _, _| Ok::<(), ()>(())).unwrap_or(false));
+        assert_eq!(ledger_snapshot().0, baseline.0 + 2, "retiring the oldest frame frees its slot");
+        let fourth = ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).expect("fourth frame fits after retirement");
+        assert!(producer.send_reserved(3, Tick::ZERO, fourth, 3).is_ok());
+        assert!(ResidentReservation::try_acquire(Some(10_000), Some(10_000), 0, 100).is_err(), "still three in flight");
+        drop(producer);
+        drop(consumer);
+        assert_eq!(ledger_snapshot(), baseline, "queued frames release their slots when the queue closes");
+    }
+}
+
+#[cfg(test)]
+mod encoder_registry_tests {
+    use super::{
+        EncodedPacket, EncoderFactory, EncoderFrame, ExportSettings, Format, FrameRate, Result, SampleEntry, VideoEncoder, register_encoder, video_factories,
+    };
+
+    /// Encoder that reports its factory through its time scale, so the test can tell who answered.
+    struct Tagged(u32);
+
+    impl VideoEncoder for Tagged {
+        fn sample_entry(&self) -> SampleEntry {
+            SampleEntry::jpeg(1, 1)
+        }
+        fn timescale(&self) -> u32 {
+            self.0
+        }
+        fn encode(&mut self, _: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+            Ok(Vec::new())
+        }
+        fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+            Ok(Vec::new())
+        }
+    }
+
+    // Answer only H.264 at 7x9, a size no other test uses: the process-wide registry stays inert elsewhere.
+    fn first_fake(format: Format, w: u32, h: u32, _: FrameRate, _: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+        (format == Format::H264 && (w, h) == (7, 9)).then(|| Ok(Box::new(Tagged(101)) as Box<dyn VideoEncoder>))
+    }
+
+    fn second_fake(format: Format, w: u32, h: u32, _: FrameRate, _: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+        (format == Format::H264 && (w, h) == (7, 9)).then(|| Ok(Box::new(Tagged(202)) as Box<dyn VideoEncoder>))
+    }
+
+    #[test]
+    fn register_encoder_puts_latest_first_and_is_idempotent() {
+        let first: EncoderFactory = first_fake;
+        let second: EncoderFactory = second_fake;
+        register_encoder(first);
+        register_encoder(second);
+        register_encoder(first);
+        let factories: Vec<EncoderFactory> = video_factories().read().unwrap_or_else(|e| e.into_inner()).clone();
+        let count = |f: EncoderFactory| factories.iter().filter(|x| std::ptr::fn_addr_eq(**x, f)).count();
+        assert_eq!(count(first), 1, "registering the same factory again must not duplicate it");
+        assert_eq!(count(second), 1);
+        let position = |f: EncoderFactory| factories.iter().position(|x| std::ptr::fn_addr_eq(*x, f)).expect("registered");
+        assert!(position(second) < position(first), "the latest registration is tried first");
+        let winner = factories.iter().find_map(|f| f(Format::H264, 7, 9, FrameRate::FPS_24, &ExportSettings::default()));
+        let encoder = winner.expect("a factory answers at 7x9").expect("the factory builds an encoder");
+        assert_eq!(encoder.timescale(), 202, "the latest registered factory answers first");
+    }
+}
+
+/// Build guard only: refuse to start or continue a build at 83% host RAM use (emergency-style
+/// stop at 85%). This is the build helper, separate from the export runtime ceiling below.
+pub fn check_ram_pressure() -> Result<()> {
+    ram_guard::check()
+}
+
+/// Runtime RAM ceiling for exports: the 90% host-RAM ceiling the user approved for export runtime,
+/// separate from the build guard's 83/85% thresholds. Supported Linux hosts stop new export work
+/// when `MemAvailable` would take total use to 90%; unsupported/unsane readings are treated as
+/// "cannot prove pressure" and do not gate exports.
+pub fn check_runtime_ram_ceiling() -> Result<()> {
+    ram_guard::check_runtime_ram_ceiling()
+}
+
+/// Runtime RAM headroom before the export 90% ceiling, in KiB, on supported Linux hosts; `None`
+/// when the host reading is unavailable or nonsensical (never used as a headroom estimate).
+pub fn runtime_ram_headroom_kib() -> Option<u64> {
+    ram_guard::runtime_ram_headroom_kib()
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Format {
@@ -430,15 +1000,28 @@ enum AudioWriter {
 
 /// An export's output file: on disk, or in memory for an [`OutputSink`].
 enum Out {
-    File(std::io::BufWriter<std::fs::File>),
+    File { writer: std::io::BufWriter<std::fs::File>, temp: Option<TempOutput> },
     Mem(std::io::Cursor<Vec<u8>>),
 }
+
+struct TempOutput {
+    path: std::path::PathBuf,
+    destination: std::path::PathBuf,
+}
+
+impl Drop for TempOutput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+static NEXT_OUTPUT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 impl Out {
     fn create(settings: &ExportSettings) -> Result<Out> {
         if let Some(file) = &settings.output_file {
             let file = file.try_clone().map_err(|e| ExportError::Io(e.to_string()))?;
-            return Ok(Out::File(std::io::BufWriter::new(file)));
+            return Ok(Out::File { writer: std::io::BufWriter::new(file), temp: None });
         }
         Out::create_path(settings, &settings.path)
     }
@@ -452,10 +1035,20 @@ impl Out {
             && let Some(file) = &settings.output_file
         {
             let file = file.try_clone().map_err(|e| ExportError::Io(e.to_string()))?;
-            return Ok(Out::File(std::io::BufWriter::new(file)));
+            return Ok(Out::File { writer: std::io::BufWriter::new(file), temp: None });
         }
-        let f = std::fs::File::create(path).map_err(|e| ExportError::Io(format!("{path}: {e}")))?;
-        Ok(Out::File(std::io::BufWriter::new(f)))
+        let destination = std::path::PathBuf::from(path);
+        let dir = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        for _ in 0..32 {
+            let id = NEXT_OUTPUT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let temp = dir.join(format!(".filmcraft-export-{}-{id}.tmp", std::process::id()));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+                Ok(file) => return Ok(Out::File { writer: std::io::BufWriter::new(file), temp: Some(TempOutput { path: temp, destination }) }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(ExportError::Io(format!("{path}: {e}"))),
+            }
+        }
+        Err(ExportError::Io(format!("{path}: could not allocate a unique temporary output")))
     }
 
     /// Flush (and hand in-memory output to the sink); returns the file size.
@@ -465,9 +1058,19 @@ impl Out {
 
     fn finish_path(self, settings: &ExportSettings, path: &str) -> Result<u64> {
         match self {
-            Out::File(mut w) => {
-                w.flush().map_err(|e| ExportError::Io(e.to_string()))?;
-                Ok(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+            Out::File { mut writer, temp } => {
+                let name = temp.as_ref().map_or_else(|| path.to_owned(), |t| t.destination.display().to_string());
+                let io = |e| ExportError::Io(format!("{name}: {e}"));
+                writer.flush().map_err(io)?;
+                let Some(temp) = temp else {
+                    // a handle the caller opened: it is theirs to sync and keep
+                    return Ok(writer.get_ref().metadata().map_err(io)?.len());
+                };
+                writer.get_ref().sync_all().map_err(io)?;
+                let size = writer.get_ref().metadata().map_err(io)?.len();
+                drop(writer);
+                std::fs::rename(&temp.path, &temp.destination).map_err(io)?;
+                Ok(size)
             }
             Out::Mem(c) => write_output(settings, path, c.into_inner()),
         }
@@ -488,13 +1091,13 @@ fn write_output(settings: &ExportSettings, path: &str, data: Vec<u8>) -> Result<
 impl Write for Out {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            Out::File(w) => w.write(buf),
+            Out::File { writer, .. } => writer.write(buf),
             Out::Mem(w) => w.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            Out::File(w) => w.flush(),
+            Out::File { writer, .. } => writer.flush(),
             Out::Mem(w) => w.flush(),
         }
     }
@@ -503,7 +1106,7 @@ impl Write for Out {
 impl std::io::Seek for Out {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         match self {
-            Out::File(w) => w.seek(pos),
+            Out::File { writer, .. } => writer.seek(pos),
             Out::Mem(w) => w.seek(pos),
         }
     }
@@ -617,6 +1220,13 @@ fn default_crf() -> f32 {
 impl ExportSettings {
     /// Reject settings the encoders cannot honour.
     pub fn validate(&self) -> Result<()> {
+        if self.gpu_rendering == GpuRendering::AmdRequired && !matches!(self.video_format(), Format::H264 | Format::Hevc) {
+            return Err(ExportError::Unsupported("AMD required mode supports VA-API H.264 or HEVC exports only".into()));
+        }
+        // GPU-required encoding has no software encoder to fall back to, so only the VA-API formats can run.
+        if self.hardware_encoding == HardwareEncoding::GpuRequired && !matches!(self.video_format(), Format::H264 | Format::Hevc) {
+            return Err(ExportError::Unsupported("GPU-required encoding supports VA-API H.264 or HEVC exports only".into()));
+        }
         if let Some(range) = self.range {
             validate_range(range)?;
         }
@@ -848,7 +1458,7 @@ pub enum Stage {
     Render,
     /// Encoding the rendered frames, colour conversion included (serial).
     Encode,
-    /// The part of [`Stage::Encode`] spent converting RGB to the encoder's YUV.
+    /// RGB-to-YUV within [`Stage::Encode`], or GPU NV12 import/repack within resident [`Stage::Render`].
     Convert,
     /// Mixing and encoding audio and writing it to the container.
     Audio,
@@ -858,6 +1468,7 @@ pub enum Stage {
     Finish,
     /// Time the encoding side waited, after encoding a batch, for the next batch to finish rendering
     /// (only with overlap: large means the export is render-bound, near zero encode-bound).
+    /// Resident rendering also records queue retirement here, nested within [`Stage::Render`].
     Wait,
 }
 
@@ -1687,7 +2298,8 @@ pub(crate) fn h264_slices(height: u32) -> usize {
 }
 
 fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
-    if format != Format::H264 {
+    // GPU-required modes never get the software encoder: no hardware factory means an error, not CPU.
+    if format != Format::H264 || matches!(s.hardware_encoding, HardwareEncoding::AmdRequired | HardwareEncoding::GpuRequired) {
         return None;
     }
     let mut cfg = filmcraft_h264enc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
@@ -1851,12 +2463,65 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
     Ok(out.into_inner())
 }
 
+/// Capability admission owned by one export job; implementations must not open encoder sessions.
+pub trait AmdExportAdmission: Send + Sync {
+    fn validate_settings(&self, settings: &ExportSettings, resolved: &settings::Resolved) -> Result<()>;
+
+    fn create_session(
+        &self,
+        _project: Arc<Project>,
+        _seq: ItemId,
+        _settings: &ExportSettings,
+        _resolved: &settings::Resolved,
+    ) -> Result<Box<dyn ResidentVideoSession>> {
+        Err(ExportError::Unsupported("AMD resident video session is unavailable".into()))
+    }
+}
+
+/// One serial, GPU-resident video encoder session owned by an export job.
+pub trait ResidentVideoSession: Send {
+    fn sample_entry(&self) -> SampleEntry;
+    fn timescale(&self) -> u32;
+    fn media_start(&self) -> Option<i64> {
+        None
+    }
+    /// Checked aggregate bytes needed for this frame, including native and output allocations.
+    fn frame_bytes(&self, frame: &PreflightedFrame) -> Result<u64>;
+    fn encode_frame(
+        &mut self,
+        index: u64,
+        frame: PreflightedFrame,
+        sources: &dyn SourceProvider,
+        reservation: &mut ResidentReservation,
+    ) -> Result<Vec<EncodedPacket>>;
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>>;
+}
+
+/// Host provider bound to the exact renderer adapter for this engine session.
+pub trait AmdExportProvider: Send + Sync {
+    fn admit(&self, format: Format) -> Result<Arc<dyn AmdExportAdmission>>;
+}
+
 /// Run an export (blocking; call from a worker thread).
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
+    export_with_admission(project, seq, settings, sources, progress, None)
+}
+
+/// Run an export with explicit host capability admission.
+pub fn export_with_admission(
+    project: &Arc<Project>,
+    seq: ItemId,
+    settings: &ExportSettings,
+    sources: &dyn SourceProvider,
+    progress: &Progress,
+    admission: Option<Arc<dyn AmdExportAdmission>>,
+) -> Result<Report> {
+    check_runtime_ram_ceiling()?;
     settings.validate()?;
     if stepped(settings.format) {
-        let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;
+        let mut ex = Exporter::new_with_admission(project.clone(), seq, settings, progress, admission)?;
         loop {
+            check_runtime_ram_ceiling()?;
             match ex.step(sources, progress)? {
                 Step::Progress => {}
                 Step::Done(r) => return Ok(r),
@@ -1901,7 +2566,9 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             let io = |e: std::io::Error| ExportError::Io(e.to_string());
             out.write_all(&head).map_err(io)?;
             let mut buf = Vec::new();
-            while let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) {
+            loop {
+                check_runtime_ram_ceiling()?;
+                let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) else { break };
                 if cancelled() {
                     return Err(ExportError::Cancelled);
                 }
@@ -1957,12 +2624,14 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             };
             let mut f = f0;
             while f < f1 {
+                check_runtime_ram_ceiling()?;
                 if cancelled() {
                     return Err(ExportError::Cancelled);
                 }
                 let end = (f + batch).min(f1);
                 if let Some(enc) = gif.as_mut() {
-                    let frames: Vec<Vec<u8>> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources).0).collect();
+                    let frames: Result<Vec<Vec<u8>>> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources).map(|frame| frame.0)).collect();
+                    let frames = frames?;
                     for (fi, rgba) in (f..end).zip(frames) {
                         let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| ExportError::Encode("frame".into()))?;
                         let delay = image::Delay::from_numer_denom_ms(u32::from(gif_delay_cs(pipe.rate, fi - f0)) * 10, 1);
@@ -1974,7 +2643,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
                         .map(|fi| {
                             let data = encode_still_with(
                                 settings.format,
-                                pipe.frame(fi, sources).0,
+                                pipe.frame(fi, sources)?.0,
                                 w,
                                 h,
                                 settings.alpha,

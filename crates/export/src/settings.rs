@@ -62,9 +62,9 @@ impl H264Profile {
 }
 
 /// Export ▸ Hardware encoding: whether H.264 may be encoded by the system's hardware video encoder
-/// (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows) instead of FilmCraft's own encoder. Off
-/// by default: hardware encoders make different streams, and exports are otherwise byte-identical
-/// from run to run and machine to machine.
+/// (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows and Linux, VA-API on Linux AMD / Intel
+/// GPUs) instead of FilmCraft's own encoder. Off by default: hardware encoders make different
+/// streams, and exports are otherwise byte-identical from run to run and machine to machine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HardwareEncoding {
@@ -73,20 +73,24 @@ pub enum HardwareEncoding {
     /// Use the hardware encoder when the system has one and it takes the settings; otherwise the
     /// software encoder.
     Auto,
+    /// Require a GPU video encoder and never the CPU: the AMD VA-API encoder today. An export that
+    /// finds no such encoder fails with an error. TODO: NVENC selection for this mode lands with
+    /// feat/export-amd-nvidia; until then NVIDIA-only machines are refused, not encoded on the CPU.
+    GpuRequired,
+    /// Require the AMD VA-API encoder. Never use NVENC or the software encoder.
+    AmdRequired,
 }
 
-/// Whether the picture of an export may be composited on the GPU (`filmcraft-gpu`'s off-screen
-/// compositor) instead of the CPU reference renderer. Auto = use the GPU when the app registered
-/// a GPU frame renderer and the machine has an adapter; the CPU result is the fallback either
-/// way. On an effects-heavy edit it exports 2.4× (1080p) to 3.2× (4K) faster, and a single plain
-/// clip takes the same time (`docs/performance.md`). The GPU matches the CPU within the
-/// compositor's parity tolerance, not bit for bit, so an export's bytes can depend on the
-/// machine's GPU. Off = the CPU reference renderer, byte-reproducible everywhere; Off is the
-/// default (opt-in per export) until GPU export has been measured on Windows and macOS.
+/// Whether an export uses the CPU reference renderer or requires GPU-resident rendering. Auto
+/// means GPU or error; it never falls back to CPU, and it always fails for now: the CPU pipeline
+/// refuses it and no GPU-resident path is connected to it. Off explicitly selects the CPU reference
+/// renderer. AmdRequired renders GPU-resident and hands the frames to the AMD VA-API encoder through
+/// host adapter admission ([`crate::AmdExportAdmission`]); without admission the export is refused.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GpuRendering {
     Auto,
+    AmdRequired,
     #[default]
     Off,
 }
@@ -499,6 +503,17 @@ pub struct Resolved {
 }
 
 impl ExportSettings {
+    /// Keep the user-facing hardware-export choice mapped to the existing strict AMD renderer and encoder modes.
+    pub fn set_hardware_export(&mut self, enabled: bool) {
+        self.gpu_rendering = if enabled { GpuRendering::AmdRequired } else { GpuRendering::Off };
+        self.hardware_encoding = if enabled { HardwareEncoding::AmdRequired } else { HardwareEncoding::Off };
+    }
+
+    /// Whether either legacy hardware setting enables the paired hardware-export mode.
+    pub fn hardware_export(&self) -> bool {
+        self.gpu_rendering != GpuRendering::Off || self.hardware_encoding != HardwareEncoding::Off
+    }
+
     /// The format whose video encoder runs: the MXF video codec for MXF exports, else the format.
     pub fn video_format(&self) -> Format {
         if self.format.is_mxf() { self.mxf_video_codec.encoder_format() } else { self.format }

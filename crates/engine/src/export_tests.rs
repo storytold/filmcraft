@@ -141,6 +141,16 @@ fn probe(path: &str) -> Option<Value> {
     Some(serde_json::from_slice(&out.stdout).unwrap())
 }
 
+fn ffprobe_supports_apv() -> bool {
+    let Some(ffprobe) = filmcraft_testkit::ffprobe() else { return false };
+    let Ok(out) = std::process::Command::new(ffprobe).args(["-hide_banner", "-codecs"]).output() else { return false };
+    out.status.success()
+        && String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next().is_some_and(|flags| flags.starts_with('D')) && fields.next() == Some("apv")
+        })
+}
+
 fn stream<'a>(j: &'a Value, kind: &str) -> Option<&'a Value> {
     j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == kind)
 }
@@ -165,6 +175,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
     let mut s = demo();
     let presets = s.execute("export.presets.list", json!({})).unwrap()["presets"].as_array().unwrap().clone();
     assert!(presets.len() >= 24);
+    let apv_probe_available = ffprobe_supports_apv();
     let dir = Scratch::new("presets");
     for pr in &presets {
         let name = pr["name"].as_str().unwrap();
@@ -302,6 +313,10 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
             }
             "apv" => {
+                if !apv_probe_available {
+                    filmcraft_testkit::skip(name, "ffprobe has no APV decoder; APV codec/profile assertions need FFmpeg 8.0+");
+                    continue;
+                }
                 assert!(fmt_name.contains("mov"), "{name}: {fmt_name}");
                 assert_eq!(v["codec_name"], "apv", "{name}");
                 let p = settings["apvProfile"].as_str().unwrap();
@@ -572,23 +587,32 @@ fn jobs_and_queue_items_report_the_time_they_have_left() {
 }
 
 #[test]
-fn hardware_encoding_is_off_unless_asked_for() {
-    use filmcraft_export::HardwareEncoding::{Auto, Off};
+fn hardware_export_is_explicit_and_legacy_auto_is_gpu_required() {
+    use filmcraft_export::{GpuRendering, HardwareEncoding};
     let s = demo();
-    let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st.hardware_encoding);
-    assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), Off);
-    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "auto"})).unwrap(), Auto);
-    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "off"})).unwrap(), Off);
-    // a boolean is understood too: true is auto
-    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": true})).unwrap(), Auto);
-    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": false})).unwrap(), Off);
-    // anything else names the choices
+    let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| (st.hardware_encoding, st.gpu_rendering));
+    let off = (HardwareEncoding::Off, GpuRendering::Off);
+    let amd = (HardwareEncoding::AmdRequired, GpuRendering::AmdRequired);
+    let gpu_encoder = (HardwareEncoding::GpuRequired, GpuRendering::Off);
+    assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), off);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "auto"})).unwrap(), gpu_encoder);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "off"})).unwrap(), off);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": true})).unwrap(), gpu_encoder);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": false})).unwrap(), off);
+    // each legacy field is normalized on its own: an explicit gpuRendering off is kept
+    assert_eq!(setting(json!({"path": "x.mp4", "gpuRendering": "auto"})).unwrap(), (HardwareEncoding::Off, GpuRendering::Auto));
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": true, "gpuRendering": false})).unwrap(), gpu_encoder);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": false, "gpuRendering": "auto"})).unwrap(), (HardwareEncoding::Off, GpuRendering::Auto));
+    assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), gpu_encoder);
+    assert_eq!(setting(json!({"path": "x.mp4", "settings": {"gpuRendering": "auto"}})).unwrap(), (HardwareEncoding::Off, GpuRendering::Auto));
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "auto", "hardwareExport": false})).unwrap(), off);
+    assert_eq!(setting(json!({"path": "x.mp4", "hardwareExport": true})).unwrap(), amd);
+    let e = setting(json!({"path": "x.mp4", "hardwareExport": "yes"})).unwrap_err().to_string();
+    assert!(e.contains("hardwareExport must be a boolean"), "{e}");
     let e = setting(json!({"path": "x.mp4", "hardwareEncoding": "gpu"})).unwrap_err().to_string();
     assert!(e.contains("off | auto"), "{e}");
-    // and it travels in the settings object, with the default filling in when it is missing
-    assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), Auto);
     let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
-    assert_eq!(old.hardware_encoding, Off);
+    assert_eq!((old.hardware_encoding, old.gpu_rendering), off);
 }
 
 #[test]
@@ -861,4 +885,128 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         let doc = sidecar(&mut edge, &edge_files, format, json!({"range":"inOut"}), ticks(30));
         assert!(doc.cues.is_empty(), "half-open export excludes cues touching either boundary: {doc:?}");
     }
+}
+
+#[test]
+fn export_amd_required_admission_precedes_side_effects() {
+    use filmcraft_export::{AmdExportAdmission, AmdExportProvider, ExportSettings, Format, GpuRendering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Reject(Format, Arc<AtomicUsize>);
+    impl AmdExportProvider for Reject {
+        fn admit(&self, format: Format) -> filmcraft_export::Result<Arc<dyn AmdExportAdmission>> {
+            assert_eq!(format, self.0);
+            self.1.fetch_add(1, Ordering::SeqCst);
+            Err(filmcraft_export::ExportError::Unsupported("fake exact-node rejection".into()))
+        }
+    }
+    let mut s = demo();
+    let seq = s.project.sequences().next().unwrap().id;
+    let dir = Scratch::new("amd-admission");
+    for format in [Format::H264, Format::Hevc] {
+        let output = dir.0.join(format!("absent-{}", format.id()));
+        let mut settings = ExportSettings {
+            format,
+            path: output.join("x.mp4").to_string_lossy().into_owned(),
+            gpu_rendering: GpuRendering::AmdRequired,
+            ..Default::default()
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        s.amd_export_provider = Some(Arc::new(Reject(format, calls.clone())));
+        settings.scale = 0.0;
+        let project = s.project.clone();
+        assert!(crate::export_tools::spawn_export(&mut s, project, seq, settings.clone(), "x".into(), true).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        settings.scale = 1.0;
+        for wait in [true, false] {
+            let project = s.project.clone();
+            let error = crate::export_tools::spawn_export(&mut s, project, seq, settings.clone(), "x".into(), wait).unwrap_err();
+            assert!(error.to_string().contains("fake exact-node rejection"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(!output.exists());
+        assert!(s.jobs.is_empty());
+    }
+}
+
+#[test]
+fn export_amd_required_owned_admission_reaches_sync_and_background_setup() {
+    use filmcraft_export::{AmdExportAdmission, AmdExportProvider, ExportSettings, Format, GpuRendering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Admission(Arc<AtomicUsize>, Format);
+    impl AmdExportAdmission for Admission {
+        fn validate_settings(&self, settings: &ExportSettings, _: &filmcraft_export::settings::Resolved) -> filmcraft_export::Result<()> {
+            assert_eq!(settings.video_format(), self.1);
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(filmcraft_export::ExportError::Unsupported("owned admission reached setup".into()))
+        }
+    }
+    struct Provider(Arc<AtomicUsize>);
+    impl AmdExportProvider for Provider {
+        fn admit(&self, format: Format) -> filmcraft_export::Result<Arc<dyn AmdExportAdmission>> {
+            Ok(Arc::new(Admission(self.0.clone(), format)))
+        }
+    }
+    let mut s = demo();
+    let seq = s.project.sequences().next().unwrap().id;
+    let calls = Arc::new(AtomicUsize::new(0));
+    s.amd_export_provider = Some(Arc::new(Provider(calls.clone())));
+    let dir = Scratch::new("amd-owned");
+    for format in [Format::H264, Format::Hevc] {
+        for wait in [true, false] {
+            let settings =
+                ExportSettings { format, path: dir.path(&format!("{}.mp4", format.id())), gpu_rendering: GpuRendering::AmdRequired, ..Default::default() };
+            let project = s.project.clone();
+            let id = crate::export_tools::spawn_export(&mut s, project, seq, settings, "x".into(), wait).unwrap();
+            let job = s.jobs.iter().find(|j| j.id == id).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while job.result.lock().unwrap().is_none() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            let result = job.result.lock().unwrap();
+            assert!(result.as_ref().unwrap().as_ref().err().unwrap().contains("owned admission reached setup"));
+        }
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
+}
+
+/// `export.formats` reports `available` from the check the export gate uses: a format the list marks
+/// unavailable is refused by the export, and an available one passes the gate and exports.
+#[test]
+fn export_formats_available_matches_export_gate() {
+    use filmcraft_export::{ExportSettings, Format};
+    let mut s = demo();
+    let listed = s.execute("export.formats", json!({})).unwrap();
+    let rows = listed.as_array().expect("export.formats lists an array");
+    let seq = s.project.sequences().next().unwrap().id;
+    let dir = Scratch::new("formats-gate");
+    for format in Format::ALL {
+        let row = rows.iter().find(|r| r["id"] == json!(format.id())).expect("every format is listed");
+        let available = filmcraft_export::available(format);
+        assert_eq!(row["available"], json!(available), "export.formats for {}", format.id());
+        if available {
+            continue;
+        }
+        let settings = ExportSettings { format, path: dir.path(&format!("gate.{}", format.extension())), ..Default::default() };
+        let project = s.project.clone();
+        let err = crate::export_tools::spawn_export(&mut s, project, seq, settings, "gate".into(), true).expect_err("the gate refuses an unavailable format");
+        assert!(format!("{err}").contains("not available"), "{}: {err}", format.id());
+    }
+    let settings = ExportSettings { format: Format::Wav, path: dir.path("gate.wav"), ..Default::default() };
+    let project = s.project.clone();
+    let id = crate::export_tools::spawn_export(&mut s, project, seq, settings, "gate".into(), true).expect("an available format passes the gate");
+    let job = s.jobs.iter().find(|j| j.id == id).expect("job recorded");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while job.result.lock().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "WAV export did not finish");
+        std::thread::yield_now();
+    }
+    let result = job.result.lock().unwrap();
+    assert!(matches!(result.as_ref(), Some(Ok(_))), "WAV export failed: {:?}", result.as_ref().and_then(|r| r.as_ref().err()));
 }

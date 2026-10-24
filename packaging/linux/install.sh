@@ -32,6 +32,10 @@ done
 [[ -f "$source_dir/share/applications/$app_id.desktop" ]] || fail 'missing desktop entry; extract the complete tarball first'
 
 mkdir -p -- "$prefix/bin" "$prefix/share"
+if [ -d "$source_dir/lib" ]; then
+  mkdir -p -- "$prefix/lib"
+  cp -R -- "$source_dir/lib/." "$prefix/lib/"
+fi
 install -m755 -- "$source_dir/bin/filmcraft" "$prefix/bin/filmcraft"
 install -m755 -- "$source_dir/bin/filmcraft-cli" "$prefix/bin/filmcraft-cli"
 cp -R -- "$source_dir/share/." "$prefix/share/"

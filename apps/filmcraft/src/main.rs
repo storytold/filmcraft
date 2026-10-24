@@ -196,6 +196,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             let start = graphics.clone();
             filmcraft_ui_egui::graphics_notice::GraphicsNotice::new(graphics.mode().label(), Box::new(move || start.reset_to_default()))
         });
+        let amd_provider_enabled = graphics.mode() == graphics::Mode::Default;
         let confirmed = AtomicBool::new(false);
         cc.egui_ctx.on_end_pass(
             "graphics-start",
@@ -206,6 +207,11 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }),
         );
         let mut session = Session::default();
+        #[cfg(target_os = "linux")]
+        if amd_provider_enabled && let Some(renderer) = filmcraft_gpu::ExportRenderer::new() {
+            let (adapter, _, _) = renderer.wgpu_handles();
+            session.amd_export_provider = Some(filmcraft_platform::amd_export_provider(adapter));
+        }
         if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
             let mut cfg = AutosaveConfig::new(dir);
             cfg.local_offset = local_offset;
@@ -257,6 +263,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
         {
             app.set_wgpu(rs);
+        } else if std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_some() {
+            app.enable_cpu_composite();
         }
         // Keep device selection available even when the default device is unavailable.
         // Settings ▸ Audio Hardware is applied on the first frame (`apply_prefs`).
@@ -388,8 +396,8 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
 }
 
 /// The GPU export frame renderer (filmcraft-gpu's off-screen compositor behind filmcraft-export's
-/// frame-renderer hook): exports with GPU rendering Auto composite on the GPU and fall back to the
-/// CPU reference renderer wherever it cannot.
+/// frame-renderer hook). GPU Rendering Auto currently fails closed until GPU-resident rendering
+/// reaches the encoder; Off is the explicit CPU reference mode.
 struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
 
 impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
@@ -401,7 +409,7 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn filmcraft_render::SourceProvider,
     ) -> Option<filmcraft_render::Image> {
-        self.0.render(project, seq, t, opts, sources)
+        self.0.render_cpu_compatible(project, seq, t, opts, sources)
     }
 }
 

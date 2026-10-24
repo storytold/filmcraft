@@ -133,8 +133,7 @@ fn rendering_ahead_does_not_change_the_file() {
         assert_eq!(ahead, 0, "{}: overlap is off", format.label());
         for (threads, batch) in [(2, 1), (3, 3), (5, 7), (16, 24)] {
             let (other, ahead) = export_overlapped(threads, batch, true, &settings(&format!("ov-{}-{threads}-{batch}", format.id())));
-            // 24 frames in one batch (the last case) has nothing to render ahead; the others do
-            assert_eq!(ahead > 0, batch < 24, "{}: {ahead} overlapped steps at batch {batch}", format.label());
+            assert!(ahead > 0, "{}: batch {batch} should render ahead", format.label());
             assert!(reference == other, "{}: rendering ahead ({threads} cores, {batch} per step) gives a different file", format.label());
         }
     }
@@ -192,19 +191,34 @@ fn hdr_with_audio_is_the_same_file_when_the_memory_budget_caps_the_batch() {
             })
         };
         let (reference, _) = run(&format!("hdrcap-{}-ref", format.id()), 16, false, None);
-        // 320 x 180 HDR frames are 691 200 bytes: a budget of six of them lets two batches of three be in
-        // flight, so a batch of 16 is cut to 3 and the interleave cut at frame 16 falls in a prefetched batch
+        // The four-frame cap and byte budget both preserve output when a requested batch is large.
         let budget = 6 * frame_bytes_for_test();
         let (capped, ahead) = run(&format!("hdrcap-{}-3", format.id()), 16, true, Some(budget));
-        assert_eq!(ahead, 3, "{}: the batch was not capped to 3", format.label());
+        assert_eq!(ahead, 2, "{}: overlap batch was not capped to 2", format.label());
         assert!(reference == capped, "{}: a capped HDR batch gives a different file", format.label());
         let (one, ahead) = run(&format!("hdrcap-{}-1", format.id()), 16, true, Some(1));
         assert_eq!(ahead, 1);
         assert!(reference == one, "{}: one-frame HDR batches give a different file", format.label());
         let (full, ahead) = run(&format!("hdrcap-{}-16", format.id()), 16, true, None);
-        assert_eq!(ahead, 8, "{}: 24 frames in batches of 16 leave 8 ahead", format.label());
-        assert!(reference == full, "{}: an uncapped HDR batch gives a different file", format.label());
+        assert_eq!(ahead, 2, "{}: the overlap frame cap was not applied", format.label());
+        assert!(reference == full, "{}: a large requested HDR batch gives a different file", format.label());
     }
+}
+
+#[test]
+fn batch_len_caps_in_flight_frames_before_rendering() {
+    let (p, seq, _) = project();
+    let s = ExportSettings { format: Format::Mjpeg, path: tmp("batch-limit.mov"), include_audio: false, ..Default::default() };
+    pool(2).install(|| {
+        let mut ex = Exporter::new(p, seq, &s, &Progress::default()).unwrap();
+        ex.set_batch(i64::MAX);
+        assert!(ex.overlapping());
+        assert_eq!(ex.batch_len(), 2, "overlap keeps at most two frames per batch");
+        ex.set_budget(0);
+        assert_eq!(ex.batch_len(), 1, "byte budget still keeps one frame minimum");
+        ex.set_overlap(false);
+        assert_eq!(ex.batch_len(), 4, "sequential mode caps the only batch at four frames");
+    });
 }
 
 /// Bytes of one HDR frame of the test project (320 x 180, three f32 per pixel).
@@ -283,12 +297,12 @@ fn cancelling_drops_the_batch_rendered_ahead() {
         let mut ex = Exporter::new(p, seq, &s, &prog).unwrap();
         ex.set_batch(4);
         assert!(matches!(ex.step(&m, &prog).unwrap(), Step::Progress));
-        assert_eq!(ex.frames_ahead(), 4, "the second batch was rendered while the first was encoded");
-        assert_eq!(prog.done.load(Ordering::Relaxed), 4);
+        assert_eq!(ex.frames_ahead(), 2, "the second batch was rendered while the first was encoded");
+        assert_eq!(prog.done.load(Ordering::Relaxed), 2);
         prog.cancel.store(true, Ordering::Relaxed);
         assert!(matches!(ex.step(&m, &prog), Err(ExportError::Cancelled)));
         assert_eq!(ex.frames_ahead(), 0);
-        assert_eq!(prog.done.load(Ordering::Relaxed), 4, "nothing more was encoded");
+        assert_eq!(prog.done.load(Ordering::Relaxed), 2, "nothing more was encoded");
     });
 }
 

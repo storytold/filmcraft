@@ -337,6 +337,7 @@
 	Tools	工具
 	Top	顶部
 	Transcribe Sequence…	转录序列…
+	Transcribe again	重新转录
 	Transcribe…	转录…
 	Transcript	转录文稿
 	Transparent Video…	透明视频…
@@ -3540,7 +3541,9 @@
 	Sync with system	跟随系统
 	UI Scale	界面缩放
 	Auto (system)	自动（系统）
-	GPU Rendering	GPU 渲染
+	Export via CPU (manual)	通过 CPU 导出（手动）
+	Off: GPU export (AMD GPU + same-node VA-API required; fails if unavailable). On: CPU reference renderer.	关闭：GPU 导出（需要 AMD GPU 和同一节点上的 VA-API；不可用时失败）。开启：CPU 参考渲染器。
+	This format exports only via CPU	此格式只能通过 CPU 导出
 	Composite on the GPU when available	可用时在 GPU 上合成
 	Text to Speech	文字转语音
 	Edit Narration	编辑旁白
@@ -3592,3 +3595,18 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	CPU compositing explicitly enabled	已明确启用 CPU 合成
+	Export preview unavailable in GPU-only mode; CPU fallback is disabled	仅 GPU 模式下无法预览导出；CPU 回退已禁用
+	GPU channel display is unsupported; CPU fallback is disabled	不支持 GPU 通道显示；CPU 回退已禁用
+	GPU compositor failed to initialise; preview unavailable	GPU 合成器初始化失败；预览不可用
+	GPU preview compositor panicked; CPU fallback is disabled	GPU 预览合成器崩溃；CPU 回退已禁用
+	GPU preview exceeds the device texture limit	GPU 预览超出设备纹理限制
+	GPU preview failed; CPU fallback is disabled	GPU 预览失败；CPU 回退已禁用
+	GPU preview unavailable; CPU fallback is disabled	GPU 预览不可用；CPU 回退已禁用
+	Reference Monitor unavailable in GPU-only preview; CPU fallback is disabled	仅 GPU 预览下参考监视器不可用；CPU 回退已禁用
+	Reference view unavailable in GPU-only preview; CPU fallback is disabled	仅 GPU 预览下参考视图不可用；CPU 回退已禁用
+	Scopes unavailable in GPU-only preview; CPU fallback is disabled	仅 GPU 预览下示波器不可用；CPU 回退已禁用
+	no supported AMD GPU adapter; preview unavailable	没有受支持的 AMD GPU 适配器；预览不可用
+	Whisper large-v3 (GPU + vocal isolation)	Whisper large-v3（GPU + 人声分离）
+	Whisper large-v3 Q5_0 (multilingual, 1.08 GB)	Whisper large-v3 Q5_0（多语言，1.08 GB）
+	Whisper large-v3 Turbo (multilingual, 809 M, faster)	Whisper large-v3 Turbo（多语言，809 M，更快）

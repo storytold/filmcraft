@@ -27,6 +27,7 @@ filmcraft-color = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-h264 = { workspace = true }
+filmcraft-h264enc = { workspace = true }
 filmcraft-hevc = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
@@ -56,7 +57,15 @@ windows = { version = "0.62", features = [
 # Linux: libva (VA-API) is loaded at run time with libloading (ISC; already in the lockfile through
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
 [target.'cfg(target_os = "linux")'.dependencies]
+ash = "0.38"
+filmcraft-gpu = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
 libloading = "0.8"
+pollster = "0.4"
+wgpu = { version = "30", default-features = false, features = ["std", "vulkan"] }
+wgpu-hal = { version = "30", default-features = false, features = ["vulkan"] }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

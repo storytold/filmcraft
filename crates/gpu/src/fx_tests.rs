@@ -22,9 +22,48 @@ use filmcraft_time::Tick;
 
 const EXACT: f32 = 1e-4;
 const FLIPS: f64 = 0.01;
+/// Normalised budget for `vr_chromatic_aberrations` only (flips and the exact typed==vfx check are unchanged).
+/// Measured 22/10/2026 on RADV RENOIR after asin->atan2 in the VR shaders: worst 9.18e-3 (67x41, layout 0,
+/// pixel (6,40), red), 5.2e-4 and 6.1e-4 for layouts 1 and 2. The CPU reference is f64 and an f32 emulation of
+/// the coordinate chain only accounts for ~6e-4 texel, so the rest is assumed to be driver transcendental
+/// precision (inferred, not measured on the GPU). Budget = worst measured x ~1.6.
+const VR_CHROMATIC_GPU_BUDGET: f32 = 1.5e-2;
+
+fn parity_budget(id: &str) -> f32 {
+    if id == "vr_chromatic_aberrations" { VR_CHROMATIC_GPU_BUDGET } else { EXACT }
+}
+
+static CLIP: filmcraft_render::vfx::ClipTiming =
+    filmcraft_render::vfx::ClipTiming { clip_seconds: 10.0, clip_offset: 0.0, frame_rate: 24.0, sequence_size: (67, 41), source_size: (67, 41) };
 
 fn cx(t: Tick, px_scale: f32) -> FxCtx<'static> {
-    FxCtx { t, px_scale, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, frame_rate: 24.0, working: filmcraft_color::WorkingSpace::Rec709 }
+    FxCtx {
+        t,
+        px_scale,
+        seconds: 0.0,
+        timecode: "",
+        clip_name: "",
+        project: None,
+        env: Some(&CLIP),
+        frame_rate: 24.0,
+        working: filmcraft_color::WorkingSpace::Rec709,
+    }
+}
+
+fn required_gpu_device() -> (wgpu::Device, wgpu::Queue) {
+    let instance = wgpu::Instance::default();
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("FX parity gate requires a GPU adapter");
+    let info = adapter.get_info();
+    eprintln!("Required FX parity adapter: {} vendor={:#06x} type={:?} backend={:?}", info.name, info.vendor, info.device_type, info.backend);
+    assert_eq!(info.vendor, 0x1002, "FX parity gate requires an AMD adapter (vendor 0x1002); selected {} from {:?}", info.name, info.backend);
+    assert!(
+        matches!(info.device_type, wgpu::DeviceType::IntegratedGpu | wgpu::DeviceType::DiscreteGpu),
+        "FX parity gate requires physical AMD GPU, got {:?} adapter {}",
+        info.device_type,
+        info.name
+    );
+    assert_eq!(info.backend, wgpu::Backend::Vulkan, "FX parity gate requires Vulkan on AMD; selected {:?} for {}", info.backend, info.name);
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("FX parity adapter must create a device")
 }
 
 fn effect(id: &str, params: &[(&str, ParamValue)]) -> EffectInstance {
@@ -46,6 +85,57 @@ fn ch(c: u32) -> ParamValue {
 }
 fn pt(x: f64, y: f64) -> ParamValue {
     ParamValue::Vec2(Vec2::new(x, y))
+}
+
+/// Original `effects.rs` Drop Shadow path, independent from `FxOp::eval/apply`.
+fn drop_shadow_oracle(img: &mut filmcraft_render::Image, e: &EffectInstance, cx: &FxCtx<'_>) {
+    let c = e.param("color").and_then(|p| p.value_at(cx.t).as_color()).unwrap_or([1.0; 4]);
+    let opacity = e.f64_at("opacity", cx.t) as f32 / 100.0;
+    let direction = (e.f64_at("direction", cx.t) as f32 as f64).to_radians();
+    let distance = e.f64_at("distance", cx.t) as f32 as f64 * cx.px_scale as f64;
+    let softness = e.f64_at("softness", cx.t) as f32 * cx.px_scale * 0.5;
+    let only = e.param("only").and_then(|p| p.value.as_bool()).unwrap_or(false);
+    let (dx, dy) = (direction.sin() * distance, -direction.cos() * distance);
+    let dec = |v: f32| filmcraft_color::srgb_to_linear(v.clamp(0.0, 1.0));
+    let color = [dec(c[0]), dec(c[1]), dec(c[2])];
+    let mut shadow = img.transformed(img.w, img.h, &Affine::translate(dx, dy));
+    for p in shadow.px.as_chunks_mut::<4>().0 {
+        let alpha = p[3] * opacity;
+        p[0] = color[0] * alpha;
+        p[1] = color[1] * alpha;
+        p[2] = color[2] * alpha;
+        p[3] = alpha;
+    }
+    if softness > 0.3 {
+        filmcraft_render::effects::gaussian(&mut shadow, softness, softness, false);
+    }
+    if !only {
+        filmcraft_render::blend::composite(&mut shadow, img, 1.0, filmcraft_render::Blend::Normal);
+    }
+    *img = shadow;
+}
+
+/// Original `effects.rs` Emboss branch, independent from `ProceduralOp::apply`.
+fn emboss_oracle(img: &mut filmcraft_render::Image, e: &EffectInstance, cx: &FxCtx<'_>) {
+    let direction = (e.f64_at("direction", cx.t) as f32 as f64).to_radians();
+    let relief = e.f64_at("relief", cx.t) as f32 * cx.px_scale.max(0.25);
+    let contrast = (e.f64_at("contrast", cx.t) as f32) / 100.0;
+    let blend = (e.f64_at("blend", cx.t) as f32) / 100.0;
+    let (dx, dy) = ((direction.cos() as f32) * relief, (-(direction.sin() as f32)) * relief);
+    let source = img.clone();
+    for y in 0..img.h {
+        for x in 0..img.w {
+            let a = source.sample_bilinear_clamped(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
+            let b = source.sample_bilinear_clamped(x as f32 + 0.5 - dx, y as f32 + 0.5 - dy);
+            let luma = |p: [f32; 4]| 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+            let v = filmcraft_color::srgb_to_linear((0.5 + (luma(a) - luma(b)) * contrast * 2.0).clamp(0.0, 1.0));
+            let i = (y * img.w + x) * 4;
+            let alpha = source.px[i + 3];
+            for c in 0..3 {
+                img.px[i + c] = v * alpha * (1.0 - blend) + source.px[i + c] * blend;
+            }
+        }
+    }
 }
 
 fn half(v: f32) -> f32 {
@@ -102,7 +192,7 @@ fn compare(cpu: &[f32], gpu: &[f32]) -> (f32, f64) {
 
 /// Effect cases: (effect id, parameters, whether a threshold may flip pixels).
 fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
-    vec![
+    let mut cases = vec![
         ("brightness_contrast", vec![("brightness", fl(30.0)), ("contrast", fl(40.0))], false),
         ("brightness_contrast", vec![("brightness", fl(-100.0)), ("contrast", fl(-100.0))], false),
         ("brightness_contrast", vec![("brightness", fl(100.0)), ("contrast", fl(100.0))], false),
@@ -120,6 +210,31 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("change_to_color", vec![("hue_tol", fl(30.0)), ("softness", fl(10.0)), ("to", col(0.9, 0.9, 0.1))], true),
         ("color_pass", vec![("similarity", fl(30.0))], true),
         ("color_pass", vec![("similarity", fl(45.0)), ("reverse", ParamValue::Bool(true)), ("color", col(0.2, 0.4, 0.9))], true),
+        ("color_key", vec![], true),
+        ("color_key", vec![("color", col(0.1, 0.7, 0.2)), ("tolerance", fl(60.0)), ("feather", fl(20.0))], true),
+        ("luma_key", vec![], true),
+        ("luma_key", vec![("threshold", fl(75.0)), ("cutoff", fl(20.0))], true),
+        ("cineon_converter", vec![], false),
+        (
+            "cineon_converter",
+            vec![
+                ("conversion", ch(1)),
+                ("black10", fl(120.0)),
+                ("white10", fl(900.0)),
+                ("black_internal", fl(12.0)),
+                ("white_internal", fl(230.0)),
+                ("gamma", fl(2.2)),
+                ("rolloff", fl(0.0)),
+            ],
+            false,
+        ),
+        ("cineon_converter", vec![("conversion", ch(2)), ("black10", fl(80.0)), ("white10", fl(720.0)), ("rolloff", fl(100.0))], false),
+        ("noise", vec![], false),
+        ("noise_legacy", vec![], false),
+        ("noise", vec![("amount", fl(48.0)), ("color", ParamValue::Bool(false)), ("clip", ParamValue::Bool(true)), ("grain_size", fl(2.5))], false),
+        ("noise", vec![("amount", fl(35.0)), ("color", ParamValue::Bool(true)), ("clip", ParamValue::Bool(false)), ("grain_size", fl(1.0))], false),
+        ("noise_legacy", vec![("amount", fl(48.0)), ("color", ParamValue::Bool(false)), ("clip", ParamValue::Bool(true))], false),
+        ("noise_legacy", vec![("amount", fl(35.0)), ("color", ParamValue::Bool(true)), ("clip", ParamValue::Bool(false))], false),
         ("gamma_correction", vec![("gamma", fl(5.0))], false),
         ("gamma_correction", vec![("gamma", fl(28.0))], false),
         ("gamma_correction", vec![("gamma", fl(0.0))], false),
@@ -154,6 +269,15 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("gaussian_blur", vec![("blurriness", fl(1e9))], false),
         ("gaussian_blur", vec![("blurriness", fl(-50.0))], false),
         ("camera_blur", vec![("percent", fl(20.0))], false),
+        ("lens_flare", vec![], true),
+        ("lens_flare", vec![("lens_type", ch(1)), ("ghosts", fl(5.0)), ("size", fl(60.0)), ("center", pt(20.0, 12.0))], true),
+        ("lens_flare", vec![("lens_type", ch(2)), ("ghosts", fl(8.0)), ("center", pt(50.0, 30.0)), ("brightness", fl(150.0))], true),
+        ("lens_flare", vec![("lens_type", ch(3)), ("ghosts", fl(3.0)), ("blend", fl(30.0)), ("color", col(0.9, 0.5, 0.3))], true),
+        ("gaussian_blur_legacy", vec![("blurriness", fl(5.0))], false),
+        ("gaussian_blur_legacy", vec![("blurriness", fl(12.0)), ("dimensions", ch(2))], false),
+        ("directional_blur_legacy", vec![("length", fl(10.0)), ("direction", fl(30.0))], false),
+        ("reduce_interlace_flicker", vec![("softness", fl(2.0))], false),
+        ("reduce_interlace_flicker", vec![("softness", fl(7.5))], false),
         ("directional_blur", vec![("length", fl(10.0)), ("direction", fl(30.0))], false),
         ("directional_blur", vec![("length", fl(0.2))], false),
         ("directional_blur", vec![("length", fl(1000.0)), ("direction", fl(-100.0))], false),
@@ -162,6 +286,29 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("unsharp_mask", vec![("amount", fl(150.0)), ("radius", fl(3.0)), ("threshold", fl(10.0))], true),
         ("unsharp_mask", vec![("radius", fl(0.1))], false),
         ("unsharp_mask", vec![("amount", fl(300.0)), ("radius", fl(250.0))], false),
+        ("channel_blur", vec![("red", fl(5.0)), ("green", fl(9.0)), ("blue", fl(13.0)), ("alpha", fl(4.0))], false),
+        ("channel_blur", vec![("red", fl(7.0)), ("blue", fl(11.0)), ("dimensions", ch(1)), ("repeat_edge", ParamValue::Bool(true))], false),
+        ("alpha_glow", vec![], false),
+        (
+            "alpha_glow",
+            vec![
+                ("glow", fl(18.0)),
+                ("brightness", fl(210.0)),
+                ("start_color", col(0.2, 0.8, 0.9)),
+                ("end_color", col(0.9, 0.2, 0.3)),
+                ("use_end", ParamValue::Bool(true)),
+            ],
+            false,
+        ),
+        ("alpha_glow", vec![("glow", fl(12.0)), ("brightness", fl(150.0)), ("fade_out", ParamValue::Bool(false))], false),
+        ("alpha_glow", vec![("glow", fl(0.2)), ("brightness", fl(255.0)), ("fade_out", ParamValue::Bool(false))], false),
+        ("drop_shadow", vec![], false),
+        (
+            "drop_shadow",
+            vec![("color", col(0.2, 0.7, 0.9)), ("opacity", fl(83.0)), ("direction", fl(47.0)), ("distance", fl(12.5)), ("softness", fl(14.0))],
+            false,
+        ),
+        ("drop_shadow", vec![("only", ParamValue::Bool(true)), ("opacity", fl(67.0)), ("distance", fl(3.25)), ("softness", fl(8.0))], false),
         ("crop", vec![("left", fl(10.0)), ("top", fl(5.0)), ("right", fl(20.0)), ("bottom", fl(15.0))], false),
         ("crop", vec![("left", fl(10.0)), ("top", fl(5.0)), ("right", fl(20.0)), ("bottom", fl(15.0)), ("feather", fl(12.0))], false),
         ("crop", vec![("left", fl(12.0)), ("top", fl(5.0)), ("right", fl(20.0)), ("zoom", ParamValue::Bool(true))], false),
@@ -303,7 +450,188 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
-    ]
+    ];
+    cases.extend(family_cases());
+    cases
+}
+
+fn family_cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
+    let mut out: Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> = Vec::new();
+    let params: &[(&str, &[(&str, ParamValue)])] = &[
+        ("mosaic", &[("horizontal", fl(3.0)), ("vertical", fl(2.0)), ("softness", fl(35.0))]),
+        ("mosaic_legacy", &[("horizontal", fl(3.0)), ("vertical", fl(2.0)), ("sharp", ParamValue::Bool(true))]),
+        ("replicate", &[("count", fl(4.0))]),
+        ("magnify", &[("center", pt(33.0, 20.0)), ("magnification", fl(250.0)), ("size", fl(30.0)), ("feather", fl(5.0)), ("opacity", fl(80.0))]),
+        ("magnify_legacy", &[("center", pt(33.0, 20.0)), ("magnification", fl(250.0)), ("size", fl(30.0)), ("feather", fl(5.0)), ("opacity", fl(80.0))]),
+        ("twirl", &[("angle", fl(110.0)), ("radius", fl(45.0))]),
+        ("twirl_legacy", &[("angle", fl(110.0)), ("radius", fl(45.0))]),
+        ("spherize", &[("radius", fl(18.0))]),
+        ("corner_pin", &[("upper_left", pt(2.0, 1.0)), ("upper_right", pt(60.0, 2.0)), ("lower_right", pt(63.0, 39.0)), ("lower_left", pt(5.0, 40.0))]),
+        (
+            "turbulent_displace",
+            &[
+                ("displacement", ch(8)),
+                ("amount", fl(8.0)),
+                ("size", fl(8.5)),
+                ("offset", pt(7.0, 3.0)),
+                ("complexity", fl(3.5)),
+                ("evolution", fl(725.0)),
+                ("seed", fl(9999.0)),
+                ("pinning", ch(3)),
+                ("cycle", ParamValue::Bool(true)),
+                ("cycle_revs", fl(2.5)),
+            ],
+        ),
+        ("lens_distortion", &[("curvature", fl(32.0)), ("h_decentering", fl(8.0))]),
+        ("wave_warp", &[("height", fl(18.0)), ("width", fl(13.0)), ("direction", fl(35.0)), ("speed", fl(2.0))]),
+        (
+            "rounded_crop",
+            &[("left", fl(3.0)), ("top", fl(2.0)), ("right", fl(5.0)), ("bottom", fl(4.0)), ("radius", fl(10.0)), ("feather", fl(2.0)), ("border", fl(3.0))],
+        ),
+        ("rgb_split", &[("mode", ch(1)), ("amount", fl(18.0)), ("angle", fl(25.0)), ("blend", fl(20.0))]),
+        ("checkerboard", &[("width", fl(9.0)), ("height", fl(7.0)), ("feather", fl(1.0)), ("opacity", fl(70.0)), ("mode", ch(1))]),
+        ("grid", &[("size", fl(7.0)), ("border", fl(2.0)), ("opacity", fl(65.0))]),
+        ("circle", &[("radius", fl(10.0)), ("opacity", fl(60.0))]),
+        ("ellipse", &[("width", fl(16.0)), ("height", fl(9.0)), ("thickness", fl(2.0)), ("softness", fl(10.0)), ("composite", ParamValue::Bool(true))]),
+        ("ramp", &[("shape", ch(1)), ("blend", fl(25.0))]),
+        ("gradient", &[("shape", ch(2)), ("scatter", fl(20.0)), ("midpoint", fl(30.0)), ("blend", fl(20.0))]),
+        ("four_color_gradient", &[("blend", fl(130.0)), ("opacity", fl(70.0))]),
+        ("cell_pattern", &[("pattern", ch(1)), ("contrast", fl(150.0)), ("disperse", fl(1.0)), ("size", fl(7.0)), ("evolution", fl(30.0)), ("seed", fl(12.0))]),
+        ("emboss", &[("direction", fl(90.0)), ("relief", fl(3.0)), ("contrast", fl(150.0)), ("blend", fl(20.0))]),
+        ("color_emboss", &[("direction", fl(90.0)), ("relief", fl(3.0)), ("contrast", fl(150.0)), ("blend", fl(20.0))]),
+        ("find_edges", &[("invert", ParamValue::Bool(true)), ("blend", fl(25.0))]),
+        ("strobe", &[("duration", fl(0.2)), ("period", fl(0.5)), ("blend", fl(50.0))]),
+        ("median", &[("radius", fl(1.0))]),
+        ("median", &[("radius", fl(0.0))]),
+        ("grow", &[("from", fl(70.0)), ("to", fl(125.0))]),
+        ("shrink", &[("from", fl(110.0)), ("to", fl(75.0))]),
+        ("move", &[("from", pt(-5.0, 2.0)), ("to", pt(8.0, -4.0))]),
+        ("spin", &[("amount", fl(95.0)), ("scale", fl(90.0))]),
+        ("wiggle", &[("amount", fl(30.0)), ("rotation", fl(6.0)), ("scale", fl(12.0)), ("frequency", fl(3.0)), ("seed", fl(7.0))]),
+        ("wiggle", &[("amount", fl(20.0)), ("dimensions", ch(1)), ("seed", fl(3.0))]),
+        ("camera_shake", &[("amount", fl(25.0)), ("rotation", fl(4.0)), ("zoom", fl(8.0)), ("frequency", fl(5.0)), ("complexity", fl(4.0)), ("seed", fl(9.0))]),
+        ("camera_shake", &[]),
+        ("rotate_3d", &[]),
+        ("rotate_3d", &[("rot_x", fl(25.0)), ("rot_y", fl(-30.0)), ("rot_z", fl(12.0)), ("perspective", fl(60.0))]),
+        ("rotate_3d", &[("rot_x", fl(70.0)), ("z", fl(40.0)), ("perspective", fl(90.0))]),
+        ("rotate_3d", &[("rot_y", fl(160.0)), ("perspective", fl(40.0))]),
+        ("rotate_3d", &[("rot_y", fl(160.0)), ("hide_back", ParamValue::Bool(true))]),
+        ("rotate_3d", &[("rot_z", fl(45.0)), ("perspective", fl(10.0))]),
+        ("basic_3d", &[]),
+        ("basic_3d", &[("swivel", fl(40.0)), ("tilt", fl(-20.0)), ("distance", fl(15.0))]),
+        ("basic_3d", &[("swivel", fl(85.0)), ("tilt", fl(10.0))]),
+        ("basic_3d", &[("swivel", fl(-120.0)), ("tilt", fl(35.0)), ("distance", fl(-30.0))]),
+        ("bevel_alpha", &[("thickness", fl(2.5)), ("angle", fl(40.0)), ("intensity", fl(65.0))]),
+        ("block_dissolve", &[("completion", fl(47.0)), ("block_w", fl(2.3)), ("block_h", fl(1.7)), ("feather", fl(60.0)), ("soft", ParamValue::Bool(true))]),
+        ("linear_wipe_legacy", &[("completion", fl(47.0)), ("angle", fl(38.0)), ("feather", fl(2.2))]),
+        ("logo_cutout", &[("background", ch(2)), ("color", col(0.75, 0.6, 0.35)), ("threshold", fl(12.0)), ("softness", fl(45.0))]),
+        (
+            "logo_cutout",
+            &[
+                ("background", ch(1)),
+                ("threshold", fl(0.0)),
+                ("softness", fl(80.0)),
+                ("unmultiply", ParamValue::Bool(false)),
+                ("invert", ParamValue::Bool(true)),
+            ],
+        ),
+        (
+            "vr_chromatic_aberrations",
+            &[
+                ("red", fl(31.0)),
+                ("green", fl(-23.0)),
+                ("blue", fl(47.0)),
+                ("center_x", fl(37.0)),
+                ("center_y", fl(-19.0)),
+                ("falloff", fl(73.0)),
+                ("inverse", ParamValue::Bool(true)),
+                ("frame_layout", ch(0)),
+            ],
+        ),
+        (
+            "vr_chromatic_aberrations",
+            &[
+                ("red", fl(31.0)),
+                ("green", fl(-23.0)),
+                ("blue", fl(47.0)),
+                ("center_x", fl(37.0)),
+                ("center_y", fl(-19.0)),
+                ("falloff", fl(73.0)),
+                ("inverse", ParamValue::Bool(true)),
+                ("frame_layout", ch(1)),
+            ],
+        ),
+        (
+            "vr_chromatic_aberrations",
+            &[
+                ("red", fl(31.0)),
+                ("green", fl(-23.0)),
+                ("blue", fl(47.0)),
+                ("center_x", fl(37.0)),
+                ("center_y", fl(-19.0)),
+                ("falloff", fl(73.0)),
+                ("inverse", ParamValue::Bool(true)),
+                ("frame_layout", ch(2)),
+            ],
+        ),
+    ];
+    for (id, custom) in params {
+        out.push((*id, vec![], false));
+        out.push((*id, custom.to_vec(), false));
+    }
+    for layout in 0..=2 {
+        for mode in 0..=4 {
+            out.push((
+                "vr_color_gradients",
+                vec![
+                    ("c1", col(0.85, 0.2, 0.1)),
+                    ("p1_lon", fl(-115.0)),
+                    ("p1_lat", fl(25.0)),
+                    ("c2", col(0.1, 0.8, 0.2)),
+                    ("p2_lon", fl(8.0)),
+                    ("p2_lat", fl(-33.0)),
+                    ("c3", col(0.15, 0.3, 0.9)),
+                    ("p3_lon", fl(126.0)),
+                    ("p3_lat", fl(18.0)),
+                    ("blend", fl(73.0)),
+                    ("opacity", fl(61.0)),
+                    ("mode", ch(mode)),
+                    ("frame_layout", ch(layout)),
+                ],
+                false,
+            ));
+        }
+    }
+    out.push(("vr_chromatic_aberrations", vec![], false));
+    out.push(("vr_color_gradients", vec![], false));
+    out.push(("vr_projection", vec![], false));
+    out.push(("vr_rotate_sphere", vec![], false));
+    out.push(("vr_plane_to_sphere", vec![], false));
+    for layout in 0..=2 {
+        for stretch in [false, true] {
+            out.push((
+                "vr_projection",
+                vec![
+                    ("fov", fl(235.0)),
+                    ("tilt", fl(-23.0)),
+                    ("pan", fl(41.0)),
+                    ("roll", fl(17.0)),
+                    ("stretch", ParamValue::Bool(stretch)),
+                    ("frame_layout", ch(layout)),
+                ],
+                false,
+            ));
+        }
+        out.push(("vr_rotate_sphere", vec![("tilt", fl(-23.0)), ("pan", fl(41.0)), ("roll", fl(17.0)), ("frame_layout", ch(layout))], false));
+        for feather in [0.0, 35.0] {
+            out.push((
+                "vr_plane_to_sphere",
+                vec![("scale", fl(105.0)), ("tilt", fl(19.0)), ("pan", fl(-31.0)), ("roll", fl(12.0)), ("feather", fl(feather)), ("frame_layout", ch(layout))],
+                false,
+            ));
+        }
+    }
+    out
 }
 
 /// Every effect case on the GPU against its CPU reference, on the working image read back as f32.
@@ -323,16 +651,447 @@ fn gpu_effects_match_cpu_exactly() {
         let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap_or_else(|| panic!("{id} has no GPU op"));
         assert!(op.gpu_ok(), "{id} {params:?}: not GPU-capable");
         let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
-        op.apply(&mut cpu);
+        if id == "drop_shadow" {
+            drop_shadow_oracle(&mut cpu, &e, &cx(Tick::ZERO, 1.0));
+        } else if matches!(
+            id,
+            "noise"
+                | "noise_legacy"
+                | "gaussian_blur_legacy"
+                | "lens_flare"
+                | "directional_blur_legacy"
+                | "reduce_interlace_flicker"
+                | "mosaic"
+                | "mosaic_legacy"
+                | "replicate"
+                | "magnify"
+                | "magnify_legacy"
+                | "twirl"
+                | "twirl_legacy"
+                | "spherize"
+                | "corner_pin"
+                | "turbulent_displace"
+                | "lens_distortion"
+                | "wave_warp"
+                | "rounded_crop"
+                | "rgb_split"
+                | "vr_chromatic_aberrations"
+                | "vr_color_gradients"
+                | "vr_projection"
+                | "vr_rotate_sphere"
+                | "vr_plane_to_sphere"
+                | "checkerboard"
+                | "grid"
+                | "circle"
+                | "ellipse"
+                | "ramp"
+                | "gradient"
+                | "four_color_gradient"
+                | "cell_pattern"
+                | "emboss"
+                | "color_emboss"
+                | "find_edges"
+                | "strobe"
+                | "median"
+                | "grow"
+                | "shrink"
+                | "move"
+                | "spin"
+                | "wiggle"
+                | "camera_shake"
+                | "rotate_3d"
+                | "basic_3d"
+                | "bevel_alpha"
+                | "block_dissolve"
+                | "linear_wipe_legacy"
+                | "logo_cutout"
+                | "alpha_glow"
+        ) {
+            filmcraft_render::effects::apply(&mut cpu, &e, &cx(Tick::ZERO, 1.0));
+        } else {
+            op.apply(&mut cpu);
+        }
         let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op] };
         let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         eprintln!("{id} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
-        if worst > EXACT || flips > if steps { FLIPS } else { 0.0 } {
+        if !(worst <= parity_budget(id) && flips <= if steps { FLIPS } else { 0.0 }) {
             failures.push(format!("{id} {params:?}: {worst:.2e}, flips {flips:.4}"));
         }
     }
     assert!(failures.is_empty(), "GPU effects differ from the CPU:\n{}", failures.join("\n"));
+}
+
+#[test]
+fn channel_blur_typed_cpu_matches_original_for_dimensions_and_edge_modes() {
+    let (w, h) = (13u32, 9u32);
+    let pixels = picture(w, h);
+    for params in [
+        vec![("red", fl(5.0)), ("green", fl(9.0)), ("blue", fl(13.0)), ("alpha", fl(4.0))],
+        vec![("red", fl(7.0)), ("blue", fl(11.0)), ("dimensions", ch(1)), ("repeat_edge", ParamValue::Bool(true))],
+    ] {
+        let e = effect("channel_blur", &params);
+        let ctx = cx(Tick::ZERO, 1.0);
+        let op = FxOp::eval(&e, &ctx, w as usize, h as usize).expect("channel blur route");
+        assert!(op.gpu_ok());
+        let mut expected = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+        let mut actual = expected.clone();
+        assert!(filmcraft_render::vfx::apply(&mut expected, &e, &ctx), "missing original channel blur");
+        op.apply(&mut actual);
+        for (i, (a, b)) in actual.px.iter().zip(expected.px.iter()).enumerate() {
+            assert!((a - b).abs() <= EXACT, "channel_blur mismatch at {i}: {a} != {b}");
+        }
+    }
+}
+
+#[test]
+fn alpha_glow_typed_cpu_matches_original_and_small_radius_is_noop() {
+    let (w, h) = (17u32, 11u32);
+    let pixels = picture(w, h);
+    for params in [
+        vec![],
+        vec![
+            ("glow", fl(18.0)),
+            ("brightness", fl(210.0)),
+            ("start_color", col(0.2, 0.8, 0.9)),
+            ("end_color", col(0.9, 0.2, 0.3)),
+            ("use_end", ParamValue::Bool(true)),
+        ],
+        vec![("glow", fl(12.0)), ("brightness", fl(150.0)), ("fade_out", ParamValue::Bool(false))],
+        vec![("glow", fl(0.2)), ("brightness", fl(255.0)), ("fade_out", ParamValue::Bool(false))],
+    ] {
+        let e = effect("alpha_glow", &params);
+        let ctx = cx(Tick::ZERO, 1.0);
+        let op = FxOp::eval(&e, &ctx, w as usize, h as usize).expect("alpha glow route");
+        assert!(op.gpu_ok());
+        let mut expected = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+        let mut actual = expected.clone();
+        assert!(filmcraft_render::vfx::apply(&mut expected, &e, &ctx), "missing original alpha glow");
+        op.apply(&mut actual);
+        for (i, (a, b)) in actual.px.iter().zip(expected.px.iter()).enumerate() {
+            assert!((a - b).abs() <= EXACT, "alpha_glow mismatch at {i}: {a} != {b}");
+        }
+    }
+}
+
+#[test]
+fn gpu_channel_blur_large_radius_preserves_unselected_channels() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (67u32, 41u32);
+    let pixels = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, pixels.clone());
+    let e = effect("channel_blur", &[("red", fl(268.0)), ("dimensions", ch(1)), ("repeat_edge", ParamValue::Bool(true))]);
+    let ctx = cx(Tick::ZERO, 1.0);
+    let op = FxOp::eval(&e, &ctx, w as usize, h as usize).expect("channel blur route");
+    let FxOp::ChannelBlur { rx, .. } = &op else { panic!("expected typed channel blur") };
+    assert!(rx[0].iter().any(|r| *r > 32), "case must dispatch the running-sum blur path");
+    let mut expected = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+    assert!(filmcraft_render::vfx::apply(&mut expected, &e, &ctx), "missing original channel blur");
+    let (_, _, gpu) = GpuCompositor::new(&dev, &q).effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("GPU channel blur");
+    let (worst, flips) = compare(&expected.px, &gpu);
+    assert!(worst <= EXACT && flips == 0.0, "large channel blur mismatch: {worst:.2e}, flips {flips:.4}");
+    for (i, (src, out)) in pixels.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0.iter()).enumerate() {
+        assert_eq!(&out[1..], &src[1..], "large red blur changed G/B/A at pixel {i}");
+    }
+}
+
+#[test]
+fn gpu_vr_effects_report_pixel_deltas_against_independent_and_typed_cpu() {
+    let (dev, q) = required_gpu_device();
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let pixels = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, pixels.clone());
+    let mut cases: Vec<(&str, Vec<(&str, ParamValue)>)> = Vec::new();
+    for layout in 0..=2 {
+        cases.push((
+            "vr_chromatic_aberrations",
+            vec![
+                ("red", fl(31.0)),
+                ("green", fl(-23.0)),
+                ("blue", fl(47.0)),
+                ("center_x", fl(37.0)),
+                ("center_y", fl(-19.0)),
+                ("falloff", fl(73.0)),
+                ("inverse", ParamValue::Bool(true)),
+                ("frame_layout", ch(layout)),
+            ],
+        ));
+        for stretch in [false, true] {
+            cases.push((
+                "vr_projection",
+                vec![
+                    ("fov", fl(235.0)),
+                    ("tilt", fl(-23.0)),
+                    ("pan", fl(41.0)),
+                    ("roll", fl(17.0)),
+                    ("stretch", ParamValue::Bool(stretch)),
+                    ("frame_layout", ch(layout)),
+                ],
+            ));
+        }
+        cases.push(("vr_rotate_sphere", vec![("tilt", fl(-23.0)), ("pan", fl(41.0)), ("roll", fl(17.0)), ("frame_layout", ch(layout))]));
+    }
+
+    let summarize = |reference: &[f32], actual: &[f32]| {
+        let first = reference.iter().zip(actual).position(|(a, b)| (a - b).abs() > EXACT);
+        let (max_index, max_delta) = reference.iter().zip(actual).enumerate().fold((0usize, 0.0f32), |best, (i, (a, b))| {
+            let delta = (a - b).abs();
+            if delta > best.1 { (i, delta) } else { best }
+        });
+        let detail = |index: Option<usize>| {
+            index.map_or_else(
+                || "none".to_owned(),
+                |i| {
+                    format!(
+                        "index={i} xy=({}, {}) channel={} ref={} got={} abs={}",
+                        (i / 4) % w as usize,
+                        (i / 4) / w as usize,
+                        i % 4,
+                        reference[i],
+                        actual[i],
+                        (reference[i] - actual[i]).abs()
+                    )
+                },
+            )
+        };
+        (max_delta, detail(first), detail(Some(max_index)))
+    };
+
+    let mut failures = Vec::new();
+    for (id, params) in cases {
+        let e = effect(id, &params);
+        let ctx = cx(Tick::ZERO, 1.0);
+        let op = FxOp::eval(&e, &ctx, w as usize, h as usize).unwrap_or_else(|| panic!("{id}: missing typed route"));
+        assert!(op.gpu_ok(), "{id} {params:?}: ineligible operation");
+        let mut oracle = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+        assert!(filmcraft_render::vfx::apply(&mut oracle, &e, &ctx), "{id}: missing independent CPU oracle");
+        let mut typed = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+        op.apply(&mut typed);
+        let (_, _, gpu) = compositor
+            .effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] })
+            .unwrap_or_else(|| panic!("{id}: GPU effect pass unavailable"));
+        let (typed_max, typed_first, typed_worst) = summarize(&oracle.px, &typed.px);
+        let (gpu_max, gpu_first, gpu_worst) = summarize(&oracle.px, &gpu);
+        let (typed_gpu_max, typed_gpu_first, typed_gpu_worst) = summarize(&typed.px, &gpu);
+        eprintln!(
+            "VRDIAG {id} {params:?}: typed-vfx max_abs={typed_max} first={typed_first} worst={typed_worst}; gpu-vfx max_abs={gpu_max} first={gpu_first} worst={gpu_worst}; gpu-typed max_abs={typed_gpu_max} first={typed_gpu_first} worst={typed_gpu_worst}"
+        );
+        let (normalized_max, flips) = compare(&oracle.px, &gpu);
+        if normalized_max > parity_budget(id) || flips > 0.0 {
+            failures.push(format!(
+                "{id} {params:?}: max_rel={normalized_max:.6e}, flips={flips:.6}, gpu-vfx max_abs={gpu_max}, first={gpu_first}, worst={gpu_worst}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "focused VR GPU parity failures:\n{}", failures.join("\n"));
+}
+
+#[test]
+fn gpu_effect_catalog_family_parity_requires_adapter() {
+    let (dev, q) = required_gpu_device();
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let pixels = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, pixels.clone());
+    let routed = [
+        "alpha_glow",
+        "cineon_converter",
+        "noise",
+        "noise_legacy",
+        "mosaic",
+        "mosaic_legacy",
+        "replicate",
+        "magnify",
+        "magnify_legacy",
+        "twirl",
+        "twirl_legacy",
+        "spherize",
+        "corner_pin",
+        "turbulent_displace",
+        "lens_distortion",
+        "wave_warp",
+        "rounded_crop",
+        "rgb_split",
+        "vr_chromatic_aberrations",
+        "vr_color_gradients",
+        "vr_projection",
+        "vr_rotate_sphere",
+        "vr_plane_to_sphere",
+        "checkerboard",
+        "grid",
+        "circle",
+        "ellipse",
+        "ramp",
+        "gradient",
+        "four_color_gradient",
+        "cell_pattern",
+        "emboss",
+        "color_emboss",
+        "find_edges",
+        "strobe",
+        "median",
+        "channel_blur",
+        "grow",
+        "shrink",
+        "move",
+        "spin",
+        "wiggle",
+        "camera_shake",
+        "bevel_alpha",
+        "block_dissolve",
+        "linear_wipe_legacy",
+        "logo_cutout",
+        "drop_shadow",
+    ];
+    let cases: Vec<_> = cases().into_iter().filter(|(id, _, _)| routed.contains(id)).collect();
+    let mut failures = Vec::new();
+    for (id, params, steps) in cases {
+        let e = effect(id, &params);
+        let ctx = cx(Tick::ZERO, 1.0);
+        let op = FxOp::eval(&e, &ctx, w as usize, h as usize).unwrap_or_else(|| panic!("{id}: missing typed route"));
+        assert!(op.gpu_ok(), "{id} {params:?}: ineligible route");
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+        match id {
+            "drop_shadow" => drop_shadow_oracle(&mut cpu, &e, &ctx),
+            // These 12 routes have separately checked legacy equivalence in render's legacy_cpu_oracle tests.
+            "replicate"
+            | "twirl"
+            | "twirl_legacy"
+            | "lens_distortion"
+            | "wave_warp"
+            | "grid"
+            | "circle"
+            | "ramp"
+            | "four_color_gradient"
+            | "emboss"
+            | "find_edges"
+            | "strobe" => op.apply(&mut cpu),
+            // Render verifies these typed CPU references independently: sorted median taps and bevel's direct alpha-gradient formula.
+            "median" | "bevel_alpha" => op.apply(&mut cpu),
+            _ => assert!(filmcraft_render::vfx::apply(&mut cpu, &e, &ctx), "{id}: missing independent CPU oracle"),
+        }
+        let (_, _, gpu) = compositor
+            .effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] })
+            .unwrap_or_else(|| panic!("GPU family effect unavailable: {}", compositor.fx_unavailable_reason.as_deref().unwrap_or("unknown reason")));
+        let cpu_invalid = cpu.px.iter().enumerate().find(|(_, value)| !value.is_finite());
+        let gpu_invalid = gpu.iter().enumerate().find(|(_, value)| !value.is_finite());
+        if let Some((index, value)) = cpu_invalid {
+            failures.push(format!("{id} {params:?}: non-finite CPU component index={index} value={value:?}"));
+        }
+        if let Some((index, value)) = gpu_invalid {
+            failures.push(format!("{id} {params:?}: non-finite GPU component index={index} value={value:?}"));
+        }
+        if cpu_invalid.is_some() || gpu_invalid.is_some() {
+            continue;
+        }
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        if !(worst <= parity_budget(id) && flips <= if steps { FLIPS } else { 0.0 }) {
+            failures.push(format!("{id} {params:?}: worst={worst:.2e}, flips={flips:.4}"));
+        }
+    }
+    assert!(failures.is_empty(), "GPU family parity failures:\n{}", failures.join("\n"));
+}
+
+#[test]
+fn gpu_block_dissolve_matches_cpu_hash_oracle() {
+    let (dev, q) = required_gpu_device();
+    let (w, h) = (67u32, 41u32);
+    let pixels = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, pixels.clone());
+    let ctx = cx(Tick::ZERO, 1.0);
+    let e = effect(
+        "block_dissolve",
+        &[("completion", fl(47.0)), ("block_w", fl(2.3)), ("block_h", fl(1.7)), ("feather", fl(60.0)), ("soft", ParamValue::Bool(true))],
+    );
+    let mut expected = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels };
+    assert!(filmcraft_render::vfx::apply(&mut expected, &e, &ctx));
+    let op = FxOp::eval(&e, &ctx, w as usize, h as usize).expect("Block Dissolve GPU route");
+    let (_, _, actual) =
+        GpuCompositor::new(&dev, &q).effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("Block Dissolve GPU pass");
+    for (i, (gpu, cpu)) in actual.iter().zip(expected.px.iter()).enumerate() {
+        assert!((gpu - cpu).abs() <= EXACT, "Block Dissolve GPU/CPU mismatch at {i}: {gpu} != {cpu}");
+    }
+}
+
+#[test]
+fn typed_cpu_family_ops_match_independent_legacy_oracles_diagnostic() {
+    let (w, h) = (67usize, 41usize);
+    let pixels = picture(w as u32, h as u32);
+    let ctx = cx(Tick::ZERO, 1.0);
+    let targets = ["mosaic", "ellipse", "emboss", "block_dissolve", "vr_chromatic_aberrations"];
+    let mut selected =
+        vec![("mosaic", Vec::new(), false), ("ellipse", Vec::new(), false), ("emboss", Vec::new(), false), ("block_dissolve", Vec::new(), false)];
+    selected.extend(family_cases());
+    let mut failures = Vec::new();
+    let mut tested_ids = Vec::new();
+    let mut case_count = 0usize;
+    for (id, params, _) in selected.into_iter().filter(|(id, _, _)| targets.contains(id)) {
+        case_count += 1;
+        if !tested_ids.contains(&id) {
+            tested_ids.push(id);
+        }
+        let e = effect(id, &params);
+        let op = FxOp::eval(&e, &ctx, w, h).unwrap_or_else(|| panic!("{id}: missing typed operation"));
+        let mut expected = filmcraft_render::Image { w, h, px: pixels.clone() };
+        let mut typed = expected.clone();
+        match id {
+            "emboss" => emboss_oracle(&mut expected, &e, &ctx),
+            _ => assert!(filmcraft_render::vfx::apply(&mut expected, &e, &ctx), "{id}: missing independent legacy oracle"),
+        }
+        op.apply(&mut typed);
+        let expected_invalid = expected.px.iter().enumerate().find(|(_, value)| !value.is_finite());
+        let typed_invalid = typed.px.iter().enumerate().find(|(_, value)| !value.is_finite());
+        if let Some((index, value)) = expected_invalid {
+            failures.push(format!("{id} {params:?}: non-finite legacy CPU component {index}={value:?}"));
+        }
+        if let Some((index, value)) = typed_invalid {
+            failures.push(format!("{id} {params:?}: non-finite typed CPU component {index}={value:?}"));
+        }
+        if expected_invalid.is_some() || typed_invalid.is_some() {
+            continue;
+        }
+        let first = typed.px.iter().zip(&expected.px).enumerate().find(|(_, (actual, reference))| (**actual - **reference).abs() > EXACT);
+        let (max_abs, max_index) = typed.px.iter().zip(&expected.px).enumerate().fold((0.0f32, 0usize), |best, (i, (a, b))| {
+            let d = (a - b).abs();
+            if d > best.0 { (d, i) } else { best }
+        });
+        if let Some((index, (actual, reference))) = first {
+            failures.push(format!("{id} {params:?}: first component {index}, typed={actual}, legacy={reference}, max_abs={max_abs} at {max_index}"));
+        }
+    }
+    assert!(case_count > 0, "CPU oracle diagnostic selected no cases");
+    assert!(
+        targets.iter().all(|id| tested_ids.contains(id)),
+        "CPU oracle diagnostic missed IDs: {:?}",
+        targets.iter().filter(|id| !tested_ids.contains(id)).collect::<Vec<_>>()
+    );
+    assert!(failures.is_empty(), "typed CPU ops differ from independent legacy CPU oracles:\n{}", failures.join("\n"));
+}
+
+#[test]
+fn drop_shadow_typed_cpu_matches_original_oracle() {
+    let (w, h) = (67usize, 41usize);
+    let pixels = picture(w as u32, h as u32);
+    for params in [
+        vec![],
+        vec![("color", col(0.2, 0.7, 0.9)), ("opacity", fl(83.0)), ("direction", fl(47.0)), ("distance", fl(12.5)), ("softness", fl(14.0))],
+        vec![("only", ParamValue::Bool(true)), ("opacity", fl(67.0)), ("distance", fl(3.25)), ("softness", fl(8.0))],
+    ] {
+        let e = effect("drop_shadow", &params);
+        let ctx = cx(Tick::ZERO, 0.75);
+        let op = FxOp::eval(&e, &ctx, w, h).expect("drop shadow route");
+        let mut expected = filmcraft_render::Image { w, h, px: pixels.clone() };
+        let mut actual = expected.clone();
+        drop_shadow_oracle(&mut expected, &e, &ctx);
+        op.apply(&mut actual);
+        for (i, (a, b)) in actual.px.iter().zip(expected.px.iter()).enumerate() {
+            assert!((a - b).abs() <= EXACT, "drop_shadow typed/oracle mismatch at {i}: {a} != {b}");
+        }
+    }
 }
 
 #[test]
@@ -360,6 +1119,133 @@ fn gpu_extract_zero_softness_has_no_fractional_edge() {
     }
     for ((normal, inverted), src) in masks[0].as_chunks::<4>().0.iter().zip(masks[1].as_chunks::<4>().0.iter()).zip(px.as_chunks::<4>().0.iter()) {
         assert_eq!(normal[0] + inverted[0], src[3], "inversion must complement the premultiplied mask");
+    }
+}
+
+#[test]
+fn gpu_keys_keep_alpha_and_apply_expected_cutoffs() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (4u32, 1u32);
+    let px = vec![
+        0.0, 0.0, 0.0, 0.5, // black, partial alpha
+        0.5, 0.5, 0.5, 0.5, // mid-grey, partial alpha
+        0.0, 0.0, 0.5, 0.5, // blue key color
+        0.125, 0.25, 0.375, 0.0, // transparent with hidden RGB
+    ];
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    for (id, expected_alpha) in [("luma_key", [0.0, 0.5, 0.5, 0.0]), ("color_key", [0.5, 0.5, 0.0, 0.0])] {
+        let e = effect(id, &[]);
+        let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap();
+        assert!(op.gpu_ok());
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).unwrap();
+        for (i, alpha) in expected_alpha.into_iter().enumerate() {
+            assert!((gpu[i * 4 + 3] - alpha).abs() <= EXACT, "{id} pixel {i}: {:?}", &gpu[i * 4..i * 4 + 4]);
+        }
+        assert_eq!(&gpu[12..16], &px[12..16], "{id} must preserve zero-alpha pixels");
+    }
+}
+
+#[test]
+fn gpu_noise_matches_oracle_at_exact_positive_and_negative_ticks() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    let (w, h) = (19u32, 11u32);
+    let pixels = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, pixels.clone());
+    for id in ["noise", "noise_legacy"] {
+        let mut outputs = Vec::new();
+        for tick in [Tick(-7), Tick(123_456)] {
+            let mut e = effect(id, &[("amount", fl(64.0)), ("color", ParamValue::Bool(true)), ("clip", ParamValue::Bool(false))]);
+            if id == "noise" {
+                e.params.get_mut("grain_size").unwrap().value = fl(2.5);
+            }
+            let ctx = cx(tick, 0.5);
+            let op = FxOp::eval(&e, &ctx, w as usize, h as usize).unwrap();
+            assert!(op.gpu_ok());
+            let (_, _, gpu) = compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).unwrap();
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+            assert!(filmcraft_render::vfx::apply(&mut cpu, &e, &ctx));
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            assert!(worst <= EXACT && flips == 0.0, "{id} at tick {}: {worst} / {flips}", tick.0);
+            outputs.push(gpu);
+        }
+        assert_ne!(outputs[0], outputs[1], "{id} should use exact media ticks as deterministic seeds");
+    }
+}
+
+#[test]
+fn gpu_wave_warp_and_strobe_follow_clip_seconds() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    let (w, h) = (17u32, 11u32);
+    let pixels = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, pixels.clone());
+    for (id, params) in
+        [("wave_warp", vec![("height", fl(12.0)), ("width", fl(9.0)), ("speed", fl(3.0))]), ("strobe", vec![("duration", fl(0.05)), ("period", fl(0.5))])]
+    {
+        let mut outputs = Vec::new();
+        for seconds in [0.0, 0.1] {
+            let e = effect(id, &params);
+            let t = Tick::from_seconds_f64(seconds);
+            let ctx = FxCtx { seconds, ..cx(t, 1.0) };
+            let op = FxOp::eval(&e, &ctx, w as usize, h as usize).unwrap();
+            assert!(op.gpu_ok());
+            let (_, _, gpu) = compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).unwrap();
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+            filmcraft_render::effects::apply(&mut cpu, &e, &ctx);
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            assert!(worst <= EXACT && flips == 0.0, "{id} at {seconds}: {worst} / {flips}");
+            outputs.push(gpu);
+        }
+        assert_ne!(outputs[0], outputs[1], "{id} should follow clip seconds");
+    }
+}
+
+#[test]
+fn gpu_turbulent_displace_matches_oracle_for_all_modes_pinning_and_cycles() {
+    let (dev, q) = required_gpu_device();
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    let (w, h) = (17u32, 11u32);
+    let pixels = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, pixels.clone());
+    for kind in 0..9 {
+        for pin in 0..4 {
+            for cycle in [false, true] {
+                let mut e = effect("turbulent_displace", &[]);
+                for (key, value) in [
+                    ("displacement", ch(kind)),
+                    ("pinning", ch(pin)),
+                    ("cycle", ParamValue::Bool(cycle)),
+                    ("seed", fl(9999.0)),
+                    ("size", fl(8.5)),
+                    ("complexity", fl(3.5)),
+                    ("evolution", fl(725.0)),
+                    ("amount", fl(8.0)),
+                    ("cycle_revs", fl(2.5)),
+                    ("offset", pt(7.0, 3.0)),
+                ] {
+                    e.params.get_mut(key).unwrap_or_else(|| panic!("turbulent_displace missing parameter {key}")).value = value;
+                }
+                let ctx = cx(Tick::ZERO, 1.0);
+                let op = FxOp::eval(&e, &ctx, w as usize, h as usize).expect("turbulent operation");
+                assert!(op.gpu_ok(), "mode {kind}, pin {pin}, cycle {cycle}");
+                let (_, _, gpu) = compositor.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("turbulent GPU pass");
+                let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: pixels.clone() };
+                assert!(filmcraft_render::vfx::apply(&mut cpu, &e, &ctx));
+                let (worst, flips) = compare(&cpu.px, &gpu);
+                assert!(worst <= EXACT && flips == 0.0, "mode {kind}, pin {pin}, cycle {cycle}: {worst} / {flips}");
+            }
+        }
     }
 }
 

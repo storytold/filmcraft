@@ -346,6 +346,7 @@
 	Tools	Ferramentas
 	Top	Superior
 	Transcribe Sequence…	Transcrever sequência…
+	Transcribe again	Refazer transcrição
 	Transcribe…	Transcrever…
 	Transcript	Transcrição
 	Transparent Video…	Vídeo transparente…
@@ -3561,7 +3562,9 @@
 	Gradient Angle	Ângulo do gradiente
 	Linear Gradient	Gradiente linear
 	Solid	Sólido
-	GPU Rendering	Renderização por GPU
+	Export via CPU (manual)	Exportar via CPU (manual)
+	Off: GPU export (AMD GPU + same-node VA-API required; fails if unavailable). On: CPU reference renderer.	Desligado: exportação via GPU (requer GPU AMD e VA-API no mesmo nó; falha se indisponível). Ligado: renderizador de referência por CPU.
+	This format exports only via CPU	Este formato só é exportado via CPU
 	Composite on the GPU when available	Compor na GPU quando disponível
 	Text to Speech	Texto para fala
 	Edit Narration	Editar narração
@@ -3585,3 +3588,18 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+	CPU compositing explicitly enabled	Composição por CPU ativada explicitamente
+	Export preview unavailable in GPU-only mode; CPU fallback is disabled	Prévia de exportação indisponível no modo somente GPU; o fallback por CPU está desativado
+	GPU channel display is unsupported; CPU fallback is disabled	A exibição de canais por GPU não é compatível; o fallback por CPU está desativado
+	GPU compositor failed to initialise; preview unavailable	Falha ao inicializar o compositor de GPU; prévia indisponível
+	GPU preview compositor panicked; CPU fallback is disabled	O compositor de prévia por GPU falhou; o fallback por CPU está desativado
+	GPU preview exceeds the device texture limit	A prévia por GPU excede o limite de textura do dispositivo
+	GPU preview failed; CPU fallback is disabled	A prévia por GPU falhou; o fallback por CPU está desativado
+	GPU preview unavailable; CPU fallback is disabled	Prévia por GPU indisponível; o fallback por CPU está desativado
+	Reference Monitor unavailable in GPU-only preview; CPU fallback is disabled	Monitor de referência indisponível na prévia somente GPU; o fallback por CPU está desativado
+	Reference view unavailable in GPU-only preview; CPU fallback is disabled	Visualização de referência indisponível na prévia somente GPU; o fallback por CPU está desativado
+	Scopes unavailable in GPU-only preview; CPU fallback is disabled	Scopes indisponíveis na prévia somente GPU; o fallback por CPU está desativado
+	no supported AMD GPU adapter; preview unavailable	Nenhum adaptador de GPU AMD compatível; prévia indisponível
+	Whisper large-v3 (GPU + vocal isolation)	Whisper large-v3 (GPU + isolamento vocal)
+	Whisper large-v3 Q5_0 (multilingual, 1.08 GB)	Whisper large-v3 Q5_0 (multilíngue, 1,08 GB)
+	Whisper large-v3 Turbo (multilingual, 809 M, faster)	Whisper large-v3 Turbo (multilíngue, 809 M, mais rápido)

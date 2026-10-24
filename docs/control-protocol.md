@@ -167,6 +167,12 @@ params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog
 `lumetri.match.*`; HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
 sequence as tone-mapped SDR.
 
+`file.exportMedia` accepts `hardwareExport: bool` (default `false`). `true` requires AMD GPU-resident
+rendering and same-node VA-API encoding; incomplete support returns an error and never falls back to
+CPU pixels. Only H.264 and HEVC are supported. Legacy `hardwareEncoding` and `gpuRendering` settings
+remain readable; any enabled legacy value is normalized to the paired strict mode. `hardwareExport`
+overrides legacy values.
+
 **Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?}`,
 `shortcuts.get`, `shortcuts.set {command, keys, panel?, add?, keepConflicts?}`, `shortcuts.clear`,
 `shortcuts.undo` / `shortcuts.redo`, `shortcuts.conflicts {platform?}`, `shortcuts.forKey {key}`,

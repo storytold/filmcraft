@@ -7,7 +7,8 @@
 //! Windows; NVDEC ([`nvdec`], NVIDIA's driver) and VA-API ([`vaapi`]) on Linux for H.264 and HEVC; on other systems (and on
 //! Linux with neither) registration does nothing and reports [`Availability::Unavailable`]. It also registers a
 //! hardware H.264 encoder factory (`filmcraft_export::register_encoder`) that only acts when an
-//! export asks for it (`ExportSettings::hardware_encoding` = `Auto`), see [`hardware_encode`]; on
+//! export asks for it (`ExportSettings::hardware_encoding` = `Auto`), see [`hardware_encode`] (on Linux:
+//! NVENC, then VA-API through [`vaapi::h264enc`] on AMD / Intel GPUs); on
 //! macOS and on Windows (NVENC, [`nvenc`]) it also makes the H.265 export format available, and on Windows
 //! (Main 10) lets HDR sequences export as HDR H.265.
 //!
@@ -30,6 +31,10 @@
 
 // Used by the Windows (and, for `biplanar`, Linux) decoders; compiled everywhere so their tests run
 // on every system.
+#[cfg(target_os = "linux")]
+pub(crate) mod amd_backend;
+#[cfg(target_os = "linux")]
+mod amd_resident;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod annexb;
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
@@ -52,6 +57,15 @@ pub mod videotoolbox;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox_encode;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub mod vulkan_buffer_probe;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub mod vulkan_import;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub mod vulkan_interop_device;
 
 pub use hybrid::HybridDecoder;
 
@@ -64,10 +78,32 @@ pub enum Availability {
     Unavailable(&'static str),
 }
 
+/// Wait at most `timeout` for startup encoder probes; intended for headless exports.
+/// GUI availability remains a non-blocking cached read.
+pub fn wait_encoder_probes(timeout: std::time::Duration) {
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    vaapi::hevcenc::wait_probe(timeout);
+    #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+    let _ = timeout;
+}
+
 /// Register the platform's hardware video decoders (call once at startup; repeated calls are
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    // Export ▸ Hardware encoding on Linux: VA-API (AMD, Intel, Mesa) in front of the software
+    // encoder, and behind NVENC (registered next; later registrations are tried first), so NVIDIA
+    // machines keep NVENC
+    #[cfg(target_os = "linux")]
+    if vaapi::h264enc::available() {
+        filmcraft_export::register_encoder(vaapi::h264enc::factory);
+    }
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    {
+        filmcraft_export::register_encoder(vaapi::hevcenc::factory);
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, vaapi::hevcenc::available);
+        vaapi::hevcenc::warm_probe();
+    }
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]
@@ -264,5 +300,200 @@ pub fn nvdec_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft
             }
             None
         }
+    }
+}
+
+/// Bind AMD capability admission to the adapter used by the shared export renderer.
+#[cfg(target_os = "linux")]
+pub fn amd_export_provider(adapter: &wgpu::Adapter) -> std::sync::Arc<dyn filmcraft_export::AmdExportProvider> {
+    std::sync::Arc::new(AmdProvider { adapter: adapter.clone() })
+}
+
+#[cfg(target_os = "linux")]
+struct AmdProvider {
+    adapter: wgpu::Adapter,
+}
+
+#[cfg(target_os = "linux")]
+impl filmcraft_export::AmdExportProvider for AmdProvider {
+    fn admit(&self, format: filmcraft_export::Format) -> filmcraft_export::Result<std::sync::Arc<dyn filmcraft_export::AmdExportAdmission>> {
+        #[cfg(target_os = "linux")]
+        {
+            use amd_backend::{AmdBackendCandidate, VaapiVideoCapabilities, VulkanVideoCapabilities};
+            let unsupported = filmcraft_export::ExportError::Unsupported;
+            let node = vulkan_import::render_node_id(&self.adapter).map_err(unsupported)?;
+            let info = self.adapter.get_info();
+            let video = vulkan_import::vulkan_video_capabilities(&self.adapter, format);
+            let vaapi = vaapi::va::vaapi_video_capabilities(format, node);
+            let candidate = AmdBackendCandidate {
+                vendor_id: info.vendor,
+                device_id: info.device,
+                device_type: info.device_type,
+                vulkan_drm_node: Some(node),
+                vaapi_drm_node: Some(node),
+                vulkan_diagnostic: video.as_ref().err().cloned().unwrap_or_default(),
+                vaapi_diagnostic: vaapi.as_ref().err().cloned().unwrap_or_default(),
+                vulkan_video: video.unwrap_or(VulkanVideoCapabilities {
+                    codec: format,
+                    extensions: false,
+                    encode_queue: false,
+                    codec_profile: false,
+                    input_format: false,
+                    required_usages: false,
+                }),
+                vaapi_video: vaapi.unwrap_or(VaapiVideoCapabilities {
+                    drm_node: Some(node),
+                    vendor_id: None,
+                    device_id: None,
+                    profile: None,
+                    rate_control: 0,
+                    max_size: None,
+                    entrypoint: 0,
+                    packed_headers: 0,
+                    codec: format,
+                    encode: false,
+                    codec_profile: false,
+                    input_format: false,
+                }),
+            };
+            let caps = candidate.vaapi_video.clone();
+            amd_backend::choose_amd_video_backend(format, &[candidate]).map_err(|e| unsupported(e.to_string()))?;
+            Ok(std::sync::Arc::new(AmdAdmission { format, node, caps }))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (&self.adapter, format);
+            Err(filmcraft_export::ExportError::Unsupported("AMD VA-API export requires Linux".into()))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct AmdAdmission {
+    format: filmcraft_export::Format,
+    node: vulkan_import::DrmNodeId,
+    caps: amd_backend::VaapiVideoCapabilities,
+}
+
+#[cfg(target_os = "linux")]
+impl filmcraft_export::AmdExportAdmission for AmdAdmission {
+    fn create_session(
+        &self,
+        project: std::sync::Arc<filmcraft_project::Project>,
+        seq: filmcraft_project::ItemId,
+        settings: &filmcraft_export::ExportSettings,
+        resolved: &filmcraft_export::settings::Resolved,
+    ) -> filmcraft_export::Result<Box<dyn filmcraft_export::ResidentVideoSession>> {
+        if !matches!(self.format, filmcraft_export::Format::H264 | filmcraft_export::Format::Hevc) {
+            return Err(filmcraft_export::ExportError::Unsupported("AMD resident export supports H.264 and HEVC only".into()));
+        }
+        self.validate_settings(settings, resolved)?;
+        amd_resident::create_session(self.node, project, seq, settings, resolved)
+    }
+
+    fn validate_settings(&self, settings: &filmcraft_export::ExportSettings, resolved: &filmcraft_export::settings::Resolved) -> filmcraft_export::Result<()> {
+        if settings.video_format() != self.format {
+            return Err(filmcraft_export::ExportError::Unsupported("AMD admission codec mismatch".into()));
+        }
+        let mut effective = settings.clone();
+        effective.bitrate_kbps = resolved.target_kbps;
+        effective.max_bitrate_kbps = Some(resolved.max_kbps);
+        effective.keyframe_distance = Some(resolved.keyint);
+        effective.adaptive_bitrate = None;
+        let limits = vaapi::va::EncodeCaps { rate_control: self.caps.rate_control, max_size: self.caps.max_size };
+        let result = match self.format {
+            filmcraft_export::Format::H264 => {
+                let expected = match effective.h264_profile {
+                    filmcraft_export::settings::H264Profile::Main => vaapi::ffi::VAProfileH264Main,
+                    filmcraft_export::settings::H264Profile::High => vaapi::ffi::VAProfileH264High,
+                    _ => return Err(filmcraft_export::ExportError::Unsupported("AMD admission H.264 profile mismatch".into())),
+                };
+                if self.caps.profile != Some(expected) || self.caps.entrypoint != vaapi::ffi::VAEntrypointEncSlice {
+                    return Err(filmcraft_export::ExportError::Unsupported("AMD admission H.264 profile/entrypoint mismatch".into()));
+                }
+                vaapi::h264enc::validate_export_settings(&effective, resolved, &limits)
+            }
+            filmcraft_export::Format::Hevc => {
+                let caps = vaapi::va::HevcEncodeCaps { limits, entrypoint: self.caps.entrypoint, packed_headers: self.caps.packed_headers };
+                vaapi::hevcenc::validate_export_settings(&effective, resolved, &caps)
+            }
+            _ => Err("AMD admission codec mismatch".into()),
+        };
+        result.map_err(filmcraft_export::ExportError::Unsupported)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod amd_admission_tests {
+    use super::*;
+    use filmcraft_export::{AmdExportAdmission, BitrateMode, ExportSettings, Format, H264Profile};
+    fn admission(format: Format, profile: i32) -> AmdAdmission {
+        AmdAdmission {
+            format,
+            node: vulkan_import::DrmNodeId { major: 226, minor: 128 },
+            caps: amd_backend::VaapiVideoCapabilities {
+                drm_node: Some(vulkan_import::DrmNodeId { major: 226, minor: 128 }),
+                vendor_id: Some(0x1002),
+                device_id: None,
+                profile: Some(profile),
+                codec: format,
+                encode: true,
+                codec_profile: true,
+                input_format: true,
+                rate_control: vaapi::ffi::VA_RC_CBR,
+                max_size: Some((1920, 1088)),
+                entrypoint: vaapi::ffi::VAEntrypointEncSlice,
+                packed_headers: vaapi::ffi::VA_ENC_PACKED_HEADER_SEQUENCE | vaapi::ffi::VA_ENC_PACKED_HEADER_PICTURE | vaapi::ffi::VA_ENC_PACKED_HEADER_SLICE,
+            },
+        }
+    }
+    #[test]
+    fn amd_required_effective_configuration_uses_exact_node_caps() {
+        for (format, profile, h264) in [
+            (Format::H264, vaapi::ffi::VAProfileH264High, H264Profile::High),
+            (Format::H264, vaapi::ffi::VAProfileH264Main, H264Profile::Main),
+            (Format::Hevc, vaapi::ffi::VAProfileHEVCMain, H264Profile::High),
+        ] {
+            let mut a = admission(format, profile);
+            let mut s = ExportSettings { format, h264_profile: h264, bitrate_mode: BitrateMode::Cbr, bitrate_kbps: 8000, ..Default::default() };
+            let mut r = s.resolve(640, 360, filmcraft_time::FrameRate::FPS_24, 48000);
+            assert!(a.validate_settings(&s, &r).is_ok());
+            s.bitrate_mode = BitrateMode::Vbr1Pass;
+            assert!(a.validate_settings(&s, &r).is_err());
+            a.caps.rate_control = vaapi::ffi::VA_RC_VBR;
+            assert!(a.validate_settings(&s, &r).is_ok());
+            s.bitrate_mode = BitrateMode::Cbr;
+            assert!(a.validate_settings(&s, &r).is_err());
+            a.caps.rate_control = vaapi::ffi::VA_RC_CBR;
+            s.bitrate_mode = BitrateMode::Crf;
+            assert!(a.validate_settings(&s, &r).is_err());
+            s.bitrate_mode = BitrateMode::Cbr;
+            r.width = 4000;
+            assert!(a.validate_settings(&s, &r).is_err());
+            r.width = 640;
+            if format == Format::Hevc {
+                a.caps.packed_headers = 0;
+                assert!(a.validate_settings(&s, &r).is_err());
+                a = admission(format, profile);
+                a.caps.entrypoint = 0;
+                assert!(a.validate_settings(&s, &r).is_err());
+            } else {
+                s.h264_profile = H264Profile::Baseline;
+                assert!(a.validate_settings(&s, &r).is_err());
+            }
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_hdr_registration_tests {
+    use super::*;
+
+    #[test]
+    fn linux_registers_no_hdr_probe_for_hevc() {
+        // The VA-API and NVENC HEVC probes are SDR only; registering them must not add an HDR one.
+        // Probes that need a GPU run here too, but the answer below does not depend on them.
+        let _ = register();
+        assert!(!filmcraft_export::hdr_available(filmcraft_export::Format::Hevc), "Linux has no HDR HEVC encoder");
     }
 }

@@ -259,7 +259,7 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
                     HardwareEncoding::Off
                 }
             }
-            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto"))?,
+            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto | gpuRequired | amdRequired"))?,
         };
     }
     if let Some(v) = p.get("gpuRendering") {
@@ -271,8 +271,16 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
                     GpuRendering::Off
                 }
             }
-            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto"))?,
+            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto | amdRequired"))?,
         };
+    }
+    if let Some(value) = p.get("hardwareExport") {
+        let enabled = value.as_bool().ok_or_else(|| bad(cmd, "hardwareExport must be a boolean"))?;
+        settings.set_hardware_export(enabled);
+    } else if settings.hardware_encoding == HardwareEncoding::Auto {
+        // Legacy `auto` asks for a hardware encoder and never the CPU: GpuRequired, not the software-
+        // fallback Auto. Each field is normalized on its own, so an explicit `gpuRendering: off` is kept.
+        settings.hardware_encoding = HardwareEncoding::GpuRequired;
     }
     if let Some(v) = bool_p(p, "burnCaptions") {
         settings.burn_captions = v;
@@ -443,8 +451,8 @@ fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, s
     }
 }
 
-/// Write the caption sidecar (`settings.caption_sidecar`) next to `path` for `range` of `seq`.
-fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<Option<String>> {
+/// Build the caption sidecar (`settings.caption_sidecar`) next to `path` for `range` of `seq`.
+fn caption_sidecar(project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<Option<(String, Vec<u8>)>> {
     let Some(kind) = settings.caption_sidecar.as_deref() else { return Ok(None) };
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let Some(track) = q.caption_tracks.first() else { return Ok(None) };
@@ -459,40 +467,93 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
         filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
     let path = format!("{}.{ext}", settings.path.rsplit_once('.').map_or(settings.path.as_str(), |x| x.0));
-    s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    Ok(Some(path))
+    Ok(Some((path, bytes)))
 }
 
 /// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
 pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
+    filmcraft_export::check_runtime_ram_ceiling().map_err(|e| EngineError::Other(e.to_string()))?;
+    settings.validate().map_err(|e| EngineError::Other(e.to_string()))?;
     let format = settings.format;
-    if !filmcraft_export::available(format) {
+    let admission = if settings.gpu_rendering == GpuRendering::AmdRequired {
+        Some(
+            s.amd_export_provider
+                .as_ref()
+                .ok_or_else(|| EngineError::Other("AMD required export needs host adapter admission".into()))?
+                .admit(settings.video_format())
+                .map_err(|e| EngineError::Other(e.to_string()))?,
+        )
+    } else {
+        None
+    };
+    if admission.is_none() && !filmcraft_export::available(format) {
         return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
     }
-    if s.services.export_in_memory() {
+    let sidecar = caption_sidecar(&project, seq, &settings)?;
+    let services = s.services.clone();
+    let in_memory = services.export_in_memory();
+    let stepped_in_engine = cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format);
+    if in_memory {
+        let sidecar_on_write = if stepped_in_engine { sidecar.clone() } else { None };
         let services = s.services.clone();
-        settings.sink = Some(filmcraft_export::OutputSink(Arc::new(move |path: &str, data: Vec<u8>| services.write_file(path, &data))));
+        settings.sink = Some(filmcraft_export::OutputSink(Arc::new(move |path: &str, data: Vec<u8>| {
+            services.write_file(path, &data)?;
+            if let Some((sidecar_path, sidecar_data)) = &sidecar_on_write {
+                services.write_file(sidecar_path, sidecar_data)?;
+            }
+            Ok(())
+        })));
     }
-    if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !s.services.export_in_memory()) {
+    let output_dir = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !in_memory).map(Path::to_path_buf);
+    let dir_was_missing = output_dir.as_ref().is_some_and(|d| !d.exists());
+    filmcraft_export::check_runtime_ram_ceiling().map_err(|e| EngineError::Other(e.to_string()))?;
+    if let Some(dir) = &output_dir {
         let _ = std::fs::create_dir_all(dir);
     }
-    write_sidecar(s, &project, seq, &settings)?;
+    if let Err(e) = filmcraft_export::check_runtime_ram_ceiling() {
+        if dir_was_missing && let Some(dir) = &output_dir {
+            let _ = std::fs::remove_dir(dir);
+        }
+        return Err(EngineError::Other(e.to_string()));
+    }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says.
     let provider = s.media.full_res_provider(project.clone(), s.services.clone()).recording();
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let offline = s.export_offline.entry(id).or_default().clone();
-    if cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format) {
+    let job_output_dir = output_dir.clone();
+    let job_dir_was_missing = dir_was_missing;
+    if stepped_in_engine {
         // No threads: the host advances the export between UI frames (`Session::pump_jobs`).
-        let mut exporter = filmcraft_export::Exporter::new(project, seq, &settings, &prog).map_err(|e| EngineError::Other(e.to_string()))?;
+        let mut exporter = match filmcraft_export::Exporter::new_with_admission(project, seq, &settings, &prog, admission) {
+            Ok(exporter) => exporter,
+            Err(e) => {
+                if dir_was_missing && let Some(dir) = &output_dir {
+                    let _ = std::fs::remove_dir(dir);
+                }
+                return Err(EngineError::Other(e.to_string()));
+            }
+        };
         exporter.set_batch(1);
         s.jobs.push(job);
         s.stepped.push(crate::SteppedJob { job: id, exporter, provider, progress: prog, result: res });
         return Ok(id);
     }
     let run = move || {
-        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
+        let mut r = filmcraft_export::export_with_admission(&project, seq, &settings, &provider, &prog, admission).map_err(|e| e.to_string());
+        if r.is_ok()
+            && let Some((path, bytes)) = sidecar
+            && let Err(e) = services.write_file(&path, &bytes)
+        {
+            r = Err(format!("{path}: {e}"));
+        }
+        if r.is_err()
+            && job_dir_was_missing
+            && let Some(dir) = &job_output_dir
+        {
+            let _ = std::fs::remove_dir(dir);
+        }
         *offline.lock().unwrap_or_else(|x| x.into_inner()) = provider.offline_used();
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -505,7 +566,12 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     if wait || cfg!(target_arch = "wasm32") {
         run();
     } else {
-        std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        if let Err(e) = std::thread::Builder::new().name("filmcraft-export".into()).spawn(run) {
+            if dir_was_missing && let Some(dir) = &output_dir {
+                let _ = std::fs::remove_dir(dir);
+            }
+            return Err(EngineError::Other(e.to_string()));
+        }
     }
     Ok(id)
 }

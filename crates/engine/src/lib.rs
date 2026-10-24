@@ -411,6 +411,8 @@ pub struct Session {
     pub state: EditorState,
     pub media: Arc<MediaPool>,
     pub services: Arc<dyn Services>,
+    /// Host capability provider bound to this session renderer.
+    pub amd_export_provider: Option<Arc<dyn filmcraft_export::AmdExportProvider>>,
     pub events: Vec<Event>,
     /// Commands executed (for macros/debugging): (id, params).
     pub journal: Vec<(String, Value)>,
@@ -535,6 +537,7 @@ impl Session {
             },
             media: Arc::new(MediaPool::default()),
             services,
+            amd_export_provider: None,
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),

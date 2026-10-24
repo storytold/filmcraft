@@ -1333,7 +1333,6 @@
 	Golden Hour	골든 아워
 	Good	좋음
 	GPU acceleration is unavailable; preview renders on the CPU	GPU 가속 사용 불가. 미리 보기는 CPU로 렌더
-	GPU Rendering	GPU 렌더링
 	Grab bag	모음
 	Gradient	그레이디언트
 	Gradient Angle	그레이디언트 각도
@@ -3238,6 +3237,7 @@
 	Transcribe Sequence	시퀀스 텍스트 변환
 	Transcribe sequence	시퀀스 기록
 	Transcribe Sequence…	시퀀스 받아쓰기…
+	Transcribe again	다시 받아쓰기
 	Transcribe…	받아쓰기…
 	Transcript	대본
 	Transcription	트랜스크립션
@@ -3603,3 +3603,18 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+	Export via CPU (manual)	CPU로 내보내기 (수동)
+	Off: GPU export (AMD GPU + same-node VA-API required; fails if unavailable). On: CPU reference renderer.	끄기: GPU 내보내기(AMD GPU와 동일 노드의 VA-API 필요, 사용할 수 없으면 실패). 켜기: CPU 참조 렌더러.
+	This format exports only via CPU	이 형식은 CPU로만 내보냅니다
+	CPU compositing explicitly enabled	CPU 합성이 명시적으로 활성화됨
+	Export preview unavailable in GPU-only mode; CPU fallback is disabled	GPU 전용 모드에서는 내보내기 미리 보기를 사용할 수 없음; CPU 대체가 비활성화됨
+	GPU channel display is unsupported; CPU fallback is disabled	GPU 채널 표시는 지원되지 않음; CPU 대체가 비활성화됨
+	GPU compositor failed to initialise; preview unavailable	GPU 컴포지터를 초기화하지 못함; 미리 보기를 사용할 수 없음
+	GPU preview compositor panicked; CPU fallback is disabled	GPU 미리 보기 컴포지터가 패닉됨; CPU 대체가 비활성화됨
+	GPU preview exceeds the device texture limit	GPU 미리 보기가 장치의 텍스처 한도를 초과함
+	GPU preview failed; CPU fallback is disabled	GPU 미리 보기 실패; CPU 대체가 비활성화됨
+	GPU preview unavailable; CPU fallback is disabled	GPU 미리 보기를 사용할 수 없음; CPU 대체가 비활성화됨
+	Reference Monitor unavailable in GPU-only preview; CPU fallback is disabled	GPU 전용 미리 보기에서 참조 모니터를 사용할 수 없음; CPU 대체가 비활성화됨
+	Reference view unavailable in GPU-only preview; CPU fallback is disabled	GPU 전용 미리 보기에서 참조 보기를 사용할 수 없음; CPU 대체가 비활성화됨
+	Scopes unavailable in GPU-only preview; CPU fallback is disabled	GPU 전용 미리 보기에서 스코프를 사용할 수 없음; CPU 대체가 비활성화됨
+	no supported AMD GPU adapter; preview unavailable	지원되는 AMD GPU 어댑터가 없음; 미리 보기를 사용할 수 없음

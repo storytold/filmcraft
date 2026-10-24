@@ -15,8 +15,10 @@ mod blur;
 mod color;
 pub(crate) use color::cdl;
 mod distort;
+pub(crate) use distort::{Plane3d, Rotate3d, camera_shake_place, rotate_3d_plane, warp_plane, wiggle_place};
 mod immersive;
 mod lights;
+pub(crate) use lights::{LensFlareParams, lens_flare_add, lens_flare_params};
 mod stylize;
 mod temporal;
 mod text;
@@ -60,6 +62,59 @@ pub trait FxEnv: Sync {
     fn source_size(&self) -> (u32, u32);
     /// Identity of the clip and its source range (cache key for analyses).
     fn clip_key(&self) -> u64;
+}
+
+/// The clip timing the GPU plan knows. It has no neighbouring frames, tracks or analyses, so effects
+/// that need those stay off the GPU route; clip-timed ones (grow, shrink, spin, move) read the span.
+#[derive(Clone, Copy, Debug)]
+pub struct ClipTiming {
+    pub clip_seconds: f64,
+    pub clip_offset: f64,
+    pub frame_rate: f64,
+    pub sequence_size: (u32, u32),
+    pub source_size: (u32, u32),
+}
+
+impl FxEnv for ClipTiming {
+    fn frame(&self, _: f64, _: &EffectInstance) -> Option<Image> {
+        None
+    }
+    fn source_frame(&self, _: f64, _: f32) -> Option<Image> {
+        None
+    }
+    fn track(&self, _: usize) -> Option<Image> {
+        None
+    }
+    fn layer_to_output(&self) -> Affine {
+        Affine::translate(0.0, 0.0)
+    }
+    fn clip_seconds(&self) -> f64 {
+        self.clip_seconds
+    }
+    fn clip_offset(&self) -> f64 {
+        self.clip_offset
+    }
+    fn frame_rate(&self) -> f64 {
+        self.frame_rate
+    }
+    fn media_timecode(&self) -> String {
+        String::new()
+    }
+    fn file_name(&self) -> String {
+        String::new()
+    }
+    fn sequence_name(&self) -> String {
+        String::new()
+    }
+    fn sequence_size(&self) -> (u32, u32) {
+        self.sequence_size
+    }
+    fn source_size(&self) -> (u32, u32) {
+        self.source_size
+    }
+    fn clip_key(&self) -> u64 {
+        0
+    }
 }
 
 /// The environment of a track item being rendered by [`crate::item_layer`].

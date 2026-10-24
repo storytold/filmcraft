@@ -552,3 +552,109 @@ fn hdr_input_gpu_matches_cpu() {
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
 }
+
+#[test]
+fn required_preview_resolves_srgb_and_renders_verified_transitions() {
+    use filmcraft_media::{Generator, MediaSource, generators::GeneratorSource};
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
+    use std::sync::Arc;
+    let (dev, queue) = device().expect("GPU required for preview color regression");
+    let mut compositor = GpuCompositor::new(&dev, &queue);
+    let source = GeneratorSource::new(Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] }, 8, 8, FrameRate::FPS_24, Tick(TICKS_PER_SECOND));
+    let mut project = filmcraft_project::Project::new("preview color regression");
+    let media = project.add_item(
+        "fixture",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::File { path: "preview-test-fixture.mov".into() },
+            info: source.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: Vec::new(),
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let seq = project.new_sequence("preview", SequenceSettings { width: 8, height: 8, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+    let clip = project.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
+    let clip_id = clip.id;
+    project.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+    let mut sources = filmcraft_render::SourceMap::default();
+    sources.0.insert(media, Arc::new(source));
+    let receipt = filmcraft_render::plan::preflight_frame_required(&project, seq, Tick::ZERO, Default::default()).unwrap();
+    let plan = filmcraft_render::plan::materialize_frame_required(receipt, &sources).unwrap();
+    compositor.composite_required_display(&plan).expect("strict GPU display resolve");
+    let (_, _, rgba) = compositor.read_output().expect("test-only display readback");
+    for pixel in rgba.as_chunks::<4>().0 {
+        assert!((i32::from(pixel[0]) - 128).abs() <= 2, "sRGB mid-grey must remain mid-grey, got {pixel:?}");
+        assert_eq!(pixel[0], pixel[1]);
+        assert_eq!(pixel[1], pixel[2]);
+        assert_eq!(pixel[3], 255);
+    }
+    for (index, id) in ["flare", "blur_dissolve", "dip_to_black", "dip_to_white"].iter().enumerate() {
+        project.sequence_mut(seq).unwrap().video_tracks[0].transitions = vec![filmcraft_project::Transition {
+            id: filmcraft_project::TransitionId(9999),
+            effect: filmcraft_project::find_effect(id).unwrap().instance(),
+            start: Tick::ZERO,
+            duration: Tick(TICKS_PER_SECOND),
+            from: None,
+            to: Some(clip_id),
+            align: filmcraft_project::TransitionAlign::StartAtCut,
+            reverse: false,
+        }];
+        let receipt = filmcraft_render::plan::preflight_frame_required(&project, seq, Tick(TICKS_PER_SECOND / 2), Default::default()).unwrap();
+        let plan = filmcraft_render::plan::materialize_frame_required(receipt, &sources).unwrap();
+        compositor.composite_required_display(&plan).unwrap_or_else(|error| panic!("{id}: {error}"));
+        assert_eq!(compositor.gpu_transitions, index as u64 + 1, "{id} must execute on GPU");
+        assert_eq!(compositor.cpu_transitions, 0, "preview must never fall back to CPU");
+    }
+}
+
+/// GUI preview of the built-in demo project: the scenes are generated on the GPU and shown without
+/// any CPU pixels, while the decoded route keeps refusing them.
+#[test]
+fn demo_preview_is_generated_on_the_gpu_and_shown() {
+    use filmcraft_media::{DemoScene, Generator, MediaSource, generators::GeneratorSource};
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
+    let (dev, queue) = device().expect("GPU required for the demo preview regression");
+    let mut compositor = GpuCompositor::new(&dev, &queue);
+    let scene = DemoScene::Aurora;
+    let source = GeneratorSource::demo(scene);
+    let mut project = filmcraft_project::Project::new("demo preview");
+    let media = project.add_item(
+        "Aurora",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(Generator::Demo(scene)),
+            info: source.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: Vec::new(),
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let seq = project.new_sequence("preview", SequenceSettings { width: 320, height: 180, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+    let clip = project.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(5 * TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
+    project.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+    let at = Tick(TICKS_PER_SECOND);
+    let refused = filmcraft_render::plan::preflight_frame_required(&project, seq, at, Default::default()).unwrap();
+    let no_cpu_source = |_item| -> Option<filmcraft_media::SharedSource> { panic!("a demo scene must not ask the CPU provider") };
+    assert!(filmcraft_render::plan::materialize_frame_required(refused, &no_cpu_source).is_err(), "the decoded route refuses demo scenes");
+    let receipt = filmcraft_render::plan::preflight_frame_required(&project, seq, at, Default::default()).unwrap();
+    let plan = filmcraft_render::plan::materialize_frame_required_demo(receipt).expect("demo-only plan");
+    let (_, size, _) = compositor.composite_demo_display(&plan).expect("GPU-generated demo display");
+    assert_eq!(size, (320, 180));
+    let (_, _, rgba) = compositor.read_output().expect("test-only display readback");
+    let first = [rgba[0], rgba[1], rgba[2]];
+    assert!(rgba.as_chunks::<4>().0.iter().any(|p| [p[0], p[1], p[2]] != first), "the generated scene must not be a flat colour");
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+}

@@ -371,6 +371,7 @@
 	Tools	Werkzeuge
 	Top	Oben
 	Transcribe Sequence…	Sequenz transkribieren…
+	Transcribe again	Erneut transkribieren
 	Transcribe…	Transkribieren…
 	Transcript	Transkript
 	Transparent Video…	Transparentes Video…
@@ -3576,7 +3577,6 @@
 	Gradient Angle	Verlaufswinkel
 	Linear Gradient	Linearer Verlauf
 	Solid	Vollton
-	GPU Rendering	GPU-Rendering
 	Composite on the GPU when available	Auf der GPU zusammensetzen, wenn verfügbar
 	Text to Speech	Text zu Sprache
 	Edit Narration	Erzählung bearbeiten
@@ -3613,3 +3613,18 @@
 	Shows the version, community links and credits in a FilmCraft window.	Zeigt Version, Community-Links und Credits in einem FilmCraft-Fenster.
 	Couldn't open your web browser	Dein Webbrowser konnte nicht geöffnet werden
 	Open this address in your browser yourself:	Öffne diese Adresse selbst in deinem Browser:
+	Export via CPU (manual)	Export über CPU (manuell)
+	Off: GPU export (AMD GPU + same-node VA-API required; fails if unavailable). On: CPU reference renderer.	Aus: GPU-Export (AMD-GPU und VA-API auf demselben Knoten erforderlich; schlägt fehl, wenn nicht verfügbar). Ein: CPU-Referenzrenderer.
+	This format exports only via CPU	Dieses Format wird nur über die CPU exportiert
+	CPU compositing explicitly enabled	CPU-Compositing ausdrücklich aktiviert
+	Export preview unavailable in GPU-only mode; CPU fallback is disabled	Exportvorschau im reinen GPU-Modus nicht verfügbar; CPU-Ausweichlösung ist deaktiviert
+	GPU channel display is unsupported; CPU fallback is disabled	Anzeige der GPU-Kanäle wird nicht unterstützt; CPU-Ausweichlösung ist deaktiviert
+	GPU compositor failed to initialise; preview unavailable	GPU-Compositor konnte nicht initialisiert werden; Vorschau nicht verfügbar
+	GPU preview compositor panicked; CPU fallback is disabled	Der GPU-Vorschau-Compositor ist abgestürzt; CPU-Ausweichlösung ist deaktiviert
+	GPU preview exceeds the device texture limit	Die GPU-Vorschau überschreitet das Texturlimit des Geräts
+	GPU preview failed; CPU fallback is disabled	GPU-Vorschau fehlgeschlagen; CPU-Ausweichlösung ist deaktiviert
+	GPU preview unavailable; CPU fallback is disabled	GPU-Vorschau nicht verfügbar; CPU-Ausweichlösung ist deaktiviert
+	Reference Monitor unavailable in GPU-only preview; CPU fallback is disabled	Referenzmonitor im reinen GPU-Vorschaumodus nicht verfügbar; CPU-Ausweichlösung ist deaktiviert
+	Reference view unavailable in GPU-only preview; CPU fallback is disabled	Referenzansicht im reinen GPU-Vorschaumodus nicht verfügbar; CPU-Ausweichlösung ist deaktiviert
+	Scopes unavailable in GPU-only preview; CPU fallback is disabled	Scopes im reinen GPU-Vorschaumodus nicht verfügbar; CPU-Ausweichlösung ist deaktiviert
+	no supported AMD GPU adapter; preview unavailable	Kein unterstützter AMD-GPU-Adapter; Vorschau nicht verfügbar

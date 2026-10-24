@@ -20,6 +20,9 @@ use filmcraft_engine::{MediaPool, Services};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_time::Tick;
 
+pub(crate) const DEFAULT_PLAN_CACHE_BUDGET: usize = 1 << 30;
+const MIN_CACHE_BUDGET: usize = 16 << 20;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     /// Composite of a sequence at a timeline time.
@@ -268,31 +271,89 @@ impl filmcraft_render::SourceProvider for JobProvider {
     }
 }
 
-/// A GPU frame plan with its layers' texel conversions already done (off the UI thread).
+/// The two strict routes a preview frame can take: decoded source frames uploaded to the GPU, or
+/// GPU-generated demo scenes (no source pixels exist on the CPU).
+pub enum GpuPlanKind {
+    Decoded(filmcraft_render::plan::RequiredFramePlan),
+    Demo(filmcraft_render::plan::ResidentRequiredFramePlan),
+}
+
+/// A strict GPU frame plan materialized off the UI thread.
 pub struct GpuPlan {
-    pub plan: filmcraft_render::plan::FramePlan,
-    pub prepared: filmcraft_gpu::PreparedPlan,
+    pub plan: GpuPlanKind,
 }
 
 impl GpuPlan {
-    /// Bytes this plan keeps alive (layer frames + converted texels).
+    /// Bytes source frames keep alive.
     fn bytes(&self) -> usize {
-        let frames = self.plan.source_bytes();
-        frames + self.prepared.bytes()
+        match &self.plan {
+            GpuPlanKind::Decoded(plan) => plan.layers().map(|layer| layer.layer().frame.byte_size()).sum(),
+            GpuPlanKind::Demo(_) => 0,
+        }
+    }
+
+    /// Composite this plan on the GPU and resolve it for display; nothing is read back.
+    #[allow(clippy::type_complexity)]
+    pub fn composite_display(
+        &self,
+        compositor: &mut filmcraft_gpu::GpuCompositor,
+    ) -> Result<(eframe::wgpu::TextureView, (u32, u32), eframe::wgpu::SubmissionIndex), filmcraft_render::plan::GpuPlanError> {
+        match &self.plan {
+            GpuPlanKind::Decoded(plan) => compositor.composite_required_display(plan),
+            GpuPlanKind::Demo(plan) => compositor.composite_demo_display(plan),
+        }
+    }
+
+    /// Canvas size and the largest side of any uploaded source frame.
+    pub fn extent(&self) -> ((usize, usize), usize) {
+        match &self.plan {
+            GpuPlanKind::Decoded(plan) => {
+                let (width, height) = plan.size();
+                (
+                    (width, height),
+                    plan.layers().map(|layer| layer.layer().frame.width.max(layer.layer().frame.height) as usize).fold(width.max(height), usize::max),
+                )
+            }
+            GpuPlanKind::Demo(plan) => {
+                let (width, height) = plan.size();
+                ((width, height), width.max(height))
+            }
+        }
     }
 }
 
 /// Finished plans, bounded by count and bytes (oldest use evicted first).
-#[derive(Default)]
 struct PlanCache {
     map: HashMap<FrameKey, (Arc<GpuPlan>, u64, usize)>,
+    errors: HashMap<FrameKey, String>,
     clock: u64,
     bytes: usize,
+    budget: usize,
+}
+
+impl Default for PlanCache {
+    fn default() -> Self {
+        Self { map: HashMap::new(), errors: HashMap::new(), clock: 0, bytes: 0, budget: DEFAULT_PLAN_CACHE_BUDGET }
+    }
 }
 
 impl PlanCache {
     const MAX: usize = 96;
-    const BUDGET: usize = 1 << 30;
+
+    fn evict(&mut self) {
+        if self.map.len() <= Self::MAX && self.bytes <= self.budget {
+            return;
+        }
+        let mut oldest: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, v)| (v.1, *k, v.2)).collect();
+        oldest.sort_unstable_by_key(|x| x.0);
+        for (_, key, bytes) in oldest {
+            if self.map.len() <= Self::MAX && self.bytes <= self.budget {
+                break;
+            }
+            self.map.remove(&key);
+            self.bytes -= bytes;
+        }
+    }
 
     fn get(&mut self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
         self.clock += 1;
@@ -304,22 +365,25 @@ impl PlanCache {
     }
 
     fn insert(&mut self, k: FrameKey, p: GpuPlan) {
+        self.errors.remove(&k);
         self.clock += 1;
         let b = p.bytes();
         self.bytes += b;
         if let Some((_, _, old)) = self.map.insert(k, (Arc::new(p), self.clock, b)) {
             self.bytes -= old;
         }
-        if self.map.len() > Self::MAX || self.bytes > Self::BUDGET {
-            let mut v: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, v)| (v.1, *k, v.2)).collect();
-            v.sort_unstable_by_key(|x| x.0);
-            for (_, k, b) in v {
-                if self.map.len() <= Self::MAX && self.bytes <= Self::BUDGET {
-                    break;
-                }
-                self.map.remove(&k);
-                self.bytes -= b;
-            }
+        self.evict();
+    }
+
+    fn insert_error(&mut self, k: FrameKey, error: String) {
+        if let Some((_, _, old)) = self.map.remove(&k) {
+            self.bytes -= old;
+        }
+        self.errors.insert(k, error);
+        if self.errors.len() > Self::MAX
+            && let Some(key) = self.errors.keys().next().copied()
+        {
+            self.errors.remove(&key);
         }
     }
 }
@@ -332,6 +396,30 @@ struct Cache {
 }
 
 impl Cache {
+    fn set_budget(&mut self, budget: usize) {
+        let budget = budget.max(MIN_CACHE_BUDGET);
+        if self.budget == budget {
+            return;
+        }
+        self.budget = budget;
+        self.evict_to(budget);
+    }
+
+    fn evict_to(&mut self, budget: usize) {
+        if self.bytes <= budget {
+            return;
+        }
+        let mut all: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, (v, s))| (*s, *k, v.px.len())).collect();
+        all.sort_unstable_by_key(|x| x.0);
+        for (_, k, b) in all {
+            if self.bytes <= budget {
+                break;
+            }
+            self.map.remove(&k);
+            self.bytes -= b;
+        }
+    }
+
     fn insert(&mut self, k: FrameKey, v: Arc<Rgba>) {
         self.clock += 1;
         self.bytes += v.px.len();
@@ -339,15 +427,7 @@ impl Cache {
             self.bytes -= old.px.len();
         }
         if self.bytes > self.budget {
-            let mut all: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, (v, s))| (*s, *k, v.px.len())).collect();
-            all.sort_unstable_by_key(|x| x.0);
-            for (_, k, b) in all {
-                if self.bytes <= self.budget * 8 / 10 {
-                    break;
-                }
-                self.map.remove(&k);
-                self.bytes -= b;
-            }
+            self.evict_to(self.budget * 8 / 10);
         }
     }
 }
@@ -395,13 +475,7 @@ impl FrameServer {
     /// Settings ▸ Memory ▸ frame cache budget (bytes); evicts down to it right away.
     pub fn set_cache_budget(&self, bytes: usize) {
         let mut c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
-        c.budget = bytes.max(16 << 20);
-        if c.bytes > c.budget
-            && let Some((k, v)) = c.map.iter().next().map(|(k, (v, _))| (*k, v.clone()))
-        {
-            // re-inserting an entry runs the eviction pass
-            c.insert(k, v);
-        }
+        c.set_budget(bytes);
     }
 
     /// (bytes cached, budget).
@@ -494,10 +568,17 @@ impl FrameServer {
         self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).get(k)
     }
 
+    pub fn plan_error(&self, k: &FrameKey) -> Option<String> {
+        self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).errors.get(k).cloned()
+    }
+
     /// Whether the exact frame (image or plan) is ready.
     pub fn is_ready(&self, k: &FrameKey) -> bool {
         match k.target {
-            Target::SequencePlan(_) => self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
+            Target::SequencePlan(_) => {
+                let plans = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+                plans.map.contains_key(k) || plans.errors.contains_key(k)
+            }
             _ => self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
         }
     }
@@ -525,6 +606,7 @@ impl FrameServer {
         let hit = || self.shared.stats.lock().unwrap_or_else(|e| e.into_inner()).request_hits += 1;
         if self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key)
             || self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key)
+            || self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).errors.contains_key(&key)
         {
             hit();
             return;
@@ -792,6 +874,9 @@ fn worker(
         if ran.is_err() {
             sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
             sh.stats.lock().unwrap_or_else(|e| e.into_inner()).failed += 1;
+            if matches!(job.key.target, Target::SequencePlan(_)) {
+                sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert_error(job.key, "GPU preview worker panicked; frame rejected".into());
+            }
             log::error!("frame job {:?} panicked; the worker continues", job.key);
         }
         if let Some(f) = repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
@@ -829,12 +914,17 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
             filmcraft_media::cancel::with_draft(job.key.draft, || {
                 filmcraft_media::cancel::with_background(is_background(job), || {
                     if let Target::SequencePlan(seq) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, pool, services, previews);
+                        let (plan, pv) = match plan_job(job, seq, pool, services) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert_error(job.key, error.to_string());
+                                loading = false;
+                                return false;
+                            }
+                        };
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let prepared = filmcraft_gpu::prepare(&plan);
-                            sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+                            sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan });
                         }
                         pv
                     } else {
@@ -907,30 +997,18 @@ fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> J
     JobProvider { inner: pool.provider(job.project.clone(), services.clone()) }
 }
 
-fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> (filmcraft_render::plan::FramePlan, bool) {
+fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> Result<(GpuPlanKind, bool), filmcraft_render::plan::GpuPlanError> {
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
-    if let Some(frame) = preview_frame(job, seq, pool, previews)
-        && let Some(q) = job.project.sequence(seq)
-    {
-        // One full-frame layer: the preview scaled to the output size. Previews never contain
-        // captions (they are not part of the preview hash), so captions are layered on live.
-        let (w, h) = filmcraft_render::output_size(q, job.scale);
-        let matrix = filmcraft_geom::Affine::scale(w as f64 / frame.width.max(1) as f64, h as f64 / frame.height.max(1) as f64);
-        let mut layers = vec![filmcraft_render::plan::PlanLayer { frame, matrix, opacity: 1.0, blend: filmcraft_render::Blend::Normal, fx: None, input: None }];
-        for o in filmcraft_render::caption_overlays(q, job.time, w, h) {
-            layers.push(filmcraft_render::plan::PlanLayer {
-                frame: Arc::new(filmcraft_frame::VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
-                matrix: filmcraft_geom::Affine::translate(o.x as f64, o.y as f64),
-                opacity: 1.0,
-                blend: filmcraft_render::Blend::Normal,
-                fx: None,
-                input: None,
-            });
-        }
-        return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);
-    }
     let provider = provider(job, pool, services);
-    (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider), false)
+    let receipt = filmcraft_render::plan::preflight_frame_required(&job.project, seq, job.time, opts)?;
+    // A frame made only of GPU-generated demo scenes has no pixels to decode: it takes the resident route.
+    // Any mix with decoded sources stays on the decoded route, which refuses demo scenes (fail-closed).
+    let requests = receipt.source_requests();
+    if !requests.is_empty() && requests.iter().all(|request| matches!(request.kind, filmcraft_render::plan::ResidentSourceKind::Demo(_))) {
+        return Ok((GpuPlanKind::Demo(filmcraft_render::plan::materialize_frame_required_demo(receipt)?), false));
+    }
+    let plan = filmcraft_render::plan::materialize_frame_required(receipt, &provider)?;
+    Ok((GpuPlanKind::Decoded(plan), false))
 }
 
 /// Render a job to RGBA8; the flag says whether it came from a render preview.
@@ -975,7 +1053,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
 
 #[cfg(test)]
 mod tests {
-    use super::{PlaybackMeter, Target, background_work, playback_plan};
+    use super::{FrameKey, PlanCache, PlaybackMeter, Target, background_work, playback_plan};
     use filmcraft_project::ItemId;
 
     #[test]
@@ -1009,6 +1087,15 @@ mod tests {
         // 0.5 s of effects per frame at 24 fps on 6 workers: 12 frames pass while one renders,
         // so start 12 ahead, and every 3rd frame is what 6 workers can finish
         assert_eq!(playback_plan(0.5, 24.0, 6), (12, 3));
+    }
+
+    #[test]
+    fn strict_gpu_plan_failure_is_cached_as_an_error() {
+        let key = FrameKey { target: Target::SequencePlan(ItemId(1)), frame: 7, size: 1000, revision: 2, draft: false };
+        let mut plans = PlanCache::default();
+        plans.insert_error(key, "unsupported GPU operation".into());
+        assert_eq!(plans.errors.get(&key).map(String::as_str), Some("unsupported GPU operation"));
+        assert!(!plans.map.contains_key(&key), "failed frame cannot retain a displayable plan");
     }
 
     #[test]

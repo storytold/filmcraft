@@ -270,6 +270,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
 #[test]
 fn lumetri_scopes_layouts_menu_and_footer() {
     let mut d = Driver::demo();
+    d.app().enable_cpu_composite();
     d.ok("ui.set", json!({"workspace": "Color"}));
     d.ok("ui.panel.show", json!({"panel": "LumetriScopes"}));
     // the default: RGB parade, Rec. 709, 8 Bit, Clamp Signal
@@ -312,6 +313,17 @@ fn lumetri_scopes_layouts_menu_and_footer() {
     let r = d.exec("scopes.read", json!({"scopes": ["histogram"], "colorSpace": "601", "bins": false}));
     assert_eq!(r["matrix"], "Bt601");
     assert!(r["histogram"]["samples"].as_u64().unwrap() > 1000, "{r}");
+}
+
+#[test]
+fn unavailable_gpu_preview_does_not_replace_command_status() {
+    let mut d = Driver::demo();
+    assert!(d.app().gpu.is_none());
+    assert!(!filmcraft_ui_egui::panels::menu_dialogs::software_renderer(d.app()));
+    let status = "Marker report exported";
+    d.app().ui.status = status.into();
+    d.frames(3);
+    assert_eq!(d.app().ui.status, status);
 }
 
 #[test]
@@ -471,6 +483,7 @@ fn events_and_progress_panels() {
 #[test]
 fn reference_monitor_parks_gangs_and_shows_scopes() {
     let mut d = Driver::demo();
+    d.app().enable_cpu_composite();
     d.ok("ui.menu.invoke", json!({"id": "window.panel.ReferenceMonitor"}));
     d.frames(3);
     assert_eq!(d.label("reference.timecode"), "00:00:00:00");
@@ -503,6 +516,7 @@ fn scopes_of_colour_bars() {
     let id = s.execute("file.newBarsAndTone", json!({"seconds": 2})).unwrap()["item"].as_u64().unwrap();
     s.execute("file.newSequenceFromClip", json!({"items": [id]})).unwrap();
     let mut d = Driver::with(s);
+    d.app().enable_cpu_composite();
     d.ok(
         "ui.set",
         json!({"workspace": "Color", "panels": {"scopes": {"shown": ["vectorscopeYuv", "histogram", "parade", "waveform"], "waveformType": "luma"}}}),

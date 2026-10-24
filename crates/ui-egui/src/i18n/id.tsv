@@ -349,6 +349,7 @@
 	Tools	Alat
 	Top	Atas
 	Transcribe Sequence…	Transkripsikan Sekuens…
+	Transcribe again	Transkripsikan ulang
 	Transcribe…	Transkripsikan…
 	Transcript	Transkrip
 	Transparent Video…	Video Transparan…
@@ -3562,7 +3563,6 @@
 	Gradient Angle	Sudut Gradien
 	Linear Gradient	Gradien Linier
 	Solid	Solid
-	GPU Rendering	Rendering GPU
 	Composite on the GPU when available	Komposit di GPU bila tersedia
 	Text to Speech	Teks ke Ucapan
 	Edit Narration	Edit Narasi
@@ -3582,3 +3582,18 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	Export via CPU (manual)	Ekspor melalui CPU (manual)
+	Off: GPU export (AMD GPU + same-node VA-API required; fails if unavailable). On: CPU reference renderer.	Nonaktif: ekspor GPU (memerlukan GPU AMD dan VA-API pada node yang sama; gagal jika tidak tersedia). Aktif: perender referensi CPU.
+	This format exports only via CPU	Format ini hanya diekspor melalui CPU
+	CPU compositing explicitly enabled	Komposisi CPU diaktifkan secara eksplisit
+	Export preview unavailable in GPU-only mode; CPU fallback is disabled	Pratinjau ekspor tidak tersedia dalam mode khusus GPU; fallback CPU dinonaktifkan
+	GPU channel display is unsupported; CPU fallback is disabled	Tampilan kanal GPU tidak didukung; fallback CPU dinonaktifkan
+	GPU compositor failed to initialise; preview unavailable	Kompositor GPU gagal diinisialisasi; pratinjau tidak tersedia
+	GPU preview compositor panicked; CPU fallback is disabled	Kompositor pratinjau GPU mengalami panic; fallback CPU dinonaktifkan
+	GPU preview exceeds the device texture limit	Pratinjau GPU melampaui batas tekstur perangkat
+	GPU preview failed; CPU fallback is disabled	Pratinjau GPU gagal; fallback CPU dinonaktifkan
+	GPU preview unavailable; CPU fallback is disabled	Pratinjau GPU tidak tersedia; fallback CPU dinonaktifkan
+	Reference Monitor unavailable in GPU-only preview; CPU fallback is disabled	Monitor referensi tidak tersedia di pratinjau khusus GPU; fallback CPU dinonaktifkan
+	Reference view unavailable in GPU-only preview; CPU fallback is disabled	Tampilan referensi tidak tersedia di pratinjau khusus GPU; fallback CPU dinonaktifkan
+	Scopes unavailable in GPU-only preview; CPU fallback is disabled	Scopes tidak tersedia di pratinjau khusus GPU; fallback CPU dinonaktifkan
+	no supported AMD GPU adapter; preview unavailable	Tidak ada adapter GPU AMD yang didukung; pratinjau tidak tersedia
