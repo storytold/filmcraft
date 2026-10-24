@@ -147,7 +147,7 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 if c.clicked() {
                     keep = false;
                 }
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(app.tokens.accent));
                 elems.push(("audioGain.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;
@@ -273,7 +273,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             }
             ui.add_space(10.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(app.tokens.accent));
                 elems.push(("addTracks.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;
@@ -375,7 +375,7 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 }
                 let o = ui.add_enabled(
                     draft.video || draft.audio || (draft.captions && !cnames.is_empty()),
-                    egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent),
+                    egui::Button::new(egui::RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(app.tokens.accent),
                 );
                 elems.push(("deleteTracks.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {

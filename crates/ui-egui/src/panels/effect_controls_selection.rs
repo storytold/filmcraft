@@ -214,11 +214,11 @@ impl Interaction {
             }
             app.ui.keyframe_selection = selected;
             let painter = ui.painter().with_clip_rect(self.area);
-            painter.rect_filled(rect, 0.0, app.tokens.accent.linear_multiply(0.15));
-            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, app.tokens.accent), egui::StrokeKind::Inside);
+            painter.rect_filled(rect, 0.0, app.tokens.editing_accent().linear_multiply(0.15));
+            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, app.tokens.editing_accent()), egui::StrokeKind::Inside);
             app.auto.add("effectControls.marquee", rect, "keyframe selection");
             for point in &self.points {
-                let color = if app.ui.keyframe_selection.contains(&point.key) { app.tokens.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
+                let color = if app.ui.keyframe_selection.contains(&point.key) { app.tokens.editing_hot_text() } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
                 paint(&painter, point.rect, point.interp, color);
             }
             if self.background.drag_stopped_by(egui::PointerButton::Primary) {
@@ -228,7 +228,7 @@ impl Interaction {
         if let Some(Gesture::Group(group)) = &self.state.gesture {
             if let Some((time, x)) = group.snap {
                 let rect = Rect::from_min_max(egui::pos2(x - 1.0, self.area.min.y), egui::pos2(x + 1.0, self.area.max.y));
-                ui.painter().with_clip_rect(self.area).line_segment([rect.center_top(), rect.center_bottom()], Stroke::new(1.0, app.tokens.accent));
+                ui.painter().with_clip_rect(self.area).line_segment([rect.center_top(), rect.center_bottom()], Stroke::new(1.0, app.tokens.editing_accent()));
                 app.auto.add("effectControls.snapTarget", rect, &time.0.to_string());
             }
             if group.ended {

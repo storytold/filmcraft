@@ -784,9 +784,8 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool>
             app.auto.add("shortcuts.message", r.rect, &msg);
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let ok = ui.add(
-                egui::Button::new(RichText::new(tl!("OK")).size(13.0).color(Color32::WHITE)).fill(t.accent).min_size(vec2(72.0, 28.0)).corner_radius(14.0),
-            );
+            let ok = ui
+                .add(egui::Button::new(RichText::new(tl!("OK")).size(13.0).color(t.on_accent())).fill(t.accent).min_size(vec2(72.0, 28.0)).corner_radius(14.0));
             app.auto.add("shortcuts.ok", ok.rect, "OK");
             if ok.clicked() {
                 close = Some(true);

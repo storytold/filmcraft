@@ -178,7 +178,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     elems.push(("exportFrame.cancel".into(), r.rect, "Cancel".into()));
                     let r = ui.add_enabled(
                         !d.name.trim().is_empty() && !d.folder.trim().is_empty(),
-                        egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent),
+                        egui::Button::new(egui::RichText::new("OK").color(app.tokens.on_accent())).fill(app.tokens.accent),
                     );
                     apply = r.clicked();
                     elems.push(("exportFrame.export".into(), r.rect, "OK".into()));

@@ -80,7 +80,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 if c.clicked() {
                     close = true;
                 }
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(app.tokens.accent));
                 elems.push(("remixProperties.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;
