@@ -128,5 +128,6 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         enabled: has_seq,
         run: scopes_read,
         journal: false,
+        named: crate::commands::NamedKeys::NONE,
     }]
 }

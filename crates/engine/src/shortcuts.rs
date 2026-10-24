@@ -1133,7 +1133,17 @@ fn list(s: &Session, p: &Value) -> Value {
 pub fn commands() -> Vec<CommandSpec> {
     macro_rules! sc {
         ($id:literal, $label:literal, $params:literal, $journal:expr, $run:expr) => {
-            CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: $journal }
+            CommandSpec {
+                id: $id,
+                label: $label,
+                menu: &[],
+                shortcut: None,
+                params: $params,
+                enabled: always,
+                run: $run,
+                journal: $journal,
+                named: crate::commands::NamedKeys::NONE,
+            }
         };
     }
     vec![
