@@ -31,6 +31,8 @@ mod audio_in;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
+#[cfg(target_os = "linux")]
+mod display;
 mod file_filters;
 mod graphics;
 mod logging;
@@ -138,8 +140,21 @@ fn main() -> eframe::Result {
     if graphics.mode() == graphics::Mode::Default {
         register_gpu_frame_renderer();
     }
+    // On a Wayland session, open through XWayland: winit 0.30 has no Wayland file drag-and-drop, so
+    // files dropped from the desktop only arrive on X11 (see [`display`]). If XWayland cannot open
+    // the window, the first start errors and the retry below keeps native Wayland. Off Linux this
+    // is always false.
+    #[cfg(target_os = "linux")]
+    let mut force_x11 = display::prefer_x11(|k| std::env::var(k).ok());
+    #[cfg(not(target_os = "linux"))]
+    let mut force_x11 = false;
+    #[cfg(target_os = "linux")]
+    if force_x11 {
+        log::info!("Wayland session: opening the window through XWayland so file drops work (FILMCRAFT_NATIVE_WAYLAND=1 keeps native Wayland)");
+    }
+    let mut x11_start_failed = false;
     let started = loop {
-        let mut options = native_options(launch.control_port.is_some());
+        let mut options = native_options(launch.control_port.is_some(), force_x11);
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
@@ -150,6 +165,14 @@ fn main() -> eframe::Result {
             // existed: try the next mode in this process.
             Err(e) if !app_created && graphics::is_graphics_failure(e) && graphics.step_down() => {
                 log::warn!("graphics start failed: {e}");
+                continue;
+            }
+            // XWayland could not open the window (no X11 libraries, a stale `DISPLAY`): keep the
+            // session's own display server rather than refuse to start.
+            Err(eframe::Error::WinitEventLoop(_)) if !app_created && force_x11 && !x11_start_failed => {
+                log::warn!("could not open the window through XWayland; using native Wayland");
+                force_x11 = false;
+                x11_start_failed = true;
                 continue;
             }
             // Closed before the second frame: the window still came up.
@@ -181,7 +204,7 @@ fn main() -> eframe::Result {
 }
 
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
-fn native_options(agent: bool) -> eframe::NativeOptions {
+fn native_options(agent: bool, force_x11: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -196,7 +219,7 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
             .with_icon(app_icon())
             // Wayland matches the window to `packaging/linux/ai.storyteller.filmcraft.desktop`.
             .with_app_id(APP_ID),
-        event_loop_builder: agent_event_loop(agent),
+        event_loop_builder: event_loop_hook(agent, force_x11),
         ..Default::default()
     }
 }
@@ -461,9 +484,18 @@ fn local_offset(unix: i64) -> i32 {
     chrono::Local.timestamp_opt(unix, 0).single().map(|d| d.offset().local_minus_utc()).unwrap_or(0)
 }
 
-/// Driven by an agent (`--control`): don't activate the app on launch, so the user's keyboard
-/// focus stays where it is (macOS; winit activates ignoring other apps by default).
-fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
+/// The event-loop builder for this start. On Linux a Wayland session opens through XWayland so
+/// file drops work ([`display`]); on macOS an agent launch (`--control`) does not activate the app,
+/// so the user's keyboard focus stays where it is (winit activates ignoring other apps by default).
+fn event_loop_hook(agent: bool, force_x11: bool) -> Option<eframe::EventLoopBuilderHook> {
+    let _ = (agent, force_x11);
+    #[cfg(target_os = "linux")]
+    if force_x11 {
+        return Some(Box::new(|b| {
+            use winit::platform::x11::EventLoopBuilderExtX11 as _;
+            b.with_x11();
+        }));
+    }
     #[cfg(target_os = "macos")]
     if agent {
         return Some(Box::new(|b| {
@@ -471,17 +503,6 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
             b.with_activate_ignoring_other_apps(false);
         }));
     }
-    // winit has no file drag-and-drop on Wayland (only on X11), so dropping files from the file
-    // manager showed a "no" cursor. Run through XWayland when it's there; FILMCRAFT_WAYLAND=1
-    // keeps the native Wayland backend.
-    #[cfg(all(unix, not(target_os = "macos")))]
-    if std::env::var_os("DISPLAY").is_some() && std::env::var_os("FILMCRAFT_WAYLAND").is_none() {
-        return Some(Box::new(|b| {
-            use winit::platform::x11::EventLoopBuilderExtX11;
-            b.with_x11();
-        }));
-    }
-    let _ = agent;
     None
 }
 

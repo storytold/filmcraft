@@ -173,7 +173,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Have:** files given at launch (terminal, Open With, file associations) open whatever the case
   of `.fcproj` and are made absolute, and arguments that are not Unicode no longer stop the start;
-  `filmcraft-cli import` stores no Windows `\\?\` paths (#850).
+  `filmcraft-cli import` stores no Windows `\\?\` paths (#850). On a Wayland session the window
+  opens through XWayland, where winit 0.30 does deliver file drops (native Wayland drag-and-drop
+  waits on winit 0.31; `FILMCRAFT_NATIVE_WAYLAND=1` keeps native Wayland).
 - **Missing:** routine runtime testing off macOS. Linux playback stutter (#617), Wayland title
   bar (#433), case-sensitive extensions (#593), "Report an issue" link (#642), Windows bins cannot
   be left (#587), Sequence Settings won't open on Windows (#586, #351), old hardware (#491).
