@@ -123,6 +123,20 @@ pub trait VideoSamples: Sync {
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
 }
 
+/// A container's sync sample for `i` when leading pictures need the GOP before: `sync` is the
+/// index's own sync sample, `leads(i, key)` says `i` is shown before `key`. One step per GOP, so a
+/// loop: a crafted index can chain tens of thousands of GOPs (#2803). A `sync` past `i` stops the
+/// walk instead of looping on it.
+pub(crate) fn open_gop_sync(mut i: usize, sync: impl Fn(usize) -> usize, leads: impl Fn(usize, usize) -> bool) -> usize {
+    loop {
+        let key = sync(i);
+        if key == 0 || key > i || !leads(i, key) {
+            return key;
+        }
+        i = key - 1;
+    }
+}
+
 /// The sync sample to start decoding at for sample `i`: its sync sample, or an earlier one when
 /// `i` is a leading picture of an open GOP (stored after its random-access picture, shown before
 /// it, like the RASL pictures after every HEVC CRA of iPhone video). Those are predicted from the
@@ -432,11 +446,13 @@ pub struct GopCache {
     budget: usize,
 }
 
-/// The cache always has room for this many frames, whatever their size: a frame-threaded decoder
-/// runs up to ~2x its thread count ahead of the frame it returns, and playback prefetches ahead
-/// of the playhead, so a byte budget alone would evict 4K frames before they are shown and force
-/// a re-decode from the keyframe.
+/// The cache reserves room for this many small frames: a frame-threaded decoder runs up to ~2x
+/// its thread count ahead of the frame it returns, and playback prefetches ahead of the playhead.
 const MIN_FRAMES: usize = 64;
+/// A source cache never retains more decoded pixels than this, regardless of frame dimensions.
+/// In particular, untrusted VP9 `show_existing_frame` samples must not turn the small-frame
+/// reserve above into an unbounded number of full-resolution copies.
+const FRAME_CACHE_CEILING: usize = 384 << 20;
 
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
 /// rather than restarting at the sync sample.
@@ -519,7 +535,7 @@ impl GopCache {
             pool: pool.clone(),
         });
         pool.register(&shared);
-        Self { shared, explicit_color, rotation: 0, crop: None, budget: 384 << 20 }
+        Self { shared, explicit_color, rotation: 0, crop: None, budget: FRAME_CACHE_CEILING }
     }
 
     /// Turn every decoded frame clockwise by `quarter_turns` × 90° (the container's display
@@ -554,6 +570,12 @@ impl GopCache {
         self.store_finished(st, pts, self.finish(f), draft);
     }
 
+    /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
+    fn cache_budget(&self, frame_bytes: usize) -> usize {
+        let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
+        self.budget.min(FRAME_CACHE_CEILING).max(reserve)
+    }
+
     /// Cache a frame [`Self::finish`] has been applied to.
     fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
         st.last_used = Instant::now();
@@ -563,7 +585,7 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.budget.max(MIN_FRAMES * f.byte_size());
+        let budget = self.cache_budget(f.byte_size());
         let before = st.bytes;
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
@@ -866,6 +888,19 @@ impl GopCache {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_gop_sync_walks_a_long_chain_of_leading_pictures_without_recursing() {
+        // Every GOP of 3 starts at a key whose leading picture is shown before it (#2803).
+        let gops = 200_000usize;
+        let sync = |i: usize| i - i % 3;
+        let leads = |i: usize, key: usize| i == key + 2;
+        assert_eq!(super::open_gop_sync(gops * 3 - 1, sync, leads), 0);
+        // A picture that is not a leading one keeps its own key.
+        assert_eq!(super::open_gop_sync(7, sync, |_, _| false), 6);
+        // An index whose sync sample lies past `i` ends the walk instead of looping.
+        assert_eq!(super::open_gop_sync(5, |_| 9, |_, _| true), 9);
+    }
+
     use super::*;
     use crate::video::DecodedFrame;
     use std::collections::VecDeque;
@@ -1420,6 +1455,17 @@ mod tests {
         fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
             Ok(Box::new(Big(self.0)))
         }
+    }
+
+    #[test]
+    fn large_frames_cannot_enlarge_the_gop_cache_ceiling() {
+        let mut c = GopCache::new(None);
+        c.budget = usize::MAX;
+        assert_eq!(c.cache_budget(1), FRAME_CACHE_CEILING);
+        assert_eq!(c.cache_budget(FRAME_CACHE_CEILING), FRAME_CACHE_CEILING);
+        c.budget = 0;
+        assert_eq!(c.cache_budget(4), MIN_FRAMES * 4, "small frames retain the playback reserve");
+        assert_eq!(c.cache_budget(FRAME_CACHE_CEILING), FRAME_CACHE_CEILING, "large frames are capped instead of reserving 64 copies");
     }
 
     #[test]

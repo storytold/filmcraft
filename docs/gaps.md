@@ -119,7 +119,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G6. No real-world media corpus or workflow acceptance tests
 
-- **Done:** first scripted MCP workflows (#835, `apps/filmcraft-cli/tests/workflows.rs`): the
+- **Done:** first scripted MCP workflows (#835, `apps/filmcraft-cli/tests/it/workflows.rs`): the
   `filmcraft-cli mcp` binary imports ffmpeg-made phone-like VFR H.264 + AAC MP4 and long-GOP
   H.264 Matroska with two audio tracks (AAC, AC-3), edits (extract, audio gain, title; ripple
   trims, colour matte, cross dissolve), exports H.264 MP4, and saves a project that a new process

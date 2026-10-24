@@ -136,7 +136,7 @@ w.finish()?;
 - `src/tests.rs`: a small OP1a writer builds synthetic files (temporal offsets, key flags, PCM,
   timecode); open, presentation order, sample bytes, PCM values; truncation at every 37 bytes and
   600 random mutations never panic and only list fully-present samples.
-- `crates/codecs/tests/mxf_oracle.rs` (FFmpeg-written fixtures, FFmpeg as the decode oracle):
+- `crates/codecs/tests/it/mxf_oracle.rs` (FFmpeg-written fixtures, FFmpeg as the decode oracle):
   H.264 long-GOP with B pictures (bit-exact every frame + 25 random seeks), H.264 29.97 DF
   timecode, DNxHR LB (±2), ProRes 422 (±1), MPEG-2 long GOP, XDCAM HD422 and D-10 (±4),
   OP-Atom VC-3 (clip-wrapped) and PCM, D-10 AES3 audio; PCM sample-exact in every file;

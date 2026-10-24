@@ -344,6 +344,8 @@ struct Win {
     defined: bool,
     visible: bool,
     rows: Vec<String>,
+    max_rows: usize,
+    max_cols: usize,
 }
 
 struct Dec708 {
@@ -416,8 +418,9 @@ impl Dec708 {
     fn put(&mut self, c: char) {
         let w = self.w();
         match w.rows.last_mut() {
-            Some(row) => row.push(c),
-            None => w.rows.push(c.to_string()),
+            Some(row) if row.chars().count() < w.max_cols => row.push(c),
+            None if w.max_rows > 0 && w.max_cols > 0 => w.rows.push(c.to_string()),
+            _ => {}
         }
     }
     fn bitmap(&mut self, m: u8, f: impl Fn(&mut Win)) {
@@ -441,7 +444,8 @@ impl Dec708 {
                     }
                 }
                 0x0c => self.w().rows = vec![String::new()],
-                0x0d => self.w().rows.push(String::new()),
+                0x0d if self.w().rows.len() < self.w().max_rows => self.w().rows.push(String::new()),
+                0x0d => {}
                 0x0e => {
                     if let Some(r) = self.w().rows.last_mut() {
                         r.clear();
@@ -500,11 +504,24 @@ impl Dec708 {
                 0x98..=0x9f => {
                     let n = (c - 0x98) as usize;
                     let vis = arg(i) & 0x20 != 0;
+                    let max_rows = (arg(i + 3) & 0x0f) as usize + 1;
+                    let max_cols = (arg(i + 4) & 0x3f) as usize + 1;
                     let w = &mut self.win[n];
                     if !w.defined {
-                        *w = Win { defined: true, visible: vis, rows: vec![String::new()] };
+                        *w = Win { defined: true, visible: vis, rows: vec![String::new()], max_rows, max_cols };
                     } else {
                         w.visible = vis;
+                        w.max_rows = max_rows;
+                        w.max_cols = max_cols;
+                        w.rows.truncate(max_rows);
+                        for row in &mut w.rows {
+                            if let Some((at, _)) = row.char_indices().nth(max_cols) {
+                                row.truncate(at);
+                            }
+                        }
+                        if w.rows.is_empty() {
+                            w.rows.push(String::new());
+                        }
                     }
                     self.cur = n;
                     i += 6;
@@ -698,5 +715,13 @@ mod tests {
         let got: Vec<(i64, i64, &str)> = back.cues.iter().map(|c| (RATE.frame_at(c.start), RATE.frame_at(c.end), c.text.as_str())).collect();
         assert_eq!(got, vec![(60, 120, "Hello, world!"), (120, 200, "Second caption\nwith two lines"), (260, 300, "Café “q” ♪")]);
         assert!(parse("garbage").is_err());
+    }
+
+    #[test]
+    fn decoder_keeps_708_text_within_declared_window_dimensions() {
+        let mut decoder = Dec708::new();
+        // Define window 0 with one row and one column, then try to overflow both.
+        decoder.service_data(&[0x98, 0, 0, 0, 0, 0, 0, b'A', b'B', 0x0d, b'C']);
+        assert_eq!(decoder.win[0].rows, ["A"]);
     }
 }

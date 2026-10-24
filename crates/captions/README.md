@@ -85,7 +85,7 @@ implementation's code was consulted.
 
 - Unit tests per module (timestamps, decoding, sloppy SRT, WebVTT blocks and voices, CEA-608
   tables, PAC round trips, known SCC pop-on and roll-up streams, layout).
-- `tests/roundtrip.rs`: property tests — SRT (also with BOM + CRLF), WebVTT (ids, speakers,
+- `tests/it/roundtrip.rs`: property tests — SRT (also with BOM + CRLF), WebVTT (ids, speakers,
   settings, STYLE blocks), SCC and MCC (drop-frame and non-drop, gaps and back-to-back captions;
   MCC also through CEA-708 alone), EBU STL (25 and 29.97 fps, accents, extension blocks), TTML
   (23.976 / 25 / 29.97 / 59.94, ids, speakers) round-trip frame-exactly; DFXP round-trips after

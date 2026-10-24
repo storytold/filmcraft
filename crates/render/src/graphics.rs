@@ -8,6 +8,17 @@ use rayon::prelude::*;
 
 use crate::image::Image;
 
+/// Effect text is metadata-controlled; do not let its measured bounds allocate an unbounded mask.
+const MAX_BURN_TEXT_PIXELS: usize = 16 << 20;
+
+fn bounded_raster_size(w: f32, h: f32) -> Option<(usize, usize)> {
+    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let (w, h) = (w.ceil() as usize, h.ceil() as usize);
+    (w.checked_mul(h)? <= MAX_BURN_TEXT_PIXELS).then_some((w, h))
+}
+
 /// sRGB-encoded straight colour (0..1) → premultiplied linear.
 pub fn premul_linear(c: [f32; 4]) -> [f32; 4] {
     let a = c[3].clamp(0.0, 1.0);
@@ -59,7 +70,7 @@ pub fn paint_mask(img: &mut Image, m: &Mask, x0: i32, y0: i32, color: [f32; 4], 
 /// Draw `text` centred on `pos` (layer pixels) at `px` pixels in white over a black box of
 /// `box_alpha` (the Timecode and Clip Name effects).
 pub fn burn_text(img: &mut Image, text: &str, family: &str, pos: Vec2, px: f32, box_alpha: f32) {
-    if text.is_empty() || pos.x.is_nan() {
+    if text.is_empty() || !pos.x.is_finite() || !pos.y.is_finite() || !px.is_finite() || px <= 0.0 {
         return;
     }
     let st = TextStyle { family: family.into(), style: "Regular".into(), size: px, ..Default::default() };
@@ -72,10 +83,27 @@ pub fn burn_text(img: &mut Image, text: &str, family: &str, pos: Vec2, px: f32, 
     let boxp = filmcraft_text::Path::rect(bx + b[0] - pad, by - vm.cap_height - pad, bx + b[2] + pad, by + vm.descent * 0.6 + pad);
     if let Some(bb) = boxp.bounds() {
         let (x0, y0) = (bb.0.floor() as i32, bb.1.floor() as i32);
-        let m =
-            filmcraft_text::raster::fill(&boxp, (bb.2.ceil() as i32 - x0).max(1) as usize, (bb.3.ceil() as i32 - y0).max(1) as usize, -x0 as f32, -y0 as f32);
-        paint_mask(img, &m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha);
+        if let Some((w, h)) = bounded_raster_size(bb.2 - x0 as f32, bb.3 - y0 as f32) {
+            let m = filmcraft_text::raster::fill(&boxp, w, h, -x0 as f32, -y0 as f32);
+            paint_mask(img, &m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha);
+        }
+    }
+    let bounds = l.bounds;
+    if bounded_raster_size(bounds[2] - bounds[0], bounds[3] - bounds[1]).is_none() {
+        return;
     }
     let (m, x0, y0) = render::rasterize(&l, &render::at(bx, by.round()));
     paint_mask(img, &m, x0, y0, [1.0, 1.0, 1.0, 1.0], 1.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn burn_in_raster_budget_rejects_huge_and_non_finite_bounds() {
+        assert_eq!(bounded_raster_size(4096.0, 4096.0), Some((4096, 4096)));
+        assert_eq!(bounded_raster_size(4097.0, 4096.0), None);
+        assert_eq!(bounded_raster_size(f32::INFINITY, 1.0), None);
+    }
 }

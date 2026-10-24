@@ -352,6 +352,24 @@ impl Services for WebServices {
         Ok(())
     }
 
+    fn write_file_new(&self, path: &str, data: &[u8]) -> io::Result<()> {
+        if path.starts_with("/opfs/") {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "exclusive OPFS writes are unavailable"));
+        }
+        let hook = FS.with(|fs| {
+            let mut fs = fs.borrow_mut();
+            if fs.entries.contains_key(path) {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            fs.entries.insert(path.to_owned(), Entry::Mem(Arc::from(data)));
+            Ok(fs.on_write.clone())
+        })?;
+        if let Some(h) = hook {
+            h(path, data);
+        }
+        Ok(())
+    }
+
     fn file_size(&self, path: &str) -> io::Result<u64> {
         Self::entry_reader(path).map(|r| r.len())
     }
@@ -434,4 +452,33 @@ pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
         let _ = web_sys::Url::revoke_object_url(&url);
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod exclusive_write_tests {
+    use super::*;
+
+    #[test]
+    fn virtual_file_creation_is_exclusive_and_opfs_fails_closed() {
+        let host = WebServices;
+        let existing = "/files/collision-test.wav";
+        let fresh = "/files/new-extraction-test.wav";
+        FS.with(|fs| {
+            let mut fs = fs.borrow_mut();
+            fs.on_write = None;
+            fs.entries.insert(existing.into(), Entry::Mem(Arc::from(&b"original"[..])));
+            fs.entries.remove(fresh);
+        });
+        assert_eq!(host.write_file_new(existing, b"replacement").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(host.read_file(existing).unwrap(), b"original");
+        host.write_file_new(fresh, b"new").unwrap();
+        assert_eq!(host.read_file(fresh).unwrap(), b"new");
+        assert_eq!(host.write_file_new(fresh, b"again").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(host.write_file_new("/opfs/media/new.wav", b"new").unwrap_err().kind(), io::ErrorKind::Unsupported);
+        FS.with(|fs| {
+            let mut fs = fs.borrow_mut();
+            fs.entries.remove(existing);
+            fs.entries.remove(fresh);
+        });
+    }
 }

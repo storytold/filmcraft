@@ -544,10 +544,18 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
         let mut cluster_starts: Vec<usize> = extents.keys().copied().collect();
         cluster_starts.sort_unstable();
         let char_bytes: Vec<usize> = text[r.clone()].char_indices().map(|(b, _)| r.start + b).collect();
+        let mut first_member = 0usize;
         for (ci, &cs) in cluster_starts.iter().enumerate() {
             let (x0, x1, rtl) = extents[&cs];
             let next = cluster_starts.get(ci + 1).copied().unwrap_or(r.end);
-            let members: Vec<usize> = char_bytes.iter().copied().filter(|b| *b >= cs && *b < next).collect();
+            while first_member < char_bytes.len() && char_bytes[first_member] < cs {
+                first_member += 1;
+            }
+            let member_start = first_member;
+            while first_member < char_bytes.len() && char_bytes[first_member] < next {
+                first_member += 1;
+            }
+            let members = &char_bytes[member_start..first_member];
             let n = members.len().max(1) as f32;
             for (mi, b) in members.iter().enumerate() {
                 let f = mi as f32 / n;

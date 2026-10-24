@@ -128,3 +128,27 @@ fn ultra_key_setting_writes_aggressive_parameters() {
     assert_eq!(e.param("choke").unwrap().value.as_f64(), Some(10.0));
     assert_eq!(e.param("contrast").unwrap().value.as_f64(), Some(10.0));
 }
+
+/// #2679: a value outside a parameter's range (the `min`/`max` `effects.list` publishes) is
+/// refused with the range, not saved: gamma 1.1 meant as a factor turned the frame black.
+#[test]
+fn set_param_refuses_values_outside_the_range() {
+    let mut s = demo();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "levels"})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "lumetri"})).unwrap();
+    let before = s.project.to_json();
+    let undo = s.history.undo.len();
+    for (effect, param, value) in
+        [("levels", "gamma", 1.1), ("lumetri", "saturation", 500.0), ("lumetri", "vibrance", -300.0), ("opacity", "opacity", 250.0), ("motion", "scale", -50.0)]
+    {
+        let e = s.execute("effects.setParam", json!({"clip": clip, "effect": effect, "param": param, "value": value})).unwrap_err().to_string();
+        assert!(e.contains("must be between"), "{effect}.{param} = {value}: {e}");
+    }
+    assert_eq!(s.project.to_json(), before, "nothing was saved");
+    assert_eq!(s.history.undo.len(), undo);
+    // the ends of the range and values inside it still go in
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "levels", "param": "gamma", "value": 110})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 100})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 0})).unwrap();
+}

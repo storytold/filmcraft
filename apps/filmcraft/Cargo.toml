@@ -29,12 +29,14 @@ filmcraft-platform = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 serde_json = { workspace = true }
+# Constant-time comparison of control-channel credentials.
+subtle = "2.6"
 log = { workspace = true }
 rfd = { workspace = true }
 cpal = "0.16"
 # Files and images on the system clipboard for Paste (#611); egui already uses it for text.
 arboard = "3"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { workspace = true, features = ["clock"] }
 sys-locale = "0.3"
 # Help menu / About / Discord links in the system browser (MIT; as PhotoCraft).
 open = "5"

@@ -630,6 +630,17 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         }
         icons::paint(ui.painter(), r.shrink(5.0), icon, t.icon);
         if id == "new-item" {
+            // a clip dropped here makes a sequence that matches it, as in Premiere (#2855)
+            if let Some(item) = crate::panels::dragged_panel_item(ui)
+                && ui.rect_contains_pointer(r)
+            {
+                ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, app.tokens.accent), egui::StrokeKind::Inside);
+                if ui.input(|i| i.pointer.any_released()) {
+                    let items: Vec<u64> = crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect();
+                    actions.push(("file.newSequenceFromClip".into(), json!({"items": items})));
+                    crate::panels::clear_drag(ui);
+                }
+            }
             egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, actions));
         } else if resp.clicked() {
             match id {

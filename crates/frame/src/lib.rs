@@ -139,6 +139,7 @@ impl VideoFrame {
     /// and bit depth unchanged. Reduced-resolution playback hands the GPU this instead of the full
     /// picture (a quarter / sixteenth of the upload). None for RGBA frames or `n` < 2.
     pub fn box_decimated(&self, n: usize) -> Option<VideoFrame> {
+        let n = self.bounded_decimation(n);
         if n < 2 {
             return None;
         }
@@ -285,7 +286,7 @@ impl VideoFrame {
     /// `decode` (a colour-managed curve: log, PQ, HLG scene light…) instead of the frame's
     /// transfer. Float frames are already linear and ignore it.
     pub fn to_linear_f32_decimated_with(&self, n: usize, decode: Option<&DecodeTable>) -> (usize, usize, Vec<f32>) {
-        let n = n.max(1);
+        let n = self.bounded_decimation(n);
         let (ow, oh) = self.decimated_size(n);
         // every element is written below, so a recycled buffer needs no zero-fill
         let mut out = pool::take_f32_overwritten(ow * oh * 4);
@@ -295,7 +296,7 @@ impl VideoFrame {
 
     /// The size of the picture after `n`×`n` box decimation.
     pub fn decimated_size(&self, n: usize) -> (usize, usize) {
-        let n = n.max(1);
+        let n = self.bounded_decimation(n);
         ((self.width as usize / n).max(1), (self.height as usize / n).max(1))
     }
 
@@ -304,7 +305,7 @@ impl VideoFrame {
     /// by row. Each pixel is exactly what the full conversion gives at that position. The buffer
     /// may come from the pool ([`pool::recycle_f32`] hands it back).
     pub fn to_linear_f32_region(&self, n: usize, decode: Option<&DecodeTable>, region: Region) -> (Region, Vec<f32>) {
-        let n = n.max(1);
+        let n = self.bounded_decimation(n);
         let (ow, oh) = self.decimated_size(n);
         let r = region.clip(ow, oh);
         let mut out = pool::take_f32_overwritten(r.w * r.h * 4);
@@ -323,6 +324,7 @@ impl VideoFrame {
             out.fill(0.0);
             return;
         }
+        let n = n.min(w.max(h)).max(1);
         if let PixelData::RgbaF32(d) = &self.data
             && n == 1
         {
@@ -343,7 +345,7 @@ impl VideoFrame {
             Some(t) => t.lookup(v),
             None => lin[(v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize],
         };
-        let inv = 1.0 / (n * n) as f32;
+        let inv = 1.0 / (n as f32 * n as f32);
         match &self.data {
             PixelData::RgbaF32(d) => {
                 out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
@@ -477,7 +479,7 @@ impl VideoFrame {
     /// or its alpha is not stored as integers), so nothing can be skipped. Pixels outside the
     /// rectangle have alpha exactly 0 and, in the premultiplied conversion, colour 0 as well.
     pub fn alpha_region(&self, n: usize) -> Option<Region> {
-        let n = n.max(1);
+        let n = self.bounded_decimation(n);
         let (w, h) = (self.width as usize, self.height as usize);
         let px = w.checked_mul(h)?;
         // the first and last x of non-transparent pixels in source row `y`
@@ -500,6 +502,12 @@ impl VideoFrame {
         let (rx0, ry0) = (x0 / n, y0 / n);
         let (rx1, ry1) = (x1 / n + 1, y1 / n + 1);
         Some(Region { x: rx0, y: ry0, w: rx1.saturating_sub(rx0), h: ry1.saturating_sub(ry0) }.clip(ow, oh))
+    }
+
+    /// Keep hostile decimation requests from doing work beyond the source picture.  Larger boxes
+    /// only resample the edge pixels, so clamping them has no useful effect on the reduced output.
+    fn bounded_decimation(&self, n: usize) -> usize {
+        n.clamp(1, (self.width as usize).max(self.height as usize).max(1))
     }
 
     /// Convert to straight-alpha sRGB RGBA8 for display (fast paths for 8-bit sources).
@@ -829,6 +837,24 @@ mod tests {
         assert_eq!(&planes[2][..], &[200, 200]);
         assert!(f.box_decimated(1).is_none());
         assert!(VideoFrame::rgba8(2, 2, vec![0; 16]).box_decimated(2).is_none());
+    }
+
+    #[test]
+    fn decimation_caps_hostile_factors_to_the_frame_size() {
+        let rgba = VideoFrame::rgba8(1, 1, vec![23, 42, 99, 255]);
+        let (w, h, pixels) = rgba.to_linear_f32_decimated(usize::MAX);
+        assert_eq!((w, h), (1, 1));
+        assert_eq!(pixels, rgba.to_linear_f32());
+
+        let yuv = VideoFrame {
+            width: 2,
+            height: 2,
+            data: PixelData::Yuv8 { planes: [Arc::new(vec![1, 2, 3, 4]), Arc::new(vec![128]), Arc::new(vec![128])], chroma: Chroma::C420, alpha: None },
+            color: ColorInfo::REC709,
+            par: (1, 1),
+            pts: Tick::ZERO,
+        };
+        assert_eq!(yuv.box_decimated(usize::MAX).expect("yuv").luma8(), vec![3]);
     }
     use super::*;
 

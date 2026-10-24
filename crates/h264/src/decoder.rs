@@ -18,6 +18,10 @@ use filmcraft_bitstream::{BitReader, annexb_nals, length_prefixed_nals, unescape
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// The decoder supports at most 16 reference pictures, so constructing more
+/// inferred gap pictures cannot improve a usable reference list.
+const MAX_INFERRED_GAP_FRAMES: u32 = 16;
+
 /// One slice of a picture job.
 struct SliceJob {
     sh: SliceHeader,
@@ -234,7 +238,7 @@ impl Decoder {
             }
         }
         // The access unit is complete: hand its picture to a decoding job.
-        self.submit_pending();
+        self.submit_pending()?;
         if let Some(e) = self.take_error() {
             result = result.and(Err(e));
         }
@@ -254,7 +258,7 @@ impl Decoder {
 
     /// Output all remaining pictures (end of stream).
     pub fn flush(&mut self) -> Vec<Picture> {
-        self.submit_pending();
+        let _ = self.submit_pending();
         let mut outs = Vec::new();
         self.dpb.flush(&mut outs);
         self.emit(outs);
@@ -304,7 +308,7 @@ impl Decoder {
             nal_type::SLICE_DPA | nal_type::SLICE_DPB | nal_type::SLICE_DPC => {
                 return unsupported("data partitioning (Extended profile)");
             }
-            nal_type::END_SEQ | nal_type::END_STREAM => self.submit_pending(),
+            nal_type::END_SEQ | nal_type::END_STREAM => self.submit_pending()?,
             // SEI, AUD, filler, SPS extension, prefix NAL, subset SPS, auxiliary and extension slices: skipped.
             _ => {}
         }
@@ -353,7 +357,7 @@ impl Decoder {
             Some(p) => is_new_picture(&p.first, &sh, &sps) || sh.first_mb_in_slice == 0 || !Arc::ptr_eq(&p.sps, &sps),
         };
         if new_pic {
-            self.submit_pending();
+            self.submit_pending()?;
             if sh.first_mb_in_slice != 0 && self.active_sps.is_none() {
                 return invalid("stream does not start with the first slice of a picture");
             }
@@ -425,6 +429,10 @@ impl Decoder {
         } else {
             let max = sps.max_frame_num();
             if sh.frame_num != self.prev_ref_frame_num && sh.frame_num != (self.prev_ref_frame_num + 1) % max {
+                let gap = (sh.frame_num + max - self.prev_ref_frame_num - 1) % max;
+                if gap > MAX_INFERRED_GAP_FRAMES {
+                    return Err(Error::Invalid("frame number gap exceeds the supported reference limit".into()));
+                }
                 // frame_num gap (8.2.5.2): insert "non-existing" frames. Their samples are never used by
                 // conforming streams; copy the latest decoded frame for concealment.
                 let meta = Arc::new(output_meta(sps, pts, false));
@@ -464,8 +472,8 @@ impl Decoder {
     }
 
     /// Start decoding the pending picture and do its reference marking / DPB insertion.
-    fn submit_pending(&mut self) {
-        let Some(p) = self.pending.take() else { return };
+    fn submit_pending(&mut self) -> Result<()> {
+        let Some(p) = self.pending.take() else { return Ok(()) };
         let PendingPic { frame, sps, first, poc, pts, key, slices } = p;
         let draft = self.draft && first.nal_ref_idc == 0;
         self.dispatch(frame.clone(), slices, draft);
@@ -476,8 +484,9 @@ impl Decoder {
         let meta = Arc::new(OutputMeta { draft, ..output_meta(&sps, pts, key) });
         let mut outs = Vec::new();
         let fpoc = frame.poc;
-        self.dpb.store_picture(&first, frame, fpoc, sps.max_frame_num(), sps.max_num_ref_frames as usize, meta, &mut outs);
+        self.dpb.store_picture(&first, frame, fpoc, sps.max_frame_num(), sps.max_num_ref_frames as usize, meta, &mut outs)?;
         self.emit(outs);
+        Ok(())
     }
 
     fn dispatch(&mut self, frame: FrameRef, slices: Vec<SliceJob>, draft: bool) {

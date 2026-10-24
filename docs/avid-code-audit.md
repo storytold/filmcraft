@@ -401,3 +401,24 @@ report modes. On this final tree, `cargo xtask ci` passed with Rust 1.95.0: **3,
 test suites, plus formatting, release Clippy with warnings denied, dependency layers, 69
 attributed assets, and WASM checks for 49 crates. The earlier private corpus and render audits
 were not repeated for this path-policy change.
+
+### Current-main integration — 2026-10-24
+
+The refresh merges main `bfc23840b603e69c782302c6ed04d4a9f6ec26a8` into the
+submitted importer. The MXF conflict retains both bounded opaque-header packet recovery
+and main's shared corruption-resynchronization budget. Relink status retains the stored-path
+policy, and the consolidated integration-test targets retain the component-media fixtures
+and UI regressions. A Rust 1.95 Clippy compatibility edit rewrites a ProRes allocation-limit
+condition equivalently; it does not change codec behavior.
+
+The Avid parser, supported-effect translation, component-binding implementation and import
+preview are unchanged by this refresh. Earlier private-corpus counts and manual playback
+checks remain prior-snapshot evidence; this integration does not extend supported coverage
+or establish Avid render equivalence.
+
+`cargo xtask ci` passed on the integrated tree with Rust 1.95.0 and the repository's
+current default profiles, without profile overrides: **3,763 tests passed, zero failed,
+76 skipped**, plus doctests, formatting, strict workspace/all-target Clippy, dependency
+layers, 69 attributed assets and WASM checks for 49 crates. Nextest used four test workers.
+Six focused importer/component-relink UI regressions also passed with wgpu rendering;
+the preview, small-window expanded report and component-match screenshots were inspected.
