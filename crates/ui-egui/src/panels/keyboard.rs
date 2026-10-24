@@ -355,7 +355,7 @@ fn begin_text_editing(app: &mut FilmcraftApp) -> Result<Value, String> {
     let len = pick["text"].as_str().map_or(0, str::len);
     app.session.execute("graphics.selectLayer", json!({"clip": clip, "layers": [layer]})).map_err(|e| e.to_string())?;
     // like Premiere, the whole text is selected so typing replaces it
-    app.ui.gfx_edit = Some(crate::state::GfxEdit { clip, layer, caret: len, anchor: 0 });
+    app.ui.gfx_edit = Some(crate::state::GfxEdit { clip, layer, caret: len, anchor: 0, ..Default::default() });
     app.show_panel(PanelKind::Program);
     Ok(json!({"clip": clip, "layer": layer}))
 }

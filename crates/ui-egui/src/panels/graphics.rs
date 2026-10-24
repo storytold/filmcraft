@@ -506,9 +506,28 @@ fn new_text_action(app: &FilmcraftApp, pic: Rect, frame: (u32, u32), at: Pos2, c
 const TEXT_EDIT_ID: &str = "gfx-text-edit";
 
 fn end_edit(app: &mut FilmcraftApp, ui: &egui::Ui) {
+    // what an input method was still composing goes into the text, as a text field keeps it
+    // (Korean commits a syllable only when the next one starts, so the last one would be lost)
+    if let Some(ed) = app.ui.gfx_edit.take().filter(|ed| !ed.preedit.is_empty()) {
+        commit_preedit(app, &ed);
+    }
     app.ui.gfx_edit = None;
     ui.memory_mut(|m| m.surrender_focus(egui::Id::new(TEXT_EDIT_ID)));
     ui.data_mut(|d| d.remove::<crate::dock::PanelKind>(egui::Id::new(TEXT_EDIT_ID).with("panel")));
+}
+
+/// Insert `ed`'s composing text at its caret (replacing the selection) as one text edit.
+fn commit_preedit(app: &mut FilmcraftApp, ed: &GfxEdit) {
+    let list = app.session.execute("graphics.list", json!({"clip": ed.clip})).unwrap_or_default();
+    let Some(mut text) = list["layers"].get(ed.layer).and_then(|l| l["text"].as_str()).map(str::to_string) else { return };
+    let (a, b) = (ed.caret.min(ed.anchor).min(text.len()), ed.caret.max(ed.anchor).min(text.len()));
+    if !text.is_char_boundary(a) || !text.is_char_boundary(b) {
+        return;
+    }
+    text.replace_range(a..b, &ed.preedit);
+    if let Err(e) = app.session.execute("graphics.setText", json!({"clip": ed.clip, "layer": ed.layer, "text": text, "merge": true})) {
+        app.ui.status = e.to_string();
+    }
 }
 
 /// A click on the Program monitor's empty space (the picture's, or around it): end the text edit
@@ -624,7 +643,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // ---- text editing
     if let Some(ed) = editing.clone() {
         match views.iter().find(|v| v.clip.0 == ed.clip && v.layer == ed.layer && v.is_text()) {
-            Some(v) => text_edit(app, ui, v, ed, &resp, &mut actions),
+            Some(v) => text_edit(app, ui, v, ed, &resp),
             None => end_edit(app, ui),
         }
     }
@@ -927,13 +946,27 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let (a, b) = (sp(&v.to_screen, x, base - ascent), sp(&v.to_screen, x, base + descent));
         painter.line_segment([a, b], Stroke::new(1.5, Color32::WHITE));
         painter.line_segment([a + vec2(1.0, 0.0), b + vec2(1.0, 0.0)], Stroke::new(0.5, Color32::BLACK));
-        let er = Rect::from_points(&v.quad()).union(Rect::from_two_pos(a, b));
+        let mut er = Rect::from_points(&v.quad()).union(Rect::from_two_pos(a, b));
+        // the composing text, underlined, just after the caret (#2445)
+        if !ed.preedit.is_empty() {
+            let size = (b.y - a.y).abs().clamp(6.0, 400.0) * 0.8;
+            let font = egui::FontId::proportional(size);
+            let galley = painter.layout_no_wrap(ed.preedit.clone(), font, Color32::WHITE);
+            let at = a + vec2(2.0, (b.y - a.y - galley.size().y) / 2.0);
+            let r = Rect::from_min_size(at, galley.size());
+            painter.rect_filled(r.expand(1.0), 2.0, Color32::from_black_alpha(140));
+            painter.galley(at, galley, Color32::WHITE);
+            painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, Color32::WHITE));
+            app.auto.add("program.textEdit.preedit", r, &ed.preedit);
+            er = er.union(r);
+        }
         app.auto.add("program.textEdit", er, &tp.text);
         ui.ctx().output_mut(|o| {
             o.ime = Some(egui::output::IMEOutput {
                 purpose: Default::default(),
                 rect: er,
                 cursor_rect: Rect::from_two_pos(a, b),
+                // egui sets it when the editor takes the focus (`request_focus` below)
                 should_interrupt_composition: false,
             })
         });
@@ -947,7 +980,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         match app.session.execute(&cmd, p) {
             Ok(r) => {
                 if then_edit && let (Some(c), Some(l)) = (r["clip"].as_u64(), r["layer"].as_u64()) {
-                    app.ui.gfx_edit = Some(GfxEdit { clip: c, layer: l as usize, caret: 0, anchor: 0 });
+                    app.ui.gfx_edit = Some(GfxEdit { clip: c, layer: l as usize, caret: 0, anchor: 0, ..Default::default() });
                     app.ui.focused = crate::dock::PanelKind::Program;
                 }
             }
@@ -987,9 +1020,13 @@ fn start_edit_at(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, p: Pos2, 
     let Some(tp) = text_of(&v.spec) else { return };
     let l = text_layout(tp);
     let caret = v.to_local(p).map_or(tp.text.len(), |(x, y)| l.hit(x, y));
-    app.ui.gfx_edit = Some(GfxEdit { clip: v.clip.0, layer: v.layer, caret, anchor: caret });
+    // another layer: the edit in progress ends first, so a syllable still being composed reaches
+    // the layer it was typed into (#2501 review)
+    if app.ui.gfx_edit.as_ref().is_some_and(|e| (e.clip, e.layer) != (v.clip.0, v.layer)) {
+        end_edit(app, ui);
+    }
+    app.ui.gfx_edit = Some(GfxEdit { clip: v.clip.0, layer: v.layer, caret, anchor: caret, ..Default::default() });
     app.ui.focused = crate::dock::PanelKind::Program;
-    let _ = ui;
     actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": [v.layer]})));
 }
 
@@ -1009,7 +1046,7 @@ pub(crate) fn select_all_edited_text(app: &mut FilmcraftApp) -> bool {
 }
 
 /// Keyboard handling while a text layer is being edited.
-fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: GfxEdit, resp: &egui::Response, actions: &mut Vec<(String, Value)>) {
+fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: GfxEdit, resp: &egui::Response) {
     let _ = resp;
     // moving to another panel ends the edit; Properties and Essential Graphics style the text
     // being edited, so working there keeps it (#683). Only a move counts: an edit started with
@@ -1032,7 +1069,12 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
         return;
     }
     ui.memory_mut(|m| {
-        m.request_focus(eid);
+        // only when it doesn't have it: egui ends the input method's composition on every
+        // request, which every frame would lose each syllable being composed; a new edit (another
+        // layer clicked) takes it once, so a syllable committed to the last one stays there
+        if !m.has_focus(eid) {
+            m.request_focus(eid);
+        }
         m.set_focus_lock_filter(eid, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
     });
     let Some(tp) = text_of(&v.spec) else { return };
@@ -1055,7 +1097,15 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
         true
     };
     for ev in events {
+        // a commit replaces what was being composed
+        if matches!(ev, egui::Event::Ime(egui::ImeEvent::Commit(_))) {
+            ed.preedit.clear();
+        }
         match ev {
+            // what the input method is composing shows at the caret until it is committed (#2445)
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+                ed.preedit = text.chars().filter(|c| !c.is_control()).collect();
+            }
             // an input method (Chinese, Japanese, Korean) hands over its finished text as a commit (#1083)
             egui::Event::Text(s) | egui::Event::Paste(s) | egui::Event::Ime(egui::ImeEvent::Commit(s)) => {
                 let s: String = s.chars().filter(|c| !c.is_control() || *c == '\n').collect();
@@ -1156,10 +1206,18 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
             _ => {}
         }
     }
-    if changed && text != tp.text {
-        actions.push(("graphics.setText".into(), json!({"clip": ed.clip, "layer": ed.layer, "text": text, "merge": true})));
+    // written now, not queued with the frame's other actions: an edit that ends later this frame
+    // (Escape, a click elsewhere, another layer) commits what an input method was still composing
+    // against this text, and a queued write would then overwrite that (#2501 review)
+    if changed
+        && text != tp.text
+        && let Err(e) = app.session.execute("graphics.setText", json!({"clip": ed.clip, "layer": ed.layer, "text": text, "merge": true}))
+    {
+        app.ui.status = e.to_string();
     }
     if stop {
+        // Escape: the composition ends with the edit (end_edit commits it)
+        app.ui.gfx_edit = Some(ed);
         end_edit(app, ui);
     } else {
         app.ui.gfx_edit = Some(ed);

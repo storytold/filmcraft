@@ -357,6 +357,103 @@ fn text_committed_by_an_input_method_is_typed_on_the_monitor() {
     assert_eq!(list["layers"][0]["text"], "A你好");
 }
 
+/// #2445: Korean commits a syllable only when the next one starts, and the text being composed
+/// was never shown, so typing Korean on the monitor seemed to do nothing, and the last syllable was
+/// lost when the edit ended. The composing text now shows at the caret and is kept when the edit
+/// ends.
+#[test]
+fn korean_being_composed_shows_and_is_kept_when_the_edit_ends() {
+    let mut d = Driver::new();
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.2}));
+    d.ok("ui.type", json!({"text": "A"}));
+    // 한 composed from ㅎ, 하, 한, then 국 started: 한 is committed, 구 shows
+    let preedit = |text: &str| egui::Event::Ime(egui::ImeEvent::Preedit { text: text.into(), active_range_chars: None });
+    d.harness.input_mut().events.extend([preedit("ㅎ"), preedit("하"), preedit("한")]);
+    d.frames(3);
+    let shown = d.ok("ui.elements", json!({"prefix": "program.textEdit.preedit"}));
+    assert_eq!(shown[0]["label"], "한", "the syllable being composed shows: {shown}");
+    d.harness.input_mut().events.extend([egui::Event::Ime(egui::ImeEvent::Commit("한".into())), preedit("구")]);
+    d.frames(3);
+    assert_eq!(d.exec("graphics.list", json!({}))["layers"][0]["text"], "A한");
+    // Escape ends the edit: the syllable still being composed is kept
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(3);
+    assert!(d.harness.state().ui.gfx_edit.is_none());
+    assert_eq!(d.exec("graphics.list", json!({}))["layers"][0]["text"], "A한구");
+}
+
+/// #2501 review: a commit, the next syllable's preedit and Escape in one input frame keep both
+/// syllables (the queued write of the commit used to overwrite the preedit's).
+#[test]
+fn a_commit_and_a_preedit_ended_in_one_frame_keep_both() {
+    let mut d = Driver::new();
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.2}));
+    d.ok("ui.type", json!({"text": "A"}));
+    d.frames(2);
+    let preedit = |text: &str| egui::Event::Ime(egui::ImeEvent::Preedit { text: text.into(), active_range_chars: None });
+    let esc = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+    d.harness.input_mut().events.extend([egui::Event::Ime(egui::ImeEvent::Commit("한".into())), preedit("구"), esc]);
+    d.frames(3);
+    assert!(d.harness.state().ui.gfx_edit.is_none());
+    assert_eq!(d.exec("graphics.list", json!({}))["layers"][0]["text"], "A한구");
+}
+
+/// #2501 review: starting to edit another text layer while a syllable is being composed puts that
+/// syllable into the layer it was typed in.
+#[test]
+fn editing_another_layer_keeps_the_syllable_being_composed() {
+    let mut d = Driver::new();
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    // two text layers in the same graphic: "A" high up, "B" lower down
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.2}));
+    d.ok("ui.type", json!({"text": "A"}));
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.7}));
+    d.ok("ui.type", json!({"text": "B"}));
+    d.frames(2);
+    let preedit = |text: &str| egui::Event::Ime(egui::ImeEvent::Preedit { text: text.into(), active_range_chars: None });
+    d.harness.input_mut().events.push(preedit("한"));
+    let ime = |d: &Driver| d.harness.output().platform_output.ime.as_ref().map(|ime| ime.should_interrupt_composition);
+    for _ in 0..3 {
+        d.frames(1);
+        // the syllable keeps being composed while the edit goes on
+        assert_eq!(ime(&d), Some(false));
+    }
+    // click into the first layer's text: the edit moves there
+    let list = d.exec("graphics.list", json!({}));
+    let texts: Vec<String> = list["layers"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap_or("").to_string()).collect();
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    // frame by frame, to see the input method told to end its composition (#2501 review): its
+    // commit of the syllable must not reach the new edit as well
+    let at = egui::pos2((pic[0] + pic[2] * 0.3 + 2.0) as f32, (pic[1] + pic[3] * 0.2) as f32);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    d.harness.input_mut().events.extend([egui::Event::PointerMoved(at), button(true)]);
+    let mut interrupted = 0;
+    for i in 0..6 {
+        if i == 1 {
+            d.harness.input_mut().events.push(button(false));
+        }
+        d.frames(1);
+        interrupted += usize::from(ime(&d) == Some(true));
+    }
+    assert!(d.harness.state().ui.gfx_edit.is_some(), "editing the other layer");
+    assert!(interrupted >= 1, "the new edit ends the composition");
+    d.frames(1);
+    assert_eq!(ime(&d), Some(false), "and then lets the next one go on");
+    let list = d.exec("graphics.list", json!({}));
+    let texts: Vec<String> = list["layers"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap_or("").to_string()).collect();
+    assert!(texts.contains(&"B한".to_string()), "the syllable went into the layer it was typed in: {texts:?}");
+}
+
 /// #2430: a click (no drag) in the text being edited on the monitor puts the caret there; before,
 /// only a press that moved a little did, and typing went on at the end.
 #[test]
