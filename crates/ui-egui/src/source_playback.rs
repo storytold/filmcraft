@@ -34,7 +34,7 @@ impl FilmcraftApp {
     }
 
     /// J / K / L in the Source monitor: play at `speed` × real time (negative = backward) from the
-    /// Source playhead. Sound plays at normal forward speed only, as in the Program monitor.
+    /// Source playhead. Sound plays from 0.5× to 4× forward, as in the Program monitor.
     pub fn shuttle_source(&mut self, speed: f64) -> Result<(), String> {
         if !speed.is_finite() || speed == 0.0 {
             return Err("Source shuttle speed must be a non-zero number".into());
@@ -115,13 +115,16 @@ impl FilmcraftApp {
 
     fn start_source_audio(&mut self, now: f64) {
         self.source_playback.clock.audio_clock = false;
-        if (self.source_playback.clock.speed - 1.0).abs() > 1e-9 {
+        // 0.5–4× forward plays sound, as in the Program monitor (#1789): the media is decoded at
+        // `mix_rate` = device rate / speed and played at the device rate. Reverse stays silent.
+        let speed = self.source_playback.clock.speed;
+        let Some(mix_rate) = self.audio.as_ref().and_then(|a| crate::shuttle_mix_rate(a.sample_rate(), speed)) else {
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
             self.source_playback.clock.audio_retry_at = 0.0;
             return;
-        }
+        };
         let Some(item) = self.source_playback.item else { return };
         let Some(view) = source_view(&self.session, item) else { return };
         let Some(media) = self.session.project.item(view.media).and_then(|i| i.as_media()) else { return };
@@ -147,35 +150,43 @@ impl FilmcraftApp {
         // A seek gets its own failure slot: a late callback from the old stream cannot stop it.
         self.source_playback.failure = Arc::new(Mutex::new(None));
         let failure = self.source_playback.failure.clone();
-        let end = self
-            .source_playback
-            .clock
-            .stop_at
-            .unwrap_or_else(|| if self.source_playback.clock.looping { view.selected_range().end() } else { view.end })
-            .to_units_floor(i64::from(sr));
-        let mix = move |cursor: i64, buf: &mut [f32], ch: usize| {
-            buf.fill(0.0);
-            if ch == 0 || cursor >= end {
-                return;
-            }
-            let frames = (buf.len() / ch).min(usize::try_from(end.saturating_sub(cursor)).unwrap_or(0));
-            match source.audio(cursor, frames, sr) {
-                Ok(mut sound) => {
-                    if !channels.is_empty() {
-                        sound.channels = channels.iter().filter_map(|c| sound.channels.get(usize::from(*c)).cloned()).collect();
-                    }
-                    let sound = filmcraft_render::audio::to_layout(sound, filmcraft_audio_dsp::channels::Layout::Stereo, mixdown);
-                    let Some(left) = sound.channels.first() else { return };
-                    let right = sound.channels.get(1).unwrap_or(left);
-                    filmcraft_engine::settings::map_output(left, right, buf, ch, map);
+        let end = self.source_playback.clock.stop_at.unwrap_or_else(|| if self.source_playback.clock.looping { view.selected_range().end() } else { view.end });
+        // the source's sound at `rate` samples per second, cursor in that rate
+        let make = move |rate: u32| {
+            let (source, channels, failure) = (source.clone(), channels.clone(), failure.clone());
+            let end = end.to_units_floor(i64::from(rate));
+            move |cursor: i64, buf: &mut [f32], ch: usize| {
+                buf.fill(0.0);
+                if ch == 0 || cursor >= end {
+                    return;
                 }
-                Err(e) => {
-                    *failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("Source audio decoding failed: {e}"));
+                let frames = (buf.len() / ch).min(usize::try_from(end.saturating_sub(cursor)).unwrap_or(0));
+                match source.audio(cursor, frames, rate) {
+                    Ok(mut sound) => {
+                        if !channels.is_empty() {
+                            sound.channels = channels.iter().filter_map(|c| sound.channels.get(usize::from(*c)).cloned()).collect();
+                        }
+                        let sound = filmcraft_render::audio::to_layout(sound, filmcraft_audio_dsp::channels::Layout::Stereo, mixdown);
+                        let Some(left) = sound.channels.first() else { return };
+                        let right = sound.channels.get(1).unwrap_or(left);
+                        filmcraft_engine::settings::map_output(left, right, buf, ch, map);
+                    }
+                    Err(e) => {
+                        *failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("Source audio decoding failed: {e}"));
+                    }
                 }
             }
         };
+        // Maintain Pitch While Shuttling, as in the Program monitor
+        let mix: Box<dyn FnMut(i64, &mut [f32], usize) + Send> = if self.session.prefs.audio.maintain_pitch_shuttling && mix_rate != sr {
+            let internal = if mix_rate > sr { sr.saturating_mul(2) } else { sr };
+            let semitones = (12.0 * (f64::from(mix_rate) / f64::from(sr)).log2()) as f32;
+            Box::new(crate::shuttle::corrected(make(internal), internal, mix_rate, semitones))
+        } else {
+            Box::new(make(mix_rate))
+        };
         audio.stop();
-        let cursor = self.session.state.source_playhead.to_units_floor(i64::from(sr));
+        let cursor = self.session.state.source_playhead.to_units_floor(i64::from(mix_rate));
         #[cfg(not(target_arch = "wasm32"))]
         let fill = crate::play_ahead::spawn(mix, cursor, sr, audio.channels(), self.source_playback.clock.audio_stats.clone());
         #[cfg(target_arch = "wasm32")]

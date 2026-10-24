@@ -2228,7 +2228,7 @@ impl eframe::App for FilmcraftApp {
 /// Effective sample rate for shuttle playback. The audio device still runs at `device_rate`,
 /// so at 2x its output samples represent twice the timeline duration. Reverse and
 /// extreme shuttle speeds remain silent rather than asking the mixer for invalid rates.
-fn shuttle_mix_rate(device_rate: u32, speed: f64) -> Option<u32> {
+pub(crate) fn shuttle_mix_rate(device_rate: u32, speed: f64) -> Option<u32> {
     if device_rate == 0 || !speed.is_finite() || !(0.5..=4.0).contains(&speed) {
         return None;
     }
