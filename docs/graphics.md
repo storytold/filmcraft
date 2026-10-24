@@ -60,6 +60,12 @@ A text layer is one of two types, as in Premiere Pro (behaviour observed in Prem
   and Anchor Point change together). It is picked before anything under it: a shape dragged by
   its exact centre moves its anchor, not the shape, and the top-left handle of a new paragraph
   box is reached only after moving the anchor.
+- **Several layers.** With the Selection tool, Shift-click adds a layer of the selected graphic
+  to the selection or takes it out again, Cmd/Ctrl-click takes it out, and a plain click selects
+  only it. Dragging any selected layer moves all of them together, snapping by their combined
+  outline, as one undo step (`graphics.moveLayers`); Shift-dragging an unselected layer adds it
+  first. Drawing a marquee to select layers is not supported yet. A selected layer that is
+  hidden (eye off) stays selected but is not dragged: only shown layers move.
 - **Switching type.** Properties ▸ Text ▸ wrench ▸ **Text Properties** ▸ Text Layer Type
   (`graphics.setTextType`). To point text: the wrapped lines become real lines (also those the
   box hid). To paragraph text: the box is fitted to the text. Either way the text stays where it
@@ -93,7 +99,8 @@ Timecode and Clip Name effects also draw with the text engine.
 | `graphics.setTextType` | Text Properties ▸ Text Layer Type | `clip`, `layer`, `type` (`point` / `paragraph`); the text stays where it is |
 | `graphics.setText` | typing on the monitor | `clip`, `layer`, `text`, `merge` (coalesce one typing session into one undo step) |
 | `graphics.set` | Properties panel | `clip`, `layer`, `props` {parameter id or camelCase alias: value; choices by index or name}, `time`, `merge` + `begin` (a drag is one undo step: send `merge: true` on every change and `begin: true` on the first change of each press) |
-| `graphics.selectLayer` | layer list / monitor click | `clip`, `layers` |
+| `graphics.selectLayer` | layer list / monitor click (Shift-click adds or removes) | `clip`, `layers` |
+| `graphics.moveLayers` | dragging selected layers on the Program monitor | `clip`, `layers` (default: the selected layers), `delta` `[dx, dy]` in graphic pixels — one undo step; pinned layers keep following their targets (moved together with its target, a pinned layer moves once, with it) |
 | `graphics.deleteLayer`, `graphics.arrangeLayer` | layer list | `clip`, `layer`, `to` (front/back/forward/backward/index) |
 | `graphics.align` | Align and Transform | `align` (left/hcenter/right/top/vcenter/bottom), `to` (frame/group/selection), `layers` |
 | `graphics.alignFrame.<how>` | Align to Video Frame ▸ Left / Center Horizontally / Right / Top / Center Vertically / Bottom | each selected layer to the frame |

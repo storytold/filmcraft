@@ -650,3 +650,73 @@ fn double_click_and_select_all_select_the_text_being_edited() {
     assert_eq!(edit(&d), Some((clip, 0, 0, 5)), "Select All selects the text being edited");
     assert_eq!(d.harness.state().session.state.selection, selection, "and leaves the timeline selection alone");
 }
+
+/// Position of each layer of `clip`, back first.
+fn positions(d: &mut Driver, clip: u64) -> Vec<(f64, f64)> {
+    let l = d.exec("graphics.list", json!({"clip": clip}));
+    l["layers"].as_array().unwrap().iter().map(|x| (num(&x["position"][0]), num(&x["position"][1]))).collect()
+}
+
+/// #2186: Shift-click adds layers of a graphic to the selection, Cmd/Ctrl-click takes them out,
+/// and dragging a selected layer moves every selected layer together, as one undo step.
+#[test]
+fn shift_click_selects_several_layers_and_a_drag_moves_them_together() {
+    let mut d = Driver::new();
+    let r = d.exec("graphics.newShape", json!({"shape": "rectangle", "position": [500, 400], "size": [240, 160]}));
+    let clip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.newShape", json!({"shape": "ellipse", "clip": clip, "position": [1000, 400], "size": [200, 200]}));
+    d.exec("graphics.newShape", json!({"shape": "rectangle", "clip": clip, "position": [1400, 800], "size": [200, 120]}));
+    d.select(clip);
+    let centre = |d: &mut Driver, l: usize| {
+        let r = d.rect(&format!("program.layer.{clip}.{l}"));
+        (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+    };
+    let click = |d: &mut Driver, at: (f64, f64), m: Value| {
+        d.ok("ui.click", json!({"x": at.0, "y": at.1, "modifiers": m}));
+        d.frames(3);
+    };
+    let sel = |d: &mut Driver| d.harness.state().session.state.graphic_layers.clone();
+    d.frames(10);
+    let (c0, c1, c2) = (centre(&mut d, 0), centre(&mut d, 1), centre(&mut d, 2));
+    click(&mut d, c1, json!({"shift": true}));
+    assert_eq!(sel(&mut d), [0, 1], "Shift-click adds a layer");
+    d.shot("graphic-layers-multi-select");
+
+    // dragging one of them moves both by the same amount; the third stays
+    let before = positions(&mut d, clip);
+    let undo = d.harness.state().session.history.undo.len();
+    // (away from the anchor point in the middle, which drags only the anchor)
+    let r0 = d.rect(&format!("program.layer.{clip}.0"));
+    assert!(near(c0, (r0[0] + r0[2] / 2.0, r0[1] + r0[3] / 2.0)), "the monitor settled");
+    let grab = (r0[0] + r0[2] / 4.0, r0[1] + r0[3] / 2.0);
+    d.drag(grab, (63.0, 41.0));
+    let after = positions(&mut d, clip);
+    let moved = |i: usize| (after[i].0 - before[i].0, after[i].1 - before[i].1);
+    assert!(moved(0).0 > 20.0 && moved(0).1 > 10.0, "{before:?} → {after:?}");
+    assert!(near(moved(0), moved(1)), "both moved alike: {:?} {:?}", moved(0), moved(1));
+    assert_eq!(after[2], before[2]);
+    assert_eq!(d.harness.state().session.history.undo.len(), undo + 1, "one undo step");
+    assert_eq!(sel(&mut d), [0, 1], "the selection stays");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(positions(&mut d, clip), before);
+
+    // Cmd/Ctrl-click takes a layer out; Shift-click on a selected one too
+    click(&mut d, c1, json!({"command": true}));
+    assert_eq!(sel(&mut d), [0]);
+    click(&mut d, c0, json!({"shift": true}));
+    assert!(sel(&mut d).is_empty());
+    // a plain click selects only the layer clicked
+    click(&mut d, c2, json!({}));
+    assert_eq!(sel(&mut d), [2]);
+
+    // Shift-dragging an unselected layer adds it and moves the lot
+    let before = positions(&mut d, clip);
+    d.hold_shift(true);
+    d.drag(grab, (-50.0, 30.0));
+    d.hold_shift(false);
+    let after = positions(&mut d, clip);
+    assert_eq!(sel(&mut d), [2, 0]);
+    let moved = |i: usize| (after[i].0 - before[i].0, after[i].1 - before[i].1);
+    assert!(moved(0).0 < -20.0 && near(moved(0), moved(2)), "{before:?} → {after:?}");
+    assert_eq!(after[1], before[1]);
+}
