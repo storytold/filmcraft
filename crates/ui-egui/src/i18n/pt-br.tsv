@@ -3585,3 +3585,9 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+# The speech model download dialog (G19).
+	Transcription runs on this computer with {model}. It needs a one-time download of {size}.	A transcrição é feita neste computador com {model}. É necessário um download único de {size}.
+	The audio is not sent anywhere.	O áudio não é enviado a lugar nenhum.
+	Licence:	Licença:
+	Download and Transcribe	Baixar e transcrever
+	Try Again	Tentar novamente

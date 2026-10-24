@@ -41,6 +41,7 @@ pub mod scopes;
 pub mod sequence_settings;
 pub mod settings;
 pub mod shortcuts_dialog;
+pub mod speech_model;
 pub mod text;
 pub mod timecode;
 pub mod timeline;

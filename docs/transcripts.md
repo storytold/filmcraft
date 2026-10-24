@@ -43,10 +43,12 @@ with timestamp decoding, language detection and word times from cross-attention 
 `filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
 
-Both are **optional features**, off by default and never built for the web:
+Both are **features**: on by default in the `filmcraft` and `filmcraft-cli` apps, so release
+builds can transcribe (G19), off by default in the library crates and never built for the web:
 
 - `whisper` (on `filmcraft-speech`, `filmcraft-engine`, and the `filmcraft` / `filmcraft-cli`
-  apps, where it also enables downloads): candle inference.
+  apps, where it also enables downloads): candle inference. `--no-default-features` builds the
+  apps without it.
 - `download` (`speech-download` on the engine): HTTPS downloads with rustls + RustCrypto and the
   operating system's certificate verifier.
 
@@ -60,7 +62,20 @@ install any recogniser in `Session::transcriber`, which enables transcription in
 
 ### Models
 
-Weights are **never** bundled or committed. They are downloaded on request into
+Weights are **never** bundled or committed. In the app, Transcribe (Text panel, or Sequence ▸
+Transcribe Sequence…) without the chosen model asks first: a dialog names the model, its download
+size, its source and its licence (with a link), and says the audio stays on the computer.
+Download and Transcribe runs `transcript.downloadModel {"wait": false}` as a background job (a
+progress bar; Cancel stops it, and a file only counts once it is complete and its SHA-256 checks out), then transcribes. Agents call
+`transcript.models` and `transcript.downloadModel` themselves (`wait` defaults to true).
+
+**Licence check (G19).** OpenAI released the Whisper code and weights under the MIT licence; the
+safetensors conversions in OpenAI's own Hugging Face repositories are labelled Apache-2.0. Both
+allow downloading and using them in FilmCraft without conditions beyond keeping the notice, which
+`transcript.models` and the dialog show. The inference code is ours on candle (MIT OR Apache-2.0),
+so no GPL code is involved, and nothing model-derived is shipped in the app.
+
+Models are downloaded into
 `<data dir>/models/<id>/` (see `filmcraft_engine::autosave::default_data_dir`), each file pinned to a
 revision of OpenAI's Hugging Face repositories and checked against its SHA-256:
 

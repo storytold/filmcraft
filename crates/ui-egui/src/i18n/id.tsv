@@ -3582,3 +3582,9 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+# The speech model download dialog (G19).
+	Transcription runs on this computer with {model}. It needs a one-time download of {size}.	Transkripsi berjalan di komputer ini dengan {model}. Perlu unduhan satu kali sebesar {size}.
+	The audio is not sent anywhere.	Audio tidak dikirim ke mana pun.
+	Licence:	Lisensi:
+	Download and Transcribe	Unduh dan Transkripsikan
+	Try Again	Coba Lagi

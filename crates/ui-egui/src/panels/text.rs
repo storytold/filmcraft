@@ -551,7 +551,8 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
         ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
         app.auto.add("text.transcript.generate", r, "Transcribe");
-        if resp.clicked() {
+        // without the speech model, ask to download it first (G19)
+        if resp.clicked() && !crate::panels::speech_model::request(app, "transcript.generate", json!({})) {
             actions.push(("transcript.generate".into(), json!({})));
         }
         run(app, ui, actions);

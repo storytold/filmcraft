@@ -415,22 +415,74 @@ fn models(_: &mut Session, _: &Value) -> Result<Value> {
     }))
 }
 
+/// A catalogue speech model by id.
+pub fn find_model(id: &str) -> Option<&'static filmcraft_speech::models::ModelInfo> {
+    filmcraft_speech::models::find(id)
+}
+
+/// The speech model `transcript.generate` will use (Settings ▸ Media Analysis & Transcription ▸
+/// Speech model), and whether it is downloaded. None when no transcriber needs one (a host
+/// installed its own) or the setting names no catalogue model.
+pub fn selected_model(s: &Session) -> Option<(&'static filmcraft_speech::models::ModelInfo, bool)> {
+    if s.transcriber.is_some() {
+        return None;
+    }
+    let m = filmcraft_speech::models::find(&s.prefs.media_analysis.whisper_model)?;
+    let installed = models_dir().is_some_and(|d| filmcraft_speech::models::installed(&d, m));
+    Some((m, installed))
+}
+
 /// Download a catalogue model into `<data dir>/models` (feature `speech-download`). Hosts show
-/// the size, source and licence (`transcript.models`) and ask before running this.
-fn download_model(_: &mut Session, p: &Value) -> Result<Value> {
+/// the size, source and licence (`transcript.models`) and ask before running this. With
+/// `"wait": false` it runs as a background job (progress, cancel) and returns its id; by default
+/// it finishes before returning, as it always did.
+fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "transcript.downloadModel";
     let id = str_p(p, "model").unwrap_or(filmcraft_speech::models::DEFAULT_MODEL);
     let m = filmcraft_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))?;
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
-    #[cfg(feature = "speech-download")]
-    {
-        filmcraft_speech::models::download(&dir, m, &mut |_, _, _| true).map_err(speech_err)?;
-        Ok(json!({"model": m.id, "dir": filmcraft_speech::models::model_dir(&dir, m).to_string_lossy()}))
+    if filmcraft_speech::models::installed(&dir, m) {
+        return Ok(json!({"model": m.id, "job": null, "installed": true, "dir": filmcraft_speech::models::model_dir(&dir, m).to_string_lossy()}));
     }
-    #[cfg(not(feature = "speech-download"))]
-    {
-        let _ = (m, dir);
-        Err(EngineError::Other("model downloads are not available in this build (built without the `speech-download` feature)".into()))
+    if !cfg!(feature = "speech-download") {
+        return Err(bad(cmd, "model downloads are not available in this build (built without the `speech-download` feature)"));
     }
+    let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(true);
+    let job = crate::narration::new_job(s, format!("Downloading {}", m.name));
+    job.progress.total.store(filmcraft_speech::models::missing_bytes(&dir, m), std::sync::atomic::Ordering::Relaxed);
+    let (prog, res) = (job.progress.clone(), job.result.clone());
+    let target = filmcraft_speech::models::model_dir(&dir, m).to_string_lossy().to_string();
+    let job_id = crate::narration::spawn(s, job, wait, "filmcraft-speech-download", move || {
+        let t0 = web_time::Instant::now();
+        let r = fetch_model(&dir, m, &prog);
+        crate::narration::finish(&prog, &res, r.map(|()| format!("{} installed", m.name)), t0);
+    })?;
+    if wait {
+        // the job ran here: report its outcome as the command's
+        let failed = s.jobs.iter().find(|j| j.id == job_id).and_then(|j| j.progress.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        if let Some(e) = failed {
+            return Err(EngineError::Other(e));
+        }
+        return Ok(json!({"model": m.id, "job": job_id, "installed": true, "dir": target}));
+    }
+    Ok(json!({"model": m.id, "job": job_id, "installed": false, "dir": target}))
+}
+
+#[cfg(feature = "speech-download")]
+fn fetch_model(dir: &std::path::Path, m: &'static filmcraft_speech::models::ModelInfo, prog: &filmcraft_export::Progress) -> std::result::Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let mut progress = |done: u64, total: u64, file: &str| {
+        prog.done.store(done, Ordering::Relaxed);
+        prog.total.store(total, Ordering::Relaxed);
+        *prog.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("Downloading {file}");
+        !prog.cancel.load(Ordering::Relaxed)
+    };
+    filmcraft_speech::models::download(dir, m, &mut progress).map_err(|e| e.to_string())
+}
+
+#[cfg(not(feature = "speech-download"))]
+fn fetch_model(_: &std::path::Path, _: &'static filmcraft_speech::models::ModelInfo, _: &filmcraft_export::Progress) -> std::result::Result<(), String> {
+    Err("model downloads are not available in this build (built without the `speech-download` feature)".into())
 }
 
 pub fn commands() -> Vec<CommandSpec> {
@@ -457,7 +509,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("transcript.inspect", "Inspect Transcript", &[], r#"{"paragraphGapSeconds":f?}"#, always, inspect, false),
         spec("transcript.search", "Search Transcript", &[], r#"{"query":str}"#, always, search, false),
         spec("transcript.models", "List Speech Models", &[], "{}", always, models, false),
-        spec("transcript.downloadModel", "Download Speech Model", &[], r#"{"model":"whisper-base"?}"#, can_download, download_model, true),
+        spec("transcript.downloadModel", "Download Speech Model", &[], r#"{"model":"whisper-base"?,"wait":bool=true}"#, can_download, download_model, false),
         spec("transcript.select", "Mark Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, select, true),
         spec("transcript.extract", "Extract Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, |s, p| extract_or_lift(s, p, true), true),
         spec("transcript.lift", "Lift Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, |s, p| extract_or_lift(s, p, false), true),

@@ -577,6 +577,9 @@ pub struct UiState {
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
+    /// Open speech model download dialog (Transcribe without the model, G19).
+    #[serde(default)]
+    pub speech_download: Option<SpeechDownload>,
     /// Open Text Properties dialog (the wrench in the Properties panel's Text section).
     #[serde(default)]
     pub text_props_dialog: Option<TextPropsDialog>,
@@ -802,6 +805,18 @@ pub enum ColorDialog {
     Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
 }
 
+/// The speech model download dialog (G19): the model, the running download job, and the
+/// transcription to run once it is there.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpeechDownload {
+    pub model: String,
+    pub job: Option<u64>,
+    pub then_command: String,
+    pub then_params: serde_json::Value,
+    pub error: String,
+}
+
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1017,6 +1032,7 @@ impl Default for UiState {
             multicam_record: true,
             edit_cameras: None,
             guide_dialog: None,
+            speech_download: None,
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,

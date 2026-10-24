@@ -7,7 +7,7 @@ work. This is the work list: agents should prefer it over adding checklist items
 [target-app-parity.md](target-app-parity.md); estimates are Opus 5.5 agent-hours, calibrated there.
 When you close or shrink a gap, update its entry, its parity doc and the revision history.
 
-Summary by kind: **feature gaps** G1, G2, G12, G13, G18, G19; **UI / UX** G8; **file formats**
+Summary by kind: **feature gaps** G1, G2, G12, G13, G18; **UI / UX** G8; **file formats**
 G2, G10, G13, G15; **codecs** G3, G10; **hardware** G5; **localization** G14; **stability and
 platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement** G1, G6, G7;
 **web** G20.
@@ -32,7 +32,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G16 | Performance reports on 0.5.0 | performance | partly | 30–60 h |
 | G17 | Audio device and playback reliability | stability | partly | 20–40 h |
 | G18 | Effects depth: approximations and missing behaviour | feature | no | 60–110 h |
-| G19 | Speech to text off in release builds | feature, AI | no | 5–10 h |
+| G19 | ~~Speech to text off in release builds~~ (closed: on in releases, download dialog) | feature, AI | no | 0 h |
 | G20 | The web app shell | platforms | no | 40–80 h |
 
 ## G1. Nothing compares our output with Premiere's
@@ -216,7 +216,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Missing:** Object Mask (Premiere 26.0, #406, #694), Generative Extend (needs a large video
   model; not reachable locally), media-intelligence search, caption translation, model-based
   Enhance Speech, Auto Reframe beyond heuristics, auto colour, Auto-Tag Audio Types.
-- **Have:** local Whisper transcription (off in releases, G19), Kokoro-82M text-to-speech
+- **Have:** local Whisper transcription (in releases since G19), Kokoro-82M text-to-speech
   narration (#278), scene edit detection, colour match.
 - **Needs:** openly licensed models we can ship. **150–300 h.**
 
@@ -301,11 +301,16 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   Shift constrains vertex and whole-mask drags to 45° steps from the press point (#1408).
 - **Estimate:** 60–110 h.
 
-## G19. Speech to text off in release builds
+## G19. Speech to text off in release builds (closed)
 
-- **Missing:** the `whisper` feature is off by default and in releases, so Transcribe Sequence,
-  text-based editing and auto captions need a source build.
-- **Estimate:** 5–10 h (model download UX, licence check).
+- **Done:** `whisper` is a default feature of the `filmcraft` and `filmcraft-cli` apps, so
+  release builds transcribe. Transcribe without the model asks first (size, source, licence, the
+  audio stays local), downloads it as a cancellable background job and then transcribes. The
+  licence check is in [transcripts.md](transcripts.md#models).
+- **Limits:** the release configuration was only built on macOS arm64 (riscv64, FreeBSD and
+  Windows-ARM now compile candle too); release size and build time were not measured; the
+  transcription itself runs on the UI thread until the background-job change lands.
+- **Estimate:** 0 h.
 
 ## G20. The web app shell
 
@@ -320,3 +325,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-19 | minor | G19 closed: speech-to-text on in release builds, with a model download dialog and the licence check |

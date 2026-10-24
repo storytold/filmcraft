@@ -911,7 +911,11 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             if cmd == "sequence.transcribe" && q["language"] == "auto" {
                 q.as_object_mut().map(|m| m.remove("language"));
             }
-            s.execute(cmd, q).map_err(|e| e.to_string())?;
+            // without the speech model, ask to download it first, then transcribe (G19)
+            if cmd == "sequence.transcribe" && crate::panels::speech_model::request(app, cmd, q.clone()) {
+                return Ok(None);
+            }
+            app.session.execute(cmd, q).map_err(|e| e.to_string())?;
             Ok(None)
         }
     }

@@ -179,3 +179,23 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+/// G19: the model Transcribe needs (Settings ▸ Speech model), and none once a host installed its
+/// own recogniser; `transcript.downloadModel` refuses without the download feature and names an
+/// unknown model.
+#[test]
+fn the_selected_speech_model_and_download_refusals() {
+    let mut s = Session::default();
+    let (m, _) = crate::transcript::selected_model(&s).expect("the default model is in the catalogue");
+    assert_eq!(m.id, filmcraft_speech::models::DEFAULT_MODEL);
+    assert!(m.size() > 0 && m.license.contains("MIT"));
+    assert!(s.execute("transcript.downloadModel", json!({"model": "no-such-model"})).is_err());
+    if !cfg!(feature = "speech-download") {
+        let installed = crate::transcript::selected_model(&s).is_some_and(|(_, i)| i);
+        let r = s.execute("transcript.downloadModel", json!({"wait": false}));
+        assert!(installed || r.is_err(), "{r:?}");
+        assert!(s.jobs.is_empty(), "no job without downloads");
+    }
+    s.transcriber = Some(Arc::new(FixedTranscriber { transcript: Transcript::default(), id: "fixed".into() }));
+    assert!(crate::transcript::selected_model(&s).is_none(), "an installed recogniser needs no model");
+}

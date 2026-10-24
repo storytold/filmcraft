@@ -3584,3 +3584,9 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+# The speech model download dialog (G19).
+	Transcription runs on this computer with {model}. It needs a one-time download of {size}.	La transcription se fait sur cet ordinateur avec {model}. Elle nécessite un téléchargement unique de {size}.
+	The audio is not sent anywhere.	L'audio n'est envoyé nulle part.
+	Licence:	Licence :
+	Download and Transcribe	Télécharger et transcrire
+	Try Again	Réessayer
