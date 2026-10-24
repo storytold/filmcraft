@@ -229,6 +229,61 @@ fn remove_unused_and_consolidate_duplicates() {
 }
 
 #[test]
+fn script_take_sources_survive_remove_unused_and_duplicate_consolidation() {
+    let mut s = demo();
+    let bars = item_named(&s, "Bars and Tone");
+    let script = ItemId(s.execute("script.importText", json!({"name":"Coverage","text":"Line"})).unwrap()["item"].as_u64().unwrap());
+    let line = s.project.item(script).unwrap().as_script().unwrap().lines[0].id.0;
+    s.execute("script.addTake", json!({"item":script.0,"source":bars.0,"startLine":line,"endLine":line})).unwrap();
+
+    s.execute("edit.removeUnused", json!({})).unwrap();
+    assert!(s.project.item(bars).is_some(), "a clip used only by Script is still in use");
+
+    let ocean = item_named(&s, "Ocean_Sunset.mp4");
+    s.execute("project.select", json!({"items":[ocean.0]})).unwrap();
+    let duplicate = ItemId(s.execute("edit.duplicate", json!({})).unwrap()["items"][0].as_u64().unwrap());
+    let added = s.execute("script.addTake", json!({"item":script.0,"source":duplicate.0,"startLine":line,"endLine":line})).unwrap();
+    let take_id = filmcraft_project::ScriptTakeId(added["take"].as_u64().unwrap());
+
+    s.execute("edit.consolidateDuplicates", json!({})).unwrap();
+    assert!(s.project.item(duplicate).is_none());
+    assert_eq!(s.project.item(script).unwrap().as_script().unwrap().take(take_id).unwrap().source, Some(ocean));
+}
+
+#[test]
+fn clearing_a_subclip_parent_unbinds_script_takes_that_use_the_subclip() {
+    let mut s = demo();
+    let parent = item_named(&s, "Bars and Tone");
+    let subclip = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Bars excerpt",
+        Label::Blue,
+        ItemKind::Subclip { parent, range: filmcraft_time::TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), restrict_trims: true },
+        None,
+    );
+    let script = ItemId(s.execute("script.importText", json!({"name":"Coverage","text":"Line"})).unwrap()["item"].as_u64().unwrap());
+    let line = s.project.item(script).unwrap().as_script().unwrap().lines[0].id.0;
+    let added = s.execute("script.addTake", json!({"item":script.0,"source":subclip.0,"startLine":line,"endLine":line})).unwrap();
+    let take = filmcraft_project::ScriptTakeId(added["take"].as_u64().unwrap());
+    s.execute("script.addMark", json!({"item":script.0,"take":take.0,"line":line,"sourceTime":0})).unwrap();
+
+    s.execute("project.select", json!({"items":[parent.0]})).unwrap();
+    s.execute("project.delete", json!({})).unwrap();
+    assert!(s.project.item(parent).is_none());
+    let after_delete = s.project.item(script).unwrap().as_script().unwrap().take(take).unwrap();
+    assert_eq!(after_delete.source, None);
+    assert_eq!(after_delete.source_name, "Bars excerpt");
+    assert_eq!(after_delete.marks.len(), 1);
+    let reopened = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap();
+    let reopened_take = reopened.project.item(script).unwrap().as_script().unwrap().take(take).unwrap();
+    assert_eq!(reopened_take.source, None);
+    assert_eq!(reopened_take.marks.len(), 1);
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.project.item(parent).is_some());
+    assert_eq!(s.project.item(script).unwrap().as_script().unwrap().take(take).unwrap().source, Some(subclip));
+}
+
+#[test]
 fn new_sequence_from_clip_bin_from_selection_and_offline_file() {
     let mut s = demo();
     assert!(s.execute("file.newSequenceFromClip", json!({})).is_err(), "nothing selected in the Project panel");

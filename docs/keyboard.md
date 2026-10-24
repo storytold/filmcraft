@@ -34,6 +34,7 @@ Premiere has these as keys only (most are not in a menu). Modules: `filmcraft_en
 | History panel | Delete (Delete Redoable Actions, which asks for OK first) | Backspace |
 | Project panel | List/Icon/Toggle View, Hover Scrub, Thumbnail Size Next/Previous (and = / -), Move/Extend Selection, Mark In / Out of the hover-scrubbed clip | Cmd+PageUp/PageDown, Shift+\, Shift+H, Shift+] / Shift+[, arrows, Home/End, PageUp/PageDown, I / O |
 | Text panel | Navigate/Select to Previous/Next Word and Line, Start/End of Segment, Delete (lift), Ripple Delete (extract), Show Program Transcript, Merge/Split Segments | arrows, Shift+arrows, Home/End, Shift+Home, Cmd+Shift+Down, Alt+Backspace, Backspace, Shift+X, Alt+M / Alt+S |
+| Script panel | Clear selected mark, candle, or setup thumbnail (the whole setup); text fields keep normal editing | Backspace / Delete |
 | Other | Help (F1), Quit (Cmd+Q), Media Browser ▸ Open In Source Monitor (imports the file first), Send to Media Encoder (= Send to Export Queue, Alt+Shift+M), Metadata panel Play/Loop | |
 
 Existing commands that only lacked their Premiere key were added to the table too (Close, Close

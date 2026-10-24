@@ -21,6 +21,7 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod script;
 pub mod transcript;
 pub mod vtransition;
 
@@ -41,6 +42,9 @@ pub use mask::{Mask, MaskMode, MaskPath, MaskVertex, TrackMethod};
 pub use mixer::{AutomationMode, InputMap, MixerStrip, TrackSend};
 pub use multicam::{Camera, MergedClip, MulticamAudio, MulticamSel, MulticamSource};
 pub use narration::{Narration, VocalPitch};
+pub use script::{
+    ScriptColor, ScriptDocument, ScriptLine, ScriptLineColor, ScriptLineId, ScriptMark, ScriptMarkId, ScriptSlate, ScriptSlateId, ScriptTake, ScriptTakeId,
+};
 pub use transcript::{Speaker, Transcript, Word};
 
 macro_rules! id_type {
@@ -267,6 +271,8 @@ pub enum ItemKind {
     /// Shared so project snapshots used by undo and background readers do not deep-copy every
     /// timeline. Mutators detach with `Arc::make_mut`.
     Sequence(std::sync::Arc<Sequence>),
+    /// Editable lined script with linked takes and source-frame dialogue marks.
+    Script(std::sync::Arc<ScriptDocument>),
     /// A subclip: a media item restricted to a range.
     Subclip {
         parent: ItemId,
@@ -335,11 +341,24 @@ impl ProjectItem {
             _ => None,
         }
     }
+    pub fn as_script(&self) -> Option<&ScriptDocument> {
+        match &self.kind {
+            ItemKind::Script(doc) => Some(doc),
+            _ => None,
+        }
+    }
+    pub fn as_script_mut(&mut self) -> Option<&mut ScriptDocument> {
+        match &mut self.kind {
+            ItemKind::Script(doc) => Some(std::sync::Arc::make_mut(doc)),
+            _ => None,
+        }
+    }
     pub fn has_video(&self) -> bool {
         match &self.kind {
             ItemKind::Media(m) => m.info.has_video(),
             ItemKind::Sequence(_) | ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => true,
             ItemKind::Subclip { .. } => true,
+            ItemKind::Script(_) => false,
         }
     }
     pub fn has_audio(&self) -> bool {
@@ -356,6 +375,7 @@ impl ProjectItem {
             ItemKind::Subclip { range, .. } => range.duration,
             ItemKind::AdjustmentLayer { duration, .. } => *duration,
             ItemKind::Graphic { .. } => Tick(3600 * TICKS_PER_SECOND),
+            ItemKind::Script(_) => Tick::ZERO,
         }
     }
     pub fn frame_rate(&self) -> FrameRate {
@@ -364,6 +384,7 @@ impl ProjectItem {
             ItemKind::Sequence(s) => s.settings.frame_rate,
             ItemKind::AdjustmentLayer { rate, .. } | ItemKind::Graphic { rate, .. } => *rate,
             ItemKind::Subclip { .. } => FrameRate::default(),
+            ItemKind::Script(_) => FrameRate::default(),
         }
     }
     /// Human-readable media type for the Project panel "Media Type" column.
@@ -382,6 +403,7 @@ impl ProjectItem {
             ItemKind::Subclip { .. } => "Subclip",
             ItemKind::AdjustmentLayer { .. } => "Adjustment Layer",
             ItemKind::Graphic { .. } => "Graphic",
+            ItemKind::Script(_) => "Script",
         }
     }
 }
@@ -1620,13 +1642,14 @@ impl Project {
         if delta == Tick::ZERO {
             return;
         }
-        let mut users = vec![item];
+        // Resolve each subclip's complete (bounded) parent chain. A direct-parent test misses
+        // subclips of subclips and leaves their source references in the old media frame space.
+        let users: Vec<ItemId> = self.items.keys().copied().filter(|id| self.resolve_media(*id).is_some_and(|(root, _, _)| root == item)).collect();
         for it in self.items.values_mut() {
-            if let ItemKind::Subclip { parent, range, .. } = &mut it.kind
-                && *parent == item
+            if let ItemKind::Subclip { range, .. } = &mut it.kind
+                && users.contains(&it.id)
             {
                 range.start -= delta;
-                users.push(it.id);
             }
         }
         for it in self.items.values_mut() {
@@ -1648,6 +1671,9 @@ impl Project {
                     }
                 }
             }
+            if let ItemKind::Script(doc) = &mut it.kind {
+                std::sync::Arc::make_mut(doc).shift_source_time(&users, delta);
+            }
         }
         if let Some(m) = self.item_mut(item).and_then(|i| i.as_media_mut()) {
             m.mark_in = m.mark_in.map(|t| t - delta);
@@ -1659,6 +1685,9 @@ impl Project {
     /// Build a track item for `item` placed at `start` covering `source` range (media time).
     pub fn make_track_item(&mut self, item: ItemId, kind: TrackKind, start: Tick, source: TimeRange, seq_rate: FrameRate) -> Option<TrackItem> {
         let it = self.items.get(&item)?;
+        if matches!(it.kind, ItemKind::Script(_)) {
+            return None;
+        }
         let name = it.name.clone();
         let label = it.label;
         let mut effects = match kind {
@@ -1789,6 +1818,7 @@ impl Project {
                 ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
                 ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
                 ItemKind::AdjustmentLayer { width, height, .. } | ItemKind::Graphic { width, height, .. } => Some((*width, *height)),
+                ItemKind::Script(_) => None,
                 ItemKind::Subclip { parent, .. } => {
                     id = *parent;
                     continue;
@@ -1809,7 +1839,7 @@ impl Project {
             return match &self.item(id)?.kind {
                 ItemKind::Media(m) => Some(m.pixel_aspect()),
                 ItemKind::Sequence(q) => Some(sane_par(q.settings.par)),
-                ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => None,
+                ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } | ItemKind::Script(_) => None,
                 ItemKind::Subclip { parent, .. } => {
                     id = *parent;
                     continue;

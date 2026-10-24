@@ -3,6 +3,70 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Script coverage
+
+Before a script is created or imported, the Script panel shows a short getting-started guide for
+text import, Project clip drops, candle coverage and Source playback, and frame-linked marks.
+The guide wraps and scrolls in small panels and disappears when a script is open. A ? button at the
+right of the Script toolbar opens the same guide in a scrollable help popover at any time.
+Toolbar controls wrap onto additional rows when the panel is narrow, keeping Scene/Page labels
+with their menus and placing search and the document below the measured toolbar height.
+
+Plain text copied from another app can be pasted directly into Script. With no script open,
+paste creates a script; otherwise it inserts rows after the selected range (or appends).
+While editing a row, paste replaces the text selection at the caret. Each hard line break
+adds a row, including blank and terminal rows, with CRLF treated as one break. Later rows
+retain stable IDs, labels, candles and marks. A single Undo removes the paste while keeping
+text typed beforehand. Clicking outside a Script text field commits the edit and releases input
+focus, including clicks into blank canvas or another panel. Oversized text, lines and invalid
+offsets fail before any paste edit.
+
+Trimming a take candle hides annotations outside its coverage while preserving their line IDs,
+mark IDs and source times. Expanding coverage restores marks, row colors and off-screen passages.
+Hidden marks cannot be selected or used to cue Source and do not choose the default thumbnail.
+Scene and Page menus retain repeated labels as separate navigation points in script order.
+Double-clicking a candle, its mark or a setup thumbnail cues the linked clip and activates Source
+for playback shortcuts. Thumbnails open the displayed candle at its thumbnail frame (or first
+visible mark, then source start). A single mark click cues Source while retaining Script editing focus.
+Setup thumbnails and take-number boxes sit above the first covered row; candle caps, endpoint
+handles, off-screen notation and marks align with that row, including blank and wrapped lines.
+Candles extend to the exact top and bottom boundaries of their covered rows. The short gray end
+caps keep equal heights independently of the first row’s available space.
+Clicking a script row anywhere across the canvas clears the active candle, thumbnail and mark
+and selects that line; Shift-click extends the line range on press, retaining the endpoint if
+the pointer slips or Shift is released before the mouse button. Clicking below the rows clears the
+line selection too. Floating thumbnails, candles and marks retain their own click targets.
+Backspace/Delete removes the selected mark, candle, or thumbnail's entire setup.
+Deleting the final candle removes the empty setup. These commands retain script text and source
+media, support Undo, and leave text-field editing alone. Selection clears after deletion to avoid
+deleting another object on a repeated key press. Layout and search caches retain the document Arc,
+so unrelated project edits do not rescan the script and document changes invalidate them safely.
+Project clips can be dropped across the full canvas width. Selected rows anchor both the preview
+and the new candle regardless of the pointer row. The dropped setup is centered at the pointer’s
+horizontal position, including when scrolled, and stays separate even if its thumbnail overlaps
+another setup when the pointer is outside its thumbnail. Dropping directly onto an online thumbnail
+adds a candle to that setup, using selected rows or the last candle's coverage when no rows are selected.
+A standard egui horizontal scrollbar spans the canvas when the take columns overflow,
+using the Timeline's rounded track and thumb styling with scroll-only interaction. Without selected
+rows, an explicit candle target takes precedence over creating a setup on the hovered line.
+Missing-source thumbnails and candles are explicit recovery targets even with selected rows:
+dropping an available Project clip reconnects them instead of creating another instance. Both
+context menus also offer Rebind to Selected Project Clip, enabled for one compatible available
+Project selection. Recovery reconnects matching candles across all scripts in one Undo step,
+using the old Project source ID or retained footage fingerprint, never a filename match.
+Matching footage preserves marks, coverage and styling; incompatible footage or a source span
+excluding existing marks requires review before any candle changes. Without a retained source ID
+or fingerprint, only the targeted candle can be identified safely. `script.rebindTake` exposes
+this batch behavior through optional `allMatching:true`; its default remains a single take.
+Script `layout.rs` shares row measurements and candle geometry across painting, endpoint targets and
+off-screen notation. `selection.rs` owns document-local state transitions: switching scripts through
+the toolbar, commands, creation/import or Find in Script clears old edits, drags and replacement
+confirmations while retaining view preferences and the section clipboard.
+The `script_ui` integration tests cover endpoint drags, hidden-mark targets and repeated labels;
+engine tests cover saved data, undo/redo, section copies and deleting hidden lines.
+`script.addTake` accepts optional `x` for a new setup in viewport-width units (0–10,000).
+Positions beyond the first viewport require this version when reopening; older builds restrict them to 0–1.
+
 ## Control input limits
 
 The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).

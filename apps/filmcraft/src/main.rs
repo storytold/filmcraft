@@ -311,6 +311,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
+        app.hooks.clipboard_text = Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok()));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));

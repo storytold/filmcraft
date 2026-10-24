@@ -1,0 +1,1835 @@
+//! The Script window keeps wrapped text, candle coverage and marks aligned in one scroll space.
+
+use std::sync::mpsc::{Sender, channel};
+
+use egui_kittest::Harness;
+use filmcraft_engine::Session;
+use filmcraft_project::ItemKind;
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND};
+use filmcraft_ui_egui::FilmcraftApp;
+use filmcraft_ui_egui::control::ControlRequest;
+use serde_json::{Value, json};
+
+struct Driver {
+    harness: Harness<'static, FilmcraftApp>,
+    tx: Sender<ControlRequest>,
+    snapshots: Option<std::path::PathBuf>,
+}
+
+impl Driver {
+    fn new() -> Self {
+        Self::with_size(egui::vec2(1600.0, 980.0))
+    }
+
+    fn with_size(size: egui::Vec2) -> Self {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let (tx, rx) = channel();
+        let app = FilmcraftApp::new(session).with_control(rx);
+        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
+        let mut builder = Harness::builder().with_size(size).with_step_dt(1.0 / 60.0).with_max_steps(10_000);
+        if snapshots.is_some() {
+            builder = builder.wgpu();
+        }
+        let harness = builder.build_eframe(move |_cc| app);
+        let mut driver = Self { harness, tx, snapshots };
+        driver.frames(4);
+        driver
+    }
+
+    fn frames(&mut self, count: usize) {
+        for _ in 0..count {
+            let ctx = self.harness.ctx.clone();
+            let mut raw = std::mem::take(self.harness.input_mut());
+            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
+            *self.harness.input_mut() = raw;
+            self.harness.step();
+        }
+    }
+
+    fn ok(&mut self, method: &str, params: Value) -> Value {
+        let (request, reply) = ControlRequest::new(method, params.clone());
+        self.tx.send(request).expect("control channel");
+        for _ in 0..600 {
+            self.frames(1);
+            if let Ok(value) = reply.try_recv() {
+                assert_eq!(value["ok"], true, "{method} {params}: {value}");
+                return value["result"].clone();
+            }
+        }
+        panic!("no reply to {method} {params}");
+    }
+
+    fn exec(&mut self, command: &str, params: Value) -> Value {
+        self.ok("engine.execute", json!({"command": command, "params": params}))
+    }
+
+    fn rect(&mut self, id: &str) -> [f64; 4] {
+        self.frames(2);
+        let value = self.ok("ui.elements", json!({"prefix": id}));
+        let element = value.as_array().expect("elements").iter().find(|entry| entry["id"] == id).unwrap_or_else(|| panic!("missing {id}: {value}"));
+        let coordinates = element["rect"].as_array().expect("rect");
+        [0, 1, 2, 3].map(|index| coordinates[index].as_f64().expect("coordinate"))
+    }
+
+    fn double_click(&mut self, id: &str) {
+        let [x, y, width, height] = self.rect(id);
+        let pos = egui::pos2((x + width * 0.5) as f32, (y + height * 0.5) as f32);
+        self.frames(60);
+        self.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+        self.frames(1);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                self.harness.input_mut().events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                self.frames(1);
+            }
+        }
+        self.frames(2);
+    }
+
+    fn snapshot(&mut self, name: &str) {
+        let Some(directory) = self.snapshots.clone() else { return };
+        std::fs::create_dir_all(&directory).expect("snapshot directory");
+        self.frames(2);
+        match self.harness.render() {
+            Ok(image) => image.save(directory.join(format!("script-{name}.png"))).expect("save script snapshot"),
+            Err(error) => eprintln!("script snapshot skipped: {error}"),
+        }
+    }
+}
+
+#[test]
+fn switching_scripts_discards_pending_edits_and_rebinds_from_the_previous_document() {
+    let mut driver = Driver::new();
+    let first = driver.exec("script.importText", json!({"name":"First","text":"Line"}))["item"].as_u64().unwrap();
+    let second = driver.exec("script.importText", json!({"name":"Second","text":"Line"}))["item"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":first}}));
+    {
+        let ui = &mut driver.harness.state_mut().ui.script;
+        ui.selected_mark = Some(4);
+        ui.pending_rebind = Some((2, 3));
+        ui.edit_line = Some(1);
+        ui.edit_text = "old text".into();
+        ui.label_line = Some(1);
+        ui.scene_text = "old scene".into();
+        ui.page_text = "old page".into();
+    }
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":second}}));
+    let ui = &driver.harness.state_mut().ui.script;
+    assert_eq!(ui.item, Some(second));
+    assert_eq!(ui.selected_mark, None);
+    assert_eq!(ui.pending_rebind, None);
+    assert_eq!(ui.edit_line, None);
+    assert!(ui.edit_text.is_empty());
+    assert_eq!(ui.label_line, None);
+    assert!(ui.scene_text.is_empty() && ui.page_text.is_empty());
+}
+
+#[test]
+fn clipboard_text_creates_script_and_inserts_rows_without_using_timeline_paste() {
+    let mut driver = Driver::new();
+    driver.ok("ui.menu.invoke", json!({"id":"window.panel.Script"}));
+    driver.harness.input_mut().events.push(egui::Event::Paste("  First\r\n\r\nLast".into()));
+    driver.frames(6);
+    let item = driver.harness.state().ui.script.item.expect("pasted script");
+    let before = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    assert_eq!(before["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(), ["  First", "", "Last"]);
+    let first = before["lines"][0]["id"].as_u64().unwrap();
+    driver.harness.state_mut().ui.script.selected_lines = Some((first, first));
+    driver.harness.input_mut().events.push(egui::Event::Paste("Inserted\nAnother".into()));
+    driver.frames(6);
+    let after = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    assert_eq!(
+        after["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["  First", "Inserted", "Another", "", "Last"]
+    );
+    driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], before);
+    driver.snapshot("pasted-script");
+}
+
+#[test]
+fn multiline_clipboard_paste_at_editor_caret_creates_one_row_per_break() {
+    let mut driver = Driver::new();
+    let item = driver.exec("script.importText", json!({"name":"Caret paste","text":"café tail\nLater"}))["item"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+    let before = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    let first = before["lines"][0]["id"].as_u64().unwrap();
+    driver.double_click(&format!("script.line.{first}"));
+    driver.ok("ui.click", json!({"id":format!("script.line.{first}.edit")}));
+    driver.ok("ui.key", json!({"key":"Home"}));
+    for _ in 0..4 {
+        driver.ok("ui.key", json!({"key":"ArrowRight"}));
+    }
+    driver.harness.input_mut().events.push(egui::Event::Paste(" A\r\n\r\nB".into()));
+    driver.frames(6);
+    let after = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    assert_eq!(after["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(), ["café A", "", "B tail", "Later"]);
+    driver.ok("ui.key", json!({"key":"Z","command":true}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], before);
+    driver.snapshot("paste-at-caret");
+}
+
+#[test]
+fn paste_undo_keeps_preceding_typing_and_native_menu_paste_uses_editor_selection() {
+    let mut driver = Driver::new();
+    let item = driver.exec("script.importText", json!({"name":"Typing","text":"Before\nAfter"}))["item"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+    let mut expected = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    let row = expected["lines"][0]["id"].as_u64().unwrap();
+    driver.double_click(&format!("script.line.{row}"));
+    driver.ok("ui.click", json!({"id":format!("script.line.{row}.edit")}));
+    driver.ok("ui.key", json!({"key":"End"}));
+    driver.ok("ui.type", json!({"text":" typed"}));
+    driver.harness.state_mut().hooks.clipboard_text = Some(Box::new(|| Some(" A\r\nB".into())));
+    driver.ok("ui.menu.invoke", json!({"id":"edit.paste"}));
+    driver.frames(6);
+    let after = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+    assert_eq!(after["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap()).collect::<Vec<_>>(), ["Before typed A", "B", "After"]);
+    driver.ok("ui.key", json!({"key":"Z","command":true}));
+    expected["lines"][0]["text"] = json!("Before typed");
+    assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], expected);
+}
+
+#[test]
+fn clicking_away_closes_a_row_editor_even_before_it_receives_keyboard_focus() {
+    for target in ["same-row-margin", "another-row", "next-row-margin", "canvas", "other-panel", "help"] {
+        let mut driver = Driver::new();
+        let item = driver.exec("script.importText", json!({"name":"Click away","text":"First\nLast"}))["item"].as_u64().unwrap();
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+        let doc = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+        let first = doc["lines"][0]["id"].as_u64().unwrap();
+        let last = doc["lines"][1]["id"].as_u64().unwrap();
+        driver.double_click(&format!("script.line.{first}"));
+        assert_eq!(driver.harness.state().ui.script.edit_line, Some(first));
+        let revision = driver.harness.state().session.revision;
+        let target = match target {
+            "same-row-margin" => json!({"id":format!("script.line.{first}"),"fx":0.98}),
+            "another-row" => json!({"id":format!("script.line.{last}")}),
+            "next-row-margin" => json!({"id":format!("script.line.{last}"),"fx":0.98}),
+            "canvas" => json!({"id":"script.emptyCanvas","fy":0.98}),
+            "other-panel" => json!({"id":"project.search"}),
+            _ => json!({"id":"script.help"}),
+        };
+        driver.ok("ui.click", target);
+        driver.frames(3);
+        assert_eq!(driver.harness.state().ui.script.edit_line, None);
+        assert_eq!(driver.harness.state().session.revision, revision, "unchanged blur must not add an edit");
+        driver.harness.input_mut().events.push(egui::Event::Text(" accidental".into()));
+        driver.frames(3);
+        assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], doc);
+        driver.snapshot("unfocused-row-click-away");
+    }
+}
+
+#[test]
+fn clicking_away_finishes_script_text_and_later_typing_does_not_edit_it() {
+    for target in ["canvas", "another-row", "next-row-margin", "other-panel", "help"] {
+        let mut driver = Driver::new();
+        let item = driver.exec("script.importText", json!({"name":"Click away","text":"First\nLast"}))["item"].as_u64().unwrap();
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+        let doc = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+        let first = doc["lines"][0]["id"].as_u64().unwrap();
+        let last = doc["lines"][1]["id"].as_u64().unwrap();
+        driver.double_click(&format!("script.line.{first}"));
+        driver.ok("ui.click", json!({"id":format!("script.line.{first}.edit")}));
+        driver.ok("ui.key", json!({"key":"End"}));
+        driver.ok("ui.type", json!({"text":" edited"}));
+        let target = match target {
+            "canvas" => json!({"id":"script.emptyCanvas","fy":0.98}),
+            "another-row" => json!({"id":format!("script.line.{last}")}),
+            "next-row-margin" => json!({"id":format!("script.line.{last}"),"fx":0.98}),
+            "other-panel" => json!({"id":"project.search"}),
+            _ => json!({"id":"script.help"}),
+        };
+        driver.ok("ui.click", target);
+        driver.frames(2);
+        assert_eq!(driver.harness.state().ui.script.edit_line, None);
+        let after = driver.exec("script.inspect", json!({"item":item}))["document"].clone();
+        assert_eq!(after["lines"][0]["text"], "First edited");
+        driver.harness.input_mut().events.push(egui::Event::Text(" accidental".into()));
+        driver.frames(3);
+        assert_eq!(driver.exec("script.inspect", json!({"item":item}))["document"], after);
+    }
+}
+
+#[test]
+fn toolbar_switch_discards_document_local_state_without_applying_old_edits() {
+    let mut driver = Driver::new();
+    let first = driver.exec("script.importText", json!({"name":"First","text":"First line"}))["item"].as_u64().unwrap();
+    let second = driver.exec("script.importText", json!({"name":"Second","text":"Second line"}))["item"].as_u64().unwrap();
+    let original = driver.exec("script.inspect", json!({"item":second}))["document"].clone();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":first}}));
+    driver.ok("ui.click", json!({"id":"script.document"}));
+    {
+        let state = &mut driver.harness.state_mut().ui.script;
+        state.pending_rebind = Some((2, 3));
+        state.edit_line = Some(1);
+        state.edit_text = "Text from previous script".into();
+        state.selected_thumbnail = Some(2);
+        state.selected_slate = Some(2);
+        state.selected_section_slates = vec![2];
+        state.drag_endpoint = Some((2, true));
+        state.drag_target = Some(0);
+        state.take_scroll = 50.0;
+        state.thumbnail_width = Some(128.0);
+        state.search = "line".into();
+        state.section_clipboard = Some(json!({"copied":"section"}));
+    }
+    driver.ok("ui.click", json!({"id":format!("script.document.{second}")}));
+    let state = &driver.harness.state().ui.script;
+    assert_eq!(state.item, Some(second));
+    assert_eq!(state.pending_rebind, None);
+    assert_eq!(state.edit_line, None);
+    assert!(state.edit_text.is_empty());
+    assert_eq!(state.selected_thumbnail, None);
+    assert!(state.selected_section_slates.is_empty());
+    assert_eq!(state.drag_endpoint, None);
+    assert_eq!(state.drag_target, None);
+    assert_eq!(state.take_scroll, 0.0);
+    assert_eq!(state.thumbnail_width, Some(128.0));
+    assert_eq!(state.search, "line");
+    assert_eq!(state.section_clipboard, Some(json!({"copied":"section"})));
+    assert_eq!(driver.exec("script.inspect", json!({"item":second}))["document"], original);
+}
+
+#[test]
+fn wrapped_line_and_candle_share_height_and_find_chooses_a_take() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
+    let long = "This is a deliberately long screenplay line. ".repeat(12);
+    let mut text = format!("{long}\nA second, short line.");
+    for index in 0..45 {
+        text.push_str(&format!("\nScene filler {index}"));
+    }
+    text.push_str("\nFind this distinctive final scene");
+    let script = driver.exec("script.importText", json!({"name": "Script QA", "text": text}))["item"].as_u64().expect("script id");
+    let doc = driver.exec("script.inspect", json!({"item": script}));
+    let first = doc["document"]["lines"][0]["id"].as_u64().expect("first line");
+    let second = doc["document"]["lines"][1]["id"].as_u64().expect("second line");
+    let last = doc["document"]["lines"].as_array().expect("lines").last().expect("last")["id"].as_u64().expect("last line id");
+    let added = driver.exec("script.addTake", json!({"item": script, "source": source, "startLine": first, "endLine": second}));
+    let take = added["take"].as_u64().expect("take");
+    let slate = added["slate"].as_u64().expect("slate");
+    let mark = driver.exec("script.addMark", json!({"item": script, "take": take, "line": second, "sourceTime": 0}))["mark"].as_u64().expect("mark");
+    driver.ok("ui.menu.invoke", json!({"id": "window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id": "script.openPanel", "params": {"item": script}}));
+    driver.frames(4);
+    let row = driver.rect(&format!("script.line.{first}"));
+    let candle = driver.rect(&format!("script.take.{take}.line.{first}"));
+    assert!(row[3] > 30.0, "long logical line should wrap: {row:?}");
+    assert!((row[1] - candle[1]).abs() < 1.0 && (row[3] - candle[3]).abs() < 1.0, "text and candle must stay aligned: {row:?} {candle:?}");
+    let thumbnail = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    assert!((thumbnail[2] - 96.0).abs() < 1.0, "setup thumbnail should retain a 16:9 picture width: {thumbnail:?}");
+    let second_candle = driver.rect(&format!("script.take.{take}.line.{second}"));
+    let mark_rect = driver.rect(&format!("script.mark.{mark}"));
+    assert!(
+        (mark_rect[0] + mark_rect[2] * 0.5 - second_candle[0] - second_candle[2] * 0.5).abs() < 1.0,
+        "script mark belongs on the candle: {mark_rect:?} {second_candle:?}"
+    );
+    driver.ok("ui.click", json!({"id":format!("script.mark.{mark}")}));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((second, second)), "a clicked mark selects its full-width row");
+    driver.ok("ui.click", json!({"id":"script.offscreen.toggle"}));
+    let styled = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(styled["document"]["slates"][0]["takes"][0]["offscreen_lines"][0], second);
+    driver.ok("ui.click", json!({"id":"script.offscreen.toggle"}));
+    let cleared = driver.exec("script.inspect", json!({"item":script}));
+    assert!(cleared["document"]["slates"][0]["takes"][0]["offscreen_lines"].as_array().is_none_or(Vec::is_empty));
+    driver.ok("ui.click", json!({"id":format!("script.line.{second}"),"fx":0.95}));
+    assert_eq!(driver.harness.state().ui.script.selected_lines, Some((second, second)), "clicking past the text margin selects that row");
+    assert_eq!(driver.harness.state().ui.script.selected_take, None);
+    driver.snapshot("wrapped-dark");
+    driver.ok("ui.set", json!({"theme": "light"}));
+    driver.snapshot("wrapped-light");
+    let second_take =
+        driver.exec("script.addTake", json!({"item": script, "source": source, "startLine": second, "endLine": second}))["take"].as_u64().expect("second take");
+    let result = driver.ok("ui.menu.invoke", json!({"id": "script.findInScript", "params": {"item": source}}));
+    assert_eq!(result["matches"], 2);
+    assert_eq!(result["chooser"], true);
+    driver.frames(3);
+    let _ = driver.rect("script.search");
+    assert_ne!(take, second_take);
+    driver.ok("ui.click", json!({"id": "script.search"}));
+    driver.ok("ui.type", json!({"text": "distinctive final scene"}));
+    driver.frames(4);
+    let found = driver.rect(&format!("script.line.{last}"));
+    assert!(found[3] >= 20.0, "search should scroll the matching logical line into view: {found:?}");
+    driver.snapshot("search-light");
+}
+
+#[test]
+fn candle_range_color_offscreen_and_selected_mark_retime() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Range","text":"First\nSecond\nThird"}))["item"].as_u64().unwrap();
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let lines: Vec<_> = doc["document"]["lines"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+    let take = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[0],"endLine":lines[2]}))["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.frames(4);
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}", lines[0]),"fy":0.1}));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((lines[0], lines[0])));
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}", lines[1]),"modifiers":{"shift":true}}));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((lines[0], lines[1])));
+    driver.ok("ui.click", json!({"id":"script.color.apply","button":"right"}));
+    driver.ok("ui.click", json!({"id":"script.color.rose"}));
+    driver.ok("ui.click", json!({"id":"script.color.apply"}));
+    driver.ok("ui.click", json!({"id":"script.offscreen.toggle"}));
+    let styled = driver.exec("script.inspect", json!({"item":script}));
+    let take_data = &styled["document"]["slates"][0]["takes"][0];
+    assert_eq!(take_data["line_colors"].as_array().unwrap().len(), 2);
+    assert_eq!(take_data["offscreen_lines"].as_array().unwrap().len(), 2);
+    assert_eq!(take_data["line_colors"][0]["color"], "Rose");
+    driver.snapshot("offscreen-selected");
+    let mark = driver.exec("script.addMark", json!({"item":script,"take":take,"line":lines[1],"sourceTime":0}))["mark"].as_u64().unwrap();
+    driver.ok("ui.click", json!({"id":format!("script.mark.{mark}")}));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_mark, Some(mark));
+    let retime = FrameRate::FPS_24.tick_of(10).0;
+    driver.exec("source.setPlayhead", json!({"time":retime}));
+    let actual_retime = driver.harness.state_mut().session.state.source_playhead.0;
+    assert!(actual_retime > 0);
+    driver.ok("ui.click", json!({"id":"script.mark.add"}));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_mark, Some(mark));
+    let retimed = driver.exec("script.inspect", json!({"item":script}));
+    let marks = retimed["document"]["slates"][0]["takes"][0]["marks"].as_array().unwrap();
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks[0]["source_time"], actual_retime);
+}
+
+#[test]
+fn alt_lasso_copies_rows_and_setup_to_another_script() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let original = driver.exec("script.importText", json!({"name":"First","text":"A\nB\nC"}))["item"].as_u64().unwrap();
+    let rows: Vec<_> = driver.exec("script.inspect", json!({"item":original}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let added = driver.exec("script.addTake", json!({"item":original,"source":source,"startLine":rows[0],"endLine":rows[2]}));
+    let slate = added["slate"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":original}}));
+    driver.frames(4);
+    let thumb = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    let last = driver.rect(&format!("script.line.{}", rows[2]));
+    driver.ok(
+        "ui.drag",
+        json!({"from":{"x":thumb[0]+2.0,"y":thumb[1]+2.0},
+        "to":{"x":last[0]+2.0,"y":last[1]+last[3]*0.5},"steps":12,"modifiers":{"alt":true}}),
+    );
+    assert!(driver.harness.state_mut().ui.script.selected_section_slates.contains(&slate));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((rows[0], rows[2])));
+    driver.ok("ui.key", json!({"key":"C","command":true}));
+    let target = driver.exec("script.importText", json!({"name":"Second","text":"Destination"}))["item"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":target}}));
+    driver.ok("ui.key", json!({"key":"V","command":true}));
+    let pasted = driver.exec("script.inspect", json!({"item":target}));
+    assert_eq!(pasted["document"]["lines"].as_array().unwrap().len(), 4);
+    assert_eq!(pasted["document"]["slates"].as_array().unwrap().len(), 1);
+    assert_eq!(pasted["document"]["slates"][0]["takes"][0]["source"], source);
+}
+
+#[test]
+fn command_dragging_thumbnail_moves_all_candles_and_keeps_mark_time() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Move Setup","text":"A\nB\nC\nD\nE\nF\nG\nH\nI"}))["item"].as_u64().unwrap();
+    let rows: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":rows[2],"endLine":rows[3]}));
+    let slate = added["slate"].as_u64().unwrap();
+    let first_take = added["take"].as_u64().unwrap();
+    driver.exec("script.addTake", json!({"item":script,"slate":slate,"source":source,"startLine":rows[3],"endLine":rows[4]}));
+    driver.exec("script.addMark", json!({"item":script,"take":first_take,"line":rows[3],"sourceTime":12345}));
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    let thumb = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    let first_box = driver.rect(&format!("script.take.{first_take}.metadata"));
+    assert!((first_box[1] - (thumb[1] + thumb[3])).abs() < 2.0, "take number should hang from the thumbnail");
+    let row = driver.rect(&format!("script.line.{}", rows[3]));
+    driver.ok(
+        "ui.drag",
+        json!({"from":{"x":thumb[0]+thumb[2]*0.5,"y":thumb[1]+thumb[3]*0.5},
+        "to":{"x":thumb[0]+thumb[2]*0.5,"y":thumb[1]+thumb[3]*0.5+row[3]*2.0},"steps":12,"modifiers":{"command":true}}),
+    );
+    let updated = driver.exec("script.inspect", json!({"item":script}));
+    let takes = updated["document"]["slates"][0]["takes"].as_array().unwrap();
+    let moved_to = takes[0]["start_line"].as_u64().unwrap();
+    let moved_index = rows.iter().position(|id| *id == moved_to).unwrap();
+    assert!(moved_index > 2, "command drag should move the first candle: {updated}");
+    let delta = moved_index - 2;
+    assert_eq!(takes[0]["end_line"], rows[3 + delta]);
+    assert_eq!(takes[1]["start_line"], rows[3 + delta]);
+    assert_eq!(takes[1]["end_line"], rows[4 + delta]);
+    assert_eq!(takes[0]["marks"][0]["line"], rows[3 + delta]);
+    assert_eq!(takes[0]["marks"][0]["source_time"], 12345);
+}
+
+#[test]
+fn candle_context_menu_reorders_takes_under_one_thumbnail() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Order","text":"A\nB\nC"}))["item"].as_u64().unwrap();
+    let lines = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"].as_array().unwrap().clone();
+    let first = lines[0]["id"].as_u64().unwrap();
+    let middle = lines[1]["id"].as_u64().unwrap();
+    let last = lines[2]["id"].as_u64().unwrap();
+    let first_added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":first,"endLine":last}));
+    let slate = first_added["slate"].as_u64().unwrap();
+    let first_take = first_added["take"].as_u64().unwrap();
+    let second_take =
+        driver.exec("script.addTake", json!({"item":script,"slate":slate,"source":source,"startLine":first,"endLine":last}))["take"].as_u64().unwrap();
+    let third_take =
+        driver.exec("script.addTake", json!({"item":script,"slate":slate,"source":source,"startLine":first,"endLine":last}))["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.ok("ui.click", json!({"id":format!("script.take.{second_take}.line.{middle}"),"button":"right"}));
+    driver.ok("ui.click", json!({"id":format!("script.take.{second_take}.moveLeft")}));
+    let moved = driver.exec("script.inspect", json!({"item":script}));
+    let takes = moved["document"]["slates"][0]["takes"].as_array().unwrap();
+    assert_eq!(takes.iter().map(|take| take["id"].as_u64().unwrap()).collect::<Vec<_>>(), [second_take, first_take, third_take]);
+    let left = driver.rect(&format!("script.take.{second_take}.line.{first}"));
+    let right = driver.rect(&format!("script.take.{first_take}.line.{first}"));
+    assert!(left[0] < right[0]);
+    driver.exec("edit.undo", json!({}));
+    let restored = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(restored["document"]["slates"][0]["takes"][0]["id"], first_take);
+}
+
+#[test]
+fn undoing_pasted_rows_during_a_slate_drag_keeps_the_canvas_usable() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Undo during drag","text":"A\nB\nC"}))["item"].as_u64().unwrap();
+    let rows: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":rows[0],"endLine":rows[2]}));
+    let slate = added["slate"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    let section = driver.exec("script.copySection", json!({"item":script,"startLine":rows[0],"endLine":rows[2],"slates":[]}));
+    driver.exec("script.pasteSection", json!({"item":script,"afterLine":rows[2],"section":section}));
+    driver.harness.state_mut().ui.script.drag_slate = Some(slate);
+    driver.harness.state_mut().ui.script.drag_slate_target = Some(5);
+    driver.exec("edit.undo", json!({}));
+    driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"]["lines"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn backspace_deletes_the_selected_mark_candle_or_setup_and_undo_restores_it() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Delete selection","text":"A\nB\nC"}))["item"].as_u64().unwrap();
+    let rows: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":rows[0],"endLine":rows[2]}));
+    let slate = added["slate"].as_u64().unwrap();
+    let take = added["take"].as_u64().unwrap();
+    driver.exec("script.addTake", json!({"item":script,"slate":slate,"source":source,"startLine":rows[0],"endLine":rows[2]}));
+    let mark = driver.exec("script.addMark", json!({"item":script,"take":take,"line":rows[1],"sourceTime":0}))["mark"].as_u64().unwrap();
+    let original = driver.exec("script.inspect", json!({"item":script}));
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.ok("ui.click", json!({"id":format!("script.mark.{mark}")}));
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    let deleted_mark = driver.exec("script.inspect", json!({"item":script}));
+    assert!(deleted_mark["document"]["slates"][0]["takes"][0]["marks"].as_array().is_none_or(Vec::is_empty));
+    assert_eq!(deleted_mark["document"]["slates"][0]["takes"].as_array().unwrap().len(), 2);
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script})), deleted_mark, "repeating Backspace without a selection must not delete the candle");
+    driver.exec("edit.undo", json!({}));
+    driver.ok("ui.click", json!({"id":format!("script.slate.{slate}.thumbnail")}));
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}",rows[2])}));
+    driver.ok("ui.key", json!({"key":"Delete"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"]["slates"][0]["takes"].as_array().unwrap().len(), 1);
+    driver.exec("edit.undo", json!({}));
+    driver.ok("ui.click", json!({"id":format!("script.mark.{mark}")}));
+    driver.ok("ui.click", json!({"id":format!("script.slate.{slate}.thumbnail")}));
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    let deleted_setup = driver.exec("script.inspect", json!({"item":script}));
+    assert!(deleted_setup["document"]["slates"].as_array().unwrap().is_empty());
+    assert_eq!(deleted_setup["document"]["lines"], original["document"]["lines"]);
+    driver.exec("edit.undo", json!({}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script})), original);
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}",rows[2])}));
+    driver.harness.state_mut().ui.script.edit_line = Some(rows[1]);
+    driver.harness.state_mut().ui.script.edit_text = "Edit me".into();
+    driver.frames(3);
+    driver.ok("ui.click", json!({"id":format!("script.line.{}.edit",rows[1])}));
+    driver.ok("ui.key", json!({"key":"End"}));
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    assert_eq!(driver.harness.state_mut().ui.script.edit_text, "Edit m");
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"]["slates"], original["document"]["slates"]);
+}
+
+#[test]
+fn selected_thumbnail_shuttles_independently_for_each_candle() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Shuttle","text":"A\nB"}))["item"].as_u64().unwrap();
+    let first = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"][0]["id"].as_u64().unwrap();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":first,"endLine":first}));
+    let slate = added["slate"].as_u64().unwrap();
+    let first_take = added["take"].as_u64().unwrap();
+    let second_take =
+        driver.exec("script.addTake", json!({"item":script,"slate":slate,"source":source,"startLine":first,"endLine":first}))["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.ok("ui.click", json!({"id":format!("script.slate.{slate}.thumbnail")}));
+    driver.ok("ui.key", json!({"key":"ArrowRight","shift":true}));
+    let first_state = driver.exec("script.inspect", json!({"item":script}));
+    let takes = first_state["document"]["slates"][0]["takes"].as_array().unwrap();
+    assert_eq!(takes[0]["id"], first_take);
+    assert!((takes[0]["thumbnail_time"].as_i64().unwrap() - TICKS_PER_SECOND).abs() < TICKS_PER_SECOND / 20);
+    assert!(takes[1]["thumbnail_time"].is_null());
+    driver.ok("ui.click", json!({"id":format!("script.take.{second_take}.line.{first}")}));
+    driver.ok("ui.key", json!({"key":"ArrowRight","shift":true}));
+    let second_state = driver.exec("script.inspect", json!({"item":script}));
+    assert!(second_state["document"]["slates"][0]["takes"][1]["thumbnail_time"].as_i64().unwrap() > 0);
+    assert_eq!(second_state["document"]["slates"][0]["takes"][0]["thumbnail_time"], takes[0]["thumbnail_time"]);
+    driver.exec("edit.undo", json!({}));
+    let undone = driver.exec("script.inspect", json!({"item":script}));
+    assert!(undone["document"]["slates"][0]["takes"][1]["thumbnail_time"].is_null());
+}
+
+#[test]
+fn thumbnail_double_click_opens_displayed_candle_in_source_for_playback() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut driver = Driver::new();
+    let sources: Vec<_> =
+        driver.harness.state().session.project.items.values().filter(|item| matches!(item.kind, ItemKind::Media(_))).map(|item| item.id.0).collect();
+    let script = driver.exec("script.importText", json!({"name":"Thumbnail cue","text":"First\nLast"}))["item"].as_u64().unwrap();
+    let lines = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"].clone();
+    let first = lines[0]["id"].as_u64().unwrap();
+    let last = lines[1]["id"].as_u64().unwrap();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":sources[0],"startLine":first,"endLine":last}));
+    let slate = added["slate"].as_u64().unwrap();
+    let first_take = added["take"].as_u64().unwrap();
+    let second_take =
+        driver.exec("script.addTake", json!({"item":script,"slate":slate,"source":sources[1],"startLine":first,"endLine":last}))["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    let thumbnail = format!("script.slate.{slate}.thumbnail");
+    let before = (driver.harness.state().session.state.source_item, driver.harness.state().session.state.source_playhead);
+    driver.ok("ui.click", json!({"id":thumbnail}));
+    assert_eq!(
+        (driver.harness.state().session.state.source_item, driver.harness.state().session.state.source_playhead),
+        before,
+        "a single click only selects the thumbnail"
+    );
+    driver.double_click(&thumbnail);
+    assert_eq!(driver.harness.state().session.state.source_item.map(|id| id.0), Some(sources[0]));
+    assert_eq!(driver.harness.state().session.state.source_playhead.0, 0);
+    assert_eq!(driver.harness.state().ui.focused, PanelKind::Source);
+    driver.ok("ui.key", json!({"key":"Space"}));
+    assert!(driver.harness.state().source_playback.clock.playing);
+    assert!(!driver.harness.state().playback.playing);
+    driver.ok("ui.key", json!({"key":"Space"}));
+
+    driver.exec("script.addMark", json!({"item":script,"take":first_take,"line":first,"sourceTime":TICKS_PER_SECOND}));
+    driver.double_click(&thumbnail);
+    let expected = filmcraft_engine::clip_ops::source_view(&driver.harness.state().session, filmcraft_project::ItemId(sources[0]))
+        .unwrap()
+        .rate
+        .snap(filmcraft_time::Tick(TICKS_PER_SECOND));
+    assert_eq!(driver.harness.state().session.state.source_playhead, expected, "use the displayed first visible mark");
+    driver.exec("script.setThumbnailTime", json!({"item":script,"take":second_take,"time":2*TICKS_PER_SECOND}));
+    driver.ok("ui.click", json!({"id":format!("script.take.{second_take}.line.{last}")}));
+    let unchanged = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    driver.double_click(&thumbnail);
+    let expected = filmcraft_engine::clip_ops::source_view(&driver.harness.state().session, filmcraft_project::ItemId(sources[1]))
+        .unwrap()
+        .rate
+        .snap(filmcraft_time::Tick(2 * TICKS_PER_SECOND));
+    assert_eq!(driver.harness.state().session.state.source_item.map(|id| id.0), Some(sources[1]), "open the take currently displayed in the shared thumbnail");
+    assert_eq!(driver.harness.state().session.state.source_playhead, expected);
+    assert_eq!(driver.harness.state().ui.focused, PanelKind::Source);
+    assert_eq!(driver.harness.state().ui.script.selected_thumbnail, Some(slate));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], unchanged);
+    driver.snapshot("thumbnail-source-focus");
+}
+
+#[test]
+fn script_mark_and_offscreen_shortcuts_work_from_a_selected_candle() {
+    let mut driver = Driver::new();
+    assert!(driver.harness.state_mut().session.shortcuts.for_command("script.addMarkAtSelection").is_empty());
+    assert!(driver.harness.state_mut().session.shortcuts.for_command("script.toggleOffscreen").is_empty());
+    driver.exec("shortcuts.set", json!({"command":"script.addMarkAtSelection","keys":"M","panel":"Script"}));
+    driver.exec("shortcuts.set", json!({"command":"script.toggleOffscreen","keys":"Shift+M","panel":"Script"}));
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Shortcuts","text":"A\nB\nC"}))["item"].as_u64().unwrap();
+    let rows: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let take = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":rows[0],"endLine":rows[2]}))["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}", rows[1])}));
+    driver.harness.state_mut().session.state.source_item = None;
+    driver.ok("ui.click", json!({"id":"script.mark.add"}));
+    assert_eq!(driver.harness.state_mut().session.state.source_item.unwrap().0, source);
+    let marked = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(marked["document"]["slates"][0]["takes"][0]["marks"].as_array().unwrap().len(), 1);
+    driver.ok("ui.key", json!({"key":"M"}));
+    let marked_again = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(marked_again["document"]["slates"][0]["takes"][0]["marks"].as_array().unwrap().len(), 2);
+    driver.ok("ui.key", json!({"key":"M","shift":true}));
+    let offscreen = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(offscreen["document"]["slates"][0]["takes"][0]["offscreen_lines"][0], rows[1]);
+}
+
+#[test]
+fn narrow_script_panel_keeps_take_controls_accessible() {
+    let mut driver = Driver::with_size(egui::vec2(620.0, 700.0));
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
+    let script =
+        driver.exec("script.importText", json!({"name": "Narrow Script", "text": "First line\nSecond line\nThird line"}))["item"].as_u64().expect("script");
+    let doc = driver.exec("script.inspect", json!({"item": script}));
+    let first = doc["document"]["lines"][0]["id"].as_u64().expect("first line");
+    let third = doc["document"]["lines"][2]["id"].as_u64().expect("third line");
+    let take = driver.exec("script.addTake", json!({"item": script, "source": source, "startLine": first, "endLine": third}))["take"].as_u64().expect("take");
+    driver.ok("ui.menu.invoke", json!({"id": "window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id": "script.openPanel", "params": {"item": script}}));
+    driver.harness.state_mut().ui.script.selected_lines = Some((first, first));
+    driver.harness.state_mut().ui.script.selected_take = Some(take);
+    driver.frames(4);
+    let _ = driver.rect("script.scene.add");
+    let _ = driver.rect("script.page.add");
+    let _ = driver.rect("script.margin.left");
+    let _ = driver.rect("script.margin.right");
+    let _ = driver.rect(&format!("script.take.{take}.topHandle"));
+    let _ = driver.rect(&format!("script.take.{take}.bottomHandle"));
+    let number = driver.rect(&format!("script.take.{take}.metadata"));
+    assert!(number[2] <= 20.0 && number[3] <= 20.0, "take number should be a small square: {number:?}");
+    driver.snapshot("narrow-controls");
+}
+
+#[test]
+fn scene_and_page_combos_keep_repeated_labels_in_script_order() {
+    let mut driver = Driver::new();
+    let script = driver.exec("script.importText", json!({"name":"Repeated labels","text":"One\nTwo\nThree"}))["item"].as_u64().unwrap();
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let lines: Vec<_> = doc["document"]["lines"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+    for (line, scene, page) in [(lines[0], "7", "3"), (lines[1], "8", "4"), (lines[2], "7", "3")] {
+        driver.exec("script.setLabel", json!({"item":script,"line":line,"scene":scene,"page":page}));
+    }
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    for key in ["scene", "page"] {
+        driver.ok("ui.click", json!({"id":format!("script.{key}.combo")}));
+        let options: Vec<_> = lines.iter().map(|line| driver.rect(&format!("script.{key}.option.{line}"))).collect();
+        assert!(options.windows(2).all(|pair| pair[0][1] < pair[1][1]), "{key} labels must retain every occurrence in row order: {options:?}");
+        driver.ok("ui.click", json!({"id":format!("script.{key}.option.{}", lines[2])}));
+        assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((lines[2], lines[2])));
+    }
+}
+
+#[test]
+fn clicking_script_text_and_empty_canvas_clears_active_candle_and_thumbnail() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Deselect takes","text":"One\nTwo\nThree"}))["item"].as_u64().unwrap();
+    let lines: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[0],"endLine":lines[2]}));
+    let take = added["take"].as_u64().unwrap();
+    let slate = added["slate"].as_u64().unwrap();
+    let mark = driver.exec("script.addMark", json!({"item":script,"take":take,"line":lines[2],"sourceTime":0}))["mark"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    for target in [format!("script.take.{take}.line.{}", lines[1]), format!("script.slate.{slate}.thumbnail"), format!("script.mark.{mark}")] {
+        driver.ok("ui.click", json!({"id":target}));
+        assert_eq!(driver.harness.state_mut().ui.script.selected_take, Some(take));
+        assert_eq!(driver.harness.state_mut().ui.script.selected_slate, Some(slate));
+        driver.ok("ui.click", json!({"id":format!("script.line.{}",lines[1]),"fx":0.4}));
+        let state = &driver.harness.state_mut().ui.script;
+        assert_eq!(state.selected_take, None);
+        assert_eq!(state.selected_slate, None);
+        assert_eq!(state.selected_mark, None);
+        assert!(state.selected_section_slates.is_empty());
+        assert_eq!(state.selected_lines, Some((lines[1], lines[1])));
+        driver.ok("ui.click", json!({"id":target}));
+        driver.ok("ui.click", json!({"id":"script.emptyCanvas","fx":0.95,"fy":0.9}));
+        let state = &driver.harness.state_mut().ui.script;
+        assert_eq!(state.selected_take, None);
+        assert_eq!(state.selected_slate, None);
+        assert_eq!(state.selected_mark, None);
+        assert_eq!(state.selected_lines, None);
+    }
+    driver.snapshot("cleared-selection");
+}
+
+#[test]
+fn rows_select_and_extend_past_both_margins_and_a_drop_uses_that_full_range() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Full-width selection","text":"One\nTwo\nThree\nFour"}))["item"].as_u64().unwrap();
+    let original = driver.exec("script.inspect", json!({"item":script}));
+    let lines: Vec<_> = original["document"]["lines"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[0],"endLine":lines[3]}));
+    let take = added["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    driver.frames(4);
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}",lines[0])}));
+    let [x, _, width, _] = driver.rect("script.emptyCanvas");
+    for fraction in [0.01, 0.95] {
+        let [_, y, _, height] = driver.rect(&format!("script.line.{}", lines[1]));
+        driver.ok("ui.click", json!({"x":x+width*fraction,"y":y+height*0.5}));
+        let state = &driver.harness.state().ui.script;
+        assert_eq!(state.selected_lines, Some((lines[1], lines[1])), "row selection must span the canvas");
+        assert_eq!(state.selected_take, None);
+        assert_eq!(state.selected_thumbnail, None);
+    }
+    let [_, y, _, height] = driver.rect(&format!("script.line.{}", lines[3]));
+    driver.ok("ui.click", json!({"x":x+width*0.95,"y":y+height*0.5,"shift":true}));
+    assert_eq!(driver.harness.state().ui.script.selected_lines, Some((lines[1], lines[3])));
+    driver.snapshot("full-width-row-selection");
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"x":x+width*0.95,"y":y+height*0.5},"steps":16}));
+    let result = driver.exec("script.inspect", json!({"item":script}));
+    let new_take = &result["document"]["slates"][1]["takes"][0];
+    assert_eq!(new_take["start_line"], lines[1]);
+    assert_eq!(new_take["end_line"], lines[3]);
+}
+
+#[test]
+fn shift_click_keeps_the_final_wrapped_row_with_pointer_slip_or_early_shift_release() {
+    for early_release in [false, true] {
+        let mut driver = Driver::new();
+        let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+        let text = format!("First\nSecond\nThird\n{}", "This last selected row wraps onto another visual line. ".repeat(3));
+        let script = driver.exec("script.importText", json!({"name":"Shift-click endpoint","text":text}))["item"].as_u64().unwrap();
+        let doc = driver.exec("script.inspect", json!({"item":script}));
+        let lines: Vec<_> = doc["document"]["lines"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+        if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+            driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+        }
+        driver.exec("project.view.set", json!({"view":"icon"}));
+        driver.frames(4);
+        driver.ok("ui.click", json!({"id":format!("script.line.{}",lines[0]),"fx":0.9}));
+        driver.ok("ui.click", json!({"id":format!("script.line.{}",lines[2]),"fx":0.9,"shift":true}));
+        assert_eq!(driver.harness.state().ui.script.selected_lines, Some((lines[0], lines[2])));
+        let [x, y, width, height] = driver.rect(&format!("script.line.{}", lines[3]));
+        assert!(height > 20.0, "last row should wrap");
+        let mut pos = egui::pos2((x + width * 0.9) as f32, (y + height * 0.8) as f32);
+        let shift = egui::Modifiers { shift: true, ..Default::default() };
+        driver.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+        driver.frames(1);
+        driver.harness.input_mut().events.extend([
+            egui::Event::ModifiersChanged(shift),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: shift },
+        ]);
+        driver.frames(1);
+        if early_release {
+            driver.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        } else {
+            pos.x += 12.0;
+            driver.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+        }
+        driver.frames(1);
+        driver.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: if early_release { egui::Modifiers::NONE } else { shift },
+        });
+        driver.frames(2);
+        driver.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        driver.frames(1);
+        assert_eq!(
+            driver.harness.state().ui.script.selected_lines,
+            Some((lines[0], lines[3])),
+            "the final Shift-clicked row must remain selected (early Shift release: {early_release})"
+        );
+        driver.snapshot("shift-click-final-row");
+        driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"id":format!("script.line.{}",lines[1]),"fx":0.9},"steps":16}));
+        let result = driver.exec("script.inspect", json!({"item":script}));
+        let take = &result["document"]["slates"][0]["takes"][0];
+        assert_eq!(take["start_line"], lines[0]);
+        assert_eq!(take["end_line"], lines[3]);
+    }
+}
+
+#[test]
+fn dropped_setup_uses_pointer_x_and_stays_separate_when_thumbnails_overlap() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Drop position","text":"\n\n\n\n\nFirst\nSecond\nThird"}))["item"].as_u64().unwrap();
+    let lines: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let existing = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[5],"endLine":lines[7]}));
+    driver.exec("script.moveThumbnail", json!({"item":script,"slate":existing["slate"],"line":lines[5],"x":0.5}));
+    let before = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    driver.harness.state_mut().ui.script.selected_lines = Some((lines[5], lines[7]));
+    let [x, y, w, h] = driver.rect(&format!("script.slate.{}.thumbnail", existing["slate"].as_u64().unwrap()));
+    // The new thumbnail may overlap, but the pointer is outside the existing target.
+    let drop_x = x + w + 10.0;
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"x":drop_x,"y":y+h*0.5},"steps":16}));
+    let after = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    let slates = after["slates"].as_array().unwrap();
+    assert_eq!(slates.len(), 2, "overlap must create a separate setup");
+    assert_eq!(slates[0], before["slates"][0]);
+    let created = slates[1]["id"].as_u64().unwrap();
+    let thumbnail = driver.rect(&format!("script.slate.{created}.thumbnail"));
+    assert!((thumbnail[0] + thumbnail[2] * 0.5 - drop_x).abs() < 1.0, "new thumbnail must stay at the pointer: {thumbnail:?} vs {drop_x}");
+    assert_eq!(slates[1]["takes"][0]["start_line"], lines[5]);
+    assert_eq!(slates[1]["takes"][0]["end_line"], lines[7]);
+    driver.snapshot("drop-overlap-position");
+    driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], before);
+}
+
+#[test]
+fn script_scrollbar_spans_the_canvas_and_scrolled_drops_keep_the_pointer_x() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Scrollable setups","text":"\n\n\n\n\nFirst\nSecond"}))["item"].as_u64().unwrap();
+    let lines: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    for _ in 0..10 {
+        driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[5],"endLine":lines[6]}));
+    }
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    let canvas = driver.rect("script.emptyCanvas");
+    let track = driver.rect("script.takeScroll");
+    assert!(track[2] > canvas[2] * 0.95, "scrollbar must span the Script canvas: {track:?} {canvas:?}");
+    let thumb = driver.rect("script.takeScroll.thumb");
+    assert!(thumb[2] > 32.0 && thumb[2] < track[2]);
+    driver.ok("ui.drag", json!({"from":{"id":"script.takeScroll.thumb"},"to":{"x":thumb[0]+thumb[2]*0.5+70.0,"y":thumb[1]+thumb[3]*0.5},"steps":10}));
+    assert!(driver.harness.state().ui.script.take_scroll > 0.0);
+    let thumb = driver.rect("script.takeScroll.thumb");
+    let scroll = driver.harness.state().ui.script.take_scroll;
+    driver
+        .ok("ui.drag", json!({"from":{"id":"script.takeScroll.thumb","fx":0.99},"to":{"x":thumb[0]+thumb[2]*0.99+20.0,"y":thumb[1]+thumb[3]*0.5},"steps":10}));
+    assert!(driver.harness.state().ui.script.take_scroll > scroll, "dragging a thumb edge must scroll");
+    assert!((driver.rect("script.takeScroll.thumb")[2] - thumb[2]).abs() < 1.0, "thumb edges must not zoom");
+    driver.ok("ui.click", json!({"id":"script.takeScroll","fx":0.99}));
+    let thumb = driver.rect("script.takeScroll.thumb");
+    assert!((thumb[0] + thumb[2] - track[0] - track[2]).abs() < 1.0, "track click should reach the right edge");
+    driver.harness.state_mut().ui.script.selected_lines = Some((lines[5], lines[6]));
+    let before = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    let row = driver.rect(&format!("script.line.{}", lines[6]));
+    let drop_x = canvas[0] + canvas[2] * 0.8;
+    let scroll = driver.harness.state().ui.script.take_scroll as f64;
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"x":drop_x,"y":row[1]+row[3]*0.5},"steps":16}));
+    let after = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    let slate = after["slates"].as_array().unwrap().last().unwrap();
+    assert!(slate["thumbnail_x"].as_f64().unwrap() > 1.0, "position beyond first viewport must be retained");
+    assert!((slate["thumbnail_x"].as_f64().unwrap() - (drop_x - canvas[0] + scroll) / canvas[2]).abs() < 0.001);
+    let thumbnail = driver.rect(&format!("script.slate.{}.thumbnail", slate["id"].as_u64().unwrap()));
+    assert!((thumbnail[0] + thumbnail[2] * 0.5 - drop_x).abs() < 1.0, "scrolled drop must stay under pointer");
+    driver.snapshot("full-width-scrollbar");
+    driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], before);
+}
+
+#[test]
+fn dropped_candles_cover_the_first_selected_row_below_the_take_number() {
+    for (name, wrapped, single_row) in [("blank-range", false, false), ("blank-single", false, true), ("wrapped-range", true, false)] {
+        let mut driver = Driver::new();
+        let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+        let first_text = if wrapped { "A long first selected row wraps onto several visual lines. ".repeat(3) } else { String::new() };
+        let script = driver.exec(
+            "script.importText",
+            json!({"name":name,"text":format!("\n\n\n\n\n{first_text}\nMARA\nYou said the door was locked.\n\nThe hallway light flickers.")}),
+        )["item"]
+            .as_u64()
+            .unwrap();
+        let rows: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line["id"].as_u64().unwrap())
+            .collect();
+        let first = rows[5];
+        let last = if single_row { first } else { rows[9] };
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+        if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+            driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+        }
+        driver.exec("project.view.set", json!({"view":"icon"}));
+        driver.ok("ui.click", json!({"id":format!("script.line.{first}"),"fx":0.9}));
+        driver.ok("ui.click", json!({"id":format!("script.line.{last}"),"fx":0.9,"shift":true}));
+        driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"id":format!("script.line.{last}"),"fx":0.9},"steps":16}));
+        let doc = driver.exec("script.inspect", json!({"item":script}));
+        let slate = doc["document"]["slates"][0]["id"].as_u64().unwrap();
+        let take = doc["document"]["slates"][0]["takes"][0]["id"].as_u64().unwrap();
+        assert_eq!(doc["document"]["slates"][0]["takes"][0]["start_line"], first);
+        assert_eq!(doc["document"]["slates"][0]["takes"][0]["end_line"], last);
+        let row = driver.rect(&format!("script.line.{first}"));
+        assert_eq!(row[3] > 20.0, wrapped);
+        let number = driver.rect(&format!("script.take.{take}.metadata"));
+        let thumbnail = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+        assert!(number[1] + number[3] <= row[1], "take number must sit above the first selected row: {number:?} {row:?}");
+        assert!((thumbnail[1] + thumbnail[3] - number[1]).abs() < 1.0, "take number hangs below its thumbnail");
+        let top = driver.rect(&format!("script.take.{take}.topHandle"));
+        assert!((top[1] + top[3] * 0.5 - row[1]).abs() < 1.0, "candle must start at the first row boundary: {top:?} {row:?}");
+        let last_row = driver.rect(&format!("script.line.{last}"));
+        let bottom = driver.rect(&format!("script.take.{take}.bottomHandle"));
+        assert!((bottom[1] + bottom[3] * 0.5 - last_row[1] - last_row[3]).abs() < 1.0);
+        let mark = driver.exec("script.addMark", json!({"item":script,"take":take,"line":first,"sourceTime":0}))["mark"].as_u64().unwrap();
+        let marker = driver.rect(&format!("script.mark.{mark}"));
+        assert!((marker[1] + marker[3] * 0.5 - row[1] - row[3] * 0.5).abs() < 1.0, "first-row mark stays centered on its row");
+        driver.snapshot(&format!("first-row-{name}"));
+    }
+}
+
+#[test]
+fn repeated_source_uses_one_setup_thumbnail_and_multiple_candles() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
+    let script =
+        driver.exec("script.importText", json!({"name": "Reset", "text": "Action\nReset\nAction again\nAfter\nEnd"}))["item"].as_u64().expect("script");
+    let doc = driver.exec("script.inspect", json!({"item": script}));
+    let first = doc["document"]["lines"][0]["id"].as_u64().expect("first line");
+    let second = doc["document"]["lines"][1]["id"].as_u64().expect("second line");
+    let last = doc["document"]["lines"][2]["id"].as_u64().expect("last line");
+    let fifth = doc["document"]["lines"][4]["id"].as_u64().expect("fifth line");
+    driver.exec("script.setLabel", json!({"item": script, "line": first, "scene": "2A", "page": "7"}));
+    driver.exec("script.setLabel", json!({"item": script, "line": second, "scene": "2B", "page": "8"}));
+    let original = driver.exec("script.addTake", json!({"item": script, "source": source, "startLine": first, "endLine": last}));
+    let slate = original["slate"].as_u64().expect("slate");
+    let duplicate = driver.exec("script.addTake", json!({"item": script, "slate": slate, "source": source, "startLine": first, "endLine": last}));
+    driver.ok("ui.menu.invoke", json!({"id": "window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id": "script.openPanel", "params": {"item": script}}));
+    let scene_combo = driver.rect("script.scene.combo");
+    let page_combo = driver.rect("script.page.combo");
+    assert!(scene_combo[0] < page_combo[0], "Scene must precede Page in the toolbar");
+    let scene_label = driver.rect(&format!("script.scene.{first}"));
+    let first_row = driver.rect(&format!("script.line.{first}"));
+    assert!(
+        (14.0..=20.0).contains(&(scene_label[0] - first_row[0])),
+        "scene label should sit close to, but separate from, the row number: {scene_label:?} {first_row:?}"
+    );
+    driver.ok("ui.click", json!({"id": "script.scene.combo"}));
+    let _ = driver.rect(&format!("script.scene.option.{second}"));
+    driver.ok("ui.click", json!({"id": format!("script.scene.option.{second}")}));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((second, second)));
+    let thumbnail = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    let first_candle = driver.rect(&format!("script.take.{}.line.{first}", original["take"].as_u64().expect("first take")));
+    let second_candle = driver.rect(&format!("script.take.{}.line.{first}", duplicate["take"].as_u64().expect("second take")));
+    let wrap_margin = driver.rect("script.margin.right");
+    let page = driver.rect(&format!("script.page.{first}"));
+    assert!(page[0] > wrap_margin[0], "page number belongs to the right of the wrap margin");
+    assert!((page[0] - wrap_margin[0] - wrap_margin[2] * 0.5).abs() < 1.0, "page text should start at the right margin marker");
+    driver.harness.state_mut().ui.script.text_column_width = Some(350.0);
+    let moved_margin = driver.rect("script.margin.right");
+    let moved_page = driver.rect(&format!("script.page.{first}"));
+    let fixed_thumbnail = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    let fixed_candle = driver.rect(&format!("script.take.{}.line.{first}", original["take"].as_u64().expect("first take")));
+    assert!((moved_margin[0] - wrap_margin[0]).abs() > 20.0, "the wrap margin should move");
+    assert!((moved_page[0] - page[0] - (moved_margin[0] - wrap_margin[0])).abs() < 1.0, "page number should follow the wrap margin");
+    assert!((fixed_thumbnail[0] - thumbnail[0]).abs() < 1.0, "moving the wrap margin must not shift a thumbnail");
+    assert!((fixed_candle[0] - first_candle[0]).abs() < 1.0, "moving the wrap margin must not shift a candle");
+    assert!(second_candle[0] > first_candle[0], "the repeated clip has its own candle beneath one setup thumbnail");
+    assert!((thumbnail[1] + thumbnail[3] + 17.0 - first_candle[1]).abs() < 1.0, "thumbnail and take number must sit above the first covered row");
+    assert!(second_candle[0] - first_candle[0] <= 32.0, "candles beneath one thumbnail should form a tight group");
+    assert!(first_candle[3] <= 26.0, "a short text row must not grow to fit the thumbnail");
+    driver.snapshot("multi-take-dark");
+    driver.exec("script.addMark", json!({"item":script,"take":original["take"],"line":second,"sourceTime":100}));
+    let first_row = driver.rect(&format!("script.line.{first}"));
+    let last_row = driver.rect(&format!("script.line.{last}"));
+    driver.ok(
+        "ui.drag",
+        json!({"from": {"id": format!("script.slate.{slate}.thumbnail")},
+        "to": {"x": thumbnail[0] + thumbnail[2] * 0.5, "y": thumbnail[1] + thumbnail[3] * 0.5 + last_row[1] - first_row[1]},
+        "steps": 12, "modifiers": {"command": true}}),
+    );
+    let moved = driver.exec("script.inspect", json!({"item": script}));
+    for take in moved["document"]["slates"][0]["takes"].as_array().expect("takes") {
+        assert_eq!(take["start_line"], last);
+        assert_eq!(take["end_line"], fifth);
+    }
+    let moved_mark = &moved["document"]["slates"][0]["takes"][0]["marks"][0];
+    assert_eq!(moved_mark["line"], doc["document"]["lines"][3]["id"]);
+    assert_eq!(moved_mark["source_time"], 100);
+    let moved_thumb = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    let fifth_row = driver.rect(&format!("script.line.{fifth}"));
+    driver.ok(
+        "ui.drag",
+        json!({"from": {"id": format!("script.slate.{slate}.thumbnail")},
+        "to": {"x": moved_thumb[0] + moved_thumb[2] * 0.5, "y": moved_thumb[1] + moved_thumb[3] * 0.5 + fifth_row[1] - last_row[1]}, "steps": 12}),
+    );
+    let thumbnail_only = driver.exec("script.inspect", json!({"item": script}));
+    assert_eq!(thumbnail_only["document"]["slates"][0]["thumbnail_line"], fifth);
+    for take in thumbnail_only["document"]["slates"][0]["takes"].as_array().expect("takes") {
+        assert_eq!(take["start_line"], last);
+        assert_eq!(take["end_line"], fifth);
+    }
+    let original_take = original["take"].as_u64().expect("original take");
+    driver.ok(
+        "ui.drag",
+        json!({"from": {"id": format!("script.take.{original_take}.topHandle")},
+        "to": {"id": format!("script.line.{second}"), "fx": 0.5, "fy": 0.5},
+        "steps": 12, "modifiers": {"command": true}}),
+    );
+    let resized = driver.exec("script.inspect", json!({"item": script}));
+    assert_eq!(resized["document"]["slates"][0]["takes"][0]["start_line"], second);
+    assert_eq!(resized["document"]["slates"][0]["takes"][0]["end_line"], fifth);
+    driver.ok(
+        "ui.drag",
+        json!({"from": {"id": format!("script.slate.{slate}.thumbnail")},
+        "to": {"id": format!("script.line.{second}"), "fx": 0.5, "fy": 0.5}, "steps": 12}),
+    );
+    let overlapped = driver.exec("script.inspect", json!({"item": script}));
+    assert!(overlapped["document"]["slates"][0]["thumbnail_x"].as_f64().is_some(), "drag should store a horizontal thumbnail position");
+    let thumb = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    let text_row = driver.rect(&format!("script.line.{second}"));
+    assert!(thumb[0] < text_row[0] + text_row[2], "thumbnail should be able to overlap the text area: thumb {thumb:?}, text {text_row:?}");
+    driver.snapshot("thumbnail-over-text");
+}
+
+#[test]
+fn dropping_repeated_source_on_script_row_creates_a_new_setup() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
+    let script = driver.exec("script.importText", json!({"name":"Repeated source", "text":"First\nSecond\nThird"}))["item"].as_u64().expect("script");
+    let inspected = driver.exec("script.inspect", json!({"item":script}));
+    let lines = inspected["document"]["lines"].as_array().expect("lines");
+    let first = lines[0]["id"].as_u64().expect("first");
+    let second = lines[1]["id"].as_u64().expect("second");
+    let original = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":first,"endLine":first}));
+    let slate = original["slate"].as_u64().expect("slate");
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.harness.state_mut().ui.script.selected_slate = Some(slate);
+    if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.frames(4);
+    let project_item = format!("project.item.{source}");
+    let target_row = format!("script.line.{second}");
+    driver.rect(&project_item);
+    driver.rect(&target_row);
+    driver.ok("ui.drag", json!({"from":{"id":project_item},"to":{"id":target_row,"fx":0.6,"fy":0.5},"steps":16}));
+    let result = driver.exec("script.inspect", json!({"item":script}));
+    let slates = result["document"]["slates"].as_array().expect("slates");
+    assert_eq!(slates.len(), 2, "a row drop must create a fresh thumbnail, even when one is selected");
+    assert_ne!(slates[0]["id"], slates[1]["id"]);
+    assert_eq!(slates[1]["takes"][0]["source"], source);
+}
+
+#[test]
+fn dropping_project_clips_beside_script_text_creates_setups_at_the_hovered_lines() {
+    for (view, fraction) in ["icon", "list", "freeform"].into_iter().flat_map(|view| [0.1, 0.55, 0.9].map(|fraction| (view, fraction))) {
+        let mut driver = Driver::new();
+        let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+        let script = driver.exec("script.importText", json!({"name":"Canvas drop", "text":"First\nSecond\nThird"}))["item"].as_u64().unwrap();
+        let original = driver.exec("script.inspect", json!({"item":script}));
+        let first = original["document"]["lines"][0]["id"].as_u64().unwrap();
+        let second = original["document"]["lines"][1]["id"].as_u64().unwrap();
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+        if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+            driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+        }
+        driver.exec("project.view.set", json!({"view":view}));
+        driver.harness.state_mut().ui.script.selected_lines = Some((first, second));
+        driver.frames(4);
+        if view == "list" {
+            driver.ok("ui.scroll", json!({"id":format!("project.item.{source}"),"dy":-150.0}));
+            driver.frames(4);
+        }
+        let [x, _, width, _] = driver.rect("script.emptyCanvas");
+        let [_, y, _, height] = driver.rect(&format!("script.line.{second}"));
+        driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}"),"fx":0.2},"to":{"x":x+width*fraction,"y":y+height*0.5},"steps":16}));
+        let result = driver.exec("script.inspect", json!({"item":script}));
+        let slates = result["document"]["slates"].as_array().unwrap();
+        assert_eq!(slates.len(), 1, "{view} drop beside text must create a setup: {result}");
+        let take = &slates[0]["takes"][0];
+        assert_eq!(take["source"], source);
+        assert_eq!(take["start_line"], first);
+        assert_eq!(take["end_line"], second);
+        driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+        assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], original["document"]);
+    }
+}
+
+#[test]
+fn script_drop_preview_spans_the_canvas_without_editing_and_escape_cancels() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Drop preview", "text":"First\nSecond\nThird"}))["item"].as_u64().unwrap();
+    let original = driver.exec("script.inspect", json!({"item":script}));
+    let last = original["document"]["lines"][2]["id"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    driver.frames(4);
+    let [sx, sy, sw, sh] = driver.rect(&format!("project.item.{source}"));
+    let [x, y, width, height] = driver.rect("script.emptyCanvas");
+    let from = egui::pos2((sx + sw * 0.5) as f32, (sy + sh * 0.5) as f32);
+    let to = egui::pos2((x + width * 0.9) as f32, (y + height * 0.8) as f32);
+    driver.harness.input_mut().events.push(egui::Event::PointerMoved(from));
+    driver.frames(1);
+    driver.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    driver.frames(1);
+    driver.harness.input_mut().events.push(egui::Event::PointerMoved(to));
+    driver.frames(3);
+    let preview = driver.rect("script.dropPreview");
+    assert!((preview[0] - x).abs() < 1.0 && (preview[2] - width).abs() < 1.0, "preview must span every column");
+    assert_eq!(preview[1], driver.rect(&format!("script.line.{last}"))[1]);
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], original["document"]);
+    driver.snapshot("full-width-drop-preview");
+    driver.ok("ui.key", json!({"key":"Escape"}));
+    driver.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    driver.frames(3);
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], original["document"]);
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"x":to.x,"y":to.y},"steps":16}));
+    let result = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(result["document"]["slates"][0]["takes"][0]["start_line"], last);
+    assert_eq!(result["document"]["slates"][0]["takes"][0]["end_line"], last);
+}
+
+#[test]
+fn selected_rows_anchor_project_drops_over_other_rows_and_floating_objects() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Selection anchors drops", "text":"First\nSecond\nThird\nFourth"}))["item"].as_u64().unwrap();
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let lines: Vec<_> = doc["document"]["lines"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+    let existing = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[3],"endLine":lines[3]}));
+    let take = existing["take"].as_u64().unwrap();
+    let slate = existing["slate"].as_u64().unwrap();
+    driver.exec("script.addMark", json!({"item":script,"take":take,"line":lines[3],"sourceTime":0}));
+    let baseline = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    driver.frames(4);
+    for end in [lines[1], lines[2]] {
+        for target in [
+            json!({"id":format!("script.line.{}",lines[0]),"fx":0.95}),
+            json!({"id":"script.emptyCanvas","fx":0.95,"fy":0.95}),
+            json!({"id":format!("script.take.{take}.line.{}",lines[3])}),
+            json!({"id":format!("script.slate.{slate}.thumbnail")}),
+        ] {
+            driver.ok("ui.click", json!({"id":format!("script.line.{}",lines[1]),"fx":0.95}));
+            driver.ok("ui.click", json!({"id":format!("script.line.{end}"),"fx":0.95,"shift":true}));
+            driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":target,"steps":16}));
+            let result = driver.exec("script.inspect", json!({"item":script}));
+            let slates = result["document"]["slates"].as_array().unwrap();
+            let thumbnail_target = target["id"] == format!("script.slate.{slate}.thumbnail");
+            let added = if thumbnail_target {
+                assert_eq!(slates.len(), 1, "a thumbnail drop must add to its existing setup");
+                assert_eq!(slates[0]["takes"][0], baseline["slates"][0]["takes"][0]);
+                assert_eq!(slates[0]["takes"].as_array().unwrap().len(), 2);
+                &slates[0]["takes"][1]
+            } else {
+                assert_eq!(slates.len(), 2, "selected rows must create a new setup over rows and candles");
+                assert_eq!(slates[0], baseline["slates"][0]);
+                &slates[1]["takes"][0]
+            };
+            assert_eq!(added["start_line"], lines[1], "the pointer must not override the selected start");
+            assert_eq!(added["end_line"], end, "the pointer must not override the selected end");
+            driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+            assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], baseline);
+        }
+    }
+}
+
+fn deleted_source_candle(driver: &mut Driver) -> (u64, u64, u64, u64, Vec<u64>) {
+    use filmcraft_project::{Label, MediaIdentity};
+    let mut media = driver.harness.state().session.project.items.values().find_map(|item| item.as_media().cloned()).unwrap();
+    media.identity = Some(MediaIdentity { size: 42, fingerprint: 10 });
+    let (original, replacement) = {
+        let project = std::sync::Arc::make_mut(&mut driver.harness.state_mut().session.project);
+        (
+            project.add_item("Deleted clip", Label::Blue, ItemKind::Media(media.clone()), None).0,
+            project.add_item("Moved clip", Label::Blue, ItemKind::Media(media), None).0,
+        )
+    };
+    let script = driver.exec("script.importText", json!({"name":"Recovery","text":"\n\n\n\n\nFirst\nSecond\nThird"}))["item"].as_u64().unwrap();
+    let lines: Vec<_> =
+        driver.exec("script.inspect", json!({"item":script}))["document"]["lines"].as_array().unwrap().iter().map(|l| l["id"].as_u64().unwrap()).collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":original,"startLine":lines[5],"endLine":lines[7]}));
+    let slate = added["slate"].as_u64().unwrap();
+    let take = added["take"].as_u64().unwrap();
+    driver.exec("script.addMark", json!({"item":script,"take":take,"line":lines[6],"sourceTime":0}));
+    let second =
+        driver.exec("script.addTake", json!({"item":script,"slate":slate,"source":original,"startLine":lines[5],"endLine":lines[7]}))["take"].as_u64().unwrap();
+    driver.exec("script.addMark", json!({"item":script,"take":second,"line":lines[7],"sourceTime":0}));
+    driver.exec("project.delete", json!({"items":[original]}));
+    assert!(driver.exec("script.inspect", json!({"item":script}))["document"]["slates"][0]["takes"][0]["source"].is_null());
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.harness.state_mut().ui.project_panel.bin = None;
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    (script, slate, take, replacement, lines)
+}
+
+#[test]
+fn deleted_clip_drops_recover_existing_candles_even_with_selected_rows() {
+    for thumbnail in [false, true] {
+        let mut driver = Driver::new();
+        let (script, slate, take, replacement, lines) = deleted_source_candle(&mut driver);
+        let mut expected = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+        driver.harness.state_mut().ui.script.selected_lines = Some((lines[2], lines[3]));
+        let target = if thumbnail { format!("script.slate.{slate}.thumbnail") } else { format!("script.take.{take}.line.{}", lines[5]) };
+        driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{replacement}")},"to":{"id":target},"steps":16}));
+        let after = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+        assert_eq!(after["slates"].as_array().unwrap().len(), 1, "recovery must not add a setup (thumbnail: {thumbnail})");
+        let before = expected.clone();
+        for take in expected["slates"][0]["takes"].as_array_mut().unwrap() {
+            take["source"] = json!(replacement);
+            take["source_name"] = json!("Moved clip");
+        }
+        assert_eq!(after, expected, "keep coverage, marks and identities");
+        driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+        assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], before);
+    }
+}
+
+#[test]
+fn deleted_clip_can_rebind_from_candle_and_thumbnail_menus() {
+    for thumbnail in [false, true] {
+        let mut driver = Driver::new();
+        let (script, slate, take, replacement, lines) = deleted_source_candle(&mut driver);
+        driver.exec("project.select", json!({"items":[replacement]}));
+        let target = if thumbnail { format!("script.slate.{slate}.thumbnail") } else { format!("script.take.{take}.line.{}", lines[5]) };
+        driver.ok("ui.click", json!({"id":target,"button":"right"}));
+        driver.ok("ui.click", json!({"id":format!("script.take.{take}.rebindSelected")}));
+        let doc = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+        assert_eq!(doc["slates"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["slates"][0]["takes"].as_array().unwrap().len(), 2);
+        for take in doc["slates"][0]["takes"].as_array().unwrap() {
+            assert_eq!(take["source"], replacement);
+            assert_eq!(take["marks"].as_array().unwrap().len(), 1);
+        }
+        assert_eq!(doc["slates"][0]["takes"][0]["marks"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn recovery_does_not_target_a_missing_candle_under_a_visible_bound_candle() {
+    let mut driver = Driver::new();
+    let (script, slate, take, replacement, lines) = deleted_source_candle(&mut driver);
+    driver.exec("script.moveThumbnail", json!({"item":script,"slate":slate,"line":lines[5],"x":0.5}));
+    let canvas = driver.rect("script.emptyCanvas");
+    let candle = driver.rect(&format!("script.take.{take}.line.{}", lines[5]));
+    let top = driver.exec("script.addTake", json!({"item":script,"source":replacement,"startLine":lines[5],"endLine":lines[7]}));
+    let x = (candle[0] + candle[2] * 0.5 - canvas[0]) / canvas[2];
+    driver.exec("script.moveThumbnail", json!({"item":script,"slate":top["slate"],"line":lines[5],"x":x}));
+    let before = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    driver.harness.state_mut().ui.script.selected_lines = Some((lines[2], lines[3]));
+    driver.ok("ui.drag",json!({"from":{"id":format!("project.item.{replacement}")},"to":{"id":format!("script.take.{}.line.{}",top["take"].as_u64().unwrap(),lines[5])},"steps":16}));
+    let after = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    assert_eq!(after["slates"].as_array().unwrap().len(), 3);
+    assert_eq!(after["slates"][0], before["slates"][0], "the hidden missing candle must not be rebound");
+    assert_eq!(after["slates"][1], before["slates"][1]);
+}
+
+#[test]
+fn recovery_menu_requires_one_compatible_project_clip_and_reviews_the_entire_batch() {
+    let mut driver = Driver::new();
+    let (script, _, take, replacement, lines) = deleted_source_candle(&mut driver);
+    let baseline = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    let target = format!("script.take.{take}.line.{}", lines[5]);
+    for items in [vec![], vec![script], vec![replacement, script]] {
+        driver.exec("project.select", json!({"items":items}));
+        driver.ok("ui.click", json!({"id":target,"button":"right"}));
+        driver.ok("ui.click", json!({"id":format!("script.take.{take}.rebindSelected")}));
+        assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], baseline);
+        driver.ok("ui.key", json!({"key":"Escape"}));
+    }
+    let different =
+        driver.harness.state().session.project.items.values().find(|item| item.id.0 != replacement && matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    driver.exec("project.select", json!({"items":[different]}));
+    driver.ok("ui.click", json!({"id":target,"button":"right"}));
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.rebindSelected")}));
+    assert_eq!(driver.harness.state().ui.script.pending_rebind, Some((take, different)));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], baseline);
+    driver.ok("ui.click", json!({"id":"script.rebind.cancel"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], baseline);
+    driver.ok("ui.click", json!({"id":target,"button":"right"}));
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.rebindSelected")}));
+    driver.ok("ui.click", json!({"id":"script.rebind.confirm"}));
+    let after = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    for take in after["slates"][0]["takes"].as_array().unwrap() {
+        assert_eq!(take["source"], different);
+        assert!(take["marks"].as_array().is_none_or(Vec::is_empty));
+    }
+    driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], baseline);
+}
+
+#[test]
+fn explicit_script_drop_targets_take_precedence_over_the_full_canvas() {
+    let mut driver = Driver::new();
+    let sources: Vec<_> = driver
+        .harness
+        .state_mut()
+        .session
+        .project
+        .items
+        .values()
+        .filter(|item| matches!(item.kind, ItemKind::Media(_)))
+        .take(2)
+        .map(|item| item.id.0)
+        .collect();
+    let (source, replacement) = (sources[0], sources[1]);
+    let script = driver.exec("script.importText", json!({"name":"Drop targets", "text":"First\nSecond\nThird"}))["item"].as_u64().unwrap();
+    let original = driver.exec("script.inspect", json!({"item":script}));
+    let first = original["document"]["lines"][0]["id"].as_u64().unwrap();
+    let second = original["document"]["lines"][1]["id"].as_u64().unwrap();
+    let last = original["document"]["lines"][2]["id"].as_u64().unwrap();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":first,"endLine":last}));
+    let (slate, take) = (added["slate"].as_u64().unwrap(), added["take"].as_u64().unwrap());
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(replacement)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    driver.frames(4);
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{replacement}")},"to":{"id":format!("script.slate.{slate}.thumbnail")},"steps":16}));
+    let result = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(result["document"]["slates"].as_array().unwrap().len(), 1);
+    assert_eq!(result["document"]["slates"][0]["takes"].as_array().unwrap().len(), 2);
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{replacement}")},"to":{"id":format!("script.take.{take}.line.{second}")},"steps":16}));
+    let rebound = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(rebound["document"]["slates"][0]["takes"][0]["source"], replacement);
+    assert_eq!(rebound["document"]["slates"].as_array().unwrap().len(), 1);
+    driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+    driver.exec("script.addMark", json!({"item":script,"take":take,"line":first,"sourceTime":0}));
+    let marked = driver.exec("script.inspect", json!({"item":script}));
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{replacement}")},"to":{"id":format!("script.take.{take}.line.{second}")},"steps":16}));
+    assert_eq!(driver.harness.state().ui.script.pending_rebind, Some((take, replacement)));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], marked["document"]);
+}
+
+#[test]
+fn candle_double_click_cues_source_start_or_interpolated_mark_time() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
+    let script = driver.exec("script.importText", json!({"name":"Cue rows", "text":"First\nBetween\nLast"}))["item"].as_u64().expect("script");
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let lines = doc["document"]["lines"].as_array().expect("lines");
+    let first = lines[0]["id"].as_u64().expect("first");
+    let middle = lines[1]["id"].as_u64().expect("middle");
+    let last = lines[2]["id"].as_u64().expect("last");
+    let take = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":first,"endLine":last}))["take"].as_u64().expect("take");
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    let before_click = (driver.harness.state_mut().session.state.source_item, driver.harness.state_mut().session.state.source_playhead);
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{middle}")}));
+    assert_eq!((driver.harness.state_mut().session.state.source_item, driver.harness.state_mut().session.state.source_playhead), before_click);
+    driver.double_click(&format!("script.take.{take}.line.{middle}"));
+    assert_eq!(driver.harness.state_mut().session.state.source_item.map(|id| id.0), Some(source));
+    assert_eq!(driver.harness.state_mut().session.state.source_playhead.0, 0);
+    assert_eq!(driver.harness.state().ui.focused, filmcraft_ui_egui::dock::PanelKind::Source);
+    driver.ok("ui.key", json!({"key":"Space"}));
+    assert!(driver.harness.state().source_playback.clock.playing, "Space after double-click must play Source");
+    assert!(!driver.harness.state().playback.playing, "Program must stay stopped");
+    driver.ok("ui.key", json!({"key":"Space"}));
+    driver.exec("source.setPlayhead", json!({"time":0}));
+    let a = FrameRate::FPS_24.tick_of(24).0;
+    let b = FrameRate::FPS_24.tick_of(72).0;
+    let mark = driver.exec("script.addMark", json!({"item":script,"take":take,"line":first,"sourceTime":a}))["mark"].as_u64().unwrap();
+    driver.exec("script.addMark", json!({"item":script,"take":take,"line":last,"sourceTime":b}));
+    driver.frames(60);
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{middle}")}));
+    assert_eq!(driver.harness.state_mut().session.state.source_playhead.0, 0);
+    driver.double_click(&format!("script.take.{take}.line.{middle}"));
+    let expected = filmcraft_engine::clip_ops::source_view(&driver.harness.state_mut().session, filmcraft_project::ItemId(source))
+        .expect("source view")
+        .rate
+        .snap(FrameRate::FPS_24.tick_of(48));
+    assert_eq!(driver.harness.state_mut().session.state.source_playhead, expected);
+    assert_eq!(driver.harness.state().ui.focused, filmcraft_ui_egui::dock::PanelKind::Source);
+    let unchanged = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    driver.frames(60);
+    driver.ok("ui.click", json!({"id":format!("script.mark.{mark}")}));
+    assert_eq!(driver.harness.state().ui.focused, filmcraft_ui_egui::dock::PanelKind::Script, "single mark clicks keep Script editing focus");
+    driver.double_click(&format!("script.mark.{mark}"));
+    assert_eq!(driver.harness.state().ui.focused, filmcraft_ui_egui::dock::PanelKind::Source, "double-clicking a mark also activates Source");
+    driver.ok("ui.key", json!({"key":"Space"}));
+    assert!(driver.harness.state().source_playback.clock.playing);
+    assert!(!driver.harness.state().playback.playing);
+    driver.ok("ui.key", json!({"key":"Space"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], unchanged);
+    driver.snapshot("candle-source-focus");
+}
+
+#[test]
+fn unlinked_candle_double_click_keeps_script_focus_and_existing_source() {
+    let mut driver = Driver::new();
+    let (script, slate, take, _, lines) = deleted_source_candle(&mut driver);
+    let before = (driver.harness.state().session.state.source_item, driver.harness.state().session.state.source_playhead);
+    driver.double_click(&format!("script.take.{take}.line.{}", lines[5]));
+    assert_eq!(driver.harness.state().ui.focused, filmcraft_ui_egui::dock::PanelKind::Script);
+    assert_eq!((driver.harness.state().session.state.source_item, driver.harness.state().session.state.source_playhead), before);
+    assert!(driver.harness.state().ui.status.contains("unlinked"));
+    assert_eq!(driver.harness.state().ui.script.item, Some(script));
+    driver.double_click(&format!("script.slate.{slate}.thumbnail"));
+    assert_eq!(driver.harness.state().ui.focused, filmcraft_ui_egui::dock::PanelKind::Script);
+    assert_eq!((driver.harness.state().session.state.source_item, driver.harness.state().session.state.source_playhead), before);
+    assert!(driver.harness.state().ui.status.contains("Reattach"));
+}
+
+#[test]
+fn thumbnail_drop_without_selected_rows_adds_one_candle_to_that_setup() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Thumbnail drop","text":"\n\n\n\n\nFirst\nLast"}))["item"].as_u64().unwrap();
+    let lines = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"].clone();
+    let first = lines[5]["id"].as_u64().unwrap();
+    let last = lines[6]["id"].as_u64().unwrap();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":first,"endLine":last}));
+    let slate = added["slate"].as_u64().unwrap();
+    let baseline = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    driver.harness.state_mut().ui.script.selected_lines = None;
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"id":format!("script.slate.{slate}.thumbnail")},"steps":16}));
+    let result = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    assert_eq!(result["slates"].as_array().unwrap().len(), 1);
+    let takes = result["slates"][0]["takes"].as_array().unwrap();
+    assert_eq!(takes.len(), 2);
+    assert_eq!(takes[0], baseline["slates"][0]["takes"][0]);
+    assert_eq!(takes[1]["source"], source);
+    assert_eq!(takes[1]["start_line"], first);
+    assert_eq!(takes[1]["end_line"], last);
+    driver.snapshot("thumbnail-add-candle");
+    driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], baseline);
+}
+
+#[test]
+fn command_dragging_a_mark_changes_its_line_without_changing_source_time() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
+    let script = driver.exec("script.importText", json!({"name":"Marks","text":"A\nB\nC\nD"}))["item"].as_u64().expect("script");
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let lines = doc["document"]["lines"].as_array().expect("lines");
+    let ids: Vec<u64> = lines.iter().map(|line| line["id"].as_u64().expect("line id")).collect();
+    let take = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":ids[0],"endLine":ids[3]}))["take"].as_u64().expect("take");
+    let mark = driver.exec("script.addMark", json!({"item":script,"take":take,"line":ids[1],"sourceTime":0}))["mark"].as_u64().expect("mark");
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.frames(4);
+    driver.ok("ui.drag", json!({"from":{"id":format!("script.mark.{mark}")},"to":{"id":format!("script.line.{}", ids[2]),"fx":0.5,"fy":0.5},"steps":12,"modifiers":{"command":true}}));
+    let moved = driver.exec("script.inspect", json!({"item":script}));
+    let stored = &moved["document"]["slates"][0]["takes"][0]["marks"][0];
+    assert_eq!(stored["line"], ids[2]);
+    assert_eq!(stored["source_time"], 0);
+}
+
+#[test]
+fn dragging_both_candle_endpoints_hides_marks_until_expanded() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Hidden marks","text":"A\nB\nC\nD\nE"}))["item"].as_u64().unwrap();
+    let lines: Vec<u64> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let take = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[0],"endLine":lines[4]}))["take"].as_u64().unwrap();
+    let first = driver.exec("script.addMark", json!({"item":script,"take":take,"line":lines[0],"sourceTime":0}))["mark"].as_u64().unwrap();
+    let last = driver.exec("script.addMark", json!({"item":script,"take":take,"line":lines[4],"sourceTime":TICKS_PER_SECOND}))["mark"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.frames(4);
+    driver.rect(&format!("script.mark.{first}"));
+    driver.rect(&format!("script.mark.{last}"));
+    driver.ok("ui.drag", json!({"from":{"id":format!("script.take.{take}.topHandle")},"to":{"id":format!("script.line.{}",lines[1]),"fx":0.5,"fy":0.5},"steps":12,"modifiers":{"command":true}}));
+    driver.ok("ui.drag", json!({"from":{"id":format!("script.take.{take}.bottomHandle")},"to":{"id":format!("script.line.{}",lines[3]),"fx":0.5,"fy":0.5},"steps":12,"modifiers":{"command":true}}));
+    driver.frames(4);
+    let trimmed = driver.exec("script.inspect", json!({"item":script}));
+    let take_data = &trimmed["document"]["slates"][0]["takes"][0];
+    assert_eq!(take_data["start_line"], lines[1]);
+    assert_eq!(take_data["end_line"], lines[3]);
+    assert_eq!(take_data["marks"].as_array().unwrap().len(), 2);
+    let hits = driver.ok("ui.elements", json!({"prefix":"script.mark."}));
+    assert!(!hits.as_array().unwrap().iter().any(|hit| hit["id"] == format!("script.mark.{first}") || hit["id"] == format!("script.mark.{last}")));
+    driver.exec("script.setCoverage", json!({"item":script,"take":take,"startLine":lines[0],"endLine":lines[4]}));
+    driver.rect(&format!("script.mark.{first}"));
+    driver.rect(&format!("script.mark.{last}"));
+    driver.harness.state_mut().ui.script.selected_take = Some(take);
+    driver.harness.state_mut().ui.script.selected_mark = Some(first);
+    driver.exec("script.setCoverage", json!({"item":script,"take":take,"startLine":lines[1],"endLine":lines[4]}));
+    driver.frames(3);
+    assert_eq!(driver.harness.state_mut().ui.script.selected_mark, None);
+}
+
+#[test]
+fn enter_in_script_text_splits_the_numbered_row_at_the_caret() {
+    let mut driver = Driver::new();
+    let script = driver.exec("script.importText", json!({"name": "Split", "text": "Door locked\nNext line"}))["item"].as_u64().expect("script");
+    let doc = driver.exec("script.inspect", json!({"item": script}));
+    let first = doc["document"]["lines"][0]["id"].as_u64().expect("first line");
+    driver.ok("ui.menu.invoke", json!({"id": "window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id": "script.openPanel", "params": {"item": script}}));
+    driver.harness.state_mut().ui.script.edit_line = Some(first);
+    driver.harness.state_mut().ui.script.edit_text = "Door locked".into();
+    driver.frames(3);
+    driver.ok("ui.click", json!({"id": format!("script.line.{first}.edit")}));
+    driver.ok("ui.key", json!({"key": "Home"}));
+    for _ in 0..4 {
+        driver.ok("ui.key", json!({"key": "ArrowRight"}));
+    }
+    driver.ok("ui.key", json!({"key": "Enter"}));
+    let updated = driver.exec("script.inspect", json!({"item": script}));
+    let rows = updated["document"]["lines"].as_array().expect("rows");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["text"], "Door");
+    assert_eq!(rows[1]["text"], " locked");
+    assert_eq!(rows[2]["text"], "Next line");
+}
+
+#[test]
+fn backspace_at_row_start_joins_text_and_drops_only_that_rows_marks() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
+    let script = driver.exec("script.importText", json!({"name":"Join","text":"First\n second\nThird"}))["item"].as_u64().expect("script");
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let first = doc["document"]["lines"][0]["id"].as_u64().expect("first");
+    let second = doc["document"]["lines"][1]["id"].as_u64().expect("second");
+    let third = doc["document"]["lines"][2]["id"].as_u64().expect("third");
+    let take = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":first,"endLine":third}))["take"].as_u64().expect("take");
+    let kept = driver.exec("script.addMark", json!({"item":script,"take":take,"line":first,"sourceTime":0}))["mark"].as_u64().expect("mark");
+    driver.exec("script.addMark", json!({"item":script,"take":take,"line":second,"sourceTime":100}));
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.harness.state_mut().ui.script.edit_line = Some(second);
+    driver.harness.state_mut().ui.script.edit_text = " second".into();
+    driver.frames(3);
+    driver.ok("ui.click", json!({"id":format!("script.line.{second}.edit")}));
+    driver.ok("ui.key", json!({"key":"Home"}));
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    let updated = driver.exec("script.inspect", json!({"item":script}));
+    let lines = updated["document"]["lines"].as_array().expect("lines");
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["text"], "First second");
+    assert_eq!(lines[0]["id"], first);
+    assert_eq!(updated["document"]["slates"][0]["takes"][0]["marks"].as_array().expect("marks").len(), 1);
+    assert_eq!(updated["document"]["slates"][0]["takes"][0]["marks"][0]["id"], kept);
+    assert_eq!(driver.harness.state_mut().ui.script.edit_line, Some(first));
+    driver.frames(2);
+    driver.ok("ui.type", json!({"text":"!"}));
+    driver.ok("ui.click", json!({"id":format!("script.line.{third}")}));
+    let continued = driver.exec("script.inspect", json!({"item":script}));
+    assert_eq!(continued["document"]["lines"][0]["text"], "First! second", "editing should continue at the removed line break");
+}
+
+#[test]
+fn search_steps_through_repeated_terms_and_wraps() {
+    let mut driver = Driver::new();
+    let script =
+        driver.exec("script.importText", json!({"name":"Repeated","text":"Morning\nEvening\nMorning again\nMorning"}))["item"].as_u64().expect("script");
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let matches: Vec<u64> = [0, 2, 3].map(|index| doc["document"]["lines"][index]["id"].as_u64().expect("line")).to_vec();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.ok("ui.click", json!({"id":"script.search"}));
+    driver.ok("ui.type", json!({"text":"morning"}));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((matches[0], matches[0])));
+    let _ = driver.rect("script.search.count");
+    for expected in [matches[1], matches[2], matches[0]] {
+        driver.ok("ui.click", json!({"id":"script.search.next"}));
+        assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((expected, expected)));
+    }
+    driver.ok("ui.click", json!({"id":"script.search.previous"}));
+    assert_eq!(driver.harness.state_mut().ui.script.selected_lines, Some((matches[2], matches[2])));
+}
+
+#[test]
+fn script_toolbar_wraps_controls_and_keeps_search_above_the_document() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let item = driver.exec("script.importText", json!({"name":"Toolbar wrap","text":"First\nLast"}))["item"].as_u64().unwrap();
+    let first = driver.exec("script.inspect", json!({"item":item}))["document"]["lines"][0]["id"].as_u64().unwrap();
+    let take = driver.exec("script.addTake", json!({"item":item,"source":source,"startLine":first,"endLine":first}))["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":item}}));
+    driver.harness.state_mut().ui.script.selected_take = Some(take);
+    driver.harness.state_mut().ui.script.selected_lines = Some((first, first));
+    let mut wrapped = false;
+    for width in [1600.0, 1100.0, 800.0] {
+        driver.harness.set_size(egui::vec2(width, 980.0));
+        driver.frames(4);
+        let [x, y, w, h] = driver.rect("script.toolbar");
+        let search = driver.rect("script.search");
+        let document = driver.rect("script.document");
+        let help = driver.rect("script.help");
+        let settings = driver.rect("script.settings");
+        assert!((help[1] - settings[1]).abs() <= 0.5, "help must align with the first row of buttons");
+        let mut controls = Vec::new();
+        for id in [
+            "script.document",
+            "script.settings",
+            "script.new",
+            "script.import",
+            "script.color.apply",
+            "script.scene.add",
+            "script.page.add",
+            "script.scene.combo",
+            "script.page.combo",
+            "script.mark.add",
+            "script.offscreen.toggle",
+            "script.help",
+        ] {
+            let r = driver.rect(id);
+            assert!(r[0] >= x && r[0] + r[2] <= x + w + 0.5, "{id} must fit within toolbar at width {width}: {r:?}");
+            assert!(r[1] >= y && r[1] + r[3] <= search[1], "{id} must stay above search at width {width}");
+            if id != "script.help" {
+                wrapped |= r[1] > document[1] + document[3];
+            }
+            controls.push((id, r));
+        }
+        let controls_bottom = controls.iter().map(|(_, r)| r[1] + r[3]).fold(y, f64::max);
+        // The shorter search field is vertically centered within its 24pt row.
+        assert!(search[1] - controls_bottom <= 9.0, "search spacing must stay compact whether the toolbar wraps or not");
+        for (i, (a, r)) in controls.iter().enumerate() {
+            for (b, s) in controls.iter().skip(i + 1) {
+                assert!(r[0] + r[2] <= s[0] || s[0] + s[2] <= r[0] || r[1] + r[3] <= s[1] || s[1] + s[3] <= r[1], "{a} overlaps {b}");
+            }
+        }
+        assert!(search[1] + search[3] <= y + h);
+        assert!(driver.rect(&format!("script.line.{first}"))[1] >= y + h, "canvas must begin below wrapped toolbar");
+        driver.snapshot(&format!("toolbar-wrap-{width}"));
+    }
+    assert!(wrapped, "narrow toolbar should wrap instead of scrolling");
+}
+
+#[test]
+fn opening_script_panel_preserves_workspace_and_empty_state_has_actions() {
+    let mut driver = Driver::new();
+    driver.ok("ui.menu.invoke", json!({"id": "window.panel.Script"}));
+    let state = driver.ok("ui.inspect", json!({}));
+    assert_eq!(state["ui"]["workspace"], "Editing");
+    let _ = driver.rect("script.new");
+    let _ = driver.rect("script.import");
+    driver.ok("ui.click", json!({"id":"script.settings"}));
+    let _ = driver.rect("script.settings.textSize");
+    let _ = driver.rect("script.settings.thumbnailSize");
+    driver.ok("ui.click", json!({"id":"script.settings.rowColors"}));
+    assert_eq!(driver.harness.state_mut().ui.script.show_row_colors, Some(false));
+    driver.ok("ui.menu.invoke", json!({"id": "window.workspace.script"}));
+    driver.ok("ui.key", json!({"key":"Escape"}));
+    driver.snapshot("getting-started");
+    driver.ok("ui.click", json!({"id":"script.help"}));
+    let _ = driver.rect("script.help.guide.export");
+    let _ = driver.rect("script.help.guide.marks");
+    driver.ok("ui.key", json!({"key":"Escape"}));
+    driver.ok("ui.click", json!({"id":"script.new"}));
+    let item = driver.harness.state_mut().ui.script.item.expect("new script item");
+    let created = driver.exec("script.inspect", json!({"item":item}));
+    assert_eq!(created["document"]["lines"].as_array().unwrap().len(), 1);
+    assert!(driver.ok("ui.elements", json!({"prefix":"script.line.add"})).as_array().unwrap().is_empty());
+    driver.snapshot("empty-dark");
+    assert!(driver.ok("ui.elements", json!({"prefix":"script.getStarted"})).as_array().unwrap().is_empty());
+    let help = driver.rect("script.help");
+    let import = driver.rect("script.import");
+    assert!(help[0] > import[0] + import[2], "help stays at the toolbar's right edge");
+    driver.ok("ui.click", json!({"id":"script.help"}));
+    let _ = driver.rect("script.help.guide.import");
+    let _ = driver.rect("script.help.guide.marks");
+    driver.snapshot("help-popover");
+    driver.ok("ui.key", json!({"key":"Escape"}));
+    driver.frames(2);
+    assert!(driver.ok("ui.elements", json!({"prefix":"script.help.guide"})).as_array().unwrap().is_empty());
+    assert_eq!(driver.exec("script.inspect", json!({"item":item})), created, "help leaves the open script unchanged");
+}
+
+#[test]
+fn thumbnail_size_slider_resizes_the_picture_and_its_layout() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Thumbnail size","text":"\n\n\n\n\nAction\nDialogue"}))["item"].as_u64().unwrap();
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let lines = doc["document"]["lines"].as_array().unwrap();
+    let first = lines[5]["id"].as_u64().unwrap();
+    let last = lines[6]["id"].as_u64().unwrap();
+    let slate = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":first,"endLine":last}))["slate"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    let id = format!("script.slate.{slate}.thumbnail");
+    let before = driver.rect(&id);
+    driver.ok("ui.click", json!({"id":"script.settings"}));
+    driver.ok("ui.drag", json!({"from":{"id":"script.settings.thumbnailSize","fx":0.3},"to":{"id":"script.settings.thumbnailSize","fx":0.8},"steps":12}));
+    let after = driver.rect(&id);
+    assert!(after[2] > before[2] + 10.0, "thumbnail slider should enlarge the picture: {before:?} -> {after:?}");
+    assert!((after[3] - (after[2] * 9.0 / 16.0 + 16.0)).abs() < 1.0, "picture remains 16:9 above its chin: {after:?}");
+}

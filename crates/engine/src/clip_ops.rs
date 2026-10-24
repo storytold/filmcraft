@@ -500,6 +500,7 @@ pub fn source_view(s: &Session, item: ItemId) -> Option<SourceView> {
                 if *restrict_trims { (range.start, range.end(), None, None) } else { (Tick::ZERO, full, Some(range.start), Some(range.end() - fd)) };
             SourceView { item, media: root, start, end, rate, mark_in: mi, mark_out: mo, markers, subclip: Some((*range, *restrict_trims)) }
         }
+        ItemKind::Script(_) => return None,
         _ => SourceView {
             item,
             media: item,
@@ -543,6 +544,9 @@ pub(crate) fn collapse_history(s: &mut Session, n0: usize, label: &str) {
 fn used_items(p: &Project) -> BTreeSet<ItemId> {
     let mut used = BTreeSet::new();
     for it in p.items.values() {
+        if let ItemKind::Script(doc) = &it.kind {
+            used.extend(doc.slates.iter().flat_map(|slate| &slate.takes).filter_map(|take| take.source));
+        }
         if let ItemKind::Sequence(q) = &it.kind {
             for t in q.all_tracks() {
                 for i in &t.items {
@@ -961,6 +965,15 @@ fn consolidate_duplicates(s: &mut Session, _: &Value) -> Result<Value> {
                 ItemKind::Subclip { parent, .. } => {
                     if let Some(k) = map.get(parent) {
                         *parent = *k;
+                    }
+                }
+                ItemKind::Script(doc)
+                    if doc.slates.iter().flat_map(|slate| &slate.takes).any(|take| take.source.is_some_and(|source| map.contains_key(&source))) =>
+                {
+                    for take in std::sync::Arc::make_mut(doc).slates.iter_mut().flat_map(|slate| &mut slate.takes) {
+                        if let Some(kept) = take.source.and_then(|source| map.get(&source)) {
+                            take.source = Some(*kept);
+                        }
                     }
                 }
                 _ => {}

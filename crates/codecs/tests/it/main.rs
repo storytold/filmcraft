@@ -1,7 +1,6 @@
 mod aac_channels_oracle;
 mod adts_file;
 mod common;
-mod draft_decoders;
 mod eac3_oracle;
 mod frame_color_oracle;
 mod h264_draft;

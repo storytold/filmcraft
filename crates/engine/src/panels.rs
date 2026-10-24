@@ -147,7 +147,7 @@ fn events_list(s: &mut Session, p: &Value) -> Result<Value> {
 // ------------------------------------------------------------------------------------ metadata
 
 /// The log fields the Metadata panel edits (stored in `ProjectItem::metadata`), in panel order.
-pub const LOG_FIELDS: [&str; 8] = ["Description", "Scene", "Shot", "Log Note", "Comment", "Tape Name", "Client", "Camera Angle"];
+pub const LOG_FIELDS: [&str; 9] = ["Description", "Scene", "Shot", "Take", "Log Note", "Comment", "Tape Name", "Client", "Camera Angle"];
 
 /// One Metadata panel row.
 #[derive(Clone, Debug, PartialEq, Serialize)]
