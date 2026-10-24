@@ -1,6 +1,6 @@
 //! Restoration: DeHum (harmonic notch comb) and DeNoise (STFT spectral gating).
 
-use super::stft::{Spectral, StftChannel, fft_size};
+use super::stft::{Spectral, StftChannel, fft_size, stream};
 use crate::biquad::{Biquad, Coeffs, FilterType};
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
 
@@ -203,61 +203,52 @@ impl AudioEffect for DeNoise {
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         let len = block_len(channels);
-        let nch = channels.len().min(self.stft.len());
         let (n, hop, sub_frames) = (self.n, self.hop, self.sub_frames);
         let (floor, thr, release) = (self.floor, self.thr, self.release);
         let scale = 1.0 / (n as f32 * 2.0);
-        for ch in 0..nch {
-            let st = &mut self.noise[ch];
-            let spec = &mut self.spec;
-            let sg = &mut self.smoothed_gains;
-            let mut frame = |input: &[f32], out: &mut [f32]| {
-                spec.analyse(input);
-                let bins = n / 2 + 1;
-                for k in 0..bins {
-                    let p = spec.re[k] * spec.re[k] + spec.im[k] * spec.im[k];
-                    st.psd[k] = if st.started { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
-                    st.cur_min[k] = st.cur_min[k].min(st.psd[k]);
-                }
-                st.started = true;
-                st.frames_in_sub += 1;
-                let rotate = st.frames_in_sub == sub_frames;
-                for k in 0..bins {
-                    let mut m = st.cur_min[k];
-                    for u in 0..MS_SUBWINDOWS {
-                        m = m.min(st.ring[u * bins + k]);
-                    }
-                    let noise = m * MS_BIAS;
-                    let target = if st.psd[k] > noise * thr { 1.0 } else { floor };
-                    let g = &mut st.gains[k];
-                    let c = if target > *g { 0.7 } else { release };
-                    *g += (target - *g) * c;
-                    if rotate {
-                        st.ring[st.ring_pos * bins + k] = st.cur_min[k];
-                        st.cur_min[k] = f32::INFINITY;
-                    }
-                }
-                if rotate {
-                    st.ring_pos = (st.ring_pos + 1) % MS_SUBWINDOWS;
-                    st.frames_in_sub = 0;
-                }
-                // Frequency smoothing (3-tap) to reduce musical noise.
-                for k in 0..bins {
-                    let a = st.gains[k.saturating_sub(1)];
-                    let b = st.gains[k];
-                    let c = st.gains[(k + 1).min(bins - 1)];
-                    sg[k] = 0.25 * a + 0.5 * b + 0.25 * c;
-                }
-                for k in 0..bins {
-                    spec.re[k] *= sg[k];
-                    spec.im[k] *= sg[k];
-                }
-                spec.synthesise_add(out, scale);
-            };
-            for v in channels[ch][..len].iter_mut() {
-                *v = self.stft[ch].tick(*v, hop, &mut frame);
+        let (states, sg) = (&mut self.noise, &mut self.smoothed_gains);
+        stream(&mut self.stft, &mut self.spec, channels, len, hop, scale, &mut |ch, _, re, im| {
+            let st = &mut states[ch];
+            let bins = n / 2 + 1;
+            for k in 0..bins {
+                let p = re[k] * re[k] + im[k] * im[k];
+                st.psd[k] = if st.started { PSD_SMOOTH * st.psd[k] + (1.0 - PSD_SMOOTH) * p } else { p };
+                st.cur_min[k] = st.cur_min[k].min(st.psd[k]);
             }
-        }
+            st.started = true;
+            st.frames_in_sub += 1;
+            let rotate = st.frames_in_sub == sub_frames;
+            for k in 0..bins {
+                let mut m = st.cur_min[k];
+                for u in 0..MS_SUBWINDOWS {
+                    m = m.min(st.ring[u * bins + k]);
+                }
+                let noise = m * MS_BIAS;
+                let target = if st.psd[k] > noise * thr { 1.0 } else { floor };
+                let g = &mut st.gains[k];
+                let c = if target > *g { 0.7 } else { release };
+                *g += (target - *g) * c;
+                if rotate {
+                    st.ring[st.ring_pos * bins + k] = st.cur_min[k];
+                    st.cur_min[k] = f32::INFINITY;
+                }
+            }
+            if rotate {
+                st.ring_pos = (st.ring_pos + 1) % MS_SUBWINDOWS;
+                st.frames_in_sub = 0;
+            }
+            // Frequency smoothing (3-tap) to reduce musical noise.
+            for k in 0..bins {
+                let a = st.gains[k.saturating_sub(1)];
+                let b = st.gains[k];
+                let c = st.gains[(k + 1).min(bins - 1)];
+                sg[k] = 0.25 * a + 0.5 * b + 0.25 * c;
+            }
+            for k in 0..bins {
+                re[k] *= sg[k];
+                im[k] *= sg[k];
+            }
+        });
     }
 }
 
