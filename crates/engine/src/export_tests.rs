@@ -862,3 +862,45 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         assert!(doc.cues.is_empty(), "half-open export excludes cues touching either boundary: {doc:?}");
     }
 }
+
+/// #2760: a path whose extension names another container still gets the format's extension
+/// (#341), and the result says so, with what to use instead; a matching extension, a name with a
+/// dot that isn't a container's and MXF through the MXF format get no note.
+#[test]
+fn a_path_naming_another_container_is_reported() {
+    let mut s = demo();
+    let dir = Scratch::new("ext-mismatch");
+    let run = |s: &mut Session, path: String, extra: serde_json::Value| {
+        let mut p = json!({"path": path, "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "audio": false, "wait": true});
+        for (k, v) in extra.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        s.execute("file.exportMedia", p).unwrap()
+    };
+    let r = run(&mut s, dir.path("a.mxf"), json!({"format": "dnxhr", "dnxProfile": "sq"}));
+    assert_eq!(r["path"], json!(dir.path("a.mxf.mov")));
+    let note = r["note"].as_str().unwrap_or_default();
+    assert!(note.contains("a.mxf.mov") && note.contains("mxf-op1a") && note.contains("dnxhr"), "{r}");
+    let r = run(&mut s, dir.path("b.avi"), json!({"format": "mjpeg"}));
+    assert!(r["note"].as_str().is_some_and(|n| n.contains("b.avi.mov")), "{r}");
+    // an image file's extension on a video export is reported too, with the extension written
+    let r = run(&mut s, dir.path("shot.png"), json!({"format": "dnxhr", "dnxProfile": "sq"}));
+    assert!(r["note"].as_str().is_some_and(|n| n.contains("shot.png.mov") && n.contains(".mov")), "{r}");
+    // the queue says the same
+    let q = s.execute("export.queue.add", json!({"path": dir.path("q.mxf"), "format": "dnxhr"})).unwrap();
+    assert!(q["note"].as_str().is_some_and(|n| n.contains("q.mxf.mov")), "{q}");
+    // several sequences at once: the note points to their entries instead of naming one file
+    let first = s.state.active_sequence.unwrap().0;
+    let second = s.execute("file.newSequence", json!({"name": "Second"})).unwrap()["sequence"].as_u64().unwrap();
+    let q = s.execute("export.queue.add", json!({"path": dir.path("multi.mxf"), "format": "dnxhr", "sequences": [first, second]})).unwrap();
+    assert!(q["note"].as_str().is_some_and(|n| n.contains("added entries") && !n.contains("multi.mxf.mov`")), "{q}");
+    // no note where nothing surprising happens
+    for (path, extra) in [
+        ("c.mov", json!({"format": "dnxhr", "dnxProfile": "sq"})),
+        ("Final.v2", json!({"format": "dnxhr", "dnxProfile": "sq"})),
+        ("d.mxf", json!({"format": "mxf-op1a", "mxfVideoCodec": "dnxhr"})),
+    ] {
+        let r = run(&mut s, dir.path(path), extra);
+        assert!(r.get("note").is_none(), "{path}: {r}");
+    }
+}

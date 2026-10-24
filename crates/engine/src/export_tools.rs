@@ -323,6 +323,52 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     Ok((preset, settings))
 }
 
+/// File extensions of containers and files FilmCraft or other tools write: a path ending in one
+/// names what the caller expects to get.
+const CONTAINER_EXTENSIONS: &[&str] = &[
+    "mp4", "m4v", "mov", "qt", "mxf", "avi", "mkv", "webm", "wav", "aif", "aiff", "m4a", "aac", "flac", "gif", "mp3", "ogg", "opus", "mpg", "mpeg", "ts",
+    "m2ts", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "tga", "dpx", "exr", "webp", "heic",
+];
+
+/// What to tell the caller when `path`'s extension names another container than `settings`'
+/// format writes (`a.mxf` for DNxHR, which writes QuickTime): the export adds the format's own
+/// extension (`a.mxf.mov`, #341), which a caller asking for `.mxf` would not expect (#2760). None
+/// when the extension matches, is not a container's (`Final.v2`), or is replaced anyway (image
+/// sequences, AIFF). `written` is the file the export writes (None: several, as a queue add of
+/// several sequences makes; the note then points to them).
+pub fn container_note(path: &str, settings: &ExportSettings, written: Option<&str>) -> Option<String> {
+    if is_folder(&expand_home(path)) || settings.is_image_sequence() || matches!(settings.format, Format::Aiff) {
+        return None;
+    }
+    let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    if !CONTAINER_EXTENSIONS.contains(&ext.as_str()) || with_extension(path, settings) == path {
+        return None;
+    }
+    let format = settings.format;
+    let hint = match (ext.as_str(), format) {
+        ("mxf", Format::DnxHr | Format::ProRes | Format::H264) => {
+            let codec = match format {
+                Format::DnxHr => "dnxhr",
+                Format::ProRes => "proRes",
+                _ => "h264",
+            };
+            format!("; for MXF use format `mxf-op1a` (or `mxf-opatom`) with mxfVideoCodec `{codec}`")
+        }
+        _ => String::new(),
+    };
+    // the extension really written (H.264 into MOV writes .mov)
+    let own = settings.extension();
+    let named = match written {
+        Some(w) => format!("the file is `{}`", file_name(w)),
+        None => format!("the files end in .{own} (see the paths of the added entries in `items`)"),
+    };
+    Some(format!(
+        "`{}` names a .{ext} file, but the {} format writes .{own}, so {named}; name it .{own} or pick a format that writes .{ext}{hint}",
+        file_name(path),
+        format.label(),
+    ))
+}
+
 /// The sequence an export command targets (`sequence` param, else the active one).
 pub fn sequence_param(s: &Session, p: &Value, cmd: &str) -> Result<ItemId> {
     match u64_p(p, "sequence") {
@@ -545,8 +591,13 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     settings.path = output_path(s, p, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
+    // the path asked for named another container: say what the file is called (#2760)
+    let note = str_p(p, "path").and_then(|asked| container_note(&expand_home(asked), &settings, Some(&settings.path)));
     let id = spawn_export(s, project, seq, settings, format!("Export {}", file_name(&path)), wait)?;
     let mut out = json!({"job": id, "path": path});
+    if let Some(note) = note {
+        out["note"] = json!(note);
+    }
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
     }
@@ -780,7 +831,16 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
         s.export_queue.running = true;
         pump_queue(s, bool_p(p, "wait").unwrap_or(false));
     }
-    Ok(json!({"added": ids, "items": queue_list_json(s)}))
+    // one item: its file by name; several: where to find theirs (#2766 review)
+    let written = match ids.as_slice() {
+        [one] => s.export_queue.items.iter().find(|i| i.id == *one).map(|i| i.settings.path.clone()),
+        _ => None,
+    };
+    let mut out = json!({"added": ids, "items": queue_list_json(s)});
+    if let Some(note) = str_p(p, "path").and_then(|asked| container_note(&expand_home(asked), &settings, written.as_deref())) {
+        out["note"] = json!(note);
+    }
+    Ok(out)
 }
 
 fn queue_list_json(s: &Session) -> Value {

@@ -114,6 +114,11 @@ progress and stop it:
 - `file.exportMedia` with `wait: true`, an export job in `jobs.list` and each `export.queue.list`
   item carry `offlineMedia`: the offline items the export drew the placeholder for (see §2b), `[]`
   when none. The export itself still succeeds; deciding what to do about it is up to the caller.
+- The written file always ends in the format's extension: a `path` ending in another container's
+  (`a.mxf` for DNxHR, which writes QuickTime) gets it added (`a.mxf.mov`). `file.exportMedia` and
+  `export.queue.add` then return a `note` saying so and what to use instead (#2760). The file
+  name is `result.path` for `file.exportMedia`, and the `path` of each newly added entry (its id
+  in `result.added`) in `result.items` for `export.queue.add`.
 - Every job in `jobs.list`, and every encoding item of `export.queue.list`, carries `etaSeconds`: the
   time left at the job's speed over the last 15 seconds, `null` until a second of progress has been
   measured (a loudness pass, a seek) and once it is done. The app shows it as `37% · 2:05 left` in the
