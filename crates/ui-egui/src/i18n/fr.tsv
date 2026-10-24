@@ -3586,4 +3586,5 @@
 	No matching text.	Aucun texte ne correspond.
 # Parakeet speech model and word-by-word captions.
 	Create word-by-word captions	Créer des sous-titres mot à mot
+	Word by word	Mot à mot
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (précision maximale, minutage par mot)

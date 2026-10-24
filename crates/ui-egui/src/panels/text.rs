@@ -582,7 +582,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             tl!("Create word-by-word captions"),
             true,
             "transcript.createCaptions",
-            json!({"wordsPerCaption": 1, "lines": 1, "name": "Word by word"}),
+            json!({"wordsPerCaption": 1, "lines": 1, "name": tl!("Word by word")}),
         ),
     ];
     for (icon, id, label, enabled, cmd, params) in tools {

@@ -3605,4 +3605,5 @@
 	No matching text.	일치하는 텍스트가 없습니다.
 # Parakeet speech model and word-by-word captions.
 	Create word-by-word captions	단어별 캡션 만들기
+	Word by word	단어별
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (최고 정확도, 단어 단위 타이밍)

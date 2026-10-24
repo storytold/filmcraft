@@ -45,6 +45,8 @@ const WHOLE_S: usize = 120;
 const MAX_VOCAB: usize = 1 << 16;
 /// Most TDT durations a `config.json` may declare (v3 has 5).
 const MAX_DURATIONS: usize = 64;
+/// Longest TDT duration, in encoder frames, a `config.json` may declare (v3's longest is 4).
+const MAX_DURATION: usize = 1000;
 /// Audio samples per encoder frame (8 × 10 ms).
 const SAMPLES_PER_FRAME: usize = 8 * features::HOP;
 
@@ -125,6 +127,10 @@ impl Parakeet {
         if cfg.vocab_size == 0 || cfg.vocab_size > MAX_VOCAB || cfg.durations.len() > MAX_DURATIONS {
             return Err(SpeechError::Model(format!("config.json: vocab_size {} or {} durations out of range", cfg.vocab_size, cfg.durations.len())));
         }
+        // every frame position and word end adds a duration to a frame index
+        if let Some(d) = cfg.durations.iter().find(|&&d| d > MAX_DURATION) {
+            return Err(SpeechError::Model(format!("config.json: duration {d} is longer than {MAX_DURATION} frames")));
+        }
         if cfg.blank_token_id as usize >= cfg.vocab_size || cfg.durations.is_empty() || cfg.encoder_config.num_attention_heads == 0 {
             return Err(SpeechError::Model("config.json: inconsistent blank token, durations or heads".into()));
         }
@@ -180,7 +186,7 @@ impl Parakeet {
             if dur > 0 {
                 on_frame = 0;
             }
-            t += dur;
+            t = t.saturating_add(dur);
         }
     }
 }
@@ -392,17 +398,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // a real tokenizer, so only the size check stands between the config and the allocation
         std::fs::write(dir.path().join("tokenizer.json"), r#"{"model":{"vocab":{"▁a":1}},"added_tokens":[]}"#).unwrap();
-        let cfg = |vocab: u64| {
-            format!(
-                r#"{{"encoder_config":{{"hidden_size":8,"intermediate_size":8,"num_attention_heads":1,"num_hidden_layers":1,"num_mel_bins":8,
-                "conv_kernel_size":3,"subsampling_conv_channels":8,"subsampling_factor":8}},"decoder_hidden_size":8,"num_decoder_layers":1,
-                "vocab_size":{vocab},"blank_token_id":0,"durations":[0,1,2]}}"#
-            )
-        };
         for vocab in [0, MAX_VOCAB as u64 + 1, u64::MAX / 2] {
-            std::fs::write(dir.path().join("config.json"), cfg(vocab)).unwrap();
+            std::fs::write(dir.path().join("config.json"), test_config(vocab, "[0,1,2]")).unwrap();
             let err = Parakeet::load(dir.path(), "t").err().expect("hostile config accepted");
             assert!(err.to_string().contains("vocab_size"), "{err}");
+        }
+    }
+
+    /// A `config.json` with the given vocabulary size and durations (no weights next to it).
+    fn test_config(vocab: u64, durations: &str) -> String {
+        format!(
+            r#"{{"encoder_config":{{"hidden_size":8,"intermediate_size":8,"num_attention_heads":1,"num_hidden_layers":1,"num_mel_bins":8,
+            "conv_kernel_size":3,"subsampling_conv_channels":8,"subsampling_factor":8}},"decoder_hidden_size":8,"num_decoder_layers":1,
+            "vocab_size":{vocab},"blank_token_id":0,"durations":{durations}}}"#
+        )
+    }
+
+    #[test]
+    fn hostile_duration_is_an_error_at_load() {
+        // a huge duration would overflow the decoder's frame position (`t + dur`) and word ends
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tokenizer.json"), r#"{"model":{"vocab":{"▁a":1}},"added_tokens":[]}"#).unwrap();
+        for durations in [format!("[0,1,{}]", MAX_DURATION + 1), format!("[0,{}]", u64::MAX)] {
+            std::fs::write(dir.path().join("config.json"), test_config(16, &durations)).unwrap();
+            let err = Parakeet::load(dir.path(), "t").err().expect("hostile config accepted");
+            assert!(err.to_string().contains("duration"), "{durations}: {err}");
         }
     }
 

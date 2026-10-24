@@ -3627,4 +3627,5 @@
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。
 # Parakeet speech model and word-by-word captions.
 	Create word-by-word captions	単語ごとのキャプションを作成
+	Word by word	単語ごと
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3（最高精度、単語単位のタイミング）
