@@ -1,5 +1,6 @@
 mod audio51_ui;
 mod audio_fx_editor_ui;
+mod caption_list_follow_ui;
 mod caption_properties_ui;
 mod captions_font_ui;
 mod chrome_ui;
