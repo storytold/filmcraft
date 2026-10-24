@@ -401,6 +401,14 @@ fn link_media_dialog_relinks_moved_media() {
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert!(!d.ids("linkMedia.locate").is_empty() && !d.ids("linkMedia.offlineAll").is_empty());
     d.snapshot("media-link-dialog");
+    // opened with a clip selected (as from its item menu): the dialog starts on that clip (#2392 review)
+    let missing: Vec<u64> = d.exec("media.linkMedia", json!({}))["missing"].as_array().unwrap().iter().map(|m| m["item"].as_u64().unwrap()).collect();
+    d.app().ui.link_media = None;
+    d.exec("project.select", json!({"items": [missing[1]]}));
+    d.ok("ui.menu.invoke", json!({"id": "media.linkMedia"}));
+    assert_eq!(d.app().ui.link_media.as_ref().map(|l| l.row), Some(1));
+    d.app().ui.link_media.as_mut().unwrap().row = 0;
+    d.frames(2);
     // search the moved folder for the selected clip
     let folder = root.join("Moved").to_string_lossy().into_owned();
     d.app().ui.link_media.as_mut().unwrap().folder = folder;
@@ -413,6 +421,42 @@ fn link_media_dialog_relinks_moved_media() {
     assert!(d.app().ui.link_media.is_none(), "both clips relinked (the second by folder remap), dialog closed");
     let st = d.exec("media.status", json!({}));
     assert!(st.as_array().unwrap().iter().all(|m| m["status"] == "online"), "{st}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn item_menu_acts_on_the_whole_selection() {
+    // #2352: Proxy ▸ Create Proxies… on one of two selected clips takes both
+    let root = tmp_dir("item-menu");
+    let paths: Vec<String> = [("a.mov", DemoScene::OceanSunset), ("b.mov", DemoScene::CityNight)]
+        .into_iter()
+        .map(|(name, scene)| {
+            let p = root.join(name);
+            make_movie(&p, scene, 64, 36, 6);
+            p.to_string_lossy().into_owned()
+        })
+        .collect();
+    let mut s = Session::default();
+    let ids = s.execute("file.import", json!({"paths": paths})).unwrap();
+    let items: Vec<u64> = ids["items"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    assert_eq!(items.len(), 2, "{ids}");
+    let mut d = Driver::new(s);
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.frames(4);
+    let create_proxies_from = |d: &mut Driver, item: u64| {
+        d.ok("ui.click", json!({"id": format!("project.item.{item}"), "button": "right"}));
+        d.frames(2);
+        d.click("project.itemMenu.proxy");
+        d.frames(2);
+        d.click("project.itemMenu.proxy.createProxies");
+        d.frames(2);
+        d.app().ui.create_proxies.take().map(|p| p.items)
+    };
+    d.exec("project.select", json!({"items": items}));
+    assert_eq!(create_proxies_from(&mut d, items[1]), Some(items.clone()));
+    // an item outside the selection: the menu acts on that item alone
+    d.exec("project.select", json!({"items": [items[0]]}));
+    assert_eq!(create_proxies_from(&mut d, items[1]), Some(vec![items[1]]));
     let _ = std::fs::remove_dir_all(&root);
 }
 
