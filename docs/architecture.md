@@ -245,6 +245,11 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   every frame of the GOP. Sequential playback reuses the decoder. Decoders implement
   `codecs::VideoDecoder`. `register_video_decoder` puts a factory in front of the built-in ones, so a
   hardware decoder can take precedence. The GOP cache never holds its lock while decoding.
+  Several frame jobs can share one decoder: each request registers the frame it waits for, and
+  eviction keeps those frames, so a job decoding past them does not make the others seek back and
+  decode their GOP again. A decoder that has not reached the wanted frame's sync sample and is more
+  than 8 samples short of it restarts there instead of decoding forward, unless another request
+  waits for a frame in between; one already past that sync sample carries on.
 - **Hardware decoding.** The apps (desktop, CLI / headless MCP, bench) call
   `filmcraft_platform::register()` at startup, which on macOS registers a VideoToolbox factory for
   `avcC` / `hvcC` streams (8 / 10-bit, 4:2:0 and 4:2:2; elsewhere it does nothing), and on Windows a

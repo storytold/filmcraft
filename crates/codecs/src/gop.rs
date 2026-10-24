@@ -293,6 +293,70 @@ struct Pool {
 struct Shared {
     state: Mutex<State>,
     pool: Arc<Pool>,
+    /// The pts each request is waiting for (one entry per request: its job's cancellation flag,
+    /// None when it cannot be cancelled), registered before the request takes `state`'s lock.
+    /// Eviction keeps these frames: with several render jobs on one source, the one that holds
+    /// the lock decodes past the pictures the others wait for, and evicting those made each of
+    /// them seek back and decode their GOP again. A request whose job was cancelled (a frame a
+    /// scrub has left) stays registered until it returns but no longer counts ([`live`]).
+    /// Lock order: `state`, then `waiting` (never the other way round).
+    waiting: Mutex<BTreeMap<i64, Vec<Waiter>>>,
+}
+
+/// A registered request's cancellation flag.
+type Waiter = Option<Arc<std::sync::atomic::AtomicBool>>;
+
+/// Whether any of the requests waiting for a frame still wants it (not cancelled).
+fn live(w: &[Waiter]) -> bool {
+    w.iter().any(|c| !c.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)))
+}
+
+/// A request's entry in [`Shared::waiting`], removed on drop (every return path).
+struct Waiting<'a> {
+    shared: &'a Shared,
+    pts: i64,
+    cancel: Waiter,
+}
+
+impl<'a> Waiting<'a> {
+    /// Register a request for `pts`, under this thread's cancellation flag.
+    fn register(shared: &'a Shared, pts: i64) -> Self {
+        let cancel = filmcraft_media::cancel::current_flag();
+        shared.waiting.lock().unwrap_or_else(PoisonError::into_inner).entry(pts).or_default().push(cancel.clone());
+        Self { shared, pts, cancel }
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        let mut w = self.shared.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(v) = w.get_mut(&self.pts) {
+            // this request's entry (any entry with the same flag, or with none, is equivalent)
+            let same = |c: &Waiter| match (c, &self.cancel) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            if let Some(i) = v.iter().position(same) {
+                v.swap_remove(i);
+            }
+            if v.is_empty() {
+                w.remove(&self.pts);
+            }
+        }
+    }
+}
+
+/// The cached frame to evict next: the one farthest from `pivot` at either end of `frames` that
+/// is neither `pivot`, `newest` nor waited for (`wanted`). None when every frame is one of those.
+fn eviction_victim<V>(frames: &BTreeMap<i64, V>, pivot: i64, newest: i64, wanted: &BTreeMap<i64, Vec<Waiter>>) -> Option<i64> {
+    let keep = |k: &i64| *k == pivot || *k == newest || wanted.get(k).is_some_and(|w| live(w));
+    let low = frames.keys().find(|k| !keep(k)).copied();
+    let high = frames.keys().rev().find(|k| !keep(k)).copied();
+    match (low, high) {
+        (Some(l), Some(h)) => Some(if pivot.saturating_sub(l) > h.saturating_sub(pivot) { l } else { h }),
+        (l, h) => l.or(h),
+    }
 }
 
 impl Drop for Shared {
@@ -455,8 +519,10 @@ const MIN_FRAMES: usize = 64;
 const FRAME_CACHE_CEILING: usize = 384 << 20;
 
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
-/// rather than restarting at the sync sample.
-const CONTINUE_THROUGH: usize = 48;
+/// rather than restarting at the sync sample (a restart costs the reorder delay again). Further
+/// back it restarts, unless another request waits for a frame in between: decoding a whole GOP
+/// nobody wants (a decoder that fell behind the playhead) costs more than the restart.
+const CONTINUE_THROUGH: usize = 8;
 
 /// Threads that run the caches' decoding (see [`isolated`]); `None` where none can be made.
 #[cfg(not(target_arch = "wasm32"))]
@@ -533,6 +599,7 @@ impl GopCache {
                 background: false,
             }),
             pool: pool.clone(),
+            waiting: Mutex::new(BTreeMap::new()),
         });
         pool.register(&shared);
         Self { shared, explicit_color, rotation: 0, crop: None, budget: FRAME_CACHE_CEILING }
@@ -595,16 +662,12 @@ impl GopCache {
         // Evict frames far from the request (pin), not the newest decode. A frame-threaded
         // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
         // wanted picture and walk the GOP again.
+        // Frames other requests wait for are kept as well (bounded by the number of requests).
         let pivot = if st.pin != i64::MIN { st.pin } else { pts };
+        // (held, not copied, through the loop: lock order is state, then waiting)
+        let wanted = self.shared.waiting.lock().unwrap_or_else(PoisonError::into_inner);
         while st.bytes > budget && st.frames.len() > 2 {
-            let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
-            let mut victim = if pivot - first > last - pivot { first } else { last };
-            if victim == pivot || victim == pts {
-                victim = if victim == first { last } else { first };
-                if victim == pivot || victim == pts {
-                    break;
-                }
-            }
+            let Some(victim) = eviction_victim(&st.frames, pivot, pts, &wanted) else { break };
             if let Some(v) = st.frames.remove(&victim) {
                 st.drafts.remove(&victim);
                 st.bytes -= v.byte_size();
@@ -613,6 +676,7 @@ impl GopCache {
                 filmcraft_frame::pool::recycle(v);
             }
         }
+        drop(wanted);
         let pool = &self.shared.pool;
         if st.bytes >= before {
             pool.bytes.fetch_add(st.bytes - before, Ordering::Relaxed);
@@ -667,6 +731,7 @@ impl GopCache {
         if DecodingGuard::active(me) {
             return self.private_frame(s, i, want_pts, n);
         }
+        let _waiting = Waiting::register(&self.shared, want_pts);
         let draft = filmcraft_media::cancel::draft();
         // Idle caches' decoders released below. Declared before the lock guard, so it is dropped
         // after the guard on every return path: dropping a decoder can block (a hardware session
@@ -734,7 +799,11 @@ impl GopCache {
         let running = st.next != usize::MAX && st.next <= n && st.start <= key;
         // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
         // playback wants those frames anyway.
-        let near = st.next <= key && key - st.next <= CONTINUE_THROUGH;
+        let wanted_on_the_way = || {
+            let w = self.shared.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+            w.range(..s.pts(key)).rev().find(|(_, v)| live(v)).is_some_and(|(&p, _)| p > st.out_max)
+        };
+        let near = st.next <= key && (key - st.next <= CONTINUE_THROUGH || wanted_on_the_way());
         let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
@@ -767,7 +836,13 @@ impl GopCache {
             }
             let k = st.next;
             let data = s.read(k)?;
-            if k != i && s.pts(k) < late && st.decoder.as_ref().is_some_and(|d| d.is_disposable(&data)) {
+            // a late disposable picture is skipped, unless another request waits for it (lock
+            // order: state, then waiting)
+            if k != i
+                && s.pts(k) < late
+                && st.decoder.as_ref().is_some_and(|d| d.is_disposable(&data))
+                && !self.shared.waiting.lock().unwrap_or_else(PoisonError::into_inner).get(&s.pts(k)).is_some_and(|v| live(v))
+            {
                 st.next += 1;
                 SKIPPED.fetch_add(1, Ordering::Relaxed);
                 continue;
