@@ -429,7 +429,7 @@ pub fn template_controls(
                 let r = egui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str())).selected_text(&fam).width(170.0).height(360.0).show_ui(
                     &mut vui,
                     |ui| {
-                        for (f, _) in filmcraft_text::families() {
+                        for (f, _) in filmcraft_text::picker_families() {
                             if ui.selectable_label(f == fam, &f).clicked() {
                                 set(json!(f), actions);
                             }
@@ -759,7 +759,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 elems.push(("replaceFonts.from".into(), r.response.rect, "Replace".into()));
                 ui.label(tl!("with:"));
                 let r = egui::ComboBox::from_id_salt("gfx-rf-to").selected_text(&d.to).width(160.0).height(360.0).show_ui(ui, |ui| {
-                    for (f, _) in filmcraft_text::families() {
+                    for (f, _) in filmcraft_text::picker_families() {
                         ui.selectable_value(&mut d.to, f.clone(), &f);
                     }
                 });

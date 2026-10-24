@@ -1688,12 +1688,9 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ParamValue::Text(f) => f,
                 _ => String::new(),
             };
-            let fams = filmcraft_text::families();
+            let fams = filmcraft_text::picker_families();
             let (_, mut vui) = cx.row(ui, tl!("Font"));
             let r = egui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
-                if !filmcraft_text::fonts::system_scanned() {
-                    filmcraft_text::fonts::scan_system();
-                }
                 for (f, _) in &fams {
                     if ui.selectable_label(*f == family, f).clicked() {
                         cx.set("font", json!(f));

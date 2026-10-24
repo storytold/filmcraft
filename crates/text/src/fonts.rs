@@ -412,6 +412,13 @@ pub fn families() -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+/// `families()` for a picker: scans the system fonts first (once), so the list taken on the first
+/// opening already holds the installed families.
+pub fn picker_families() -> Vec<(String, Vec<String>)> {
+    scan_system();
+    families()
+}
+
 /// The face chosen for a family/style request, plus synthetic emboldening / slant when the family
 /// lacks a real bold / italic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
