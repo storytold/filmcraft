@@ -93,6 +93,10 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Where the captions move from their anchored place, `[x, y]` as fractions of the frame's
+    /// width and height (positive: right, down), for captions that must not cover something
+    /// (#2476). They stay inside the frame.
+    pub offset: [f32; 2],
 }
 
 impl Default for CaptionStyle {
@@ -109,6 +113,7 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            offset: [0.0, 0.0],
         }
     }
 }

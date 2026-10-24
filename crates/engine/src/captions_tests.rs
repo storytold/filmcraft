@@ -159,6 +159,22 @@ fn caption_list_track_filter_never_falls_back_to_every_track() {
     }
 }
 
+/// #2476: `captions.setStyle` takes a free offset (fractions of the frame), clamped to one frame,
+/// ignores a value that isn't a finite number, and `captions.list` reports it.
+#[test]
+fn caption_style_takes_an_offset() {
+    let mut s = demo();
+    s.execute("captions.add", json!({"text": "one", "durationSeconds": 1.0})).unwrap();
+    let tid = s.active_sequence().unwrap().caption_tracks[0].id.0;
+    s.execute("captions.setStyle", json!({"track": tid, "offsetX": 0.25, "offsetY": -3.0})).unwrap();
+    let offset = |s: &Session| s.active_sequence().unwrap().caption_tracks[0].style.offset;
+    assert_eq!(offset(&s), [0.25, -1.0], "clamped to one frame");
+    s.execute("captions.setStyle", json!({"track": tid, "offsetX": "x"})).unwrap();
+    assert_eq!(offset(&s), [0.25, -1.0], "a value that isn't a number changes nothing");
+    let list = s.execute("captions.list", json!({})).unwrap();
+    assert!(list.to_string().contains("\"offsetX\":0.25"), "{list}");
+}
+
 fn caption_spans(s: &Session) -> Vec<(f64, f64, String)> {
     let secs = |t: Tick| (t.seconds() * 10.0).round() / 10.0; // the demo sequence snaps to 23.976 fps frames
     s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (secs(c.start), secs(c.end()), c.text.clone())).collect()

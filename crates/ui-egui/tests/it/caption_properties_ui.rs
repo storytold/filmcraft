@@ -89,3 +89,40 @@ fn properties_panel_edits_the_selected_caption() {
     assert_eq!(caps[1]["text"], "Second line", "{caps:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #2526 review: dragging a number field of the Text panel's caption style strip stores the
+/// dragged value (the release frame used to hand the field the style's old value back, so the
+/// X offset, and the Size field before it, ended where they started).
+#[test]
+fn dragging_the_caption_style_numbers_stores_them() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    let (tx, rx) = channel();
+    let app = FilmcraftApp::new(session).with_control(rx);
+    let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut d = Driver { harness, tx };
+    d.frames(4);
+    d.exec("captions.add", json!({"text": "Hello", "durationSeconds": 2.0}));
+    d.ok("ui.panel.show", json!({"panel": "Text"}));
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    d.frames(3);
+    let drag = |d: &mut Driver, id: &str| {
+        let v = d.ok("ui.elements", json!({"prefix": id}));
+        let r: Vec<f64> = v.as_array().unwrap()[0]["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 50.0, "y": y}, "steps": 6}));
+        d.frames(3);
+    };
+    drag(&mut d, "text.captions.style.size");
+    // the strip is wider than the panel: scroll it sideways to the offset fields
+    let v = d.ok("ui.elements", json!({"prefix": "text.captions.style.size"}));
+    let r: Vec<f64> = v.as_array().unwrap()[0]["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+    for _ in 0..10 {
+        d.ok("ui.scroll", json!({"x": r[0] + r[2] / 2.0, "y": r[1] + r[3] / 2.0, "dx": -200.0, "dy": 0.0}));
+        d.frames(2);
+    }
+    drag(&mut d, "text.captions.style.offsetX");
+    let st = d.harness.state().session.active_sequence().unwrap().caption_tracks[0].style.clone();
+    assert!(st.offset[0] > 0.02, "the dragged offset was stored: {:?}", st.offset);
+    assert!(st.size > 54.0, "the dragged size was stored: {}", st.size);
+}
