@@ -90,6 +90,17 @@ impl<T: Clone> Slot<T> {
             g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
     }
+
+    /// [`Slot::wait`] for the slot's only consumer: moves the value out instead of cloning it.
+    fn take(&self) -> Result<T> {
+        let mut g = self.value.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(v) = g.take() {
+                return v;
+            }
+            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
 }
 
 type FrameSlot = Slot<Arc<RefFrame>>;
@@ -107,7 +118,7 @@ struct FrameJob {
     tile_covered: Vec<bool>,
     slot: Arc<FrameSlot>,
     /// The output picture, when the frame is shown.
-    picture: Option<Arc<Slot<Arc<Picture>>>>,
+    picture: Option<Arc<Slot<Picture>>>,
     pts: i64,
     apply_film_grain: bool,
     /// Draft mode: the frame refreshes no reference slot, so its in-loop filters are skipped.
@@ -117,7 +128,7 @@ struct FrameJob {
 /// A shown picture in output order.
 #[allow(clippy::large_enum_variant)]
 enum Output {
-    Decoded(Arc<Slot<Arc<Picture>>>),
+    Decoded(Arc<Slot<Picture>>),
     /// show_existing_frame: built from the reference slot when it is finished.
     Existing {
         slot: Arc<FrameSlot>,
@@ -140,7 +151,7 @@ impl Output {
 
     fn take(self) -> Result<Picture> {
         match self {
-            Output::Decoded(s) => s.wait().map(|p| Arc::try_unwrap(p).unwrap_or_else(|p| (*p).clone())),
+            Output::Decoded(s) => s.take(),
             Output::Existing { slot, seq, width, height, grain, apply_film_grain, pts } => {
                 let rf = slot.wait()?;
                 Ok(output_picture(&seq, &rf, width, height, &grain, apply_film_grain, pts))
@@ -658,7 +669,7 @@ fn run_job(job: FrameJob, pool: &Pool, stats: &Mutex<DecodeStats>) {
     match decode_frame(&job, pool, &mut st) {
         Ok((rf, pic)) => {
             if let Some(ps) = &job.picture {
-                ps.set(pic.map(Arc::new).ok_or(Error::Invalid("shown frame without picture")));
+                ps.set(pic.ok_or(Error::Invalid("shown frame without picture")));
             }
             job.slot.set(Ok(rf));
         }
@@ -702,13 +713,14 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     fs.ref_info = job.ref_info.clone();
     if fh.primary_ref_frame != PRIMARY_REF_NONE {
         // load_previous_segment_ids( )
-        if let Some(rf) = &fs.refs[fh.ref_frame_idx[fh.primary_ref_frame]]
+        let (mi_cols, mi_rows) = (fs.mi.cols, fs.mi.rows);
+        let sh = &mut fs.sh;
+        if let Some(rf) = &sh.refs[fh.ref_frame_idx[fh.primary_ref_frame]]
             && fh.seg.enabled
-            && rf.mi_cols == fs.mi.cols
-            && rf.mi_rows == fs.mi.rows
+            && rf.mi_cols == mi_cols
+            && rf.mi_rows == mi_rows
         {
-            let ids = rf.segment_ids.clone();
-            fs.prev_segment_ids.copy_from_slice(&ids);
+            sh.prev_segment_ids.copy_from_slice(&rf.segment_ids);
         }
     }
     if fh.use_ref_frame_mvs {
@@ -886,23 +898,21 @@ fn motion_field_estimation(fs: &mut FrameState) {
     for r in LAST_FRAME..=ALTREF_FRAME {
         fs.motion_field[r] = vec![[crate::mvpred::INVALID_MV, crate::mvpred::INVALID_MV]; w8 * h8];
     }
-    let fh = fs.fh.clone();
-    let seq = fs.seq.clone();
-    let rd = |a: u32, b: u32| crate::header::relative_dist(&seq, a, b);
-    let last_idx = fh.ref_frame_idx[0];
-    let cur_gold = fh.order_hints[GOLDEN_FRAME];
-    let last_alt = fs.ref_info[last_idx].saved_order_hints[ALTREF_FRAME];
-    if last_alt != cur_gold {
+    let (fh, seq) = (&fs.fh, &fs.seq);
+    let after_cur = |r: usize| crate::header::relative_dist(seq, fh.order_hints[r], fh.order_hint) > 0;
+    let (bwd, alt2, alt) = (after_cur(BWDREF_FRAME), after_cur(ALTREF2_FRAME), after_cur(ALTREF_FRAME));
+    let last_alt = fs.ref_info[fh.ref_frame_idx[0]].saved_order_hints[ALTREF_FRAME];
+    if last_alt != fh.order_hints[GOLDEN_FRAME] {
         project(fs, LAST_FRAME, -1);
     }
     let mut ref_stamp = MFMV_STACK_SIZE as i32 - 2;
-    if rd(fh.order_hints[BWDREF_FRAME], fh.order_hint) > 0 && project(fs, BWDREF_FRAME, 1) {
+    if bwd && project(fs, BWDREF_FRAME, 1) {
         ref_stamp -= 1;
     }
-    if rd(fh.order_hints[ALTREF2_FRAME], fh.order_hint) > 0 && project(fs, ALTREF2_FRAME, 1) {
+    if alt2 && project(fs, ALTREF2_FRAME, 1) {
         ref_stamp -= 1;
     }
-    if rd(fh.order_hints[ALTREF_FRAME], fh.order_hint) > 0 && ref_stamp >= 0 && project(fs, ALTREF_FRAME, 1) {
+    if alt && ref_stamp >= 0 && project(fs, ALTREF_FRAME, 1) {
         ref_stamp -= 1;
     }
     if ref_stamp >= 0 {
@@ -930,17 +940,16 @@ fn project_pos(v8: i32, delta: i32, dst_sign: i32, max8: i32, max_off8: i32) -> 
 
 /// Projection process (7.9.2).
 fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
-    let fh = fs.fh.clone();
-    let seq = fs.seq.clone();
+    let FrameShared { seq, fh, refs, ref_info, motion_field, .. } = &mut fs.sh;
     let src_idx = fh.ref_frame_idx[src - LAST_FRAME];
     let w8 = fh.mi_cols as i32 >> 1;
     let h8 = fh.mi_rows as i32 >> 1;
-    let ri = fs.ref_info[src_idx].clone();
+    let ri = &ref_info[src_idx];
     if ri.mi_rows != fh.mi_rows || ri.mi_cols != fh.mi_cols || ri.frame_type == INTRA_ONLY_FRAME as u8 || ri.frame_type == KEY_FRAME as u8 {
         return false;
     }
-    let Some(rf) = fs.refs[src_idx].clone() else { return false };
-    let rd = |a: u32, b: u32| crate::header::relative_dist(&seq, a, b);
+    let Some(rf) = &refs[src_idx] else { return false };
+    let rd = |a: u32, b: u32| crate::header::relative_dist(seq, a, b);
     let mi_cols = fh.mi_cols as usize;
     for y8 in 0..h8 {
         for x8 in 0..w8 {
@@ -960,7 +969,7 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
                         for dst in LAST_FRAME..=ALTREF_FRAME {
                             let ref_to_dst = rd(fh.order_hint, fh.order_hints[dst]);
                             let pm = get_mv_projection(mv, ref_to_dst, ref_offset);
-                            fs.motion_field[dst][(py * w8 + px) as usize] = pm;
+                            motion_field[dst][(py * w8 + px) as usize] = pm;
                         }
                     }
                 }
