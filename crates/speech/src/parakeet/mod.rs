@@ -18,7 +18,9 @@
 //!    `max_symbols_per_step` tokens on one frame). Each chunk starts from a fresh prediction
 //!    network.
 //! 4. SentencePiece pieces are joined into words at `▁`; a word spans its first token's frame to
-//!    its last token's frame plus that token's duration.
+//!    its last token's frame plus that token's duration. A word that starts on the same frame as
+//!    the one before it (duration-0 steps) starts halfway through its own span instead, so every
+//!    word keeps a length.
 //! 5. Word bounds are tightened past silent frames ([`crate::vad`]), and speakers labelled
 //!    ([`crate::diarize`]) when asked.
 
@@ -39,6 +41,10 @@ pub const MAX_CHUNK_S: usize = 90;
 pub const CUT_SEARCH_S: usize = 30;
 /// Clips up to this long are encoded whole.
 const WHOLE_S: usize = 120;
+/// Largest vocabulary a `config.json` may declare (v3 has 8 193 tokens with the blank).
+const MAX_VOCAB: usize = 1 << 16;
+/// Most TDT durations a `config.json` may declare (v3 has 5).
+const MAX_DURATIONS: usize = 64;
 /// Audio samples per encoder frame (8 × 10 ms).
 const SAMPLES_PER_FRAME: usize = 8 * features::HOP;
 
@@ -115,6 +121,10 @@ impl Parakeet {
     pub fn load(dir: &Path, id: &str) -> Result<Self, SpeechError> {
         let read = |n: &str| std::fs::read(dir.join(n)).map_err(|e| SpeechError::Model(format!("{}: {e}", dir.join(n).display())));
         let cfg: Config = serde_json::from_slice(&read("config.json")?).map_err(|e| SpeechError::Model(format!("config.json: {e}")))?;
+        // the vocabulary size sizes allocations before any tensor is checked against it
+        if cfg.vocab_size == 0 || cfg.vocab_size > MAX_VOCAB || cfg.durations.len() > MAX_DURATIONS {
+            return Err(SpeechError::Model(format!("config.json: vocab_size {} or {} durations out of range", cfg.vocab_size, cfg.durations.len())));
+        }
         if cfg.blank_token_id as usize >= cfg.vocab_size || cfg.durations.is_empty() || cfg.encoder_config.num_attention_heads == 0 {
             return Err(SpeechError::Model("config.json: inconsistent blank token, durations or heads".into()));
         }
@@ -182,14 +192,15 @@ fn group_words(vocab: &Vocab, emits: &[Emit], total_frames: usize) -> Vec<Word> 
         first: usize,
         last_end: usize,
     }
-    let mut words: Vec<Word> = Vec::new();
+    // (text, first sample, end sample)
+    let mut words: Vec<(String, usize, usize)> = Vec::new();
     let mut cur: Option<Pending> = None;
-    let flush = |p: Option<Pending>, words: &mut Vec<Word>| {
+    let flush = |p: Option<Pending>, words: &mut Vec<(String, usize, usize)>| {
         if let Some(p) = p {
             let text = String::from_utf8_lossy(&p.bytes).trim().to_string();
             if !text.is_empty() {
                 let end = p.last_end.max(p.first + 1).min(total_frames.max(p.first + 1));
-                words.push(Word::new(text, sample_tick((p.first * SAMPLES_PER_FRAME) as i64), sample_tick((end * SAMPLES_PER_FRAME) as i64)));
+                words.push((text, p.first * SAMPLES_PER_FRAME, end * SAMPLES_PER_FRAME));
             }
         }
     };
@@ -208,14 +219,36 @@ fn group_words(vocab: &Vocab, emits: &[Emit], total_frames: usize) -> Vec<Word> 
         }
     }
     flush(cur.take(), &mut words);
-    // words never overlap the next one
-    for i in 1..words.len() {
-        let next = words[i].start;
-        if words[i - 1].end > next {
-            words[i - 1].end = next.max(words[i - 1].start);
+    // TDT can emit several words on one frame (duration 0), so they share a start. The later one
+    // starts halfway through its own span instead (never past its end, so nothing is stretched
+    // past the audio); one with no room left joins the word before it.
+    let mut out: Vec<(String, usize, usize)> = Vec::with_capacity(words.len());
+    for (text, start, end) in words {
+        let Some(prev) = out.last_mut() else {
+            out.push((text, start, end));
+            continue;
+        };
+        if start > prev.1 {
+            out.push((text, start, end));
+            continue;
+        }
+        let moved = prev.1 + end.saturating_sub(prev.1) / 2;
+        if moved > prev.1 && moved < end {
+            out.push((text, moved, end));
+        } else {
+            prev.0.push(' ');
+            prev.0.push_str(&text);
+            prev.2 = prev.2.max(end);
         }
     }
-    words
+    // words never overlap the next one; starts now strictly increase, so every word keeps a length
+    for i in 1..out.len() {
+        let next = out[i].1;
+        if out[i - 1].2 > next {
+            out[i - 1].2 = next.max(out[i - 1].1);
+        }
+    }
+    out.into_iter().map(|(text, s, e)| Word::new(text, sample_tick(s as i64), sample_tick(e as i64))).collect()
 }
 
 /// A best guess at the language of `text` from common short words (Parakeet v3 does not report
@@ -333,6 +366,44 @@ mod tests {
         assert_eq!((words[0].start, words[0].end), (f(2), f(6)));
         assert_eq!((words[1].start, words[1].end), (f(7), f(10)));
         assert_eq!((words[2].start, words[2].end), (f(12), f(14)));
+    }
+
+    #[test]
+    fn words_on_one_frame_keep_a_length() {
+        let v = vocab();
+        let e = |id, frame, dur| Emit { id, frame, dur };
+        let f = |n: i64| sample_tick(n * SAMPLES_PER_FRAME as i64);
+        // TDT emits "▁Hel" and "▁wor" on frame 2 (duration 0, then 2): both words start there
+        let words = group_words(&v, &[e(2, 2, 0), e(5, 2, 2), e(10, 6, 1)], 100);
+        let text: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(text, ["Hel", "wor", "caf"]);
+        assert!(words.iter().all(|w| w.end > w.start), "{words:?}");
+        assert!(words.windows(2).all(|w| w[0].end <= w[1].start), "{words:?}");
+        assert_eq!((words[0].start, words[2].end), (f(2), f(7)));
+        // three words on the last frame of the audio: each keeps a length, none runs past the end
+        let words = group_words(&v, &[e(2, 9, 0), e(5, 9, 0), e(10, 9, 1)], 10);
+        assert_eq!(words.len(), 3);
+        assert!(words.iter().all(|w| w.end > w.start && w.end <= f(10)), "{words:?}");
+        assert!(words.windows(2).all(|w| w[0].end <= w[1].start), "{words:?}");
+    }
+
+    #[test]
+    fn hostile_vocab_size_is_an_error_before_allocation() {
+        let dir = tempfile::tempdir().unwrap();
+        // a real tokenizer, so only the size check stands between the config and the allocation
+        std::fs::write(dir.path().join("tokenizer.json"), r#"{"model":{"vocab":{"▁a":1}},"added_tokens":[]}"#).unwrap();
+        let cfg = |vocab: u64| {
+            format!(
+                r#"{{"encoder_config":{{"hidden_size":8,"intermediate_size":8,"num_attention_heads":1,"num_hidden_layers":1,"num_mel_bins":8,
+                "conv_kernel_size":3,"subsampling_conv_channels":8,"subsampling_factor":8}},"decoder_hidden_size":8,"num_decoder_layers":1,
+                "vocab_size":{vocab},"blank_token_id":0,"durations":[0,1,2]}}"#
+            )
+        };
+        for vocab in [0, MAX_VOCAB as u64 + 1, u64::MAX / 2] {
+            std::fs::write(dir.path().join("config.json"), cfg(vocab)).unwrap();
+            let err = Parakeet::load(dir.path(), "t").err().expect("hostile config accepted");
+            assert!(err.to_string().contains("vocab_size"), "{err}");
+        }
     }
 
     #[test]

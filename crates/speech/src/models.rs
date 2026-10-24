@@ -212,7 +212,7 @@ static CATALOGUE: &[ModelInfo] = &[
         engine: Engine::Parakeet,
         name: "Parakeet TDT 0.6B v3 (25 European languages)",
         multilingual: true,
-        description: "600 M parameters (NVIDIA). The most accurate here, with punctuation and precise per-word timing for word-by-word captions. English and 24 other European languages, detected automatically. Needs about 3 GB of memory.",
+        description: "600 M parameters (NVIDIA). The most accurate here, with punctuation and precise per-word timing for word-by-word captions. English and 24 other European languages, detected automatically. Needs about 4 GB of memory.",
         license: "CC-BY-4.0 (NVIDIA Parakeet TDT 0.6B v3)",
         license_url: "https://creativecommons.org/licenses/by/4.0/",
         author: "NVIDIA",

@@ -47,8 +47,11 @@ recognisers, both run in pure Rust on [candle](https://github.com/huggingface/ca
   word-by-word captions, and it writes punctuation and capitals. It recognises English and 24 other
   European languages without being told which; the transcript's language is guessed from common
   words. Long clips are cut into chunks of at most 90 s in pauses (see the
-  `filmcraft_speech::parakeet` module docs). It needs about 4 GB of memory while transcribing. Speakers are labelled by clustering per-chunk MFCC
-statistics (`filmcraft_speech::diarize`); no model is involved.
+  `filmcraft_speech::parakeet` module docs). It needs about 4 GB of memory while transcribing
+  (3.8 GB peak measured); its known limits are listed in the `filmcraft-speech` README.
+
+Speakers are labelled by clustering per-chunk MFCC statistics (`filmcraft_speech::diarize`); no
+model is involved.
 
 Both are **optional features**, off by default and never built for the web:
 
