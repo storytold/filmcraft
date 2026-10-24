@@ -141,17 +141,17 @@ fn main() -> eframe::Result {
     if graphics.mode() == graphics::Mode::Default {
         register_gpu_frame_renderer();
     }
-    // On a Wayland session, open through XWayland: winit 0.30 has no Wayland file drag-and-drop, so
-    // files dropped from the desktop only arrive on X11 (see [`display`]). If XWayland cannot open
-    // the window, the first start errors and the retry below keeps native Wayland. Off Linux this
-    // is always false.
+    // A Wayland session opens natively, where the pinned winit fork delivers file drag-and-drop
+    // (see [`display`]); `FILMCRAFT_XWAYLAND=1` opens through XWayland instead. If XWayland cannot
+    // open the window, the first start errors and the retry below keeps native Wayland. Off Linux
+    // this is always false.
     #[cfg(target_os = "linux")]
     let mut force_x11 = display::prefer_x11(|k| std::env::var(k).ok());
     #[cfg(not(target_os = "linux"))]
     let mut force_x11 = false;
     #[cfg(target_os = "linux")]
     if force_x11 {
-        log::info!("Wayland session: opening the window through XWayland so file drops work (FILMCRAFT_NATIVE_WAYLAND=1 keeps native Wayland)");
+        log::info!("FILMCRAFT_XWAYLAND=1: opening the window through XWayland");
     }
     let mut x11_start_failed = false;
     let started = loop {
@@ -486,9 +486,10 @@ fn local_offset(unix: i64) -> i32 {
     chrono::Local.timestamp_opt(unix, 0).single().map(|d| d.offset().local_minus_utc()).unwrap_or(0)
 }
 
-/// The event-loop builder for this start. On Linux a Wayland session opens through XWayland so
-/// file drops work ([`display`]); on macOS an agent launch (`--control`) does not activate the app,
-/// so the user's keyboard focus stays where it is (winit activates ignoring other apps by default).
+/// The event-loop builder for this start. On Linux `FILMCRAFT_XWAYLAND=1` opens a Wayland session
+/// through XWayland ([`display`]); on macOS an agent launch (`--control`) does not activate the
+/// app, so the user's keyboard focus stays where it is (winit activates ignoring other apps by
+/// default).
 fn event_loop_hook(agent: bool, force_x11: bool) -> Option<eframe::EventLoopBuilderHook> {
     let _ = (agent, force_x11);
     #[cfg(target_os = "linux")]
