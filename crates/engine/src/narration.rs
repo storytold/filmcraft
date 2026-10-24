@@ -183,7 +183,11 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
 fn write_and_import(s: &mut Session, p: &Value, samples: &[f32], rate: u32, near: Option<ItemId>) -> Result<(ItemId, String)> {
     let beside = near.filter(|_| p.get("dir").is_none()).and_then(|i| match &s.project.items.get(&i)?.kind {
         ItemKind::Media(m) => match &m.media {
-            MediaRef::File { path } => std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_string_lossy().into_owned()),
+            MediaRef::File { path } => s
+                .media
+                .follow(path)
+                .ok()
+                .and_then(|f| std::path::Path::new(&f).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_string_lossy().into_owned())),
             MediaRef::Generator(_) => None,
         },
         _ => None,

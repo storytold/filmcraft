@@ -222,9 +222,10 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let prev_dst = crate::previews::dir_for_project(&project_path);
     let services = s.services.clone();
+    let media = s.media.clone();
     let run = move || {
         let t0 = web_time::Instant::now();
-        let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), &project_path, pr, &prog, &*services);
+        let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), &project_path, pr, &prog, &*services, &media);
         let secs = t0.elapsed().as_secs_f64();
         let r = r.map(|bytes| filmcraft_export::Report {
             path: project_path.clone(),
@@ -266,6 +267,7 @@ fn execute(
     pr: &Preset,
     prog: &filmcraft_export::Progress,
     services: &dyn crate::Services,
+    media: &crate::MediaPool,
 ) -> std::result::Result<u64, String> {
     let mut bytes = 0;
     let openers = filmcraft_codecs::openers();
@@ -318,7 +320,8 @@ fn execute(
     if let Some((from, to)) = previews {
         bytes += copy_dir(&from, &to).map_err(|e| format!("copying previews: {e}"))?;
     }
-    let data = filmcraft_format::encode(&proj, false);
+    let stored = crate::doc_path::project_for_document(&proj, Some(project_path), |p| media.follow(p));
+    let data = filmcraft_format::encode(&stored, false);
     filmcraft_format::atomic_write(Path::new(project_path), &data).map_err(|e| format!("{project_path}: {e}"))?;
     prog.done.fetch_add(1, Ordering::Relaxed);
     Ok(bytes + data.len() as u64)

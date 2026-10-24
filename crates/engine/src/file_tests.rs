@@ -94,6 +94,56 @@ fn project_is_named_after_its_file() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Media paths are stored relative to the project file, so the project and the media beside it
+/// keep working when the folder moves to another drive, share or machine (#3067). Files from
+/// older builds hold absolute paths and open the same as before.
+#[test]
+fn media_paths_are_stored_relative_to_the_project_file() {
+    let d = temp_dir("rel-paths");
+    let media = d.join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    let clip = media.join("clip.mov");
+    crate::media_test_util::make_movie(&clip, filmcraft_media::DemoScene::OceanSunset, 64, 36, 4);
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths": [clip.to_string_lossy()]})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    let item = filmcraft_project::ItemId(r["items"][0].as_u64().unwrap());
+    let proj = d.join("cut.fcproj");
+    s.execute("file.saveAs", json!({"path": proj.to_string_lossy()})).unwrap();
+    // the file holds the relative form; the session keeps the path it imported
+    let loaded = filmcraft_format::decode(&std::fs::read(&proj).unwrap()).unwrap();
+    let m = loaded.project.item(item).and_then(|i| i.as_media()).unwrap();
+    assert_eq!(m.media, filmcraft_project::MediaRef::File { path: "media/clip.mov".into() });
+    assert!(
+        matches!(&s.project.item(item).unwrap().as_media().unwrap().media, filmcraft_project::MediaRef::File { path } if path == clip.to_string_lossy().as_ref())
+    );
+    // Save As to another folder rebases the stored path, it does not blindly copy it.
+    let other = d.join("nested").join("saveas.fcproj");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    s.execute("file.saveAs", json!({"path": other.to_string_lossy()})).unwrap();
+    let loaded = filmcraft_format::decode(&std::fs::read(&other).unwrap()).unwrap();
+    let m = loaded.project.item(item).and_then(|i| i.as_media()).unwrap();
+    assert_eq!(m.media, filmcraft_project::MediaRef::File { path: "../media/clip.mov".into() });
+    // Move the whole folder: the moved project opens with its media found.
+    let moved = temp_dir("rel-paths-moved");
+    std::fs::remove_dir(&moved).unwrap();
+    std::fs::rename(&d, &moved).unwrap();
+    let mut t = Session::default();
+    let r = t.execute("file.open", json!({"path": moved.join("cut.fcproj").to_string_lossy()})).unwrap();
+    assert_eq!(r["missingMedia"], json!(0), "{r}");
+    let m = t.project.item(item).and_then(|i| i.as_media()).unwrap();
+    assert_eq!(m.media, filmcraft_project::MediaRef::File { path: moved.join("media").join("clip.mov").to_string_lossy().into_owned() });
+    // A file written by an older build holds absolute paths; it opens and finds its media too.
+    let mut doc: Value = serde_json::from_slice(&std::fs::read(moved.join("cut.fcproj")).unwrap()).unwrap();
+    doc["project"]["items"][item.0.to_string()]["kind"]["Media"]["media"]["File"]["path"] = json!(moved.join("media").join("clip.mov").to_string_lossy());
+    let old = moved.join("old.fcproj");
+    std::fs::write(&old, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let mut u = Session::default();
+    let r = u.execute("file.open", json!({"path": old.to_string_lossy()})).unwrap();
+    assert_eq!(r["missingMedia"], json!(0), "{r}");
+    let _ = std::fs::remove_dir_all(&moved);
+}
+
 /// Opening the demo after a saved project must not keep that path: Save would overwrite it.
 #[test]
 fn open_demo_project_clears_saved_path_so_save_does_not_overwrite() {

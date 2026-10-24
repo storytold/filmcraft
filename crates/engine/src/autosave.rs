@@ -637,6 +637,8 @@ pub(crate) struct Sent {
 
 struct Snapshot {
     project: Arc<Project>,
+    /// The media pool the project's stored paths resolve through ([`crate::doc_path`]).
+    media: Arc<crate::MediaPool>,
     revision: u64,
     path: Option<String>,
 }
@@ -759,8 +761,8 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        let _ = self.tx.send(Msg::Dirty(Snapshot { project, revision, path }));
+    pub(crate) fn send_dirty(&self, project: Arc<Project>, media: Arc<crate::MediaPool>, revision: u64, path: Option<String>) {
+        let _ = self.tx.send(Msg::Dirty(Snapshot { project, media, revision, path }));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -975,7 +977,10 @@ impl Worker {
     fn write_journal(&mut self) {
         let Some(s) = &self.latest else { return };
         let t0 = Instant::now();
-        let bytes = filmcraft_format::encode(&s.project, false);
+        // Recovery installs the snapshot with `meta.project_path` as its document: stored paths
+        // are relative to the project's own file (#3067).
+        let stored = crate::doc_path::project_for_document(&s.project, s.path.as_deref(), |p| s.media.follow(p));
+        let bytes = filmcraft_format::encode(&stored, false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         let unix = unix_now();
@@ -1025,11 +1030,15 @@ impl Worker {
             }
             (None, _) => (self.data_dir.join(names::AUTO_SAVE_DIR), s.project.name.clone()),
         };
+        let unix = unix_now();
         let t0 = Instant::now();
-        let bytes = filmcraft_format::encode(&s.project, false);
+        // Stored paths are relative to the file holding them: the timestamped copy in the
+        // auto-save directory, and the project file when Auto Save also saves the project (#3067).
+        let dst = dir.join(names::auto_save_name(&name, unix, (self.local_offset)(unix)));
+        let stored = crate::doc_path::project_for_document(&s.project, dst.to_str(), |p| s.media.follow(p));
+        let bytes = filmcraft_format::encode(&stored, false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
-        let unix = unix_now();
         let r = names::write_auto_save(&dir, &name, unix, (self.local_offset)(unix), &bytes, self.prefs.max_versions as usize);
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
@@ -1039,7 +1048,8 @@ impl Worker {
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
                 {
-                    match filmcraft_format::atomic_write(Path::new(p), &bytes) {
+                    let stored = crate::doc_path::project_for_document(&s.project, Some(p.as_str()), |x| s.media.follow(x));
+                    match filmcraft_format::atomic_write(Path::new(p), &filmcraft_format::encode(&stored, false)) {
                         Ok(()) => {
                             let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
                         }
