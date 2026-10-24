@@ -452,9 +452,141 @@ fn audio_transition_on_a_cut_crossfades_through_the_handles() {
 
 // ------------------------------------------------------------------------------------- 5.1
 
+/// No-pick nested clips retain parent-width routing across every Mono/Stereo/5.1
+/// child-master and parent layout pair, with 1/2/6-channel fixture media.
+#[test]
+fn nested_no_pick_output_is_unchanged_for_all_layout_pairs() {
+    let layouts = [(1, AudioChannels::Mono), (2, AudioChannels::Stereo), (6, AudioChannels::Surround51)];
+    let expected: [[&[f32]; 3]; 3] = [
+        [&[0.04999999, 0.04999999], &[0.07071066, 0.07071066], &[0.070710674, 0.070710674, 0.0, 0.0, 0.0, 0.0]],
+        [&[0.106065996, 0.106065996], &[0.09999997, 0.19999994], &[0.09999999, 0.19999997, 0.0, 0.0, 0.0, 0.0]],
+        [&[0.53106594, 0.53106594], &[0.6656853, 0.836396], &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]],
+    ];
+    for (source_index, (source_width, inner_layout)) in layouts.into_iter().enumerate() {
+        for (parent_index, (_, parent_layout)) in layouts.into_iter().enumerate() {
+            let mut r = Rig::with_channels(&[chan_dc], source_width);
+            let inner = r.seq;
+            r.track(0).channels = inner_layout;
+            r.p.sequence_mut(inner).unwrap().settings.audio_master = inner_layout;
+            let outer = r.p.new_sequence("no-pick nest", SequenceSettings::default(), 0, 1, None);
+            let range = TimeRange::new(Tick::ZERO, Tick(10 * TICKS_PER_SECOND));
+            let clip = r.p.make_track_item(inner, TrackKind::Audio, Tick::ZERO, range, FrameRate::FPS_24).unwrap();
+            assert!(clip.source_channels.is_empty());
+            let seq = r.p.sequence_mut(outer).unwrap();
+            seq.settings.audio_master = parent_layout;
+            seq.audio_tracks[0].channels = parent_layout;
+            seq.audio_tracks[0].items.push(clip);
+            let audio = mix_graph(&r.p, r.p.sequence(outer).unwrap(), SR, 256, &r.map, None);
+            let want = expected[source_index][parent_index];
+            assert_eq!(audio.channels.len(), want.len(), "source {source_width}, parent {parent_layout:?}");
+            for (channel_index, (channel, value)) in audio.channels.iter().zip(want).enumerate() {
+                assert_eq!(channel.len(), 256);
+                for (sample_index, sample) in channel.iter().enumerate() {
+                    assert!(
+                        close(*sample, *value, 1e-6),
+                        "source {source_width}, parent {parent_layout:?}, channel {channel_index}, sample {sample_index}: expected {value}, got {sample}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Distinct DC level per source channel: 0.1, 0.2, … (L, R, C, LFE, Ls, Rs for 6-channel sources).
 fn chan_dc(_: i64, c: usize) -> f32 {
     (c + 1) as f32 * 0.1
+}
+
+#[test]
+fn nested_source_channel_picks_precede_destination_layout_conversion() {
+    for (source_width, parent, picks, expected) in [
+        (6, AudioChannels::Stereo, vec![4], vec![0.5, 0.5]),
+        (6, AudioChannels::Stereo, vec![4, 1], vec![0.5, 0.2]),
+        (6, AudioChannels::Stereo, vec![4, 1, 6], vec![0.5, 0.2]),
+        (6, AudioChannels::Stereo, vec![4, 1, 6, 6, 6], vec![0.5, 0.2]),
+        (6, AudioChannels::Stereo, vec![1, 0, 2, 3, 4, 5], vec![0.7656853, 0.736396]),
+        (6, AudioChannels::Stereo, vec![1, 0, 2, 3, 4, 5, 6], vec![0.7656853, 0.736396]),
+        (2, AudioChannels::Mono, vec![1], vec![0.2 * std::f32::consts::FRAC_1_SQRT_2; 2]),
+        (1, AudioChannels::Stereo, vec![0], vec![0.07071066; 2]),
+    ] {
+        let mut r = Rig::with_channels(&[chan_dc], source_width);
+        let inner = r.seq;
+        let layout = match source_width {
+            1 => AudioChannels::Mono,
+            6 => AudioChannels::Surround51,
+            _ => AudioChannels::Stereo,
+        };
+        r.track(0).channels = layout;
+        r.p.sequence_mut(inner).unwrap().settings.audio_master = layout;
+        let outer = r.p.new_sequence("selected nest", SequenceSettings::default(), 0, 1, None);
+        let range = TimeRange::new(Tick::ZERO, Tick(10 * TICKS_PER_SECOND));
+        let mut clip = r.p.make_track_item(inner, TrackKind::Audio, Tick::ZERO, range, FrameRate::FPS_24).unwrap();
+        clip.source_channels = picks.clone();
+        let seq = r.p.sequence_mut(outer).unwrap();
+        seq.settings.audio_master = parent;
+        let track = &mut seq.audio_tracks[0];
+        track.channels = parent;
+        track.items.push(clip);
+        let audio = mix_graph(&r.p, r.p.sequence(outer).unwrap(), SR, 256, &r.map, None);
+        assert_eq!(audio.channels.len(), expected.len());
+        for (channel_index, (channel, expected)) in audio.channels.iter().zip(expected).enumerate() {
+            assert_eq!(channel.len(), 256);
+            for (sample_index, sample) in channel.iter().enumerate() {
+                assert!(
+                    close(*sample, expected, 1e-6),
+                    "source {source_width}, parent {parent:?}, picks {picks:?}, channel {channel_index}, sample {sample_index}: expected {expected}, got {sample}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_nested_pick_retains_silent_output() {
+    let mut r = Rig::with_channels(&[chan_dc], 2);
+    let inner = r.seq;
+    r.track(0).channels = AudioChannels::Stereo;
+    r.p.sequence_mut(inner).unwrap().settings.audio_master = AudioChannels::Stereo;
+    let outer = r.p.new_sequence("invalid nested pick", SequenceSettings::default(), 0, 1, None);
+    let range = TimeRange::new(Tick::ZERO, Tick(10 * TICKS_PER_SECOND));
+    let mut clip = r.p.make_track_item(inner, TrackKind::Audio, Tick::ZERO, range, FrameRate::FPS_24).unwrap();
+    clip.source_channels = vec![4];
+    let seq = r.p.sequence_mut(outer).unwrap();
+    seq.settings.audio_master = AudioChannels::Surround51;
+    seq.audio_tracks[0].channels = AudioChannels::Surround51;
+    seq.audio_tracks[0].items.push(clip);
+    let audio = mix_graph(&r.p, r.p.sequence(outer).unwrap(), SR, 256, &r.map, None);
+    assert_eq!(audio.channels.len(), 6);
+    for channel in &audio.channels {
+        assert_eq!(channel.len(), 256);
+        assert!(channel.iter().all(|sample| *sample == 0.0));
+    }
+}
+
+#[test]
+fn invalid_consumed_nested_pick_keeps_parent_width_fallback() {
+    let mut r = Rig::with_channels(&[chan_dc], 6);
+    let inner = r.seq;
+    r.track(0).channels = AudioChannels::Surround51;
+    r.p.sequence_mut(inner).unwrap().settings.audio_master = AudioChannels::Surround51;
+    let outer = r.p.new_sequence("invalid consumed pick", SequenceSettings::default(), 0, 1, None);
+    let range = TimeRange::new(Tick::ZERO, Tick(10 * TICKS_PER_SECOND));
+    let mut clip = r.p.make_track_item(inner, TrackKind::Audio, Tick::ZERO, range, FrameRate::FPS_24).unwrap();
+    clip.source_channels = vec![0, 1, 6, 3, 4, 5];
+    let seq = r.p.sequence_mut(outer).unwrap();
+    seq.settings.audio_master = AudioChannels::Stereo;
+    seq.audio_tracks[0].channels = AudioChannels::Stereo;
+    seq.audio_tracks[0].items.push(clip);
+    let audio = mix_graph(&r.p, r.p.sequence(outer).unwrap(), SR, 256, &r.map, None);
+    assert_eq!(audio.channels.len(), 2);
+    // The invalid pick keeps parent-width conversion before the six-pick fold;
+    // unavailable indices then select channel zero.
+    for (channel_index, (channel, expected)) in audio.channels.iter().zip([1.6071064, 1.7778171]).enumerate() {
+        assert_eq!(channel.len(), 256);
+        for (sample_index, sample) in channel.iter().enumerate() {
+            assert!(close(*sample, expected, 1e-6), "channel {channel_index}, sample {sample_index}: expected {expected}, got {sample}");
+        }
+    }
 }
 
 fn set_master_51(r: &mut Rig) {

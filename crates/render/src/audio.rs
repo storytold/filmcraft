@@ -222,7 +222,12 @@ fn mix_item(
         };
         // The nested sequence is the clip's source: speed, reverse and clip effects apply to its
         // mix exactly as they do to a media clip's sound.
-        let read = |m0: i64, len: usize| Some(nested_mix(project, &q, m0, len, sr, sources, w, live.depth));
+        let nested_width = master_layout(&q).channels();
+        // Empty or invalid consumed picks retain parent-width routing; an unread trailing
+        // entry cannot force that fallback.
+        let picks = consumed_source_picks(item);
+        let source_width = if picks.is_empty() || picks.iter().any(|&channel| usize::from(channel) >= nested_width) { w } else { nested_width };
+        let read = |m0: i64, len: usize| Some(nested_mix(project, &q, m0, len, sr, sources, source_width, live.depth));
         effected(item, &read, a0, n, sr, w)
     } else {
         let Some(src) = sources.source(item.item) else { return };
@@ -447,20 +452,29 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     out
 }
 
+/// Prefix consumed by the render path: one pick for a singleton, two for lists of 2–5,
+/// and six for lists of 6+ (which take a 5.1 path, including stereo fold). Unread entries
+/// cannot change the width used for a nested source.
+fn consumed_source_picks(item: &TrackItem) -> &[u16] {
+    let picks = &item.source_channels;
+    let count = if picks.len() >= 6 { 6 } else { picks.len().min(2) };
+    &picks[..count]
+}
+
 /// The source channels a clip on a 5.1 track plays: six picked channels (Modify ▸ Audio Channels),
 /// else the source's first six; a mono pick or source gives one channel (upmixed to C), a stereo
 /// pick or 2–5 channel source gives two (upmixed to L/R).
 pub fn source_51(item: &TrackItem, available: usize) -> Vec<usize> {
     let ok = |c: u16| if (c as usize) < available { c as usize } else { 0 };
-    match item.source_channels.len() {
-        0 => match available {
+    match consumed_source_picks(item) {
+        [] => match available {
             0 | 1 => vec![0],
             2..=5 => vec![0, 1],
             _ => (0..6).collect(),
         },
-        1 => vec![ok(item.source_channels[0])],
-        2..=5 => vec![ok(item.source_channels[0]), ok(item.source_channels[1])],
-        _ => item.source_channels.iter().take(6).map(|&c| ok(c)).collect(),
+        [m] => vec![ok(*m)],
+        [l, r] => vec![ok(*l), ok(*r)],
+        picks => picks.iter().map(|&c| ok(c)).collect(),
     }
 }
 
@@ -468,10 +482,13 @@ pub fn source_51(item: &TrackItem, available: usize) -> Vec<usize> {
 /// pick (Modify ▸ Audio Channels), else all of a six-channel source. `None` plays [`source_pair`]
 /// (sources with another channel count have no known 5.1 layout).
 fn source_51_fold(item: &TrackItem, available: usize) -> Option<Vec<usize>> {
-    match item.source_channels.len() {
-        0 if available == 6 => Some((0..6).collect()),
-        6.. => Some(source_51(item, available)),
-        _ => None,
+    let picks = consumed_source_picks(item);
+    if picks.is_empty() && available == 6 {
+        Some((0..6).collect())
+    } else if picks.len() == 6 {
+        Some(source_51(item, available))
+    } else {
+        None
     }
 }
 
@@ -480,7 +497,7 @@ fn source_51_fold(item: &TrackItem, available: usize) -> Option<Vec<usize>> {
 /// both sides). Channels the source doesn't have fall back to the first.
 pub fn source_pair(item: &TrackItem, available: usize) -> (usize, usize) {
     let ok = |c: u16| if (c as usize) < available { c as usize } else { 0 };
-    match item.source_channels.as_slice() {
+    match consumed_source_picks(item) {
         [] => (0, if available >= 2 { 1 } else { 0 }),
         [m] => (ok(*m), ok(*m)),
         [l, r, ..] => (ok(*l), ok(*r)),
