@@ -1011,7 +1011,24 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         })
     };
     let extent = cards.iter().fold(vec2(rect.width(), rect.height()), |e, c| vec2(e.x.max(c.x + c.size + 40.0), e.y.max(c.y + c.size * 9.0 / 16.0 + 60.0)));
-    egui::ScrollArea::both().id_salt((&v.prefix, "ff-scroll")).auto_shrink([false, false]).show(ui, |ui| {
+    // a middle-button drag anywhere on the canvas pans it, the content following the pointer, as in
+    // the Timeline and the monitors (#579); cards move only with the primary button
+    let (offset_key, pan_key) = (egui::Id::new((&v.prefix, "ff-offset")), egui::Id::new((&v.prefix, "ff-pan")));
+    let view = ui.max_rect();
+    let (middle, origin, pos) = ui.input(|i| (i.pointer.middle_down(), i.pointer.press_origin(), i.pointer.latest_pos()));
+    let mut area = egui::ScrollArea::both().id_salt((&v.prefix, "ff-scroll")).auto_shrink([false, false]);
+    // (where the middle button went down, the scroll offset then)
+    let pan: Option<(egui::Pos2, egui::Vec2)> = ui.ctx().data(|d| d.get_temp(pan_key));
+    match (middle, pan, origin, pos) {
+        (true, Some((from, start)), _, Some(p)) => area = area.scroll_offset((start - (p - from)).max(egui::Vec2::ZERO)),
+        (true, None, Some(o), _) if view.contains(o) => {
+            let start: egui::Vec2 = ui.ctx().data(|d| d.get_temp(offset_key)).unwrap_or_default();
+            ui.ctx().data_mut(|d| d.insert_temp(pan_key, (o, start)));
+        }
+        (false, Some(_), _, _) => ui.ctx().data_mut(|d| d.remove::<(egui::Pos2, egui::Vec2)>(pan_key)),
+        _ => {}
+    }
+    let out = area.show(ui, |ui| {
         ui.data_mut(|d| d.remove::<Vec<(u64, Rect)>>(hits_id(v)));
         let (canvas, bg) = ui.allocate_exact_size(extent, Sense::click_and_drag());
         app.auto.add(&format!("{}.freeform", v.prefix), canvas, "Freeform canvas");
@@ -1059,10 +1076,12 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             // Escape puts the cards back and drops nothing until the button comes up (#580); egui
             // also ends the drag on Escape, so it arrives as a stop as often as during the drag
             let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-            if (resp.dragged() || resp.drag_stopped()) && (escape || crate::panels::drag_cancelled(ui)) {
+            // only the primary button moves cards: a middle-button drag pans the canvas (#579)
+            let (dragged, stopped) = (resp.dragged_by(egui::PointerButton::Primary), resp.drag_stopped_by(egui::PointerButton::Primary));
+            if (dragged || stopped) && (escape || crate::panels::drag_cancelled(ui)) {
                 ui.ctx().data_mut(|d| d.remove::<(u64, egui::Vec2)>(drag_key));
                 crate::panels::cancel_drag(ui);
-            } else if resp.dragged() {
+            } else if dragged {
                 let total = dragging.filter(|d| d.0 == c.item).map(|d| d.1).unwrap_or_default() + resp.drag_delta();
                 ui.ctx().data_mut(|d| d.insert_temp(drag_key, (c.item, total)));
                 // leaving the panel turns the move into an item drag (to the Timeline, a monitor)
@@ -1073,7 +1092,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                     crate::panels::start_drag_item(ui, ItemId(c.item));
                 }
             }
-            if resp.drag_stopped() && !crate::panels::drag_cancelled(ui) {
+            if stopped && !crate::panels::drag_cancelled(ui) {
                 released = dragging.filter(|d| d.0 == c.item).map(|d| (d.0, d.1 + resp.drag_delta()));
             }
             resp.context_menu(|ui| card_menu(app, ui, v, c.item, actions));
@@ -1115,6 +1134,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         let bin = Some(v.bin.0);
         bg.context_menu(|ui| canvas_menu(app, ui, v, bin, actions));
     });
+    ui.ctx().data_mut(|d| d.insert_temp(offset_key, out.state.offset));
 }
 
 fn cards_stack(cards: &[Card], item: u64) -> Option<u64> {

@@ -339,6 +339,47 @@ fn icon_view_hover_scrub_sets_in_and_out() {
     assert_eq!(d.app().ui.project_panel.bin, None);
 }
 
+/// Drag with the middle button from `from` to `to`, a frame per step.
+fn middle_drag(d: &mut Driver, from: egui::Pos2, to: egui::Pos2) {
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Middle, pressed, modifiers: egui::Modifiers::NONE };
+    let send = |d: &mut Driver, e| {
+        d.harness.input_mut().events.push(e);
+        d.frames(1);
+    };
+    send(d, egui::Event::PointerMoved(from));
+    send(d, button(from, true));
+    for k in 1..=8 {
+        send(d, egui::Event::PointerMoved(from.lerp(to, k as f32 / 8.0)));
+    }
+    send(d, button(to, false));
+    d.frames(2);
+}
+
+#[test]
+fn freeform_middle_drag_pans_and_never_moves_a_card() {
+    // #579: a middle-button drag pans the canvas, on a card as on the background
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    d.exec("project.view.set", json!({"view": "freeform"}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    // one card in view, one far out so the canvas is larger than the panel
+    d.exec("project.freeform.move", json!({"items": [items[0]], "x": 40, "y": 40}));
+    d.exec("project.freeform.move", json!({"items": [items[1]], "x": 4000, "y": 3000}));
+    let card = format!("project.item.{}", items[0]);
+    d.wait_for(&card);
+    d.frames(2);
+    let pos = |d: &mut Driver| d.app().session.project.item(ItemId(items[0])).unwrap().metadata.get(FREEFORM_POS).cloned();
+    let (before, selection) = (pos(&mut d), d.app().session.state.project_selection.clone());
+    let canvas = d.rect("project.freeform");
+    let r = d.rect(&card);
+    let from = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    middle_drag(&mut d, from, from - egui::vec2(120.0, 80.0));
+    let moved = d.rect("project.freeform");
+    assert!((canvas[0] - moved[0] - 120.0).abs() < 4.0 && (canvas[1] - moved[1] - 80.0).abs() < 4.0, "panned {canvas:?} -> {moved:?}");
+    assert_eq!(pos(&mut d), before, "the card stayed put");
+    assert_eq!(d.app().session.state.project_selection, selection);
+}
+
 #[test]
 fn freeform_view_places_and_stacks_cards() {
     let mut d = project_driver();

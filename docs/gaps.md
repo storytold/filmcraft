@@ -159,7 +159,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Missing:** on-screen transform handles for Motion / Transform in the Program monitor (#639);
   Effect Controls keyframe zoom bar, draggable divider, row lines (#640–#645); panel docking
   rearrangement (#493); clicking empty space to deselect (#683); filmstrip thumbnails (#614);
-  marquee selection in the Project panel (#578); Freeform bins and middle-mouse pan (#579);
+  marquee selection in the Project panel (#578); Freeform bins (#579);
   Program monitor Button Editor (+) (#431); keyframe curves for Position (#448); transition
   editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize;
   the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
