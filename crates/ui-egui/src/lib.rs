@@ -347,6 +347,8 @@ pub struct FilmcraftApp {
     input_waiters: Vec<Sender<Value>>,
     next_token: u64,
     styled: bool,
+    /// The language the fonts were installed for (see `theme::chinese_first`).
+    styled_language: Option<i18n::Language>,
     /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
     pub ui_error: Option<String>,
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a
@@ -590,6 +592,7 @@ impl FilmcraftApp {
             input_waiters: Vec::new(),
             next_token: 1,
             styled: false,
+            styled_language: None,
             ui_error: None,
             panic_next_frame: false,
             quit_confirmed: false,
@@ -2133,8 +2136,10 @@ impl eframe::App for FilmcraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
-        if !self.styled {
-            theme::install(ctx, &self.tokens);
+        // the fonts are installed again when the language changes: it orders the hanzi fallbacks
+        if !self.styled || self.styled_language != Some(self.ui.language) {
+            self.styled_language = Some(self.ui.language);
+            theme::install_for(ctx, &self.tokens, self.ui.language);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
             // (likewise Chinese without a Chinese face, Korean without a Hangul one)

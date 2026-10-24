@@ -418,6 +418,27 @@ pub fn font_families() -> Vec<FontFamily> {
 /// craft-fonts, Arabic and Hebrew fallbacks (craft-fonts or installed faces, [`crate::rtl`]) and
 /// egui visuals. Document names keep their glyphs in every interface language.
 pub fn install(ctx: &egui::Context, t: &Tokens) {
+    install_for(ctx, t, crate::i18n::current());
+}
+
+/// The order of the hanzi fallbacks: the interface's language decides whose glyph forms the
+/// shared code points take. Chinese first in the Chinese interface, so 确 and the like are drawn
+/// in their simplified forms (#2022); Japanese first otherwise, so Japanese text keeps Japanese
+/// forms. Chinese faces still cover the hanzi Japanese fonts lack, and the other way round.
+pub(crate) fn chinese_first(language: crate::i18n::Language) -> bool {
+    // Simplified Chinese is the only Chinese interface so far: a Traditional Chinese one (zh-TW)
+    // must be added here too, or it gets Japanese forms for the shared code points (#2500 review)
+    language == crate::i18n::Language::ZhCn
+}
+
+/// [`install`] for the interface `language` (the font fallbacks depend on it).
+pub fn install_for(ctx: &egui::Context, t: &Tokens, language: crate::i18n::Language) {
+    ctx.set_fonts(font_definitions(language));
+    apply_visuals(ctx, t);
+}
+
+/// The interface fonts with their fallbacks, for `language`.
+pub(crate) fn font_definitions(language: crate::i18n::Language) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_REGULAR)));
     fonts.font_data.insert("inter-medium".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_MEDIUM)));
@@ -427,13 +448,16 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jbmono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["inter-semibold".into(), "inter".into()]);
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["inter-medium".into(), "inter".into()]);
-    // Japanese before Chinese: the two share code points, and Japanese text must keep Japanese
-    // glyph forms; Chinese faces still cover the hanzi Japanese fonts lack
-    add_craft_fonts(&mut fonts);
-    crate::cjk::install(&mut fonts);
+    if chinese_first(language) {
+        crate::cjk::install_chinese(&mut fonts);
+        add_craft_fonts(&mut fonts);
+    } else {
+        add_craft_fonts(&mut fonts);
+        crate::cjk::install_chinese(&mut fonts);
+    }
+    crate::cjk::install_korean(&mut fonts);
     crate::rtl::install(&mut fonts);
-    ctx.set_fonts(fonts);
-    apply_visuals(ctx, t);
+    fonts
 }
 
 /// Name of the egui font for a craft-fonts entry.
@@ -666,6 +690,30 @@ mod tests {
 
     /// Built with craft-fonts: every font family ends with the Japanese faces (BIZ UDPGothic
     /// first), and Japanese text gets real glyphs, not the replacement box.
+    /// #2022: in the Chinese interface the Chinese faces come before the Japanese ones, so the
+    /// hanzi both have (确…) take simplified forms; in every other language Japanese comes first.
+    /// The order check needs both a Japanese craft font and a Chinese face, and skips without.
+    #[test]
+    fn chinese_faces_come_first_only_in_the_chinese_interface() {
+        use crate::i18n::Language;
+        assert!(chinese_first(Language::ZhCn));
+        for l in [Language::En, Language::Ja, Language::Ko, Language::De] {
+            assert!(!chinese_first(l), "{l:?}");
+        }
+        let first = |language: Language| {
+            let fonts = font_definitions(language);
+            let stack = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+            let japanese = filmcraft_text::fonts::craft_japanese().map(craft_font_name).collect::<Vec<_>>();
+            let jp = stack.iter().position(|n| japanese.contains(n));
+            let zh = stack.iter().position(|n| n == "system-chinese" || crate::cjk::craft_fonts().any(|f| *n == craft_font_name(f)));
+            (jp, zh)
+        };
+        let (Some(jp), Some(zh)) = first(Language::ZhCn) else { return };
+        assert!(zh < jp, "Chinese first in the Chinese interface");
+        let (Some(jp), Some(zh)) = first(Language::En) else { return };
+        assert!(jp < zh, "Japanese first otherwise");
+    }
+
     #[test]
     fn japanese_renders_with_craft_fonts() {
         if filmcraft_text::fonts::craft_japanese().next().is_none() {
@@ -676,8 +724,8 @@ mod tests {
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             for (family, stack) in &defs.families {
-                // installed right-to-left faces (Hebrew is not in craft-fonts) come after the craft run
-                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n)).collect();
+                // installed faces craft-fonts doesn't have (Hebrew, Hangul) come after the craft run
+                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n) && n.as_str() != "system-korean").collect();
                 let first = stack.iter().position(|n| n.starts_with("craft:")).unwrap_or(stack.len());
                 assert!(first > 0 && stack[first..].iter().all(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 let first_japanese = stack.iter().find(|n| n.starts_with("craft:BIZ") || n.starts_with("craft:Shippori"));
