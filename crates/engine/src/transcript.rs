@@ -108,7 +108,9 @@ fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
 }
 
 /// Mono 16 kHz audio of a media item (None: no audio).
-fn item_audio(s: &Session, item: ItemId) -> Option<Vec<f32>> {
+/// What to transcribe for `item`: its source and how many samples (at the speech rate) it has.
+/// None when it has no audio.
+fn item_source(s: &Session, item: ItemId) -> Option<(filmcraft_media::SharedSource, usize)> {
     let dur = match &s.project.item(item)?.kind {
         ItemKind::Media(m) => m.duration(),
         _ => return None,
@@ -117,9 +119,13 @@ fn item_audio(s: &Session, item: ItemId) -> Option<Vec<f32>> {
     if !src.info().has_audio() {
         return None;
     }
-    let sr = filmcraft_speech::SAMPLE_RATE;
-    let len = dur.to_units_floor(sr as i64).max(0) as usize;
-    let buf = src.audio(0, len, sr).ok()?;
+    let len = dur.to_units_floor(filmcraft_speech::SAMPLE_RATE as i64).max(0) as usize;
+    Some((src, len))
+}
+
+/// The mono speech-rate samples of a source (decoded here: in the job's thread when in the background).
+fn decode_audio(src: &filmcraft_media::SharedSource, len: usize) -> Option<Vec<f32>> {
+    let buf = src.audio(0, len, filmcraft_speech::SAMPLE_RATE).ok()?;
     Some(filmcraft_speech::downmix(&buf.channels))
 }
 
@@ -128,9 +134,28 @@ fn speech_err(e: SpeechError) -> EngineError {
 }
 
 /// The transcriber to use: the installed one, else the named catalogue model.
-fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
+/// Where the recogniser comes from: a host's, installed in the session, or a catalogue model that
+/// is loaded where the work runs (the job's thread for a background transcription: loading
+/// Whisper takes a while and must not hold up the editor).
+enum TranscriberSource {
+    Installed(Arc<dyn Transcriber>),
+    Model { dir: std::path::PathBuf, id: String },
+}
+
+impl TranscriberSource {
+    fn load(self) -> std::result::Result<Arc<dyn Transcriber>, String> {
+        match self {
+            TranscriberSource::Installed(t) => Ok(t),
+            TranscriberSource::Model { dir, id } => filmcraft_speech::load(&dir, &id).map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// The recogniser to use: the installed one, else the named catalogue model, checked here (an
+/// unknown model or a build without speech-to-text fails at once) but not loaded yet.
+fn transcriber(s: &Session, p: &Value) -> Result<TranscriberSource> {
     if let Some(t) = &s.transcriber {
-        return Ok(t.clone());
+        return Ok(TranscriberSource::Installed(t.clone()));
     }
     // Settings ▸ Media Analysis & Transcription ▸ Speech model
     let model = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model);
@@ -141,7 +166,7 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
         return Err(EngineError::Other(NO_SPEECH.into()));
     }
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
-    filmcraft_speech::load(&dir, model).map_err(speech_err)
+    Ok(TranscriberSource::Model { dir, id: model.to_string() })
 }
 
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -161,31 +186,149 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
         max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
     };
-    let mut done: Vec<(ItemId, Transcript)> = Vec::new();
+    let mut work = Vec::new();
     let mut skipped = Vec::new();
     for item in items {
-        let Some(audio) = item_audio(s, item) else {
-            skipped.push(item.0);
-            continue;
-        };
-        let mut tr = t.transcribe(&audio, &opts, &mut |_, _| true).map_err(speech_err)?;
-        tr.normalize();
-        done.push((item, tr));
+        match item_source(s, item) {
+            Some((src, len)) => {
+                let name = s.project.item(item).map(|i| i.name.clone()).unwrap_or_default();
+                work.push(TranscribeWork { item, name, src, len });
+            }
+            None => skipped.push(item.0),
+        }
     }
-    if done.is_empty() {
+    if work.is_empty() {
         return Err(EngineError::Other("none of the clips has audio to transcribe".into()));
     }
+    // in the background (the app), or here until done (agents and the CLI, as before)
+    let wait = bool_p(p, "wait").unwrap_or(true);
+    let label = format!("Transcribe ({} clip{})", work.len(), if work.len() == 1 { "" } else { "s" });
+    let job = crate::narration::new_job(s, label);
+    job.progress.total.store(work.len() as u64 * PROGRESS_STEPS, std::sync::atomic::Ordering::Relaxed);
+    let results: PendingResults = Arc::default();
+    let (prog, res, out) = (job.progress.clone(), job.result.clone(), results.clone());
+    let id = job.id;
+    let generation = s.project_generation;
+    s.transcribe_jobs.push(PendingTranscribe { job: id, generation, results: results.clone() });
+    crate::narration::spawn(s, job, wait, "filmcraft-transcribe", move || {
+        let t0 = web_time::Instant::now();
+        // the model loads here, in the job: a failure ends the job with its reason
+        *prog.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = "Loading the speech model".into();
+        let r = t.load().and_then(|t| run_transcription(&work, t.as_ref(), &opts, &prog)).map(|done| {
+            let words: usize = done.iter().map(|(_, t)| t.words.len()).sum();
+            *out.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(done);
+            format!("Transcribed {words} word(s)")
+        });
+        crate::narration::finish(&prog, &res, r, t0);
+    })?;
+    if !wait {
+        return Ok(json!({"job": id, "skipped": skipped}));
+    }
+    // the job ran here: apply it now and report as before
+    let failed = s.jobs.iter().find(|j| j.id == id).and_then(|j| j.progress.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+    let done = results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    s.transcribe_jobs.retain(|j| j.job != id);
+    let Some(done) = done else { return Err(EngineError::Other(failed.unwrap_or_else(|| "transcription failed".into()))) };
     let report: Vec<Value> = done
         .iter()
         .map(|(i, t)| json!({"item": i.0, "words": t.words.len(), "speakers": t.speakers.len(), "language": t.language, "source": t.source}))
         .collect();
+    apply_transcripts(s, done)?;
+    Ok(json!({"items": report, "skipped": skipped}))
+}
+
+/// Progress steps per clip (the recogniser reports a fraction).
+const PROGRESS_STEPS: u64 = 1000;
+
+type PendingResults = Arc<std::sync::Mutex<Option<Vec<(ItemId, Transcript)>>>>;
+
+/// One clip's audio to transcribe.
+struct TranscribeWork {
+    item: ItemId,
+    name: String,
+    src: filmcraft_media::SharedSource,
+    len: usize,
+}
+
+/// A background transcription whose transcripts are stored when it finishes ([`poll`]).
+pub struct PendingTranscribe {
+    pub job: u64,
+    /// The project it was started for: another project opened meanwhile gets nothing.
+    generation: u64,
+    results: PendingResults,
+}
+
+/// Transcribe every clip of `work` in turn, reporting progress and stopping on cancel.
+fn run_transcription(
+    work: &[TranscribeWork],
+    t: &dyn Transcriber,
+    opts: &Options,
+    prog: &filmcraft_export::Progress,
+) -> std::result::Result<Vec<(ItemId, Transcript)>, String> {
+    use std::sync::atomic::Ordering;
+    let mut done = Vec::new();
+    for (k, w) in work.iter().enumerate() {
+        if prog.cancel.load(Ordering::Relaxed) {
+            return Err("stopped: nothing was changed".into());
+        }
+        *prog.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("Reading the audio of {}", w.name);
+        let Some(audio) = decode_audio(&w.src, w.len) else { continue };
+        let base = k as u64 * PROGRESS_STEPS;
+        let mut progress = |f: f32, what: &str| {
+            let f = if f.is_finite() { f.clamp(0.0, 1.0) } else { 0.0 };
+            prog.done.store(base + (f64::from(f) * PROGRESS_STEPS as f64) as u64, Ordering::Relaxed);
+            *prog.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("{}: {what}", w.name);
+            !prog.cancel.load(Ordering::Relaxed)
+        };
+        let mut tr = t.transcribe(&audio, opts, &mut progress).map_err(|e| e.to_string())?;
+        tr.normalize();
+        done.push((w.item, tr));
+        prog.done.store(base + PROGRESS_STEPS, Ordering::Relaxed);
+    }
+    if done.is_empty() {
+        return Err("none of the clips has audio to transcribe".into());
+    }
+    Ok(done)
+}
+
+/// Store transcripts as one undo step (items no longer in the project are left out).
+fn apply_transcripts(s: &mut Session, done: Vec<(ItemId, Transcript)>) -> Result<()> {
     s.edit("Transcribe", move |pr, _| {
         for (i, t) in done {
-            pr.transcripts.insert(i, Arc::new(t));
+            if pr.item(i).is_some() {
+                pr.transcripts.insert(i, Arc::new(t));
+            }
         }
         Ok(())
     })?;
-    Ok(json!({"items": report, "skipped": skipped}))
+    Ok(())
+}
+
+/// Store the transcripts of finished background transcriptions (one undo step each) and drop
+/// finished or cancelled ones. Called once per UI frame from [`Session::poll_persistence`].
+pub fn poll(s: &mut Session) {
+    use std::sync::atomic::Ordering;
+    let mut i = 0;
+    while i < s.transcribe_jobs.len() {
+        let job = s.jobs.iter().find(|j| j.id == s.transcribe_jobs[i].job);
+        let finished = job.is_none_or(|j| j.progress.finished.load(Ordering::Relaxed));
+        let cancelled = job.is_some_and(|j| j.progress.cancel.load(Ordering::Relaxed));
+        if !finished {
+            i += 1;
+            continue;
+        }
+        let pj = s.transcribe_jobs.remove(i);
+        let done = pj.results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let Some(done) = done.filter(|_| !cancelled && pj.generation == s.project_generation) else { continue };
+        if let Err(e) = apply_transcripts(s, done) {
+            s.error_toast("transcript.generate", format!("Transcribe: {e}"));
+        }
+    }
+}
+
+/// Whether a transcription is running in the background (its job id).
+pub fn running_job(s: &Session) -> Option<u64> {
+    s.transcribe_jobs.first().map(|j| j.job)
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
@@ -439,7 +582,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?}"#,
+            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"wait":bool=true}"#,
             can_transcribe,
             generate,
             true,

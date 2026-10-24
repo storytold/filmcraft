@@ -3608,3 +3608,7 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+# Transcribing in the background (Text panel).
+	Transcribing…	Trascrizione in corso…
+	Stopping…	Interruzione…
+	Transcribing in the background (see the Text panel or Progress)	Trascrizione in background (vedi il pannello Testo o Avanzamento)

@@ -527,6 +527,35 @@ fn reading_order(ui: &mut egui::Ui, text: &str, id: egui::Id) -> egui::Response 
     resp.on_hover_cursor(egui::CursorIcon::Text)
 }
 
+/// The Text panel while a transcription runs in the background: what it is doing, how far it is,
+/// and Cancel. Automation ids: `text.transcribing.progress`, `text.transcribing.cancel`.
+fn transcribing(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id: u64) {
+    use std::sync::atomic::Ordering;
+    let t = app.tokens;
+    let Some(job) = app.session.jobs.iter().find(|j| j.id == id) else { return };
+    let (done, total) = (job.progress.done.load(Ordering::Relaxed), job.progress.total.load(Ordering::Relaxed));
+    let status = job.progress.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let cancelling = job.progress.cancel.load(Ordering::Relaxed);
+    let f = if total > 0 { (done as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
+    let c = rect.center();
+    ui.painter().text(c - vec2(0.0, 40.0), Align2::CENTER_CENTER, tl!("Transcribing…"), Tokens::semibold(16.0), t.text);
+    ui.painter().text(c - vec2(0.0, 18.0), Align2::CENTER_CENTER, &status, Tokens::ui(12.0), t.text_dim);
+    let bar = Rect::from_center_size(c + vec2(0.0, 6.0), vec2((rect.width() - 60.0).clamp(80.0, 320.0), 8.0));
+    ui.painter().rect_filled(bar, 4.0, t.field_bg);
+    ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * f, bar.height())), 4.0, t.accent);
+    app.auto.add("text.transcribing.progress", bar, &format!("{f:.2}"));
+    let r = Rect::from_center_size(c + vec2(0.0, 36.0), vec2(120.0, 24.0));
+    let resp = ui.interact(r, egui::Id::new("text.transcribing.cancel"), Sense::click());
+    ui.painter().rect_stroke(r, 12.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
+    ui.painter().text(r.center(), Align2::CENTER_CENTER, if cancelling { tl!("Stopping…") } else { tl!("Cancel") }, Tokens::ui(12.0), t.text);
+    app.auto.add("text.transcribing.cancel", r, "Cancel");
+    if resp.clicked() {
+        job.progress.cancel.store(true, Ordering::Relaxed);
+    }
+    // the progress moves without input: keep drawing while it runs
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+}
+
 fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     if app.session.active_sequence().is_none() {
@@ -536,6 +565,11 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut actions: Vec<(String, Value)> = Vec::new();
     let content = app.transcript_cache.content(&app.session);
     let words = &content.words;
+    // a transcription running in the background: its progress, and Cancel
+    if let Some(id) = filmcraft_engine::transcript::running_job(&app.session) {
+        transcribing(app, ui, rect, id);
+        return;
+    }
     if words.is_empty() {
         let c = rect.center();
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
@@ -552,7 +586,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
         app.auto.add("text.transcript.generate", r, "Transcribe");
         if resp.clicked() {
-            actions.push(("transcript.generate".into(), json!({})));
+            actions.push(("transcript.generate".into(), json!({"wait": false})));
         }
         run(app, ui, actions);
         return;
