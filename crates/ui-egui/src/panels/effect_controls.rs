@@ -641,9 +641,19 @@ pub(crate) fn param_row(
             });
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
-            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if egui::color_picker::color_edit_button_rgba(&mut vui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+            // A colour parameter holds sRGB-encoded components, not linear ones: `ultra_key`
+            // encodes each pixel with `effects::enc` (linear → sRGB) before comparing it with the
+            // key colour, which it uses as it is stored (`render/src/vfx/color.rs`). egui's `Rgba`
+            // is linear, so reading the parameter through it showed the wrong colour — Ultra Key's
+            // default `[0.0, 0.8, 0.2]` is `#00cc33`, but the picker opened on `#00e77c`. Reading
+            // and writing it as `Color32` keeps the swatch, the picker and the hex field agreed.
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let mut srgb = egui::Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]));
+            let sw = egui::color_picker::color_edit_button_srgba(&mut vui, &mut srgb, egui::color_picker::Alpha::Opaque);
+            app.auto.add(&format!("effectControls.{}.{}.swatch", e.effect, pkey), sw.rect, pd.label);
+            if sw.changed() {
+                // `Alpha::Opaque` doesn't edit alpha, so the parameter keeps the one it had.
+                set = Some(json!([srgb.r() as f32 / 255.0, srgb.g() as f32 / 255.0, srgb.b() as f32 / 255.0, c[3]]));
             }
             // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
             let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
@@ -652,6 +662,27 @@ pub(crate) fn param_row(
             app.auto.add(&format!("effectControls.{}.{}.eyedropper", e.effect, pkey), drop.rect, "Eyedropper");
             if drop.clicked() {
                 app.ui.eyedropper = if armed { None } else { Some(target) };
+            }
+            // `#rrggbb`, for the colour you already know: a green screen's published value, a
+            // brand colour, one read off another shot. While the field has focus it shows what is
+            // typed, even when that isn't a colour yet (one character into `#00ff00`); each valid
+            // colour is applied as it comes, and leaving shows the kept one again. Same handling
+            // as the hex field in Settings ▸ Appearance.
+            let hex_id = id.with("hex");
+            let mut text = vui.data(|m| m.get_temp::<String>(hex_id)).unwrap_or_else(|| filmcraft_color::to_hex([c[0], c[1], c[2], 1.0]));
+            let h = vui.add(egui::TextEdit::singleline(&mut text).desired_width(70.0).font(egui::TextStyle::Monospace));
+            app.auto.add(&format!("effectControls.{}.{}.hex", e.effect, pkey), h.rect, "Hex");
+            if h.has_focus() {
+                vui.data_mut(|m| m.insert_temp(hex_id, text.clone()));
+            } else {
+                vui.data_mut(|m| m.remove::<String>(hex_id));
+            }
+            if h.changed()
+                && let Some(v) = filmcraft_color::parse_hex(&text)
+            {
+                // The swatch is `Alpha::Opaque`, so a typed colour leaves this parameter's alpha
+                // alone, whether six digits were typed or eight.
+                set = Some(json!([v[0], v[1], v[2], c[3]]));
             }
         }
         (ParamKind::Path, _) => {
@@ -827,9 +858,13 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": pd.default.as_f64().unwrap_or(0.0)}));
                         }
                     } else if let ParamValue::Color(c) = v {
-                        let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                        if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [rgba.r(), rgba.g(), rgba.b(), 1.0]}));
+                        // sRGB-encoded, as in `param_row`: Lumetri's tints are the same kind of
+                        // colour parameter, so they must not be read through egui's linear `Rgba`.
+                        let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                        let mut srgb = egui::Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]));
+                        if egui::color_picker::color_edit_button_srgba(ui, &mut srgb, egui::color_picker::Alpha::Opaque).changed() {
+                            let v = [srgb.r() as f32 / 255.0, srgb.g() as f32 / 255.0, srgb.b() as f32 / 255.0, 1.0];
+                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v}));
                         }
                     }
                 });
