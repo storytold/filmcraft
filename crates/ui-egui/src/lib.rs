@@ -1641,6 +1641,38 @@ impl FilmcraftApp {
             } else {
                 None
             };
+            // Clear in Effect Controls removes the selected effect, never the clip (#1354). Motion and
+            // the other fixed effects cannot be removed; Backspace then does nothing.
+            if self.ui.focused == PanelKind::EffectControls
+                && matches!(id.as_str(), "edit.clear" | "edit.rippleDelete")
+                && self.session.state.selected_effect.is_some()
+            {
+                let sel = self.session.state.selected_effect.clone();
+                let target = sel.and_then(|e| {
+                    let (_, it) = self.session.active_sequence()?.find_item(e.clip)?;
+                    let idx = e.index(&it.effects)?;
+                    Some((e.clip, idx, it.effects.get(idx)?.def().is_some_and(|d| d.intrinsic)))
+                });
+                if let Some((clip, idx, intrinsic)) = target
+                    && !intrinsic
+                    && let Err(e) = menus::invoke(self, ctx, "effects.remove", json!({"clip": clip.0, "index": idx}))
+                {
+                    self.ui.status = e;
+                }
+                continue;
+            }
+            // A selected mask row (which clears the effect selection) goes the same way: the mask is
+            // removed, journaled, and never the clip.
+            if self.ui.focused == PanelKind::EffectControls
+                && matches!(id.as_str(), "edit.clear" | "edit.rippleDelete")
+                && self.session.state.selected_effect.is_none()
+                && let Some(m) = self.session.state.selected_mask
+            {
+                if let Err(e) = menus::invoke(self, ctx, "masks.remove", json!({"clip": m.clip.0, "effect": m.effect, "mask": m.mask})) {
+                    self.ui.status = e;
+                }
+                continue;
+            }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if let Some(p) = clear {
                 p
