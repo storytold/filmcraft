@@ -206,8 +206,16 @@ fn steps(op: &FxOp) -> Vec<Step> {
             vround,
             vfeather,
             aspect,
+            grade,
+            specular,
             ..
         } => {
+            // the grading signal: mode 0 sRGB, 1 PQ (p3.w = norm), 2 HLG (p3.w = white, p4.w = gamma)
+            let (mode, g0, g1) = match *grade {
+                filmcraft_color::GradeSpace::Sdr => (0u32, 0.0, 0.0),
+                filmcraft_color::GradeSpace::Pq { norm, .. } => (1, norm, 0.0),
+                filmcraft_color::GradeSpace::Hlg { white, gamma } => (2, white, gamma),
+            };
             let ge = [gains[0] * exposure, gains[1] * exposure, gains[2] * exposure];
             let b0 = -bl * 0.15;
             let w0 = 1.0 - wh * 0.15;
@@ -233,17 +241,17 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 *vmid,
                 *vfeather,
                 vround_aspect,
-                0.0,
+                g0,
                 st_k[0],
                 st_k[1],
                 st_k[2],
-                0.0,
+                g1,
                 ht_k[0],
                 ht_k[1],
                 ht_k[2],
-                0.0,
+                *specular,
             ];
-            out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, 0, 0], &p));
+            out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, mode, 0], &p));
         }
     }
     out

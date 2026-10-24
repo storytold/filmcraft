@@ -441,6 +441,83 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
     }
 }
 
+// `GradeSpace::encode` / `decode` (filmcraft-color): the signal Lumetri grades, by u.i1.z
+// (0 sRGB, 1 PQ normalised by u.p3.w, 2 HLG of a u.p3.w cd/m² display with system gamma u.p4.w).
+const REFERENCE_WHITE: f32 = 203.0;
+const LUMA2020: vec3<f32> = vec3(0.26270021, 0.67799807, 0.05930172);
+
+fn pq_eotf1(e: f32) -> f32 {
+    let m1 = 0.15930176; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.851563; let c3 = 18.6875;
+    let p = powf(max(e, 0.0), 1.0 / m2);
+    return powf(max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+}
+
+fn pq_inverse_eotf1(y: f32) -> f32 {
+    let m1 = 0.15930176; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.851563; let c3 = 18.6875;
+    let p = powf(max(y, 0.0), m1);
+    return powf((c1 + c2 * p) / (1.0 + c3 * p), m2);
+}
+
+fn hlg_oetf1(l: f32) -> f32 {
+    let a = 0.17883277; let b = 0.28466892; let c = 0.5599107;
+    if l <= 1.0 / 12.0 {
+        return sqrt(3.0 * max(l, 0.0));
+    }
+    return a * log(12.0 * l - b) + c;
+}
+
+fn hlg_inverse_oetf1(e: f32) -> f32 {
+    let a = 0.17883277; let b = 0.28466892; let c = 0.5599107;
+    if e <= 0.5 {
+        return e * e / 3.0;
+    }
+    return (exp((e - c) / a) + b) / 12.0;
+}
+
+fn grade_enc(c: vec3<f32>) -> vec3<f32> {
+    let mode = u.i1.z;
+    if mode == 1u {
+        let norm = u.p3.w;
+        let k = REFERENCE_WHITE / 10000.0;
+        let m = max(c, vec3(0.0)) * k;
+        return vec3(pq_inverse_eotf1(min(m.x, 1.0)), pq_inverse_eotf1(min(m.y, 1.0)), pq_inverse_eotf1(min(m.z, 1.0))) / norm;
+    }
+    if mode == 2u {
+        let white = u.p3.w;
+        let gamma = u.p4.w;
+        let fd = max(c, vec3(0.0)) * (REFERENCE_WHITE / white);
+        let yd = dot(LUMA2020, fd);
+        if yd <= 0.0 {
+            return vec3(0.0);
+        }
+        let k = powf(yd, (1.0 - gamma) / gamma);
+        return vec3(hlg_oetf1(fd.x * k), hlg_oetf1(fd.y * k), hlg_oetf1(fd.z * k));
+    }
+    return enc(c);
+}
+
+fn grade_dec(v: vec3<f32>) -> vec3<f32> {
+    let mode = u.i1.z;
+    if mode == 1u {
+        let norm = u.p3.w;
+        let q = clamp(v * norm, vec3(0.0), vec3(1.0));
+        return vec3(pq_eotf1(q.x), pq_eotf1(q.y), pq_eotf1(q.z)) * (10000.0 / REFERENCE_WHITE);
+    }
+    if mode == 2u {
+        let white = u.p3.w;
+        let gamma = u.p4.w;
+        let q = clamp(v, vec3(0.0), vec3(1.5));
+        let es = vec3(hlg_inverse_oetf1(q.x), hlg_inverse_oetf1(q.y), hlg_inverse_oetf1(q.z));
+        let ys = dot(LUMA2020, es);
+        if ys <= 0.0 {
+            return vec3(0.0);
+        }
+        let k = powf(ys, gamma - 1.0);
+        return es * (k * white / REFERENCE_WHITE);
+    }
+    return dec(v);
+}
+
 fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     let s = size();
     let creative_on = u.i1.x != 0u;
@@ -449,7 +526,7 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     // white balance + exposure in linear light
     let ge = u.p0.xyz;
     let lin = c * ge;
-    var v = enc(lin);
+    var v = grade_enc(lin);
 
     // whites / blacks: endpoints
     let b0 = u.p0.w;
@@ -471,17 +548,27 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
         v = v * k;
     }
 
-    // contrast: smooth S-curve around mid grey
+    // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
+    // keep their distance from white)
     let contrast = u.p1.w;
+    let hdr = u.i1.z != 0u;
     if abs(contrast) > 1e-4 {
         let k = 1.0 + contrast;
         let q = clamp(v, vec3(0.0), vec3(1.0));
         let sc = q * q * (vec3(3.0) - 2.0 * q);
+        var o: vec3<f32>;
         if k >= 1.0 {
-            v = q + (sc - q) * (k - 1.0);
+            o = q + (sc - q) * (k - 1.0);
         } else {
-            v = vec3(0.5) + (q - vec3(0.5)) * k;
+            o = vec3(0.5) + (q - vec3(0.5)) * k;
         }
+        v = select(o, v, vec3(hdr) & (v > vec3(1.0)));
+    }
+
+    // HDR Specular: brightness of the highlights above HDR White
+    let specular = u.p5.w;
+    if abs(specular) > 1e-4 {
+        v = select(v, vec3(1.0) + (v - vec3(1.0)) * max(1.0 + specular, 0.0), v > vec3(1.0));
     }
 
     // faded film: lift blacks and compress
@@ -527,7 +614,7 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
         }
     }
 
-    return dec(v);
+    return grade_dec(v);
 }
 
 // One output pixel of every op but the running-sum box blur.

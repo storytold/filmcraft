@@ -577,8 +577,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   Range**): `filmcraft_color::GradeSpace` (PQ: `PQ⁻¹(nits/10000) / PQ⁻¹(white/10000)`; HLG: the
   BT.2100 inverse OOTF of a display with that peak, then the OETF). So the sliders and curves span
   0 … HDR White like black … white in SDR, exposure is stops of light, and highlights above HDR
-  White pass through (contrast leaves them alone; **HDR Specular** scales them). Rec. 709
-  sequences grade exactly as before. HSL Secondary ▸ Refine: **Denoise** (median of the key,
+  White pass through (contrast leaves them alone; **HDR Specular** scales them). The GPU Lumetri
+  op (basic, creative, vignette) grades the same signal. Rec. 709 sequences grade exactly as
+  before. HSL Secondary ▸ Refine: **Denoise** (median of the key,
   radius 1–3 px) and **Blur** (Gaussian of the key, σ ≤ 20 px), both scaled with the playback
   resolution.
 - **HDR metadata.** `VideoStreamInfo::hdr` (`HdrMetadata`: ST 2086 mastering luminance, MaxCLL,

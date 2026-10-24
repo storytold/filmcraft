@@ -566,12 +566,65 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // HDR working space
-    let e = effect("lumetri", &[]);
+    // HDR still falls back for the sections the shader does not have
     let mut cx_hdr = cx(Tick::ZERO, 1.0);
-    cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
-    let op = FxOp::eval(&e, &cx_hdr, w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Hlg;
+    let e = effect("lumetri", &[("sharpen", fl(20.0))]);
+    assert!(FxOp::eval(&e, &cx_hdr, w, h).is_some_and(|o| !o.gpu_ok()));
+}
+
+/// Lumetri's basic, creative and vignette sections in an HDR working space (the PQ / HLG grading
+/// signal, contrast that leaves speculars alone, HDR Specular) match the CPU op on the GPU.
+#[test]
+fn hdr_lumetri_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let grades: [&[(&str, ParamValue)]; 4] = [
+        &[("exposure", fl(-0.5)), ("saturation", fl(150.0))],
+        &[("contrast", fl(40.0)), ("highlights", fl(-20.0)), ("shadows", fl(25.0)), ("hdr_specular", fl(-30.0)), ("temperature", fl(15.0))],
+        &[("contrast", fl(-50.0)), ("whites", fl(20.0)), ("blacks", fl(-10.0)), ("hdr_white", fl(200.0)), ("hdr_specular", fl(60.0))],
+        &[
+            ("creative_on", ParamValue::Bool(true)),
+            ("vibrance", fl(30.0)),
+            ("faded_film", fl(20.0)),
+            ("shadow_tint", col(0.4, 0.45, 0.6)),
+            ("vignette_amount", fl(-2.0)),
+        ],
+    ];
+    let mut failures = Vec::new();
+    for working in [filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+        let mut cxh = cx(Tick::ZERO, 1.0);
+        cxh.working = working;
+        for params in grades {
+            let e = effect("lumetri", params);
+            let op = FxOp::eval(&e, &cxh, w as usize, h as usize).expect("lumetri op");
+            assert!(op.gpu_ok(), "{working:?} {params:?}: not GPU-capable");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            // HDR Specular only acts above HDR White: the picture must reach it, or the parity
+            // check below would pass without running that branch
+            if params.iter().any(|(k, _)| *k == "hdr_specular") {
+                let off: Vec<(&str, ParamValue)> = params.iter().map(|(k, v)| (*k, if *k == "hdr_specular" { fl(0.0) } else { v.clone() })).collect();
+                let flat = FxOp::eval(&effect("lumetri", &off), &cxh, w as usize, h as usize).expect("lumetri op");
+                let mut plain = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                flat.apply(&mut plain);
+                assert_ne!(cpu.px, plain.px, "{working:?} {params:?}: HDR Specular changed nothing");
+            }
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("{working:?} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            if worst > EXACT * 10.0 || flips > 0.0 {
+                failures.push(format!("{working:?} {params:?}: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "HDR Lumetri differs from the CPU:\n{}", failures.join("\n"));
 }
 
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working
