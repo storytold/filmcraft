@@ -158,3 +158,109 @@ fn caption_list_track_filter_never_falls_back_to_every_track() {
         assert!(s.execute("captions.list", json!({"track": sel})).is_err(), "{sel} names no caption track");
     }
 }
+
+#[test]
+fn caption_track_styles_copy_paste_and_saved_presets_are_undoable_and_persisted() {
+    let dir = std::env::temp_dir().join(format!("fc-caption-style-presets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = demo();
+    s.caption_style_presets.set_dir(&dir);
+    let first = s.execute("captions.newTrack", json!({"name": "First"})).unwrap()["track"].as_u64().unwrap();
+    let second = s.execute("captions.newTrack", json!({"name": "Second"})).unwrap()["track"].as_u64().unwrap();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    s.execute("captions.add", json!({"track": first, "text": "Keep my timing"})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 4.0})).unwrap();
+    s.execute("captions.add", json!({"track": second, "text": "Also keep mine"})).unwrap();
+    s.execute("captions.setStyle", json!({"track": first, "font": "Inter", "size": 42.0, "color": "#22aaff", "anchor": "top"})).unwrap();
+    let first_style = s.active_sequence().unwrap().caption_tracks.iter().find(|t| t.id.0 == first).unwrap().style.clone();
+    let second_captions = s.active_sequence().unwrap().caption_tracks.iter().find(|t| t.id.0 == second).unwrap().captions.clone();
+
+    s.execute("captions.copyStyle", json!({"track": first})).unwrap();
+    s.execute("captions.setStyle", json!({"track": second, "size": 24.0, "anchor": "bottom"})).unwrap();
+    s.execute("captions.pasteStyle", json!({"track": second})).unwrap();
+    let target = s.active_sequence().unwrap().caption_tracks.iter().find(|t| t.id.0 == second).unwrap();
+    assert_eq!(target.style, first_style);
+    assert_eq!(target.captions, second_captions, "style paste preserves caption text and timing");
+    s.execute("edit.undo", json!({})).unwrap();
+    let target = s.active_sequence().unwrap().caption_tracks.iter().find(|t| t.id.0 == second).unwrap();
+    assert_eq!(target.style.size, 24.0, "pasting a style is one undo step");
+
+    s.execute("captions.stylePreset.save", json!({"track": first, "name": "Broadcast Blue"})).unwrap();
+    s.execute("captions.setStyle", json!({"track": first, "size": 18.0})).unwrap();
+    s.execute("captions.stylePreset.apply", json!({"track": first, "name": "Broadcast Blue"})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks.iter().find(|t| t.id.0 == first).unwrap().style, first_style);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks.iter().find(|t| t.id.0 == first).unwrap().style.size, 18.0);
+    let list = s.execute("captions.stylePreset.list", json!({})).unwrap();
+    assert_eq!(list["presets"][0]["name"], "Broadcast Blue");
+
+    let mut loaded = crate::captions::CaptionStyleLibrary::default();
+    loaded.set_dir(&dir);
+    assert_eq!(loaded.find("Broadcast Blue"), Some(first_style));
+    assert!(loaded.delete("Broadcast Blue").unwrap());
+    assert!(loaded.find("Broadcast Blue").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn caption_style_preset_commands_reject_hostile_parameters_without_mutation() {
+    let mut s = demo();
+    s.execute("captions.newTrack", json!({"name": "Hostile test"})).unwrap();
+    let original_style = s.active_sequence().unwrap().caption_tracks[0].style.clone();
+    for name in [String::new(), "x".repeat(101), "line\nbreak".to_string()] {
+        assert!(s.execute("captions.stylePreset.save", json!({"track": "C1", "name": name})).is_err());
+    }
+    assert!(s.execute("captions.stylePreset.apply", json!({"track": "C1", "name": "missing"})).is_err());
+    assert!(s.execute("captions.stylePreset.delete", json!({"name": "missing"})).is_err());
+    assert!(s.execute("captions.pasteStyle", json!({"track": "C1"})).is_err());
+    assert!(s.caption_style_presets.all().is_empty());
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style, original_style);
+}
+
+#[test]
+fn caption_style_preset_save_does_not_replace_a_file_that_failed_to_load() {
+    let dir = std::env::temp_dir().join(format!("fc-caption-style-presets-invalid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("caption-style-presets.json");
+    let original = b"not a valid preset file";
+    std::fs::write(&path, original).unwrap();
+
+    let mut library = crate::captions::CaptionStyleLibrary::default();
+    library.set_dir(&dir);
+    assert!(library.save("Replacement", Default::default()).is_err());
+    assert!(library.all().is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn caption_style_preset_save_and_load_share_unicode_name_normalization() {
+    let dir = std::env::temp_dir().join(format!("fc-caption-style-presets-unicode-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut library = crate::captions::CaptionStyleLibrary::default();
+    library.set_dir(&dir);
+    library.save("Café", Default::default()).unwrap();
+    library.save("CAFÉ", Default::default()).unwrap();
+    assert_eq!(library.all().len(), 1);
+
+    let mut loaded = crate::captions::CaptionStyleLibrary::default();
+    loaded.set_dir(&dir);
+    assert_eq!(loaded.all().len(), 1);
+    assert!(loaded.find("CAFÉ").is_some());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn caption_style_preset_save_requires_a_persistence_directory() {
+    let mut library = crate::captions::CaptionStyleLibrary::default();
+    assert!(library.save("Temporary", Default::default()).is_err());
+    assert!(library.all().is_empty());
+
+    let mut session = demo();
+    session.execute("captions.newTrack", json!({"name": "No persistence"})).unwrap();
+    assert!(session.execute("captions.stylePreset.save", json!({"track": "C1", "name": "Temporary"})).is_err());
+    assert!(session.caption_style_presets.all().is_empty());
+}

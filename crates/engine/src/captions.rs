@@ -5,6 +5,10 @@
 //! selection (`EditorState::caption_selection`) or the caption under the playhead. Caption tracks
 //! are addressed by id or `"C1"`, `"C2"`… (top first); the default is the first caption track.
 
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use filmcraft_captions::{Document, Format, WriteOptions};
@@ -18,6 +22,183 @@ use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
+
+const STYLE_PRESET_FILE: &str = "caption-style-presets.json";
+const STYLE_PRESET_FORMAT: &str = "filmcraft.caption-style-presets";
+const MAX_STYLE_PRESETS: usize = 100;
+const MAX_STYLE_PRESET_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_STYLE_PRESET_NAME_CHARS: usize = 100;
+const MAX_STYLE_FONT_BYTES: usize = 1024;
+
+/// A named, reusable caption track appearance.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionStylePreset {
+    pub name: String,
+    pub style: CaptionStyle,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CaptionStylePresetFile {
+    format: String,
+    version: u32,
+    presets: Vec<CaptionStylePreset>,
+}
+
+/// User-created caption track styles persisted in the application data directory.
+#[derive(Default)]
+pub struct CaptionStyleLibrary {
+    user: Vec<CaptionStylePreset>,
+    dir: Option<PathBuf>,
+    load_error: Option<String>,
+}
+
+impl CaptionStyleLibrary {
+    /// Load saved styles from the app data directory. Invalid files are left untouched and reported.
+    pub fn set_dir(&mut self, data_dir: &Path) {
+        self.dir = Some(data_dir.to_path_buf());
+        self.user.clear();
+        self.load_error = None;
+        let path = data_dir.join(STYLE_PRESET_FILE);
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                log::warn!("{}: {e}", path.display());
+                self.load_error = Some(e.to_string());
+                return;
+            }
+        };
+        let mut bytes = Vec::new();
+        let read = file.take(MAX_STYLE_PRESET_FILE_BYTES.saturating_add(1)).read_to_end(&mut bytes);
+        if let Err(e) = read {
+            log::warn!("{}: {e}", path.display());
+            self.load_error = Some(e.to_string());
+            return;
+        }
+        match if bytes.len() as u64 > MAX_STYLE_PRESET_FILE_BYTES {
+            Err("caption style preset file exceeds the 1 MiB limit".into())
+        } else {
+            parse_style_presets(&bytes)
+        } {
+            Ok(presets) => self.user = presets,
+            Err(e) => {
+                log::warn!("{}: {e}", path.display());
+                self.load_error = Some(e);
+            }
+        }
+    }
+
+    /// Return all user-saved caption track style presets.
+    pub fn all(&self) -> &[CaptionStylePreset] {
+        &self.user
+    }
+
+    /// Find a saved preset by its exact display name.
+    pub fn find(&self, name: &str) -> Option<CaptionStyle> {
+        self.user.iter().find(|p| p.name == name).map(|p| p.style.clone())
+    }
+
+    /// Save or replace a preset, persisting it before changing the in-memory list.
+    pub fn save(&mut self, name: &str, style: CaptionStyle) -> std::result::Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > MAX_STYLE_PRESET_NAME_CHARS || name.chars().any(char::is_control) {
+            return Err(format!("preset name must be 1–{MAX_STYLE_PRESET_NAME_CHARS} printable characters"));
+        }
+        let style = normalize_style(style).ok_or_else(|| "caption style has an invalid font or non-finite value".to_string())?;
+        let mut next = self.user.clone();
+        let key = style_preset_name_key(name);
+        if let Some(preset) = next.iter_mut().find(|p| style_preset_name_key(&p.name) == key) {
+            preset.name = name.to_string();
+            preset.style = style;
+        } else {
+            if next.len() >= MAX_STYLE_PRESETS {
+                return Err(format!("caption style preset limit ({MAX_STYLE_PRESETS}) reached"));
+            }
+            next.push(CaptionStylePreset { name: name.to_string(), style });
+        }
+        self.persist(&next)?;
+        self.user = next;
+        Ok(())
+    }
+
+    /// Delete a preset by its exact display name, persisting the change before removing it in memory.
+    pub fn delete(&mut self, name: &str) -> std::result::Result<bool, String> {
+        let Some(index) = self.user.iter().position(|p| p.name == name) else { return Ok(false) };
+        let mut next = self.user.clone();
+        next.remove(index);
+        self.persist(&next)?;
+        self.user = next;
+        Ok(true)
+    }
+
+    fn persist(&self, presets: &[CaptionStylePreset]) -> std::result::Result<(), String> {
+        if let Some(error) = &self.load_error {
+            return Err(format!("cannot save caption style presets because the existing file failed to load: {error}"));
+        }
+        let Some(dir) = &self.dir else { return Err("caption style preset persistence is not configured".into()) };
+        std::fs::create_dir_all(dir).map_err(|e| format!("could not create caption style preset directory: {e}"))?;
+        let bytes = style_preset_file_bytes(presets)?;
+        filmcraft_format::atomic_write(&dir.join(STYLE_PRESET_FILE), &bytes).map_err(|e| e.to_string())
+    }
+}
+
+/// Normalize preset names with the same Unicode case-folding rule for saves and file validation.
+fn style_preset_name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+fn normalize_style(mut style: CaptionStyle) -> Option<CaptionStyle> {
+    if style.font.len() > MAX_STYLE_FONT_BYTES
+        || !style.size.is_finite()
+        || !style.margin.is_finite()
+        || !style.line_spacing.is_finite()
+        || !style.outline.is_finite()
+    {
+        return None;
+    }
+    style.size = style.size.clamp(4.0, 400.0);
+    style.margin = style.margin.clamp(0.0, 0.45);
+    style.line_spacing = style.line_spacing.clamp(0.8, 4.0);
+    style.outline = style.outline.clamp(0.0, 40.0);
+    Some(style)
+}
+
+fn style_preset_file_bytes(presets: &[CaptionStylePreset]) -> std::result::Result<Vec<u8>, String> {
+    serde_json::to_vec_pretty(&CaptionStylePresetFile { format: STYLE_PRESET_FORMAT.into(), version: 1, presets: presets.to_vec() })
+        .map_err(|e| format!("could not serialize caption style presets: {e}"))
+}
+
+fn parse_style_presets(bytes: &[u8]) -> std::result::Result<Vec<CaptionStylePreset>, String> {
+    if bytes.len() as u64 > MAX_STYLE_PRESET_FILE_BYTES {
+        return Err("caption style preset file exceeds the 1 MiB limit".into());
+    }
+    let file: CaptionStylePresetFile = serde_json::from_slice(bytes).map_err(|e| format!("invalid caption style preset file: {e}"))?;
+    if file.format != STYLE_PRESET_FORMAT {
+        return Err(format!("not a caption style preset file (format `{}`)", file.format));
+    }
+    if file.version != 1 {
+        return Err(format!("unsupported caption style preset version {}", file.version));
+    }
+    if file.presets.len() > MAX_STYLE_PRESETS {
+        return Err(format!("caption style preset file exceeds the {MAX_STYLE_PRESETS} preset limit"));
+    }
+    let mut names = std::collections::HashSet::new();
+    let mut presets = Vec::with_capacity(file.presets.len());
+    for mut preset in file.presets {
+        let name = preset.name.trim().to_string();
+        if name.is_empty() || name.chars().count() > MAX_STYLE_PRESET_NAME_CHARS || name.chars().any(char::is_control) {
+            return Err("caption style preset file contains an invalid name".into());
+        }
+        if !names.insert(style_preset_name_key(&name)) {
+            return Err("caption style preset file contains duplicate names".into());
+        }
+        preset.name = name.clone();
+        preset.style = normalize_style(preset.style).ok_or_else(|| format!("caption style preset `{name}` has an invalid style"))?;
+        presets.push(preset);
+    }
+    Ok(presets)
+}
 
 fn spec(
     id: &'static str,
@@ -366,6 +547,59 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(Value::Null)
             },
         ),
+        spec("captions.copyStyle", "Copy Caption Track Style", &[], None, r#"{"track":id|"C1"?}"#, has_caption_track, |s, p| {
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.copyStyle", "no such caption track"))?;
+            let style = s.active_sequence().and_then(|q| q.caption_track(tid)).map(|t| t.style.clone()).ok_or(EngineError::NoSequence)?;
+            s.caption_style_clipboard = Some(style);
+            Ok(json!({"track": tid.0, "copied": true}))
+        }),
+        spec("captions.pasteStyle", "Paste Caption Track Style", &[], None, r#"{"track":id|"C1"?}"#, has_caption_track, |s, p| {
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.pasteStyle", "no such caption track"))?;
+            let style = s.caption_style_clipboard.clone().ok_or_else(|| bad("captions.pasteStyle", "copy a caption track style first"))?;
+            s.edit_sequence("Paste Caption Track Style", move |q, _, _| {
+                let track = q.caption_track_mut(tid).ok_or_else(|| bad("captions.pasteStyle", "no such caption track"))?;
+                track.style = style;
+                Ok(())
+            })?;
+            Ok(json!({"track": tid.0, "pasted": true}))
+        }),
+        spec("captions.stylePreset.save", "Save Caption Style Preset", &[], None, r#"{"name":str,"track":id|"C1"?}"#, has_caption_track, |s, p| {
+            let name = str_p(p, "name").ok_or_else(|| bad("captions.stylePreset.save", "need `name`"))?;
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.stylePreset.save", "no such caption track"))?;
+            let style = s.active_sequence().and_then(|q| q.caption_track(tid)).map(|t| t.style.clone()).ok_or(EngineError::NoSequence)?;
+            s.caption_style_presets.save(name, style).map_err(|e| bad("captions.stylePreset.save", e))?;
+            Ok(json!({"name": name.trim()}))
+        }),
+        spec("captions.stylePreset.apply", "Apply Caption Style Preset", &[], None, r#"{"name":str,"track":id|"C1"?}"#, has_caption_track, |s, p| {
+            let name = str_p(p, "name").ok_or_else(|| bad("captions.stylePreset.apply", "need `name`"))?;
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.stylePreset.apply", "no such caption track"))?;
+            let style =
+                s.caption_style_presets.find(name).ok_or_else(|| bad("captions.stylePreset.apply", format!("no caption style preset named `{name}`")))?;
+            s.edit_sequence("Apply Caption Style Preset", move |q, _, _| {
+                let track = q.caption_track_mut(tid).ok_or_else(|| bad("captions.stylePreset.apply", "no such caption track"))?;
+                track.style = style;
+                Ok(())
+            })?;
+            Ok(json!({"name": name, "track": tid.0}))
+        }),
+        spec("captions.stylePreset.delete", "Delete Caption Style Preset", &[], None, r#"{"name":str}"#, always, |s, p| {
+            let name = str_p(p, "name").ok_or_else(|| bad("captions.stylePreset.delete", "need `name`"))?;
+            let deleted = s.caption_style_presets.delete(name).map_err(|e| bad("captions.stylePreset.delete", e))?;
+            if !deleted {
+                return Err(bad("captions.stylePreset.delete", format!("no caption style preset named `{name}`")));
+            }
+            Ok(json!({"name": name, "deleted": true}))
+        }),
+        CommandSpec {
+            id: "captions.stylePreset.list",
+            label: "List Caption Style Presets",
+            menu: &[],
+            shortcut: None,
+            params: "{}",
+            enabled: always,
+            run: |s, _| Ok(json!({"presets": s.caption_style_presets.all()})),
+            journal: false,
+        },
         spec(
             "captions.add",
             "Add Caption at Playhead",
@@ -565,3 +799,28 @@ fn show_all(s: &mut Session, on: bool) -> Result<Value> {
 #[cfg(test)]
 #[path = "captions_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod preset_file_tests {
+    use super::*;
+
+    #[test]
+    fn caption_style_preset_parser_survives_truncation_and_bit_flips() {
+        let valid = style_preset_file_bytes(&[CaptionStylePreset { name: "Safe".into(), style: CaptionStyle::default() }]).expect("valid preset serializes");
+        let mut candidates: Vec<Vec<u8>> = (0..valid.len()).map(|length| valid[..length].to_vec()).collect();
+        candidates.push(valid.clone());
+        for index in 0..valid.len() {
+            for bit in 0..8 {
+                let mut changed = valid.clone();
+                changed[index] ^= 1 << bit;
+                candidates.push(changed);
+            }
+        }
+        candidates.push(vec![b' '; MAX_STYLE_PRESET_FILE_BYTES as usize + 1]);
+
+        for candidate in candidates {
+            let parsed = std::panic::catch_unwind(|| parse_style_presets(&candidate));
+            assert!(parsed.is_ok(), "malformed preset data must return an error instead of panicking");
+        }
+    }
+}

@@ -453,6 +453,10 @@ pub struct Session {
     pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
+    /// User-saved caption track styles, persisted in the data directory.
+    pub caption_style_presets: captions::CaptionStyleLibrary,
+    /// Caption style copied for use on another track in this session.
+    pub caption_style_clipboard: Option<filmcraft_project::CaptionStyle>,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
     pub export_presets: export_tools::ExportPresetLibrary,
     /// The export queue (session state, not saved with the project).
@@ -556,6 +560,8 @@ impl Session {
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
             presets: Default::default(),
+            caption_style_presets: Default::default(),
+            caption_style_clipboard: None,
             export_presets: Default::default(),
             export_queue: Default::default(),
             stepped: Vec::new(),
@@ -606,6 +612,7 @@ impl Session {
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
+        self.caption_style_presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
