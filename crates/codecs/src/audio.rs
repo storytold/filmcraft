@@ -1,6 +1,7 @@
 //! Audio decoding: PCM directly; compressed codecs through symphonia (bootstrap, MPL-2.0 unmodified).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource};
@@ -788,18 +789,47 @@ pub fn read_resampled(src: &[Vec<f32>], src_rate: u32, start: i64, frames: usize
     out
 }
 
-/// A standalone audio file decoded fully into memory (audio files are small next to video).
+/// A standalone audio file: the bytes are kept and the decoded PCM lives in the process-wide
+/// [`audio_cache`] (`AUDIO_BUDGET`), so importing a music library costs the size of the files and
+/// not the size of their samples. A source whose PCM was evicted decodes its file again on the
+/// next read.
 pub struct AudioFileSource {
     info: MediaInfo,
     rate: u32,
-    samples: Vec<Vec<f32>>,
+    bytes: Arc<[u8]>,
+    key: u64,
+}
+
+/// Most decoded PCM (all standalone audio sources together) held at once: ~22 minutes of 48 kHz
+/// stereo f32. Beyond it the least recently read sources give their samples up and re-decode on
+/// the next read.
+pub const AUDIO_BUDGET: usize = 1 << 29;
+
+static PCM: std::sync::LazyLock<filmcraft_media::AudioCache> = std::sync::LazyLock::new(|| filmcraft_media::AudioCache::new(AUDIO_BUDGET));
+static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
+
+/// The process-wide cache of decoded standalone-audio PCM (`perf.stats` `decode.audioCacheMB`).
+pub fn audio_cache() -> &'static filmcraft_media::AudioCache {
+    &PCM
+}
+
+pub(crate) fn fresh_key() -> u64 {
+    NEXT_KEY.fetch_add(1, Ordering::Relaxed)
 }
 
 impl AudioFileSource {
     pub fn decode(name: &str, bytes: Arc<[u8]>) -> Result<Self> {
+        let (info, rate, samples) = Self::decode_file(name, &bytes)?;
+        let key = fresh_key();
+        audio_cache().insert(key, Arc::new(samples));
+        Ok(Self { info, rate, bytes, key })
+    }
+
+    /// (info, rate, planar samples): the full decode, run once at open and again on a cache miss.
+    fn decode_file(name: &str, bytes: &Arc<[u8]>) -> Result<(MediaInfo, u32, Vec<Vec<f32>>)> {
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         if matches!(ext.as_str(), "mp2" | "mp3")
-            && let Some((layer, rate, samples)) = decode_mpeg_layer12(&bytes)
+            && let Some((layer, rate, samples)) = decode_mpeg_layer12(bytes)
         {
             let frames = samples.first().map_or(0, Vec::len);
             let info = MediaInfo {
@@ -812,10 +842,10 @@ impl AudioFileSource {
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
             };
-            return Ok(Self { info, rate, samples });
+            return Ok((info, rate, samples));
         }
         if ext == "aac" {
-            let (rate, samples) = decode_adts(&bytes)?.ok_or_else(|| CodecError::Decode(format!("{name}: no ADTS AAC frames")))?;
+            let (rate, samples) = decode_adts(bytes)?.ok_or_else(|| CodecError::Decode(format!("{name}: no ADTS AAC frames")))?;
             let frames = samples.first().map_or(0, Vec::len);
             let info = MediaInfo {
                 name: name.to_string(),
@@ -827,7 +857,7 @@ impl AudioFileSource {
                 start_timecode: None,
                 file_size: Some(bytes.len() as u64),
             };
-            return Ok(Self { info, rate, samples });
+            return Ok((info, rate, samples));
         }
         let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes.clone())), Default::default());
         let mut hint = Hint::new();
@@ -882,7 +912,7 @@ impl AudioFileSource {
             start_timecode: None,
             file_size: Some(bytes.len() as u64),
         };
-        Ok(Self { info, rate, samples })
+        Ok((info, rate, samples))
     }
 }
 
@@ -1011,7 +1041,10 @@ impl MediaSource for AudioFileSource {
         Err(MediaError::NoStream("video"))
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> std::result::Result<AudioBuffer, MediaError> {
-        Ok(read_resampled(&self.samples, self.rate, start, frames, sample_rate))
+        let samples = audio_cache()
+            .get_or_insert_with(self.key, || Self::decode_file(&self.info.name, &self.bytes).map(|(_, _, s)| Arc::new(s)))
+            .map_err(MediaError::from)?;
+        Ok(read_resampled(&samples, self.rate, start, frames, sample_rate))
     }
 }
 
@@ -1071,6 +1104,21 @@ mod mpeg_layer12_tests {
         assert!(decode_mpeg_layer12(&[&mono[..], &[0x12; 50]].concat()).is_none());
         // an ID3v2 tag claiming the largest size (with a footer) points past the end
         assert!(decode_mpeg_layer12(&[&b"ID3\x04\0\x10\x7F\x7F\x7F\x7F"[..], &mono].concat()).is_none());
+    }
+
+    /// #2473: an evicted source decodes its file again on the next read instead of holding every sample.
+    #[test]
+    fn evicted_source_redecodes_on_read() {
+        let mono = silent_frame(14, 3);
+        let file = [&mono[..], &mono, &mono].concat();
+        let src = AudioFileSource::decode("x.mp2", file.into()).unwrap();
+        let rate = src.info().audio().map_or(0, |a| a.sample_rate);
+        let first = src.audio(0, 1152, rate).unwrap();
+        assert_eq!(first.frames(), 1152);
+        // Drop this source's PCM (what the budget does to the least recently read source).
+        crate::audio::audio_cache().remove(&src.key);
+        let again = src.audio(0, 1152, rate).unwrap();
+        assert_eq!(again, first);
     }
 }
 
@@ -1352,6 +1400,7 @@ mod gapless_tests {
     #[test]
     fn mp3_encoder_delay_is_trimmed() {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
-        assert_eq!(src.samples[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
+        let pcm = audio_cache().get(&src.key).expect("open inserted the PCM into the audio cache");
+        assert_eq!(pcm[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
     }
 }
