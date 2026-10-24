@@ -7,6 +7,7 @@ use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
@@ -39,6 +40,8 @@ pub struct ScriptUi {
     pub selected_slate: Option<u64>,
     pub selected_take: Option<u64>,
     pub selected_mark: Option<u64>,
+    /// Thumbnail selection is distinct from its display take for delete routing.
+    pub selected_thumbnail: Option<u64>,
     #[serde(skip)]
     thumbnail_shuttle_at: f64,
     #[serde(skip)]
@@ -102,7 +105,7 @@ pub struct ScriptUi {
     #[serde(skip)]
     search_cache_item: Option<u64>,
     #[serde(skip)]
-    search_cache_revision: u64,
+    search_cache_doc: Option<Arc<ScriptDocument>>,
     #[serde(skip)]
     search_cache_query: String,
     /// Only the take columns move horizontally; script text stays in view.
@@ -116,7 +119,7 @@ pub struct ScriptUi {
     #[serde(skip)]
     layout_item: Option<u64>,
     #[serde(skip)]
-    layout_revision: u64,
+    layout_doc: Option<Arc<ScriptDocument>>,
     #[serde(skip)]
     layout_width: u32,
     #[serde(skip)]
@@ -170,6 +173,26 @@ pub(crate) fn add_mark_at_selection(app: &mut FilmcraftApp) -> Result<Value, Str
         ("script.addMark", json!({"item":item,"take":take_id,"line":line_id,"sourceTime":time}))
     };
     app.session.execute(command, params).map_err(|error| error.to_string())
+}
+
+pub(crate) fn delete_selection(app: &mut FilmcraftApp) -> Result<Value, String> {
+    let Some(item) = app.ui.script.item else { return Ok(Value::Null) };
+    let (command, params) = if let (Some(take), Some(mark)) = (app.ui.script.selected_take, app.ui.script.selected_mark) {
+        ("script.deleteMark", json!({"item":item,"take":take,"mark":mark}))
+    } else if let Some(slate) = app.ui.script.selected_thumbnail.filter(|slate| Some(*slate) == app.ui.script.selected_slate) {
+        ("script.deleteSlate", json!({"item":item,"slate":slate}))
+    } else if let Some(take) = app.ui.script.selected_take {
+        ("script.deleteTake", json!({"item":item,"take":take}))
+    } else {
+        return Ok(Value::Null);
+    };
+    let result = app.session.execute(command, params).map_err(|error| error.to_string())?;
+    app.ui.script.selected_mark = None;
+    app.ui.script.selected_take = None;
+    app.ui.script.selected_slate = None;
+    app.ui.script.selected_thumbnail = None;
+    app.ui.script.selected_section_slates.clear();
+    Ok(result)
 }
 
 pub(crate) fn toggle_offscreen_selection(app: &mut FilmcraftApp) -> Result<Value, String> {
@@ -278,6 +301,7 @@ fn run_actions(app: &mut FilmcraftApp, actions: Vec<Action>) {
                 if let Some(value) = command(app, "script.create", json!({"name": tl!("Untitled Script")})) {
                     app.ui.script.item = value["item"].as_u64();
                     app.ui.script.selected_slate = None;
+                    app.ui.script.selected_thumbnail = None;
                     app.ui.script.selected_take = None;
                     app.ui.script.selected_lines = None;
                     if let Some(line) = app
@@ -330,11 +354,13 @@ fn run_actions(app: &mut FilmcraftApp, actions: Vec<Action>) {
             Action::CueMark { take, mark } => {
                 if command(app, "script.cueMark", json!({"item": app.ui.script.item, "take": take, "mark": mark})).is_some() {
                     app.show_panel(PanelKind::Source);
+                    app.ui.focused = PanelKind::Script;
                 }
             }
             Action::CueLine { take, line } => {
                 if command(app, "script.cueLine", json!({"item": app.ui.script.item, "take": take, "line": line})).is_some() {
                     app.show_panel(PanelKind::Source);
+                    app.ui.focused = PanelKind::Script;
                 }
             }
             Action::SplitLine { line, text, at } => {
@@ -417,6 +443,7 @@ fn import_text(app: &mut FilmcraftApp) {
             app.ui.script.item = value["item"].as_u64();
             app.ui.script.selected_lines = None;
             app.ui.script.selected_slate = None;
+            app.ui.script.selected_thumbnail = None;
             app.ui.script.selected_take = None;
         }
     });
@@ -470,7 +497,7 @@ fn thumbnail_height(width: f32) -> f32 {
 
 /// Measured once per document revision and width; a 4 MiB script may have 50,000 rows, so only
 /// visible rows are painted while their cached prefix heights keep the candles in exact alignment.
-fn row_layout(app: &mut FilmcraftApp, ui: &egui::Ui, doc: &ScriptDocument, left_w: f32, text_inset: f32) {
+fn row_layout(app: &mut FilmcraftApp, ui: &egui::Ui, doc: &Arc<ScriptDocument>, left_w: f32, text_inset: f32) {
     let width = left_w.round().max(1.0) as u32;
     let inset = text_inset.round().max(1.0) as u32;
     let script_font_size = app.ui.script.font_size.unwrap_or(SCRIPT_FONT_SIZE).clamp(10.0, 24.0);
@@ -478,7 +505,7 @@ fn row_layout(app: &mut FilmcraftApp, ui: &egui::Ui, doc: &ScriptDocument, left_
     let thumb_w = thumbnail_width(&app.ui.script);
     let thumb_width = thumb_w.round() as u32;
     if app.ui.script.layout_item == app.ui.script.item
-        && app.ui.script.layout_revision == app.session.revision
+        && app.ui.script.layout_doc.as_ref().is_some_and(|cached| Arc::ptr_eq(cached, doc))
         && app.ui.script.layout_width == width
         && app.ui.script.layout_inset == inset
         && app.ui.script.layout_font_size == font_size
@@ -507,7 +534,7 @@ fn row_layout(app: &mut FilmcraftApp, ui: &egui::Ui, doc: &ScriptDocument, left_
     }
     app.ui.script.row_tops = tops;
     app.ui.script.layout_item = app.ui.script.item;
-    app.ui.script.layout_revision = app.session.revision;
+    app.ui.script.layout_doc = Some(Arc::clone(doc));
     app.ui.script.layout_width = width;
     app.ui.script.layout_inset = inset;
     app.ui.script.layout_font_size = font_size;
@@ -532,8 +559,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     });
     let mut actions = Vec::new();
     let header_rect = Rect::from_min_size(rect.min, vec2(rect.width(), 72.0));
-    toolbar::header(app, ui, header_rect, &scripts, doc.as_deref(), &mut actions);
-    if let Some(doc) = doc.as_deref() {
+    toolbar::header(app, ui, header_rect, &scripts, doc.as_ref(), &mut actions);
+    if let Some(doc) = doc.as_ref() {
         toolbar::coverage_hotkeys(app, ui, doc, &mut actions);
         let body = Rect::from_min_max(pos2(rect.min.x, header_rect.max.y), rect.max);
         canvas::content(app, ui, body, doc, &mut actions);
@@ -615,6 +642,8 @@ fn source_matches(app: &FilmcraftApp, source: ItemId) -> Vec<SourceMatch> {
 fn select_source_match(state: &mut ScriptUi, entry: &SourceMatch) {
     state.item = Some(entry.item.0);
     state.selected_take = Some(entry.take);
+    state.selected_thumbnail = None;
+    state.selected_mark = None;
     state.selected_lines = Some((entry.start, entry.end));
     state.scroll_to_line = Some(entry.start);
 }
@@ -669,4 +698,44 @@ fn truncate(text: &str, max_chars: usize) -> String {
     let mut chars = text.chars();
     let head: String = chars.by_ref().take(max_chars).collect();
     if chars.next().is_some() { format!("{head}…") } else { head }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn document_caches_survive_unrelated_edits_and_refresh_for_same_length_text_changes() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let item = app.session.execute("script.importText", json!({"name":"Cached","text":"Needle\nOther"})).unwrap()["item"].as_u64().unwrap();
+        app.ui.script.item = Some(item);
+        app.ui.script.search = "needle".into();
+        let ctx = egui::Context::default();
+        let draw = |app: &mut FilmcraftApp| {
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 980.0))), ..Default::default() }, |ui| {
+                    show(app, ui, ui.max_rect());
+                });
+            output.textures_delta.clear();
+        };
+        draw(&mut app);
+        let tops = app.ui.script.row_tops.as_ptr();
+        let results = app.ui.script.search_results.as_ptr();
+        let first_height = app.ui.script.row_tops[1];
+        assert_eq!(app.ui.script.search_results.len(), 1);
+        app.session.execute("script.importText", json!({"name":"Unrelated","text":"Another document"})).unwrap();
+        draw(&mut app);
+        assert_eq!(app.ui.script.row_tops.as_ptr(), tops, "unrelated edits must not remeasure the script");
+        assert_eq!(app.ui.script.search_results.as_ptr(), results, "unrelated edits must not rescan the script");
+        let cached = Arc::clone(app.ui.script.layout_doc.as_ref().unwrap());
+        assert!(Arc::ptr_eq(&cached, app.ui.script.search_cache_doc.as_ref().unwrap()));
+        let revision = app.session.revision;
+        Arc::make_mut(&mut app.session.project).item_mut(ItemId(item)).unwrap().as_script_mut().unwrap().lines[0].text = "Long wrapping dialogue ".repeat(50);
+        assert_eq!(app.session.revision, revision, "document identity must work independently of the global revision");
+        draw(&mut app);
+        assert!(!Arc::ptr_eq(&cached, app.ui.script.layout_doc.as_ref().unwrap()));
+        assert_eq!(cached.lines[0].text, "Needle", "the retained cache document stays immutable");
+        assert!(app.ui.script.row_tops[1] > first_height);
+        assert!(app.ui.script.search_results.is_empty());
+    }
 }

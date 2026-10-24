@@ -7,7 +7,7 @@ pub(super) fn header(
     ui: &mut egui::Ui,
     rect: Rect,
     scripts: &[(ItemId, String)],
-    doc: Option<&ScriptDocument>,
+    doc: Option<&Arc<ScriptDocument>>,
     actions: &mut Vec<Action>,
 ) {
     let t = app.tokens;
@@ -24,6 +24,7 @@ pub(super) fn header(
                         app.ui.script.item = Some(id.0);
                         app.ui.script.selected_lines = None;
                         app.ui.script.selected_slate = None;
+                        app.ui.script.selected_thumbnail = None;
                         app.ui.script.selected_take = None;
                         app.ui.script.selected_section_slates.clear();
                     }
@@ -224,7 +225,7 @@ pub(super) fn header(
         if let Some(doc) = doc {
             let query_changed =
                 response.changed() || app.ui.script.search_cache_query != app.ui.script.search || app.ui.script.search_cache_item != app.ui.script.item;
-            if query_changed || app.ui.script.search_cache_revision != app.session.revision {
+            if query_changed || app.ui.script.search_cache_doc.as_ref().is_none_or(|cached| !Arc::ptr_eq(cached, doc)) {
                 let query = app.ui.script.search.to_lowercase();
                 app.ui.script.search_results = if query.is_empty() {
                     Vec::new()
@@ -232,7 +233,7 @@ pub(super) fn header(
                     doc.lines.iter().filter(|line| line.text.to_lowercase().contains(&query)).map(|line| line.id.0).collect()
                 };
                 app.ui.script.search_cache_item = app.ui.script.item;
-                app.ui.script.search_cache_revision = app.session.revision;
+                app.ui.script.search_cache_doc = Some(Arc::clone(doc));
                 app.ui.script.search_cache_query = app.ui.script.search.clone();
                 if query_changed {
                     app.ui.script.search_result_index = 0;

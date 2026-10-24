@@ -516,9 +516,18 @@ pub fn auto_relink(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("media.autoRelink", "need `from` and `to`, or `folder`"));
     }
+    let mut needs_review = Vec::new();
+    plans.retain(|plan| {
+        if needs_script_review(s, plan.item, plan.cand.identity) {
+            needs_review.push(json!({"item": plan.item.0, "path": plan.cand.path, "reason": SCRIPT_MARKS_RELINK_REVIEW}));
+            false
+        } else {
+            true
+        }
+    });
     let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, None, "Link Media")? };
     refresh(s);
-    Ok(json!({"relinked": rows, "failed": failed, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
+    Ok(json!({"relinked": rows, "failed": failed, "needsReview": needs_review, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// Files under `root` by lower-case file name (breadth-first, at most `limit` files).

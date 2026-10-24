@@ -11,6 +11,11 @@ Hidden marks cannot be selected or used to cue Source and do not choose the defa
 Scene and Page menus retain repeated labels as separate navigation points in script order.
 Clicking text or empty script canvas clears the active candle, thumbnail and mark; text clicks
 still select the clicked line, while empty canvas clears the line selection too.
+Backspace/Delete removes the selected mark, candle, or thumbnail's entire setup.
+Deleting the final candle removes the empty setup. These commands retain script text and source
+media, support Undo, and leave text-field editing alone. Selection clears after deletion to avoid
+deleting another object on a repeated key press. Layout and search caches retain the document Arc,
+so unrelated project edits do not rescan the script and document changes invalidate them safely.
 The `script_ui` integration tests cover endpoint drags, hidden-mark targets and repeated labels;
 engine tests cover saved data, undo/redo, section copies and deleting hidden lines.
 

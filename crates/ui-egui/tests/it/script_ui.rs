@@ -340,6 +340,81 @@ fn candle_context_menu_reorders_takes_under_one_thumbnail() {
 }
 
 #[test]
+fn undoing_pasted_rows_during_a_slate_drag_keeps_the_canvas_usable() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Undo during drag","text":"A\nB\nC"}))["item"].as_u64().unwrap();
+    let rows: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":rows[0],"endLine":rows[2]}));
+    let slate = added["slate"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    let section = driver.exec("script.copySection", json!({"item":script,"startLine":rows[0],"endLine":rows[2],"slates":[]}));
+    driver.exec("script.pasteSection", json!({"item":script,"afterLine":rows[2],"section":section}));
+    driver.harness.state_mut().ui.script.drag_slate = Some(slate);
+    driver.harness.state_mut().ui.script.drag_slate_target = Some(5);
+    driver.exec("edit.undo", json!({}));
+    driver.rect(&format!("script.slate.{slate}.thumbnail"));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"]["lines"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn backspace_deletes_the_selected_mark_candle_or_setup_and_undo_restores_it() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Delete selection","text":"A\nB\nC"}))["item"].as_u64().unwrap();
+    let rows: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["id"].as_u64().unwrap())
+        .collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":rows[0],"endLine":rows[2]}));
+    let slate = added["slate"].as_u64().unwrap();
+    let take = added["take"].as_u64().unwrap();
+    driver.exec("script.addTake", json!({"item":script,"slate":slate,"source":source,"startLine":rows[0],"endLine":rows[2]}));
+    let mark = driver.exec("script.addMark", json!({"item":script,"take":take,"line":rows[1],"sourceTime":0}))["mark"].as_u64().unwrap();
+    let original = driver.exec("script.inspect", json!({"item":script}));
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    driver.ok("ui.click", json!({"id":format!("script.mark.{mark}")}));
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    let deleted_mark = driver.exec("script.inspect", json!({"item":script}));
+    assert!(deleted_mark["document"]["slates"][0]["takes"][0]["marks"].as_array().is_none_or(Vec::is_empty));
+    assert_eq!(deleted_mark["document"]["slates"][0]["takes"].as_array().unwrap().len(), 2);
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script})), deleted_mark, "repeating Backspace without a selection must not delete the candle");
+    driver.exec("edit.undo", json!({}));
+    driver.ok("ui.click", json!({"id":format!("script.slate.{slate}.thumbnail")}));
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}",rows[2])}));
+    driver.ok("ui.key", json!({"key":"Delete"}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"]["slates"][0]["takes"].as_array().unwrap().len(), 1);
+    driver.exec("edit.undo", json!({}));
+    driver.ok("ui.click", json!({"id":format!("script.mark.{mark}")}));
+    driver.ok("ui.click", json!({"id":format!("script.slate.{slate}.thumbnail")}));
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    let deleted_setup = driver.exec("script.inspect", json!({"item":script}));
+    assert!(deleted_setup["document"]["slates"].as_array().unwrap().is_empty());
+    assert_eq!(deleted_setup["document"]["lines"], original["document"]["lines"]);
+    driver.exec("edit.undo", json!({}));
+    assert_eq!(driver.exec("script.inspect", json!({"item":script})), original);
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}",rows[2])}));
+    driver.harness.state_mut().ui.script.edit_line = Some(rows[1]);
+    driver.harness.state_mut().ui.script.edit_text = "Edit me".into();
+    driver.frames(3);
+    driver.ok("ui.click", json!({"id":format!("script.line.{}.edit",rows[1])}));
+    driver.ok("ui.key", json!({"key":"End"}));
+    driver.ok("ui.key", json!({"key":"Backspace"}));
+    assert_eq!(driver.harness.state_mut().ui.script.edit_text, "Edit m");
+    assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"]["slates"], original["document"]["slates"]);
+}
+
+#[test]
 fn selected_thumbnail_shuttles_independently_for_each_candle() {
     let mut driver = Driver::new();
     let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;

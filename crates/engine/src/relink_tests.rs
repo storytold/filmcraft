@@ -233,6 +233,54 @@ fn confirming_one_script_relink_does_not_confirm_automatically_found_sources() {
 }
 
 #[test]
+fn auto_relink_reports_script_review_without_blocking_other_sources() {
+    for folder_search in [false, true] {
+        let root = tmp_dir("auto-relink-script-review");
+        let (path, items) = saved_project(&root);
+        let mut s = open(&path);
+        let script = s.execute("script.importText", json!({"name":"Script","text":"Line"})).unwrap()["item"].as_u64().unwrap();
+        let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
+        let take = s.execute("script.addTake", json!({"item":script,"source":items[0].0,"startLine":line,"endLine":line})).unwrap()["take"].as_u64().unwrap();
+        s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":0})).unwrap();
+        let take_id = filmcraft_project::ScriptTakeId(take);
+        let project = std::sync::Arc::make_mut(&mut s.project);
+        project.item_mut(items[0]).unwrap().as_media_mut().unwrap().identity = None;
+        project.item_mut(ItemId(script)).unwrap().as_script_mut().unwrap().take_mut(take_id).unwrap().source_identity = None;
+        s.execute("file.save", json!({"path":path})).unwrap();
+        drop(s);
+        let moved = root.join("Moved");
+        std::fs::rename(root.join("Media"), &moved).unwrap();
+        let mut s = open(&path);
+        let original = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(take_id).unwrap().clone();
+        let params = if folder_search {
+            json!({"folder":moved.to_string_lossy()})
+        } else {
+            json!({"from":root.join("Media").to_string_lossy(),"to":moved.to_string_lossy()})
+        };
+        let result = s.execute("media.autoRelink", params).unwrap();
+        assert_eq!(result["relinked"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(result["relinked"][0]["item"], items[1].0);
+        assert_eq!(result["needsReview"].as_array().unwrap().len(), 1);
+        assert_eq!(result["needsReview"][0]["item"], items[0].0);
+        assert_eq!(result["failed"], json!([]));
+        assert_eq!(result["remaining"], json!([items[0].0]));
+        assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(take_id).unwrap(), &original);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(
+            s.project.item(items[1]).unwrap().as_media().unwrap().media,
+            filmcraft_project::MediaRef::File { path: root.join("Media/b.mov").to_string_lossy().into_owned() }
+        );
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(
+            s.project.item(items[1]).unwrap().as_media().unwrap().media,
+            filmcraft_project::MediaRef::File { path: moved.join("b.mov").to_string_lossy().into_owned() }
+        );
+        drop(s);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn forced_relink_takes_the_new_files_properties() {
     let root = tmp_dir("relink-forced-info");
     let (path, items) = saved_project(&root);

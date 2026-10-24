@@ -274,6 +274,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         if app.ui.script.item != Some(item) {
             app.ui.script.selected_lines = None;
             app.ui.script.selected_slate = None;
+            app.ui.script.selected_thumbnail = None;
             app.ui.script.selected_take = None;
             app.ui.script.selected_mark = None;
             app.ui.script.selected_section_slates.clear();
@@ -302,6 +303,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     }
     if id == "script.toggleOffscreen" {
         return crate::panels::script::toggle_offscreen_selection(app);
+    }
+    if app.ui.focused == PanelKind::Script && id == "edit.clear" && params.as_object().is_none_or(|map| map.is_empty()) {
+        if ctx.text_edit_focused() {
+            return Ok(Value::Null);
+        }
+        return crate::panels::script::delete_selection(app);
     }
     if matches!(id, "script.thumbnailBack" | "script.thumbnailForward") {
         return crate::panels::script::shuttle_thumbnail(app, ctx, if id == "script.thumbnailBack" { -1 } else { 1 });

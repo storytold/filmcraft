@@ -13,7 +13,7 @@ struct SlateHeader<'a> {
     last_take: &'a ScriptTake,
 }
 
-pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc: &ScriptDocument, actions: &mut Vec<Action>) {
+pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc: &Arc<ScriptDocument>, actions: &mut Vec<Action>) {
     let t = app.tokens;
     let thumb_w = thumbnail_width(&app.ui.script);
     let min_left = 180.0_f32.min((rect.width() - 85.0).max(100.0));
@@ -185,7 +185,8 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
             let Some(slate) = doc.slates.iter().find(|slate| slate.id.0 == header.id) else { continue };
             let shown_index =
                 if app.ui.script.drag_slate == Some(header.id) { app.ui.script.drag_slate_target.unwrap_or(header.start_index) } else { header.start_index };
-            let box_top = base_y + tops[shown_index];
+            let Some(&shown_top) = tops.get(shown_index).or_else(|| tops.get(header.start_index)) else { continue };
+            let box_top = base_y + shown_top;
             let preview_y = if app.ui.script.drag_slate == Some(header.id) && app.ui.script.drag_slate_group { app.ui.script.drag_slate_delta.y } else { 0.0 };
             for (ordinal, take) in slate.takes.iter().enumerate() {
                 let Some(&center) = column_centers.get(header.first_column + ordinal) else { continue };
@@ -340,6 +341,7 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
     if (empty_canvas.clicked() || foreground_click) && !take_click && !selecting_section {
         app.ui.script.selected_take = None;
         app.ui.script.selected_slate = None;
+        app.ui.script.selected_thumbnail = None;
         app.ui.script.selected_mark = None;
         app.ui.script.selected_section_slates.clear();
     }
@@ -712,6 +714,7 @@ fn row_view(
                 && app.ui.script.selected_lines.is_some_and(|(anchor, _)| line_indices.get(&anchor).is_some_and(|at| (start..=end).contains(at)));
             let anchor = if extend { app.ui.script.selected_lines.map_or(line.id.0, |pair| pair.0) } else { line.id.0 };
             app.ui.script.selected_slate = Some(*slate);
+            app.ui.script.selected_thumbnail = None;
             app.ui.script.selected_take = Some(take.id.0);
             app.ui.script.selected_lines = Some((anchor, line.id.0));
             app.ui.script.selected_mark = None;
@@ -762,11 +765,13 @@ fn row_view(
                 *foreground_click = true;
                 let extend = app.ui.script.selected_take == Some(take.id.0);
                 app.ui.script.selected_slate = Some(*slate);
+                app.ui.script.selected_thumbnail = None;
                 app.ui.script.selected_take = Some(take.id.0);
                 select_line(&mut app.ui.script, line, extend);
             } else if response.clicked() && !ui.input(|input| input.modifiers.command) {
                 *foreground_click = true;
                 app.ui.script.selected_slate = Some(*slate);
+                app.ui.script.selected_thumbnail = None;
                 app.ui.script.selected_take = Some(take.id.0);
                 select_line(&mut app.ui.script, line, false);
                 app.ui.script.selected_mark = Some(mark.id.0);
@@ -820,6 +825,7 @@ fn endpoint_interaction(
             let extend = shift_click(ui) && app.ui.script.selected_take == Some(take.id.0);
             let anchor = if extend { app.ui.script.selected_lines.map_or(line.0, |pair| pair.0) } else { line.0 };
             app.ui.script.selected_slate = doc.slates.iter().find(|slate| slate.takes.iter().any(|candidate| candidate.id == take.id)).map(|slate| slate.id.0);
+            app.ui.script.selected_thumbnail = None;
             app.ui.script.selected_take = Some(take.id.0);
             app.ui.script.selected_lines = Some((anchor, line.0));
             app.ui.script.selected_mark = None;
@@ -924,6 +930,8 @@ fn thumbnail_interaction(
     }
     if response.clicked() {
         app.ui.script.selected_slate = Some(header.id);
+        app.ui.script.selected_thumbnail = Some(header.id);
+        app.ui.script.selected_mark = None;
         if let Some(slate) = doc.slates.iter().find(|slate| slate.id.0 == header.id)
             && !slate.takes.iter().any(|take| app.ui.script.selected_take == Some(take.id.0))
         {

@@ -4,6 +4,8 @@ The Script toolbar has a gear menu for settings that are implemented today. This
 
 Shortening either candle endpoint changes only its visible coverage. Script marks, per-row colors, and off-screen passages on hidden lines remain stored with their original line IDs; marks also retain their IDs and exact source times. Expanding the candle reveals them again. Hidden marks have no canvas target and do not anchor visible-row cue interpolation. Deleting a logical line removes its annotations even when that line is hidden. No Script project schema change is needed.
 
+Backspace or forward Delete removes the selected Script object: a mark, a candle, or a setup selected by its thumbnail. Deleting a thumbnail removes that entire setup with all its candles and marks. Deleting the last candle also removes its empty setup. Script text and Project media stay intact, and Undo restores the deleted objects. With no object selected these keys do nothing; in a text field they retain normal text-editing behavior.
+
 | Control | FilmCraft state |
 | --- | --- |
 | Font and size | Text-size control in the gear menu; font-family choice pending. |

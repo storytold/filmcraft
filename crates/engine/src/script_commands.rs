@@ -456,6 +456,39 @@ fn delete_line(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+fn delete_take(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "script.deleteTake";
+    let item = item(p, cmd)?;
+    let take = ScriptTakeId(id(p, "take", cmd)?);
+    s.edit("Delete Script Take", |project, _| {
+        let doc = script_mut(project, item, cmd)?;
+        let slate =
+            doc.slates.iter_mut().find(|slate| slate.takes.iter().any(|candidate| candidate.id == take)).ok_or_else(|| bad(cmd, "take does not exist"))?;
+        slate.takes.retain(|candidate| candidate.id != take);
+        if slate.takes.is_empty() {
+            let id = slate.id;
+            doc.slates.retain(|slate| slate.id != id);
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
+fn delete_slate(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "script.deleteSlate";
+    let item = item(p, cmd)?;
+    let slate = ScriptSlateId(id(p, "slate", cmd)?);
+    s.edit("Delete Script Setup", |project, _| {
+        let doc = script_mut(project, item, cmd)?;
+        if !doc.slates.iter().any(|candidate| candidate.id == slate) {
+            return Err(bad(cmd, "setup does not exist"));
+        }
+        doc.slates.retain(|candidate| candidate.id != slate);
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
 fn set_label(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "script.setLabel";
     let item = item(p, cmd)?;
@@ -889,7 +922,9 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("script.deleteLine", "Delete Script Line", r#"{"item":id,"line":id}"#, delete_line, true),
         spec("script.setLabel", "Set Script Scene/Page", r#"{"item":id,"line":id,"scene":str|null?,"page":str|null?}"#, set_label, true),
         spec("script.addSlate", "Add Script Slate", r#"{"item":id,"name":str}"#, add_slate, true),
+        spec("script.deleteSlate", "Delete Script Setup", r#"{"item":id,"slate":id}"#, delete_slate, true),
         spec("script.addTake", "Add Script Take", r#"{"item":id,"slate":id?,"source":id,"startLine":id,"endLine":id}"#, add_take, true),
+        spec("script.deleteTake", "Delete Script Take", r#"{"item":id,"take":id}"#, delete_take, true),
         spec("script.moveTake", "Reorder Script Take", r#"{"item":id,"take":id,"direction":-1|1}"#, move_take, true),
         spec("script.setThumbnailTime", "Set Script Thumbnail Frame", r#"{"item":id,"take":id,"time":ticks}"#, set_thumbnail_time, true),
         spec("script.rebindTake", "Rebind Script Take", r#"{"item":id,"take":id,"source":id,"discardMarks":bool?}"#, rebind_take, true),
@@ -1092,6 +1127,48 @@ mod tests {
         assert_eq!(after_delete.offscreen_lines, vec![filmcraft_project::ScriptLineId(rows[0])]);
         assert_eq!(after_delete.line_colors.len(), 1);
         s.project.item(ItemId(script)).unwrap().as_script().unwrap().validate().unwrap();
+    }
+
+    #[test]
+    fn deleting_candles_and_setups_is_undoable_and_keeps_script_text_and_media() {
+        let mut s = Session::default();
+        let media = source(&mut s, "clip", 10);
+        let item = s.execute("script.importText", json!({"name":"Delete","text":"A\nB"})).unwrap()["item"].as_u64().unwrap();
+        let rows: Vec<_> = s.project.item(ItemId(item)).unwrap().as_script().unwrap().lines.iter().map(|line| line.id.0).collect();
+        let first = s.execute("script.addTake", json!({"item":item,"source":media.0,"startLine":rows[0],"endLine":rows[1]})).unwrap();
+        let slate = first["slate"].as_u64().unwrap();
+        let take = first["take"].as_u64().unwrap();
+        let second = s.execute("script.addTake", json!({"item":item,"slate":slate,"source":media.0,"startLine":rows[0],"endLine":rows[1]})).unwrap()["take"]
+            .as_u64()
+            .unwrap();
+        s.execute("script.addMark", json!({"item":item,"take":take,"line":rows[1],"sourceTime":0})).unwrap();
+        let original = s.project.item(ItemId(item)).unwrap().as_script().unwrap().clone();
+        s.execute("script.deleteTake", json!({"item":item,"take":take})).unwrap();
+        assert_eq!(s.project.item(ItemId(item)).unwrap().as_script().unwrap().slates[0].takes.len(), 1);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project.item(ItemId(item)).unwrap().as_script().unwrap(), &original);
+        s.execute("edit.redo", json!({})).unwrap();
+        s.execute("script.deleteTake", json!({"item":item,"take":second})).unwrap();
+        assert!(s.project.item(ItemId(item)).unwrap().as_script().unwrap().slates.is_empty(), "the final candle removes its empty setup");
+        s.execute("edit.undo", json!({})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project.item(ItemId(item)).unwrap().as_script().unwrap(), &original);
+        s.execute("script.deleteSlate", json!({"item":item,"slate":slate})).unwrap();
+        let deleted = s.project.item(ItemId(item)).unwrap().as_script().unwrap();
+        assert!(deleted.slates.is_empty());
+        assert_eq!(deleted.lines, original.lines);
+        assert!(s.project.item(media).is_some());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project.item(ItemId(item)).unwrap().as_script().unwrap(), &original);
+        for (command, params) in [
+            ("script.deleteTake", json!({"item":item,"take":0})),
+            ("script.deleteTake", json!({"item":item,"take":u64::MAX})),
+            ("script.deleteSlate", json!({"item":item,"slate":u64::MAX})),
+            ("script.deleteSlate", json!({"item":media.0,"slate":slate})),
+        ] {
+            assert!(s.execute(command, params).is_err());
+            assert_eq!(s.project.item(ItemId(item)).unwrap().as_script().unwrap(), &original);
+        }
     }
 
     #[test]
