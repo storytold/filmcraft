@@ -158,7 +158,10 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
   never touched.
 - Recovering loads the snapshot as an **unsaved** project with its original path, so Save writes
   over the original file. The recovered state goes into the new session's own journal before the old
-  journal is deleted.
+  journal is deleted. Both the replacement snapshot and its metadata must be successfully written
+  for that recovered revision. If journaling is disabled, writing fails, or the worker cannot
+  confirm the write, recovery reports an error and retains the original candidate. The recovered
+  project remains open and unsaved; use Save or Save As to keep it.
 - A normal quit with nothing unsaved removes the session directory. Quitting with unsaved changes
   (Quit, Cmd+Q or the window's close button) first asks *"Save changes to 'X' before closing?"*
   with **Cancel**, **Don't Save** and **Save** (Save on a never-saved project opens the Save dialog);
