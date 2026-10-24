@@ -2860,76 +2860,80 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
     resp.context_menu(|ui| {
-        ui.set_min_width(220.0);
-        if let Some(marker) = ctx.data(|d| d.get_temp::<Option<MarkerId>>(marker_menu_id)).flatten() {
-            marker_menu(app, &ctx, ui, marker);
-            return;
-        }
-        if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
-            edit_point_menu(app, &ctx, ui, seq, target);
-            return;
-        }
-        if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
-            gap_menu(app, &ctx, ui);
-            return;
-        }
-        let sel = app.session.state.selection.clone();
-        let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
-        let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
-        let linked = picked.iter().any(|it| it.link.is_some());
-        let mut first = true;
-        for group in CLIP_MENU {
-            if !std::mem::take(&mut first) {
-                ui.separator();
+        // a long menu scrolls instead of running off the bottom of the screen (#2852)
+        let max_height = (ui.ctx().content_rect().height() - 16.0).max(0.0);
+        egui::ScrollArea::vertical().id_salt("clip-menu-scroll").max_height(max_height).min_scrolled_height(max_height).show(ui, |ui| {
+            ui.set_min_width(220.0);
+            if let Some(marker) = ctx.data(|d| d.get_temp::<Option<MarkerId>>(marker_menu_id)).flatten() {
+                marker_menu(app, &ctx, ui, marker);
+                return;
             }
-            for &(label, cmd) in *group {
-                if cmd == "edit.label" {
-                    ui.add_enabled_ui(!picked.is_empty(), |ui| {
-                        let menu = ui.menu_button(crate::i18n::t(label), |ui| {
-                            // the user's label names and colours, as in Edit ▸ Label (#786)
-                            let labels = app.session.prefs.labels.clone();
-                            for l in filmcraft_project::Label::ALL {
-                                if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "timeline.clipMenu.label").clicked() {
-                                    if let Err(error) = app.session.execute("edit.label", json!({"label":l.name()})) {
-                                        app.ui.status = error.to_string();
+            if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
+                edit_point_menu(app, &ctx, ui, seq, target);
+                return;
+            }
+            if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
+                gap_menu(app, &ctx, ui);
+                return;
+            }
+            let sel = app.session.state.selection.clone();
+            let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
+            let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
+            let linked = picked.iter().any(|it| it.link.is_some());
+            let mut first = true;
+            for group in CLIP_MENU {
+                if !std::mem::take(&mut first) {
+                    ui.separator();
+                }
+                for &(label, cmd) in *group {
+                    if cmd == "edit.label" {
+                        ui.add_enabled_ui(!picked.is_empty(), |ui| {
+                            let menu = ui.menu_button(crate::i18n::t(label), |ui| {
+                                // the user's label names and colours, as in Edit ▸ Label (#786)
+                                let labels = app.session.prefs.labels.clone();
+                                for l in filmcraft_project::Label::ALL {
+                                    if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "timeline.clipMenu.label").clicked() {
+                                        if let Err(error) = app.session.execute("edit.label", json!({"label":l.name()})) {
+                                            app.ui.status = error.to_string();
+                                        }
+                                        ui.close();
                                     }
-                                    ui.close();
+                                }
+                            });
+                            app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
+                        });
+                        continue;
+                    }
+                    if cmd == "clip.multicam" {
+                        multicam_menu(app, ui, &picked);
+                        continue;
+                    }
+                    let label = match cmd {
+                        "clip.enable" if all_enabled => tl!("✓ Enable"),
+                        "clip.link" if linked => tl!("Unlink"),
+                        _ => crate::i18n::t(label),
+                    };
+                    let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
+                    app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                    if r.clicked() {
+                        match crate::menus::invoke(app, &ctx, cmd, json!({})) {
+                            // Unlink (#220): the clips were selected together because they were linked;
+                            // keep only the one right-clicked, so it can be dragged away from the others
+                            Ok(v) if cmd == "clip.link" && v["linked"] == json!(false) => {
+                                if let Some(clip) = ctx.data(|d| d.get_temp::<ClipId>(menu_clip_id))
+                                    && app.session.state.selection.contains(&clip)
+                                {
+                                    let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
                                 }
                             }
-                        });
-                        app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
-                    });
-                    continue;
-                }
-                if cmd == "clip.multicam" {
-                    multicam_menu(app, ui, &picked);
-                    continue;
-                }
-                let label = match cmd {
-                    "clip.enable" if all_enabled => tl!("✓ Enable"),
-                    "clip.link" if linked => tl!("Unlink"),
-                    _ => crate::i18n::t(label),
-                };
-                let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
-                app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
-                if r.clicked() {
-                    match crate::menus::invoke(app, &ctx, cmd, json!({})) {
-                        // Unlink (#220): the clips were selected together because they were linked;
-                        // keep only the one right-clicked, so it can be dragged away from the others
-                        Ok(v) if cmd == "clip.link" && v["linked"] == json!(false) => {
-                            if let Some(clip) = ctx.data(|d| d.get_temp::<ClipId>(menu_clip_id))
-                                && app.session.state.selection.contains(&clip)
-                            {
-                                let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
-                            }
+                            Ok(_) => {}
+                            Err(e) => app.ui.status = e,
                         }
-                        Ok(_) => {}
-                        Err(e) => app.ui.status = e,
+                        ui.close();
                     }
-                    ui.close();
                 }
             }
-        }
+        });
     });
 
     // ---- drops: project items and effects

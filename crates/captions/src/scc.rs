@@ -34,7 +34,7 @@ pub fn parse_timecode(s: &str) -> Option<i64> {
     let df = s.contains([';', '.', ',']);
     let parts: Vec<&str> = s.split([':', ';', '.', ',']).collect();
     let [h, m, sec, f] = parts.as_slice() else { return None };
-    let n = |p: &str| if (1..=3).contains(&p.len()) { p.parse::<i64>().ok() } else { None };
+    let n = |p: &str| if (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()) { p.parse::<i64>().ok() } else { None };
     Some(fields_to_frames(n(h)?, n(m)?, n(sec)?, n(f)?, RATE, df))
 }
 
@@ -482,6 +482,14 @@ mod tests {
 
     fn cue(s: i64, e: i64, text: &str) -> Cue {
         Cue { start: RATE.tick_of(s), end: RATE.tick_of(e), text: text.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn timecode_rejects_signed_fields() {
+        assert_eq!(parse_timecode("00:00:-5:00"), None);
+        assert_eq!(parse_timecode("00:+1:00:00"), None);
+        assert_eq!(parse_timecode("00:00:00:"), None);
+        assert_eq!(parse_timecode("00:00:01:00"), Some(30));
     }
 
     #[test]

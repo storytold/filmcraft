@@ -53,7 +53,7 @@ use filmcraft_project::{Project, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use atomic::atomic_write;
+pub use atomic::{atomic_write, atomic_write_new};
 
 /// The `format` tag written in every envelope.
 pub const FORMAT_ID: &str = "filmcraft.project";
@@ -281,6 +281,18 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
             }
         }
     }
+    // Every new id is `next_id`, read from the file as is. One that lags behind the ids in it (an
+    // older build, a hand edit) would hand out an id in use, and the new item replace the old (#2809).
+    let project = &mut loaded.project;
+    let max = project.max_id();
+    let past = max.checked_add(1).ok_or_else(|| FormatError::Corrupt(format!("project ID space exhausted (id {max} in use)")))?;
+    if project.next_id < past {
+        log::warn!("next id {} is not past the largest id in the project, raised to {past}", project.next_id);
+        project.next_id = past;
+    }
+    if project.next_id > Project::MAX_NEXT_ID {
+        return Err(FormatError::Corrupt(format!("project ID space exhausted (next id {})", project.next_id)));
+    }
     Ok(loaded)
 }
 
@@ -507,7 +519,10 @@ mod tests {
                 source_identity: None,
             }],
         });
+        // Both load repairs must apply together: stale project IDs and missing Script sources.
+        p.next_id = script.0;
         let repaired = decode(&encode(&p, false)).unwrap();
+        assert!(repaired.project.next_id > script.0);
         let take = &repaired.project.item(script).unwrap().as_script().unwrap().slates[0].takes[0];
         assert_eq!(take.source, None);
         assert_eq!(take.source_name, "gone");

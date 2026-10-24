@@ -6,7 +6,7 @@ use filmcraft_project::{ItemId, ItemKind, ScriptColor, ScriptDocument, ScriptLin
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
@@ -204,7 +204,7 @@ pub(crate) fn shuttle_thumbnail(app: &mut FilmcraftApp, ctx: &egui::Context, dir
         slate.takes.iter().find(|take| app.ui.script.selected_take == Some(take.id.0)).or_else(|| slate.takes.first()).ok_or("thumbnail has no candles")?;
     let source = take.source.ok_or("reattach this candle's source first")?;
     let view = filmcraft_engine::clip_ops::source_view(&app.session, source).ok_or("linked source is unavailable")?;
-    let first = take.thumbnail_time.or_else(|| take.marks.first().map(|mark| mark.source_time)).unwrap_or(view.start);
+    let first = take.thumbnail_time.or_else(|| doc.first_visible_mark_time(take)).unwrap_or(view.start);
     let take_id = take.id.0;
     let now = ctx.input(|input| input.time);
     if app.ui.script.thumbnail_shuttle_direction == direction && now - app.ui.script.thumbnail_shuttle_at < 0.25 {

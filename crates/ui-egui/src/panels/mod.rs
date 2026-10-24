@@ -182,6 +182,14 @@ pub fn dragged_project_item(ui: &egui::Ui) -> Option<ItemId> {
         _ => None,
     }
 }
+/// An item dragged from the Project panel (or the Media Browser), but not a Source Monitor drag,
+/// whose In/Out range and video/audio choice only a timeline drop keeps.
+pub fn dragged_panel_item(ui: &egui::Ui) -> Option<ItemId> {
+    match payload(ui) {
+        Some(DragPayload::Item(i)) => Some(i),
+        _ => None,
+    }
+}
 /// The items a drag from the Project panel carries: the whole selection when the dragged item is
 /// one of several selected, otherwise just the dragged item.
 pub fn dragged_selection(app: &FilmcraftApp, item: ItemId) -> Vec<ItemId> {

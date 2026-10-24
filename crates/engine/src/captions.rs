@@ -82,7 +82,11 @@ fn parse_color(v: &Value) -> Option<[u8; 4]> {
             _ => None,
         };
     }
-    let h = v.as_str()?.trim_start_matches('#');
+    let h = v.as_str()?;
+    let h = h.strip_prefix('#').unwrap_or(h);
+    if !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let b = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
     match h.len() {
         6 => Some([b(0)?, b(2)?, b(4)?, 255]),

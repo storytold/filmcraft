@@ -954,7 +954,8 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let labels = app.session.prefs.labels.clone();
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
-    egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
+    // The bar's titles and their menus share one size and colour, as in a native menu bar.
+    egui::MenuBar::new().style(crate::theme::menu_style).config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
         let mut titles = Vec::with_capacity(MENUS.len());
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();

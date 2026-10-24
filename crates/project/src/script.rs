@@ -150,7 +150,7 @@ pub struct ScriptTake {
     pub source_name: String,
     pub start_line: ScriptLineId,
     pub end_line: ScriptLineId,
-    /// Chosen thumbnail frame for this candle. None uses its first mark or source In.
+    /// Chosen thumbnail frame for this candle. None uses its first visible mark or source In.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail_time: Option<Tick>,
     #[serde(default)]
@@ -250,7 +250,8 @@ impl ScriptDocument {
     }
 
     /// Validate untrusted serialized scripts before an editor can mutate them. Stable IDs are
-    /// unique across all node types, and every annotation must point into its take's candle.
+    /// unique across all node types. Annotations may live on hidden lines outside candle
+    /// coverage so shortening and re-expanding a take never discards editorial work.
     pub fn validate(&self) -> Result<(), String> {
         if self.lines.len() > Self::MAX_LINES || self.slates.len() > Self::MAX_SLATES {
             return Err("too many script lines or slates".into());
@@ -315,20 +316,20 @@ impl ScriptDocument {
                     return Err("too many script annotations".into());
                 }
                 for line in &take.offscreen_lines {
-                    if positions.get(line).is_none_or(|i| !(a..=b).contains(i)) {
-                        return Err("off-screen annotation is outside its take".into());
+                    if !positions.contains_key(line) {
+                        return Err("off-screen annotation refers to a missing line".into());
                     }
                 }
                 let mut colored = BTreeSet::new();
                 for entry in &take.line_colors {
-                    if !colored.insert(entry.line) || positions.get(&entry.line).is_none_or(|i| !(a..=b).contains(i)) {
-                        return Err("candle color is duplicated or outside its take".into());
+                    if !colored.insert(entry.line) || !positions.contains_key(&entry.line) {
+                        return Err("candle color is duplicated or refers to a missing line".into());
                     }
                 }
                 for mark in &take.marks {
                     accept_id(mark.id.0)?;
-                    if positions.get(&mark.line).is_none_or(|i| !(a..=b).contains(i)) {
-                        return Err("script mark is outside its take".into());
+                    if !positions.contains_key(&mark.line) {
+                        return Err("script mark refers to a missing line".into());
                     }
                 }
             }
@@ -355,6 +356,13 @@ impl ScriptDocument {
         let a = self.line_index(start)?;
         let b = self.line_index(end)?;
         (a <= b).then_some((a, b))
+    }
+
+    /// First stored mark on a currently covered line, for the default thumbnail frame.
+    /// Hidden marks remain in storage but cannot choose a visible thumbnail.
+    pub fn first_visible_mark_time(&self, take: &ScriptTake) -> Option<Tick> {
+        let (start, end) = self.line_range(take.start_line, take.end_line)?;
+        take.marks.iter().find(|mark| self.line_index(mark.line).is_some_and(|row| (start..=end).contains(&row))).map(|mark| mark.source_time)
     }
 
     /// A deleted line loses its marks and annotations. Endpoints move to the nearest surviving
@@ -483,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn validator_rejects_duplicate_and_stale_ids_and_outside_marks() {
+    fn validator_rejects_duplicate_and_stale_ids_but_keeps_hidden_marks() {
         let mut doc = ScriptDocument::from_text("first\nsecond").unwrap();
         assert!(doc.validate().is_ok());
         doc.lines[1].id = doc.lines[0].id;
@@ -512,8 +520,11 @@ mod tests {
             }],
         });
         doc.next_id = 6;
-        assert!(doc.validate().is_err());
-        doc.slates[0].takes[0].marks[0].line = ScriptLineId(1);
-        assert!(doc.validate().is_ok(), "signed post-relink source time is valid stored data");
+        assert!(doc.validate().is_ok(), "hidden marks and signed source times remain valid stored data");
+        assert_eq!(doc.first_visible_mark_time(doc.take(ScriptTakeId(4)).unwrap()), None);
+        doc.slates[0].takes[0].end_line = ScriptLineId(2);
+        assert_eq!(doc.first_visible_mark_time(doc.take(ScriptTakeId(4)).unwrap()), Some(Tick(-100)));
+        doc.slates[0].takes[0].marks[0].line = ScriptLineId(99);
+        assert!(doc.validate().is_err(), "marks on deleted or nonexistent lines remain invalid");
     }
 }

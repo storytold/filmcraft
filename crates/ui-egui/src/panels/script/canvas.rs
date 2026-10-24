@@ -25,6 +25,21 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
     let text_inset = app.ui.script.text_inset.unwrap_or(DEFAULT_TEXT_INSET).clamp(min_inset, max_inset);
     row_layout(app, ui, doc, left_w, text_inset);
     let line_indices: HashMap<u64, usize> = doc.lines.iter().enumerate().map(|(index, line)| (line.id.0, index)).collect();
+    // A coverage trim keeps annotations in the model, but a previously selected or
+    // dragged mark must stop being interactive as soon as its row is hidden.
+    let visible_mark = |take_id: u64, mark_id: u64| {
+        doc.take(filmcraft_project::ScriptTakeId(take_id)).is_some_and(|take| {
+            let Some((&start, &end)) = line_indices.get(&take.start_line.0).zip(line_indices.get(&take.end_line.0)) else { return false };
+            take.marks.iter().any(|mark| mark.id.0 == mark_id && line_indices.get(&mark.line.0).is_some_and(|row| (start..=end).contains(row)))
+        })
+    };
+    if app.ui.script.selected_mark.is_some_and(|mark| app.ui.script.selected_take.is_none_or(|take| !visible_mark(take, mark))) {
+        app.ui.script.selected_mark = None;
+    }
+    if app.ui.script.drag_mark.is_some_and(|(take, mark)| !visible_mark(take, mark)) {
+        app.ui.script.drag_mark = None;
+        app.ui.script.drag_mark_target = None;
+    }
     // Script text, setup thumbnails and candles share one canvas. The wrap margin only
     // controls text layout; it is not a clipping boundary for setups.
     let canvas = rect;
@@ -81,7 +96,7 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
                 center_x,
                 start_index,
                 source: display_take.and_then(|take| take.source),
-                source_time: display_take.and_then(|take| take.thumbnail_time.or_else(|| take.marks.first().map(|mark| mark.source_time))),
+                source_time: display_take.and_then(|take| take.thumbnail_time.or_else(|| doc.first_visible_mark_time(take))),
                 source_name: display_take.map_or("", |take| take.source_name.as_str()),
                 last_take,
             });
@@ -124,6 +139,8 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
     let mut clicked_mark = None;
     let mut clicked_candle = None;
     let mut foreground_click = false;
+    let mut take_click = false;
+    let selecting_section = app.ui.script.lasso_start.is_some();
     let mut scroll_origin = body.min.y;
     let range = selected_range(doc, app.ui.script.selected_lines);
     let tops = app.ui.script.row_tops.clone();
@@ -202,10 +219,12 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
                     &columns,
                     &column_centers,
                     &line_indices,
+                    &tops,
                     &mut drop_line,
                     &mut clicked_mark,
                     &mut clicked_candle,
                     &mut foreground_click,
+                    &mut take_click,
                     actions,
                 );
             }
@@ -217,7 +236,7 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
             let Some(&row_y) = tops.get(header.start_index) else { continue };
             let thumbnail = thumbnail_rect(body.min.x, base_y + row_y, header, app.ui.script.take_scroll, thumb_w);
             if thumbnail.intersects(body) {
-                thumbnail_interaction(app, ui, header, thumbnail, body, &tops, base_y, doc, &mut foreground_click, actions);
+                thumbnail_interaction(app, ui, header, thumbnail, body, &tops, base_y, doc, &mut foreground_click, &mut take_click, actions);
             }
         }
         for index in start..end {
@@ -239,7 +258,23 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
                 if cx + TAKE_W * 0.5 < body.min.x || cx - TAKE_W * 0.5 > body.max.x {
                     continue;
                 }
-                endpoint_interaction(app, ui, take, row, body, cx, index, take_start, take_end, &tops, base_y, doc, &mut foreground_click, actions);
+                endpoint_interaction(
+                    app,
+                    ui,
+                    take,
+                    row,
+                    body,
+                    cx,
+                    index,
+                    take_start,
+                    take_end,
+                    &tops,
+                    base_y,
+                    doc,
+                    &mut foreground_click,
+                    &mut take_click,
+                    actions,
+                );
             }
         }
         // Paint last so a setup may sit over the script text, like a floating slate.
@@ -301,6 +336,12 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
     }
     if empty_canvas.clicked() && !foreground_click {
         app.ui.script.selected_lines = None;
+    }
+    if (empty_canvas.clicked() || foreground_click) && !take_click && !selecting_section {
+        app.ui.script.selected_take = None;
+        app.ui.script.selected_slate = None;
+        app.ui.script.selected_mark = None;
+        app.ui.script.selected_section_slates.clear();
     }
     if let Some((take, mark)) = clicked_mark {
         actions.push(Action::CueMark { take, mark });
@@ -411,7 +452,12 @@ fn paint_offscreen_paths(
     let paint = ui.painter().with_clip_rect(clip);
     for (column, (slate, maybe_take, _)) in columns.iter().enumerate() {
         let Some(take) = maybe_take else { continue };
-        let (Some(&start), Some(&end)) = (line_indices.get(&take.start_line.0), line_indices.get(&take.end_line.0)) else { continue };
+        let (Some(&stored_start), Some(&stored_end)) = (line_indices.get(&take.start_line.0), line_indices.get(&take.end_line.0)) else { continue };
+        let (start, end) = match (app.ui.script.drag_endpoint, app.ui.script.drag_target) {
+            (Some((id, true)), Some(target)) if id == take.id.0 => (target.min(stored_end), stored_end),
+            (Some((id, false)), Some(target)) if id == take.id.0 => (stored_start, target.max(stored_start)),
+            _ => (stored_start, stored_end),
+        };
         let cx = clip.left() + column_centers[column] - app.ui.script.take_scroll;
         if cx + TAKE_W * 0.5 < clip.left() || cx - TAKE_W * 0.5 > clip.right() {
             continue;
@@ -451,10 +497,12 @@ fn row_view(
     columns: &[(u64, Option<&ScriptTake>, &str)],
     column_centers: &[f32],
     line_indices: &HashMap<u64, usize>,
+    tops: &[f32],
     drop_line: &mut Option<u64>,
     clicked_mark: &mut Option<(u64, u64)>,
     clicked_candle: &mut Option<(u64, u64)>,
     foreground_click: &mut bool,
+    take_click: &mut bool,
     actions: &mut Vec<Action>,
 ) {
     let t = app.tokens;
@@ -635,9 +683,18 @@ fn row_view(
         let candle_bottom = if index == end { draw_row.max.y - 2.0 } else { draw_row.max.y };
         paint.line_segment([pos2(cx, candle_top), pos2(cx, candle_bottom)], halo);
         paint.line_segment([pos2(cx, candle_top), pos2(cx, candle_bottom)], stroke);
-        // Slightly taller gray terminal edges show where the candle can be
-        // grabbed. Their width matches the existing outline exactly.
-        let cap_height = 3.5_f32.min(((candle_bottom - candle_top) * 0.33).max(0.0));
+        // Keep the short exposed tips at either endpoint the same color as
+        // the outline. A row's fill can begin just below the take number (or
+        // continue past the final row), so a tiny cap lets the take's base
+        // color peek through even when the adjacent range is recolored.
+        let segment_height = (candle_bottom - candle_top).max(0.0);
+        let cap_height = if start == end {
+            12.0_f32.min(segment_height * 0.5)
+        } else {
+            let first_span = tops.get(start).zip(tops.get(start + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top - 16.0).max(0.0));
+            let last_span = tops.get(end).zip(tops.get(end + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top - 2.0).max(0.0));
+            12.0_f32.min(first_span).min(last_span)
+        };
         if index == start {
             paint.rect_filled(Rect::from_min_size(pos2(cx - halo.width * 0.5, candle_top), vec2(halo.width, cap_height)), 0.0, t.text_dim);
         }
@@ -649,6 +706,7 @@ fn row_view(
         app.auto.add(&format!("script.take.{}.line.{}", take.id.0, line.id.0), response.rect, "Take coverage");
         if response.clicked() {
             *foreground_click = true;
+            *take_click = true;
             let extend = shift_click(ui)
                 && app.ui.script.selected_take == Some(take.id.0)
                 && app.ui.script.selected_lines.is_some_and(|(anchor, _)| line_indices.get(&anchor).is_some_and(|at| (start..=end).contains(at)));
@@ -671,8 +729,11 @@ fn row_view(
         }
         // Draw the dragged mark on top of an existing mark at the destination row.
         // Otherwise the preview can disappear until the pointer is released.
-        let dragged_here =
-            take.marks.iter().find(|mark| app.ui.script.drag_mark == Some((take.id.0, mark.id.0)) && app.ui.script.drag_mark_target == Some(index));
+        let dragged_here = take.marks.iter().find(|mark| {
+            app.ui.script.drag_mark == Some((take.id.0, mark.id.0))
+                && line_indices.get(&mark.line.0).is_some_and(|row| (start..=end).contains(row))
+                && app.ui.script.drag_mark_target == Some(index)
+        });
         let mark = dragged_here.or_else(|| take.marks.iter().find(|mark| app.ui.script.drag_mark != Some((take.id.0, mark.id.0)) && mark.line == line.id));
         if let Some(mark) = mark {
             let mark_y = if index == start { draw_row.max.y - 8.0 } else { draw_row.center().y };
@@ -696,6 +757,7 @@ fn row_view(
                 app.ui.script.drag_mark = Some((take.id.0, mark.id.0));
                 app.ui.script.drag_mark_target = Some(index);
             }
+            *take_click |= response.clicked();
             if response.clicked() && shift_click(ui) {
                 *foreground_click = true;
                 let extend = app.ui.script.selected_take == Some(take.id.0);
@@ -735,6 +797,7 @@ fn endpoint_interaction(
     base_y: f32,
     doc: &ScriptDocument,
     foreground_click: &mut bool,
+    take_click: &mut bool,
     actions: &mut Vec<Action>,
 ) {
     let candle_top = if index == start { row.min.y + 16.0 } else { row.min.y };
@@ -750,6 +813,7 @@ fn endpoint_interaction(
         app.auto.add(&format!("script.take.{}.{}Handle", take.id.0, if top { "top" } else { "bottom" }), response.rect, "Adjust candle length");
         if response.clicked() || response.drag_started() {
             *foreground_click = true;
+            *take_click = true;
         }
         if response.clicked() {
             let line = if top { take.start_line } else { take.end_line };
@@ -796,6 +860,7 @@ fn thumbnail_interaction(
     base_y: f32,
     doc: &ScriptDocument,
     foreground_click: &mut bool,
+    take_click: &mut bool,
     actions: &mut Vec<Action>,
 ) {
     let response =
@@ -803,6 +868,7 @@ fn thumbnail_interaction(
     app.auto.add(&format!("script.slate.{}.thumbnail", header.id), response.rect, "Setup thumbnail");
     if response.clicked() || response.drag_started() {
         *foreground_click = true;
+        *take_click = true;
     }
     if response.drag_started() && app.ui.script.lasso_start.is_none() {
         app.ui.script.drag_slate = Some(header.id);

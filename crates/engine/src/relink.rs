@@ -536,9 +536,14 @@ pub fn index_folder(root: &Path, limit: usize) -> BTreeMap<String, Vec<PathBuf>>
             if name.starts_with('.') {
                 continue;
             }
-            if p.is_dir() {
+            let Ok(file_type) = e.file_type() else { continue };
+            // A relink search must stay within the folder explicitly chosen by the user. In
+            // particular, following a directory symlink can make a small loop defeat the file
+            // budget and walk an unrelated tree. Symlinked files are still candidates.
+            let is_file = if file_type.is_symlink() { std::fs::metadata(&p).is_ok_and(|m| m.is_file()) } else { file_type.is_file() };
+            if file_type.is_dir() {
                 queue.push_back(p);
-            } else {
+            } else if is_file {
                 out.entry(name.to_ascii_lowercase()).or_default().push(p);
                 n += 1;
                 if n >= limit {
@@ -611,7 +616,11 @@ pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
     let mut deleted = Vec::new();
     if delete {
         for (_, path) in &files {
-            if std::fs::remove_file(path).is_ok() {
+            // Stored paths in an opened document are not authority to delete arbitrary files.
+            // Delete only the resolved path that the media pool permits opening.
+            if let Ok(path) = s.media.follow(path)
+                && std::fs::remove_file(&path).is_ok()
+            {
                 deleted.push(path.clone());
             }
         }
@@ -630,14 +639,14 @@ fn status_json(s: &Session, id: ItemId) -> Option<Value> {
     let status = match &path {
         None => "generated",
         Some(_) if m.offline => "offline",
-        Some(p) if s.services.file_size(p).is_err() => "missing",
+        Some(p) if s.media.follow(p).ok().is_none_or(|file| s.services.file_size(&file).is_err()) => "missing",
         Some(_) => match s.media.offline_status(id) {
             Some(o) if o.reason == filmcraft_render::offline::OfflineReason::Unreadable => "unreadable",
             _ => "online",
         },
     };
     let proxy = match &m.proxy {
-        Some(MediaRef::File { path }) => json!({"path": path, "online": s.services.file_size(path).is_ok()}),
+        Some(MediaRef::File { path }) => json!({"path": path, "online": s.media.follow(path).is_ok_and(|file| s.services.file_size(&file).is_ok())}),
         _ => Value::Null,
     };
     Some(json!({

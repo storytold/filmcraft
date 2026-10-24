@@ -2,6 +2,8 @@
 
 The Script toolbar has a gear menu for settings that are implemented today. This inventory tracks the other requested controls without presenting them as working features.
 
+Shortening either candle endpoint changes only its visible coverage. Script marks, per-row colors, and off-screen passages on hidden lines remain stored with their original line IDs; marks also retain their IDs and exact source times. Expanding the candle reveals them again. Hidden marks have no canvas target and do not anchor visible-row cue interpolation. Deleting a logical line removes its annotations even when that line is hidden. No Script project schema change is needed.
+
 | Control | FilmCraft state |
 | --- | --- |
 | Font and size | Text-size control in the gear menu; font-family choice pending. |

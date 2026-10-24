@@ -3,6 +3,17 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Script coverage
+
+Trimming a take candle hides annotations outside its coverage while preserving their line IDs,
+mark IDs and source times. Expanding coverage restores marks, row colors and off-screen passages.
+Hidden marks cannot be selected or used to cue Source and do not choose the default thumbnail.
+Scene and Page menus retain repeated labels as separate navigation points in script order.
+Clicking text or empty script canvas clears the active candle, thumbnail and mark; text clicks
+still select the clicked line, while empty canvas clears the line selection too.
+The `script_ui` integration tests cover endpoint drags, hidden-mark targets and repeated labels;
+engine tests cover saved data, undo/redo, section copies and deleting hidden lines.
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the
@@ -38,9 +49,15 @@ translated label and its English source, including Unicode capitals. Project con
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
 English. Ukrainian and Russian currently cover the core menus; they fall back to English elsewhere.
 
-Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders,
-literal/menu/registry coverage and UI behaviour; `cargo xtask ci` runs the workspace gates. Visual
-checks use the control channel to switch language and capture the resulting panels.
+A string a catalog lacks shows in English, so a missing translation never fails a test or a
+build. `cargo xtask i18n-report` prints each language's missing strings (menus, `tl!` literals and
+registry names) and its entries whose source the interface no longer has; `cargo xtask ci` prints
+the same report in its log.
+
+Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders
+and UI behaviour in other languages (switching, search, font coverage); `cargo xtask ci` runs the
+workspace gates. Visual checks use the control channel to switch language and capture the resulting
+panels.
 
 ## Source playback
 

@@ -3080,6 +3080,13 @@ fn build() -> Vec<CommandSpec> {
                     let (keyframes, v) = {
                         let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
                         let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
+                        // the parameter's hard range, which `effects.list` publishes: a value outside it
+                        // (a factor where a percentage is meant, #2679) is refused, not saved
+                        if let (Some(filmcraft_project::ParamKind::Float { min, max, .. }), ParamValue::Float(x)) = (def.map(|d| &d.kind), &v)
+                            && !(*min..=*max).contains(x)
+                        {
+                            return Err(bad("effects.setParam", format!("`{pid}` must be between {min} and {max}, got {x}")));
+                        }
                         let keyframes = if keyframe {
                             // the stopwatch and the value in one step
                             prm.put_keyframe(mt, v.clone());

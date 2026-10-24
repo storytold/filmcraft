@@ -123,6 +123,20 @@ pub trait VideoSamples: Sync {
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
 }
 
+/// A container's sync sample for `i` when leading pictures need the GOP before: `sync` is the
+/// index's own sync sample, `leads(i, key)` says `i` is shown before `key`. One step per GOP, so a
+/// loop: a crafted index can chain tens of thousands of GOPs (#2803). A `sync` past `i` stops the
+/// walk instead of looping on it.
+pub(crate) fn open_gop_sync(mut i: usize, sync: impl Fn(usize) -> usize, leads: impl Fn(usize, usize) -> bool) -> usize {
+    loop {
+        let key = sync(i);
+        if key == 0 || key > i || !leads(i, key) {
+            return key;
+        }
+        i = key - 1;
+    }
+}
+
 /// The sync sample to start decoding at for sample `i`: its sync sample, or an earlier one when
 /// `i` is a leading picture of an open GOP (stored after its random-access picture, shown before
 /// it, like the RASL pictures after every HEVC CRA of iPhone video). Those are predicted from the
@@ -866,6 +880,19 @@ impl GopCache {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_gop_sync_walks_a_long_chain_of_leading_pictures_without_recursing() {
+        // Every GOP of 3 starts at a key whose leading picture is shown before it (#2803).
+        let gops = 200_000usize;
+        let sync = |i: usize| i - i % 3;
+        let leads = |i: usize, key: usize| i == key + 2;
+        assert_eq!(super::open_gop_sync(gops * 3 - 1, sync, leads), 0);
+        // A picture that is not a leading one keeps its own key.
+        assert_eq!(super::open_gop_sync(7, sync, |_, _| false), 6);
+        // An index whose sync sample lies past `i` ends the walk instead of looping.
+        assert_eq!(super::open_gop_sync(5, |_| 9, |_, _| true), 9);
+    }
+
     use super::*;
     use crate::video::DecodedFrame;
     use std::collections::VecDeque;

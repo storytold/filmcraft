@@ -356,7 +356,7 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
     let unit_start = s.find(|c: char| c.is_ascii_alphabetic())?;
     let (v, unit) = s.split_at(unit_start);
     let (vi, vf) = v.split_once('.').unwrap_or((v, ""));
-    if !vi.bytes().all(|b| b.is_ascii_digit()) || vi.len() > 15 {
+    if vi.is_empty() || !vi.bytes().all(|b| b.is_ascii_digit()) || vi.len() > 15 {
         return None;
     }
     let t = match unit {
@@ -756,6 +756,17 @@ mod tests {
         for expr in ["1.xt", "1.1234567890123t", "999999999999999.5t"] {
             assert_eq!(parse_time(expr, timing), None, "{expr}");
         }
+    }
+
+    #[test]
+    fn offset_time_without_integer_digits_is_rejected() {
+        let t = tm(FrameRate::FPS_25);
+        for expr in ["s", "ms", "h", "m", "t", "f", ".5s", ".5ms", ".s"] {
+            assert_eq!(parse_time(expr, t), None, "{expr}");
+        }
+        assert_eq!(parse_time("0s", t), Some(Tick(0)));
+        assert_eq!(parse_time("0.5s", t), Some(Tick(TICKS_PER_SECOND / 2)));
+        assert_eq!(parse_time("1ms", t), Some(Tick(TICKS_PER_SECOND / 1000)));
     }
 
     #[test]

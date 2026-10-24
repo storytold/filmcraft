@@ -2,6 +2,8 @@
 //! off by default, approximate frames only reach draft requests, and decoding for an export after
 //! draft playback (same source, same GOP cache) still matches ffmpeg bit for bit.
 
+// GOP statistics are process-wide; isolate this test from H.264 draft playback in `it`.
+#[path = "it/common/mod.rs"]
 mod common;
 
 use common::*;

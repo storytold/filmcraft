@@ -39,6 +39,7 @@ cargo xtask web --serve 8765                          # the web app on http://12
 | Variable | Effect |
 |---|---|
 | `FILMCRAFT_CONTROL_PORT` | Same as `--control <port>` |
+| `FILMCRAFT_CONTROL_TOKEN` | Required for `--control`: 64 random hex characters, inherited by authorized clients; [setup](control-protocol.md) |
 | `FILMCRAFT_CPU_COMPOSITE=1` | Disables the GPU compositor |
 | `FILMCRAFT_DEV_DESKTOP_ENTRY=1` | Linux, opt-in: a run from a source tree installs a user-level desktop entry (and the icons from `assets/app-icon`) so the taskbar shows the FilmCraft icon. Nothing is written without it; packaged runs never write one |
 | `FILMCRAFT_DATA_DIR` | Same as `--data-dir <dir>`: auto-save, crash recovery, settings and logs |
@@ -88,7 +89,8 @@ Regular, to keep the wasm small). The Japanese ones become the last fallback of 
 (`crates/ui-egui/src/theme.rs`, BIZ UDPGothic first) and fallback faces in the text engine (Gothic
 for sans text, Mincho for serif text). Without `CRAFT_FONTS_DIR`, `CRAFT_FONTS` is empty and
 FilmCraft uses its bundled and system fonts. A `CRAFT_FONTS_DIR` that is not a checkout is a build
-warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both). Tests on these fonts'
+warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both). With
+`CRAFT_FONTS_REQUIRED=1`, a build without `CRAFT_FONTS_DIR` is an error too. Tests on these fonts'
 glyphs skip when it is empty; when you touch fonts, run the gates both with and without it.
 
 Chinese media names and track labels use the `Hans` / `Hant` craft-fonts faces after the Japanese
@@ -116,11 +118,11 @@ Every commit must pass all of these:
 |---|---|
 | Format | `cargo fmt --check` (`rustfmt.toml`: `max_width = 160`) |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
-| Tests | `cargo test --workspace` |
+| Tests | `cargo nextest run --workspace` ([cargo-nextest](https://nexte.st), or `cargo test --workspace`), then `cargo test --workspace --doc` |
 | Layering | `cargo xtask layers` |
 | Assets | `cargo xtask assets` |
 | wasm | `cargo xtask wasm` (checks every L0–L4 crate, `filmcraft-ui-egui` and `filmcraft-web` for `wasm32-unknown-unknown`) |
-| All of the above | `cargo xtask ci` (runs clippy and tests with `--release`) |
+| All of the above | `cargo xtask ci` |
 
 Run them with `CRAFT_FONTS_DIR` set too when you change font code ([craft-fonts](#building-with-craft-fonts)).
 

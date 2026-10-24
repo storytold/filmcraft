@@ -149,22 +149,27 @@ pub(super) fn header(
                 }
                 for (key, caption, scene) in [("scene", "Sc:", true), ("page", "Pg:", false)] {
                     ui.label(caption);
-                    let mut seen = HashSet::new();
+                    // Labels are navigation points: repeated numbers belong to
+                    // distinct script rows and must remain separate options.
                     let values: Vec<_> = doc
                         .lines
                         .iter()
                         .filter_map(|line| {
                             let value = if scene { line.scene.as_deref() } else { line.page.as_deref() }?.trim();
-                            (!value.is_empty() && seen.insert(value.to_owned())).then_some((value.to_owned(), line))
+                            (!value.is_empty()).then_some((value, line))
                         })
                         .collect();
-                    let selected = current_line(doc, &app.ui.script)
-                        .and_then(|line| doc.line_index(line.id))
-                        .and_then(|index| doc.lines[..=index].iter().rev().find_map(|line| if scene { line.scene.as_deref() } else { line.page.as_deref() }));
+                    let selected_line = current_line(doc, &app.ui.script).and_then(|line| doc.line_index(line.id)).and_then(|index| {
+                        doc.lines[..=index]
+                            .iter()
+                            .rev()
+                            .find(|line| (if scene { line.scene.as_deref() } else { line.page.as_deref() }).is_some_and(|value| !value.trim().is_empty()))
+                    });
+                    let selected = selected_line.and_then(|line| if scene { line.scene.as_deref() } else { line.page.as_deref() });
                     let combo =
                         egui::ComboBox::from_id_salt(format!("script.{key}.combo")).selected_text(selected.unwrap_or("—")).width(44.0).show_ui(ui, |ui| {
                             for (value, line) in &values {
-                                let response = ui.selectable_label(selected == Some(value.as_str()), value);
+                                let response = ui.selectable_label(selected_line.is_some_and(|selected| selected.id == line.id), *value);
                                 app.auto.add(&format!("script.{key}.option.{}", line.id.0), response.rect, value);
                                 if response.clicked() {
                                     select_line(&mut app.ui.script, line, false);
@@ -178,19 +183,32 @@ pub(super) fn header(
                     let in_candle = doc
                         .line_range(take.start_line, take.end_line)
                         .is_some_and(|(start, end)| doc.line_index(line.id).is_some_and(|current| (start..=end).contains(&current)));
+                    let can_mark = take.source.is_some() && in_candle;
                     let mark = ui
-                        .add_enabled(take.source.is_some() && in_candle, egui::Button::new("〈〉"))
+                        .add_enabled(can_mark, egui::Button::new("  ").min_size(vec2(29.0, 23.0)))
                         .on_hover_text(tl!("Add a mark at the Source playhead; cues the selected candle's source if needed"));
                     app.auto.add("script.mark.add", mark.rect, "Mark this line at the Source playhead");
+                    let center = mark.rect.center();
+                    let icon_color = if can_mark { t.text } else { t.text_dim };
+                    ui.painter().add(egui::Shape::convex_polygon(
+                        vec![center + vec2(0.0, -5.5), center + vec2(5.5, 0.0), center + vec2(0.0, 5.5), center + vec2(-5.5, 0.0)],
+                        icon_color,
+                        Stroke::NONE,
+                    ));
                     if mark.clicked() {
                         actions.push(Action::AddMarkAtSelection);
                     }
                     let ids = selected_take_lines(doc, &app.ui.script, take);
                     let all_offscreen = !ids.is_empty() && ids.iter().all(|id| take.offscreen_lines.contains(id));
                     let offscreen = ui
-                        .add_enabled(!ids.is_empty(), egui::Button::new("〈ϟ〉").selected(all_offscreen))
+                        .add_enabled(!ids.is_empty(), egui::Button::new("  ").min_size(vec2(29.0, 23.0)).selected(all_offscreen))
                         .on_hover_text(tl!("Mark or clear the selected candle rows as off-screen"));
                     app.auto.add("script.offscreen.toggle", offscreen.rect, "Toggle off-screen passage");
+                    let center = offscreen.rect.center();
+                    ui.painter().add(egui::Shape::line(
+                        vec![center + vec2(0.0, -6.0), center + vec2(-3.0, -3.0), center + vec2(3.0, 0.0), center + vec2(-3.0, 3.0), center + vec2(0.0, 6.0)],
+                        Stroke::new(2.5, if ids.is_empty() { t.text_dim } else { t.text }),
+                    ));
                     if offscreen.clicked() {
                         actions.push(Action::ToggleOffscreenSelection);
                     }

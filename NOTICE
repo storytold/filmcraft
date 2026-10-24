@@ -17,5 +17,5 @@ Noto Serif font (assets/fonts/NotoSerif-Regular.ttf) — OFL-1.1. See assets/fon
 JetBrains Mono font (assets/fonts/JetBrainsMono-Regular.ttf) — OFL-1.1. See assets/fonts/OFL-JetBrainsMono.txt.
 Builds made with craft-fonts (CRAFT_FONTS_DIR; all official releases) also embed the fonts listed in
 https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, Shippori Mincho,
-BIZ UDMincho) — OFL-1.1. Their licence texts ship with the packages as OFL-<family>.txt.
+BIZ UDMincho, Noto Sans CJK SC, Noto Sans Arabic, Noto Sans Thai, Noto Sans Georgian) — OFL-1.1. Their licence texts ship with the packages as OFL-<family>.txt.
 Public-domain film and NASA frames and CC0 music shown in README screenshots (docs/images/) — public domain / CC0-1.0. See ATTRIBUTION.md.

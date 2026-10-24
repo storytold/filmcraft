@@ -601,18 +601,8 @@ fn set_coverage(s: &mut Session, p: &Value) -> Result<Value> {
     let end = ScriptLineId(id(p, "endLine", cmd)?);
     s.edit("Set Script Take Coverage", |project, _| {
         let doc = script_mut(project, item, cmd)?;
-        let (a, b) = doc.line_range(start, end).ok_or_else(|| bad(cmd, "startLine and endLine must exist and be in script order"))?;
-        let covered: Vec<_> = doc.lines.get(a..=b).ok_or_else(|| bad(cmd, "invalid line range"))?.iter().map(|l| l.id).collect();
+        doc.line_range(start, end).ok_or_else(|| bad(cmd, "startLine and endLine must exist and be in script order"))?;
         let take = doc.take_mut(take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
-        if take.marks.iter().any(|mark| !covered.contains(&mark.line)) {
-            return Err(bad(cmd, "new candle range excludes existing marks; move or delete those marks first"));
-        }
-        if take.offscreen_lines.iter().any(|line| !covered.contains(line)) {
-            return Err(bad(cmd, "new candle range excludes an off-screen passage; clear that passage first"));
-        }
-        if take.line_colors.iter().any(|entry| !covered.contains(&entry.line)) {
-            return Err(bad(cmd, "new candle range excludes a colored passage; clear that color first"));
-        }
         take.start_line = start;
         take.end_line = end;
         Ok(())
@@ -663,7 +653,7 @@ fn set_style(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit("Set Script Take Style", |project, _| {
         let doc = script_mut(project, item, cmd)?;
         let take = doc.take(take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
-        let (a, b) = doc.line_range(take.start_line, take.end_line).ok_or_else(|| bad(cmd, "take coverage is damaged"))?;
+        doc.line_range(take.start_line, take.end_line).ok_or_else(|| bad(cmd, "take coverage is damaged"))?;
         if let Some(ref selected) = offscreen {
             let annotations = doc.annotation_count().ok_or_else(|| bad(cmd, "annotation count overflow"))?;
             let updated = annotations
@@ -673,9 +663,8 @@ fn set_style(s: &mut Session, p: &Value) -> Result<Value> {
             if updated > ScriptDocument::MAX_ANNOTATIONS {
                 return Err(bad(cmd, "script already has the maximum number of annotations"));
             }
-            let covered = doc.lines.get(a..=b).ok_or_else(|| bad(cmd, "take coverage is damaged"))?;
-            if selected.iter().any(|line| !covered.iter().any(|row| row.id == *line)) {
-                return Err(bad(cmd, "off-screen line is outside the take"));
+            if selected.iter().any(|line| doc.line_index(*line).is_none()) {
+                return Err(bad(cmd, "off-screen line does not exist"));
             }
         }
         if let Some(ref selected) = line_colors {
@@ -687,10 +676,9 @@ fn set_style(s: &mut Session, p: &Value) -> Result<Value> {
             if updated > ScriptDocument::MAX_ANNOTATIONS {
                 return Err(bad(cmd, "script already has the maximum number of annotations"));
             }
-            let covered = doc.lines.get(a..=b).ok_or_else(|| bad(cmd, "take coverage is damaged"))?;
             let mut seen = std::collections::BTreeSet::new();
-            if selected.iter().any(|entry| !seen.insert(entry.line) || !covered.iter().any(|row| row.id == entry.line)) {
-                return Err(bad(cmd, "colored line is duplicated or outside the take"));
+            if selected.iter().any(|entry| !seen.insert(entry.line) || doc.line_index(entry.line).is_none()) {
+                return Err(bad(cmd, "colored line is duplicated or does not exist"));
             }
         }
         if let (Some(offscreen), Some(line_colors)) = (&offscreen, &line_colors) {
@@ -827,6 +815,10 @@ fn cue_mark(s: &mut Session, p: &Value) -> Result<Value> {
     let source = take.source.ok_or_else(|| bad(cmd, "take is unlinked"))?;
     let mark_id = ScriptMarkId(id(p, "mark", cmd)?);
     let mark = take.marks.iter().find(|m| m.id == mark_id).ok_or_else(|| bad(cmd, "mark does not exist"))?;
+    let (start, end) = doc.line_range(take.start_line, take.end_line).ok_or_else(|| bad(cmd, "take coverage is invalid"))?;
+    if doc.line_index(mark.line).is_none_or(|row| !(start..=end).contains(&row)) {
+        return Err(bad(cmd, "mark is hidden outside the take's coverage"));
+    }
     let at = mark.source_time;
     let view = crate::clip_ops::source_view(s, source).ok_or_else(|| bad(cmd, "source item is gone"))?;
     if at < view.start || at >= view.end {
@@ -999,17 +991,107 @@ mod tests {
         let mark = s.execute("script.addMark", json!({"item":script,"take":take,"line":middle,"sourceTime":FrameRate::FPS_24.tick_of(48).0})).unwrap()["mark"]
             .as_u64()
             .unwrap();
-        assert!(s.execute("script.setCoverage", json!({"item":script,"take":take,"startLine":first,"endLine":first})).is_err());
+        s.execute("script.setCoverage", json!({"item":script,"take":take,"startLine":first,"endLine":first})).unwrap();
+        assert!(s.execute("script.cueMark", json!({"item":script,"take":take,"mark":mark})).is_err(), "a hidden mark cannot cue Source");
         let bytes = filmcraft_format::encode(&s.project, false);
         let loaded = filmcraft_format::decode(&bytes).unwrap();
         let saved_take = loaded.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap();
         assert_eq!(saved_take.marks[0].id.0, mark);
+        assert_eq!(saved_take.marks[0].line.0, middle);
+        s.execute("script.setCoverage", json!({"item":script,"take":take,"startLine":first,"endLine":last})).unwrap();
         assert!(s.execute("script.rebindTake", json!({"item":script,"take":take,"source":different.0})).is_err());
         assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().source, Some(media));
         s.execute("script.rebindTake", json!({"item":script,"take":take,"source":different.0,"discardMarks":true})).unwrap();
         assert!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().marks.is_empty());
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().source, Some(media));
+    }
+
+    #[test]
+    fn coverage_trims_hide_and_restore_annotations_without_changing_marks() {
+        let mut s = Session::default();
+        let media = source(&mut s, "clip", 10);
+        let script = s.execute("script.importText", json!({"name":"Trim","text":"A\nB\nC\nD\nE"})).unwrap()["item"].as_u64().unwrap();
+        let rows: Vec<_> = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines.iter().map(|line| line.id.0).collect();
+        let added = s.execute("script.addTake", json!({"item":script,"source":media.0,"startLine":rows[0],"endLine":rows[4]})).unwrap();
+        let take = added["take"].as_u64().unwrap();
+        let slate = added["slate"].as_u64().unwrap();
+        let times = [FrameRate::FPS_24.tick_of(12).0, FrameRate::FPS_24.tick_of(24).0, FrameRate::FPS_24.tick_of(72).0, FrameRate::FPS_24.tick_of(96).0];
+        let marked_rows = [rows[0], rows[1], rows[3], rows[4]];
+        let marks: Vec<_> = marked_rows
+            .iter()
+            .zip(times)
+            .map(|(&line, time)| {
+                s.execute("script.addMark", json!({"item":script,"take":take,"line":line,"sourceTime":time})).unwrap()["mark"].as_u64().unwrap()
+            })
+            .collect();
+        s.execute(
+            "script.setTakeStyle",
+            json!({"item":script,"take":take,
+            "lineColors":[{"line":rows[0],"color":"Rose"},{"line":rows[4],"color":"Blue"}],
+            "offscreenLines":[rows[0],rows[4]]}),
+        )
+        .unwrap();
+        let baseline = s.execute("script.cueLine", json!({"item":script,"take":take,"line":rows[2]})).unwrap()["time"].clone();
+        let stored = |session: &Session| session.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap().clone();
+        let original = stored(&s);
+
+        // Shrink the top, then bottom: several marks and both kinds of style are hidden.
+        s.execute("script.setCoverage", json!({"item":script,"take":take,"startLine":rows[1],"endLine":rows[4]})).unwrap();
+        s.execute("script.setCoverage", json!({"item":script,"take":take,"startLine":rows[1],"endLine":rows[3]})).unwrap();
+        s.execute("script.setCoverage", json!({"item":script,"take":take,"startLine":rows[2],"endLine":rows[2]})).unwrap();
+        let hidden = stored(&s);
+        assert_eq!(hidden.marks, original.marks);
+        assert_eq!(hidden.line_colors, original.line_colors);
+        assert_eq!(hidden.offscreen_lines, original.offscreen_lines);
+        for mark in &marks {
+            assert!(s.execute("script.cueMark", json!({"item":script,"take":take,"mark":mark})).is_err());
+        }
+        // No visible anchors means Source In; hidden marks must not interpolate.
+        assert_eq!(s.execute("script.cueLine", json!({"item":script,"take":take,"line":rows[2]})).unwrap()["time"], 0);
+        let bytes = filmcraft_format::encode(&s.project, false);
+        let loaded = filmcraft_format::decode(&bytes).unwrap();
+        assert_eq!(loaded.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap(), &hidden);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(stored(&s).marks, original.marks);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(stored(&s), hidden);
+        let section = s.execute("script.copySection", json!({"item":script,"startLine":rows[0],"endLine":rows[4],"slates":[slate]})).unwrap();
+        let target = s.execute("script.importText", json!({"name":"Pasted","text":"Before\nAfter"})).unwrap()["item"].as_u64().unwrap();
+        let after = s.project.item(ItemId(target)).unwrap().as_script().unwrap().lines[0].id.0;
+        s.execute("script.pasteSection", json!({"item":target,"afterLine":after,"section":section})).unwrap();
+        let pasted_doc = s.project.item(ItemId(target)).unwrap().as_script().unwrap();
+        pasted_doc.validate().unwrap();
+        let pasted = &pasted_doc.slates[0].takes[0];
+        assert_eq!(pasted_doc.line_index(pasted.start_line), Some(3));
+        assert_eq!(pasted_doc.line_index(pasted.end_line), Some(3));
+        assert_eq!(pasted.marks.iter().map(|mark| mark.source_time.0).collect::<Vec<_>>(), times);
+        assert_ne!(pasted.marks[0].id.0, marks[0], "pasted annotations receive new IDs in the target document");
+        assert_eq!(pasted.offscreen_lines.len(), 2);
+        assert_eq!(pasted.line_colors.len(), 2);
+
+        // Repeated expansion and re-trimming must restore exactly the same IDs and times.
+        for _ in 0..2 {
+            s.execute("script.setCoverage", json!({"item":script,"take":take,"startLine":rows[0],"endLine":rows[4]})).unwrap();
+            assert_eq!(stored(&s), original);
+            assert_eq!(s.execute("script.cueLine", json!({"item":script,"take":take,"line":rows[2]})).unwrap()["time"], baseline);
+            s.execute("script.setCoverage", json!({"item":script,"take":take,"startLine":rows[2],"endLine":rows[2]})).unwrap();
+            assert_eq!(stored(&s), hidden);
+        }
+        // Editing style while trimmed carries hidden annotations forward.
+        s.execute(
+            "script.setTakeStyle",
+            json!({"item":script,"take":take,
+            "lineColors":[{"line":rows[0],"color":"Rose"},{"line":rows[4],"color":"Blue"}],
+            "offscreenLines":[rows[0],rows[4]]}),
+        )
+        .unwrap();
+        s.execute("script.deleteLine", json!({"item":script,"line":rows[4]})).unwrap();
+        let after_delete = stored(&s);
+        assert_eq!(after_delete.marks.iter().map(|mark| mark.id.0).collect::<Vec<_>>(), marks[..3]);
+        assert_eq!(after_delete.offscreen_lines, vec![filmcraft_project::ScriptLineId(rows[0])]);
+        assert_eq!(after_delete.line_colors.len(), 1);
+        s.project.item(ItemId(script)).unwrap().as_script().unwrap().validate().unwrap();
     }
 
     #[test]
