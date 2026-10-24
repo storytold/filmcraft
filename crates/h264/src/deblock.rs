@@ -23,11 +23,36 @@ fn ref_ids8(st: &MbState, sl: &SliceInfo) -> [[u32; 2]; 4] {
 }
 
 #[inline(always)]
-fn block_motion(st: &MbState, ids8: &[[u32; 2]; 4], raster: usize) -> Motion {
-    let b8 = (raster >> 3) * 2 + ((raster & 3) >> 1);
-    let ids = ids8[b8];
-    let count = (ids[0] != u32::MAX) as u8 + (ids[1] != u32::MAX) as u8;
-    Motion { ids, mv: [st.mv[0][raster], st.mv[1][raster]], count }
+fn b8_of(raster: usize) -> usize {
+    (raster >> 3) * 2 + ((raster & 3) >> 1)
+}
+
+/// A macroblock's motion for bS derivation; the reference picture ids are looked up on first use.
+struct MbMotion<'a> {
+    st: &'a MbState,
+    sl: &'a SliceInfo,
+    ids8: Option<[[u32; 2]; 4]>,
+}
+
+impl<'a> MbMotion<'a> {
+    fn new(st: &'a MbState, sl: &'a SliceInfo) -> Self {
+        MbMotion { st, sl, ids8: None }
+    }
+
+    #[inline(always)]
+    fn block(&mut self, raster: usize) -> Motion {
+        let ids = self.ids8.get_or_insert_with(|| ref_ids8(self.st, self.sl))[b8_of(raster)];
+        let count = (ids[0] != u32::MAX) as u8 + (ids[1] != u32::MAX) as u8;
+        Motion { ids, mv: [self.st.mv[0][raster], self.st.mv[1][raster]], count }
+    }
+}
+
+/// Same reference indices and mvs in both lists. Within one slice that means the same reference
+/// pictures, so bS is 0 without looking at the picture ids.
+#[inline(always)]
+fn same_motion(p: &MbState, rp: usize, q: &MbState, rq: usize) -> bool {
+    let (bp, bq) = (b8_of(rp), b8_of(rq));
+    p.ref_idx[0][bp] == q.ref_idx[0][bq] && p.ref_idx[1][bp] == q.ref_idx[1][bq] && p.mv[0][rp] == q.mv[0][rq] && p.mv[1][rp] == q.mv[1][rq]
 }
 
 #[inline(always)]
@@ -317,12 +342,11 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
             }
         }
     } else {
-        let qids = ref_ids8(q, sq);
         let q_uniform = (0..2).all(|l| {
             let r = q.ref_idx[l];
             r[1] == r[0] && r[2] == r[0] && r[3] == r[0] && q.mv[l].iter().all(|m| *m == q.mv[l][0])
         });
-        let qm: [Motion; 16] = std::array::from_fn(|r| block_motion(q, &qids, r));
+        let mut qm = MbMotion::new(q, sq);
         for dir in 0..2 {
             let neighbor = if dir == 0 { left } else { top };
             if let Some(n) = neighbor {
@@ -330,11 +354,17 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
                 if p.kind.is_intra() {
                     bs[dir][0] = [4; 4];
                 } else {
-                    let pids = ref_ids8(p, &pic.slices[p.slice_num as usize]);
+                    let same_slice = p.slice_num == q.slice_num;
+                    let mut pm = MbMotion::new(p, &pic.slices[p.slice_num as usize]);
                     for k in 0..4 {
                         let (rq, rp) = if dir == 0 { (k * 4, k * 4 + 3) } else { (k, 12 + k) };
-                        bs[dir][0][k] =
-                            if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(p, &pids, rp), &qm[rq]) };
+                        bs[dir][0][k] = if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 {
+                            2
+                        } else if same_slice && same_motion(p, rp, q, rq) {
+                            0
+                        } else {
+                            motion_bs(&pm.block(rp), &qm.block(rq))
+                        };
                     }
                 }
             }
@@ -348,7 +378,13 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
                 }
                 for k in 0..4 {
                     let (rq, rp) = if dir == 0 { (k * 4 + e, k * 4 + e - 1) } else { (e * 4 + k, e * 4 + k - 4) };
-                    bs[dir][e][k] = if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&qm[rp], &qm[rq]) };
+                    bs[dir][e][k] = if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 {
+                        2
+                    } else if same_motion(q, rp, q, rq) {
+                        0
+                    } else {
+                        motion_bs(&qm.block(rp), &qm.block(rq))
+                    };
                 }
             }
         }
