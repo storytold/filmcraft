@@ -602,6 +602,14 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
+/// Per-channel gains of Lumetri Basic Correction's Temperature and Tint sliders (both −1…1,
+/// the slider value / 100), applied in linear light before Exposure. Auto Correct
+/// (`crate::auto_correct`) inverts this model; the GPU path (`gpufx`) mirrors it.
+#[inline]
+pub fn white_balance_gains(temp: f32, tint: f32) -> [f32; 3] {
+    [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp]
+}
+
 /// The grading signal of the effect's section: HDR White (`white_id`) applies in HDR working
 /// spaces only.
 pub(crate) fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> GradeSpace {
@@ -647,7 +655,7 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let vround = f(e, "vignette_roundness", cx) / 100.0;
     let vfeather = f(e, "vignette_feather", cx) / 100.0;
     let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
-    let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
+    let gains = white_balance_gains(temp, tint);
     let (w, h) = (img.w as f32, img.h as f32);
     let aspect = w / h;
     img.map_rgb(|c, x, y| {

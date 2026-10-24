@@ -11,6 +11,7 @@
 
 pub mod audio;
 pub mod audio_fx;
+pub mod auto_correct;
 pub mod blend;
 pub mod color_match;
 pub mod colorman;

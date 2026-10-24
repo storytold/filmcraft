@@ -70,6 +70,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut bui, |ui| {
         if open_section(ui, app, &e, "Basic Correction", "basic_on", "basic", &mut sections) {
             lut_combo(ui, app, &e, "input_lut", tl!("Input LUT"), true, &mut lut_actions);
+            ui.horizontal(|ui| {
+                let b = ui.button(tl!("Auto Correct")).on_hover_text(tl!("White balance and exposure from the frame at the playhead"));
+                app.auto.add("lumetri.auto", b.rect, "Auto Correct");
+                if b.clicked() {
+                    lut_actions.push(("lumetri.auto", json!({"frames": "playhead"})));
+                }
+            });
             sub(ui, &t, tl!("Color"));
             slider(ui, &e, mt, "temperature", tl!("Temperature"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "tint", tl!("Tint"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
