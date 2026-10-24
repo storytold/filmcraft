@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::es::Splitter;
 use crate::pes::{self, PesHeader};
-use crate::{ByteSource, Codec, Error, File, Format, Result, Stream, StreamId, Unit, Unwrap, read_some};
+use crate::{ByteSource, ClockRange, Codec, Error, File, Format, Result, Stream, StreamId, Unit, Unwrap, read_some};
 
 /// Byte-wise table for the MSB-first CRC-32 (polynomial 0x04C11DB7): entry `i` is the CRC register
 /// after shifting the byte `i` through eight bit steps.
@@ -241,7 +241,8 @@ fn language(desc: &[u8]) -> Option<String> {
         let (tag, len) = (desc[i], desc[i + 1] as usize);
         if tag == 0x0A && len >= 3 {
             let b = desc.get(i + 2..i + 5)?;
-            return Some(String::from_utf8_lossy(b).trim().to_string()).filter(|s| !s.is_empty());
+            // ISO 639-2 codes are three ASCII letters; anything else is garbage
+            return b.iter().all(u8::is_ascii_alphabetic).then(|| b.to_ascii_lowercase().iter().map(|&c| c as char).collect());
         }
         i += 2 + len;
     }
@@ -299,10 +300,14 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     let mut es: HashMap<u16, EsState> = HashMap::new();
     let mut order: Vec<u16> = Vec::new();
     let mut pmt_version: Option<u8> = None;
+    // one timestamp unwrapper for the program: its streams share one clock, so a stream whose
+    // first timestamp lies just after the 33-bit wrap stays in step with one just before it
     let mut unwrap = Unwrap::default();
-    let mut pcr_unwrap = 0i64;
-    let mut last_pcr: Option<i64> = None;
-    let mut pcr_range: Option<(i64, i64)> = None;
+    // one clock per PID that carries PCRs, and the PMT's PCR_PID; the PCR_PID's clock is the
+    // file's `pcr_range`, the first PCR PID seen stands in until (or unless) a PMT names one
+    let mut clocks: HashMap<u16, ClockRange> = HashMap::new();
+    let mut first_pcr_pid: Option<u16> = None;
+    let mut pcr_pid: Option<u16> = None;
     let (mut lost_sync, mut cc_errors, mut crc_errors) = (0u64, 0u64, 0u64);
     const BLOCK: usize = 4096;
     let mut block = vec![0u8; BLOCK * packet_size];
@@ -340,17 +345,8 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
             };
             p += packet_size;
             if let Some(pcr) = pk.pcr {
-                // 33-bit base × 300 wraps at 2^33·300
-                let wrap = (1i64 << 33) * 300;
-                let mut v = pcr + pcr_unwrap;
-                if let Some(l) = last_pcr
-                    && v < l - wrap / 2
-                {
-                    pcr_unwrap += wrap;
-                    v += wrap;
-                }
-                last_pcr = Some(v);
-                pcr_range = Some(pcr_range.map_or((v, v), |(a, b)| (a.min(v), b.max(v))));
+                first_pcr_pid.get_or_insert(pk.pid);
+                clocks.entry(pk.pid).or_default().push(pcr);
             }
             if pk.pid == 0 {
                 for sec in pat.feed(pk.pusi, pk.payload) {
@@ -387,6 +383,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                         continue;
                     }
                     pmt_version = Some(version);
+                    pcr_pid = Some((((sec[8] & 0x1F) as u16) << 8) | sec[9] as u16);
                     let pinfo = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
                     let prog_desc = sec.get(12..12 + pinfo).unwrap_or(&[]);
                     let hdmv = packet_size == 192 || prog_desc.windows(4).any(|w| w == b"HDMV");
@@ -470,6 +467,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         }
         streams.push(e.stream);
     }
+    let pcr_range = pcr_pid.or(first_pcr_pid).and_then(|p| clocks.get(&p)).and_then(ClockRange::range);
     Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program, pcr_range, warnings })
 }
 
