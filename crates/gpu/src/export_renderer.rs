@@ -153,6 +153,23 @@ impl ExportRenderer {
             FramePlan::Composite { .. } => None,
         }
     }
+    /// Render an opaque SDR frame directly to RGBA8 when the plan is GPU-compatible.
+    pub fn render_rgba8(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<(u32, u32, Vec<u8>)> {
+        if device_failed() {
+            return None;
+        }
+        let plan = plan_frame(project, seq, t, opts, sources);
+        if !matches!(plan, FramePlan::Layers { .. }) {
+            return None;
+        }
+        let prep = prepare(&plan);
+        let result = self.compositor.render_export_rgba8_prepared(&plan, Some(&prep))?;
+        if device_failed() {
+            return None;
+        }
+        timing::add_frame();
+        Some(result)
+    }
 }
 
 #[cfg(test)]
@@ -168,6 +185,50 @@ mod tests {
     use std::sync::Arc;
 
     const EPS: f32 = 1e-4;
+
+    /// An opaque 256-level grayscale ramp for SDR GPU export parity tests.
+    fn ramp_project() -> (Arc<Project>, ItemId, SourceMap) {
+        use filmcraft_media::still::StillSource;
+
+        let (w, h) = (320u32, 180u32);
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for _y in 0..h {
+            for x in 0..w {
+                let gray = (x % 256) as u8;
+                rgba.extend_from_slice(&[gray, gray, gray, 255]);
+            }
+        }
+
+        let still = StillSource::from_rgba("grayscale-ramp.png", w, h, rgba, false, 0);
+        let info = still.info().clone();
+        let mut p = Project::new("SDR grayscale ramp");
+        let item = p.add_item(
+            "grayscale-ramp.png",
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::File { path: "grayscale-ramp.png".into() },
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let seq = p.new_sequence("ramp", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 0, None);
+        let clip = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).expect("ramp video clip");
+
+        p.sequence_mut(seq).expect("ramp sequence").video_tracks[0].items.push(clip);
+
+        let mut sources = SourceMap::default();
+        sources.0.insert(item, Arc::new(still));
+        (Arc::new(p), seq, sources)
+    }
 
     /// A solid colour generator at 320×180 plus a tone generator (mirrors the export tests'
     /// fixture-free project helper).
@@ -207,6 +268,7 @@ mod tests {
         let r = filmcraft_time::FrameRate::FPS_24;
         let _v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
         let a = p.make_track_item(t, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(_v);
         if transform {
             // Motion + opacity as fixed effects (the way the golden transform scene does it).
             if let Some(clip) = p.sequence_mut(seq).unwrap().video_tracks[0].items.last_mut() {
@@ -302,6 +364,112 @@ mod tests {
         let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).expect("rendered");
         let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
         assert_parity(&cpu, &gpu, "frame renderer");
+    }
+
+    #[test]
+    fn experimental_sdr_rgba8_difference() {
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED: no GPU adapter");
+            return;
+        };
+
+        for (case, transformed) in [("solid", false), ("transformed", true), ("grayscale-ramp", false)] {
+            let (project, seq, sources) = if case == "grayscale-ramp" { ramp_project() } else { project(transformed) };
+            let t = Tick::ZERO;
+            let plan = plan_frame(&project, seq, t, RenderOptions::default(), &sources);
+            assert!(matches!(&plan, FramePlan::Layers { layers, .. } if !layers.is_empty()), "{case} must produce GPU layers");
+
+            let prep = prepare(&plan);
+
+            let (w, h, linear) = renderer.compositor.render_export_prepared(&plan, Some(&prep)).expect("linear GPU export");
+
+            let old = Image { w: w as usize, h: h as usize, px: linear }.over_black_rgba8();
+
+            let (nw, nh, new) = renderer.compositor.render_export_rgba8_prepared(&plan, Some(&prep)).expect("RGBA8 GPU export");
+
+            assert_eq!((w, h), (nw, nh));
+            assert_eq!(old.len(), new.len());
+            assert_eq!(new.len(), (nw * nh * 4) as usize);
+
+            // The opaque SDR path must resolve every output pixel over black.
+            for (i, pixel) in new.as_chunks::<4>().0.iter().enumerate() {
+                assert_eq!(pixel[3], 255, "RGBA8 output alpha is not opaque at pixel {i}: {}", pixel[3]);
+            }
+
+            if case == "grayscale-ramp" {
+                let mut levels = std::collections::BTreeSet::new();
+                for pixel in new.as_chunks::<4>().0.iter() {
+                    levels.insert(pixel[0]);
+                }
+                eprintln!("SDR grayscale ramp: distinct red-channel levels={}", levels.len());
+                assert!(levels.len() >= 128, "grayscale ramp output lacks tonal variation: {} levels", levels.len());
+            }
+
+            let differences: Vec<u32> = old.iter().zip(&new).map(|(a, b)| (*a as u32).abs_diff(*b as u32)).collect();
+
+            let max = differences.iter().copied().max().unwrap_or(0);
+            let mean = differences.iter().map(|&d| d as f64).sum::<f64>() / differences.len() as f64;
+            let differing = differences.iter().filter(|&&d| d != 0).count();
+
+            eprintln!("SDR RGBA8 case={case} transformed={transformed}: max={max}, mean={mean:.6}, differing={differing}/{}", differences.len());
+
+            assert!(max <= 1, "SDR RGBA8 pixel difference exceeds 1: case={case}, transformed={transformed}, max={max}, mean={mean:.6}");
+        }
+    }
+
+    #[test]
+    #[ignore = "GPU performance benchmark; run explicitly"]
+    fn benchmark_sdr_rgba8_readback() {
+        let Some(mut renderer) = ExportRenderer::new() else {
+            panic!("GPU adapter unavailable; benchmark cannot run");
+        };
+
+        for transformed in [false, true] {
+            let (project, seq, sources) = project(transformed);
+            let plan = plan_frame(&project, seq, Tick::ZERO, RenderOptions::default(), &sources);
+            assert!(matches!(&plan, FramePlan::Layers { layers, .. } if !layers.is_empty()), "benchmark fixture must produce GPU layers");
+            let prep = prepare(&plan);
+
+            for _ in 0..3 {
+                renderer.compositor.render_export_prepared(&plan, Some(&prep)).expect("linear warm-up");
+                renderer.compositor.render_export_rgba8_prepared(&plan, Some(&prep)).expect("RGBA8 warm-up");
+            }
+
+            let mut linear_ms = Vec::new();
+            let mut rgba8_ms = Vec::new();
+
+            for i in 0..30 {
+                for rgba8_first in [i % 2 != 0] {
+                    for use_rgba8 in [rgba8_first, !rgba8_first] {
+                        let start = std::time::Instant::now();
+
+                        if use_rgba8 {
+                            let result = renderer.compositor.render_export_rgba8_prepared(&plan, Some(&prep)).expect("RGBA8");
+                            std::hint::black_box(result);
+                            rgba8_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+                        } else {
+                            let result = renderer.compositor.render_export_prepared(&plan, Some(&prep)).expect("linear");
+                            std::hint::black_box(result);
+                            linear_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+                        }
+                    }
+                }
+            }
+
+            let stats = |v: &mut Vec<f64>| {
+                v.sort_by(|a, b| a.total_cmp(b));
+                let mean = v.iter().sum::<f64>() / v.len() as f64;
+                (v[0], mean, v[v.len() - 1])
+            };
+
+            let (l_min, l_mean, l_max) = stats(&mut linear_ms);
+            let (r_min, r_mean, r_max) = stats(&mut rgba8_ms);
+
+            eprintln!(
+                "SDR BENCH transformed={transformed} runs=30 linear_ms={l_min:.3}/{l_mean:.3}/{l_max:.3} rgba8_ms={r_min:.3}/{r_mean:.3}/{r_max:.3} speedup={:.2}%",
+                (l_mean - r_mean) / l_mean * 100.0
+            );
+        }
     }
 
     #[test]

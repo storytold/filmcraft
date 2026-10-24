@@ -26,6 +26,17 @@ impl FrameRenderer for GpuFrameRenderer {
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
     }
+
+    fn render_rgba8(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        self.0.render_rgba8(project, seq, t, opts, sources)
+    }
 }
 
 fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcraft_project::ItemId, SourceMap) {
@@ -131,4 +142,12 @@ fn gpu_export_matches_cpu_and_counts() {
     }
     let GpuRenderStats { frames, .. } = filmcraft_export::gpu_render_stats();
     assert!(frames >= 8, "gpu frames counted across the parity exports: {frames}");
+
+    let fast = filmcraft_export::rgba8_fast_frames();
+    println!("RGBA8 FASTPATH: {fast} kare");
+    if std::env::var("FILMCRAFT_ENABLE_RGBA8_FASTPATH").is_ok_and(|v| v == "1") {
+        assert!(fast >= 8, "RGBA8 fast path bekleniyordu, kullanılan kare: {fast}");
+    } else {
+        assert_eq!(fast, 0, "Varsayılan durumda RGBA8 fast path kapalı olmalı");
+    }
 }
