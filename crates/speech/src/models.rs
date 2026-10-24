@@ -1,9 +1,9 @@
 //! The speech model catalogue and the model store.
 //!
-//! Models are downloaded on first use, after the user confirms (the dialog shows the size, the
-//! source URL and the licence), into `<data dir>/models/<id>/`. They are never bundled with
-//! FilmCraft or committed to the repository. Every file is pinned to a Hugging Face revision of
-//! OpenAI's own repositories and checked against its SHA-256 before it is used.
+//! Models are downloaded only when asked for (`transcript.downloadModel`), into
+//! `<data dir>/models/<id>/`. They are never bundled with FilmCraft or committed to the
+//! repository. Every file is pinned to a Hugging Face revision of its publisher's own repository
+//! (OpenAI's or NVIDIA's) and checked against its SHA-256 and size before it is used.
 //!
 //! Licence: OpenAI released the Whisper code and model weights under the MIT licence
 //! (<https://github.com/openai/whisper/blob/main/LICENSE>); the safetensors conversions OpenAI
