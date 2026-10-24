@@ -13,7 +13,7 @@
 	Add Audio Submix Track	添加音频子混音轨道
 	Add Caption at Playhead	在播放头处添加字幕
 	Add Chapter Marker…	添加章节标记…
-	Add Edit	添加编辑
+	Add Edit	添加编辑点
 	Add Edit to All Tracks	在所有轨道添加编辑点
 	Add Flash Cue Marker…	添加闪现提示标记…
 	Add Frame Hold	添加帧定格
@@ -42,15 +42,15 @@
 	Audio Clip Mixer	音频剪辑混音器
 	Audio Gain…	音频增益…
 	Audio Hardware…	音频硬件…
-	Audio In	音频入
+	Audio In	音频输入
 	Audio Meters	音频电平表
 	Audio Options	音频选项
-	Audio Out	音频出
+	Audio Out	音频输出
 	Audio Track Mixer	音频轨道混音器
 	Audio Waveform	音频波形
 	Auto Save…	自动保存…
 	Automate to Sequence…	自动适配到序列…
-	Bars and Tone…	彩条与音调…
+	Bars and Tone…	彩条和测试音…
 	Bin	素材箱
 	Bin From Selection	从所选对象创建素材箱
 	Black Video…	黑场视频…
@@ -63,7 +63,7 @@
 	Captions	字幕
 	Captions and Graphics	字幕与图形
 	Captions…	字幕…
-	Caribbean	加勒比
+	Caribbean	加勒比蓝
 	Center Horizontally	水平居中
 	Center Vertically	垂直居中
 	Cerulean	蔚蓝
@@ -82,7 +82,7 @@
 	Color Management…	色彩管理…
 	Color Matte…	颜色遮罩…
 	Comparison View	比较视图
-	Composite Video	合成视频
+	Composite Video	复合视频
 	Consolidate Duplicates	合并重复项
 	Copy	复制
 	Copy Paste Includes Sequence Markers	复制粘贴包含序列标记
@@ -105,11 +105,11 @@
 	Distribute Space Horizontally	水平均匀分布间距
 	Distribute Space Vertically	垂直均匀分布间距
 	Distribute Vertically	垂直分布
-	Duplicate	复制
+	Duplicate	创建副本
 	Dynamic Audio Waveforms	动态音频波形
 	Edit	编辑
 	Edit Offline…	脱机编辑…
-	Edit Original	编辑原始素材
+	Edit Original	编辑原稿
 	Edit Subclip…	编辑子剪辑…
 	Editing	编辑
 	Effect Controls	效果控件
@@ -133,7 +133,7 @@
 	FilmCraft on getartcraft.com	getartcraft.com 上的 FilmCraft
 	Find Next	查找下一个
 	Find…	查找…
-	Fit	适配
+	Fit	适合
 	Fit to frame	适配到帧
 	Flatten	拼合
 	Forest	森林绿
@@ -155,7 +155,7 @@
 	Go to Previous Caption Segment	转到上一段字幕
 	Go to Previous Marker	转到上一个标记
 	Go to Split	转到拆分点
-	Graphics and Titles	图形与字幕
+	Graphics and Titles	图形和标题
 	Graphics…	图形…
 	Green	绿
 	Group	编组
@@ -188,7 +188,7 @@
 	Link	链接
 	Link Media…	链接媒体…
 	Refresh Changed Media	刷新已更改的媒体
-	Linked Selection	关联选择
+	Linked Selection	链接选择
 	Lock Guides	锁定参考线
 	Lumetri Color	Lumetri 颜色
 	Lumetri Scopes	Lumetri 示波器
@@ -302,7 +302,7 @@
 	Select Next Layer	选择下一个图层
 	Select Previous Graphic	选择上一个图形
 	Select Previous Layer	选择上一个图层
-	Selection Follows Playhead	选择跟随播放头
+	Selection Follows Playhead	所选跟随播放头
 	Selection as FilmCraft Project…	将所选对象另存为 FilmCraft 项目…
 	Selection…	所选对象…
 	Send Backward	下移一层
@@ -316,7 +316,7 @@
 	Show All Marker Colors	显示所有标记颜色
 	Show Guides	显示参考线
 	Show Rulers	显示标尺
-	Show Through Edits	显示贯通编辑
+	Show Through Edits	显示贯穿剪辑点
 	Simplify Sequence…	简化序列…
 	Snap in Program Monitor	在节目监视器中吸附
 	Snap in Timeline	在时间轴中吸附
@@ -349,9 +349,9 @@
 	Upgrade Caption to Graphic	将字幕升级为图形
 	Upgrade to Source Graphic	升级为源图形
 	Vertical Text	竖排文本
-	Video In	视频入
+	Video In	视频输入
 	Video Options	视频选项
-	Video Out	视频出
+	Video Out	视频输出
 	Video and Audio Waveform Split	视频与音频波形拆分
 	View	视图
 	Violet	紫罗兰
