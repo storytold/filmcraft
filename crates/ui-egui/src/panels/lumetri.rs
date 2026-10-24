@@ -67,6 +67,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let set = |actions: &mut Actions, param: &str, v: Value| actions.push(json!({"clip": clip.0, "effect": idx, "param": param, "value": v}));
     let mut sections: Vec<&'static str> = Vec::new();
     let mut lut_actions: Vec<(&'static str, Value)> = Vec::new();
+    let mut run_auto = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut bui, |ui| {
         if open_section(ui, app, &e, "Basic Correction", "basic_on", "basic", &mut sections) {
             lut_combo(ui, app, &e, "input_lut", tl!("Input LUT"), true, &mut lut_actions);
@@ -74,7 +75,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             slider(ui, &e, mt, "temperature", tl!("Temperature"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "tint", tl!("Tint"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
             slider(ui, &e, mt, "saturation", tl!("Saturation"), None, &t, &mut actions, clip, idx);
-            sub(ui, &t, tl!("Light"));
+            ui.horizontal(|ui| {
+                sub(ui, &t, tl!("Light"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Auto: a starting grade solved from the clip's picture (lumetri.autoBasic)
+                    let b = ui.small_button(tl!("Auto")).on_hover_text(tl!("Set white balance, exposure, whites and blacks from the clip's picture"));
+                    if b.clicked() {
+                        run_auto = true;
+                    }
+                    auto_rows.push(("lumetri.auto".into(), b.rect, "Auto"));
+                });
+            });
             for (id, label) in [
                 ("exposure", tl!("Exposure")),
                 ("contrast", tl!("Contrast")),
@@ -238,6 +249,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if r.is_positive() {
             app.auto.add(&id, r, label);
         }
+    }
+    if run_auto && let Err(err) = app.session.execute("lumetri.autoBasic", json!({"clips": [clip.0]})) {
+        app.ui.status = err.to_string();
     }
     // a dragged value is one undo step, as in Effect Controls
     crate::panels::effect_controls::run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());

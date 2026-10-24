@@ -169,7 +169,11 @@ rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpac
 `color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
 `lut.remove {id}`, `lut.export {lut, path, format?}`, `lumetri.setInputLut` / `lumetri.setLook
 {clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
-`lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`. Without
+`lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`,
+`lumetri.autoBasic {clips?, scope?: selection|sequence, whiteBalance?}` (Clip ▸ Auto Color Correction,
+Cmd+Alt+L, and the Basic Correction section's **Auto** button `lumetri.auto`: white balance from the
+near-neutral pixels, exposure towards 18 % grey, whites / blacks stretched — see
+`filmcraft_render::auto_tone`; every target clip in one undo step). Without
 params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog.working.<id>`,
 `colorDialog.wideGamut`, `colorDialog.autoToneMap`, `colorDialog.ok|cancel`). Lumetri panel ids:
 `lumetri.input_lut`, `lumetri.look_lut`, `lumetri.switch.<section>`, `lumetri.section.<section>`,

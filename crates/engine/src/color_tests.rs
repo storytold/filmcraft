@@ -254,3 +254,99 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
 }
+
+/// The clip's own picture (all its effects) at `t`, working linear light, ¼ size.
+fn clip_picture(s: &Session, clip: ClipId, t: filmcraft_time::Tick) -> filmcraft_render::Image {
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let opts = filmcraft_render::RenderOptions { scale: 0.25, working_output: true, ..Default::default() };
+    filmcraft_render::render_clip(&s.project, s.state.active_sequence.unwrap(), clip, t, opts, &provider).unwrap()
+}
+
+/// Log-average luminance and the 1 % … 99 % range of the sRGB-encoded luma.
+fn tone(img: &filmcraft_render::Image) -> (f32, f32) {
+    let mut ls = Vec::new();
+    let mut lsum = 0f64;
+    for p in img.px.as_chunks::<4>().0.iter().filter(|p| p[3] > 1e-3) {
+        let l = (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) / p[3];
+        lsum += (l.max(1e-4) as f64).ln();
+        ls.push(filmcraft_color::linear_to_srgb(l));
+    }
+    ls.sort_by(f32::total_cmp);
+    let at = |q: f32| ls[((ls.len() - 1) as f32 * q) as usize];
+    ((lsum / ls.len() as f64).exp() as f32, at(0.99) - at(0.01))
+}
+
+#[test]
+fn auto_color_correction_brightens_and_stretches_a_dull_clip() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    let mid = it.start + filmcraft_time::Tick(it.duration.0 / 2);
+    s.execute("playhead.set", json!({"time": mid.0})).unwrap();
+    // make the shot dim and flat
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "brightness_contrast"})).unwrap();
+    for (k, v) in [("brightness", -45.0), ("contrast", -50.0)] {
+        s.execute("effects.setParam", json!({"clip": clip.0, "effect": "brightness_contrast", "param": k, "value": v})).unwrap();
+    }
+    let (l0, r0) = tone(&clip_picture(&s, clip, mid));
+    let r = s.execute("lumetri.autoBasic", json!({})).unwrap();
+    assert_eq!(r["count"], 1, "{r}");
+    let q = s.active_sequence().unwrap();
+    let e = q.find_item(clip).unwrap().1.effects.iter().find(|e| e.effect == "lumetri").expect("Lumetri added").clone();
+    let fv = |k: &str| e.param(k).and_then(|p| p.value.as_f64()).unwrap_or(0.0);
+    assert!(fv("exposure") > 0.2, "a dim shot is brightened: {r}");
+    assert!(fv("blacks") < 0.0 || fv("whites") > 0.0, "a flat shot is stretched: {r}");
+    let (l1, r1) = tone(&clip_picture(&s, clip, mid));
+    assert!((l1 / 0.18).log2().abs() < (l0 / 0.18).log2().abs(), "closer to 18 % grey: {l0} → {l1}");
+    assert!(r1 > r0, "wider tonal range: {r0} → {r1}");
+    // one undo step takes it all back (the Lumetri it added included)
+    s.execute("edit.undo", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert!(!q.find_item(clip).unwrap().1.effects.iter().any(|e| e.effect == "lumetri"));
+}
+
+#[test]
+fn auto_color_correction_does_the_whole_sequence_in_one_step() {
+    let mut s = demo();
+    s.state.selection.clear();
+    assert!(s.execute("lumetri.autoBasic", json!({})).is_err(), "nothing selected");
+    let q = s.active_sequence().unwrap();
+    let pictured: Vec<ClipId> = q
+        .video_tracks
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .filter(|it| s.project.source_par(it.item).is_some() && s.project.source_size(it.item).is_some())
+        .map(|it| it.id)
+        .collect();
+    assert!(pictured.len() > 1);
+    let temperature = |s: &Session, c: ClipId| {
+        let q = s.active_sequence().unwrap();
+        let it = q.find_item(c).unwrap().1;
+        it.effects.iter().find(|e| e.effect == "lumetri").map(|e| e.param("temperature").and_then(|p| p.value.as_f64()).unwrap_or(0.0))
+    };
+    let had: Vec<Option<f64>> = pictured.iter().map(|c| temperature(&s, *c)).collect();
+    let r = s.execute("lumetri.autoBasic", json!({"scope": "sequence", "whiteBalance": false})).unwrap();
+    assert_eq!(r["count"].as_u64(), Some(pictured.len() as u64), "{r}");
+    for (c, before) in pictured.iter().zip(&had) {
+        assert_eq!(temperature(&s, *c), Some(before.unwrap_or(0.0)), "every clip graded, white balance left alone");
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(pictured.iter().map(|c| temperature(&s, *c)).collect::<Vec<_>>(), had, "one undo step");
+    assert!(s.execute("lumetri.autoBasic", json!({"scope": "everything"})).is_err());
+}
+
+/// #2378 review: in an HDR working space Auto leaves Whites as the user set it (the solver only
+/// grades it in SDR), and still sets the other Basic values.
+#[test]
+fn auto_basic_keeps_whites_in_hdr() {
+    let mut s = demo();
+    s.execute("sequence.colorSettings", json!({"workingSpace": "Rec. 2100 PQ"})).unwrap();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("timeline.select", json!({"clips": [clip]})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "lumetri"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "lumetri", "param": "whites", "value": 25.0})).unwrap();
+    s.execute("lumetri.autoBasic", json!({})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.clone();
+    let l = it.effect("lumetri").unwrap();
+    assert_eq!(l.param("whites").unwrap().value.as_f64(), Some(25.0), "Whites untouched in HDR");
+}

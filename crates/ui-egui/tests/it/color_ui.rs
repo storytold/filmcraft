@@ -364,3 +364,30 @@ fn lumetri_rows_keep_their_width_when_the_clip_name_is_long() {
     let long = d.element("lumetri.param.hdr_white").expect("hdr_white row");
     assert_eq!(short, long, "a long clip name must not move or widen the control rows");
 }
+
+#[test]
+fn auto_color_correction_from_the_basic_section_and_its_shortcut() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    // a frame from the middle of the shot (its first frames fade in from black)
+    let seq = d.exec("sequence.inspect", json!({}));
+    let first = seq["video"][0]["items"][0].clone();
+    let mid = first["startFrame"].as_i64().unwrap() + first["durationFrames"].as_i64().unwrap() / 2;
+    d.exec("playhead.set", json!({"frame": mid}));
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    let untouched = lumetri(&mut d, clip)["params"]["exposure"]["value"].clone();
+    assert_eq!(untouched, json!("Float(0.0)"));
+    d.click("lumetri.auto");
+    let graded = lumetri(&mut d, clip)["params"]["exposure"]["value"].clone();
+    assert_ne!(graded, untouched, "the Auto button grades the clip");
+    d.snapshot("color-lumetri-auto", None);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(lumetri(&mut d, clip)["params"]["exposure"]["value"], untouched, "one undo step");
+    // the default shortcut runs the same command on the selection
+    d.ok("ui.key", json!({"key": "Cmd+Alt+L"}));
+    d.frames(3);
+    assert_eq!(lumetri(&mut d, clip)["params"]["exposure"]["value"], graded, "Cmd+Alt+L");
+}
