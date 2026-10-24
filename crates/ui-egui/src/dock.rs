@@ -522,7 +522,38 @@ pub fn layout_with_actions(
     reg: &mut crate::automation::Registry,
     actions: &mut Vec<craft_ui::docking::Action<PanelKind>>,
 ) {
-    layout_inner(ui, node, rect, t, path, &[], out, reg, actions);
+    layout_inner(ui, node, rect, t, path, &[], DividerSides::default(), out, reg, actions);
+}
+
+/// How far a divider's grab band reaches into each neighbouring panel, in logical points (#2690).
+///
+/// The visible gap between panels is only `Tokens::gap` (4 pt) wide. The band adds this much on
+/// both sides, so it is `gap + 2 * DIVIDER_HIT_MARGIN` (12 pt; 24 physical px on a 2x display)
+/// and can be grabbed anywhere along its length.
+pub const DIVIDER_HIT_MARGIN: f32 = 4.0;
+
+/// Which sides of a tab group face a vertical divider (a left/right split), so its content can
+/// step out of the divider's grab band.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DividerSides {
+    left: bool,
+    right: bool,
+}
+
+/// A group's content rectangle, inset by [`DIVIDER_HIT_MARGIN`] on each side that faces a vertical
+/// divider.
+///
+/// Panel bodies are clipped to this rectangle, so nothing inside them (in particular a vertical
+/// `ScrollArea` scroll bar, whose invisible 10 pt hit strip runs down the panel's right side)
+/// overlaps the divider's grab band: pressing there resizes, and the scroll bar keeps its full
+/// width. The inset shrinks for very narrow panels so at least half of the content remains.
+/// Horizontal dividers (top/bottom splits) keep the content's height: their band still reaches
+/// `DIVIDER_HIT_MARGIN` into each panel, but there it only wins where the panel has no widget.
+fn inset_content(content: Rect, sides: DividerSides) -> Rect {
+    let inset = DIVIDER_HIT_MARGIN.min(content.width() / 4.0).max(0.0);
+    let min_x = content.min.x + if sides.left { inset } else { 0.0 };
+    let max_x = content.max.x - if sides.right { inset } else { 0.0 };
+    if min_x <= max_x { Rect::from_x_y_ranges(min_x..=max_x, content.y_range()) } else { content }
 }
 
 fn layout_inner(
@@ -532,6 +563,7 @@ fn layout_inner(
     t: &Tokens,
     path: &str,
     tree_path: &[bool],
+    sides: DividerSides,
     out: &mut Vec<Group>,
     reg: &mut crate::automation::Registry,
     actions: &mut Vec<craft_ui::docking::Action<PanelKind>>,
@@ -540,15 +572,21 @@ fn layout_inner(
         DockNode::Tabs { panels, active } => {
             let tab_h = if panels.len() == 1 && panels[0].compact() { 8.0 } else { t.tab_h };
             let content = Rect::from_min_max(pos2(rect.min.x, rect.min.y + tab_h), rect.max);
+            // The tab strip keeps its full width: its grip, tabs and menu button are registered
+            // after the divider, so they still win the overlap and stay clickable.
+            let content = inset_content(content, sides);
             out.push(Group { path: path.to_string(), rect, content, panels: panels.clone(), active: *active });
         }
         DockNode::Split { vertical, size, a, b } => {
             let axis = if *vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal };
             let Some(split) = split_rect(rect, axis, size.shared(), t.gap, 20.0) else { return };
             let id = egui::Id::new(("dock-gutter", path.to_string()));
-            let handle_style = ResizeHandleStyle { hovered: t.focus.gamma_multiply(0.4), dragged: t.focus.gamma_multiply(0.9), focused: t.focus };
+            let handle_style = ResizeHandleStyle { hovered: t.focus.gamma_multiply(0.6), dragged: t.focus.gamma_multiply(0.9), focused: t.focus };
             let label = if *vertical { tl!("Height:") } else { tl!("Width:") };
-            let response = ResizeHandle::new(id, axis, split.divider, label, handle_style).value(split.first_size(), 0.0..=split.available()).show(ui);
+            let response = ResizeHandle::new(id, axis, split.divider, label, handle_style)
+                .hit_margin(DIVIDER_HIT_MARGIN)
+                .value(split.first_size(), 0.0..=split.available())
+                .show(ui);
             reg.add_response(&format!("dock.gutter.{path}"), &response.response, "gutter");
             if response.delta != 0.0
                 && let Some(resized) = split.resized(size.shared(), response.delta, 40.0)
@@ -559,8 +597,10 @@ fn layout_inner(
             first_path.push(false);
             let mut second_path = tree_path.to_vec();
             second_path.push(true);
-            layout_inner(ui, a, split.first, t, &format!("{path}a"), &first_path, out, reg, actions);
-            layout_inner(ui, b, split.second, t, &format!("{path}b"), &second_path, out, reg, actions);
+            let (first_sides, second_sides) =
+                if *vertical { (sides, sides) } else { (DividerSides { right: true, ..sides }, DividerSides { left: true, ..sides }) };
+            layout_inner(ui, a, split.first, t, &format!("{path}a"), &first_path, first_sides, out, reg, actions);
+            layout_inner(ui, b, split.second, t, &format!("{path}b"), &second_path, second_sides, out, reg, actions);
         }
     }
 }
