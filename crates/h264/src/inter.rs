@@ -45,6 +45,35 @@ fn tap6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
     a - 5 * b + 20 * c + 20 * d - 5 * e + f
 }
 
+/// ITU-T H.264 6-tap luma FIR on eight lanes: `a − 5b + 20c + 20d − 5e + f`.
+#[inline(always)]
+fn tap6_x8(a: wide::i32x8, b: wide::i32x8, c: wide::i32x8, d: wide::i32x8, e: wide::i32x8, f: wide::i32x8) -> wide::i32x8 {
+    let five = wide::i32x8::splat(5);
+    let twenty = wide::i32x8::splat(20);
+    a - b * five + c * twenty + d * twenty - e * five + f
+}
+
+/// Load eight consecutive 8-bit samples as `i32x8` (no `unsafe`; `src` must hold ≥ 8 bytes).
+#[inline(always)]
+fn load8_u8_i32(src: &[u8]) -> wide::i32x8 {
+    wide::i32x8::from([
+        src[0] as i32,
+        src[1] as i32,
+        src[2] as i32,
+        src[3] as i32,
+        src[4] as i32,
+        src[5] as i32,
+        src[6] as i32,
+        src[7] as i32,
+    ])
+}
+
+#[inline(always)]
+fn store8_i32(dst: &mut [i32], v: wide::i32x8) {
+    let a: [i32; 8] = v.into();
+    dst[..8].copy_from_slice(&a);
+}
+
 #[inline(always)]
 fn clip1(v: i32) -> u8 {
     v.clamp(0, 255) as u8
@@ -74,19 +103,63 @@ fn avg(a: u8, b: u8) -> u8 {
 
 /// Horizontal 6-tap (unclipped) at every position of `row` for `n` outputs: out[c] uses row[c..c + 6].
 #[inline(always)]
-fn htap_row(row: &[u8], out: &mut [i32], n: usize) {
+fn htap_row_scalar(row: &[u8], out: &mut [i32], n: usize) {
     let row = &row[..n + 5];
     for (o, w) in out[..n].iter_mut().zip(row.windows(6)) {
         *o = tap6(w[0] as i32, w[1] as i32, w[2] as i32, w[3] as i32, w[4] as i32, w[5] as i32);
     }
 }
 
+/// Horizontal 6-tap: eight-wide `wide::i32x8` body, scalar tail for remainders / widths < 8.
+#[inline(always)]
+fn htap_row(row: &[u8], out: &mut [i32], n: usize) {
+    let row = &row[..n + 5];
+    let mut i = 0;
+    while i + 8 <= n {
+        let a = load8_u8_i32(&row[i..]);
+        let b = load8_u8_i32(&row[i + 1..]);
+        let c = load8_u8_i32(&row[i + 2..]);
+        let d = load8_u8_i32(&row[i + 3..]);
+        let e = load8_u8_i32(&row[i + 4..]);
+        let f = load8_u8_i32(&row[i + 5..]);
+        store8_i32(&mut out[i..], tap6_x8(a, b, c, d, e, f));
+        i += 8;
+    }
+    if i < n {
+        htap_row_scalar(&row[i..], &mut out[i..], n - i);
+    }
+}
+
 /// Vertical 6-tap (unclipped) over six rows at columns 0..n.
 #[inline(always)]
-fn vtap_row(rows: [&[u8]; 6], out: &mut [i32], n: usize) {
+fn vtap_row_scalar(rows: [&[u8]; 6], out: &mut [i32], n: usize) {
     let [a, b, c, d, e, f] = rows.map(|r| &r[..n]);
     for i in 0..n {
         out[i] = tap6(a[i] as i32, b[i] as i32, c[i] as i32, d[i] as i32, e[i] as i32, f[i] as i32);
+    }
+}
+
+/// Vertical 6-tap: eight-wide `wide::i32x8` body, scalar tail for remainders / widths < 8.
+#[inline(always)]
+fn vtap_row(rows: [&[u8]; 6], out: &mut [i32], n: usize) {
+    let [a, b, c, d, e, f] = rows.map(|r| &r[..n]);
+    let mut i = 0;
+    while i + 8 <= n {
+        store8_i32(
+            &mut out[i..],
+            tap6_x8(
+                load8_u8_i32(&a[i..]),
+                load8_u8_i32(&b[i..]),
+                load8_u8_i32(&c[i..]),
+                load8_u8_i32(&d[i..]),
+                load8_u8_i32(&e[i..]),
+                load8_u8_i32(&f[i..]),
+            ),
+        );
+        i += 8;
+    }
+    if i < n {
+        vtap_row_scalar([a, b, c, d, e, f].map(|r| &r[i..]), &mut out[i..], n - i);
     }
 }
 
@@ -497,6 +570,34 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn six_tap_simd_matches_scalar() {
+        let mut seed = 0x9e37_79b9u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 24) as u8
+        };
+        for n in [4usize, 8, 16, 5, 9, 15, 17] {
+            let mut row = vec![0u8; n + 5];
+            for x in &mut row {
+                *x = next();
+            }
+            let mut simd = vec![0i32; n];
+            let mut scalar = vec![0i32; n];
+            htap_row(&row, &mut simd, n);
+            htap_row_scalar(&row, &mut scalar, n);
+            assert_eq!(simd, scalar, "htap_row n={n}");
+
+            let rows: [Vec<u8>; 6] = std::array::from_fn(|_| (0..n).map(|_| next()).collect());
+            let refs: [&[u8]; 6] = std::array::from_fn(|i| rows[i].as_slice());
+            let mut vs = vec![0i32; n];
+            let mut vc = vec![0i32; n];
+            vtap_row(refs, &mut vs, n);
+            vtap_row_scalar(refs, &mut vc, n);
+            assert_eq!(vs, vc, "vtap_row n={n}");
         }
     }
 
