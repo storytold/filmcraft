@@ -215,8 +215,8 @@ fn desktop_file_content(app_id: &str, name: &str, exe: &str) -> String {
     out.push_str("StartupNotify=true\n");
     out.push_str(&format!("StartupWMClass={app_id}\n"));
     out.push_str("Categories=AudioVideo;Video;AudioVideoEditing;\n");
-    out.push_str("MimeType=application/x-filmcraft;video/mp4;video/x-m4v;video/quicktime;video/x-matroska;video/webm;");
-    out.push_str("video/vnd.avi;video/x-msvideo;application/mxf;video/mp2t;video/mpeg;video/3gpp;\n");
+    // the project and video files the packaged entry opens (packaging/linux/ai.storyteller.filmcraft.desktop)
+    out.push_str("MimeType=application/x-filmcraft;video/mp4;video/x-m4v;video/quicktime;video/x-matroska;video/webm;video/vnd.avi;video/x-msvideo;application/mxf;video/mp2t;video/mpeg;video/3gpp;\n");
     out.push_str("Keywords=video;editor;film;timeline;color;grading;nle;\n");
     out
 }

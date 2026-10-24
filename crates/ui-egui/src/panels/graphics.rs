@@ -929,14 +929,20 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         painter.line_segment([a + vec2(1.0, 0.0), b + vec2(1.0, 0.0)], Stroke::new(0.5, Color32::BLACK));
         let er = Rect::from_points(&v.quad()).union(Rect::from_two_pos(a, b));
         app.auto.add("program.textEdit", er, &tp.text);
-        ui.ctx().output_mut(|o| {
-            o.ime = Some(egui::output::IMEOutput {
-                purpose: Default::default(),
-                rect: er,
-                cursor_rect: Rect::from_two_pos(a, b),
-                should_interrupt_composition: false,
-            })
-        });
+        // the input method only while the text has the keyboard, as a TextEdit does: it is then
+        // turned on in the frame that takes the keyboard, not on before and restarted by the focus
+        // request a frame later, which an X11 input method (fcitx) did not survive; and a field
+        // in Properties that has the keyboard keeps the input method to itself
+        if ui.memory(|m| m.has_focus(egui::Id::new(TEXT_EDIT_ID))) {
+            ui.ctx().output_mut(|o| {
+                o.ime = Some(egui::output::IMEOutput {
+                    purpose: Default::default(),
+                    rect: er,
+                    cursor_rect: Rect::from_two_pos(a, b),
+                    should_interrupt_composition: false,
+                })
+            });
+        }
     }
     // ---- run
     for (cmd, p) in actions {
@@ -1032,7 +1038,12 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
         return;
     }
     ui.memory_mut(|m| {
-        m.request_focus(eid);
+        // only when it does not have it yet: every request also interrupts the input method, and
+        // asking each frame turned it off and on again 60 times a second, so with an X11 input
+        // method (fcitx, ibus) no key reached the text, and could stay lost after the edit
+        if !m.has_focus(eid) {
+            m.request_focus(eid);
+        }
         m.set_focus_lock_filter(eid, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
     });
     let Some(tp) = text_of(&v.spec) else { return };

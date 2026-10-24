@@ -16,6 +16,10 @@ struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
     shots: Option<std::path::PathBuf>,
+    /// Frames that restarted an input method already on (`should_interrupt_composition` while the
+    /// frame before also had it on): the window then turns it off and on again.
+    ime_restarts: usize,
+    ime_on: bool,
 }
 
 impl Driver {
@@ -30,7 +34,7 @@ impl Driver {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
         let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
+        let mut d = Driver { harness, tx, shots, ime_restarts: 0, ime_on: false };
         d.frames(4);
         d
     }
@@ -43,6 +47,11 @@ impl Driver {
             eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
             *self.harness.input_mut() = raw;
             self.harness.step();
+            let ime = self.harness.output().platform_output.ime;
+            if self.ime_on && ime.is_some_and(|i| i.should_interrupt_composition) {
+                self.ime_restarts += 1;
+            }
+            self.ime_on = ime.is_some();
         }
     }
 
@@ -355,6 +364,38 @@ fn text_committed_by_an_input_method_is_typed_on_the_monitor() {
     d.frames(4);
     let list = d.exec("graphics.list", json!({}));
     assert_eq!(list["layers"][0]["text"], "A你好");
+}
+
+/// While text is typed on the monitor the input method stays on and is not restarted: not on
+/// every frame (the text asked for the keyboard on each one, and each request restarts it), and not
+/// when an edit of a text already there starts (it was turned on, then restarted a frame later by
+/// the focus request). Each restart makes the window drop and recreate its X11 input context; with
+/// fcitx or ibus no key reached the title, and typing stayed broken until FilmCraft was restarted.
+#[test]
+fn typing_on_the_monitor_does_not_restart_the_input_method() {
+    let mut d = Driver::new();
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    let (x, y) = (pic[0] + pic[2] * 0.3, pic[1] + pic[3] * 0.2);
+    d.ok("ui.click", json!({"x": x, "y": y}));
+    d.ok("ui.type", json!({"text": "Title"}));
+    d.frames(10);
+    assert!(d.ime_on, "the input method is on while the new title is typed");
+    assert_eq!(d.ime_restarts, 0, "typing a new title restarted the input method");
+    // stop, then click into the title again and go on typing
+    d.ok("ui.key", json!({"key": "Escape"}));
+    // the input method stays on a moment after the edit (crate::ime_hold), then goes off
+    d.frames(40);
+    assert!(!d.ime_on, "Esc ends the edit and then the input method");
+    d.ok("ui.click", json!({"x": x + 4.0, "y": y + 10.0}));
+    d.frames(10);
+    assert!(d.ime_on, "the input method is on again");
+    assert_eq!(d.ime_restarts, 0, "editing the title again restarted the input method");
+    d.harness.input_mut().events.push(egui::Event::Ime(egui::ImeEvent::Commit("!".into())));
+    d.frames(4);
+    let text = d.exec("graphics.list", json!({}))["layers"][0]["text"].clone();
+    assert!(text.as_str().is_some_and(|t| t.contains('!') && t.len() == 6), "{text}");
 }
 
 /// #2430: a click (no drag) in the text being edited on the monitor puts the caret there; before,
