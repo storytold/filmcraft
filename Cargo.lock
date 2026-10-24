@@ -2073,6 +2073,7 @@ name = "filmcraft-h264enc"
 version = "0.12.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-h264",
  "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",

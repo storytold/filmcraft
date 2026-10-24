@@ -2,12 +2,16 @@
 //!
 //! `cargo run --release -p filmcraft-h264enc --example h264enc_synth -- W H FRAMES [profile] [preset] [bframes] [rate] [slices] [src]`
 //! profile: baseline|main|high, preset: speed|balanced|quality, rate: qpN | crfN | cbrN | vbrN
+//! Environment: THREADS, KEYINT, AQ, PERF=k (cycle k source pictures), GOPS=0 (no GOP-parallel coding).
 #[path = "../tests/it/common/mod.rs"]
 mod common;
 
 use filmcraft_h264enc::*;
 use std::time::Instant;
 
+/// Encode the pictures the arguments describe and print speed, bitrate and the first packets; then
+/// (with ffmpeg, and not on a `PERF` run) decode the stream, report each picture where the decode
+/// first differs from the encoder's reconstruction, and the mean luma PSNR against the source.
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let arg = |i: usize, d: &str| a.get(i).cloned().unwrap_or_else(|| d.to_string());
@@ -48,6 +52,9 @@ fn main() {
     if let Ok(k) = std::env::var("AQ") {
         cfg.aq_strength = k.parse().unwrap();
     }
+    if let Ok(k) = std::env::var("GOPS") {
+        cfg.parallel_gops = k != "0";
+    }
     // PERF=k: generate only k distinct pictures and cycle them (for long speed runs without verification).
     let distinct = std::env::var("PERF").ok().map_or(n, |k| k.parse::<usize>().unwrap().min(n));
     let base: Vec<common::Yuv> =
@@ -60,14 +67,16 @@ fn main() {
     let mut out = Vec::new();
     let mut pk = Vec::new();
     let t0 = Instant::now();
+    let c0 = cpu_secs();
     if perf {
         enc.set_recon_capture(false);
     }
     for (i, f) in frames.iter().enumerate() {
         pk.extend(enc.encode(&f.frame(), i as i64).unwrap());
     }
-    pk.extend(enc.flush());
+    pk.extend(enc.flush().unwrap());
     let el = t0.elapsed().as_secs_f64();
+    let cpu = cpu_secs().zip(c0).map_or(String::new(), |(c1, c0)| format!(", {:.2}s CPU", c1 - c0));
     for p in &pk {
         out.extend_from_slice(&p.data);
     }
@@ -76,7 +85,7 @@ fn main() {
     let mut recon = enc.take_recon();
     recon.sort_by_key(|r| r.pts);
     let kbps = out.len() as f64 * 8.0 / (n as f64 / 30.0) / 1000.0;
-    println!("encoded {n} frames in {el:.3}s = {:.1} fps, {} bytes, {kbps:.1} kbps", n as f64 / el, out.len());
+    println!("encoded {n} frames in {el:.3}s{cpu} = {:.1} fps, {} bytes, {kbps:.1} kbps, GOP-parallel {}", n as f64 / el, out.len(), enc.gop_parallel());
     for p in pk.iter().take(12) {
         print!("{:?}(pts{} dts{} qp{} {}B) ", p.frame_type, p.pts, p.dts, p.qp, p.data.len());
     }
@@ -151,4 +160,15 @@ fn main() {
     }
     println!("mean luma PSNR vs source: {:.2} dB", psnr_sum / recon.len() as f64);
     std::fs::write(dir.join("src.yuv"), &src_all).unwrap();
+}
+
+/// CPU time of the process (user + system) in seconds, from `/proc` (Linux; `None` elsewhere).
+fn cpu_secs() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // the fields after the parenthesised command name; utime and stime are the 12th and 13th
+    let rest = stat.rsplit_once(')')?.1;
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    let ticks: f64 = f.get(11)?.parse::<f64>().ok()? + f.get(12)?.parse::<f64>().ok()?;
+    // USER_HZ, fixed at 100 for /proc
+    Some(ticks / 100.0)
 }

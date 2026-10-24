@@ -344,6 +344,65 @@ the encoder's hand-off). Only NVENC, whose encode is light on the CPU, comes clo
 encoder waits for the renderer), as expected. 1080p exports use 70-160 MB more (the second batch of 16
 frames); 4K exports use less than before because the batch is smaller (8 for SDR, 2 for HDR instead of 16).
 
+## H.264: CRF and constant-QP GOPs in parallel
+
+The built-in H.264 encoder codes a picture's slices in parallel and the B-frames of a mini-GOP
+together, but one picture batch after another. With constant QP and CRF it now also codes whole GOPs
+at the same time, with byte-identical output (`crates/h264enc/README.md`, "Threading"):
+
+- `try_encode` keeps its serial input side on the calling thread (import, half-resolution analysis,
+  complexity against the previous source picture, AQ offsets, the IDR / scene-cut decision, the
+  mini-GOP structure, decoding times). Each GOP gets a thread with its own reference state from its IDR
+  on; its batches reach that thread as they are formed and are coded with the same calls, in the same
+  order, as on the serial path. When the input comes faster than one GOP can be coded, the following GOPs
+  start while the earlier ones finish; all their slices share the encoder's pool. A small pool of its own
+  analyses the input (on the shared pool the analysis waited behind the slices: 16 ms instead of 1 ms a
+  picture at 1080p, and the GOP threads starved).
+- IDRs are closed, and the few counters a GOP takes from the stream (`idr_pic_id` parity, reference
+  picture numbering, the identification / HDR SEI on the first picture only) are handed to its thread.
+  Packets, rate-control and first-pass statistics and reconstructions come back in decoding order, so
+  packets come out later than on the serial path but never out of order. The export interleaves video and
+  audio by `VideoEncoder::packets_due` (what a serial encode would have returned by the end of each
+  16-frame group): a group whose packets are not out yet waits with its audio, so a CRF export is the
+  same file either way, on any core count and step size (`determinism_tests.rs`,
+  `job::tests::late_packets_keep_the_interleave_of_a_serial_encode`).
+- Memory: the input pictures not coded yet plus each GOP thread's working set stay within 1 GiB of padded
+  pictures (3.6 MiB each at 1080p, 13 MiB at 4K); `try_encode` waits for the oldest GOP before passing it.
+  When two GOPs of `keyint` pictures do not fit (4K with the export's 2-second keyframe distance, 1080p
+  with `keyint` 250) the encoder stays serial, as it does with one thread or `parallel_gops = false`.
+- The bitrate modes (CBR, one-pass VBR, the default export, and both passes of two-pass VBR) stay serial:
+  every picture's QP comes from the actual size of the pictures coded before it (ABR model, VBV fill,
+  two-pass model error) and per-macroblock AQ is applied to that fractional QP, so no GOP can start before
+  the previous one is coded without changing the bytes.
+
+Measured 2026-10-23 on an Intel Core Ultra 9 275HX (24 cores: 8 P + 16 E), Linux, release builds,
+serial and parallel runs alternating. Other work was using several cores meanwhile, so the numbers
+are indicative.
+
+The encoder alone (`h264enc_synth 1920 1080 192 high balanced 2 <rate> 17` with `KEYINT=60 PERF=96`,
+17 slices as an export uses, three alternated runs each, `GOPS=0` for the serial path; CPU is user +
+system time of the process during the encode, rayon's idle spinning included):
+
+| Rate control | serial wall / CPU | GOP-parallel wall / CPU | speedup | stream md5 (both) |
+|---|---|---|---|---|
+| CRF 23 | 4.90-5.00 s / 62-64 s | 4.15-4.38 s / 72-73 s | 1.15x | `7457ac2b50f81795abe04c84e98d6d78` |
+| QP 26 | 4.42-5.00 s / 56-60 s | 3.75-4.00 s / 64-68 s | 1.20x | `0cc05ee61ae52a6e5debea30d1a41e7c` |
+
+Whole exports through the CLI: a 1920x1080 23.976 fps H.264 + AAC clip, Sequence From Clip, settings
+`{"bitrateMode":"crf","crf":23,"hardwareEncoding":"off"}` (a keyframe every 48 frames), main's build
+against this one, median of alternated runs; CPU and peak RSS of the CLI process:
+
+| Export | main: wall / CPU / peak RSS | GOP-parallel: wall / CPU / peak RSS | speedup | file md5 (both) |
+|---|---|---|---|---|
+| 0-8 s, 192 frames (5 rounds) | 5.15 s / 50.4 s / 1880 MB | 4.43 s / 53.6 s / 2039 MB | 1.16x | `d5aa1193c07946b172b7e648f69f2b27` |
+| 0-20 s, 479 frames (3 rounds) | 11.34 s / 117.6 s / 2124 MB | 8.89 s / 126.6 s / 2344 MB | 1.28x | `2e783401b9d3b3ea4d27cf08fd19bbaa` |
+
+The serial encoder already kept about 12 of the 24 cores busy (17 slices per picture, 34 per B batch);
+the GOP-parallel one fills most of the rest, so the gain is bounded by the cores the serial path left idle
+(and, on this machine, by the other load); longer exports gain more because more GOPs overlap. The
+first GOP starts coding at its first picture, and the flush waits for the last GOPs. Peak RSS grows by
+0.15-0.25 GB here (the uncoded pictures and the GOP threads' reference pictures), CPU time by 6-8 %.
+
 ## Results (HW3: VideoToolbox hardware H.265 (HEVC) encoding, against hardware H.264)
 
 Apple M1 (8 cores, 16 GB), 2026-10-07, single runs on an otherwise idle machine, release build. Both

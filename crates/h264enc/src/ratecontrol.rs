@@ -78,10 +78,38 @@ impl PassStats {
 
 #[derive(Clone, Debug)]
 pub enum RcKind {
-    Qp(u8),
-    Crf(f32),
+    Fixed(FixedQp),
     Abr { kbps: u32 },
     TwoPass { kbps: u32, plan: Vec<f64>, planned_bits: Vec<f64>, planned_total: f64, remaining_bits: Vec<f64> },
+}
+
+/// The modes whose frame QP depends only on the frame type, never on what earlier frames cost:
+/// constant QP and constant quality. Their frames can be coded in any order (GOP-parallel path).
+#[derive(Clone, Copy, Debug)]
+pub enum FixedQp {
+    /// Constant QP (0–51); B frames use QP + 2.
+    Qp(u8),
+    /// Constant quality factor (0–51) with I/P/B offsets.
+    Crf(f32),
+}
+
+impl FixedQp {
+    /// The (fractional) frame QP of a frame of type `t`.
+    pub fn frame_qp(self, t: SliceType) -> f64 {
+        match self {
+            FixedQp::Qp(q) => {
+                let q = q as f64;
+                if t == SliceType::B { (q + 2.0).min(51.0) } else { q }
+            }
+            FixedQp::Crf(c) => (c as f64
+                + match t {
+                    SliceType::I => -2.0,
+                    SliceType::P => 0.0,
+                    SliceType::B => 1.5,
+                })
+            .clamp(0.0, 51.0),
+        }
+    }
 }
 
 pub struct RateControl {
@@ -164,24 +192,21 @@ impl RateControl {
         RcKind::TwoPass { kbps, plan, planned_bits, planned_total, remaining_bits }
     }
 
+    /// The QP rule when it needs no feedback (constant QP, constant quality).
+    #[cfg(feature = "threads")]
+    pub fn fixed(&self) -> Option<FixedQp> {
+        match self.kind {
+            RcKind::Fixed(f) => Some(f),
+            _ => None,
+        }
+    }
+
     /// Choose the frame QP (fractional) for frame `index` (display order) of `t` with lookahead complexity `cplx`.
     pub fn frame_qp(&mut self, t: SliceType, cplx: f64, index_in_coding_order: usize) -> f64 {
         let ti = type_idx(t);
         let cplx = cplx.max(1.0);
         let qp = match &self.kind {
-            RcKind::Qp(q) => {
-                let q = *q as f64;
-                return if t == SliceType::B { (q + 2.0).min(51.0) } else { q };
-            }
-            RcKind::Crf(c) => {
-                let c = *c as f64;
-                return (c + match t {
-                    SliceType::I => -2.0,
-                    SliceType::P => 0.0,
-                    SliceType::B => 1.5,
-                })
-                .clamp(0.0, 51.0);
-            }
+            RcKind::Fixed(f) => return f.frame_qp(t),
             RcKind::Abr { kbps } => {
                 let bpf = *kbps as f64 * 1000.0 / self.fps;
                 // rate factor so that past frames at this rf would have hit the target

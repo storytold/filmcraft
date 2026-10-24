@@ -16,6 +16,10 @@
 //! The file does not depend on how many frames a step renders (one per core natively, one on the
 //! web): packets go to the muxer in fixed groups of [`INTERLEAVE`] output frames, each followed by
 //! the audio up to its end, so the same project and settings give the same bytes on any machine.
+//! A group's video is the packets the encoder had returned by its end when coding one picture
+//! batch at a time ([`VideoEncoder::packets_due`]); an encoder that codes in the background (the
+//! GOP-parallel H.264 encoder for CRF) returns some of them later, and the group then waits for
+//! them with its audio (`Cut`), so the file is the one a serial encode writes.
 //!
 //! # Overlapping render and encode
 //!
@@ -59,6 +63,7 @@
 //!   their sum may exceed the export's wall time; `Wait` is the time the encoding side then spent
 //!   waiting for the render (large: render-bound; near zero: encode-bound).
 
+use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -128,6 +133,13 @@ fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider)
     (!pending.load(Ordering::Relaxed)).then_some(frames)
 }
 
+/// The end of an [`INTERLEAVE`] group: its video is the stream's packets up to number `packets`
+/// (those not written by the groups before), then comes its audio.
+struct Cut {
+    packets: u64,
+    audio: Option<Vec<Vec<f32>>>,
+}
+
 /// What encoding a batch came to.
 enum Encoded {
     Done,
@@ -171,8 +183,15 @@ pub struct Exporter {
     measured: bool,
     /// The first pass of a two-pass encode is running.
     first_pass: bool,
-    /// Encoded video packets not written yet (the current [`INTERLEAVE`] group).
+    /// Encoded video packets not written yet (the current [`INTERLEAVE`] group, and the groups in
+    /// `cuts` waiting for theirs).
     queued: Vec<EncodedPacket>,
+    /// Video packets received from the encoder so far (written, or in `queued`).
+    received: u64,
+    /// Video packets written so far.
+    written: u64,
+    /// Ended interleave groups not written yet: their video packets are not all out.
+    cuts: VecDeque<Cut>,
     /// Created after the first group was encoded (encoders may finalise their codec config then).
     mux: Option<Mp4Writer<Out>>,
     /// MXF exports write through this instead of `mux`.
@@ -219,6 +238,9 @@ impl Exporter {
         timed(Stage::Setup, || Self::set_up(project, seq, settings, progress))
     }
 
+    /// The work of [`Exporter::new`]: validate the settings, pick the colour signalling, bake the
+    /// derived bitrate and keyframe values in, and create the pipeline, the video and audio encoders
+    /// and the audio mixer (the container writer comes once the first group is encoded).
     fn set_up(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, progress: &Progress) -> Result<Self> {
         if !stepped(settings.format) {
             return Err(ExportError::Unsupported(format!("{} is not a stepped export", settings.format.label())));
@@ -281,6 +303,9 @@ impl Exporter {
             measured,
             first_pass: two_pass,
             queued: Vec::new(),
+            received: 0,
+            written: 0,
+            cuts: VecDeque::new(),
             mux: None,
             mxf: None,
             seq,
@@ -340,10 +365,13 @@ impl Exporter {
         if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch }
     }
 
+    /// The audio sample at rate `sr` where frame `f` starts, rounded down.
     fn sample_at_frame(&self, f: i64, sr: u32) -> i64 {
         self.pipe.rate.tick_of(f).to_units_floor(sr as i64)
     }
 
+    /// Write the mixed audio of an interleave group: to the MXF writer, or to the audio track,
+    /// encoded (AAC, FLAC) or as little-endian PCM. Nothing to write without audio.
     fn write_audio(&mut self, planar: Option<Vec<Vec<f32>>>) -> Result<()> {
         if let Some(m) = self.mxf.as_mut() {
             return match planar {
@@ -375,6 +403,7 @@ impl Exporter {
         Ok(())
     }
 
+    /// Write encoded video packets, in order, to the container (or the MXF writer).
     fn write_video(&mut self, packets: Vec<EncodedPacket>) -> Result<()> {
         if let Some(m) = self.mxf.as_mut() {
             return m.write_video(packets);
@@ -383,6 +412,30 @@ impl Exporter {
         for p in packets {
             mux.write_sample(self.vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
                 .map_err(|e| ExportError::Io(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Take packets from the video encoder: they wait in `queued` until their interleave group is
+    /// written.
+    fn receive(&mut self, packets: Vec<EncodedPacket>) {
+        self.received += packets.len() as u64;
+        self.queued.extend(packets);
+    }
+
+    /// Write the ended interleave groups whose video packets are all out, in order: each group's
+    /// video, then its audio. `finishing`: the encoder was flushed, nothing more will come.
+    fn write_groups(&mut self, finishing: bool) -> Result<()> {
+        while let Some(due) = self.cuts.front().map(|c| c.packets) {
+            if due > self.received && !finishing {
+                break;
+            }
+            let n = usize::try_from(due.saturating_sub(self.written)).unwrap_or(usize::MAX).min(self.queued.len());
+            let packets: Vec<EncodedPacket> = self.queued.drain(..n).collect();
+            self.written += n as u64;
+            timed(Stage::Mux, || self.write_video(packets))?;
+            let pcm = self.cuts.pop_front().and_then(|c| c.audio);
+            timed(Stage::Audio, || self.write_audio(pcm))?;
         }
         Ok(())
     }
@@ -483,8 +536,12 @@ impl Exporter {
         if self.mux.is_none() && self.mxf.is_none() {
             self.open_mux()?;
         }
-        let mut tail = std::mem::take(&mut self.queued);
-        tail.extend(self.venc.flush()?);
+        let flushed = self.venc.flush()?;
+        self.receive(flushed);
+        // every packet is out now: the groups still waiting, then the rest
+        self.write_groups(true)?;
+        let tail = std::mem::take(&mut self.queued);
+        self.written += tail.len() as u64;
         self.write_video(tail)?;
         self.write_audio(mixed)?;
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
@@ -618,17 +675,14 @@ impl Exporter {
         for (k, frame) in frames.into_iter().enumerate() {
             let fi = f + k as i64;
             let packets = timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), fi))?;
-            self.queued.extend(packets);
+            self.receive(packets);
             if cuts.contains(&(fi + 1)) {
-                timed(Stage::Mux, || -> Result<()> {
-                    if self.mux.is_none() && self.mxf.is_none() {
-                        self.open_mux()?;
-                    }
-                    let packets = std::mem::take(&mut self.queued);
-                    self.write_video(packets)
-                })?;
-                let pcm = mixed.next().flatten();
-                timed(Stage::Audio, || self.write_audio(pcm))?;
+                if self.mux.is_none() && self.mxf.is_none() {
+                    timed(Stage::Mux, || self.open_mux())?;
+                }
+                let packets = self.venc.packets_due().unwrap_or(self.received);
+                self.cuts.push_back(Cut { packets, audio: mixed.next().flatten() });
+                self.write_groups(false)?;
             }
         }
         Ok(Encoded::Done)
@@ -656,6 +710,7 @@ mod tests {
 
     const MIB: u64 = 1 << 20;
 
+    /// A frame in flight takes 4 bytes a pixel in SDR and 12 in HDR, saturating, none when empty.
     #[test]
     fn frame_bytes_by_format() {
         assert_eq!(frame_bytes(1920, 1080, false), 1920 * 1080 * 4);
@@ -664,6 +719,9 @@ mod tests {
         assert_eq!(frame_bytes(0, 1080, false), 0);
     }
 
+    /// The overlap batch never asks for more than the batch or fewer than one frame, handles
+    /// degenerate sizes, and keeps two batches in flight within the budget unless one frame alone
+    /// passes it.
     #[test]
     fn the_overlap_batch_fits_the_memory_budget() {
         let budget = IN_FLIGHT_BUDGET;
@@ -691,6 +749,78 @@ mod tests {
                 assert!(n >= 1 && n <= batch as u64);
                 assert!(n == 1 || 2 * n * fb <= budget, "batch {batch}, frame {fb}: {n}");
             }
+        }
+    }
+
+    /// An encoder that hands its packets over late (every 11th picture, and at the flush), as the
+    /// GOP-parallel H.264 encoder does, saying which of them a serial encode would have returned.
+    struct Late {
+        inner: Box<dyn VideoEncoder>,
+        held: Vec<EncodedPacket>,
+        pictures: u64,
+        due: u64,
+    }
+
+    impl VideoEncoder for Late {
+        /// The wrapped encoder's sample entry.
+        fn sample_entry(&self) -> SampleEntry {
+            self.inner.sample_entry()
+        }
+        /// The wrapped encoder's timescale.
+        fn timescale(&self) -> u32 {
+            self.inner.timescale()
+        }
+        /// Encode with the wrapped encoder, holding its packets back until every 11th picture.
+        fn encode(&mut self, frame: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+            let p = self.inner.encode(frame)?;
+            self.due += p.len() as u64;
+            self.held.extend(p);
+            self.pictures += 1;
+            Ok(if self.pictures.is_multiple_of(11) { std::mem::take(&mut self.held) } else { Vec::new() })
+        }
+        /// Flush the wrapped encoder and hand over every packet held.
+        fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+            let p = self.inner.flush()?;
+            self.due += p.len() as u64;
+            self.held.extend(p);
+            Ok(std::mem::take(&mut self.held))
+        }
+        /// The wrapped encoder's media start.
+        fn media_start(&self) -> Option<i64> {
+            self.inner.media_start()
+        }
+        /// The packets the wrapped encoder returned so far: what a serial encode would have
+        /// handed over by now.
+        fn packets_due(&self) -> Option<u64> {
+            Some(self.due)
+        }
+    }
+
+    /// H.264 and ProRes exports write the same file when the encoder hands its packets over late:
+    /// the interleave groups wait for their video, as `packets_due` says.
+    #[test]
+    fn late_packets_keep_the_interleave_of_a_serial_encode() {
+        for (format, ext) in [(Format::H264, "mp4"), (Format::ProRes, "mov")] {
+            let export = |late: bool| {
+                let path = std::env::temp_dir().join(format!("fc-export-late-{}-{}-{late}.{ext}", std::process::id(), format.id()));
+                let settings = ExportSettings { format, path: path.to_string_lossy().to_string(), ..Default::default() };
+                let (p, seq, m) = crate::tests::project();
+                let prog = Progress::default();
+                let mut ex = Exporter::new(p, seq, &settings, &prog).unwrap();
+                ex.set_batch(5);
+                if late {
+                    let inner = make_venc(&ex.settings, ex.pipe.w, ex.pipe.h, ex.pipe.rate).unwrap();
+                    ex.venc = Box::new(Late { inner, held: Vec::new(), pictures: 0, due: 0 });
+                }
+                let mut waited = false;
+                while !matches!(ex.step(&m, &prog).unwrap(), Step::Done(_)) {
+                    waited |= !ex.cuts.is_empty();
+                }
+                assert_eq!(waited, late, "{}: a group waited for its video", format.label());
+                assert!(ex.cuts.is_empty() && ex.queued.is_empty() && ex.written == ex.received);
+                std::fs::read(&path).unwrap()
+            };
+            assert!(export(false) == export(true), "{}: late packets change the file", format.label());
         }
     }
 }

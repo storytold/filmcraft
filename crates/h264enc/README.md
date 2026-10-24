@@ -21,16 +21,18 @@ let mut enc = Encoder::new(cfg)?;
 let avcc = enc.avcc();                      // AVCDecoderConfigurationRecord for the MP4 `avcC` box
 for (i, pic) in pictures.iter().enumerate() {
     let frame = YuvFrame { y: &pic.y, u: &pic.u, v: &pic.v, y_stride: w, uv_stride: w / 2 };
-    for p in enc.encode(&frame, i as i64) { /* p.data, p.pts, p.dts, p.keyframe, p.frame_type */ }
+    for p in enc.encode(&frame, i as i64)? { /* p.data, p.pts, p.dts, p.keyframe, p.frame_type */ }
 }
-for p in enc.flush() { /* ... */ }
+for p in enc.flush()? { /* ... */ }
 ```
 
 - Input: planar 4:2:0 8-bit (`YuvFrame` with strides); any even size, non-multiple-of-16 sizes are
   cropped via the SPS frame cropping. `try_encode` returns an error instead of panicking on short planes.
 - Output: one `Packet` per picture in decoding order with `pts` (as given), `dts` (reorder-delayed, always
   `<= pts` and strictly increasing), `keyframe` (IDR) and the frame type/QP. Annex-B packets carry an AUD,
-  SPS/PPS on every IDR and an identification SEI on the first picture.
+  SPS/PPS on every IDR and an identification SEI on the first picture. With constant QP or CRF the packets
+  may come out later than the picture that made them (see [Threading](#threading)); `flush` returns all of
+  them, and `packets_due()` says how many a serial encode would have returned by now.
 - Two-pass: encode once with `cfg.pass = Pass::First`, take `enc.pass_stats()` (serialisable with
   `PassStats::to_text/from_text`), then encode again with `Pass::Second(stats)`.
 - `set_recon_capture(true)` + `take_recon()` expose the encoder's reconstructed pictures (used by the tests to
@@ -50,7 +52,55 @@ for p in enc.flush() { /* ... */ }
 | Loop filter | normative deblocking (bS 0–4 incl. bi-predicted rules, 8x8-transform edges, chroma QP mapping) in the reconstruction loop |
 | Mode decision | SATD + λ·bits for Speed/Balanced; Quality adds RD-lite (SSD + λ·CABAC-estimated bits) between the best intra/inter/skip candidates |
 | Rate control | `Qp`, `Crf` (constant quality with I/P/B offsets), 1-pass ABR with complexity model + VBV (`Cbr`, 1-pass `Vbr`), closed-loop 2-pass VBR; variance adaptive quantisation (`aq_strength`), lookahead scene-cut IDR insertion |
-| Threading | slice-parallel encoding (MB-row slices, `disable_deblocking_filter_idc = 2` with >1 slice so each slice is also deblocked in parallel), parallel half-sample interpolation and lookahead |
+| Threading | slice-parallel encoding (MB-row slices, `disable_deblocking_filter_idc = 2` with >1 slice so each slice is also deblocked in parallel), parallel half-sample interpolation and lookahead, the B-frames of a mini-GOP coded together, and for constant QP / CRF whole GOPs coded concurrently (same bytes, see [Threading](#threading)) |
+
+## Threading
+
+With the `threads` feature (on by default) the encoder has its own rayon pool of `threads` threads
+(0 = every core) and uses it at three levels:
+
+- **Slices.** A picture is cut into MB-row slices (`slices`, or one per thread up to one per four MB rows),
+  coded and deblocked in parallel. The slice count shapes the stream: an export fixes it from the picture
+  height so the file does not depend on the machine.
+- **B-frames.** The B pictures of a mini-GOP reference only the two anchors around them, so they are coded
+  together (all their slices at once) after the P picture.
+- **GOPs** (constant QP and CRF only). `try_encode` keeps its serial input side on the calling thread:
+  import, half-resolution analysis against the previous source picture, AQ offsets, the IDR / scene-cut
+  decision, the mini-GOP structure, each picture's place in coding order and its decoding time. Coding
+  moves to one thread per GOP, started at the GOP's IDR with its own reference state; the GOP's batches
+  (IDR, then each P picture and its B pictures, then whatever the next IDR or a flush finishes) reach that
+  thread as they are formed and are coded in that order by the same code as the serial path. When the
+  input comes faster than a GOP can be coded, the next GOPs start while the earlier ones finish, so several
+  GOPs run at once, their slices sharing the pool. A small pool of its own analyses the input meanwhile
+  (on the shared pool it waited behind the slices and starved the GOPs).
+
+  The bytes are the serial path's: IDRs are closed (an IDR empties the DPB and restarts `frame_num` and the
+  POC), and the few counters a GOP takes from the stream (the `idr_pic_id` parity, the reference picture
+  numbering, the identification / HDR SEI on the first picture only) are given to its thread. Constant QP
+  and CRF choose a picture's QP from its type alone. Packets, rate-control statistics, first-pass
+  statistics and reconstructions are taken back in decoding order, so a packet only comes out once every
+  packet before it is coded: later than on the serial path. `packets_due()` is the number of packets the
+  serial path would have returned by now; the export interleaves its audio by it, so a CRF export is the same
+  file either way (`crates/export/src/determinism_tests.rs`).
+
+  Memory: the input pictures not coded yet plus each GOP thread's working set (references with their
+  half-sample planes, reconstructions) stay within 1 GiB of padded pictures; `try_encode` waits for the
+  oldest GOPs when the next picture, or the working set of a GOP about to start, would pass it. When two
+  GOPs of `keyint` pictures do not fit (1080p with `keyint` 250, 4K with a 2-second `keyint`), or with one
+  thread, the encoder stays serial (so with the older GOPs taken a new one always fits). A GOP
+  thread that panics turns into `Error::Worker`, returned by the first `try_encode` / `flush` after its
+  death is noticed: that GOP's remaining packets are lost, it takes no more pictures, and when the stream
+  would have continued from it the next picture is coded as an IDR, so no later picture refers to a lost
+  one; the other GOPs and later calls carry on. Dropping the encoder stops every GOP thread after its
+  current batch and waits for it, so the GOPs' pictures, buffers and pool work are released by the time
+  the drop returns.
+  `EncoderConfig::parallel_gops = false` forces the serial path; `gop_parallel()` says which path an encoder
+  took. Measurements: `docs/performance.md`, "H.264: CRF and constant-QP GOPs in parallel".
+
+  The bitrate modes (CBR, one-pass VBR, both passes of two-pass VBR) stay serial: each picture's QP comes
+  from the actual size of the pictures coded before it (ABR model, VBV fill, two-pass model error), and
+  per-macroblock AQ is applied to that fractional frame QP, so no GOP can be coded before the previous one
+  without changing the bytes.
 
 ## Verification
 
@@ -77,8 +127,16 @@ Results on the synthetic content (moving gradient, grain noise, text-like edges,
 
 Development tool: `cargo run --release -p filmcraft-h264enc --example h264enc_synth -- W H FRAMES
 [profile] [preset] [bframes] [qpN|crfN|cbrN|vbrN] [slices] [synth|testsrc2|mandelbrot]` encodes, decodes with
-ffmpeg and reports speed, bitrate, PSNR and any encoder/decoder mismatch (`MAP=1` prints a per-MB mismatch map,
-`PERF=k` cycles k source pictures for speed runs).
+ffmpeg and reports speed (wall and CPU time), bitrate, PSNR and any encoder/decoder mismatch (`MAP=1` prints a
+per-MB mismatch map, `PERF=k` cycles k source pictures for speed runs, `GOPS=0` forces the serial path,
+`THREADS` / `KEYINT` / `AQ` override the settings).
+
+`tests/it/gop_parallel.rs` encodes CRF and constant-QP streams both ways and requires identical packets
+(bytes, pts, dts, keyframe, type, QP) and reconstructions over 0–3 B-frames, Baseline / Main / High, 1 and
+4 slices (and 15 at 320x240), `keyint` 5 and 250 with scene cuts inside a `keyint`, Annex B and
+length-prefixed output, HDR SEI, flushes in the middle of a mini-GOP and a partial last GOP, reconstruction
+capture switched on mid-stream and pools of 2, 3 and 8 threads; also that the bitrate modes, a single thread
+and a picture buffer over budget take the serial path, and that CRF first-pass statistics match.
 
 ## Limitations / not yet implemented
 
@@ -86,4 +144,5 @@ ffmpeg and reports speed, bitrate, PSNR and any encoder/decoder mismatch (`MAP=1
   high bit depth, no custom scaling matrices, no sub-8x8 partitions, no B_8x8.
 - CAVLC is used only for Baseline (High/Main always use CABAC); 8x8 transform is therefore CABAC-only.
 - No trellis quantisation, no psy-RD; no HRD/buffering-period SEI (VBV is enforced internally only).
-- Threading is slice-based only (no frame-level pipelining); with many slices, slice edges are not deblocked.
+- No frame-level pipelining inside a GOP (a picture starts once its reference is complete); with many slices,
+  slice edges are not deblocked.
