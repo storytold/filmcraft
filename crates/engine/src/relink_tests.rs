@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::Session;
 use crate::media_test_util::{frame_rgba, make_movie, psnr, session_with, tmp_dir};
-use crate::relink::{apply_remap, derive_remap, index_folder};
+use crate::relink::{apply_remap, derive_remap};
 
 const W: u32 = 160;
 const H: u32 = 90;
@@ -178,7 +178,7 @@ fn relink_search_does_not_follow_directory_symlinks() {
     symlink(&outside, inside.join("loop")).unwrap();
     symlink(outside.join("outside.mov"), inside.join("linked.mov")).unwrap();
 
-    let index = index_folder(&inside, 20_000);
+    let index = crate::relink::index_folder(&inside, 20_000);
     assert!(index.contains_key("kept.mov"));
     assert!(!index.contains_key("outside.mov"));
     // a symlinked file is still media the user can relink to
