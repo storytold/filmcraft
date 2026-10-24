@@ -348,11 +348,12 @@ fn parse_amount(rest: &str, _lang: Lang) -> Option<(u64, usize, usize, u32, bool
                 if frac_digits.len() < 9 {
                     frac_digits.push(ch);
                 }
-            } else if int_digits.len() > MAX_CARDINAL_DIGITS {
-                break;
-            } else {
+            } else if int_digits.len() <= MAX_CARDINAL_DIGITS {
                 int_digits.push(ch);
             }
+            // Past the cap the digit is not collected, but the run is still consumed: `used`
+            // must cover all of it, or the caller reads only the collected digits and speaks
+            // the rest of the amount as a separate number.
             used = i + 1;
         } else if ch == ',' && !int_digits.is_empty() && !after_decimal {
             if !grouping_followed_by_3(rest, i) {
@@ -1639,5 +1640,19 @@ mod tests {
         assert_eq!(words("1999!", Lang::EnUs), "nineteen ninety-nine |!");
         assert_eq!(words("(1999)", Lang::EnUs), "( nineteen ninety-nine )");
         assert_eq!(words("in 1999.", Lang::EnGb), "in nineteen ninety-nine |");
+    }
+
+    /// A currency amount whose digit run passes the cap must still be read digit by digit:
+    /// the run is consumed as a whole, not only up to the cap. The leftover used to be spoken
+    /// as a cardinal, so a `$` followed by 25 digits ended in "four hundred fifty-six billion".
+    #[test]
+    fn money_run_past_the_cap_is_read_digit_by_digit() {
+        assert_eq!(words("$123456789012345", Lang::EnUs), "one two three four five six seven eight nine zero one two three four five");
+        assert_eq!(
+            words("$1234567890123456789012345", Lang::EnUs),
+            "one two three four five six seven eight nine zero one two three four five six seven eight nine zero one two three four five"
+        );
+        // At or below the cap nothing changes: an amount still goes through the amount path.
+        assert_eq!(words("$12.50", Lang::EnUs), "twelve dollars and fifty cents");
     }
 }
