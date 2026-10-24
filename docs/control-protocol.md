@@ -158,6 +158,8 @@ the result's `sourceInClamped: [ids]` (present with `keepSourceIn`) names the cl
 **Colour** (`crates/engine/src/color.rs`): `sequence.colorSettings {workingSpace: rec709|rec2100-pq|
 rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace?: auto|<id>, pixelAspect?: [num, den]|file}`,
 `color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
+`lut.folders` (the `.cube` / `.3dl` files under `FILMCRAFT_LUT_DIR`, `<exe dir>/LUTs` and
+`<data dir>/LUTs`, grouped by subfolder; the Lumetri menus list them and a pick imports the file),
 `lut.remove {id}`, `lut.export {lut, path, format?}`, `lumetri.setInputLut` / `lumetri.setLook
 {clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
 `lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`. Without

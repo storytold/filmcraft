@@ -91,6 +91,138 @@ fn import_lut_set_input_and_look_then_undo() {
 }
 
 #[test]
+fn lut_folders_list_cube_and_3dl_files_grouped_by_subfolder() {
+    let root = std::env::temp_dir().join(format!("filmcraft-lut-folders-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (rel, text) in [
+        ("Creative/RED_LUSH.cube", "TITLE \"x\"\nLUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n"),
+        ("Creative/sub/deep.3DL", "3DMESH\n"),
+        ("Creative/.hidden.cube", "nope"),
+        ("Creative/readme.txt", "not a LUT"),
+        ("top.cube", "LUT_3D_SIZE 2\n"),
+    ] {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    let luts = crate::color::scan_lut_folders(&[root.clone(), root.join("missing")]);
+    let seen: Vec<(String, String)> = luts.iter().map(|l| (l.group.clone(), l.name.clone())).collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("Creative".to_string(), "RED_LUSH".to_string()),
+            ("Creative / sub".to_string(), "deep".to_string()),
+            (root.file_name().unwrap().to_string_lossy().to_string(), "top".to_string()),
+        ]
+    );
+    // a folder pick is an import plus the slot assignment: the project stays self-contained
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let path = luts[0].path.clone();
+    let r = s.execute("lumetri.setInputLut", json!({"clip": clip.0, "path": path})).unwrap();
+    assert!(r["lut"].as_str().unwrap().starts_with("lib:"));
+    assert_eq!(s.project.luts[0].source_path.as_deref(), Some(luts[0].path.as_str()));
+    // the query itself never fails, whatever the folders hold
+    let q = s.execute("lut.folders", json!({})).unwrap();
+    assert!(q["folders"].is_array() && q["luts"].is_array());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn lut_folder_scan_reads_a_bounded_number_of_entries_per_folder() {
+    let base = std::env::temp_dir().join(format!("filmcraft-lut-budget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (wide, nested, small) = (base.join("wide"), base.join("nested"), base.join("small"));
+    for (dir, n) in [(wide.clone(), 25), (nested.join("sub"), 25), (small.clone(), 1)] {
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..n {
+            std::fs::write(dir.join(format!("l{i:02}.cube")), "").unwrap();
+        }
+    }
+    let count = |luts: &[crate::color::FolderLut], dir: &std::path::Path| luts.iter().filter(|l| std::path::Path::new(&l.path).starts_with(dir)).count();
+    // each folder gets its own budget of 10 entries: 10 of the 25 files, the subfolder entry plus
+    // 9 files beneath it, and the next folder is still read
+    let luts = crate::color::scan_lut_folders_within(&[wide.clone(), nested.clone(), small.clone()], 10, 2000);
+    assert_eq!((count(&luts, &wide), count(&luts, &nested), count(&luts, &small)), (10, 9, 1));
+    // the real budget lists them all
+    let luts = crate::color::scan_lut_folders(&[wide.clone(), nested.clone(), small.clone()]);
+    assert_eq!((count(&luts, &wide), count(&luts, &nested), count(&luts, &small)), (25, 25, 1));
+    // no budget reads nothing
+    assert!(crate::color::scan_lut_folders_within(&[wide], 0, 2000).is_empty());
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn lut_folders_list_each_file_once() {
+    let base = std::env::temp_dir().join(format!("filmcraft-lut-dedup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (a, nested, b) = (base.join("A"), base.join("A").join("LUTs"), base.join("B"));
+    for dir in [&nested, &b] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for p in [a.join("x.cube"), nested.join("y.cube"), b.join("z.cube")] {
+        std::fs::write(p, "").unwrap();
+    }
+    // a folder named twice, and a folder inside another one
+    let luts = crate::color::scan_lut_folders(&[a.clone(), b.clone(), a.clone(), nested.clone()]);
+    let mut names: Vec<&str> = luts.iter().map(|l| l.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["x", "y", "z"], "{luts:?}");
+    // y keeps its first listing, under A
+    assert_eq!(luts.iter().find(|l| l.name == "y").map(|l| l.group.as_str()), Some("LUTs"));
+    // a repeat does not count toward the LUT limit: with the nested folder first, A adds only x
+    // and B's z still fits under a limit of 3
+    let luts = crate::color::scan_lut_folders_within(&[nested.clone(), a.clone(), b.clone()], 100, 3);
+    let mut names: Vec<&str> = luts.iter().map(|l| l.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["x", "y", "z"], "{luts:?}");
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn picking_a_copy_of_a_library_lut_records_its_path() {
+    let base = std::env::temp_dir().join(format!("filmcraft-lut-copy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let text = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    let (p1, p2) = (base.join("one.cube").to_string_lossy().to_string(), base.join("two.cube").to_string_lossy().to_string());
+    std::fs::write(&p1, text).unwrap();
+    std::fs::write(&p2, text).unwrap();
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let r1 = s.execute("lumetri.setInputLut", json!({"clip": clip.0, "path": p1})).unwrap();
+    let r2 = s.execute("lumetri.setInputLut", json!({"clip": clip.0, "path": p2})).unwrap();
+    // one library entry, now from the copy just picked
+    assert_eq!(r1["lut"], r2["lut"]);
+    assert_eq!(s.project.luts.len(), 1);
+    assert_eq!(s.project.luts[0].source_path.as_deref(), Some(p2.as_str()));
+    // the same path again is no edit
+    let n = s.history.undo.len();
+    s.execute("lut.import", json!({"path": p2})).unwrap();
+    assert_eq!(s.history.undo.len(), n);
+    // a bad target changes nothing, even with the undo history full (where an edit would drop
+    // its oldest step): the path stays, no new entry, the same history
+    let p3 = base.join("three.cube").to_string_lossy().to_string();
+    let p4 = base.join("four.cube").to_string_lossy().to_string();
+    std::fs::write(&p3, text).unwrap();
+    std::fs::write(&p4, text.replace("1 1 1", "0.5 0.5 0.5")).unwrap();
+    s.history.limit = s.history.undo.len();
+    let labels = |s: &Session| s.history.undo.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>();
+    let before = labels(&s);
+    let revision = s.revision;
+    s.state.selection = vec![];
+    for path in [&p3, &p4] {
+        assert!(s.execute("lumetri.setInputLut", json!({"clip": 9_999_999, "path": path})).is_err());
+        assert!(s.execute("lumetri.setLook", json!({"path": path})).is_err(), "no clip and nothing selected");
+    }
+    assert_eq!(labels(&s), before);
+    assert_eq!(s.revision, revision);
+    assert_eq!(s.project.luts.len(), 1);
+    assert_eq!(s.project.luts[0].source_path.as_deref(), Some(p2.as_str()));
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
 fn export_builtin_and_library_luts() {
     let mut s = demo();
     for (fmt, ext) in [("cube", "cube"), ("3dl", "3dl")] {
