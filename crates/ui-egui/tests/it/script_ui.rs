@@ -660,6 +660,58 @@ fn shift_click_keeps_the_final_wrapped_row_with_pointer_slip_or_early_shift_rele
 }
 
 #[test]
+fn dropped_candles_cover_the_first_selected_row_below_the_take_number() {
+    for (name, wrapped, single_row) in [("blank-range", false, false), ("blank-single", false, true), ("wrapped-range", true, false)] {
+        let mut driver = Driver::new();
+        let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+        let first_text = if wrapped { "A long first selected row wraps onto several visual lines. ".repeat(3) } else { String::new() };
+        let script = driver.exec(
+            "script.importText",
+            json!({"name":name,"text":format!("\n\n\n\n\n{first_text}\nMARA\nYou said the door was locked.\n\nThe hallway light flickers.")}),
+        )["item"]
+            .as_u64()
+            .unwrap();
+        let rows: Vec<_> = driver.exec("script.inspect", json!({"item":script}))["document"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line["id"].as_u64().unwrap())
+            .collect();
+        let first = rows[5];
+        let last = if single_row { first } else { rows[9] };
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+        if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+            driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+        }
+        driver.exec("project.view.set", json!({"view":"icon"}));
+        driver.ok("ui.click", json!({"id":format!("script.line.{first}"),"fx":0.9}));
+        driver.ok("ui.click", json!({"id":format!("script.line.{last}"),"fx":0.9,"shift":true}));
+        driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"id":format!("script.line.{last}"),"fx":0.9},"steps":16}));
+        let doc = driver.exec("script.inspect", json!({"item":script}));
+        let slate = doc["document"]["slates"][0]["id"].as_u64().unwrap();
+        let take = doc["document"]["slates"][0]["takes"][0]["id"].as_u64().unwrap();
+        assert_eq!(doc["document"]["slates"][0]["takes"][0]["start_line"], first);
+        assert_eq!(doc["document"]["slates"][0]["takes"][0]["end_line"], last);
+        let row = driver.rect(&format!("script.line.{first}"));
+        assert_eq!(row[3] > 20.0, wrapped);
+        let number = driver.rect(&format!("script.take.{take}.metadata"));
+        let thumbnail = driver.rect(&format!("script.slate.{slate}.thumbnail"));
+        assert!(number[1] + number[3] <= row[1], "take number must sit above the first selected row: {number:?} {row:?}");
+        assert!((thumbnail[1] + thumbnail[3] - number[1]).abs() < 1.0, "take number hangs below its thumbnail");
+        let top = driver.rect(&format!("script.take.{take}.topHandle"));
+        assert!((top[1] + top[3] * 0.5 - row[1] - 2.0).abs() < 1.0, "candle must start at the first row boundary: {top:?} {row:?}");
+        let last_row = driver.rect(&format!("script.line.{last}"));
+        let bottom = driver.rect(&format!("script.take.{take}.bottomHandle"));
+        assert!((bottom[1] + bottom[3] * 0.5 - last_row[1] - last_row[3] + 2.0).abs() < 1.0);
+        let mark = driver.exec("script.addMark", json!({"item":script,"take":take,"line":first,"sourceTime":0}))["mark"].as_u64().unwrap();
+        let marker = driver.rect(&format!("script.mark.{mark}"));
+        assert!((marker[1] + marker[3] * 0.5 - row[1] - row[3] * 0.5).abs() < 1.0, "first-row mark stays centered on its row");
+        driver.snapshot(&format!("first-row-{name}"));
+    }
+}
+
+#[test]
 fn repeated_source_uses_one_setup_thumbnail_and_multiple_candles() {
     let mut driver = Driver::new();
     let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
@@ -707,7 +759,7 @@ fn repeated_source_uses_one_setup_thumbnail_and_multiple_candles() {
     assert!((fixed_thumbnail[0] - thumbnail[0]).abs() < 1.0, "moving the wrap margin must not shift a thumbnail");
     assert!((fixed_candle[0] - first_candle[0]).abs() < 1.0, "moving the wrap margin must not shift a candle");
     assert!(second_candle[0] > first_candle[0], "the repeated clip has its own candle beneath one setup thumbnail");
-    assert!((thumbnail[1] + thumbnail[3] - first_candle[1]).abs() < 1.0, "thumbnail bottom must meet a row boundary without stretching that row");
+    assert!((thumbnail[1] + thumbnail[3] + 17.0 - first_candle[1]).abs() < 1.0, "thumbnail and take number must sit above the first covered row");
     assert!(second_candle[0] - first_candle[0] <= 32.0, "candles beneath one thumbnail should form a tight group");
     assert!(first_candle[3] <= 26.0, "a short text row must not grow to fit the thumbnail");
     driver.snapshot("multi-take-dark");

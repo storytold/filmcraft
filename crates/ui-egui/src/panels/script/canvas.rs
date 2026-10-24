@@ -224,8 +224,8 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
                 if cx < body.left() || cx > body.right() {
                     continue;
                 }
-                let box_bottom = take_metadata_rect(cx, box_top).bottom();
-                let candle_top = base_y + row_top + preview_y + 16.0;
+                let box_bottom = take_metadata_rect(cx, box_top - TAKE_HEADER_H).bottom();
+                let candle_top = base_y + row_top + preview_y + CANDLE_EDGE_INSET;
                 if (box_bottom - candle_top).abs() > 1.0 {
                     ui.painter().with_clip_rect(body).line_segment([pos2(cx, box_bottom), pos2(cx, candle_top)], Stroke::new(1.0, t.text_dim));
                 }
@@ -448,7 +448,7 @@ fn margin_ruler(
 fn thumbnail_rect(right_x: f32, row_y: f32, header: &SlateHeader<'_>, scroll: f32, width: f32) -> Rect {
     let group_center = right_x + header.center_x - scroll;
     let height = thumbnail_height(width);
-    Rect::from_min_size(pos2(group_center - width * 0.5, row_y - height), vec2(width, height))
+    Rect::from_min_size(pos2(group_center - width * 0.5, row_y - TAKE_HEADER_H - height), vec2(width, height))
 }
 
 /// Paint one narrow overlay for each contiguous off-screen passage. Restarting on every
@@ -493,8 +493,8 @@ fn paint_offscreen_paths(
                 flush(&mut overlay);
                 continue;
             }
-            let y0 = base_y + tops[index] + preview_y + if index == start { 16.0 } else { 0.0 };
-            let y1 = base_y + tops[index + 1] + preview_y - if index == end { 2.0 } else { 0.0 };
+            let y0 = base_y + tops[index] + preview_y + if index == start { CANDLE_EDGE_INSET } else { 0.0 };
+            let y1 = base_y + tops[index + 1] + preview_y - if index == end { CANDLE_EDGE_INSET } else { 0.0 };
             let delta = (y1 - y0).max(0.0);
             let points = [pos2(cx, y0), pos2(cx - 5.0, y0 + delta / 3.0), pos2(cx + 5.0, y0 + delta * 2.0 / 3.0), pos2(cx, y1)];
             overlay.extend(points.iter().copied().skip(usize::from(!overlay.is_empty())));
@@ -698,8 +698,8 @@ fn row_view(
         // outline equally on both sides of the colored candle.
         let halo = Stroke::new(if selected_take { 9.0 } else { 7.0 }, t.text_dim);
         let paint = ui.painter().with_clip_rect(draw_clip);
-        let candle_top = if index == start { draw_row.min.y + 16.0 } else { draw_row.min.y };
-        let candle_bottom = if index == end { draw_row.max.y - 2.0 } else { draw_row.max.y };
+        let candle_top = if index == start { draw_row.min.y + CANDLE_EDGE_INSET } else { draw_row.min.y };
+        let candle_bottom = if index == end { draw_row.max.y - CANDLE_EDGE_INSET } else { draw_row.max.y };
         paint.line_segment([pos2(cx, candle_top), pos2(cx, candle_bottom)], halo);
         paint.line_segment([pos2(cx, candle_top), pos2(cx, candle_bottom)], stroke);
         // Keep the short exposed tips at either endpoint the same color as
@@ -708,11 +708,11 @@ fn row_view(
         // color peek through even when the adjacent range is recolored.
         let segment_height = (candle_bottom - candle_top).max(0.0);
         let cap_height = if start == end {
-            12.0_f32.min(segment_height * 0.5)
+            CANDLE_CAP_H.min(segment_height * 0.5)
         } else {
-            let first_span = tops.get(start).zip(tops.get(start + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top - 16.0).max(0.0));
-            let last_span = tops.get(end).zip(tops.get(end + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top - 2.0).max(0.0));
-            12.0_f32.min(first_span).min(last_span)
+            let first_span = tops.get(start).zip(tops.get(start + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top - CANDLE_EDGE_INSET).max(0.0));
+            let last_span = tops.get(end).zip(tops.get(end + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top - CANDLE_EDGE_INSET).max(0.0));
+            CANDLE_CAP_H.min(first_span).min(last_span)
         };
         if index == start {
             paint.rect_filled(Rect::from_min_size(pos2(cx - halo.width * 0.5, candle_top), vec2(halo.width, cap_height)), 0.0, t.text_dim);
@@ -756,7 +756,7 @@ fn row_view(
         });
         let mark = dragged_here.or_else(|| take.marks.iter().find(|mark| app.ui.script.drag_mark != Some((take.id.0, mark.id.0)) && mark.line == line.id));
         if let Some(mark) = mark {
-            let mark_y = if index == start { draw_row.max.y - 8.0 } else { draw_row.center().y };
+            let mark_y = draw_row.center().y;
             let mark_rect = Rect::from_center_size(pos2(cx, mark_y), vec2(23.0, 18.0));
             let marker = ui.painter().with_clip_rect(draw_clip);
             marker.add(egui::Shape::convex_polygon(
@@ -822,8 +822,8 @@ fn endpoint_interaction(
     take_click: &mut bool,
     actions: &mut Vec<Action>,
 ) {
-    let candle_top = if index == start { row.min.y + 16.0 } else { row.min.y };
-    for (top, y) in [(true, candle_top), (false, row.max.y - 2.0)] {
+    let candle_top = if index == start { row.min.y + CANDLE_EDGE_INSET } else { row.min.y };
+    for (top, y) in [(true, candle_top), (false, row.max.y - CANDLE_EDGE_INSET)] {
         if (top && index != start) || (!top && index != end) {
             continue;
         }
@@ -906,7 +906,7 @@ fn thumbnail_interaction(
     }
     if app.ui.script.drag_slate == Some(header.id) {
         if let Some(pointer) = response.interact_pointer_pos() {
-            let bottom_y = (pointer.y - app.ui.script.drag_slate_grab_y - base_y).max(0.0);
+            let bottom_y = (pointer.y - app.ui.script.drag_slate_grab_y + TAKE_HEADER_H - base_y).max(0.0);
             let lower = first_visible(tops, bottom_y).min(doc.lines.len().saturating_sub(1));
             let upper = (lower + 1).min(doc.lines.len().saturating_sub(1));
             let mut target = if (tops[upper] - bottom_y).abs() < (tops[lower] - bottom_y).abs() { upper } else { lower };
@@ -1033,7 +1033,7 @@ fn take_metadata_paint(app: &mut FilmcraftApp, ui: &egui::Ui, doc: &ScriptDocume
 }
 
 fn take_metadata_rect(cx: f32, thumbnail_bottom: f32) -> Rect {
-    Rect::from_min_size(pos2(cx - 8.0, thumbnail_bottom), vec2(16.0, 15.0))
+    Rect::from_min_size(pos2(cx - 8.0, thumbnail_bottom), vec2(16.0, TAKE_NUMBER_H))
 }
 
 fn take_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, take: &ScriptTake, actions: &mut Vec<Action>) {

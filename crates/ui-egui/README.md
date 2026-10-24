@@ -9,6 +9,9 @@ Trimming a take candle hides annotations outside its coverage while preserving t
 mark IDs and source times. Expanding coverage restores marks, row colors and off-screen passages.
 Hidden marks cannot be selected or used to cue Source and do not choose the default thumbnail.
 Scene and Page menus retain repeated labels as separate navigation points in script order.
+Setup thumbnails and take-number boxes sit above the first covered row; candle caps, endpoint
+handles, off-screen notation and marks align with that row, including blank and wrapped lines.
+The short gray end caps keep equal heights independently of the first row’s available space.
 Clicking a script row anywhere across the canvas clears the active candle, thumbnail and mark
 and selects that line; Shift-click extends the line range on press, retaining the endpoint if
 the pointer slips or Shift is released before the mouse button. Clicking below the rows clears the

@@ -22,6 +22,10 @@ const DEFAULT_THUMB_W: f32 = 96.0;
 const MIN_THUMB_W: f32 = 64.0;
 const MAX_THUMB_W: f32 = 192.0;
 const THUMB_CHIN_H: f32 = 16.0;
+const TAKE_NUMBER_H: f32 = 15.0;
+const TAKE_HEADER_H: f32 = TAKE_NUMBER_H + 2.0;
+const CANDLE_EDGE_INSET: f32 = 2.0;
+const CANDLE_CAP_H: f32 = 4.0;
 const SLATE_GAP: f32 = 14.0;
 const IMPORT_LEADING_LINES: &str = "\n\n\n\n\n";
 const DEFAULT_TEXT_INSET: f32 = 64.0;
@@ -516,7 +520,7 @@ fn row_layout(app: &mut FilmcraftApp, ui: &egui::Ui, doc: &Arc<ScriptDocument>, 
     }
     let mut tops = Vec::with_capacity(doc.lines.len().saturating_add(1));
     let leading_blank = doc.lines.iter().take(5).take_while(|line| line.text.is_empty()).count();
-    let clearance = thumbnail_height(thumb_w) + 10.0;
+    let clearance = thumbnail_height(thumb_w) + TAKE_HEADER_H + 10.0;
     let top_space = if leading_blank >= 3 { (clearance - leading_blank as f32 * MIN_ROW_H).max(8.0) } else { clearance };
     tops.push(top_space);
     let mut total = top_space;
