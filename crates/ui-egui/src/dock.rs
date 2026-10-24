@@ -525,6 +525,89 @@ pub fn layout_with_actions(
     layout_inner(ui, node, rect, t, path, &[], out, reg, actions);
 }
 
+/// The sizes to set when a divider moves, so that only the two panels beside it change: `old` and
+/// `new` are the moved split's size before and after, `rect` its area, `a` and `b` its children,
+/// `path` its place in the tree. The first element is the split itself; the rest keep the panels
+/// farther away at the sizes they had, where ratio splits would otherwise scale them with the area
+/// their parent gained or lost. (A fixed-size panel keeps its own size either way.)
+fn moved_divider_sizes(
+    vertical: bool,
+    old: SharedSplitSize,
+    new: SharedSplitSize,
+    a: &DockNode,
+    b: &DockNode,
+    rect: Rect,
+    path: &[bool],
+    gap: f32,
+) -> Vec<(Vec<bool>, SharedSplitSize)> {
+    let axis = if vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal };
+    let mut out = vec![(path.to_vec(), new)];
+    let (Some(before), Some(after)) = (split_rect(rect, axis, old, gap, 20.0), split_rect(rect, axis, new, gap, 20.0)) else { return out };
+    let (first, second) = (after.first_size(), after.available() - after.first_size());
+    let mut at = path.to_vec();
+    at.push(false);
+    keep_far_panels(a, before.first, vertical, first, true, gap, &mut at, &mut out);
+    at.pop();
+    at.push(true);
+    keep_far_panels(b, before.second, vertical, second, false, gap, &mut at, &mut out);
+    out
+}
+
+/// `node` (laid out in `rect`) gets `new_extent` along the axis of a moved divider that touches its
+/// far (`toward_end`) or near edge: the panel next to that edge takes the change, the others keep
+/// their size. Appends the sizes that makes true.
+fn keep_far_panels(
+    node: &DockNode,
+    rect: Rect,
+    vertical: bool,
+    new_extent: f32,
+    toward_end: bool,
+    gap: f32,
+    path: &mut Vec<bool>,
+    out: &mut Vec<(Vec<bool>, SharedSplitSize)>,
+) {
+    let DockNode::Split { vertical: own, size, a, b } = node else { return };
+    let old_extent = if vertical { rect.height() } else { rect.width() };
+    if !new_extent.is_finite() || (new_extent - old_extent).abs() < 0.5 {
+        return;
+    }
+    let axis = if *own { SplitAxis::Vertical } else { SplitAxis::Horizontal };
+    let shared = size.shared();
+    let Some(before) = split_rect(rect, axis, shared, gap, 20.0) else { return };
+    let (first_extent, second_extent) = if *own == vertical {
+        // side by side along the moved axis: the child next to the divider takes the change
+        let available = (new_extent - gap.min(new_extent)).max(0.0);
+        let low = 20.0_f32.min(available * 0.5);
+        let was_first = before.first_size();
+        let was_second = before.available() - was_first;
+        // a fixed-size child keeps its size, and then the other one takes the change
+        let first = match (toward_end, shared) {
+            (true, SharedSplitSize::FixedSecond(_)) | (false, SharedSplitSize::Ratio(_) | SharedSplitSize::FixedSecond(_)) => available - was_second,
+            _ => was_first,
+        };
+        let first = first.clamp(low, (available - low).max(low));
+        let resized = match shared {
+            SharedSplitSize::Ratio(_) if available > 0.0 => SharedSplitSize::Ratio(first / available),
+            SharedSplitSize::FixedFirst(_) => SharedSplitSize::FixedFirst(first),
+            SharedSplitSize::FixedSecond(_) => SharedSplitSize::FixedSecond(available - first),
+            other => other,
+        };
+        if resized != shared {
+            out.push((path.clone(), resized));
+        }
+        (first, available - first)
+    } else {
+        // stacked across it: both children span the whole of the moved axis
+        (new_extent, new_extent)
+    };
+    path.push(false);
+    keep_far_panels(a, before.first, vertical, first_extent, toward_end, gap, path, out);
+    path.pop();
+    path.push(true);
+    keep_far_panels(b, before.second, vertical, second_extent, toward_end, gap, path, out);
+    path.pop();
+}
+
 fn layout_inner(
     ui: &mut egui::Ui,
     node: &mut DockNode,
@@ -553,7 +636,10 @@ fn layout_inner(
             if response.delta != 0.0
                 && let Some(resized) = split.resized(size.shared(), response.delta, 40.0)
             {
-                actions.push(craft_ui::docking::Action::ResizeSplit { path: tree_path.to_vec(), size: resized });
+                // the panels beside the divider change; the ones farther away keep their size
+                for (path, size) in moved_divider_sizes(*vertical, size.shared(), resized, a, b, rect, tree_path, t.gap) {
+                    actions.push(craft_ui::docking::Action::ResizeSplit { path, size });
+                }
             }
             let mut first_path = tree_path.to_vec();
             first_path.push(false);
@@ -897,6 +983,127 @@ pub fn placeholder(ui: &mut egui::Ui, rect: Rect, t: &Tokens, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The node at `path` and the area it gets.
+    fn find<'a>(node: &'a DockNode, rect: Rect, path: &[bool], gap: f32) -> (&'a DockNode, Rect) {
+        let Some((&second, rest)) = path.split_first() else { return (node, rect) };
+        let DockNode::Split { vertical, size, a, b } = node else { panic!("no split at the path") };
+        let axis = if *vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal };
+        let split = split_rect(rect, axis, size.shared(), gap, 20.0).unwrap();
+        if second { find(b, split.second, rest, gap) } else { find(a, split.first, rest, gap) }
+    }
+
+    fn set_size(node: &mut DockNode, path: &[bool], new: SharedSplitSize) {
+        match (node, path.split_first()) {
+            (DockNode::Split { size, .. }, None) => {
+                *size = match new {
+                    SharedSplitSize::Ratio(v) => SplitSize::Ratio(v),
+                    SharedSplitSize::FixedFirst(v) => SplitSize::FixedA(v),
+                    SharedSplitSize::FixedSecond(v) => SplitSize::FixedB(v),
+                }
+            }
+            (DockNode::Split { a, b, .. }, Some((&second, rest))) => set_size(if second { b } else { a }, rest, new),
+            _ => panic!("no split at the path"),
+        }
+    }
+
+    fn leaves(node: &DockNode, rect: Rect, gap: f32, out: &mut Vec<(PanelKind, Rect)>) {
+        match node {
+            DockNode::Tabs { panels, .. } => out.push((panels[0], rect)),
+            DockNode::Split { vertical, size, a, b } => {
+                let axis = if *vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal };
+                let split = split_rect(rect, axis, size.shared(), gap, 20.0).unwrap();
+                leaves(a, split.first, gap, out);
+                leaves(b, split.second, gap, out);
+            }
+        }
+    }
+
+    /// Move the divider of the split at `path` by `delta` the way the layout does, and return every
+    /// panel's area before and after.
+    fn drag(root: &mut DockNode, rect: Rect, path: &[bool], delta: f32) -> (Vec<(PanelKind, Rect)>, Vec<(PanelKind, Rect)>) {
+        let gap = 4.0;
+        let (mut before, mut after) = (Vec::new(), Vec::new());
+        leaves(root, rect, gap, &mut before);
+        let (node, area) = find(root, rect, path, gap);
+        let DockNode::Split { vertical, size, a, b } = node else { panic!("not a split") };
+        let axis = if *vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal };
+        let split = split_rect(area, axis, size.shared(), gap, 20.0).unwrap();
+        let resized = split.resized(size.shared(), delta, 40.0).unwrap();
+        let changes = moved_divider_sizes(*vertical, size.shared(), resized, a, b, area, path, gap);
+        for (at, new) in changes {
+            set_size(root, &at, new);
+        }
+        leaves(root, rect, gap, &mut after);
+        (before, after)
+    }
+
+    fn widths(layout: &[(PanelKind, Rect)]) -> Vec<(PanelKind, f32)> {
+        layout.iter().map(|(p, r)| (*p, r.width().round())).collect()
+    }
+
+    #[test]
+    fn a_divider_changes_only_the_two_panels_beside_it() {
+        use PanelKind::*;
+        // Source | (Program | Properties), all ratios: the outer divider used to scale Properties too
+        let mut root = hsplit(SplitSize::Ratio(0.5), tabs(&[Source], 0), hsplit(SplitSize::Ratio(0.5), tabs(&[Program], 0), tabs(&[Properties], 0)));
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(1004.0, 400.0));
+        let (before, after) = drag(&mut root, rect, &[], 100.0);
+        let (b, a) = (widths(&before), widths(&after));
+        assert_eq!(a[0].1, b[0].1 + 100.0, "Source takes what the divider moved: {b:?} → {a:?}");
+        assert_eq!(a[2].1, b[2].1, "Properties is not beside the divider and keeps its width: {b:?} → {a:?}");
+        assert_eq!(a[1].1, b[1].1 - 100.0, "Program gives it up");
+    }
+
+    #[test]
+    fn the_far_side_works_the_same_way_for_a_divider_between_the_last_two() {
+        use PanelKind::*;
+        // (Source | Program) | Properties: moving the outer divider left must leave Source alone
+        let mut root = hsplit(SplitSize::Ratio(0.7), hsplit(SplitSize::Ratio(0.5), tabs(&[Source], 0), tabs(&[Program], 0)), tabs(&[Properties], 0));
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(1004.0, 400.0));
+        let (before, after) = drag(&mut root, rect, &[], -80.0);
+        let (b, a) = (widths(&before), widths(&after));
+        assert_eq!(a[0].1, b[0].1, "Source keeps its width: {b:?} → {a:?}");
+        assert_eq!(a[1].1, b[1].1 - 80.0, "Program is beside the divider");
+        assert_eq!(a[2].1, b[2].1 + 80.0, "Properties grows");
+    }
+
+    #[test]
+    fn fixed_size_panels_and_the_ones_stacked_across_a_divider_behave() {
+        use PanelKind::*;
+        // the bottom row of the Editing workspace: Project | Tools (64) | Timeline | Meters (116)
+        let mut root = hsplit(
+            SplitSize::Ratio(0.3),
+            tabs(&[Project], 0),
+            hsplit(SplitSize::FixedA(64.0), tabs(&[Tools], 0), hsplit(SplitSize::FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0))),
+        );
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(1404.0, 300.0));
+        let (before, after) = drag(&mut root, rect, &[], 60.0);
+        let (b, a) = (widths(&before), widths(&after));
+        assert_eq!((a[1].1, a[3].1), (64.0, 116.0), "Tools and the meters keep their size");
+        assert_eq!(a[0].1, b[0].1 + 60.0);
+        assert_eq!(a[2].1, b[2].1 - 60.0, "the Timeline gives it up: {b:?} → {a:?}");
+        // a column of two, beside a third: both of the column change with its divider
+        let mut root = hsplit(SplitSize::Ratio(0.4), vsplit(SplitSize::Ratio(0.5), tabs(&[Source], 0), tabs(&[Effects], 0)), tabs(&[Program], 0));
+        let (before, after) = drag(&mut root, rect, &[], 50.0);
+        let (b, a) = (widths(&before), widths(&after));
+        assert_eq!((a[0].1, a[1].1), (b[0].1 + 50.0, b[1].1 + 50.0));
+        assert_eq!(a[2].1, b[2].1 - 50.0);
+    }
+
+    #[test]
+    fn a_divider_dragged_to_the_limit_never_makes_a_panel_smaller_than_the_minimum() {
+        use PanelKind::*;
+        let mut root = hsplit(SplitSize::Ratio(0.5), tabs(&[Source], 0), hsplit(SplitSize::Ratio(0.5), tabs(&[Program], 0), tabs(&[Properties], 0)));
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(1004.0, 400.0));
+        let (_, after) = drag(&mut root, rect, &[], 10_000.0);
+        // the drag limit leaves 40 points to the two panels past the divider: half of it each
+        for (panel, r) in &after {
+            assert!(r.width() >= 17.9 && r.width().is_finite(), "{panel:?} is {} wide", r.width());
+        }
+        let total: f32 = after.iter().map(|(_, r)| r.width()).sum::<f32>() + 2.0 * 4.0;
+        assert!((total - 1004.0).abs() < 1.0, "the panels and dividers fill the area: {total}");
+    }
 
     #[test]
     fn split_first_never_panics_on_tiny_areas() {
