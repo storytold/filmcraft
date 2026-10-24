@@ -478,6 +478,13 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
         d.ok("ui.playback", json!({"action": "stop"}));
         assert!(!d.harness.state().playback.playing);
         d.snapshot(&format!("meters-{workspace}-paused-start"), None);
+        // A slow release after Stop reads as audio still playing: silent within 0.4 s.
+        for _ in 0..4 {
+            d.harness.step();
+        }
+        let (_, meters): (u64, std::collections::HashMap<u64, Vec<[f32; 2]>>) =
+            d.harness.ctx.data(|data| data.get_temp(egui::Id::new("mixer-meters"))).unwrap();
+        assert!(meters.values().flatten().all(|meter| *meter == [-90.0; 2]), "{workspace}: still falling 0.4 s after Stop: {meters:?}");
         // Harness::run follows immediate repaint requests, adding no mouse or keyboard input.
         let steps = d.harness.run();
         // Inspect both values that drive the bars: a silent level alone must not strand its

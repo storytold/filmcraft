@@ -24,6 +24,8 @@ use subtle::ConstantTimeEq;
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 pub const MAX_CONNECTIONS: usize = 16;
+/// A peer that stops sending or reading must eventually give back its connection slot.
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
     start_with_token(port, ctx, std::env::var("FILMCRAFT_CONTROL_TOKEN").ok())
@@ -83,13 +85,22 @@ impl Drop for Slot {
 }
 
 fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: &str) {
-    let Ok(read) = stream.try_clone() else { return };
+    if let Err(e) = serve_with_timeout(stream, tx, ctx, token, CONNECTION_TIMEOUT) {
+        eprintln!("filmcraft: could not configure control connection: {e}");
+    }
+}
+
+fn serve_with_timeout(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: &str, timeout: Duration) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    let read = stream.try_clone()?;
     serve_lines(read, stream, token, |method, params| {
         let (req, rrx) = ControlRequest::new(method, params);
         tx.send(req).ok()?;
         ctx.request_repaint();
         Some(rrx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| json!({"ok": false, "error": "timeout"})))
     });
+    Ok(())
 }
 
 /// One parsed line.
@@ -131,13 +142,22 @@ fn parse_line(bytes: &[u8], token: &str) -> Line {
     Line::Request { id: obj.get("id").cloned().unwrap_or(Value::Null), method: method.to_string(), params: obj.get("params").cloned().unwrap_or(json!({})) }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReadFailure {
+    Timeout,
+    Rejected(String),
+}
+
 /// Read one `\n`-terminated line of at most `max` bytes into `buf` (newline stripped).
 /// `Ok(false)` at end of stream; `Err` when the line is too long or the read fails.
-fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -> Result<bool, String> {
+fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -> Result<bool, ReadFailure> {
     buf.clear();
     // `take` bounds the bytes buffered for one line: a peer can't make us allocate more than `max`.
     let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
-    let n = reader.take(limit).read_until(b'\n', buf).map_err(|e| e.to_string())?;
+    let n = reader.take(limit).read_until(b'\n', buf).map_err(|e| match e.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => ReadFailure::Timeout,
+        _ => ReadFailure::Rejected(e.to_string()),
+    })?;
     if n == 0 {
         return Ok(false);
     }
@@ -149,7 +169,7 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
         return Ok(true);
     }
     if buf.len() > max {
-        return Err(format!("request line longer than {max} bytes; closing the connection"));
+        return Err(ReadFailure::Rejected(format!("request line longer than {max} bytes; closing the connection")));
     }
     // Last line without a newline, then end of stream.
     Ok(true)
@@ -164,7 +184,10 @@ fn serve_lines<R: Read, W: Write>(read: R, mut out: W, token: &str, mut handle: 
     loop {
         let reject = match read_bounded_line(&mut reader, &mut buf, MAX_LINE) {
             Ok(false) => return,
-            Err(e) => e,
+            // Expiration is not a request: a pooled client must see EOF and reconnect, rather
+            // than read a stale error reply. A partial line must not be parsed on timeout.
+            Err(ReadFailure::Timeout) => return,
+            Err(ReadFailure::Rejected(e)) => e,
             Ok(true) => match parse_line(&buf, token) {
                 Line::Blank => continue,
                 Line::Reject(e) => e,
@@ -310,6 +333,115 @@ mod tests {
         BufReader::new(&mut extra).read_line(&mut line).unwrap();
         assert!(line.contains("too many control connections"), "{line}");
         drop(held);
+    }
+
+    /// Idle and unterminated requests must release a counted connection without client EOF.
+    fn timed_out_connection_releases_slot(partial: &[u8]) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let open = Arc::new(AtomicUsize::new(1));
+        let counted = Arc::clone(&open);
+        let (tx, rx) = channel::<ControlRequest>();
+        let (done, finished) = channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            {
+                let _slot = Slot(counted);
+                serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_millis(100)).unwrap();
+            }
+            done.send(()).unwrap();
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client.write_all(partial).unwrap();
+        let completion = finished.recv_timeout(Duration::from_secs(5));
+        let mut unsolicited = String::new();
+        if completion.is_ok() {
+            client.read_to_string(&mut unsolicited).unwrap();
+        }
+        // Always unblock and join the test worker before asserting, even on the unfixed server.
+        let unexpected_command = rx.try_recv().is_ok();
+        drop(rx);
+        drop(client);
+        server.join().unwrap();
+        assert!(completion.is_ok(), "an idle peer held its connection slot until the client closed");
+        assert!(unsolicited.is_empty(), "expiration must not leave a stale reply for a pooled client: {unsolicited}");
+        assert_eq!(open.load(Ordering::SeqCst), 0);
+        assert!(!unexpected_command, "an incomplete request must not reach the UI queue");
+    }
+
+    #[test]
+    /// A silent unauthenticated peer must not retain control-server capacity.
+    fn idle_connection_releases_its_slot() {
+        timed_out_connection_releases_slot(b"");
+    }
+
+    #[test]
+    /// Sending a partial JSON line must not bypass idle expiration.
+    fn unterminated_request_releases_its_slot() {
+        timed_out_connection_releases_slot(b"{\"method\":");
+    }
+
+    #[test]
+    /// A timeout is not EOF: valid JSON without its newline must not be dispatched.
+    fn valid_unterminated_request_is_not_dispatched() {
+        let request = json!({"id": 1, "token": TOKEN, "method": "ui.inspect"}).to_string();
+        timed_out_connection_releases_slot(request.as_bytes());
+    }
+
+    #[test]
+    /// Waiting for the UI is separate from socket idleness; buffered requests remain answerable.
+    fn idle_timeout_does_not_cancel_a_pending_ui_reply() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = channel::<ControlRequest>();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_millis(100)).unwrap();
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut read = BufReader::new(client.try_clone().unwrap());
+        // Buffer complete requests, as the bridge does. Queue both before waiting for replies:
+        // client scheduling after reply 1 must not create a genuine idle gap in this test.
+        let requests: String = [1, 2].into_iter().map(|id| format!("{}\n", json!({"token": TOKEN, "id": id, "method": "ui.inspect"}))).collect();
+        client.write_all(requests.as_bytes()).unwrap();
+        for id in [1, 2] {
+            let request = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|e| panic!("request {id} did not reach the UI: {e}"));
+            // Deliberately exceed the read timeout while the server is awaiting a UI reply.
+            std::thread::sleep(Duration::from_millis(250));
+            request.reply.send(json!({"ok": true})).unwrap();
+            let mut line = String::new();
+            read.read_line(&mut line).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), json!({"id": id, "ok": true}));
+        }
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    /// An active client can send another request after consuming its previous reply.
+    fn active_connection_can_be_reused() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = channel::<ControlRequest>();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_secs(5)).unwrap();
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut read = BufReader::new(client.try_clone().unwrap());
+        for id in [1, 2] {
+            let line = format!("{}\n", json!({"token": TOKEN, "id": id, "method": "ui.inspect"}));
+            client.write_all(line.as_bytes()).unwrap();
+            rx.recv_timeout(Duration::from_secs(5)).unwrap().reply.send(json!({"ok": true})).unwrap();
+            let mut reply = String::new();
+            read.read_line(&mut reply).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&reply).unwrap(), json!({"id": id, "ok": true}));
+        }
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        server.join().unwrap();
     }
 
     #[test]

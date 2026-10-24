@@ -87,7 +87,7 @@ pub const INPUT_METER: u64 = u64::MAX - 1;
 
 /// Per-strip meter state, `strip id → [level, peak]` per channel (dBFS; 2 channels, or 6 for 5.1
 /// strips), fed by the playing mix ([`filmcraft_render::mixer::LiveMix`]) with fast attack and a
-/// 20 dB/s fall. [`INPUT_METER`] holds the voice-over input.
+/// 20 dB/s fall (peak holds 6 dB/s) while live, dropping within a quarter second after Stop. [`INPUT_METER`] holds the voice-over input.
 pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f32; 2]>> {
     let id = egui::Id::new("mixer-meters");
     let frame = ui.ctx().cumulative_frame_nr();
@@ -102,15 +102,18 @@ pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f
     if !input.is_empty() {
         fresh.push((INPUT_METER, input));
     }
+    // scrubbing plays through the same mixer, so its grains move the meters too
+    let live = app.playback.playing || app.session.voiceover.recording() || app.scrub.is_open();
+    // Once stopped, bars and peak holds drop within a quarter second instead of easing down for
+    // seconds, which read as audio still playing.
+    let (level_fall, peak_fall) = if live { (20.0, 6.0) } else { (360.0, 360.0) };
     let dt = ui.input(|i| i.stable_dt).min(0.1);
     for v in st.values_mut() {
         for m in v.iter_mut() {
-            m[0] = (m[0] - 20.0 * dt).max(-90.0);
-            m[1] = (m[1] - 6.0 * dt).max(-90.0);
+            m[0] = (m[0] - level_fall * dt).max(-90.0);
+            m[1] = (m[1] - peak_fall * dt).max(-90.0);
         }
     }
-    // scrubbing plays through the same mixer, so its grains move the meters too
-    let live = app.playback.playing || app.session.voiceover.recording() || app.scrub.is_open();
     if live {
         for (k, p) in fresh {
             let e = st.entry(k).or_default();
