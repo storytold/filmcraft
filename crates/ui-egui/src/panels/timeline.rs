@@ -209,8 +209,21 @@ impl Layout {
     pub fn tick_at(&self, x: f32) -> Tick {
         Tick::from_seconds_f64(self.scroll + (x - self.content.min.x) as f64 / self.pps)
     }
+    /// The track row under `y`. Rows are not clipped to their pane: a scrolled video track
+    /// reaches below the divider and a scrolled audio track above it or over the Mix row, so a
+    /// row only counts inside its own pane (video above the divider, audio between the divider
+    /// and the Mix row). Without this a press on an audio track hit the hidden V1 row.
     pub fn row_at(&self, y: f32) -> Option<&Row> {
-        self.rows.iter().find(|r| r.rect.min.y <= y && y < r.rect.max.y)
+        let audio_top = self.split_y + DIVIDER_H;
+        let audio_bottom = self.content.max.y - MASTER_H;
+        self.rows.iter().find(|r| {
+            r.rect.min.y <= y
+                && y < r.rect.max.y
+                && match r.kind {
+                    TrackKind::Video => y < self.split_y,
+                    TrackKind::Audio => y >= audio_top && y < audio_bottom,
+                }
+        })
     }
 }
 
@@ -3385,6 +3398,42 @@ mod new_track_tests {
 
     /// #1522: when the video tracks fill the video area, scrolling all the way up still leaves a
     /// track's height of empty space above the top one, so a drop there can add a fourth track.
+    #[test]
+    fn rows_only_hit_inside_their_own_pane_when_scrolled() {
+        // video pane 100…300, divider 300…305, audio pane 305…466, Mix row 466…500
+        let content = Rect::from_min_max(pos2(0.0, 100.0), pos2(1000.0, 500.0));
+        let split_y = 300.0;
+        let row = |track: u64, kind: TrackKind, y0: f32, y1: f32| Row {
+            track: TrackId(track),
+            kind,
+            index: 0,
+            rect: Rect::from_min_max(pos2(0.0, y0), pos2(1000.0, y1)),
+            lane: false,
+        };
+        let layout = Layout {
+            content,
+            ruler: Rect::from_min_max(pos2(0.0, 60.0), pos2(1000.0, 100.0)),
+            rows: vec![
+                // V1 scrolled 40 px: it reaches 40 px below the divider
+                row(1, TrackKind::Video, 240.0, 340.0),
+                // A1 scrolled: its top is hidden above the audio pane, over the divider
+                row(2, TrackKind::Audio, 290.0, 380.0),
+                // the last audio track runs under the Mix row
+                row(3, TrackKind::Audio, 380.0, 480.0),
+            ],
+            pps: 100.0,
+            scroll: 0.0,
+            split_y,
+        };
+        let at = |y: f32| layout.row_at(y).map(|r| r.track.0);
+        assert_eq!(at(260.0), Some(1), "V1 above the divider");
+        assert_eq!(at(320.0), Some(2), "below the divider the audio track wins, not the hidden V1");
+        assert_eq!(at(302.0), None, "the divider is no track");
+        assert_eq!(at(295.0), Some(1), "A1's hidden top over the video pane");
+        assert_eq!(at(400.0), Some(3));
+        assert_eq!(at(470.0), None, "the Mix row is no track");
+    }
+
     #[test]
     fn a_full_video_area_scrolls_to_space_for_a_new_track() {
         let mut p = Project::new("t");
