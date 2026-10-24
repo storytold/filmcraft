@@ -342,10 +342,10 @@ impl VideoDecoder for H264Decoder {
         self.dec.flush().into_iter().map(Self::convert).collect()
     }
     fn reset(&mut self) {
-        if let Ok(d) = Self::make_inner(&self.avcc, self.threads) {
-            self.dec = d;
+        self.dec.reset();
+        if !self.avcc.is_empty() {
+            let _ = self.dec.configure_avcc(&self.avcc);
         }
-        self.dec.set_draft(self.draft);
     }
     fn name(&self) -> &str {
         "FilmCraft H.264"

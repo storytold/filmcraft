@@ -55,7 +55,7 @@ impl SliceDecoder<'_> {
             } else {
                 self.decode_mb_cabac(&mut c)?;
             }
-            self.pic.mb_done(addr);
+            self.pic.mb_done(addr)?;
             ensure!(!c.overrun(), "CABAC read past end of slice data");
             if c.decode_terminate() == 1 {
                 break;

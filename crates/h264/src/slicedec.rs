@@ -12,6 +12,8 @@ use crate::slice::{SliceHeader, SliceType};
 use crate::tables::*;
 use crate::transform::{self, LevelScale};
 use filmcraft_bitstream::BitReader;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Per-slice data kept with the picture (deblocking, motion field export).
 #[derive(Clone, Debug, Default)]
@@ -42,6 +44,10 @@ pub struct PicState {
     rows_published: usize,
     /// Draft mode for a non-reference picture: rows are published without deblocking.
     pub skip_deblock: bool,
+    /// Checked once per macroblock row: when set, slice decoding stops ([`Decoder::reset`]).
+    ///
+    /// [`Decoder::reset`]: crate::Decoder::reset
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl PicState {
@@ -61,6 +67,7 @@ impl PicState {
             rows_deblocked: 0,
             rows_published: 0,
             skip_deblock: false,
+            cancel: None,
         }
     }
 
@@ -82,18 +89,33 @@ impl PicState {
         self.skip_deblock = false;
     }
 
-    /// Record a decoded macroblock and deblock / publish rows that became final.
+    /// Record a decoded macroblock and deblock / publish rows that became final. Fails when the
+    /// picture was cancelled.
     #[inline]
-    pub fn mb_done(&mut self, addr: usize) {
+    pub fn mb_done(&mut self, addr: usize) -> Result<()> {
         self.decoded_mbs += 1;
         let r = addr / self.mb_w;
         self.row_count[r] += 1;
         if self.row_count[r] as usize >= self.mb_w && r == self.rows_recon {
-            while self.rows_recon < self.mb_h && self.row_count[self.rows_recon] as usize >= self.mb_w {
-                self.rows_recon += 1;
-            }
-            self.flush_rows(false);
+            return self.rows_done();
         }
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn rows_done(&mut self) -> Result<()> {
+        if self.cancelled() {
+            return invalid("decoding cancelled");
+        }
+        while self.rows_recon < self.mb_h && self.row_count[self.rows_recon] as usize >= self.mb_w {
+            self.rows_recon += 1;
+        }
+        self.flush_rows(false);
+        Ok(())
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
     }
 
     /// Deblock and publish rows. With `finished`, everything remaining is processed (also rows with
@@ -1429,7 +1451,7 @@ impl<'a> SliceDecoder<'a> {
                 for _ in 0..run {
                     self.start_mb(addr);
                     self.decode_skip()?;
-                    self.pic.mb_done(addr);
+                    self.pic.mb_done(addr)?;
                     addr += 1;
                 }
                 if run > 0 && !r.more_rbsp_data() {
@@ -1439,7 +1461,7 @@ impl<'a> SliceDecoder<'a> {
             }
             self.start_mb(addr);
             self.decode_mb_cavlc(r)?;
-            self.pic.mb_done(addr);
+            self.pic.mb_done(addr)?;
             addr += 1;
             if !r.more_rbsp_data() {
                 break;
