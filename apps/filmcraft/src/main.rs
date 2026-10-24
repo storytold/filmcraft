@@ -132,7 +132,7 @@ fn main() -> eframe::Result {
         register_gpu_frame_renderer();
     }
     let started = loop {
-        let mut options = native_options(launch.control_port.is_some());
+        let mut options = native_options(launch.control_port.is_some(), data_root.as_deref());
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
@@ -164,9 +164,21 @@ fn main() -> eframe::Result {
     started
 }
 
+/// The file in the data directory that remembers the main window's geometry (#1994).
+const WINDOW_FILE: &str = "window.ron";
+
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
-fn native_options(agent: bool) -> eframe::NativeOptions {
+///
+/// The window's position, size and maximized / full-screen state are kept in `window.ron` in the
+/// data directory and restored on the next launch (#1994); eframe moves a remembered position back
+/// onto a monitor and sizes the window to one. Nothing else is persisted (see
+/// [`eframe::App::persist_egui_memory`] in the UI crate). A window started for an agent
+/// (`--control`) opens where the user's window was but writes nothing back: an automation run
+/// sharing the data directory must not move the user's window.
+fn native_options(agent: bool, data_dir: Option<&std::path::Path>) -> eframe::NativeOptions {
     eframe::NativeOptions {
+        persist_window: !agent,
+        persistence_path: data_dir.map(|d| d.join(WINDOW_FILE)),
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
             .with_inner_size([1600.0, 980.0])
@@ -515,6 +527,20 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// #1994: the window geometry file lives in the data directory, the user's window is remembered,
+    /// and an agent's window (`--control`) is not.
+    #[test]
+    fn window_geometry_is_remembered_in_the_data_directory_but_not_for_an_agent() {
+        let dir = std::path::Path::new("data");
+        let user = super::native_options(false, Some(dir));
+        assert!(user.persist_window);
+        assert_eq!(user.persistence_path.as_deref(), Some(dir.join(super::WINDOW_FILE).as_path()));
+        let agent = super::native_options(true, Some(dir));
+        assert!(!agent.persist_window, "an automation run must not move the user's window");
+        assert_eq!(agent.persistence_path.as_deref(), Some(dir.join(super::WINDOW_FILE).as_path()), "but it opens where the user's window was");
+        assert_eq!(super::native_options(false, None).persistence_path, None, "no data directory: eframe's default location");
+    }
+
     /// Start-up registers the hardware decoders whether or not anything is logged (no logger is
     /// installed here, as in a normal run).
     #[test]
