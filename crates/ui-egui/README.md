@@ -10,7 +10,8 @@ mark IDs and source times. Expanding coverage restores marks, row colors and off
 Hidden marks cannot be selected or used to cue Source and do not choose the default thumbnail.
 Scene and Page menus retain repeated labels as separate navigation points in script order.
 Clicking a script row anywhere across the canvas clears the active candle, thumbnail and mark
-and selects that line; Shift-click extends the line range. Clicking below the rows clears the
+and selects that line; Shift-click extends the line range on press, retaining the endpoint if
+the pointer slips or Shift is released before the mouse button. Clicking below the rows clears the
 line selection too. Floating thumbnails, candles and marks retain their own click targets.
 Backspace/Delete removes the selected mark, candle, or thumbnail's entire setup.
 Deleting the final candle removes the empty setup. These commands retain script text and source

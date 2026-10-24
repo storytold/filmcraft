@@ -600,6 +600,66 @@ fn rows_select_and_extend_past_both_margins_and_a_drop_uses_that_full_range() {
 }
 
 #[test]
+fn shift_click_keeps_the_final_wrapped_row_with_pointer_slip_or_early_shift_release() {
+    for early_release in [false, true] {
+        let mut driver = Driver::new();
+        let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+        let text = format!("First\nSecond\nThird\n{}", "This last selected row wraps onto another visual line. ".repeat(3));
+        let script = driver.exec("script.importText", json!({"name":"Shift-click endpoint","text":text}))["item"].as_u64().unwrap();
+        let doc = driver.exec("script.inspect", json!({"item":script}));
+        let lines: Vec<_> = doc["document"]["lines"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+        driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+        driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+        if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+            driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+        }
+        driver.exec("project.view.set", json!({"view":"icon"}));
+        driver.frames(4);
+        driver.ok("ui.click", json!({"id":format!("script.line.{}",lines[0]),"fx":0.9}));
+        driver.ok("ui.click", json!({"id":format!("script.line.{}",lines[2]),"fx":0.9,"shift":true}));
+        assert_eq!(driver.harness.state().ui.script.selected_lines, Some((lines[0], lines[2])));
+        let [x, y, width, height] = driver.rect(&format!("script.line.{}", lines[3]));
+        assert!(height > 20.0, "last row should wrap");
+        let mut pos = egui::pos2((x + width * 0.9) as f32, (y + height * 0.8) as f32);
+        let shift = egui::Modifiers { shift: true, ..Default::default() };
+        driver.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+        driver.frames(1);
+        driver.harness.input_mut().events.extend([
+            egui::Event::ModifiersChanged(shift),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: shift },
+        ]);
+        driver.frames(1);
+        if early_release {
+            driver.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        } else {
+            pos.x += 12.0;
+            driver.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+        }
+        driver.frames(1);
+        driver.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: if early_release { egui::Modifiers::NONE } else { shift },
+        });
+        driver.frames(2);
+        driver.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        driver.frames(1);
+        assert_eq!(
+            driver.harness.state().ui.script.selected_lines,
+            Some((lines[0], lines[3])),
+            "the final Shift-clicked row must remain selected (early Shift release: {early_release})"
+        );
+        driver.snapshot("shift-click-final-row");
+        driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"id":format!("script.line.{}",lines[1]),"fx":0.9},"steps":16}));
+        let result = driver.exec("script.inspect", json!({"item":script}));
+        let take = &result["document"]["slates"][0]["takes"][0];
+        assert_eq!(take["start_line"], lines[0]);
+        assert_eq!(take["end_line"], lines[3]);
+    }
+}
+
+#[test]
 fn repeated_source_uses_one_setup_thumbnail_and_multiple_candles() {
     let mut driver = Driver::new();
     let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;

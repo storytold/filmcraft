@@ -525,12 +525,17 @@ fn row_view(
     let t = app.tokens;
     let left = Rect::from_min_size(row.min, vec2(left_w, row.height()));
     let right = row;
-    let interaction = ui.interact(row, egui::Id::new(("script.line", line.id.0)), Sense::click_and_drag());
+    let interaction = ui.interact(row, egui::Id::new(("script.line", line.id.0)), Sense::click());
     app.auto.add(&format!("script.line.{}", line.id.0), interaction.rect, &line.text);
-    if interaction.clicked() {
-        *foreground_click = true;
-        select_line(&mut app.ui.script, line, ui.input(|input| input.modifiers.shift));
+    // Select on press: a slight pointer slip or releasing Shift before the
+    // mouse button must not leave the range at the previous row.
+    let select_pressed =
+        interaction.contains_pointer() && interaction.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_pressed() && !input.modifiers.alt);
+    let select_activated = interaction.clicked() && !interaction.clicked_by(egui::PointerButton::Primary);
+    if select_pressed || select_activated {
+        select_line(&mut app.ui.script, line, shift_click(ui));
     }
+    *foreground_click |= select_pressed || interaction.clicked();
     if interaction.double_clicked() {
         app.ui.script.edit_line = Some(line.id.0);
         app.ui.script.edit_text = line.text.clone();
