@@ -12,6 +12,7 @@
 //! UI commands: `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`.
 
 use crate::widgets::CenteredDialog as _;
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use filmcraft_engine::voiceover::VoiceOverPrefs;
 use filmcraft_project::TrackId;
@@ -286,7 +287,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             elems.push(("voiceover.input".into(), cb.response.rect, cur));
             ui.end_row();
             ui.label("");
-            let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, tl!("Countdown Sound Cues"));
+            let r = ui.checkbox_drag(&mut d.prefs.countdown_sound_cues, tl!("Countdown Sound Cues"));
             elems.push(("voiceover.countdown".into(), r.rect, "Countdown Sound Cues".into()));
             ui.end_row();
             ui.label(tl!("Pre-roll:"));

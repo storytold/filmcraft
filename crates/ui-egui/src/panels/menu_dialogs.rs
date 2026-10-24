@@ -17,6 +17,7 @@
 //! scratch rows `projectSettings.scratch.<key>` / `.browse` / `.same`.
 
 use crate::widgets::CenteredDialog as _;
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, RichText};
 use filmcraft_project::{FindOp, find::COLUMNS};
 use serde::{Deserialize, Serialize};
@@ -369,7 +370,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
 
 fn check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str) {
     let mut v = p.get(key).and_then(Value::as_bool).unwrap_or(false);
-    let r = ui.checkbox(&mut v, label);
+    let r = ui.checkbox_drag(&mut v, label);
     push(elems, format!("{pre}.{key}"), &r, label);
     if r.changed() {
         p[key] = json!(v);
@@ -571,7 +572,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     "ingest" => {
                         let mut ing = p["ingest"].clone();
                         let mut on = ing["enabled"].as_bool().unwrap_or(false);
-                        let r = ui.checkbox(&mut on, tl!("Ingest"));
+                        let r = ui.checkbox_drag(&mut on, tl!("Ingest"));
                         push(&mut elems, "projectSettings.ingest.enabled", &r, "Ingest");
                         ing["enabled"] = json!(on);
                         let actions = vec![

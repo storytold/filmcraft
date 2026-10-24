@@ -14,6 +14,7 @@
 //!   `pm.handles`, `pm.includeProxies`, `pm.includePreviews`, `pm.destination`, `pm.browse`,
 //!   `pm.calculate`, `pm.sizes`, `pm.ok`, `pm.cancel`.
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Color32, RichText};
 use serde_json::{Value, json};
 
@@ -204,14 +205,14 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         ("mediaStart", tl!("Media Start"), &mut d.media_start),
                         ("metadata", tl!("Frame Size / Rate"), &mut d.metadata),
                     ] {
-                        let r = ui.checkbox(v, label);
+                        let r = ui.checkbox_drag(v, label);
                         push(&mut elems, format!("linkMedia.match.{id}"), &r, label);
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
-                    let r = ui.checkbox(&mut d.align_timecode, tl!("Align Timecode"));
+                    let r = ui.checkbox_drag(&mut d.align_timecode, tl!("Align Timecode"));
                     push(&mut elems, "linkMedia.alignTimecode", &r, "Align Timecode");
-                    let r = ui.checkbox(&mut d.relink_others, tl!("Relink others automatically"));
+                    let r = ui.checkbox_drag(&mut d.relink_others, tl!("Relink others automatically"));
                     push(&mut elems, "linkMedia.relinkOthers", &r, "Relink others automatically");
                 });
                 ui.separator();
@@ -224,7 +225,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     if r.clicked() {
                         action = Some("browse");
                     }
-                    let r = ui.checkbox(&mut d.exact_name, tl!("Exact name matches only"));
+                    let r = ui.checkbox_drag(&mut d.exact_name, tl!("Exact name matches only"));
                     push(&mut elems, "linkMedia.exactName", &r, "Exact name matches only");
                     let r = ui.button(tl!("Search"));
                     push(&mut elems, "linkMedia.search", &r, "Search");
@@ -505,7 +506,7 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.label(RichText::new(tl!("Sequences")).strong());
             for (id, name) in &seqs {
                 let mut on = d.sequences.contains(id);
-                let r = ui.checkbox(&mut on, name);
+                let r = ui.checkbox_drag(&mut on, name);
                 push(&mut elems, format!("pm.seq.{id}"), &r, name.clone());
                 if r.changed() {
                     if on {
@@ -537,7 +538,7 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.separator();
             ui.label(RichText::new(tl!("Options")).strong());
-            let r = ui.checkbox(&mut d.exclude_unused, tl!("Exclude Unused Clips"));
+            let r = ui.checkbox_drag(&mut d.exclude_unused, tl!("Exclude Unused Clips"));
             push(&mut elems, "pm.excludeUnused", &r, "Exclude Unused Clips");
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(d.mode == "consolidate", |ui| {
@@ -547,10 +548,10 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
             });
             ui.add_enabled_ui(d.mode == "collect", |ui| {
-                let r = ui.checkbox(&mut d.include_proxies, tl!("Include Proxies"));
+                let r = ui.checkbox_drag(&mut d.include_proxies, tl!("Include Proxies"));
                 push(&mut elems, "pm.includeProxies", &r, "Include Proxies");
             });
-            let r = ui.checkbox(&mut d.include_previews, tl!("Include Preview Files"));
+            let r = ui.checkbox_drag(&mut d.include_previews, tl!("Include Preview Files"));
             push(&mut elems, "pm.includePreviews", &r, "Include Preview Files");
             ui.separator();
             ui.label(RichText::new(tl!("Destination Path")).strong());

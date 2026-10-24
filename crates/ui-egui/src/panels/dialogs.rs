@@ -1,6 +1,7 @@
 //! Modal dialogs (About; Keyboard Shortcuts in `shortcuts_dialog`; Settings in `settings`;
 //! Recovery/Revert in `file_dialogs`).
 
+use crate::widgets::DragCheckbox as _;
 use crate::{Dialog, FilmcraftApp};
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
@@ -348,7 +349,7 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(title).strong());
                 let label = delete.to_string();
-                let c = ui.checkbox(on, &label);
+                let c = ui.checkbox_drag(on, &label);
                 elems.push((format!("deleteTracks.{kind}"), c.rect, label));
                 ui.horizontal(|ui| {
                     ui.add_space(22.0);

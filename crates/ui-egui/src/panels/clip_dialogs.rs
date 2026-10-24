@@ -31,6 +31,7 @@
 //!   `quit.save`, `quit.dontSave`, `quit.cancel`.
 
 use crate::widgets::CenteredDialog as _;
+use crate::widgets::DragCheckbox as _;
 use egui::RichText;
 use filmcraft_project::{AudioChannelMap, AudioChannels, ItemKind, TrackKind};
 use serde_json::{Value, json};
@@ -252,7 +253,7 @@ fn format_of(name: &str) -> AudioChannels {
 
 fn check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, enabled: bool) {
     let mut v = p.get(key).and_then(Value::as_bool).unwrap_or(false);
-    let r = ui.add_enabled(enabled, egui::Checkbox::new(&mut v, label));
+    let r = ui.checkbox_drag_enabled(enabled, &mut v, label);
     push(elems, format!("{pre}.{key}"), &r, label);
     if r.changed() {
         p[key] = json!(v);
@@ -335,7 +336,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 for (id, name) in &effects {
                     let mut on = p["effects"].as_array().is_some_and(|x| x.iter().any(|e| e.as_str() == Some(id)));
-                    let r = ui.checkbox(&mut on, crate::i18n::t(name));
+                    let r = ui.checkbox_drag(&mut on, crate::i18n::t(name));
                     push(&mut elems, format!("{pre}.effect.{id}"), &r, name.as_str());
                     if r.changed() {
                         let mut list: Vec<Value> = p["effects"].as_array().cloned().unwrap_or_default();
@@ -445,7 +446,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                             ui.label(tlf!("Clip {n}", n = ci + 1));
                             for c in 0..n {
                                 let mut on = chans.contains(&c);
-                                let r = ui.checkbox(&mut on, "");
+                                let r = ui.checkbox_drag(&mut on, "");
                                 push(&mut elems, format!("{pre}.clip.{ci}.ch.{c}"), &r, format!("Clip {} Ch. {}", ci + 1, c + 1));
                                 if r.changed() {
                                     if on {
@@ -466,7 +467,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         for c in 0..n.max(2) {
                             let mut on = chans.contains(&c);
-                            let r = ui.checkbox(&mut on, tlf!("Ch. {n}", n = c + 1));
+                            let r = ui.checkbox_drag(&mut on, tlf!("Ch. {n}", n = c + 1));
                             push(&mut elems, format!("{pre}.clip.0.ch.{c}"), &r, format!("Ch. {}", c + 1));
                             if r.changed() {
                                 if on {

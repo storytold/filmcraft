@@ -20,6 +20,7 @@
 //! `quickExport.location` (the folder; opens the save dialog), `quickExport.preset.<name>`,
 //! `quickExport.go`, `quickExport.close`.
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
@@ -374,7 +375,7 @@ fn drag(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut f64, range: std::ops
 }
 
 fn check(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut bool, label: &str) -> bool {
-    let r = ui.checkbox(v, label);
+    let r = ui.checkbox_drag(v, label);
     reg.add(id, r.rect, label);
     r.changed()
 }

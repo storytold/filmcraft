@@ -26,6 +26,7 @@
 //! `workingSpace` (+ `workingSpace.option.<id>`), `wideGamut`, `autoToneMap`; VR Properties:
 //! `vr.projection`, `vr.layout`, `vr.horizontal`, `vr.vertical`; `ok`, `cancel`.
 
+use crate::widgets::DragCheckbox as _;
 use filmcraft_color::WorkingSpace;
 use filmcraft_project::{AudioChannels, SequenceSettings};
 use filmcraft_time::FrameRate;
@@ -342,7 +343,7 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
             let ar = ui.label(&a);
             elems.push(("sequenceSettings.aspect".into(), ar.rect, a));
         });
-        let r = ui.checkbox(&mut d.scale_motion, tl!("Scale motion effects proportionally when changing frame size"));
+        let r = ui.checkbox_drag(&mut d.scale_motion, tl!("Scale motion effects proportionally when changing frame size"));
         elems.push(("sequenceSettings.scaleMotion".into(), r.rect, d.scale_motion.to_string()));
         row(ui, label_w, "Pixel Aspect Ratio:", false, |ui| fixed_combo(ui, elems, "par", &par_label(cur.par), list_w, NOT_YET));
         row(ui, label_w, "Fields:", false, |ui| fixed_combo(ui, elems, "fields", "No Fields (Progressive Scan)", list_w, NOT_YET));
@@ -416,13 +417,13 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
         });
         ui.horizontal(|ui| {
             let mut bit_depth = cur.max_bit_depth;
-            let r = ui.add_enabled(false, egui::Checkbox::new(&mut bit_depth, tl!("Maximum Bit Depth"))).on_disabled_hover_text(t(NOT_YET));
+            let r = ui.checkbox_drag_enabled(false, &mut bit_depth, tl!("Maximum Bit Depth")).on_disabled_hover_text(t(NOT_YET));
             elems.push(("sequenceSettings.maxBitDepth".into(), r.rect, bit_depth.to_string()));
-            let r = ui.checkbox(&mut d.max_render_quality, tl!("Maximum Render Quality"));
+            let r = ui.checkbox_drag(&mut d.max_render_quality, tl!("Maximum Render Quality"));
             elems.push(("sequenceSettings.maxRenderQuality".into(), r.rect, d.max_render_quality.to_string()));
         });
         let mut linear = true;
-        let r = ui.add_enabled(false, egui::Checkbox::new(&mut linear, tl!("Composite in Linear Color"))).on_disabled_hover_text(t(LINEAR));
+        let r = ui.checkbox_drag_enabled(false, &mut linear, tl!("Composite in Linear Color")).on_disabled_hover_text(t(LINEAR));
         elems.push(("sequenceSettings.linearColor".into(), r.rect, "true".into()));
     });
 }
@@ -441,9 +442,9 @@ fn color(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, elems: &mut Elems) {
         elems.push(("sequenceSettings.workingSpace".into(), resp.response.rect, shown));
     });
     ui.add_space(4.0);
-    let r = ui.checkbox(&mut d.wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
+    let r = ui.checkbox_drag(&mut d.wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
     elems.push(("sequenceSettings.wideGamut".into(), r.rect, d.wide_gamut.to_string()));
-    let r = ui.checkbox(&mut d.auto_tone_map, tl!("Auto Tone Map Media (HDR and log into SDR)"));
+    let r = ui.checkbox_drag(&mut d.auto_tone_map, tl!("Auto Tone Map Media (HDR and log into SDR)"));
     elems.push(("sequenceSettings.autoToneMap".into(), r.rect, d.auto_tone_map.to_string()));
 }
 
