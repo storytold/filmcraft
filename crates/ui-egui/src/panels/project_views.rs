@@ -734,6 +734,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let selected = app.session.state.project_selection.contains(&id);
         if selected {
             ui.painter().rect_filled(r, 0.0, t.row_selected);
+            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, t.accent), StrokeKind::Inside);
         } else if *row % 2 == 1 {
             ui.painter().rect_filled(r, 0.0, t.row_alt);
         }
@@ -781,6 +782,9 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
             x += c.width;
         }
         app.auto.add(&format!("{}.item.{}", v.prefix, id.0), r.intersect(ui.clip_rect()), &it.name);
+        if selected {
+            app.auto.add(&format!("{}.item.{}.selected", v.prefix, id.0), r.intersect(ui.clip_rect()), "Selected");
+        }
         slow_click_rename(app, ui, &resp, name_r, id, selected);
         item_interactions(app, ui, v, &resp, id, &it.kind, actions, true, true);
     }
@@ -828,9 +832,10 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
     let selected = app.session.state.project_selection.contains(&id);
     let card_bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
-    ui.painter().rect_filled(card_bg, 4.0, if selected { t.tl_header_bg } else { t.panel_bg });
+    ui.painter().rect_filled(card_bg, 4.0, if selected { t.row_selected } else { t.panel_bg });
     if selected {
         ui.painter().rect_stroke(card_bg, 4.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
+        app.auto.add(&format!("{pre}.item.{}.selected", id.0), card_bg.intersect(ui.clip_rect()), "Selected");
     }
     let at = hover_time(app, ui, &resp, th, &it);
     thumb(app, ui, th, &it, at);
