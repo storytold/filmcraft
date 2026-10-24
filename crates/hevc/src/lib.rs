@@ -1,7 +1,7 @@
 //! Clean-room pure-Rust H.265 / HEVC decoder, implemented from ITU-T Rec. H.265 (ISO/IEC 23008-2).
 //!
-//! Supported: Main and Main 10 profiles (4:2:0, 8/10-bit; up to 12-bit 4:2:0 without range-extension
-//! tools), all coding tools of those profiles: CABAC, coding / transform quadtrees, AMP, PCM,
+//! Supported: Main, Main 10 and Main 4:2:2 10 profiles (4:2:0 and 4:2:2, 8/10-bit; up to 12-bit
+//! without range-extension tools), all coding tools of those profiles: CABAC, coding / transform quadtrees, AMP, PCM,
 //! transform skip, scaling lists, sign data hiding, 35 intra modes with strong intra smoothing,
 //! merge / AMVP / TMVP, weighted prediction, deblocking, SAO, tiles, wavefront parallel processing
 //! (parsing), dependent slice segments, short- and long-term reference picture sets.
@@ -54,6 +54,45 @@ pub struct ColorInfo {
     pub matrix: u8,
 }
 
+/// Chroma sampling of a decoded picture (`chroma_format_idc`; 4:4:4 and monochrome are not
+/// decoded).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChromaFormat {
+    /// 4:2:0: chroma planes are half the luma width and height.
+    C420,
+    /// 4:2:2: chroma planes are half the luma width and the full luma height.
+    C422,
+}
+
+impl ChromaFormat {
+    /// The decoded format for `chroma_format_idc`, if this decoder handles it.
+    pub fn from_idc(idc: u32) -> Option<ChromaFormat> {
+        match idc {
+            1 => Some(ChromaFormat::C420),
+            2 => Some(ChromaFormat::C422),
+            _ => None,
+        }
+    }
+    /// log2(SubWidthC), log2(SubHeightC): the shifts from luma to chroma sample positions.
+    #[inline(always)]
+    pub fn shifts(self) -> (u32, u32) {
+        match self {
+            ChromaFormat::C420 => (1, 1),
+            ChromaFormat::C422 => (1, 0),
+        }
+    }
+    /// SubWidthC.
+    #[inline(always)]
+    pub fn sub_width(self) -> usize {
+        1 << self.shifts().0
+    }
+    /// SubHeightC.
+    #[inline(always)]
+    pub fn sub_height(self) -> usize {
+        1 << self.shifts().1
+    }
+}
+
 /// Samples of one plane: 8-bit streams produce `U8`, higher bit depths `U16` (value range
 /// `0..(1 << bit_depth)`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +139,7 @@ impl Plane {
     }
 }
 
-/// A decoded, cropped picture in planar 4:2:0.
+/// A decoded, cropped picture in planar 4:2:0 or 4:2:2 ([`Picture::chroma`]).
 #[derive(Clone, Debug)]
 pub struct Picture {
     /// Cropped luma width.
@@ -109,6 +148,8 @@ pub struct Picture {
     pub height: u32,
     pub chroma_width: u32,
     pub chroma_height: u32,
+    /// Chroma sampling of the `u` / `v` planes.
+    pub chroma: ChromaFormat,
     /// Luma bit depth (chroma uses the same storage type).
     pub bit_depth: u32,
     pub y: Plane,

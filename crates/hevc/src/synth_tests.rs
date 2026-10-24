@@ -573,10 +573,11 @@ fn check_ffmpeg(name: &str, stream: &[u8], pics: &[crate::Picture]) {
     let src = filmcraft_testkit::temp_path(&dir.join(format!("synth_{name}.hevc")));
     let yuv = filmcraft_testkit::temp_path(&dir.join(format!("synth_{name}.yuv")));
     std::fs::write(&src, stream).unwrap();
-    let st = std::process::Command::new(ff)
+    let st = std::process::Command::new(&ff)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(&src)
-        .args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuv420p"])
+        .args(filmcraft_testkit::fps_passthrough_args(&ff))
+        .args(["-f", "rawvideo", "-pix_fmt", "yuv420p"])
         .arg(&yuv)
         .status()
         .unwrap();
@@ -662,4 +663,57 @@ fn slices_without_tiles() {
     let segs =
         vec![Segment { start: 0, len: 7, dependent: false }, Segment { start: 7, len: 9, dependent: true }, Segment { start: 16, len: 8, dependent: false }];
     run("slices", None, false, segs);
+}
+
+/// The RBSP of a minimal PPS (no transform skip) with a pps_range_extension() whose only
+/// non-default fields are the SAO offset scales.
+fn pps_rbsp_with_sao_offset_scale(luma: u32, chroma: u32) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.write_ue(0); // pps_pic_parameter_set_id
+    w.write_ue(0); // pps_seq_parameter_set_id
+    w.write_bits(0, 1); // dependent slice segments
+    w.write_bits(0, 1); // output flag present
+    w.write_bits(0, 3); // num_extra_slice_header_bits
+    w.write_bits(0, 1); // sign data hiding
+    w.write_bits(0, 1); // cabac_init_present
+    w.write_ue(0);
+    w.write_ue(0);
+    w.write_se(0); // init_qp 26
+    w.write_bits(0, 1); // constrained intra
+    w.write_bits(0, 1); // transform skip
+    w.write_bits(0, 1); // cu_qp_delta
+    w.write_se(0);
+    w.write_se(0);
+    w.write_bits(0, 1); // slice chroma qp offsets present
+    w.write_bits(0, 1); // weighted pred
+    w.write_bits(0, 1); // weighted bipred
+    w.write_bits(0, 1); // transquant bypass
+    w.write_bits(0, 1); // tiles
+    w.write_bits(0, 1); // entropy coding sync
+    w.write_bits(1, 1); // loop filter across slices
+    w.write_bits(0, 1); // deblocking control
+    w.write_bits(0, 1); // scaling list
+    w.write_bits(0, 1); // lists modification
+    w.write_ue(0); // log2_parallel_merge_level - 2
+    w.write_bits(0, 1); // slice header extension
+    w.write_bits(1, 1); // pps_extension_present
+    w.write_bits(0x80, 8); // pps_range_extension_flag only
+    w.write_bits(0, 1); // cross_component_prediction
+    w.write_bits(0, 1); // chroma_qp_offset_list
+    w.write_ue(luma); // log2_sao_offset_scale_luma
+    w.write_ue(chroma); // log2_sao_offset_scale_chroma
+    w.rbsp_trailing();
+    w.finish()
+}
+
+/// SAO offsets are applied unscaled, so a PPS scaling them (a range-extension tool) must be
+/// refused rather than decoded to wrong samples; a range extension that enables nothing is fine.
+#[test]
+fn a_pps_scaling_sao_offsets_is_unsupported() {
+    let plain = crate::params::Pps::parse(&pps_rbsp_with_sao_offset_scale(0, 0)).expect("parses");
+    assert!(plain.check_supported().is_ok());
+    for (luma, chroma) in [(1, 0), (0, 2)] {
+        let pps = crate::params::Pps::parse(&pps_rbsp_with_sao_offset_scale(luma, chroma)).expect("parses");
+        assert!(pps.check_supported().is_err(), "luma {luma}, chroma {chroma}");
+    }
 }

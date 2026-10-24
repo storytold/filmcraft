@@ -68,6 +68,18 @@ pub fn qpc_420(qpi: i32) -> i32 {
     }
 }
 
+/// Table 8-3: IntraPredModeC for modeIdx (Table 8-2) when ChromaArrayType is 2 (the 4:2:2
+/// chroma intra prediction mode: the luma direction with its horizontal component halved).
+pub static INTRA_CHROMA_MODE_422: [u8; 35] =
+    [0, 1, 2, 2, 2, 2, 3, 5, 7, 8, 10, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 23, 24, 24, 25, 25, 26, 27, 27, 28, 28, 29, 29, 30, 31];
+
+/// QpC for the index qPi (8.6.1, 8.7.2.5.5): Table 8-10 when ChromaArrayType is 1, otherwise
+/// Min(qPi, 51).
+#[inline]
+pub fn qpc(qpi: i32, chroma_array_type_1: bool) -> i32 {
+    if chroma_array_type_1 { qpc_420(qpi) } else { qpi.min(51) }
+}
+
 /// Table 9-50 ctxIdxMap for 4x4 sig_coeff_flag contexts.
 pub static CTX_IDX_MAP: [u8; 16] = [0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8];
 
@@ -80,6 +92,40 @@ pub static DST_MATRIX: [[i8; 4]; 4] = [[29, 55, 74, 84], [74, 74, 0, -74], [84, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Table 8-3 (Rec. ITU-T H.265 v8 (08/2021), 8.4.3) is the 4:2:2 form of each luma direction:
+    /// chroma has half the horizontal resolution, so the direction of mode m (Table 8-5's
+    /// intraPredAngle, horizontal modes 2..=17 and vertical 18..=34) with its horizontal component
+    /// halved, mapped to the angular mode nearest in angle. Planar and DC stay. This rule
+    /// reproduces every one of the 35 entries, so a mistyped entry fails here without an oracle.
+    #[test]
+    fn the_422_chroma_mode_table_is_the_luma_direction_with_half_the_width() {
+        let dir = |m: usize| -> (f64, f64) {
+            let a = f64::from(INTRA_PRED_ANGLE[m]);
+            if m < 18 { (-32.0, a) } else { (a, -32.0) }
+        };
+        let angle = |(x, y): (f64, f64)| y.atan2(x);
+        let gap = |a: f64, b: f64| {
+            let d = (a - b).rem_euclid(std::f64::consts::TAU);
+            d.min(std::f64::consts::TAU - d)
+        };
+        for m in 0..35usize {
+            let want = if m < 2 {
+                m
+            } else {
+                let (x, y) = dir(m);
+                let t = angle((x / 2.0, y));
+                let mut best = 2;
+                for k in 2..35 {
+                    if gap(angle(dir(k)), t) < gap(angle(dir(best)), t) - 1e-12 {
+                        best = k;
+                    }
+                }
+                best
+            };
+            assert_eq!(INTRA_CHROMA_MODE_422[m] as usize, want, "luma mode {m}");
+        }
+    }
 
     #[test]
     fn diagonal_scan_4x4() {
@@ -119,5 +165,8 @@ mod tests {
         assert_eq!(qpc_420(30), 29);
         assert_eq!(qpc_420(43), 37);
         assert_eq!(qpc_420(51), 45);
+        assert_eq!(qpc(43, true), 37);
+        assert_eq!(qpc(43, false), 43);
+        assert_eq!(qpc(57, false), 51);
     }
 }
