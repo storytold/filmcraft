@@ -462,12 +462,19 @@ pub struct Session {
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
     /// feature `whisper`). Hosts and tests install one here.
     pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
+    /// Transcription jobs whose results are still to be applied ([`transcript::poll`]).
+    /// PLACEHOLDER: this field is used by `transcript.rs` only; it is not persisted.
+    pub transcribe_jobs: Vec<crate::transcript::PendingTranscription>,
     /// The Events panel log: failed commands, job results, auto-save errors, messages.
     pub log: panels::EventLog,
     /// Media Browser navigation (directory, back / forward history, selected files).
     pub browser: media_browser::BrowserState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
+    /// Next background-job id. Monotonic: finished jobs may be pruned from `jobs`, but a
+    /// `PendingTranscription` still holding an old id keeps it "live" so ids are never
+    /// reused while its result is pending ([`Session::next_job_id`]).
+    next_job_id: u64,
     /// Each media file's size and modification time when last seen (Settings ▸ Media ▸
     /// Automatically refresh growing files, [`media_watch`]).
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
@@ -560,9 +567,11 @@ impl Session {
             export_queue: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
+            transcribe_jobs: Vec::new(),
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
+            next_job_id: 1,
             media_stamps: Default::default(),
             media_scan: None,
         }
@@ -594,6 +603,14 @@ impl Session {
             }
         }
         !self.stepped.is_empty() || self.export_queue.is_active()
+    }
+
+    /// The next background-job id, guaranteed never to repeat while a `PendingTranscription`
+    /// holds the previous one (the counter is monotonic; `jobs` may be pruned).
+    pub(crate) fn next_job_id(&mut self) -> u64 {
+        let id = self.next_job_id;
+        self.next_job_id = self.next_job_id.saturating_add(1);
+        id
     }
 
     /// Start auto-save and the crash-recovery journal (native frontends). Loads preferences from
