@@ -97,7 +97,7 @@ impl GeneratorSource {
             },
             pixel_format: "RGBA 8-bit".into(),
             color: ColorInfo::SRGB_FULL,
-            has_alpha: matches!(generator, Generator::TransparentVideo),
+            has_alpha: matches!(generator, Generator::TransparentVideo) || matches!(&generator, Generator::ColorMatte { color } if color[3] < 1.0 - 1e-5),
             bitrate: None,
             hdr: None,
         });

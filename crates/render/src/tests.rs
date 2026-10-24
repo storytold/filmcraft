@@ -148,6 +148,131 @@ fn cross_dissolve_midpoint() {
 }
 
 #[test]
+fn cross_dissolve_transparent_clip_fades_out() {
+    let (mut p, red, _o, seq, map) = setup();
+    let a = place(&mut p, seq, 0, red, 0, 24);
+    let blue_src = GeneratorSource::new(Generator::ColorMatte { color: [0.0, 0.0, 1.0, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+    let info = blue_src.info().clone();
+    let blue = p.add_item(
+        "blue",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(blue_src.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let mut map = map;
+    map.0.insert(blue, Arc::new(blue_src));
+    let b = place(&mut p, seq, 0, blue, 24, 24);
+
+    // Scale clip A down to 50% placed at top-left, so it has transparency outside its frame
+    let s = p.sequence_mut(seq).unwrap();
+    let (_, it_a) = s.find_item_mut(a).unwrap();
+    let m = it_a.effect_mut("motion").unwrap();
+    m.params.get_mut("scale").unwrap().value = ParamValue::Float(50.0);
+    m.params.get_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(80.0, 45.0));
+
+    // Scale clip B down to 50% placed at bottom-right
+    let s = p.sequence_mut(seq).unwrap();
+    let (_, it_b) = s.find_item_mut(b).unwrap();
+    let m = it_b.effect_mut("motion").unwrap();
+    m.params.get_mut("scale").unwrap().value = ParamValue::Float(50.0);
+    m.params.get_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(240.0, 135.0));
+
+    let r = FrameRate::FPS_24;
+    let tr = filmcraft_project::Transition {
+        id: filmcraft_project::TransitionId(999),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: r.tick_of(18),
+        duration: r.tick_of(12),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    };
+    p.sequence_mut(seq).unwrap().video_tracks[0].transitions.push(tr);
+
+    // Midpoint of transition (frame 24): progress = 0.5
+    let plan = crate::plan::plan_frame(&p, seq, r.tick_of(24), RenderOptions::default(), &map);
+    // Must plan as Composite with a Transition step, not plain layers leaving A at full opacity
+    let crate::plan::FramePlan::Composite { steps, .. } = &plan else {
+        panic!("transparent clip dissolve must plan as Composite with Transition step");
+    };
+    assert!(steps.iter().any(|s| matches!(s, crate::plan::PlanStep::Transition { .. })));
+
+    let img = crate::plan::execute_cpu(&plan);
+    // At top-left (inside clip A), alpha and red should be faded by ~50%
+    let ca = img.get(80, 45);
+    assert!((ca[0] - 0.5).abs() < 0.05, "clip A red should be ~0.5, got {ca:?}");
+    assert!((ca[3] - 0.5).abs() < 0.05, "clip A alpha should be ~0.5, got {ca:?}");
+
+    // At bottom-right (inside clip B), alpha and blue should be faded by ~50%
+    let cb = img.get(240, 135);
+    assert!((cb[2] - 0.5).abs() < 0.05, "clip B blue should be ~0.5, got {cb:?}");
+    assert!((cb[3] - 0.5).abs() < 0.05, "clip B alpha should be ~0.5, got {cb:?}");
+}
+
+#[test]
+fn cross_dissolve_translucent_color_matte_fades_out() {
+    let (mut p, red, _o, seq, map) = setup();
+    let a = place(&mut p, seq, 0, red, 0, 24);
+    let blue_src = GeneratorSource::new(Generator::ColorMatte { color: [0.0, 0.0, 1.0, 0.5] }, 320, 180, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+    let info = blue_src.info().clone();
+    let blue = p.add_item(
+        "blue_matte",
+        Label::Iris,
+        ItemKind::Media(MediaClip {
+            media: MediaRef::Generator(blue_src.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    let mut map = map;
+    map.0.insert(blue, Arc::new(blue_src));
+    let b = place(&mut p, seq, 0, blue, 24, 24);
+
+    let r = FrameRate::FPS_24;
+    let tr = filmcraft_project::Transition {
+        id: filmcraft_project::TransitionId(1001),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: r.tick_of(18),
+        duration: r.tick_of(12),
+        from: Some(a),
+        to: Some(b),
+        align: Default::default(),
+        reverse: false,
+    };
+    p.sequence_mut(seq).unwrap().video_tracks[0].transitions.push(tr);
+
+    let plan = crate::plan::plan_frame(&p, seq, r.tick_of(24), RenderOptions::default(), &map);
+    let crate::plan::FramePlan::Composite { steps, .. } = &plan else {
+        panic!("translucent color matte dissolve must plan as Composite with Transition step");
+    };
+    assert!(steps.iter().any(|s| matches!(s, crate::plan::PlanStep::Transition { .. })));
+
+    let img = crate::plan::execute_cpu(&plan);
+    let c = img.get(160, 90);
+    assert!((c[0] - 0.5).abs() < 0.05, "outgoing red should be ~0.5, got {c:?}");
+    assert!((c[2] - 0.25).abs() < 0.05, "incoming translucent blue should be ~0.25, got {c:?}");
+    assert!((c[3] - 0.75).abs() < 0.05, "composite alpha should be ~0.75, got {c:?}");
+}
+
+#[test]
 fn audio_mix_bars_tone() {
     let mut p = Project::new("a");
     let g = GeneratorSource::new(Generator::BarsAndTone, 64, 36, FrameRate::FPS_24, Tick(5 * TICKS_PER_SECOND));
