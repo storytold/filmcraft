@@ -1538,7 +1538,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         if f.p.partitions {
             let big = cost16 as u64 > (256 * 4) as u64;
             if big {
-                for part in [Part::P16x8, Part::P8x16, Part::P8x8] {
+                for part in [Part::P8x8, Part::P16x8, Part::P8x16] {
+                    if part != Part::P8x8 && best_part == Part::P16x16 {
+                        continue;
+                    }
                     let (m, p, c) = self.search_part(mx, my, r, part, 0, src, lam, mv16[0]);
                     let extra = match part {
                         Part::P8x8 => 10,
