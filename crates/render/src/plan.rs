@@ -90,6 +90,10 @@ pub enum PlanStep {
         progress: f32,
         scale: f32,
     },
+    /// A full-frame adjustment layer at 100 % opacity blending Normal: `ops` run on the canvas
+    /// composited so far (a working image of the output size) and the result replaces it, as
+    /// `adjustment_layer` does on the CPU.
+    Adjustment(Arc<LayerFx>),
 }
 
 #[derive(Default)]
@@ -136,6 +140,7 @@ impl FramePlan {
                 .map(|s| match s {
                     PlanStep::Layers(ls) => layers(ls),
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| layers(ls)).sum(),
+                    PlanStep::Adjustment(_) => 0,
                 })
                 .sum(),
         }
@@ -152,6 +157,7 @@ impl FramePlan {
                 .map(|s| match s {
                     PlanStep::Layers(ls) => layer_side(ls),
                     PlanStep::Transition { inputs, .. } => inputs.iter().map(|ls| layer_side(ls)).max().unwrap_or(0),
+                    PlanStep::Adjustment(fx) => fx.size.0.max(fx.size.1) as usize,
                 })
                 .fold((*width).max(*height), usize::max),
         }
@@ -227,11 +233,11 @@ fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick) -> bool {
     !seq.settings.color.is_plain() || !layered_at(project, seq, t)
 }
 
-/// Whether the frame of `seq` at `t` can be planned as layers: no adjustment layer and no
-/// transition the compositor cannot mix itself is showing (a transition into or out of an
-/// adjustment layer counts, also on the side of the cut where the other clip is).
+/// Whether the frame of `seq` at `t` can be planned as layers: no adjustment layer other than a
+/// [`plain_adjustment`] one and no transition the compositor cannot mix itself is showing (a
+/// transition into or out of an adjustment layer counts, also on the side of the cut where the
+/// other clip is).
 pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
-    let adjustment = |it: &TrackItem| project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. }));
     for tr in &seq.video_tracks {
         if !tr.enabled {
             continue;
@@ -240,17 +246,76 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
             if !simple_transition(&trn.effect.effect) && trn.effect.effect != "push" {
                 return false;
             }
-            if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {
+            if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(|i| is_adjustment(project, i)) {
                 return false;
             }
         }
         if let Some(it) = tr.item_at(t)
-            && adjustment(it)
+            && is_adjustment(project, it)
+            && !plain_adjustment(project, seq, it, t)
         {
             return false;
         }
     }
     true
+}
+
+fn is_adjustment(project: &Project, it: &TrackItem) -> bool {
+    project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. }))
+}
+
+/// An adjustment layer the plan runs as a [`PlanStep::Adjustment`]: covering the whole frame at
+/// 100 % opacity, blending Normal, with no opacity masks and only unmasked effects the GPU
+/// effect stage implements. (Its effects may still evaluate to values the GPU leaves to the CPU:
+/// [`push_adjustment`] then flattens the frame there.)
+fn plain_adjustment(project: &Project, seq: &Sequence, it: &TrackItem, t: Tick) -> bool {
+    let mt = it.effect_time_at(t);
+    let (op, bl) = crate::opacity_blend(it, mt);
+    let (w, h) = (seq.settings.width as usize, seq.settings.height as usize);
+    !it.has_opacity_masks()
+        && bl == Blend::Normal
+        && op >= 1.0 - 1e-6
+        && it
+            .effects
+            .iter()
+            .filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic))
+            .all(|e| !e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None) && crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()))
+        && crate::adjustment_region(seq, it, project, mt, 1.0, w, h).is_none()
+}
+
+/// Push a [`plain_adjustment`] layer: its effects as a [`PlanStep::Adjustment`] on the canvas so
+/// far, or, when one evaluates to something the GPU does not run, the canvas so far flattened on
+/// the CPU with the adjustment applied by the reference renderer.
+#[allow(clippy::too_many_arguments)]
+fn push_adjustment(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, opts: RenderOptions, w: usize, h: usize, out: &mut PlanStack) {
+    // (the reference renderer leaves adjustment layers out when effects are off)
+    if !opts.effects {
+        return;
+    }
+    let mt = item.effect_time_at(t);
+    let cx = crate::effects::FxCtx {
+        t: mt,
+        px_scale: opts.scale,
+        seconds: (t - item.start).seconds(),
+        timecode: "",
+        clip_name: &item.name,
+        project: Some(project),
+        env: None,
+        frame_rate: seq.settings.frame_rate.as_f64(),
+        working: seq.settings.color.working,
+    };
+    let ops: Option<Vec<FxOp>> =
+        item.effects.iter().filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic)).map(|e| FxOp::eval(e, &cx, w, h).filter(FxOp::gpu_ok)).collect();
+    match ops {
+        Some(ops) if ops.is_empty() => {}
+        Some(ops) => out.0.push(PlanStep::Adjustment(Arc::new(LayerFx { size: (w as u32, h as u32), decimation: 1, ops }))),
+        None => {
+            let below = execute_cpu(&std::mem::take(out).finish(w, h));
+            let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
+            let (adj, _) = crate::adjustment_layer(project, seq, item, t, opts, &tc, &below);
+            out.push(PlanLayer::new(cpu_frame(adj), Affine::IDENTITY, 1.0, Blend::Normal));
+        }
+    }
 }
 
 /// Push the layers of every video track of `seq` at `t`, bottom track first (`seq` must be
@@ -308,6 +373,10 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
         if !item.enabled {
             continue;
         }
+        if is_adjustment(project, item) {
+            push_adjustment(project, seq, item, t, opts, w, h, layers);
+            continue;
+        }
         push_item(project, seq, item, t, opts, sources, 1.0, None, nest, layers);
     }
 }
@@ -321,6 +390,8 @@ fn nest_is_plain(project: &Project, seq: &Sequence, nested: &Sequence, ft: Tick)
     nested.settings.color == seq.settings.color
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
         && layered_at(project, nested, ft)
+        // an adjustment layer inside applies to the nested sequence's own tracks only
+        && !nested.video_tracks.iter().any(|tr| tr.enabled && tr.item_at(ft).is_some_and(|i| i.enabled && is_adjustment(project, i)))
         && !nested.video_tracks.iter().any(|tr| tr.enabled && tr.transitions.iter().any(|t| t.range().contains(ft) && !simple_transition(&t.effect.effect)))
         && nested.video_tracks.iter().filter(|tr| tr.enabled).all(|tr| {
             tr.transitions.iter().any(|x| x.range().contains(ft))
@@ -509,6 +580,11 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
                         });
                         let mixed = crate::transitions::apply_scaled(effect, &a, &b, *progress, *scale);
                         crate::blend::composite(&mut canvas, &mixed, 1.0, Blend::Normal);
+                    }
+                    PlanStep::Adjustment(fx) => {
+                        for op in &fx.ops {
+                            op.apply(&mut canvas);
+                        }
                     }
                 }
             }

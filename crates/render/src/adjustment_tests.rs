@@ -363,3 +363,35 @@ fn basic_3d_keeps_its_perspective_at_every_render_scale() {
         }
     }
 }
+
+/// A full-frame adjustment layer at 100 % blending Normal, with effects the GPU runs, is planned
+/// as an adjustment step on the canvas instead of sending the whole frame to the CPU; the plan
+/// gives the reference picture, and a layer above stays untouched. With opacity it is not.
+#[test]
+fn a_plain_adjustment_layer_is_planned_as_a_step_on_the_canvas() {
+    let mut s = scene(3);
+    let red = matte(&mut s.p, &mut s.map, [0.8, 0.3, 0.1, 1.0]);
+    let blue = matte(&mut s.p, &mut s.map, [0.0, 0.0, 1.0, 1.0]);
+    place(&mut s.p, s.seq, 0, red);
+    let adj = adjustment(&mut s.p, s.seq, 1);
+    fx(&mut s, adj, "lumetri");
+    {
+        let l = clip(&mut s, adj).effect_mut("lumetri").unwrap();
+        for (k, v) in [("contrast", 10.0), ("highlights", -15.0), ("shadows", 8.0), ("whites", -5.0), ("vibrance", 10.0)] {
+            l.param_mut(k).unwrap().value = ParamValue::Float(v);
+        }
+    }
+    let top = place(&mut s.p, s.seq, 2, blue);
+    clip(&mut s, top).effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(25.0);
+    let t = R.tick_of(12);
+    assert!(crate::plan::layered_at(&s.p, s.p.sequence(s.seq).unwrap(), t));
+    let plan = crate::plan::plan_frame(&s.p, s.seq, t, RenderOptions::default(), &s.map);
+    let crate::plan::FramePlan::Composite { steps, .. } = &plan else { panic!("expected a composite plan") };
+    assert!(steps.iter().any(|st| matches!(st, crate::plan::PlanStep::Adjustment(_))));
+    let (got, want) = (crate::plan::execute_cpu(&plan), render(&s));
+    let max = got.px.iter().zip(&want.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(max < 1e-4, "max diff {max}");
+    assert!(near(got.get(160, 90), [0.0, 0.0, 1.0], 1e-4), "the layer above is not adjusted");
+    clip(&mut s, adj).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+    assert!(!crate::plan::layered_at(&s.p, s.p.sequence(s.seq).unwrap(), t));
+}
