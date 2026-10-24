@@ -1082,3 +1082,34 @@ fn toggle_animation_creates_a_parameter_missing_from_an_older_instance() {
     let rot = it.effect("motion").unwrap().param("rotation").unwrap();
     assert!(rot.is_animated(), "the stopwatch is on");
 }
+
+/// Clip ▸ Video Options items were enabled for any selection and then failed with "select a video
+/// clip" when only audio was selected. They are enabled when a video clip is selected; calls that
+/// name a video clip still work with nothing selected.
+#[test]
+fn video_options_are_enabled_only_with_a_video_clip_selected() {
+    let video_only = [
+        "clip.frameHoldOptions",
+        "clip.fieldOptions",
+        "clip.timeInterpolation.frameSampling",
+        "clip.timeInterpolation.frameBlending",
+        "clip.timeInterpolation.opticalFlow",
+        "clip.setTimeInterpolation",
+        "clip.fitToFrame",
+        "clip.fillFrame",
+    ];
+    let mut s = demo();
+    let sound = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    s.execute("timeline.select", json!({"clips": [sound.0], "linked": false})).unwrap();
+    for id in video_only {
+        assert!(!s.is_enabled(id), "{id} with only a sound selected");
+    }
+    let picture = v1(&s)[0].id;
+    s.execute("timeline.select", json!({"clips": [picture.0], "linked": false})).unwrap();
+    for id in video_only {
+        assert!(s.is_enabled(id), "{id} with a video clip selected");
+    }
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    s.execute("clip.fitToFrame", json!({"clips": [picture.0]})).unwrap();
+    s.execute("clip.timeInterpolation.frameBlending", json!({"clips": [picture.0]})).unwrap();
+}
