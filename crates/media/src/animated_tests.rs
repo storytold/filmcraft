@@ -57,7 +57,7 @@ fn webp(frames: &[(Vec<u8>, u32)]) -> Vec<u8> {
         out.extend_from_slice(kind);
         out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
         out.extend_from_slice(data);
-        if data.len() % 2 != 0 {
+        if !data.len().is_multiple_of(2) {
             out.push(0);
         }
     }
