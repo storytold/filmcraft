@@ -289,7 +289,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             let path = std::path::Path::new(name);
             let mut dialog = rfd::FileDialog::new()
                 .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
-                .set_file_name(path.file_name().map_or(name.into(), |n| n.to_string_lossy()));
+                .set_file_name(path.file_name().map_or(name.into(), std::ffi::OsStr::to_string_lossy));
             if let Some(dir) = path.parent().filter(|d| d.is_dir()) {
                 dialog = dialog.set_directory(dir);
             }

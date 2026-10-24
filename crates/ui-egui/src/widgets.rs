@@ -6,42 +6,48 @@ use filmcraft_time::{FrameRate, Tick, parse_timecode};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
+fn hot_number_edit(ui: &mut Ui, id: egui::Id, buf: &mut String, value: f64, range: (f64, f64), suffix: &str) -> (Response, Option<f64>) {
+    let editing_id = id.with("editing");
+    let edit_id = id.with("edit");
+    let select_all_id = id.with("select-all");
+    let r = ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0)));
+    let mut out = None;
+    if r.lost_focus() {
+        // the field's own unit can be typed anywhere; calc ignores the common ones
+        let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
+        if let Some(v) = crate::calc::eval(&typed, value) {
+            out = Some(v.clamp(range.0, range.1));
+        }
+        ui.data_mut(|d| d.remove::<String>(editing_id));
+    } else {
+        let b = buf.clone();
+        ui.data_mut(|d| d.insert_temp(editing_id, b));
+        // select the whole value once the field has focus (egui collapses a selection to a caret
+        // in a field that does not have it yet), so typing replaces it as in Premiere
+        let selected_now = r.has_focus() && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
+        if selected_now {
+            let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
+            st.store(ui.ctx(), edit_id);
+        }
+        // the focus and the selection show on the next frame, which nothing else would trigger
+        if !r.has_focus() || selected_now {
+            ui.ctx().request_repaint();
+        }
+        r.request_focus();
+    }
+    (r, out)
+}
+
 /// Premiere "hot text": a blue number you drag horizontally to scrub, click to type a number or a
 /// calculation ([`crate::calc`]).
 /// Returns (response, Some(new value) when changed).
 pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64, f64), decimals: usize, suffix: &str, t: &Tokens) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
-    let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
-    let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
-    if let Some(buf) = editing.as_mut() {
-        let r = ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0)));
-        let mut out = None;
-        if r.lost_focus() {
-            // the field's own unit can be typed anywhere; calc ignores the common ones
-            let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
-            if let Some(v) = crate::calc::eval(&typed, value) {
-                out = Some(v.clamp(range.0, range.1));
-            }
-            ui.data_mut(|d| d.remove::<String>(editing_id));
-        } else {
-            let b = buf.clone();
-            ui.data_mut(|d| d.insert_temp(editing_id, b));
-            // select the whole value once the field has focus (egui collapses a selection to a caret
-            // in a field that does not have it yet), so typing replaces it as in Premiere
-            let selected_now = r.has_focus() && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
-            if selected_now {
-                let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
-                st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
-                st.store(ui.ctx(), edit_id);
-            }
-            // the focus and the selection show on the next frame, which nothing else would trigger
-            if !r.has_focus() || selected_now {
-                ui.ctx().request_repaint();
-            }
-            r.request_focus();
-        }
-        return (r, out);
+    let editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
+    if let Some(mut buf) = editing {
+        return hot_number_edit(ui, id, &mut buf, value, range, suffix);
     }
     let text = format!("{value:.decimals$}{suffix}");
     let galley = ui.painter().layout_no_wrap(text, Tokens::ui(12.0), t.hot_text);

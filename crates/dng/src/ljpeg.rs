@@ -311,7 +311,7 @@ pub fn decode(data: &[u8], max_samples: usize) -> Result<Decoded> {
                 }
                 let mut hufs = Vec::with_capacity(comps.len());
                 for c in &comps {
-                    hufs.push(tables.get(c.table).and_then(|t| t.as_ref()).ok_or(Error::Malformed("lossless JPEG: missing Huffman table"))?);
+                    hufs.push(tables.get(c.table).and_then(Option::as_ref).ok_or(Error::Malformed("lossless JPEG: missing Huffman table"))?);
                 }
                 let samples = scan(data, pos + len, &hufs, width, height, precision, predictor, pt, restart_interval)?;
                 return Ok(Decoded { width, height, components: comps.len(), precision, predictor, samples });

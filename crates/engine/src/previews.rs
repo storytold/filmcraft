@@ -28,7 +28,7 @@ use filmcraft_render::audio::to_layout;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{FrameRequest, SharedSource};
@@ -187,15 +187,15 @@ impl PreviewStore {
 
     /// The folder unsaved projects' previews go into (None = the system temp dir).
     pub fn temp_root(&self) -> Option<PathBuf> {
-        self.temp_root.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.temp_root.read().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     pub fn set_temp_root(&self, root: Option<PathBuf>) {
-        *self.temp_root.write().unwrap_or_else(|e| e.into_inner()) = root;
+        *self.temp_root.write().unwrap_or_else(PoisonError::into_inner) = root;
     }
 
     pub fn dir(&self) -> Option<PathBuf> {
-        self.dir.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.dir.read().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Point the store at `dir` and index the previews already there.
@@ -211,11 +211,11 @@ impl PreviewStore {
                 }
             }
         }
-        *self.dir.write().unwrap_or_else(|e| e.into_inner()) = dir;
-        *self.files.write().unwrap_or_else(|e| e.into_inner()) = files;
+        *self.dir.write().unwrap_or_else(PoisonError::into_inner) = dir;
+        *self.files.write().unwrap_or_else(PoisonError::into_inner) = files;
         self.reindex();
-        self.sources.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        self.audio.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.sources.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.audio.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.bump();
     }
 
@@ -229,7 +229,7 @@ impl PreviewStore {
             && (old.starts_with(crate::temp_dir()) || self.temp_root().is_some_and(|r| old.starts_with(r)))
         {
             let _ = std::fs::create_dir_all(&dir);
-            for name in self.files.read().unwrap_or_else(|e| e.into_inner()).iter() {
+            for name in self.files.read().unwrap_or_else(PoisonError::into_inner).iter() {
                 let (a, b) = (old.join(name), dir.join(name));
                 if !b.exists() && std::fs::rename(&a, &b).is_err() {
                     let _ = std::fs::copy(&a, &b).map(|_| std::fs::remove_file(&a));
@@ -242,17 +242,17 @@ impl PreviewStore {
     /// Rebuild the by-hash index of the video previews from the file names.
     fn reindex(&self) {
         let mut video: HashMap<String, Vec<Part>> = HashMap::new();
-        for name in self.files.read().unwrap_or_else(|e| e.into_inner()).iter() {
+        for name in self.files.read().unwrap_or_else(PoisonError::into_inner).iter() {
             if let Some((hash, off, len)) = parse_video_name(name) {
                 video.entry(hash.to_string()).or_default().push(Part { off, len, name: name.clone() });
             }
         }
-        *self.video.write().unwrap_or_else(|e| e.into_inner()) = video;
+        *self.video.write().unwrap_or_else(PoisonError::into_inner) = video;
     }
 
     /// The rendered frames of `seg`, counted from its start: sorted, merged, within the segment.
     pub fn coverage(&self, seg: &Segment) -> Vec<(i64, i64)> {
-        let video = self.video.read().unwrap_or_else(|e| e.into_inner());
+        let video = self.video.read().unwrap_or_else(PoisonError::into_inner);
         let Some(parts) = video.get(&seg.hash) else { return Vec::new() };
         let n = seg.frames.max(0);
         let mut iv: Vec<(i64, i64)> = parts.iter().map(|p| (p.off.clamp(0, n), p.off.saturating_add(p.len).clamp(0, n))).filter(|(a, b)| a < b).collect();
@@ -277,19 +277,19 @@ impl PreviewStore {
         if a >= b {
             return Vec::new();
         }
-        let video = self.video.read().unwrap_or_else(|e| e.into_inner());
+        let video = self.video.read().unwrap_or_else(PoisonError::into_inner);
         let Some(parts) = video.get(&seg.hash) else { return Vec::new() };
         parts.iter().filter(|p| p.off < b && a < p.off.saturating_add(p.len)).map(|p| p.name.clone()).collect()
     }
 
     /// Whether the audio preview of audio segment `hash` exists.
     pub fn has_audio(&self, hash: &str) -> bool {
-        self.files.read().unwrap_or_else(|e| e.into_inner()).contains(&audio_name(hash))
+        self.files.read().unwrap_or_else(PoisonError::into_inner).contains(&audio_name(hash))
     }
 
     /// Number of preview files (video and audio).
     pub fn count(&self) -> usize {
-        self.files.read().unwrap_or_else(|e| e.into_inner()).len()
+        self.files.read().unwrap_or_else(PoisonError::into_inner).len()
     }
 
     pub fn audio_path_for(&self, hash: &str) -> Option<PathBuf> {
@@ -298,14 +298,14 @@ impl PreviewStore {
 
     /// Register a finished video preview file (`<hash>.mov` or `<hash>-<off>-<len>.mov`).
     fn add_video(&self, name: &str) {
-        self.files.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string());
+        self.files.write().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
         self.reindex();
         self.bump();
     }
 
     /// Register a finished audio preview file.
     pub fn add_audio(&self, hash: &str) {
-        self.files.write().unwrap_or_else(|e| e.into_inner()).insert(audio_name(hash));
+        self.files.write().unwrap_or_else(PoisonError::into_inner).insert(audio_name(hash));
         self.bump();
     }
 
@@ -313,7 +313,7 @@ impl PreviewStore {
     /// how many files were removed.
     pub fn delete(&self, hashes: Option<&[String]>) -> usize {
         let victims: Vec<String> = {
-            let files = self.files.read().unwrap_or_else(|e| e.into_inner());
+            let files = self.files.read().unwrap_or_else(PoisonError::into_inner);
             match hashes {
                 Some(h) => files
                     .iter()
@@ -333,12 +333,12 @@ impl PreviewStore {
     fn delete_files(&self, names: &[String]) -> usize {
         let Some(dir) = self.dir() else { return 0 };
         let victims: Vec<String> = {
-            let files = self.files.read().unwrap_or_else(|e| e.into_inner());
+            let files = self.files.read().unwrap_or_else(PoisonError::into_inner);
             names.iter().filter(|n| files.contains(*n)).cloned().collect()
         };
-        self.sources.lock().unwrap_or_else(|e| e.into_inner()).retain(|(n, _)| !victims.contains(n));
-        self.audio.lock().unwrap_or_else(|e| e.into_inner()).retain(|(h, _)| !victims.contains(&audio_name(h)));
-        let mut files = self.files.write().unwrap_or_else(|e| e.into_inner());
+        self.sources.lock().unwrap_or_else(PoisonError::into_inner).retain(|(n, _)| !victims.contains(n));
+        self.audio.lock().unwrap_or_else(PoisonError::into_inner).retain(|(h, _)| !victims.contains(&audio_name(h)));
+        let mut files = self.files.write().unwrap_or_else(PoisonError::into_inner);
         for n in &victims {
             let _ = std::fs::remove_file(dir.join(n));
             files.remove(n);
@@ -351,7 +351,7 @@ impl PreviewStore {
 
     /// Audio segments of `seq` in this project snapshot (memoized per snapshot).
     pub fn audio_segments(&self, project: &Arc<Project>, seq: ItemId) -> Arc<Vec<AudioSegment>> {
-        let mut memo = self.audio_memo.lock().unwrap_or_else(|e| e.into_inner());
+        let mut memo = self.audio_memo.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((_, _, s)) = memo.iter().find(|(p, q, _)| Arc::ptr_eq(p, project) && *q == seq) {
             return s.clone();
         }
@@ -365,7 +365,7 @@ impl PreviewStore {
 
     fn load_audio(&self, hash: &str) -> Option<Arc<Vec<f32>>> {
         {
-            let mut g = self.audio.lock().unwrap_or_else(|e| e.into_inner());
+            let mut g = self.audio.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(i) = g.iter().position(|(h, _)| h == hash) {
                 let e = g.remove(i);
                 let s = e.1.clone();
@@ -375,7 +375,7 @@ impl PreviewStore {
         }
         let bytes = std::fs::read(self.audio_path_for(hash)?).ok()?;
         let samples = Arc::new(read_wav_f32(&bytes)?);
-        let mut g = self.audio.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.audio.lock().unwrap_or_else(PoisonError::into_inner);
         g.push((hash.to_string(), samples.clone()));
         if g.len() > 32 {
             g.remove(0);
@@ -406,7 +406,7 @@ impl PreviewStore {
     ) -> AudioBuffer {
         let Some(q) = project.sequence(seq) else { return AudioBuffer::silence(48_000, layout.channels(), frames) };
         let live = Some(&*self.live);
-        let has_audio = self.files.read().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n.ends_with(".wav"));
+        let has_audio = self.files.read().unwrap_or_else(PoisonError::into_inner).iter().any(|n| n.ends_with(".wav"));
         let surround = q.settings.audio_master == filmcraft_project::AudioChannels::Surround51;
         let previews_ok = layout == Layout::Stereo && (!surround || mixdown == Mixdown::FrontRear);
         // held mixer controls are heard live (rendered previews don't know them)
@@ -453,7 +453,7 @@ impl PreviewStore {
 
     /// Segments of `seq` in this project snapshot (memoized per snapshot).
     pub fn segments(&self, project: &Arc<Project>, seq: ItemId) -> Arc<Vec<Segment>> {
-        let mut memo = self.memo.lock().unwrap_or_else(|e| e.into_inner());
+        let mut memo = self.memo.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((_, _, s)) = memo.iter().find(|(p, q, _)| Arc::ptr_eq(p, project) && *q == seq) {
             return s.clone();
         }
@@ -507,14 +507,14 @@ impl PreviewStore {
 
     /// The preview frame for sequence frame `frame`, if its segment has been rendered.
     pub fn frame(&self, pool: &MediaPool, project: &Arc<Project>, seq: ItemId, frame: i64, scale: f32) -> Option<Arc<VideoFrame>> {
-        if self.files.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
+        if self.files.read().unwrap_or_else(PoisonError::into_inner).is_empty() {
             return None;
         }
         let segs = self.segments(project, seq);
         let seg = segment_at(&segs, frame)?;
         let rel = frame.checked_sub(seg.first_frame)?;
         let (name, off) = {
-            let video = self.video.read().unwrap_or_else(|e| e.into_inner());
+            let video = self.video.read().unwrap_or_else(PoisonError::into_inner);
             let p = video.get(&seg.hash)?.iter().find(|p| p.off <= rel && rel < p.off.saturating_add(p.len))?;
             (p.name.clone(), p.off)
         };
@@ -526,7 +526,7 @@ impl PreviewStore {
     /// The opened preview file `name` (`<hash>.mov` or a part).
     fn open(&self, pool: &MediaPool, name: &str) -> Option<SharedSource> {
         {
-            let mut g = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+            let mut g = self.sources.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(i) = g.iter().position(|(n, _)| n == name) {
                 let e = g.remove(i);
                 let s = e.1.clone();
@@ -536,7 +536,7 @@ impl PreviewStore {
         }
         let path = self.dir()?.join(name);
         let src = open_preview_file(pool, name, &path)?;
-        let mut g = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.sources.lock().unwrap_or_else(PoisonError::into_inner);
         g.push((name.to_string(), src.clone()));
         if g.len() > 6 {
             g.remove(0);
@@ -663,7 +663,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                 outcome = Err("cancelled".into());
                 break;
             }
-            *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("Rendering segment {} of {nseg}", k + 1);
+            *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = format!("Rendering segment {} of {nseg}", k + 1);
             let name = part_name(&t.seg.hash, t.off, t.len, t.seg.frames);
             let part = dir.join(format!("{name}.part"));
             let first = t.seg.first_frame.saturating_add(t.off);
@@ -710,12 +710,12 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             extra_files: Vec::new(),
         });
         if let Err(e) = &r {
-            *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
+            *prog.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.clone());
         }
-        *prog.status.lock().unwrap_or_else(|e| e.into_inner()) =
+        *prog.status.lock().unwrap_or_else(PoisonError::into_inner) =
             if r.is_ok() { format!("Rendered {done_frames} frames in {secs:.1}s") } else { "Render stopped".into() };
         prog.finished.store(true, Ordering::Relaxed);
-        *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
+        *res.lock().unwrap_or_else(PoisonError::into_inner) = Some(r);
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
@@ -797,12 +797,12 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             extra_files: Vec::new(),
         });
         if let Err(e) = &r {
-            *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
+            *prog.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.clone());
         }
-        *prog.status.lock().unwrap_or_else(|e| e.into_inner()) =
+        *prog.status.lock().unwrap_or_else(PoisonError::into_inner) =
             if r.is_ok() { format!("Rendered audio for {nseg} segment(s) in {secs:.1}s") } else { "Render stopped".into() };
         prog.finished.store(true, Ordering::Relaxed);
-        *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
+        *res.lock().unwrap_or_else(PoisonError::into_inner) = Some(r);
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);

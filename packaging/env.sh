@@ -19,6 +19,7 @@ workspace_version() {
     /^\[/ { in_pkg = ($0 == "[workspace.package]") ; next }
     in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }
   ' "$ROOT/Cargo.toml"
+  return 0
 }
 
 VERSION="${FILMCRAFT_VERSION:-$(workspace_version)}"
@@ -42,6 +43,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 # Emit a GitHub Actions warning (plain stderr outside Actions).
 warn() {
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::warning::$*"; else echo "warning: $*" >&2; fi
+  return 0
 }
 
 # Copy licence and readme files that exist into a package directory, plus the licences of the
@@ -52,6 +54,7 @@ copy_docs() {
     if [[ -f "$ROOT/$f" ]]; then cp "$ROOT/$f" "$dest/"; fi
   done
   copy_font_licences "$dest"
+  return 0
 }
 
 # Copy each craft-fonts licence ($CRAFT_FONTS_DIR/fonts/<family>/OFL.txt) to <dest>/OFL-<family>.txt.
@@ -64,9 +67,12 @@ copy_font_licences() {
     family="$(basename "$(dirname "$lic")")"
     cp "$lic" "$dest/OFL-$family.txt"
   done
+  return 0
 }
 
 # Portable SHA-256 of a file (prints just the hash).
 sha256() {
-  if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  local file="$1"
+  if command -v sha256sum >/dev/null; then sha256sum "$file" | cut -d' ' -f1; else shasum -a 256 "$file" | cut -d' ' -f1; fi
+  return 0
 }

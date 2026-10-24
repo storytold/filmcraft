@@ -627,7 +627,7 @@ fn morphology(word: &str, lex: &Lexicon) -> Option<String> {
         }
     }
     // -ing (stem may need its silent e back: making → make).
-    let ing_stems: [Option<String>; 2] = [strip_suffix(word, "ing").map(|s| s.to_string()), strip_suffix(word, "ing").map(|s| format!("{s}e"))];
+    let ing_stems: [Option<String>; 2] = [strip_suffix(word, "ing").map(ToString::to_string), strip_suffix(word, "ing").map(|s| format!("{s}e"))];
     for stem in ing_stems.into_iter().flatten() {
         let stem = stem.as_str();
         if let Some(pron) = lex.pronunciations(&stem.to_uppercase())
@@ -720,7 +720,7 @@ fn past_ed(last: &Phone) -> &'static str {
 /// doubled consonants, soft c/g, `y` as vowel; primary stress on the first
 /// syllable (on the vowel before -tion/-sion). Always pronounceable.
 fn letter_to_sound(word: &str) -> Option<String> {
-    let letters: Vec<char> = word.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+    let letters: Vec<char> = word.chars().filter(char::is_ascii_alphabetic).collect();
     if letters.is_empty() || letters.len() > MAX_LETTER_TO_SOUND_CHARS {
         return None;
     }
