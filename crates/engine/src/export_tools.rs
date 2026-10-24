@@ -195,13 +195,34 @@ pub fn parse_rate(v: &Value) -> Option<FrameRate> {
     if (f - f.round()).abs() < 1e-6 { Some(FrameRate::new(f.round() as i64, 1)) } else { Some(FrameRate::new((f * 1000.0).round() as i64, 1000)) }
 }
 
+/// The format `p` asks for, flat (`format`) or in `settings`; None when it names none.
+fn requested_format(p: &Value, cmd: &str) -> Result<Option<Format>> {
+    if let Some(f) = str_p(p, "format") {
+        return Format::from_name(f).map(Some).ok_or_else(|| bad(cmd, format!("unknown format `{f}`")));
+    }
+    match p.get("settings").and_then(|v| v.get("format")) {
+        Some(f) => serde_json::from_value(f.clone()).map(Some).map_err(|e| bad(cmd, format!("settings.format: {e}"))),
+        None => Ok(None),
+    }
+}
+
 /// The preset named in `p` (or None), and the settings: preset ⊕ `settings` ⊕ flat overrides.
 pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option<ExportPreset>, ExportSettings)> {
     let preset = match str_p(p, "preset") {
         Some(name) => Some(s.export_presets.find(name).ok_or_else(|| bad(cmd, format!("no export preset named `{name}` (see export.presets.list)")))?),
         None => None,
     };
-    let mut settings = preset.as_ref().map(|x| x.settings.clone()).unwrap_or_default();
+    let mut settings = match &preset {
+        Some(x) => x.settings.clone(),
+        // Without a preset an H.264 export starts from the default preset, as Export mode and
+        // Quick Export do, so its bitrate follows the frame size: `ExportSettings::default()`'s
+        // fixed 20 Mbit/s is ten times that for standard definition. Other formats keep the
+        // plain defaults (the default preset's AAC audio would replace a QuickTime file's PCM).
+        None if requested_format(p, cmd)?.is_none_or(|f| f == Format::H264) => {
+            filmcraft_export::presets::find_builtin(DEFAULT_PRESET).map(|x| x.settings).unwrap_or_default()
+        }
+        None => ExportSettings::default(),
+    };
     if preset.is_none()
         && let Some(f) = str_p(p, "format")
     {
@@ -211,6 +232,11 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         let mut v = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
         merge(&mut v, patch);
         settings = serde_json::from_value(v).map_err(|e| bad(cmd, format!("settings: {e}")))?;
+        // A bitrate given in `settings` is the bitrate, as the flat `bitrateKbps` is: an adaptive
+        // bitrate from the preset would otherwise replace it (`ExportSettings::resolve`).
+        if patch.get("bitrateKbps").is_some() && patch.get("adaptiveBitrate").is_none() {
+            settings.adaptive_bitrate = None;
+        }
         // serde ignores keys it doesn't know, so a misspelt or misplaced key (a flat parameter
         // such as `loudnessLufs` put inside `settings`) would silently do nothing.
         let known = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
