@@ -48,6 +48,12 @@ bar and track have stable automation ids; its narrowest view is five sequence fr
 `effect_controls_zoom_bar_scales_keyframes_and_ruler` covers the ruler, lane and graph positions,
 zoom-scaled keyframe dragging, hidden out-of-range keys, resizing, and invalid ranges.
 
+Alt+wheel up zooms in around the pointer; down zooms out without scrolling another view. Delete removes
+the selected keyframes, or selected non-intrinsic effects when no keys are selected. The keyframe and
+effect context menus can Clear the selected group, and the keyframe menu also copies/pastes effects.
+Effect/keyframe clipboard data pastes onto the Timeline selection with Cmd/Ctrl+V. Color-picker
+popups include a hex text field for editing and clipboard copy/paste.
+
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified

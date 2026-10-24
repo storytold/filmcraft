@@ -163,7 +163,7 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, duration:
 }
 
 /// Alt+wheel scales the lane around the timeline time directly under the pointer. The modified
-/// wheel is consumed here so it cannot also scroll the effect rows underneath the lane.
+/// wheel is consumed here so it cannot also scroll the effect rows or the surrounding view.
 fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, duration: Tick, rate: filmcraft_time::FrameRate) {
     let Some(pointer) = ui.input(|i| i.pointer.hover_pos()).filter(|p| lane.contains(*p)) else { return };
     let (delta, has_alt) = ui.input(|input| {
@@ -187,14 +187,39 @@ fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, durati
         }
         (delta, has_alt)
     });
-    if !has_alt || delta.abs() < 0.01 {
+    if !has_alt {
+        return;
+    }
+    // ScrollArea reads the aggregated deltas, while other panel gestures can inspect raw events.
+    // Remove Alt-wheel events and rebuild both deltas from any ordinary wheel events left in this
+    // frame, so zooming cannot also move the Timeline or a surrounding scroll view.
+    ui.input_mut(|input| {
+        let mut remaining = egui::Vec2::ZERO;
+        input.raw.events.retain(|event| match event {
+            egui::Event::MouseWheel { modifiers, .. } if modifiers.alt => false,
+            egui::Event::MouseWheel { unit, delta, .. } if delta.x.is_finite() && delta.y.is_finite() => {
+                let scale = match unit {
+                    egui::MouseWheelUnit::Point => 1.0,
+                    egui::MouseWheelUnit::Line => 40.0,
+                    egui::MouseWheelUnit::Page => 400.0,
+                };
+                remaining += *delta * scale;
+                true
+            }
+            _ => true,
+        });
+        input.smooth_scroll_delta = remaining;
+    });
+    if delta.abs() < 0.01 {
         return;
     }
     let (start, end) = time_zoom_range(app.ui.effect_controls_time_zoom);
     let span = end - start;
     let under_pointer = ((pointer.x - lane.min.x) / lane.width().max(1.0)).clamp(0.0, 1.0) as f64;
     let anchor = start + under_pointer * span;
-    let factor = f64::from(delta / 300.0).exp().clamp(0.1, 10.0);
+    // A positive wheel delta is content moving down: this is a wheel-down gesture, so it widens
+    // the view; wheel-up has a negative delta and narrows it (zooms in).
+    let factor = f64::from(-delta / 300.0).exp().clamp(0.1, 10.0);
     let clip_ticks = duration.0.max(1);
     let min_span = (rate.frame_duration().0.max(1).saturating_mul(MIN_ZOOM_FRAMES) as f64 / clip_ticks as f64).clamp(0.0, 1.0);
     let new_span = (span * factor).clamp(min_span, 1.0);
@@ -331,6 +356,17 @@ fn selected_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectIn
         app.ui.selected_effects.iter().filter(|selection| selection.clip == clip).filter_map(|selection| selection.index(effects)).collect();
     indices.sort_unstable();
     indices.dedup();
+    indices
+}
+
+fn removable_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectInstance], clicked: Option<usize>) -> Vec<usize> {
+    let mut indices = selected_effect_indices(app, clip, effects);
+    if let Some(clicked) = clicked
+        && !indices.contains(&clicked)
+    {
+        indices = vec![clicked];
+    }
+    indices.retain(|index| effects.get(*index).is_some_and(|effect| effect.def().is_some_and(|definition| !definition.intrinsic)));
     indices
 }
 
@@ -518,11 +554,42 @@ pub(crate) fn copy_for_shortcut(app: &mut FilmcraftApp) {
         }
         return;
     }
+    copy_selected_effects(app);
+}
+
+pub(crate) fn copy_selected_effects(app: &mut FilmcraftApp) {
     let Some((clip, item, _)) = selected_clip(app) else { return };
     let selected = selected_effect_indices(app, clip, &item.effects);
     let fallback = app.session.state.selected_effect.as_ref().filter(|selection| selection.clip == clip).and_then(|selection| selection.index(&item.effects));
     if let Some(index) = selected.first().copied().or(fallback) {
         copy_effects(app, clip, &item, index);
+    }
+}
+
+pub(crate) fn can_paste_for_shortcut(app: &FilmcraftApp) -> bool {
+    !app.session.state.selection.is_empty()
+        && match app.ui.effect_controls_clipboard_kind {
+            Some(crate::state::EffectControlsClipboardKind::Keyframes) => !app.ui.effect_keyframe_clipboard.entries.is_empty(),
+            Some(crate::state::EffectControlsClipboardKind::Effects) => !app.ui.effect_clipboard.effects.is_empty(),
+            None => false,
+        }
+}
+
+pub(crate) fn delete_for_shortcut(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if !app.ui.keyframe_selection.is_empty() {
+        run(app, ctx, vec![("effects.deleteKeyframes".into(), json!({"keyframes": app.ui.keyframe_selection}))]);
+        return;
+    }
+    let Some((clip, item, _)) = selected_clip(app) else { return };
+    let mut indices = removable_effect_indices(app, clip, &item.effects, None);
+    if indices.is_empty()
+        && let Some(index) =
+            app.session.state.selected_effect.as_ref().filter(|selection| selection.clip == clip).and_then(|selection| selection.index(&item.effects))
+    {
+        indices = removable_effect_indices(app, clip, &item.effects, Some(index));
+    }
+    if !indices.is_empty() {
+        run(app, ctx, vec![("effects.removeMany".into(), json!({"clip": clip.0, "indices": indices}))]);
     }
 }
 
@@ -672,6 +739,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     || (app.ui.selected_effects.is_empty()
                         && app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx)));
                 let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click_and_drag());
+                let resp = if def.intrinsic { resp } else { resp.on_hover_cursor(egui::CursorIcon::Grab) };
                 if selected {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
                 } else if resp.hovered() {
@@ -732,6 +800,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 if resp.drag_started() && !def.intrinsic {
                     effect_drag = Some(EffectDrag { clip: clip.0, from: idx, target: Some(idx) });
+                    bui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
                 if let Some(drag) = effect_drag.as_mut() {
                     if drag.clip == clip.0 && resp.hovered() && def.intrinsic {
@@ -770,9 +839,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         paste_effect = true;
                         ui.close();
                     }
-                    if !def.intrinsic && ui.button(tl!("Clear")).clicked() {
-                        actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
-                        ui.close();
+                    if !def.intrinsic {
+                        let clear = ui.button(tl!("Clear"));
+                        app.auto.add(&format!("effectControls.effect.{fx_id}.clear"), clear.rect, "Clear");
+                        if clear.clicked() {
+                            let indices = removable_effect_indices(app, clip, &it.effects, Some(idx));
+                            if !indices.is_empty() {
+                                actions.push(("effects.removeMany".into(), json!({"clip": clip.0, "indices": indices})));
+                            }
+                            ui.close();
+                        }
                     }
                 });
                 if save_preset {
@@ -828,6 +904,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some(to) = drag.target.filter(|to| *to != drag.from)
     {
         reorder = Some((drag.clip, drag.from, to));
+    }
+    if effect_drag.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     }
     ui.data_mut(|d| {
         if let Some(drag) = effect_drag.clone() {
@@ -1569,8 +1648,14 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     } else if let ParamValue::Color(c) = v {
                         let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                        if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
+                        let (color_response, changed, hex_rect) =
+                            crate::widgets::color_edit_with_hex(ui, egui::Id::unique(("lumetri-color", pd.id)), &mut rgba, egui::color_picker::Alpha::Opaque);
+                        app.auto.add(&format!("lumetri.{}.color", pd.id), color_response.rect, "Color picker");
+                        if changed {
                             actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [rgba.r(), rgba.g(), rgba.b(), 1.0]}));
+                        }
+                        if let Some(rect) = hex_rect {
+                            app.auto.add(&format!("lumetri.{}.hex", pd.id), rect, "HEX color");
                         }
                     }
                 });
@@ -1818,12 +1903,38 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
     let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
     let mut wrote = false;
     for (cmd, mut p) in actions {
-        let removed = if cmd == "effects.remove" {
-            p.get("clip").and_then(Value::as_u64).zip(p.get("index").and_then(Value::as_u64).and_then(|index| usize::try_from(index).ok()))
-        } else {
-            None
+        if cmd == "ui.effectControls.copyEffects" {
+            copy_selected_effects(app);
+            continue;
+        }
+        if cmd == "ui.effectControls.pasteEffects" {
+            if let Some((clip, _, _)) = selected_clip(app) {
+                paste_effects(app, clip);
+            }
+            continue;
+        }
+        let removed: Option<(ClipId, Vec<usize>)> = match cmd.as_str() {
+            "effects.removeMany" => p
+                .get("clip")
+                .and_then(Value::as_u64)
+                .map(ClipId)
+                .zip(
+                    p.get("indices")
+                        .and_then(Value::as_array)
+                        .map(|indices| indices.iter().filter_map(Value::as_u64).filter_map(|index| usize::try_from(index).ok()).collect()),
+                )
+                .filter(|(_, indices): &(ClipId, Vec<usize>)| !indices.is_empty()),
+            "effects.remove" => p
+                .get("clip")
+                .and_then(Value::as_u64)
+                .map(ClipId)
+                .zip(p.get("index").and_then(Value::as_u64).and_then(|index| usize::try_from(index).ok()).map(|index| vec![index])),
+            _ => None,
         };
-        let before = removed.and_then(|(clip, _)| app.session.active_sequence().and_then(|q| q.find_item(ClipId(clip))).map(|(_, item)| item.effects.clone()));
+        let before =
+            removed.as_ref().and_then(|(clip, _)| app.session.active_sequence().and_then(|q| q.find_item(*clip)).map(|(_, item)| item.effects.clone()));
+        let deleted_keys: Option<Vec<KeyframeRef>> =
+            (cmd == "effects.deleteKeyframes").then(|| serde_json::from_value(p.get("keyframes").cloned().unwrap_or(Value::Null)).ok()).flatten();
         if cmd == "effects.setParam" && down {
             if p.get("merge").is_none() {
                 p["merge"] = json!(true);
@@ -1834,33 +1945,34 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
             wrote = true;
         }
         match app.session.execute(&cmd, p) {
-            Ok(_) if let (Some((clip, index)), Some(before)) = (removed, before) => {
-                if let Some((_, after)) = app.session.active_sequence().and_then(|q| q.find_item(ClipId(clip))) {
-                    let mut remapped: Vec<_> = app.ui.selected_effects.iter().filter(|selection| selection.clip != ClipId(clip)).cloned().collect();
-                    remapped.extend(
-                        app.ui
-                            .selected_effects
-                            .iter()
-                            .filter(|selection| selection.clip == ClipId(clip))
-                            .filter_map(|selection| selection.index(&before))
-                            .filter(|old| *old != index)
-                            .filter_map(|old| filmcraft_engine::EffectSel::of(ClipId(clip), &after.effects, if old > index { old - 1 } else { old })),
-                    );
+            Ok(_) if let (Some((clip, indices)), Some(before)) = (&removed, before) => {
+                if let Some((_, after)) = app.session.active_sequence().and_then(|q| q.find_item(*clip)) {
+                    let mut remapped: Vec<_> = app.ui.selected_effects.iter().filter(|selection| selection.clip != *clip).cloned().collect();
+                    remapped.extend(app.ui.selected_effects.iter().filter(|selection| selection.clip == *clip).filter_map(|selection| {
+                        let old = selection.index(&before)?;
+                        if indices.contains(&old) {
+                            return None;
+                        }
+                        let shift = indices.iter().filter(|removed| **removed < old).count();
+                        filmcraft_engine::EffectSel::of(*clip, &after.effects, old.saturating_sub(shift))
+                    }));
                     app.ui.selected_effects = remapped;
                     app.ui.keyframe_selection.retain_mut(|key| {
-                        if key.clip != clip {
+                        if key.clip != clip.0 {
                             return true;
                         }
-                        if key.effect == index {
+                        if indices.contains(&key.effect) {
                             return false;
                         }
-                        if key.effect > index {
-                            key.effect = key.effect.saturating_sub(1);
+                        let shift = indices.iter().filter(|removed| **removed < key.effect).count();
+                        if shift > 0 {
+                            key.effect = key.effect.saturating_sub(shift);
                         }
                         true
                     });
                 }
             }
+            Ok(_) if let Some(deleted) = deleted_keys => app.ui.keyframe_selection.retain(|key| !deleted.contains(key)),
             Err(error) => app.ui.status = error.to_string(),
             _ => {}
         }

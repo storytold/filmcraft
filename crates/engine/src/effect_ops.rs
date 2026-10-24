@@ -27,6 +27,13 @@ fn spec(id: &'static str, label: &'static str, params: &'static str, run: Run) -
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
     vec![
+        spec("effects.removeMany", "Remove Effects", r#"{"clip":id,"indices":[index]}"#, remove_effects),
+        spec(
+            "effects.deleteKeyframes",
+            "Delete Keyframes",
+            r#"{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":ticks}]}"#,
+            delete_keyframes,
+        ),
         spec(
             "effects.setInterpolations",
             "Set Keyframe Interpolation",
@@ -77,6 +84,86 @@ fn interpolation(s: &str) -> Option<Interpolation> {
         "easeout" => Some(Interpolation::EaseOut),
         _ => None,
     }
+}
+
+fn remove_effects(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effects.removeMany";
+    let clip = p.get("clip").and_then(Value::as_u64).map(ClipId).ok_or_else(|| bad(CMD, "need `clip`"))?;
+    let raw = p.get("indices").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need `indices`"))?;
+    if raw.is_empty() || raw.len() > MAX_EFFECTS {
+        return Err(bad(CMD, format!("effect count must be between 1 and {MAX_EFFECTS}")));
+    }
+    let mut indices = Vec::with_capacity(raw.len());
+    let mut unique = HashSet::with_capacity(raw.len());
+    for value in raw {
+        let index = value.as_u64().and_then(|value| usize::try_from(value).ok()).ok_or_else(|| bad(CMD, "effect indices must be non-negative integers"))?;
+        if !unique.insert(index) {
+            return Err(bad(CMD, "duplicate effect index"));
+        }
+        indices.push(index);
+    }
+    indices.sort_unstable();
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, item) = q.find_item(clip).ok_or_else(|| bad(CMD, "clip does not exist"))?;
+    if indices.iter().any(|index| item.effects.get(*index).is_none_or(|effect| effect.def().is_none_or(|definition| definition.intrinsic))) {
+        return Err(bad(CMD, "an effect does not exist or is intrinsic"));
+    }
+    let selected_effect = s.state.selected_effect.clone().filter(|selected| selected.clip == clip);
+    let selected_index = selected_effect.as_ref().and_then(|selected| selected.index(&item.effects));
+    s.edit_sequence("Remove Effects", |sequence, _, _| {
+        let (_, item) = sequence.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        for index in indices.iter().rev() {
+            let effect = item.effects.get(*index).ok_or_else(|| bad(CMD, "effect order changed before removal"))?;
+            if effect.def().is_none_or(|definition| definition.intrinsic) {
+                return Err(bad(CMD, "intrinsic effects cannot be removed"));
+            }
+            item.effects.remove(*index);
+        }
+        Ok(())
+    })?;
+    if let Some(selected_index) = selected_index
+        && indices.binary_search(&selected_index).is_ok()
+    {
+        s.state.selected_effect = None;
+    }
+    Ok(json!({"removed": indices.len()}))
+}
+
+fn delete_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effects.deleteKeyframes";
+    let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need `keyframes`"))?;
+    if raw.is_empty() || raw.len() > MAX_KEYS {
+        return Err(bad(CMD, format!("keyframe count must be between 1 and {MAX_KEYS}")));
+    }
+    let keys: Vec<KeyRef> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(CMD, "invalid keyframe reference"))?;
+    let mut unique = HashSet::with_capacity(keys.len());
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    for key in &keys {
+        if key.param.is_empty() || key.param.len() > 256 || key.mask.is_some_and(|mask| mask >= MAX_MASKS) || !unique.insert(key.clone()) {
+            return Err(bad(CMD, "duplicate or invalid keyframe reference"));
+        }
+        let (_, item) = q.find_item(ClipId(key.clip)).ok_or_else(|| bad(CMD, "clip does not exist"))?;
+        let effect = item.effects.get(key.effect).ok_or_else(|| bad(CMD, "effect does not exist"))?;
+        let param = match key.mask {
+            Some(mask) => effect.masks.get(mask).and_then(|mask| mask.param(&key.param)),
+            None => effect.params.get(&key.param),
+        }
+        .ok_or_else(|| bad(CMD, "parameter does not exist"))?;
+        if !param.keyframes.iter().any(|keyframe| keyframe.time == key.time) {
+            return Err(bad(CMD, "keyframe does not exist"));
+        }
+    }
+    s.edit_sequence("Delete Keyframes", |sequence, _, _| {
+        for key in &keys {
+            let param = key_param_mut(sequence, key)?;
+            let Some(index) = param.keyframes.iter().position(|keyframe| keyframe.time == key.time) else {
+                return Err(bad(CMD, "keyframe disappeared before removal"));
+            };
+            param.keyframes.remove(index);
+        }
+        Ok(())
+    })?;
+    Ok(json!({"deleted": keys.len()}))
 }
 
 fn set_interpolations(s: &mut Session, p: &Value) -> Result<Value> {
@@ -728,6 +815,64 @@ mod tests {
         assert!(session.execute("effects.setInterpolations", json!({"keyframes": [first, stale, masked], "interpolation": "hold"})).is_err());
         assert!(Arc::ptr_eq(&before, &session.project));
         assert_eq!(session.history.undo.len(), undo);
+    }
+
+    #[test]
+    fn selected_keyframes_delete_together_and_reject_stale_refs_atomically() {
+        let (mut session, clip) = fixture();
+        let scale = add_key(&mut session, clip, "scale", 0.8);
+        let rotation = add_key(&mut session, clip, "rotation", 1.2);
+        let undo = session.history.undo.len();
+        let before = session.project.clone();
+        let result = session.execute("effects.deleteKeyframes", json!({"keyframes": [scale.clone(), rotation.clone()]})).expect("delete keys");
+        assert_eq!(result["deleted"], 2);
+        assert_eq!(session.history.undo.len(), undo + 1);
+        let item = session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, item)| item).expect("clip");
+        assert!(item.effects[scale.effect].params["scale"].keyframes.is_empty());
+        assert!(item.effects[rotation.effect].params["rotation"].keyframes.is_empty());
+        let deleted = session.project.clone();
+        session.undo();
+        assert_eq!(serde_json::to_value(&*session.project).expect("restored project"), serde_json::to_value(&*before).expect("before project"));
+        session.redo();
+        assert_eq!(serde_json::to_value(&*session.project).expect("deleted project"), serde_json::to_value(&*deleted).expect("deleted snapshot"));
+
+        let undo = session.history.undo.len();
+        let before_bad = session.project.clone();
+        let stale = KeyRef { time: Tick::MAX, ..rotation };
+        assert!(session.execute("effects.deleteKeyframes", json!({"keyframes": [scale, stale]})).is_err());
+        assert!(Arc::ptr_eq(&before_bad, &session.project));
+        assert_eq!(session.history.undo.len(), undo);
+    }
+
+    #[test]
+    fn selected_effects_delete_together_and_refuse_intrinsic_or_duplicate_indices() {
+        let (mut session, clip) = fixture();
+        session.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).expect("apply blur");
+        session.execute("effects.apply", json!({"clips": [clip.0], "effect": "tint"})).expect("apply tint");
+        let before = session.project.clone();
+        let effects = session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, item)| item.effects.clone()).expect("effects");
+        let indices: Vec<usize> =
+            effects.iter().enumerate().filter_map(|(index, effect)| matches!(effect.effect.as_str(), "gaussian_blur" | "tint").then_some(index)).collect();
+        let undo = session.history.undo.len();
+        let result = session.execute("effects.removeMany", json!({"clip": clip.0, "indices": indices})).expect("remove effects");
+        assert_eq!(result["removed"], 2);
+        assert_eq!(session.history.undo.len(), undo + 1);
+        let remaining = session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, item)| &item.effects).expect("effects");
+        assert!(remaining.iter().all(|effect| !matches!(effect.effect.as_str(), "gaussian_blur" | "tint")));
+        let deleted = session.project.clone();
+        session.undo();
+        assert_eq!(serde_json::to_value(&*session.project).expect("restored project"), serde_json::to_value(&*before).expect("before project"));
+        session.redo();
+        assert_eq!(serde_json::to_value(&*session.project).expect("deleted project"), serde_json::to_value(&*deleted).expect("deleted snapshot"));
+
+        let undo = session.history.undo.len();
+        let before_bad = session.project.clone();
+        let intrinsic = effects.iter().position(|effect| effect.def().is_some_and(|definition| definition.intrinsic)).expect("intrinsic effect");
+        for request in [json!({"clip": clip.0, "indices": [intrinsic]}), json!({"clip": clip.0, "indices": [0, 0]})] {
+            assert!(session.execute("effects.removeMany", request).is_err());
+            assert!(Arc::ptr_eq(&before_bad, &session.project));
+            assert_eq!(session.history.undo.len(), undo);
+        }
     }
 
     #[test]

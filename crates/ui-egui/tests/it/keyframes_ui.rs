@@ -401,13 +401,22 @@ fn alt_wheel_zoom_is_anchored_to_the_pointer_and_zoom_bar_sits_at_lane_bottom() 
     assert!(bar[1] > lane[1] + lane[3] * 0.8, "navigator is placed below the keyframe area: {bar:?} {lane:?}");
     let u = 0.31;
     let x = lane[0] + lane[2] * u;
-    d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.55, "dy": -100.0, "modifiers": {"alt": true}}));
+    d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.55, "dy": 100.0, "modifiers": {"alt": true}}));
+    assert!(
+        !d.harness.ctx.input(|input| input.raw.events.iter().any(|event| matches!(event, egui::Event::MouseWheel { modifiers, .. } if modifiers.alt))),
+        "the zoom gesture is removed from raw wheel events too"
+    );
     d.frames(3);
     let zoom = d.harness.state().ui.effect_controls_time_zoom.expect("Alt-wheel zooms in");
     assert!(zoom[1] - zoom[0] < 1.0);
     assert!(((zoom[0] + (zoom[1] - zoom[0]) * u) - u).abs() < 0.01, "the time under the pointer remains anchored: {zoom:?}");
 
-    let before = zoom;
+    d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.55, "dy": -40.0, "modifiers": {"alt": true}}));
+    d.frames(2);
+    let zoomed_out = d.harness.state().ui.effect_controls_time_zoom.expect("wheel-down zooms out");
+    assert!(zoomed_out[1] - zoomed_out[0] > zoom[1] - zoom[0], "wheel-down widens the view: {zoom:?} → {zoomed_out:?}");
+
+    let before = zoomed_out;
     let effect = d.rect("effectControls.effect.motion");
     d.ok("ui.scroll", json!({"x": effect[0] + 80.0, "y": effect[1] + effect[3] * 0.5, "dy": -100.0, "modifiers": {"alt": true}}));
     d.frames(3);
@@ -419,7 +428,7 @@ fn alt_wheel_zoom_is_anchored_to_the_pointer_and_zoom_bar_sits_at_lane_bottom() 
         let lane = d.rect("effectControls.lane");
         let x = lane[0] + lane[2] * edge;
         let pointer_fraction = (x - lane[0]) / lane[2];
-        d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.5, "dy": -80.0, "modifiers": {"alt": true}}));
+        d.ok("ui.scroll", json!({"x": x, "y": lane[1] + lane[3] * 0.5, "dy": 80.0, "modifiers": {"alt": true}}));
         d.frames(2);
         let [start, end] = d.harness.state().ui.effect_controls_time_zoom.expect("edge wheel zoom");
         assert!((start + (end - start) * pointer_fraction - pointer_fraction).abs() < 0.01, "edge time stays under pointer: {edge} → [{start}, {end}]");
@@ -438,7 +447,7 @@ fn alt_wheel_zoom_is_anchored_to_the_pointer_and_zoom_bar_sits_at_lane_bottom() 
     d.frames(2);
     assert_eq!(d.harness.state().ui.effect_controls_time_zoom, None, "a short clip displays the whole range");
     let lane = d.rect("effectControls.lane");
-    d.ok("ui.scroll", json!({"x": lane[0] + lane[2] * 0.5, "y": lane[1] + lane[3] * 0.5, "dy": -80.0, "modifiers": {"alt": true}}));
+    d.ok("ui.scroll", json!({"x": lane[0] + lane[2] * 0.5, "y": lane[1] + lane[3] * 0.5, "dy": 80.0, "modifiers": {"alt": true}}));
     d.frames(2);
     assert_eq!(d.harness.state().ui.effect_controls_time_zoom, None, "a short clip cannot be zoomed beyond its full range");
 }
@@ -475,6 +484,87 @@ fn selected_keyframes_change_interpolation_together_and_alt_drag_duplicates() {
     assert_eq!(d.parameter(&clip, "motion", "scale").keyframes, before_scale);
     assert_eq!(d.parameter(&clip, "motion", "rotation").keyframes, before_rotation);
     assert_eq!(d.undo_len(), undo - 1);
+}
+
+#[test]
+fn delete_removes_selected_keyframes_together_with_one_undo() {
+    let (mut d, clip) = Driver::demo();
+    let keys = lane_keys(&mut d, &clip, &[("scale", 0.8), ("rotation", 1.2)]);
+    select_keys(&mut d, &keys);
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    let undo = d.undo_len();
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.frames(3);
+    assert!(d.parameter(&clip, "motion", "scale").keyframes.is_empty());
+    assert!(d.parameter(&clip, "motion", "rotation").keyframes.is_empty());
+    assert!(d.harness.state().ui.keyframe_selection.is_empty());
+    assert_eq!(d.undo_len(), undo + 1, "deleting a group is one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.parameter(&clip, "motion", "scale").keyframes.len(), 1);
+    assert_eq!(d.parameter(&clip, "motion", "rotation").keyframes.len(), 1);
+}
+
+#[test]
+fn clear_from_keyframe_context_menu_deletes_the_selected_group() {
+    let (mut d, clip) = Driver::demo();
+    let keys = lane_keys(&mut d, &clip, &[("scale", 0.8), ("rotation", 1.2)]);
+    select_keys(&mut d, &keys);
+    let undo = d.undo_len();
+    d.right_click(&key_id(&d, &keys[0]));
+    d.click("effectControls.keyframeMenu.clear");
+    assert!(d.parameter(&clip, "motion", "scale").keyframes.is_empty());
+    assert!(d.parameter(&clip, "motion", "rotation").keyframes.is_empty());
+    assert!(d.harness.state().ui.keyframe_selection.is_empty());
+    assert_eq!(d.undo_len(), undo + 1, "Clear removes all selected keys as one edit");
+}
+
+#[test]
+fn delete_removes_all_selected_effects_together() {
+    let (mut d, clip) = Driver::demo();
+    for effect in ["gaussian_blur", "tint"] {
+        d.exec("effects.apply", json!({"clips": [clip.id], "effect": effect}));
+    }
+    for intrinsic in ["motion", "opacity", "time_remap"] {
+        d.click(&format!("effectControls.effect.{intrinsic}.twirl"));
+    }
+    d.click("effectControls.effect.gaussian_blur");
+    d.ok("ui.click", json!({"id": "effectControls.effect.tint", "modifiers": {"shift": true}}));
+    d.frames(2);
+    assert_eq!(d.harness.state().ui.selected_effects.len(), 2, "both effects should be selected before Delete");
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    let undo = d.undo_len();
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.frames(3);
+    let item = d.harness.state().session.active_sequence().and_then(|sequence| sequence.find_item(ClipId(clip.id))).map(|(_, item)| item).expect("clip");
+    assert!(item.effects.iter().all(|effect| !matches!(effect.effect.as_str(), "gaussian_blur" | "tint")));
+    assert!(d.harness.state().ui.selected_effects.is_empty());
+    assert_eq!(d.undo_len(), undo + 1, "deleting the selected effect chain is one edit");
+    d.exec("edit.undo", json!({}));
+    let item = d.harness.state().session.active_sequence().and_then(|sequence| sequence.find_item(ClipId(clip.id))).map(|(_, item)| item).expect("clip");
+    assert!(item.effects.iter().any(|effect| effect.effect == "gaussian_blur"));
+    assert!(item.effects.iter().any(|effect| effect.effect == "tint"));
+}
+
+#[test]
+fn clear_from_effect_context_menu_removes_the_selected_effect_group() {
+    let (mut d, clip) = Driver::demo();
+    for effect in ["gaussian_blur", "tint"] {
+        d.exec("effects.apply", json!({"clips": [clip.id], "effect": effect}));
+    }
+    for intrinsic in ["motion", "opacity", "time_remap"] {
+        d.click(&format!("effectControls.effect.{intrinsic}.twirl"));
+    }
+    d.click("effectControls.effect.gaussian_blur");
+    d.ok("ui.click", json!({"id": "effectControls.effect.tint", "modifiers": {"shift": true}}));
+    d.frames(2);
+    let undo = d.undo_len();
+    d.ok("ui.click", json!({"id": "effectControls.effect.tint", "button": "right"}));
+    d.frames(2);
+    assert!(d.find("effectControls.effect.tint.savePreset").is_some(), "effect context menu did not open");
+    d.click("effectControls.effect.tint.clear");
+    let item = d.harness.state().session.active_sequence().and_then(|sequence| sequence.find_item(ClipId(clip.id))).map(|(_, item)| item).expect("clip");
+    assert!(item.effects.iter().all(|effect| !matches!(effect.effect.as_str(), "gaussian_blur" | "tint")));
+    assert_eq!(d.undo_len(), undo + 1, "Clear removes the selected effect group atomically");
 }
 
 #[test]
@@ -531,7 +621,9 @@ fn effect_controls_shift_selection_save_preset_copy_paste_and_reorder() {
     let tint = d.rect("effectControls.effect.tint");
     let from = egui::pos2((blur[0] + blur[2] / 2.0) as f32, (blur[1] + blur[3] / 2.0) as f32);
     let to = egui::pos2((tint[0] + tint[2] / 2.0) as f32, (tint[1] + tint[3] * 0.8) as f32);
-    d.gesture(from, to, egui::Modifiers::NONE, None);
+    d.press_drag(from, to, egui::Modifiers::NONE);
+    assert_eq!(d.harness.output().platform_output.cursor_icon, egui::CursorIcon::Grabbing, "the active effect drag uses a grabbing cursor");
+    d.release(to, egui::Modifiers::NONE);
     let effects = &d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip.id)).unwrap().1.effects;
     let names: Vec<&str> = effects.iter().map(|effect| effect.effect.as_str()).filter(|name| *name == "gaussian_blur" || *name == "tint").collect();
     assert!(names.windows(2).any(|pair| pair == ["tint", "gaussian_blur"]), "dragging the header changes the chain order: {names:?}");
@@ -567,6 +659,111 @@ fn effect_controls_copy_paste_keyframes_uses_playhead_anchor() {
     assert_eq!(d.parameter(&clip, "motion", "scale").keyframes.len(), 1);
     d.exec("edit.redo", json!({}));
     assert_eq!(d.parameter(&clip, "motion", "scale").keyframes.len(), 2);
+}
+
+#[test]
+fn keyframe_context_menu_copies_and_pastes_selected_effects() {
+    let (mut d, clip) = Driver::demo();
+    for effect in ["gaussian_blur", "tint"] {
+        d.exec("effects.apply", json!({"clips": [clip.id], "effect": effect}));
+    }
+    for intrinsic in ["opacity", "time_remap"] {
+        d.click(&format!("effectControls.effect.{intrinsic}.twirl"));
+    }
+    d.click("effectControls.effect.gaussian_blur");
+    d.ok("ui.click", json!({"id": "effectControls.effect.tint", "modifiers": {"shift": true}}));
+    let key = lane_keys(&mut d, &clip, &[("scale", 1.0)])[0].clone();
+    d.click(&key_id(&d, &key));
+    let before =
+        d.harness.state().session.active_sequence().and_then(|sequence| sequence.find_item(ClipId(clip.id))).map(|(_, item)| item.effects.len()).expect("clip");
+    d.right_click(&key_id(&d, &key));
+    d.click("effectControls.keyframeMenu.copyEffects");
+    assert!(d.harness.state().ui.status.contains("Copied 2 effect"), "{}", d.harness.state().ui.status);
+    d.right_click(&key_id(&d, &key));
+    d.click("effectControls.keyframeMenu.pasteEffects");
+    let after =
+        d.harness.state().session.active_sequence().and_then(|sequence| sequence.find_item(ClipId(clip.id))).map(|(_, item)| item.effects.len()).expect("clip");
+    assert_eq!(after, before + 2, "the keyframe area's context menu applies the selected effect chain");
+}
+
+#[test]
+fn effect_color_picker_accepts_and_exposes_hex_text() {
+    let (mut d, clip) = Driver::demo();
+    d.exec("effects.apply", json!({"clips": [clip.id], "effect": "tint"}));
+    for intrinsic in ["motion", "opacity", "time_remap"] {
+        d.click(&format!("effectControls.effect.{intrinsic}.twirl"));
+    }
+    let picker = "effectControls.tint.black.color";
+    d.click(picker);
+    let hex = "effectControls.tint.black.hex";
+    d.click(hex);
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "#123456"}));
+    d.frames(3);
+    d.shot("effect-color-hex");
+    let value = d.parameter(&clip, "tint", "black").value;
+    let filmcraft_project::ParamValue::Color(color) = value else { panic!("color picker changed the parameter type") };
+    let expected = [0x12 as f32 / 255.0, 0x34 as f32 / 255.0, 0x56 as f32 / 255.0, 1.0];
+    assert!(color.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() < 1e-6), "{color:?}");
+    assert!(d.find(hex).is_some(), "the popup hex editor has a stable automation id");
+}
+
+#[test]
+fn copied_effects_paste_to_the_timeline_selected_clip() {
+    let (mut d, source) = Driver::demo();
+    for effect in ["gaussian_blur", "tint"] {
+        d.exec("effects.apply", json!({"clips": [source.id], "effect": effect}));
+    }
+    for intrinsic in ["motion", "opacity", "time_remap"] {
+        d.click(&format!("effectControls.effect.{intrinsic}.twirl"));
+    }
+    d.click("effectControls.effect.gaussian_blur");
+    d.ok("ui.click", json!({"id": "effectControls.effect.tint", "modifiers": {"shift": true}}));
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+
+    let sequence = d.exec("sequence.inspect", json!({}));
+    let target = sequence["video"][0]["items"][1]["clip"].as_u64().expect("second video clip");
+    d.exec("timeline.select", json!({"clips": [target]}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let panel = d.rect("panel.Timeline");
+    d.ok("ui.move", json!({"x": panel[0] + panel[2] / 2.0, "y": panel[1] + panel[3] / 2.0}));
+    d.frames(2);
+    let undo = d.undo_len();
+    d.ok("ui.key", json!({"key": "Cmd+V"}));
+    d.frames(2);
+    let item = d.harness.state().session.active_sequence().and_then(|sequence| sequence.find_item(ClipId(target))).map(|(_, item)| item).expect("target clip");
+    assert!(item.effects.iter().any(|effect| effect.effect == "gaussian_blur"));
+    assert!(item.effects.iter().any(|effect| effect.effect == "tint"));
+    assert_eq!(d.undo_len(), undo + 1, "Timeline paste is one undoable operation");
+}
+
+#[test]
+fn copied_keyframes_paste_to_the_timeline_selected_clip() {
+    let (mut d, source) = Driver::demo();
+    let key = lane_keys(&mut d, &source, &[("scale", 1.0)])[0].clone();
+    d.click(&key_id(&d, &key));
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+
+    let sequence = d.exec("sequence.inspect", json!({}));
+    let target_entry = &sequence["video"][0]["items"][1];
+    let target = target_entry["clip"].as_u64().expect("second video clip");
+    let start = target_entry["start"].as_i64().expect("target start");
+    let duration = target_entry["duration"].as_i64().expect("target duration");
+    d.exec("timeline.select", json!({"clips": [target]}));
+    d.exec("playhead.set", json!({"time": start + duration / 2}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let panel = d.rect("panel.Timeline");
+    d.ok("ui.move", json!({"x": panel[0] + panel[2] / 2.0, "y": panel[1] + panel[3] / 2.0}));
+    d.frames(2);
+    let undo = d.undo_len();
+    d.ok("ui.key", json!({"key": "Cmd+V"}));
+    d.frames(2);
+    let item = d.harness.state().session.active_sequence().and_then(|sequence| sequence.find_item(ClipId(target))).map(|(_, item)| item).expect("target clip");
+    assert_eq!(item.effect("motion").and_then(|effect| effect.param("scale")).map(|param| param.keyframes.len()), Some(1));
+    assert_eq!(d.harness.state().ui.keyframe_selection.first().map(|key| key.clip), Some(target));
+    assert_eq!(d.undo_len(), undo + 1, "Timeline keyframe paste is one undoable operation");
 }
 
 /// #412: Scale and Position both have a keyframe at the same time. A click on Scale's keyframe in

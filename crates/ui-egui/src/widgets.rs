@@ -212,6 +212,48 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
     })
 }
 
+/// A compact colour swatch whose popup includes a copyable/pastable hex text field.
+/// Returns (swatch response, changed, hex field rect while the popup is open).
+pub(crate) fn color_edit_with_hex(ui: &mut Ui, id: egui::Id, rgba: &mut egui::Rgba, alpha: egui::color_picker::Alpha) -> (Response, bool, Option<Rect>) {
+    let popup_id = id.with("popup");
+    let hex_id = id.with("hex-input");
+    let mut hsva = egui::ecolor::Hsva::from(*rgba);
+    let [sr, sg, sb, sa] = hsva.to_srgba_unmultiplied();
+    let shown = Color32::from_rgba_unmultiplied(sr, sg, sb, sa);
+    let swatch = ui
+        .add_sized(vec2(26.0, 18.0), egui::Button::new("").fill(shown).stroke(Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)))
+        .on_hover_text(tl!("Click to edit color"));
+    let mut changed = false;
+    let mut hex_rect = None;
+    egui::Popup::menu(&swatch).id(popup_id).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.spacing_mut().slider_width = 275.0;
+        changed |= egui::color_picker::color_picker_hsva_2d(ui, &mut hsva, alpha);
+        ui.horizontal(|ui| {
+            ui.label(tl!("HEX"));
+            let [r, g, b, a] = hsva.to_srgba_unmultiplied();
+            let initial = filmcraft_color::to_hex([f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, f32::from(a) / 255.0]);
+            let mut text = ui.data(|data| data.get_temp::<String>(hex_id)).unwrap_or(initial);
+            let response = ui.add(egui::TextEdit::singleline(&mut text).id(hex_id).desired_width(86.0).char_limit(9));
+            hex_rect = Some(response.rect);
+            if response.changed()
+                && let Some([r, g, b, a]) = filmcraft_color::parse_hex(&text)
+            {
+                hsva = egui::ecolor::Hsva::from(egui::Rgba::from_rgba_unmultiplied(r, g, b, a));
+                changed = true;
+            }
+            if response.has_focus() {
+                ui.data_mut(|data| data.insert_temp(hex_id, text));
+            } else {
+                ui.data_mut(|data| data.remove::<String>(hex_id));
+            }
+        });
+    });
+    if changed {
+        *rgba = egui::Rgba::from(hsva);
+    }
+    (swatch, changed, hex_rect)
+}
+
 /// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
 /// scrub (1 frame per point, Shift ×10), click to type a time (Enter or clicking away commits,
 /// Escape cancels). Returns the time to go to (never before `min`), or why a typed time is invalid.

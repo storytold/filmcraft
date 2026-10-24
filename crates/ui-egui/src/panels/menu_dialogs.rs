@@ -443,13 +443,15 @@ fn color(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
     ui.horizontal(|ui| {
         ui.label(label);
         let c = p.get(key).and_then(Value::as_str).and_then(filmcraft_color::parse_hex).unwrap_or([0.0, 0.0, 0.0, 1.0]);
-        let mut rgb = [c[0], c[1], c[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-        let r = egui::color_picker::color_edit_button_srgb(ui, &mut rgb);
+        let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+        let (r, changed, hex_rect) = crate::widgets::color_edit_with_hex(ui, egui::Id::unique((pre, key)), &mut rgba, egui::color_picker::Alpha::Opaque);
         push(elems, format!("{pre}.{key}"), &r, label);
-        if r.changed() {
-            p[key] = json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+        if let Some(rect) = hex_rect {
+            elems.push((format!("{pre}.{key}.hex"), rect, tl!("HEX").into()));
         }
-        ui.label(p.get(key).and_then(Value::as_str).unwrap_or_default());
+        if changed {
+            p[key] = json!(filmcraft_color::to_hex([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+        }
     });
 }
 
