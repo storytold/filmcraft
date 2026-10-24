@@ -421,6 +421,8 @@ pub enum Event {
     OpenSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),
+    /// File ▸ Close Project left no project open (the frontend shows its Home screen).
+    ProjectClosed,
 }
 
 pub struct Session {

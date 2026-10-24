@@ -5,7 +5,8 @@
 //! unknown option is an error (exit code 2), not a file to open.
 //!
 //! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
-//! (the demo project), Open Most Recent, or an empty project.
+//! (Home, or the demo project while there are no recent projects), Open Most Recent, or an empty
+//! project.
 //!
 //! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
 //! `FILMCRAFT_CONTROL_TOKEN` is required (see `docs/control-protocol.md`).
@@ -216,6 +217,15 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
         let (project, media) = args::project_and_media(&files);
+        // Settings ▸ General ▸ At Startup ▸ Show Home: Home, once there is a recent project to
+        // show; before that (a first launch) the demo project, so new users start with something
+        // to play. Not when a project, media or a recovery is about to take its place.
+        let show_home = project.is_none()
+            && media.is_empty()
+            && !startup_flag
+            && session.prefs.general.at_startup == "showHome"
+            && recover != Some(true)
+            && session.prefs.general.recent_projects.iter().any(|p| std::path::Path::new(p).exists());
         if let Some(p) = project {
             if let Err(e) = session.execute("file.open", json!({"path": p})) {
                 log::error!("{e}");
@@ -234,6 +244,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 }
             }
         } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
+        } else if show_home {
+            // Home over an empty project; the editor takes over once a project is opened or made
         } else if demo {
             let _ = session.execute("file.openDemoProject", json!({}));
         }
@@ -248,6 +260,9 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }
         }
         let mut app = FilmcraftApp::new(session);
+        if show_home {
+            app.ui.mode = filmcraft_ui_egui::state::Mode::Home;
+        }
         app.graphics_notice = notice;
         if recover == Some(false) {
             app.dialog = None;

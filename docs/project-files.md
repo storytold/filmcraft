@@ -226,7 +226,7 @@ opens the dialog on a page.
 
 | Category | Takes effect |
 |---|---|
-| General | At Startup (Show Home = demo project, Open Most Recent, empty project; recent projects are remembered on open/save), Show Tool Tips |
+| General | At Startup (Show Home = the Home screen, or the demo project until there is a recent project; Open Most Recent; empty project; recent projects are remembered on open/save), Show Tool Tips |
 | Appearance | Appearance Mode `appearanceMode` (`auto` = Sync with system / `dark` (default) / `light`; the header button and View ▸ Appearance ▸ Next Appearance Mode cycle it), Dark Theme `darkTheme` (`darkest` (default) / `dark`), Light Theme `lightTheme` (`light`), highlight colour, accessible contrast. `colorTheme` (Darkest / Dark / Light) is legacy input: setting it (older files and clients, View ▸ Appearance ▸ a theme) selects that theme and fixes the mode to its family; a file without `appearanceMode` migrates to its theme's fixed mode. It is kept in line with the choices: the theme a fixed mode shows, the dark theme in Auto |
 | Audio | Automatch Time, Large Volume Adjustment, automation keyframe thinning (linear, minimum time) |
 | Audio Hardware | device class (cpal host), output device, I/O buffer size, sample rate, force document rate, Output Mapping (programme L/R → device channels) |
