@@ -11,7 +11,7 @@ use crate::params::{Layout, Pps, Sps};
 use crate::picture::{FrameRef, RefPic, Sample};
 use crate::slice::{SliceHeader, SliceType};
 use crate::spec_tables::*;
-use crate::tables::{CTX_IDX_MAP, LEVEL_SCALE, SCAN_4, qpc_420, scan_order};
+use crate::tables::{LEVEL_SCALE, SCAN_4, SIG_CTX, qpc_420, scan_order, scan_pos};
 use crate::transform;
 use std::sync::Arc;
 
@@ -260,6 +260,8 @@ pub struct SliceDecoder<'a, S> {
     pub cu_part: PartMode,
     // scratch
     pub coeffs: Vec<i32>,
+    /// Scaled non-zero coefficients of the current transform block: (index in `coeffs`, value).
+    pub nz: Vec<(u16, i32)>,
     pub pred0: Vec<i16>,
     pub pred1: Vec<i16>,
     pub mc: crate::inter::McScratch,
@@ -381,6 +383,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             intra_split: false,
             cu_part: PartMode::P2Nx2N,
             coeffs: vec![0; 32 * 32],
+            nz: vec![(0, 0); 32 * 32],
             pred0: vec![0; 64 * 64],
             pred1: vec![0; 64 * 64],
             mc: Default::default(),
@@ -1083,9 +1086,23 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let sb_scan = scan_order(log2sb, scan_idx);
         let pos_scan = &SCAN_4[scan_idx];
         let sb_w = 1usize << log2sb;
-        let last_sb = sb_scan.iter().position(|&(x, y)| x as u32 == lx >> 2 && y as u32 == ly >> 2).unwrap_or(0);
-        let last_pos = pos_scan.iter().position(|&(x, y)| x as u32 == lx & 3 && y as u32 == ly & 3).unwrap_or(0);
-        self.coeffs[..n * n].fill(0);
+        let last_sb = scan_pos(log2sb, scan_idx, lx >> 2, ly >> 2);
+        let last_pos = scan_pos(2, scan_idx, lx & 3, ly & 3);
+        // scaling (8.6.3), applied as each coefficient is decoded
+        let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
+        let bd_shift = bd + log2 - 5;
+        let round = 1i64 << (bd_shift - 1);
+        let scale = (LEVEL_SCALE[(qp % 6) as usize] as i64) << (qp / 6);
+        let matrix = match &self.pic.scaling {
+            Some(s) if !bypass && !(ts && n > 4) => {
+                let size_id = (log2 - 2) as usize;
+                let matrix_id = if self.cu_intra { c } else { 3 + c };
+                Some((s.clone(), size_id * 6 + matrix_id))
+            }
+            _ => None,
+        };
+        let m: Option<&[u8]> = matrix.as_ref().map(|(s, i)| &s[*i][..]);
+        let mut nnz = 0;
         let mut csbf = [0u8; 64];
         let mut prev_g1: Option<u32> = None;
         let sdh = self.pps.sign_data_hiding && !bypass;
@@ -1114,57 +1131,30 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 15
             };
             if csbf[ys * 8 + xs] != 0 {
-                let prev_csbf = right + (below << 1);
+                let prev_csbf = (right + (below << 1)) as usize;
+                let ctx_tab = if log2 == 2 {
+                    SIG_CTX[scan_idx][4]
+                } else {
+                    let off = if c == 0 {
+                        (if xs + ys > 0 { 3 } else { 0 }) + if log2 == 3 { if scan_idx == 0 { 9 } else { 15 } } else { 21 }
+                    } else if log2 == 3 {
+                        9
+                    } else {
+                        12
+                    };
+                    let mut t = SIG_CTX[scan_idx][prev_csbf];
+                    for v in t.iter_mut() {
+                        *v += off;
+                    }
+                    if i == 0 {
+                        t[0] = 0;
+                    }
+                    t
+                };
                 let mut np = start;
                 while np >= 0 {
-                    let (xp, yp) = (pos_scan[np as usize].0 as usize, pos_scan[np as usize].1 as usize);
-                    let (xc, yc) = (xs * 4 + xp, ys * 4 + yp);
                     if np > 0 || !infer_dc {
-                        let sig_ctx = if log2 == 2 {
-                            CTX_IDX_MAP[(yc << 2) + xc] as usize
-                        } else if xc + yc == 0 {
-                            0
-                        } else {
-                            let mut s = match prev_csbf {
-                                0 => {
-                                    if xp + yp == 0 {
-                                        2
-                                    } else if xp + yp < 3 {
-                                        1
-                                    } else {
-                                        0
-                                    }
-                                }
-                                1 => {
-                                    if yp == 0 {
-                                        2
-                                    } else if yp == 1 {
-                                        1
-                                    } else {
-                                        0
-                                    }
-                                }
-                                2 => {
-                                    if xp == 0 {
-                                        2
-                                    } else if xp == 1 {
-                                        1
-                                    } else {
-                                        0
-                                    }
-                                }
-                                _ => 2,
-                            };
-                            if c == 0 {
-                                if xs + ys > 0 {
-                                    s += 3;
-                                }
-                                s += if log2 == 3 { if scan_idx == 0 { 9 } else { 15 } } else { 21 };
-                            } else {
-                                s += if log2 == 3 { 9 } else { 12 };
-                            }
-                            s
-                        };
+                        let sig_ctx = ctx_tab[np as usize] as usize;
                         if self.c.decode_decision(SIG_COEFF + c_off_sig + sig_ctx) == 1 {
                             sig[nsig] = np as u8;
                             nsig += 1;
@@ -1249,12 +1239,17 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                         v = -v;
                     }
                 }
-                self.coeffs[yc * n + xc] = v;
+                if !bypass {
+                    let f = m.map_or(16, |m| m[yc * n + xc] as i64);
+                    v = ((v as i64 * f * scale + round) >> bd_shift).clamp(-32768, 32767) as i32;
+                }
+                self.nz[nnz] = ((yc * n + xc) as u16, v);
+                nnz += 1;
                 max_x = max_x.max(xc);
                 max_y = max_y.max(yc);
             }
         }
-        self.reconstruct(x0, y0, log2, c, qp, ts, max_x, max_y)
+        self.reconstruct(x0, y0, log2, c, ts, nnz, max_x, max_y)
     }
 
     fn coeff_abs_level_remaining(&mut self, rice: u32) -> Result<i32> {
@@ -1272,54 +1267,50 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
     }
 
-    /// Scaling, transform and addition to the prediction.
-    fn reconstruct(&mut self, x0: i32, y0: i32, log2: u32, c: usize, qp: i32, ts: bool, max_x: usize, max_y: usize) -> Result<()> {
+    /// Transform of the scaled coefficients `nz[..nnz]` and addition to the prediction.
+    fn reconstruct(&mut self, x0: i32, y0: i32, log2: u32, c: usize, ts: bool, nnz: usize, max_x: usize, max_y: usize) -> Result<()> {
         let n = 1usize << log2;
         let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
-        let coeffs = &mut self.coeffs[..n * n];
-        let mut dc_only = false;
-        if !self.cu_transquant_bypass {
-            // scaling (8.6.3)
-            let bd_shift = bd + log2 - 5;
-            let round = 1i64 << (bd_shift - 1);
-            let scale = (LEVEL_SCALE[(qp % 6) as usize] as i64) << (qp / 6);
-            let m: Option<&[u8]> = match &self.pic.scaling {
-                Some(s) if !(ts && n > 4) => {
-                    let size_id = (log2 - 2) as usize;
-                    let matrix_id = if self.cu_intra { c } else { 3 + c };
-                    Some(&s[size_id * 6 + matrix_id])
-                }
-                _ => None,
-            };
-            for y in 0..=max_y {
-                for x in 0..=max_x {
-                    let v = coeffs[y * n + x];
-                    if v != 0 {
-                        let f = m.map_or(16, |m| m[y * n + x] as i64);
-                        coeffs[y * n + x] = ((v as i64 * f * scale + round) >> bd_shift).clamp(-32768, 32767) as i32;
-                    }
-                }
+        let bypass = self.cu_transquant_bypass;
+        let dst = self.cu_intra && c == 0 && n == 4;
+        let (stride, max) = (if c == 0 { self.pic.width } else { self.pic.cwidth }, (1i32 << bd) - 1);
+        let off = y0 as usize * stride + x0 as usize;
+        let plane = &mut self.pic.planes[c];
+        let bd_shift = 20 - bd;
+        if !bypass && !ts && max_x == 0 && max_y == 0 && !dst {
+            let v = transform::inverse_dc(self.nz[0].1, bd_shift);
+            match n {
+                4 => add_dc::<S, 4>(plane, off, stride, v, max),
+                8 => add_dc::<S, 8>(plane, off, stride, v, max),
+                16 => add_dc::<S, 16>(plane, off, stride, v, max),
+                _ => add_dc::<S, 32>(plane, off, stride, v, max),
             }
-            let bd_shift = 20 - bd;
+            return Ok(());
+        }
+        // the inverse transform reads only the bounding box of the coefficients
+        let coeffs = &mut self.coeffs[..n * n];
+        if bypass || ts {
+            coeffs.fill(0);
+        } else {
+            for row in coeffs.chunks_exact_mut(n).take(max_y + 1) {
+                row[..=max_x].fill(0);
+            }
+        }
+        for &(p, v) in &self.nz[..nnz] {
+            coeffs[p as usize] = v;
+        }
+        if !bypass {
             if ts {
                 transform::transform_skip(coeffs, n, bd_shift);
-            } else if max_x == 0 && max_y == 0 && !(self.cu_intra && c == 0 && n == 4) {
-                let v = transform::inverse_dc(coeffs[0], bd_shift);
-                coeffs.fill(v);
-                dc_only = true;
             } else {
-                let dst = self.cu_intra && c == 0 && n == 4;
                 transform::inverse_transform(coeffs, n, dst, max_x, max_y, bd_shift);
             }
         }
-        let _ = dc_only;
-        let (stride, max) = (if c == 0 { self.pic.width } else { self.pic.cwidth }, (1i32 << bd) - 1);
-        let plane = &mut self.pic.planes[c];
-        for y in 0..n {
-            let row = &mut plane[(y0 as usize + y) * stride + x0 as usize..][..n];
-            for (x, s) in row.iter_mut().enumerate() {
-                *s = S::from_i32((s.to_i32() + coeffs[y * n + x]).clamp(0, max));
-            }
+        match n {
+            4 => add_residual::<S, 4>(plane, off, stride, coeffs, max),
+            8 => add_residual::<S, 8>(plane, off, stride, coeffs, max),
+            16 => add_residual::<S, 16>(plane, off, stride, coeffs, max),
+            _ => add_residual::<S, 32>(plane, off, stride, coeffs, max),
         }
         Ok(())
     }
@@ -1513,6 +1504,25 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     }
 }
 
+#[inline(always)]
+fn add_residual<S: Sample, const N: usize>(plane: &mut [S], off: usize, stride: usize, res: &[i32], max: i32) {
+    for (y, r) in res.as_chunks::<N>().0.iter().take(N).enumerate() {
+        let row = &mut plane[off + y * stride..][..N];
+        for (s, &d) in row.iter_mut().zip(r) {
+            *s = S::from_i32((s.to_i32() + d).max(0).min(max));
+        }
+    }
+}
+
+#[inline(always)]
+fn add_dc<S: Sample, const N: usize>(plane: &mut [S], off: usize, stride: usize, v: i32, max: i32) {
+    for y in 0..N {
+        for s in &mut plane[off + y * stride..][..N] {
+            *s = S::from_i32((s.to_i32() + v).max(0).min(max));
+        }
+    }
+}
+
 /// Whether the explicit weights of the lists `f` predicts from are the default ones for component
 /// `c` (weight 2^denom, offset 0).
 fn default_weights(pwt: &crate::slice::PredWeightTable, f: &MvField, c: usize) -> bool {
@@ -1523,4 +1533,31 @@ fn default_weights(pwt: &crate::slice::PredWeightTable, f: &MvField, c: usize) -
             wt == 1 << denom && o == 0
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::transform;
+
+    /// `reconstruct` clears only the coefficient bounding box, so the inverse transform must not
+    /// read the stale values left outside it by the previous block.
+    #[test]
+    fn inverse_transform_reads_only_the_coefficient_box() {
+        for &(n, dst) in &[(4usize, true), (4, false), (8, false), (16, false), (32, false)] {
+            for (max_x, max_y) in [(0, 1), (1, 0), (2, 3), (n / 2, 1), (n - 1, 0), (n - 1, n - 1)] {
+                let (mut clean, mut stale) = (vec![0i32; n * n], vec![0i32; n * n]);
+                for (i, (c, s)) in clean.iter_mut().zip(stale.iter_mut()).enumerate() {
+                    let (x, y) = (i % n, i / n);
+                    *s = 12345 - i as i32;
+                    if x <= max_x && y <= max_y {
+                        *c = (i as i32 * 37) % 201 - 100;
+                        *s = *c;
+                    }
+                }
+                transform::inverse_transform(&mut clean, n, dst, max_x, max_y, 12);
+                transform::inverse_transform(&mut stale, n, dst, max_x, max_y, 12);
+                assert_eq!(clean, stale, "n {n} dst {dst} box ({max_x}, {max_y})");
+            }
+        }
+    }
 }
