@@ -3584,3 +3584,28 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+# Parakeet speech model and word-by-word captions.
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (précision maximale, minutage par mot)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = aucune limite. 1 crée des sous-titres mot à mot ; avec une durée minimale de 0, chaque mot garde son propre minutage.
+	A shorter caption is held into the silence after it, never over the next caption.	Un sous-titre plus court est prolongé dans le silence qui le suit, jamais sur le sous-titre suivant.
+	Caption preset	Paramètre prédéfini de sous-titres
+	Captioning Preferences (format, max/min length, lines)	Préférences de sous-titrage (format, longueur max./min., lignes)
+	Couldn't save caption settings: {e}	Impossible d'enregistrer les réglages de sous-titres : {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Créez des sous-titres à partir de la transcription, commencez une piste de sous-titres vide ou importez un fichier de sous-titres.
+	Create captions from transcript	Créer des sous-titres à partir de la transcription
+	Created {n} captions	{n} sous-titres créés
+	Delete preset	Supprimer le paramètre prédéfini
+	Double Line	Deux lignes
+	Frames left empty between one caption and the next.	Images laissées vides entre un sous-titre et le suivant.
+	Gap between captions (frames)	Écart entre les sous-titres (images)
+	Layout	Disposition
+	Maximum length in characters	Longueur maximale en caractères
+	Maximum words per caption	Nombre maximal de mots par sous-titre
+	Minimum duration in seconds	Durée minimale en secondes
+	Save as preset…	Enregistrer comme paramètre prédéfini…
+	Single Line	Une ligne
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	Le style de piste de sous-titres de la nouvelle piste : le style par défaut, ou celui d'une piste de sous-titres de cette séquence.
+	Words wrap to a new line, or a new caption, at this many characters.	Les mots passent à la ligne, ou à un nouveau sous-titre, à partir de ce nombre de caractères.
+	characters	caractères
+	words	mots
+	words (no limit)	mots (aucune limite)

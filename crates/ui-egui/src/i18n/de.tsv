@@ -3613,3 +3613,28 @@
 	Shows the version, community links and credits in a FilmCraft window.	Zeigt Version, Community-Links und Credits in einem FilmCraft-Fenster.
 	Couldn't open your web browser	Dein Webbrowser konnte nicht geöffnet werden
 	Open this address in your browser yourself:	Öffne diese Adresse selbst in deinem Browser:
+# Parakeet speech model and word-by-word captions.
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (höchste Genauigkeit, Zeitangaben pro Wort)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = keine Begrenzung. 1 erzeugt Wort-für-Wort-Untertitel; bei einer Mindestdauer von 0 behält jedes Wort sein eigenes Timing.
+	A shorter caption is held into the silence after it, never over the next caption.	Ein kürzerer Untertitel wird in die folgende Stille verlängert, nie über den nächsten Untertitel.
+	Caption preset	Untertitelvorgabe
+	Captioning Preferences (format, max/min length, lines)	Untertiteleinstellungen (Format, max./min. Länge, Zeilen)
+	Couldn't save caption settings: {e}	Untertiteleinstellungen konnten nicht gespeichert werden: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Untertitel aus dem Transkript erstellen, eine leere Untertitelspur beginnen oder eine Untertiteldatei importieren.
+	Create captions from transcript	Untertitel aus Transkript erstellen
+	Created {n} captions	{n} Untertitel erstellt
+	Delete preset	Vorgabe löschen
+	Double Line	Zwei Zeilen
+	Frames left empty between one caption and the next.	Leere Frames zwischen einem Untertitel und dem nächsten.
+	Gap between captions (frames)	Abstand zwischen Untertiteln (Frames)
+	Layout	Layout
+	Maximum length in characters	Maximale Länge in Zeichen
+	Maximum words per caption	Maximale Wörter pro Untertitel
+	Minimum duration in seconds	Mindestdauer in Sekunden
+	Save as preset…	Als Vorgabe speichern…
+	Single Line	Eine Zeile
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	Der Untertitelspurstil der neuen Spur: der Standardstil oder der Stil einer Untertitelspur in dieser Sequenz.
+	Words wrap to a new line, or a new caption, at this many characters.	Bei so vielen Zeichen werden Wörter in eine neue Zeile oder einen neuen Untertitel umbrochen.
+	characters	Zeichen
+	words	Wörter
+	words (no limit)	Wörter (unbegrenzt)

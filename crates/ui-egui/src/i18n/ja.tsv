@@ -3625,3 +3625,28 @@
 	No matching text.	一致するテキストはありません。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。
+# Parakeet speech model and word-by-word captions.
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3（最高精度、単語単位のタイミング）
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = 制限なし。1 にすると単語ごとのキャプションを作成します。最小デュレーションを 0 にすると、各単語が自身のタイミングを保ちます。
+	A shorter caption is held into the silence after it, never over the next caption.	短いキャプションは直後の無音部分まで延長されますが、次のキャプションに重なることはありません。
+	Caption preset	キャプションプリセット
+	Captioning Preferences (format, max/min length, lines)	キャプションの環境設定(形式、最大/最小の長さ、行数)
+	Couldn't save caption settings: {e}	キャプション設定を保存できませんでした: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	トランスクリプトからキャプションを作成するか、空のキャプショントラックを作成するか、キャプションファイルを読み込みます。
+	Create captions from transcript	トランスクリプトからキャプションを作成
+	Created {n} captions	{n} 個のキャプションを作成しました
+	Delete preset	プリセットを削除
+	Double Line	2 行
+	Frames left empty between one caption and the next.	キャプションと次のキャプションの間に空けるフレーム数です。
+	Gap between captions (frames)	キャプション間の間隔(フレーム)
+	Layout	レイアウト
+	Maximum length in characters	最大文字数
+	Maximum words per caption	キャプションあたりの最大単語数
+	Minimum duration in seconds	最小デュレーション(秒)
+	Save as preset…	プリセットとして保存…
+	Single Line	1 行
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	新しいトラックのキャプショントラックスタイル: デフォルトのスタイル、またはこのシーケンス内のキャプショントラックのスタイルです。
+	Words wrap to a new line, or a new caption, at this many characters.	この文字数で単語が次の行、または次のキャプションに折り返されます。
+	characters	文字
+	words	単語
+	words (no limit)	単語(制限なし)

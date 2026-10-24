@@ -179,3 +179,40 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+/// The Create captions dialog's settings: the style lands on the new track, hostile numbers are
+/// clamped (lines × characters no longer overflows), and the settings survive a prefs round trip.
+#[test]
+fn create_captions_with_dialog_settings() {
+    use crate::transcript::{CaptionPrefs, CaptionSettings, builtin_caption_presets};
+    use filmcraft_project::CaptionStyle;
+    let (mut s, _, _) = session();
+    s.execute("transcript.generate", json!({})).unwrap();
+    let style = CaptionStyle { font: "Lato".into(), size: 80.0, background: false, ..Default::default() };
+    let set = CaptionSettings { lines: 1, max_chars: 7, min_seconds: 1.2, style: Some(style.clone()), style_name: "TEXS.ORG".into(), ..Default::default() };
+    let r = s.execute("transcript.createCaptions", set.params()).unwrap();
+    let q = s.active_sequence().unwrap();
+    let tr = &q.caption_tracks[0];
+    assert_eq!(tr.style, style);
+    assert_eq!(r["captions"].as_u64(), Some(tr.captions.len() as u64));
+    assert!(tr.captions.iter().all(|c| !c.text.contains('\n')), "single line");
+    q.check().unwrap();
+
+    let r = s.execute("transcript.createCaptions", json!({"maxChars": u64::MAX, "lines": u64::MAX, "minSeconds": -1e300, "gapFrames": i64::MIN})).unwrap();
+    assert!(r["captions"].as_u64().is_some_and(|n| n > 0));
+    assert!(s.execute("transcript.createCaptions", json!({"style": 5})).is_err());
+
+    let prefs = CaptionPrefs { last: set.clone(), user_presets: vec![] };
+    let back: CaptionPrefs = serde_json::from_value(serde_json::to_value(&prefs).unwrap()).unwrap();
+    assert_eq!(back, prefs);
+    let old: crate::autosave::Preferences = serde_json::from_value(json!({"version": 2})).unwrap();
+    assert_eq!(old.captions.last, CaptionSettings::default(), "older prefs files open with the defaults");
+    assert_eq!(builtin_caption_presets()[0].settings, CaptionSettings::default());
+
+    // the dialog always sends its minimum: the Word by Word preset's 0 keeps each word's own
+    // timing, and a word-by-word setup with a minimum keeps that minimum
+    let words = builtin_caption_presets().into_iter().find(|p| p.name == "Word by Word").unwrap().settings;
+    assert_eq!((words.params()["wordsPerCaption"].as_u64(), words.params()["minSeconds"].as_f64()), (Some(1), Some(0.0)));
+    let held = CaptionSettings { words_per_caption: 1, min_seconds: 1.2, ..words };
+    assert_eq!(held.params()["minSeconds"].as_f64(), Some(1.2));
+}
