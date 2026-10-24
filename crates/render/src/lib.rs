@@ -14,6 +14,7 @@ pub mod audio_fx;
 pub mod blend;
 pub mod color_match;
 pub mod colorman;
+mod effect_bounds;
 pub mod effects;
 pub mod flow;
 pub mod gpufx;
@@ -508,8 +509,9 @@ pub(crate) fn item_layer_ex(
     let px_scale = layer.w as f32 / src_size.0.max(1) as f32;
     // layer px → source px → sequence px → output px
     let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
+    let mut origin = Vec2::new(0.0, 0.0);
     if opts.effects {
-        let env = vfx::ItemEnv { project, seq, item, t, opts, sources, want, layer_size: (layer.w, layer.h), layer_to_output: m, tc };
+        let mut env = vfx::ItemEnv { project, seq, item, t, opts, sources, want, layer_size: (layer.w, layer.h), layer_to_output: m, origin, tc };
         let cx = effects::FxCtx {
             t: mt,
             px_scale,
@@ -517,7 +519,7 @@ pub(crate) fn item_layer_ex(
             timecode: tc,
             clip_name: &item.name,
             project: Some(project),
-            env: Some(&env),
+            env: None,
             frame_rate: seq.settings.frame_rate.as_f64(),
             working: seq.settings.color.working,
         };
@@ -525,10 +527,16 @@ pub(crate) fn item_layer_ex(
             if filmcraft_media::cancel::cancelled() {
                 return None;
             }
-            mask::apply_effect(&mut layer, e, &cx);
+            effect_bounds::expand(&mut layer, &mut origin, e, &cx);
+            env.origin = origin;
+            env.layer_size = (layer.w, layer.h);
+            env.layer_to_output = effect_bounds::placement(m, origin);
+            let cx = effects::FxCtx { env: Some(&env), ..cx };
+            mask::apply_effect_at(&mut layer, e, &cx, origin);
         }
     }
-    mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
+    mask::apply_opacity_masks_at(&mut layer, item, mt, px_scale, origin);
+    let m = effect_bounds::placement(m, origin);
     let placed = if layer.w == w && layer.h == h && identity_placement(&m) { layer } else { layer.transformed(w, h, &m) };
     let (op, bl) = opacity_blend(item, mt);
     Some(Layer::Full { image: placed, opacity: op, blend: bl, opaque: false })

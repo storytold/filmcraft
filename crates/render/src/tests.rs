@@ -521,3 +521,143 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let all: Vec<i64> = (0..20).flat_map(|f| shown(&p, f, false)).collect();
     assert_eq!(all, (10..=29).rev().collect::<Vec<_>>());
 }
+
+fn shadow_scene(direction: f64, only: bool, softness: f64) -> (Project, ItemId, filmcraft_project::ClipId, SourceMap) {
+    let (mut p, red, _, seq, map) = setup();
+    let id = place(&mut p, seq, 0, red, 0, 48);
+    let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+    it.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(50.0);
+    let mut shadow = filmcraft_project::find_effect("drop_shadow").unwrap().instance();
+    for (k, v) in [("direction", direction), ("distance", 40.0), ("opacity", 100.0), ("softness", softness)] {
+        shadow.params.get_mut(k).unwrap().value = ParamValue::Float(v);
+    }
+    shadow.params.get_mut("only").unwrap().value = ParamValue::Bool(only);
+    it.effects.push(shadow);
+    (p, seq, id, map)
+}
+
+#[test]
+fn drop_shadow_extends_past_all_four_clip_edges() {
+    for (direction, outside) in [(90.0, (250, 90)), (270.0, (70, 90)), (0.0, (160, 35)), (180.0, (160, 145))] {
+        for only in [false, true] {
+            let (p, seq, _, map) = shadow_scene(direction, only, 0.0);
+            for scale in [1.0, 0.5, 0.25] {
+                let opts = RenderOptions { scale, ..Default::default() };
+                let img = render_sequence(&p, seq, Tick::ZERO, opts, &map);
+                let at = |x: usize, y: usize| img.get((x as f32 * scale) as usize, (y as f32 * scale) as usize);
+                let c = at(outside.0, outside.1);
+                assert!(c[3] > 0.99 && c[0] < 0.001, "shadow outside clip: direction={direction}, only={only}, scale={scale}: {c:?}");
+                assert_eq!(at(10, 10)[3], 0.0);
+                assert_eq!(at(160, 90)[0], if only { 0.0 } else { 1.0 }, "source position must not change");
+                let planned = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, opts, &map));
+                assert_eq!(img, planned, "GPU plan's CPU fallback must preserve the expanded shadow");
+            }
+        }
+    }
+}
+
+#[test]
+fn drop_shadow_softness_has_room_outside_the_shifted_clip() {
+    let (p, seq, _, map) = shadow_scene(90.0, true, 20.0);
+    let img = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map);
+    let a = img.get(262, 90)[3];
+    assert!(a > 0.01 && a < 0.5, "blur must extend past the shifted right edge: {a}");
+    assert!(img.get(250, 90)[3] > a);
+}
+
+#[test]
+fn drop_shadow_keeps_following_points_masks_and_effect_order() {
+    let (mut p, seq, id, map) = shadow_scene(270.0, false, 0.0);
+    let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+    // An explicit identity Transform must agree with its automatic anchor/position.
+    let mut transform = filmcraft_project::find_effect("transform").unwrap().instance();
+    for key in ["anchor", "position"] {
+        transform.params.get_mut(key).unwrap().value = ParamValue::Vec2(Vec2::new(160.0, 90.0));
+    }
+    it.effects.push(transform);
+    // Inverting after the shadow must also turn the shadow white.
+    let mut invert = filmcraft_project::find_effect("invert").unwrap().instance();
+    let mask = filmcraft_project::Mask::new("left", filmcraft_project::MaskPath::rect(-80.0, -80.0, 160.0, 260.0));
+    invert.masks.push(mask);
+    it.effects.push(invert);
+    let img = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map);
+    assert_eq!(img.get(70, 90), [1.0; 4], "masked Invert reaches the expanded shadow");
+    assert_eq!(img.get(120, 90), [0.0, 1.0, 1.0, 1.0], "mask stays in source coordinates");
+    assert_eq!(img.get(180, 90), [1.0, 0.0, 0.0, 1.0], "unmasked source is unchanged");
+    // Opacity masks also use the original source coordinates after expansion.
+    let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+    it.effect_mut("opacity").unwrap().masks.push(filmcraft_project::Mask::new("right", filmcraft_project::MaskPath::rect(160.0, 0.0, 320.0, 180.0)));
+    let img = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map);
+    assert_eq!(img.get(120, 90)[3], 0.0);
+    assert_eq!(img.get(180, 90), [1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn drop_shadow_effect_mask_can_cover_its_expanded_bounds() {
+    let (mut p, seq, id, map) = shadow_scene(270.0, false, 0.0);
+    let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+    it.effect_mut("drop_shadow").unwrap().masks.push(filmcraft_project::Mask::new("upper half", filmcraft_project::MaskPath::rect(-80.0, -80.0, 400.0, 90.0)));
+    let img = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map);
+    assert_eq!(img.get(70, 65)[3], 1.0);
+    assert_eq!(img.get(70, 115)[3], 0.0);
+    assert_eq!(img.get(160, 115), [1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn drop_shadow_multiple_instances_and_animated_distance() {
+    let (mut p, seq, id, map) = shadow_scene(90.0, true, 0.0);
+    let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+    let shadow = it.effect_mut("drop_shadow").unwrap();
+    shadow.params.get_mut("distance").unwrap().keyframes = vec![
+        filmcraft_project::Keyframe::new(Tick::ZERO, ParamValue::Float(0.0)),
+        filmcraft_project::Keyframe::new(Tick::from_seconds_f64(1.0), ParamValue::Float(80.0)),
+    ];
+    // A second shadow moves the first one down, in the original clip's pixel units.
+    let mut second = filmcraft_project::find_effect("drop_shadow").unwrap().instance();
+    second.params.get_mut("direction").unwrap().value = ParamValue::Float(180.0);
+    second.params.get_mut("distance").unwrap().value = ParamValue::Float(40.0);
+    second.params.get_mut("opacity").unwrap().value = ParamValue::Float(100.0);
+    second.params.get_mut("only").unwrap().value = ParamValue::Bool(true);
+    it.effects.push(second);
+    let early = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map);
+    let late = render_sequence(&p, seq, Tick::from_seconds_f64(1.0), RenderOptions::default(), &map);
+    assert_eq!(early.get(270, 145)[3], 0.0);
+    assert_eq!(late.get(270, 145)[3], 1.0);
+    assert_eq!(late.get(100, 90)[3], 0.0);
+}
+
+#[test]
+fn drop_shadow_survives_temporal_resampling_and_motion_rotation() {
+    let (mut p, seq, id, map) = shadow_scene(90.0, false, 0.0);
+    let time = Tick::from_seconds_f64(0.04);
+    let expected = render_sequence(&p, seq, time, RenderOptions::default(), &map);
+    let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+    it.effects.push(filmcraft_project::find_effect("posterize_time").unwrap().instance());
+    assert_eq!(render_sequence(&p, seq, time, RenderOptions::default(), &map), expected);
+    let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+    it.effect_mut("motion").unwrap().params.get_mut("rotation").unwrap().value = ParamValue::Float(90.0);
+    let img = render_sequence(&p, seq, time, RenderOptions::default(), &map);
+    assert_eq!(img.get(160, 90), [1.0, 0.0, 0.0, 1.0]);
+    assert!(img.get(160, 175)[3] > 0.99, "the shadow rotates with the clip");
+}
+
+#[test]
+fn drop_shadow_disabled_and_hostile_parameters() {
+    let (mut p, seq, id, map) = shadow_scene(90.0, false, 0.0);
+    let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+    it.effect_mut("drop_shadow").unwrap().enabled = false;
+    let img = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map);
+    assert_eq!(img.get(250, 90)[3], 0.0);
+    assert_eq!(img.get(160, 90), [1.0, 0.0, 0.0, 1.0]);
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        let (_, it) = p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap();
+        let e = it.effect_mut("drop_shadow").unwrap();
+        e.enabled = true;
+        for key in ["direction", "distance", "softness", "opacity"] {
+            e.params.get_mut(key).unwrap().value = ParamValue::Float(value);
+        }
+        let img = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map);
+        assert!(img.px.iter().all(|v| v.is_finite()));
+        assert_eq!(img.get(160, 90), [1.0, 0.0, 0.0, 1.0]);
+    }
+}
