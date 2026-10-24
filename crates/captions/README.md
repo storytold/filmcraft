@@ -39,8 +39,8 @@ whitespace; punctuation, Unicode and literal underscores survive a round trip. A
 `other` because a caption's speaker label does not say whether it denotes a person or a group.
 
 On import, agent definitions directly under `head` or `head/metadata` resolve paragraph and timed
-span speakers. Speaker metadata uses the standard TTML namespace or the April and October 2006
-TTaf1 draft namespaces. Agent IDs use `xml:id`, except in the April draft, which uses unqualified
+span speakers. Speaker metadata uses the standard TTML namespace or the April 2006 Working Draft and
+November 2006 Candidate Recommendation TTaf1 namespaces. Agent IDs use `xml:id`, except in the April draft, which uses unqualified
 `id`. Agent definitions from unrelated application metadata are ignored. Recognized `ttm:agent`
 attributes take precedence over the legacy local-name `agent` fallback. A full name is preferred,
 otherwise the first nonempty name (or an explicitly empty name) is used. Multiple agent references become one display label, joined with `, ` in
@@ -51,6 +51,25 @@ fallback. Other agent metadata, including actor relationships, is not retained.
 This mapping follows [W3C TTML1, third edition (2018), §§12.1.5–12.2.1](https://www.w3.org/TR/2018/REC-ttml1-20181108/#metadata-vocabulary-agent).
 The [April 2006 TTaf1 draft, §§7.2.1 and 12.1.5–12.2.1](https://www.w3.org/TR/2006/WD-ttaf1-dfxp-20060427/)
 defines its earlier metadata namespace and agent ID form.
+
+### TTML inherited text styles
+
+On import, italic, bold and underline styles from `<body>`, `<p>` and timed `<span>` roots appear in
+stored cue text as balanced `<i>`, `<b>` and `<u>` tags. Descendant overrides and explicit
+normal/noUnderline resets are retained. For compatibility, `inherit` is accepted for font style,
+weight and underline in every recognized styling namespace, or unqualified, and restores the
+parent value. Unspecified properties remain inherited. Styling attributes are read from TTML
+styling namespaces, with unqualified attributes as a compatibility fallback. Styling attributes
+and definitions in unrelated nonempty namespaces are ignored. The existing parser still accepts
+unqualified `<style>` elements and style definitions outside `<head><styling>` for compatibility.
+
+Content style inheritance follows [W3C TTML1, second edition (2013)](https://www.w3.org/TR/2013/REC-ttml1-20130924/#semantics-style-inheritance-content).
+The supported DFXP styling namespaces are described by the [April 2006 Working Draft](https://www.w3.org/TR/2006/WD-ttaf1-dfxp-20060427/)
+and [November 2006 Candidate Recommendation](https://www.w3.org/TR/2006/CR-ttaf1-dfxp-20061116/);
+`2006/10` is the namespace date, not a specification publication date.
+
+The inline text collector collapses XML whitespace and walks nested spans iteratively. Named-style
+chaining and `xml:space="preserve"` are not supported. Stack safety for the separate recursive time-container walk is tracked by #2049.
 
 ### SCC writer
 
