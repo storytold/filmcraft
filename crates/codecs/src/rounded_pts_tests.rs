@@ -172,14 +172,42 @@ fn mp4_with_frames_on_the_grid_shows_every_frame_once() {
     check_90k_late(0);
 }
 
-/// An MP4 at 90 kHz with these sample durations.
-fn mp4_90k(durations: &[u32]) -> Arc<[u8]> {
+/// An MP4 with these sample durations and track timescale.
+fn mp4_90k(durations: &[u32], timescale: u32) -> Arc<[u8]> {
     let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
-    let t = w.add_track(TrackConfig::new(SampleEntry::jpeg((BITS * BLOCK) as u16, BLOCK as u16), 90_000)).unwrap();
+    let t = w.add_track(TrackConfig::new(SampleEntry::jpeg((BITS * BLOCK) as u16, BLOCK as u16), timescale)).unwrap();
     for (k, &duration) in durations.iter().enumerate() {
         w.write_sample(t, WriteSample { data: &picture(k), duration, composition_offset: 0, is_sync: true }).unwrap();
     }
     w.finish().unwrap().into_inner().into()
+}
+
+/// A constant-rate clip whose every picture time was rounded to a whole millisecond (issue #1700):
+/// at a fine track timescale the frames alternate around the grid and the median duration is the
+/// long one. The reported rate and the frame grid both come back to the millisecond-round times:
+/// every picture plays once at its standard rate.
+#[test]
+fn mp4_ms_rounded_frame_times_get_back_to_their_rate() {
+    let cases: [(&str, Vec<u32>); 2] = [
+        // 120 frames over 4 s, alternating 33 and 34 ms.
+        ("30 fps", (0..120).map(|k: u64| ((k + 1) * 90_000 / 30 - k * 90_000 / 30) as u32).collect()),
+        // 180 frames over 3 s, alternating 1501 and 1502.
+        ("59.94 fps", (0..180).map(|k: u64| ((k + 1) * 1_501_500 / 1000 - k * 1_501_500 / 1000) as u32).collect()),
+    ];
+    let mut failures = Vec::new();
+    for (case_index, (name, durations)) in cases.into_iter().enumerate() {
+        let src = crate::open_bytes("synthetic.mov", mp4_90k(&durations, 90_000)).unwrap();
+        let want = [FrameRate::FPS_30, FrameRate::FPS_59_94];
+        let got = src.info().video.as_ref().map(|v| v.frame_rate);
+        if got != Some(want[case_index]) {
+            failures.push(format!("{name}: reported {got:?}, want {:?}", want[case_index]));
+        }
+        let rate = want[case_index];
+        for p in problems(src.as_ref(), rate) {
+            failures.push(format!("{name}: {p}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures[..failures.len().min(8)].join("\n"));
 }
 
 /// Files that are not a constant rate gone slightly off its grid keep their own times: whatever is
@@ -220,7 +248,7 @@ fn mp4_variable_rate_and_on_grid_frame_times_stay_put() {
     ];
     let mut failures = Vec::new();
     for (name, durations) in cases {
-        let src = crate::open_bytes("synthetic.mov", mp4_90k(&durations)).unwrap();
+        let src = crate::open_bytes("synthetic.mov", mp4_90k(&durations, 90_000)).unwrap();
         let starts: Vec<i64> = durations.iter().scan(0i64, |t, &d| Some(std::mem::replace(t, *t + i64::from(d)))).collect();
         let end = *starts.last().unwrap();
         let mut asked: Vec<i64> = starts.iter().flat_map(|&s| [s, s - 1]).filter(|&s| s >= 0).collect();
