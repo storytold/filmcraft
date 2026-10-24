@@ -269,6 +269,114 @@ fn running_decoder_continues_through_a_nearby_sync_sample() {
 }
 
 #[test]
+fn a_decoder_far_behind_restarts_at_the_wanted_gop() {
+    // sync samples every 30: the decoder stands at 26, the wanted frame 70 is two GOPs on.
+    // Decoding 26..70 (44 pictures nobody asked for) used to be preferred over a restart at 60.
+    let s = samples(200, 30, 0, false);
+    let c = GopCache::new(None);
+    assert_eq!(index_of(&c.frame(&s, 25_000).expect("frame")), 25);
+    let before = s.decodes.load(Ordering::Relaxed);
+    assert_eq!(index_of(&c.frame(&s, 70_000).expect("frame")), 70);
+    assert_eq!(s.resets.load(Ordering::Relaxed), 2, "restarted at the sync sample");
+    assert!(s.decodes.load(Ordering::Relaxed) - before <= 12, "decoded {}", s.decodes.load(Ordering::Relaxed) - before);
+}
+
+#[test]
+fn a_decoder_far_behind_continues_when_a_frame_on_the_way_is_waited_for() {
+    // as above, but another request waits for frame 40 (between the decoder at 26 and the
+    // sync sample at 60): decoding on to 70 serves it too, so there is no restart
+    let s = samples(200, 30, 0, false);
+    let c = GopCache::new(None);
+    assert_eq!(index_of(&c.frame(&s, 25_000).expect("frame")), 25);
+    let _other = Waiting::register(&c.shared, 40_000);
+    assert_eq!(index_of(&c.frame(&s, 70_000).expect("frame")), 70);
+    assert_eq!(s.resets.load(Ordering::Relaxed), 1, "continued instead of restarting at 60");
+}
+
+#[test]
+fn a_cancelled_request_does_not_keep_a_decoder_far_behind_going() {
+    // a scrub leaves superseded requests registered until they return: one waiting for frame
+    // 40 whose job was cancelled must not make the decoder walk 26..70 instead of restarting
+    let s = samples(200, 30, 0, false);
+    let c = GopCache::new(None);
+    assert_eq!(index_of(&c.frame(&s, 25_000).expect("frame")), 25);
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _stale = filmcraft_media::cancel::with_cancel(&flag, || Waiting::register(&c.shared, 40_000));
+    flag.store(true, Ordering::Relaxed);
+    let before = s.decodes.load(Ordering::Relaxed);
+    assert_eq!(index_of(&c.frame(&s, 70_000).expect("frame")), 70);
+    assert_eq!(s.resets.load(Ordering::Relaxed), 2, "restarted at the sync sample");
+    assert!(s.decodes.load(Ordering::Relaxed) - before <= 12, "decoded {}", s.decodes.load(Ordering::Relaxed) - before);
+}
+
+/// Two jobs on one source: the one holding the decoder runs past the frame the other waits for.
+/// `pinned`: the other job has registered that frame. Returns the pictures decoded and the
+/// decoder restarts it took to serve both jobs.
+fn two_jobs_on_one_gop(pinned: bool) -> (usize, usize) {
+    let s = samples(MIN_FRAMES * 8, MIN_FRAMES * 8, 0, false);
+    let c = GopCache { budget: 1, ..GopCache::new(None) };
+    let last = (s.n as i64 - 1) * 1000;
+    let other = pinned.then(|| Waiting::register(&c.shared, 5_000));
+    assert_eq!(index_of(&c.frame(&s, last).expect("frame")), s.n - 1);
+    assert_eq!(index_of(&c.frame(&s, 5_000).expect("frame")), 5);
+    drop(other);
+    (s.decodes.load(Ordering::Relaxed), s.resets.load(Ordering::Relaxed))
+}
+
+#[test]
+fn a_frame_another_job_waits_for_is_not_decoded_twice() {
+    let n = MIN_FRAMES * 8;
+    assert_eq!(two_jobs_on_one_gop(true), (n, 1), "the waited-for frame stays cached");
+    let (decodes, resets) = two_jobs_on_one_gop(false);
+    assert!(decodes > n && resets == 2, "without the wait the GOP is walked again: {decodes} decodes, {resets} resets");
+}
+
+#[test]
+fn requests_leave_nothing_registered_on_any_return() {
+    let s = samples(64, 8, 0, false);
+    let c = GopCache::new(None);
+    let registered = || c.shared.waiting.lock().unwrap_or_else(PoisonError::into_inner).len();
+    assert_eq!(index_of(&c.frame(&s, 3_000).expect("frame")), 3);
+    assert_eq!(registered(), 0, "after a frame");
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    assert!(filmcraft_media::cancel::with_cancel(&flag, || c.frame(&s, 40_000)).is_err());
+    assert_eq!(registered(), 0, "after a cancelled request");
+}
+
+#[test]
+fn requests_that_never_return_pin_one_frame_each_and_no_more() {
+    const STUCK: usize = 16;
+    let n = MIN_FRAMES * 8;
+    let s = samples(n, n, 0, false);
+    let c = GopCache { budget: 1, ..GopCache::new(None) };
+    let stuck: Vec<_> = (0..STUCK).map(|i| Waiting::register(&c.shared, i as i64 * 1000)).collect();
+    assert_eq!(index_of(&c.frame(&s, (n as i64 - 1) * 1000).expect("frame")), n - 1);
+    let kept = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).frames.len();
+    assert!(kept <= MIN_FRAMES + STUCK + 2, "{kept} frames kept for a budget of {MIN_FRAMES}");
+    drop(stuck);
+}
+
+#[test]
+fn eviction_keeps_the_frames_requests_wait_for() {
+    let frames: BTreeMap<i64, ()> = (0..10).map(|k| (k, ())).collect();
+    let none = BTreeMap::new();
+    // pivot 9: the oldest frame goes first, as before
+    assert_eq!(eviction_victim(&frames, 9, 9, &none), Some(0));
+    // frames 0..=2 are waited for by other render jobs: the next oldest goes instead
+    let wanted: BTreeMap<i64, Vec<Waiter>> = [(0, vec![None]), (1, vec![None]), (2, vec![None, None])].into_iter().collect();
+    assert_eq!(eviction_victim(&frames, 9, 9, &wanted), Some(3));
+    // nothing left that may go
+    let all: BTreeMap<i64, Vec<Waiter>> = (0..10).map(|k| (k, vec![None])).collect();
+    assert_eq!(eviction_victim(&frames, 9, 9, &all), None);
+    // a frame only cancelled requests wait for may go
+    let gone = Some(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    let stale: BTreeMap<i64, Vec<Waiter>> = [(0, vec![gone])].into_iter().collect();
+    assert_eq!(eviction_victim(&frames, 9, 9, &stale), Some(0));
+    // the farther end wins, whichever side it is on
+    assert_eq!(eviction_victim(&frames, 1, 1, &none), Some(9));
+}
+
+#[test]
 fn intra_frames_decode_in_parallel_once_each() {
     let s = Arc::new(samples(64, 1, 0, true));
     let c = Arc::new(GopCache::new(None));
