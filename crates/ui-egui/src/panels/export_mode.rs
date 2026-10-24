@@ -16,14 +16,15 @@
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
 //! `presetManager.item.<name>`, `presetManager.favorite.<name>`, `presetManager.saveName`,
 //! `presetManager.save`, `presetManager.delete`, `presetManager.import`, `presetManager.export`,
-//! `presetManager.ok`, `presetManager.cancel`; Quick Export: `quickExport.path`,
-//! `quickExport.preset.<name>`, `quickExport.go`, `quickExport.close`.
+//! `presetManager.ok`, `presetManager.cancel`; Quick Export: `quickExport.path` (the file name),
+//! `quickExport.location` (the folder; opens the save dialog), `quickExport.preset.<name>`,
+//! `quickExport.go`, `quickExport.close`.
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, Scaling,
-    TextOverlay, builtin_presets, format_bytes,
+    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec,
+    Placement, SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
+use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
 /// Export mode state.
@@ -308,11 +310,22 @@ fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui
 
 /// A combo box over `options` (label, enabled); returns the chosen index.
 fn combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[(String, bool)], width: f32) -> Option<usize> {
+    let why = tl!("Not supported by FilmCraft's encoders yet");
+    let options: Vec<(String, Option<&str>)> = options.iter().map(|(l, on)| (l.clone(), (!on).then_some(why))).collect();
+    combo_why(ui, reg, id, selected, &options, width)
+}
+
+/// [`combo`] whose options carry why they are greyed out (label, `Some(reason)` when disabled).
+fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[(String, Option<&str>)], width: f32) -> Option<usize> {
     let mut chosen = None;
     let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).show_ui(ui, |ui| {
-        for (i, (label, enabled)) in options.iter().enumerate() {
-            let resp = ui.add_enabled(*enabled, egui::Button::selectable(label == selected, crate::i18n::t(label)));
-            let resp = if *enabled { resp } else { resp.on_disabled_hover_text(tl!("Not supported by FilmCraft's encoders yet")) };
+        for (i, (label, why)) in options.iter().enumerate() {
+            let enabled = why.is_none();
+            let resp = ui.add_enabled(enabled, egui::Button::selectable(label == selected, crate::i18n::t(label)));
+            let resp = match why {
+                Some(why) => resp.on_disabled_hover_text(*why),
+                None => resp,
+            };
             reg.add(format!("{id}.option.{i}"), resp.rect, label.clone());
             if resp.clicked() {
                 chosen = Some(i);
@@ -342,8 +355,21 @@ fn section(ui: &mut egui::Ui, reg: &mut Reg, open: &mut Vec<String>, key: &str, 
 }
 
 fn drag(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, speed: f64, suffix: &str, decimals: usize) -> bool {
-    let r = ui.add(egui::DragValue::new(v).range(range).speed(speed).suffix(suffix).max_decimals(decimals));
+    let before = *v;
+    let r = ui.add(crate::widgets::number_drag(v).range(range).speed(speed).suffix(suffix).max_decimals(decimals));
     reg.add(id, r.rect, format!("{v}"));
+    // a drag ended by Escape goes back to the value it started from (egui ends the drag, #580)
+    let home = r.id.with("before-drag");
+    if r.drag_started() {
+        ui.data_mut(|d| d.insert_temp(home, before));
+    }
+    if r.drag_stopped()
+        && let Some(b) = ui.data_mut(|d| d.remove_temp::<f64>(home))
+        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        *v = b;
+        return true;
+    }
     r.changed()
 }
 
@@ -356,6 +382,77 @@ fn check(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut bool, label: &str) 
 fn text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut String, hint: &str) {
     let r = ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(f32::INFINITY));
     reg.add(id, r.rect, hint);
+}
+
+/// A text field over a value the caller fills in again every frame (a file name taken from a path,
+/// a folder that falls back to the default one). While it has focus it shows what is typed, even
+/// when that is not usable yet (emptied to retype, a half-typed path); each non-empty value is
+/// returned as it comes. Leaving shows the stored value again.
+fn draft_text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, stored: &str, hint: &str) -> Option<String> {
+    let draft_id = egui::Id::new(("export-draft", id));
+    let mut v = ui.data(|m| m.get_temp::<String>(draft_id)).unwrap_or_else(|| stored.to_string());
+    let r = ui.add(egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(f32::INFINITY));
+    reg.add(id, r.rect, hint);
+    if r.has_focus() {
+        ui.data_mut(|m| m.insert_temp(draft_id, v.clone()));
+    } else {
+        ui.data_mut(|m| m.remove::<String>(draft_id));
+    }
+    (r.changed() && !v.trim().is_empty()).then_some(v)
+}
+
+/// Longest folder tail the link lays out or shows on hover.
+const MAX_LOCATION_DISPLAY_BYTES: usize = 4096;
+
+/// Keep the tail of a UTF-8 folder name without copying or splitting a codepoint. Project item
+/// names can enter the generated export path, so UI display work must not scale with an arbitrary
+/// imported name.
+fn location_tail(s: &str) -> (&str, bool) {
+    if s.len() <= MAX_LOCATION_DISPLAY_BYTES {
+        return (s, false);
+    }
+    let mut start = s.len() - MAX_LOCATION_DISPLAY_BYTES;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    (&s[start..], true)
+}
+
+/// The output folder as a link (folder icon, accent colour, underlined); the caller opens the save
+/// dialog on a click. A path too long for the row loses its start, so the folder's name stays.
+fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+    let col = if resp.hovered() { t.accent_hover } else { t.accent };
+    crate::icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 8.0, r.center().y), vec2(14.0, 14.0)), crate::icons::Icon::Folder, col);
+    let room = (r.width() - 22.0).max(0.0);
+    let (folder, truncated) = location_tail(folder);
+    let mut galley = ui.painter().layout_no_wrap(folder.to_string(), Tokens::ui(12.5), col);
+    if galley.size().x > room {
+        let starts: Vec<usize> = folder.char_indices().map(|(i, _)| i).collect();
+        let suffix = if starts.len() > 1 {
+            let mut lo = 1usize;
+            let mut hi = starts.len() - 1;
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                let candidate = format!("…{}", &folder[starts[mid]..]);
+                if ui.painter().layout_no_wrap(candidate, Tokens::ui(12.5), col).size().x <= room {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            format!("…{}", &folder[starts[lo]..])
+        } else {
+            "…".into()
+        };
+        galley = ui.painter().layout_no_wrap(suffix, Tokens::ui(12.5), col);
+    }
+    let at = pos2(r.min.x + 20.0, r.center().y - galley.size().y / 2.0);
+    let underline = at.y + galley.size().y;
+    ui.painter().hline(at.x..=at.x + galley.size().x, underline, egui::Stroke::new(1.0, col));
+    ui.painter().galley(at, galley, col);
+    let hover = if truncated { format!("…{folder}") } else { folder.to_string() };
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover)
 }
 
 const RATES: [(&str, FrameRate); 11] = [
@@ -403,12 +500,18 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     egui::ScrollArea::vertical().id_salt("export-settings-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         ui.label(egui::RichText::new(tl!("Media File")).strong().size(14.0));
         ui.add_space(6.0);
-        row(ui, &t, tl!("File Name"), |ui| text(ui, &mut reg, "export.fileName", &mut ex.file_name, tl!("Sequence name")));
+        row(ui, &t, tl!("File Name"), |ui| {
+            if let Some(v) = draft_text(ui, &mut reg, "export.fileName", &ex.file_name, tl!("Sequence name")) {
+                ex.file_name = v;
+            }
+        });
         row(ui, &t, tl!("Location"), |ui| {
             let r = ui.small_button("…");
             reg.add("export.location.browse", r.rect, "Choose folder");
             pick_folder = r.clicked();
-            text(ui, &mut reg, "export.location", &mut ex.location, tl!("Folder"));
+            if let Some(v) = draft_text(ui, &mut reg, "export.location", &ex.location, tl!("Folder")) {
+                ex.location = v;
+            }
         });
         // Preset: favourites, then every preset by category, then More presets…
         row(ui, &t, tl!("Preset"), |ui| {
@@ -543,12 +646,20 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if open_manager {
         app.ui.export.manager = Some(PresetManager { selected: app.ui.export.preset.clone(), ..Default::default() });
     }
-    if pick_folder && let Some(d) = app.hooks.pick_folder.as_mut().and_then(|f| f()) {
-        app.ui.export.location = d;
+    if pick_folder {
+        app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
+            if let Some(d) = paths.into_iter().next() {
+                app.ui.export.location = d;
+            }
+        });
     }
-    if pick_overlay && let Some(f) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Image"), &["png", "jpg", "jpeg"])) {
-        app.ui.export.settings.effects.image_overlay.path = f;
-        app.ui.export.settings.effects.image_overlay.enabled = true;
+    if pick_overlay {
+        app.pick_ui(FileDialog::open_file(tl!("Image"), &["png", "jpg", "jpeg"]), |app, paths| {
+            if let Some(f) = paths.into_iter().next() {
+                app.ui.export.settings.effects.image_overlay.path = f;
+                app.ui.export.settings.effects.image_overlay.enabled = true;
+            }
+        });
     }
     reg.flush(app);
 }
@@ -743,6 +854,21 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
             });
         }
+        Format::ExrSequence => {
+            row(ui, t, tl!("Compression"), |ui| {
+                // every mode is lossless; RLE and the ZIP variants shrink the files
+                let label = |c: ExrCompression| match c {
+                    ExrCompression::None => tl!("None"),
+                    ExrCompression::Rle => "RLE",
+                    ExrCompression::Zips => tl!("ZIP (1 scan line)"),
+                    ExrCompression::Zip => tl!("ZIP (16 scan lines)"),
+                };
+                let labels: Vec<&str> = ExrCompression::ALL.iter().map(|&c| label(c)).collect();
+                if let Some(i) = combo(ui, reg, "export.video.exrCompression", label(s.exr_compression), &opts(&labels), 220.0) {
+                    s.exr_compression = ExrCompression::ALL[i];
+                }
+            });
+        }
         Format::Mjpeg | Format::JpegSequence => {
             row(ui, t, tl!("Quality"), |ui| {
                 let mut q = s.quality as f64;
@@ -773,16 +899,22 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     }
     row(ui, t, tl!("Audio Format"), |ui| {
-        let fixed = s.format.is_mp4_with(s.multiplexer) || audio_only || s.format.is_mxf();
+        let fixed = audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
+            AudioCodec::Flac => tl!("FLAC (lossless)"),
             _ => tl!("Uncompressed (PCM)"),
         };
-        let labels = vec![("AAC".to_string(), !audio_only), (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer))];
+        // MP4 takes AAC or FLAC; QuickTime any of the three
+        let labels = vec![
+            ("AAC".to_string(), !audio_only),
+            (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer)),
+            (tl!("FLAC (lossless)").to_string(), true),
+        ];
         if fixed {
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
-            s.audio.codec = if i == 0 { AudioCodec::Aac } else { AudioCodec::Pcm };
+            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
         }
     });
     row(ui, t, tl!("Sample Rate"), |ui| {
@@ -814,11 +946,33 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         });
     } else {
         row(ui, t, tl!("Sample Size"), |ui| {
-            let sizes = [tl!("16 bit"), tl!("24 bit")];
-            let cur = if s.audio.bits >= 24 { sizes[1] } else { sizes[0] };
-            if let Some(i) = combo(ui, reg, "export.audio.bits", cur, &opts(&sizes), 120.0) {
-                s.audio.bits = if i == 0 { 16 } else { 24 };
+            // every size, the ones this codec and container cannot store greyed out; a size the
+            // audio format no longer takes (float after switching to FLAC) becomes 32-bit integer
+            if !s.supports_sample_format(s.audio.sample_format()) {
+                s.audio.set_sample_format(SampleFormat::Int32);
             }
+            let sizes = [tl!("16 bit"), tl!("24 bit"), tl!("32 bit"), tl!("32 bit float")];
+            let why = |f: SampleFormat| match (s.supports_sample_format(f), s.audio_codec()) {
+                (true, _) => None,
+                (false, AudioCodec::Flac) => Some(tl!("FLAC stores whole-number samples only")),
+                (false, _) if s.format.is_mxf() => Some(tl!("MXF export writes integer PCM only")),
+                (false, _) => Some(tl!("Not supported by FilmCraft's encoders yet")),
+            };
+            let labels: Vec<(String, Option<&str>)> = SampleFormat::ALL.iter().zip(sizes).map(|(&f, l)| (l.to_string(), why(f))).collect();
+            let cur = SampleFormat::ALL.iter().position(|&f| f == s.audio.sample_format()).and_then(|i| sizes.get(i).copied()).unwrap_or(sizes[0]);
+            if let Some(&f) = combo_why(ui, reg, "export.audio.bits", cur, &labels, 120.0).and_then(|i| SampleFormat::ALL.get(i)) {
+                s.audio.set_sample_format(f);
+            }
+        });
+    }
+    if s.audio_codec() == AudioCodec::Flac {
+        // every level is lossless: higher levels take longer for smaller files
+        row(ui, t, tl!("Compression Level"), |ui| {
+            let mut level = f64::from(s.audio.flac_level.min(8));
+            if drag(ui, reg, "export.audio.flacLevel", &mut level, 0.0..=8.0, 0.05, "", 0) {
+                s.audio.flac_level = level.round() as u8;
+            }
+            ui.label(egui::RichText::new(tl!("0 fastest, 8 smallest")).size(12.0));
         });
     }
 }
@@ -1182,22 +1336,25 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.status = e.to_string();
     }
     match pick {
-        Some("import") => match app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Export presets"), &["json"])) {
+        Some("import") => app.pick_ui(FileDialog::open_file(tl!("Export presets"), &["json"]), |app, paths| match paths.into_iter().next() {
             Some(path) => {
                 if let Err(e) = app.session.execute("export.presets.import", json!({"path": path})) {
                     app.ui.status = e.to_string();
                 }
             }
             None => app.ui.status = tl!("Import: no file chosen (agents: export.presets.import {path})").into(),
-        },
-        Some(_) => match app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Export presets"), &["json"], &format!("{}.json", m.selected))) {
-            Some(path) => {
-                if let Err(e) = app.session.execute("export.presets.export", json!({"path": path, "names": [m.selected]})) {
-                    app.ui.status = e.to_string();
+        }),
+        Some(_) => {
+            let selected = m.selected.clone();
+            app.pick_ui(FileDialog::save_as(tl!("Export presets"), &["json"], &format!("{selected}.json")), move |app, paths| match paths.into_iter().next() {
+                Some(path) => {
+                    if let Err(e) = app.session.execute("export.presets.export", json!({"path": path, "names": [selected]})) {
+                        app.ui.status = e.to_string();
+                    }
                 }
-            }
-            None => app.ui.status = tl!("Export: no file chosen (agents: export.presets.export {path, names})").into(),
-        },
+                None => app.ui.status = tl!("Export: no file chosen (agents: export.presets.export {path, names})").into(),
+            })
+        }
         None => {}
     }
     if let Some(name) = apply
@@ -1205,7 +1362,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     {
         close = true;
     }
-    app.ui.export.manager = if close || !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) { None } else { Some(m) };
+    app.ui.export.manager = if close || !open || crate::widgets::escape_closes(ctx) { None } else { Some(m) };
 }
 
 /// A five-pointed star (favourite marker), drawn from scratch.
@@ -1244,6 +1401,32 @@ fn quick_presets(app: &FilmcraftApp) -> Vec<String> {
     v
 }
 
+/// The Quick Export path for the preset's extension `ext`, or None when `path` already fits. No
+/// folder means the default one and no file name the sequence's; another format's extension is
+/// swapped and any other kept, so a typed or chosen name survives a preset change.
+fn quick_file(app: &FilmcraftApp, path: &str, seq_name: &str, ext: &str) -> Option<String> {
+    let p = std::path::Path::new(path);
+    let folder = path.ends_with(['/', '\\']);
+    let dir = if folder { Some(p) } else { p.parent() }.filter(|d| !d.as_os_str().is_empty());
+    let name = if folder { None } else { p.file_name().and_then(|n| n.to_str()) }.filter(|n| !n.trim().is_empty());
+    let cur = name.and_then(|n| std::path::Path::new(n).extension()).and_then(|e| e.to_str()).unwrap_or("");
+    if dir.is_some() && name.is_some() && cur.eq_ignore_ascii_case(ext) {
+        return None;
+    }
+    let file = match name {
+        // Sequence names come from the project, not from this Quick Export interaction. Keep
+        // metadata in one filename component before joining it to the selected/default folder.
+        None => format!("{}.{}", filmcraft_engine::export_tools::file_safe(seq_name), ext),
+        Some(n) if cur.eq_ignore_ascii_case(ext) => n.to_string(),
+        Some(n) if !cur.is_empty() && app.session.export_presets.all().iter().any(|x| x.settings.extension().eq_ignore_ascii_case(cur)) => {
+            std::path::Path::new(n).with_extension(ext).to_string_lossy().to_string()
+        }
+        Some(n) => format!("{n}.{ext}"),
+    };
+    let dir = dir.map(std::path::Path::to_path_buf).unwrap_or_else(|| filmcraft_engine::export_tools::default_export_dir(&app.session));
+    Some(dir.join(file).to_string_lossy().to_string())
+}
+
 /// The Quick Export popup under the header button at `anchor`.
 pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::Pos2) {
     if !app.ui.export.quick_open {
@@ -1260,14 +1443,14 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     }
     let preset = app.session.export_presets.find(&app.ui.export.quick_preset);
     let ext = preset.as_ref().map(|p| p.settings.extension()).unwrap_or("mp4");
-    if app.ui.export.quick_path.is_empty() || !app.ui.export.quick_path.ends_with(&format!(".{ext}")) {
-        let name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
-        let dir = match app.ui.export.quick_path.rsplit_once(['/', '\\']) {
-            Some((d, _)) if !d.is_empty() => d.to_string(),
-            _ => filmcraft_engine::export_tools::default_export_dir(&app.session).to_string_lossy().to_string(),
-        };
-        app.ui.export.quick_path = std::path::Path::new(&dir).join(format!("{name}.{ext}")).to_string_lossy().to_string();
+    let format = preset.as_ref().map(|p| p.settings.format.label()).unwrap_or("MP4");
+    let seq_name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
+    if let Some(p) = quick_file(app, &app.ui.export.quick_path, &seq_name, ext) {
+        app.ui.export.quick_path = p;
     }
+    let path = std::path::Path::new(&app.ui.export.quick_path);
+    let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let folder = path.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
     let est = app
         .session
         .execute("export.resolve", json!({"preset": app.ui.export.quick_preset}))
@@ -1277,6 +1460,8 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     let mut reg = Reg::default();
     let mut go = false;
     let mut close = false;
+    let mut browse = false;
+    let mut typed: Option<String> = None;
     let q = &mut app.ui.export;
     let area = egui::Area::new(egui::Id::new("quick-export")).order(egui::Order::Foreground).fixed_pos(anchor).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -1290,8 +1475,10 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
                 });
             });
             ui.label(egui::RichText::new(tl!("File Name & Location")).color(t.text_dim).size(11.5));
-            let r = ui.add(egui::TextEdit::singleline(&mut q.quick_path).desired_width(f32::INFINITY));
-            reg.add("quickExport.path", r.rect, "File Name & Location");
+            typed = draft_text(ui, &mut reg, "quickExport.path", &file_name, tl!("File Name"));
+            let r = location_link(ui, &t, &folder);
+            reg.add("quickExport.location", r.rect, folder.clone());
+            browse = r.clicked();
             ui.add_space(4.0);
             ui.label(egui::RichText::new(tl!("Preset")).color(t.text_dim).size(11.5));
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
@@ -1318,6 +1505,13 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     // the header click that opened the popup is not a click elsewhere
     let toggled = ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("quick-export-toggled")).unwrap_or(false));
     reg.flush(app);
+    if let Some(v) = typed {
+        // a file name goes in the shown folder; a typed or pasted path replaces both
+        app.ui.export.quick_path = if v.contains(['/', '\\']) { v } else { std::path::Path::new(&folder).join(v.trim()).to_string_lossy().to_string() };
+    }
+    if browse && let Some(p) = app.hooks.pick_save_as.as_mut().and_then(|f| f(format, &[ext], &app.ui.export.quick_path)) {
+        app.ui.export.quick_path = p;
+    }
     if go {
         let p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});
         match app.session.execute("export.quick", p) {
@@ -1326,7 +1520,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         }
         close = true;
     }
-    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) || (clicked_elsewhere && !toggled) {
+    if close || crate::widgets::escape_closes(ctx) || (clicked_elsewhere && !toggled) {
         app.ui.export.quick_open = false;
     }
 }
@@ -1344,4 +1538,19 @@ fn list_row(ui: &mut egui::Ui, t: &Tokens, selected: bool, text: &str, width: f3
     ui.painter().rect_filled(r, 3.0, bg);
     ui.painter().text(pos2(r.min.x + 6.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.5), if selected { Color32::WHITE } else { t.text });
     resp
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::*;
+
+    #[test]
+    fn location_tail_is_bounded_and_keeps_utf8_intact() {
+        let input = format!("/{}終", "é".repeat(MAX_LOCATION_DISPLAY_BYTES));
+        let (tail, truncated) = location_tail(&input);
+        assert!(truncated);
+        assert!(tail.len() <= MAX_LOCATION_DISPLAY_BYTES);
+        assert!(tail.ends_with('終'));
+        assert!(std::str::from_utf8(tail.as_bytes()).is_ok());
+    }
 }

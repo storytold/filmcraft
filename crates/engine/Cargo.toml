@@ -42,8 +42,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+chrono = { workspace = true }
+craft-docpath = { workspace = true }
 web-time = "1"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
-image = { version = "0.25", default-features = false, features = ["png"] }
+filmcraft-dng = { workspace = true, features = ["writer"] }
+filmcraft-isobmff = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }

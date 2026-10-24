@@ -30,7 +30,8 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | DV / DVCPRO / DV100 | decode + encode | none | none | — | 0% | 15–25 h |
 | MPEG-4 Part 2 | decode | none | none | — | 0% | 10–20 h |
 | WMV / VC-1 | decode, encode on Windows | none | none | — | 0% | 20–35 h |
-| Camera RAW: R3D (incl. R3D NE), ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW (plug-in), Cinema DNG | decode (vendor SDKs) | none (#383) | — | — | 0% | 60–100 h for the ones with public specs; vendor-SDK-only formats need an owner decision |
+| CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; **no** lossy / JPEG XL DNG, MXF-wrapped CinemaDNG, opcode lists or Raw settings UI | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values | 60% | 10–20 h |
+| Camera RAW: R3D (incl. R3D NE), ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW (plug-in) | decode (vendor SDKs) | none (#383) | — | — | 0% | 50–90 h for the ones with public specs; vendor-SDK-only formats need an owner decision |
 | GIF (animated) | encode | decode as still | encode | — | 80% | — |
 | Uncompressed / v210 / RGB | decode + encode (AVI, MOV) | partial (MOV PCM-style video not verified) | none | — | 30% | 8–15 h |
 
@@ -42,7 +43,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | AAC (LC, HE, LATM) | decode + encode | own decoder (LC, HE core), LATM | own LC encoder | loudness oracle vs ffmpeg | 90% | 3–5 h |
 | AC-3 | decode (licensed) | own decoder (ATSC A/52) | none | conformance | 80% | — |
 | E-AC-3 (Dolby Digital Plus) | decode | own decoder (ATSC A/52 Annex E, #647): independent substream, 1–6 blocks, spectral extension; **no** adaptive hybrid transform, enhanced coupling or 7.1 dependent substreams (plays the 5.1 core) | none | SNR vs ffmpeg 65–91 dB (raw, MP4, MOV, Matroska, TS) | 75% | 10–20 h |
-| MP3 / MP2 | decode + MP3 encode | decode (symphonia, MPL-2.0; own MP2) in raw, MP4, MOV (#800), Matroska, TS, PS; **not** MP2 mono above 192 kbit/s or stereo below 64 kbit/s (ffmpeg's mono default; symphonia rejects them) | **none** | MP2 sample-exact vs ffmpeg (raw, MP4, MOV, TS, PS) | 60% | 10–20 h (MP3 encoder) |
+| MP3 / MP2 | decode + MP3 encode | MP3: symphonia (MPL-2.0); MP1 / MP2: own decoder (ISO/IEC 11172-3 / 13818-3, #809), also the bit rate / mode combinations ffmpeg writes by default (mono 384 kbit/s); in raw, MP4, MOV (#800), Matroska, TS, PS | **none** | MP1 / MP2: SNR vs ffmpeg 73–84 dB; MP2 in MP4 / MOV within 1e-4 of ffmpeg, also after a seek (#800) | 65% | 10–20 h (MP3 encoder) |
 | Opus | — (not a Premiere import format) | own decoder, RFC 8251 range-exact | none | conformance vectors | ahead | — |
 | FLAC, ALAC, Vorbis | partial | decode (symphonia); FLAC in MP4 silent (#603) | none | — | 70% | 3–6 h |
 | WMA | decode on Windows | none | none | — | 0% | 10–20 h |
@@ -60,4 +61,5 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-11 | minor | CinemaDNG / DNG decode (#1065) |
 | 2026-10-10 | major | Created: codec-by-codec comparison with Premiere 26.5.2 from the codec crates' READMEs, the export format registry and the installed bundle's listings |

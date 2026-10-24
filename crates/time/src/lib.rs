@@ -121,6 +121,7 @@ impl SubAssign for Tick {
 }
 
 /// A half-open time range `[start, start + duration)`.
+/// Zero or negative durations are empty and never overlap another range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TimeRange {
     pub start: Tick,
@@ -141,7 +142,7 @@ impl TimeRange {
         t >= self.start && t < self.end()
     }
     pub fn overlaps(&self, o: &TimeRange) -> bool {
-        self.start < o.end() && o.start < self.end()
+        !self.is_empty() && !o.is_empty() && self.start < o.end() && o.start < self.end()
     }
     pub fn intersect(&self, o: &TimeRange) -> Option<TimeRange> {
         let s = self.start.max(o.start);
@@ -416,11 +417,18 @@ pub fn format_time(t: Tick, rate: FrameRate, drop_frame: bool, display: TimeDisp
             format!("{}{}+{:02}", if neg { "-" } else { "" }, a / per_ft, a % per_ft)
         }
         TimeDisplay::AudioSamples => {
-            let secs = t.0.div_euclid(TICKS_PER_SECOND);
-            let rem = Tick(t.0.rem_euclid(TICKS_PER_SECOND)).to_units_floor(sample_rate);
-            format!("{:02}:{:02}:{:02}:{rem:05}", secs / 3600, (secs / 60) % 60, secs % 60)
+            let neg = t.0 < 0;
+            let a = t.0.unsigned_abs();
+            let tps = TICKS_PER_SECOND.unsigned_abs();
+            let secs = a / tps;
+            let rem = Tick((a % tps) as i64).to_units_floor(sample_rate);
+            format!("{}{:02}:{:02}:{:02}:{rem:05}", if neg { "-" } else { "" }, secs / 3600, (secs / 60) % 60, secs % 60)
         }
-        TimeDisplay::Seconds => format!("{:.3}", t.seconds()),
+        TimeDisplay::Seconds => {
+            let s = format!("{:.3}", t.seconds());
+            // A tiny negative time rounds to zero but keeps its sign: drop it.
+            if s == "-0.000" { "0.000".to_string() } else { s }
+        }
     }
 }
 
@@ -473,7 +481,15 @@ pub fn parse_timecode(input: &str, rate: FrameRate, drop_frame: bool, current: i
     } else {
         parts
             .iter()
-            .map(|p| if p.is_empty() { Ok(0) } else { p.parse::<i64>().map_err(|_| ParseError(format!("bad field `{p}`"))) })
+            .map(|p| {
+                if p.is_empty() {
+                    Ok(0)
+                } else if !p.bytes().all(|b| b.is_ascii_digit()) {
+                    Err(ParseError(format!("bad field `{p}`")))
+                } else {
+                    p.parse::<i64>().map_err(|_| ParseError(format!("bad field `{p}`")))
+                }
+            })
             .collect::<Result<_, _>>()?
     };
     if nums.len() > 4 {
@@ -506,6 +522,46 @@ pub const SAMPLE_RATES: [i64; 6] = [32_000, 44_100, 48_000, 88_200, 96_000, 192_
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn empty_time_ranges_never_overlap() {
+        let clip = TimeRange::new(Tick(0), Tick(10));
+        for duration in [0, -1, -5] {
+            let empty = TimeRange::new(Tick(5), Tick(duration));
+            assert!(empty.is_empty());
+            assert_eq!(empty.intersect(&clip), None);
+            assert!(!empty.overlaps(&clip), "duration {duration}");
+            assert!(!clip.overlaps(&empty), "duration {duration}");
+        }
+    }
+
+    #[test]
+    fn time_range_overlap_respects_half_open_boundaries() {
+        let clip = TimeRange::new(Tick(0), Tick(10));
+        for (start, duration, expected) in [(-5, 5, false), (10, 5, false), (-5, 6, true), (9, 5, true), (2, 3, true)] {
+            let other = TimeRange::new(Tick(start), Tick(duration));
+            assert_eq!(clip.overlaps(&other), expected);
+            assert_eq!(other.overlaps(&clip), expected);
+        }
+    }
+
+    #[test]
+    fn seconds_display_has_no_negative_zero() {
+        let f = |t: i64| format_time(Tick(t), FrameRate::default(), false, TimeDisplay::Seconds, 48000);
+        assert_eq!(f(-1), "0.000");
+        assert_eq!(f(-2), "0.000");
+        assert_eq!(f(-(TICKS_PER_SECOND / 2500)), "0.000");
+        assert_eq!(f(-TICKS_PER_SECOND), "-1.000");
+        assert_eq!(f(-TICKS_PER_SECOND / 1000), "-0.001");
+    }
+
+    #[test]
+    fn audio_samples_negative_time_has_leading_minus() {
+        let r = FrameRate::new(30000, 1001);
+        let f = |t| format_time(Tick(t), r, false, TimeDisplay::AudioSamples, 48000);
+        assert_eq!(f(-TICKS_PER_SECOND), "-00:00:01:00000");
+        assert_eq!(f(-(TICKS_PER_SECOND + TICKS_PER_SECOND / 2)), "-00:00:01:24000");
+    }
 
     /// Damaged files and projects can carry zero / negative rates and timebases, and users or
     /// agents can type huge timecodes: these used to panic (division by zero, overflow,
@@ -693,6 +749,14 @@ mod tests {
         assert_eq!(parse_timecode("-1.00", r, false, 100).unwrap(), 75);
         assert_eq!(parse_timecode("00;01;00;02", FrameRate::FPS_29_97, true, 0).unwrap(), 1800);
         assert!(parse_timecode("abc", r, false, 0).is_err());
+    }
+
+    #[test]
+    fn signed_field_rejected() {
+        let r = FrameRate::FPS_25;
+        assert!(parse_timecode("00:00:-5:00", r, false, 0).is_err());
+        assert!(parse_timecode("00:+1:00:00", r, false, 0).is_err());
+        assert_eq!(parse_timecode("00:00:10:00", r, false, 0).unwrap(), 250);
     }
 
     #[test]

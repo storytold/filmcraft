@@ -247,6 +247,15 @@ fn track_mut(seq: &mut Sequence, id: TrackId) -> Result<&mut Track> {
     seq.track_mut(id).ok_or(EditError::NoTrack(id))
 }
 
+/// The clip's track, or [`EditError::Locked`] when that track may not change.
+fn unlocked_track(seq: &Sequence, clip: ClipId) -> Result<TrackId> {
+    let (tid, _) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
+    if seq.track(tid).ok_or(EditError::NoTrack(tid))?.locked {
+        return Err(EditError::Locked);
+    }
+    Ok(tid)
+}
+
 /// Overwrite edits: each item replaces material on its track.
 pub fn overwrite(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx: &mut EditCtx) -> Result<Vec<ClipId>> {
     let mut links = HashMap::new();
@@ -503,7 +512,10 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     let mut work = seq.clone();
     let mut placed = Vec::new();
     for (c, dest, start) in moves {
-        let (_, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        let (src, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        if work.track(src).is_some_and(|t| t.locked) {
+            return Err(EditError::Locked);
+        }
         let mut it = it.clone();
         if work.track(*dest).ok_or(EditError::NoTrack(*dest))?.locked {
             return Err(EditError::Locked);
@@ -547,7 +559,8 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         it.start = (*start).max(Tick::ZERO);
         placed.push((*dest, it));
     }
-    // worked out on the original ids, then moved over to the copies
+    // worked out on the original ids, then moved over to the copies (only transitions whose every
+    // clip is copied travel; one whose partner stays with the originals is not duplicated)
     let carried = carried_transitions(&work, &placed);
     let mut ids = HashMap::new();
     let mut links = HashMap::new();
@@ -584,9 +597,10 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     Ok(out)
 }
 
-/// The transitions that travel with a move (#227, #374): those whose clips all move, onto one
-/// track and by one offset (a fade at a moved clip's edge, or the cut between two clips that move
-/// together), shifted to where those clips land.
+/// The transitions that travel with a move (#227, #374): only those whose every clip moves, onto
+/// one track and by one offset (a fade at a moved clip's edge, or the cut between two clips that
+/// move together), shifted to where those clips land. A transition whose partner stays behind is
+/// dropped, as in Premiere (the drag preview leaves it where it is until the release).
 fn carried_transitions(seq: &Sequence, placed: &[(TrackId, TrackItem)]) -> Vec<(TrackId, Transition)> {
     let landing = |c: ClipId| {
         let (dest, it) = placed.iter().find(|(_, it)| it.id == c)?;
@@ -595,9 +609,14 @@ fn carried_transitions(seq: &Sequence, placed: &[(TrackId, TrackItem)]) -> Vec<(
     };
     let mut carried = Vec::new();
     for tr in seq.all_tracks().filter(|t| !t.locked).flat_map(|t| t.transitions.iter()) {
-        let lands: Option<Vec<(TrackId, Tick)>> = [tr.from, tr.to].into_iter().flatten().map(landing).collect();
-        let Some((&(dest, delta), rest)) = lands.as_deref().and_then(<[_]>::split_first) else { continue };
-        if rest.iter().all(|l| *l == (dest, delta)) {
+        let endpoints: Vec<ClipId> = [tr.from, tr.to].into_iter().flatten().collect();
+        let lands: Vec<(TrackId, Tick)> = endpoints.iter().filter_map(|c| landing(*c)).collect();
+        // every clip it sits on must move, onto one track by one offset, or the transition is
+        // dropped with the delete below (a partner that stayed behind ends the move)
+        if lands.len() == endpoints.len()
+            && let Some(&(dest, delta)) = lands.first()
+            && lands.iter().skip(1).all(|l| *l == (dest, delta))
+        {
             carried.push((dest, Transition { start: tr.start + delta, ..tr.clone() }));
         }
     }
@@ -633,7 +652,8 @@ fn neighbours(track: &Track, id: ClipId) -> (Tick, Tick) {
 
 /// Compute the clamped delta a trim may apply (for UI feedback while dragging).
 pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, ctx: &EditCtx) -> Result<Tick> {
-    let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
+    let tid = unlocked_track(seq, clip)?;
+    let (_, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
     let (prev_end, next_start) = neighbours(tr, clip);
     let media = media_len(ctx, it);
@@ -703,6 +723,7 @@ pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
 /// Trim one edge of an item (Selection-tool edge drag = Regular; Ripple tool = Ripple).
 /// Linked partners should be trimmed by the caller with the same delta.
 pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    unlocked_track(seq, clip)?;
     let d = clamp_trim(seq, clip, edge, mode, delta, ctx)?;
     if d == Tick::ZERO {
         return Ok(d);
@@ -759,6 +780,9 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
 /// overwrite material on a sync-locked track, or when such a linked clip has no room to follow.
 pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
     let Some(&first) = clips.first() else { return Ok(Tick::ZERO) };
+    for c in clips {
+        unlocked_track(seq, *c)?;
+    }
     let mut d = delta;
     for c in clips {
         let x = clamp_trim(seq, *c, edge, TrimMode::Ripple, d, ctx)?;
@@ -861,6 +885,8 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
 
 /// Rolling edit between two adjacent items on one track: moves the cut by `delta`.
 pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    unlocked_track(seq, left)?;
+    unlocked_track(seq, right)?;
     let (_, l) = seq.find_item(left).ok_or(EditError::NoItem(left))?;
     let (_, r) = seq.find_item(right).ok_or(EditError::NoItem(right))?;
     if l.end() != r.start {
@@ -908,6 +934,7 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
 
 /// Slip: change which part of the media an item shows without moving it.
 pub fn slip(seq: &mut Sequence, clip: ClipId, delta_media: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    unlocked_track(seq, clip)?;
     let (_, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let used = src_of(it.duration, it.speed);
     let max_in = media_len(ctx, it).map(|m| m - used).unwrap_or(Tick::MAX);
@@ -921,6 +948,7 @@ pub fn slip(seq: &mut Sequence, clip: ClipId, delta_media: Tick, ctx: &mut EditC
 
 /// Slide: move an item between its neighbours, trimming them to keep the gapless span.
 pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    unlocked_track(seq, clip)?;
     let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let it = it.clone();
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
@@ -999,27 +1027,65 @@ pub fn slide_items(seq: &mut Sequence, clips: &[ClipId], delta: Tick, ctx: &mut 
     Ok(d)
 }
 
-/// Rate stretch: change an item's duration by dragging an edge, adjusting speed to keep the same media.
-pub fn rate_stretch(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
+/// How far `clip` can rate-stretch on `edge` without overlapping a neighbour or going shorter than
+/// one frame. Linked partners use this so they all take the tightest room.
+pub fn clamp_rate_stretch(seq: &Sequence, clip: ClipId, edge: Edge, delta: Tick, ctx: &EditCtx) -> Result<Tick> {
     let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
     let (prev_end, next_start) = neighbours(tr, clip);
-    let src_len = it.source_out() - it.source_in;
-    let d = match edge {
+    Ok(match edge {
         Edge::Out => delta.clamp(-(it.duration - ctx.min_duration), next_start - it.end()),
         Edge::In => delta.clamp(-(it.start - prev_end), it.duration - ctx.min_duration),
-    };
-    let new_dur = match edge {
-        Edge::Out => it.duration + d,
-        Edge::In => it.duration - d,
-    };
-    let speed = src_len.0 as f64 / new_dur.0 as f64;
-    let (_, it) = seq.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
-    if edge == Edge::In {
-        it.start += d;
+    })
+}
+
+/// Rate stretch: change an item's duration by dragging an edge, adjusting speed to keep the same media.
+pub fn rate_stretch(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
+    rate_stretch_items(seq, &[clip], edge, delta, ctx)
+}
+
+/// Rate stretch a clip and its linked partners as one edit: the tightest neighbour on any member
+/// clamps them all, so they keep one speed. A neighbour on the sound track cannot leave the picture
+/// stretching further (and the pair still linked at different rates).
+pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
+    // clips on locked tracks are left as they are; with every clip locked the edit is refused
+    let mut open = Vec::with_capacity(clips.len());
+    for &c in clips {
+        match unlocked_track(seq, c) {
+            Ok(_) => open.push(c),
+            Err(EditError::Locked) => {}
+            Err(e) => return Err(e),
+        }
     }
-    it.duration = new_dur;
-    it.speed = speed;
+    if open.is_empty() {
+        return Err(EditError::Locked);
+    }
+    let clips = open.as_slice();
+    let mut d = delta;
+    for c in clips {
+        let x = clamp_rate_stretch(seq, *c, edge, d, ctx)?;
+        if x.0.signum() != d.0.signum() {
+            d = Tick::ZERO;
+        } else if x.abs() < d.abs() {
+            d = x;
+        }
+    }
+    let mut speed = 1.0;
+    for c in clips {
+        let (_, it) = seq.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        let src_len = it.source_out() - it.source_in;
+        let new_dur = match edge {
+            Edge::Out => it.duration + d,
+            Edge::In => it.duration - d,
+        };
+        speed = src_len.0 as f64 / new_dur.0 as f64;
+        let (_, it) = seq.find_item_mut(*c).ok_or(EditError::NoItem(*c))?;
+        if edge == Edge::In {
+            it.start += d;
+        }
+        it.duration = new_dur;
+        it.speed = speed;
+    }
     Ok(speed)
 }
 
@@ -1037,6 +1103,9 @@ pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ri
 pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse: bool, ripple: bool, ctx: &mut EditCtx) -> Result<()> {
     if !(speed.is_finite() && speed > 0.0) {
         return Err(EditError::Other("speed must be positive".into()));
+    }
+    for clip in clips {
+        unlocked_track(seq, *clip)?;
     }
     let mut work = seq.clone();
     // per member track: where its later material starts, and by how much the member's length changed
@@ -1061,6 +1130,7 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         it.speed = speed;
         it.reverse = reverse;
         it.duration = new_dur;
+        fades_follow_edges(work.track_mut(tid).ok_or(EditError::NoTrack(tid))?, *clip);
         origins.push((tid, old_end, delta));
     }
     let main_from = origins.first().map(|o| o.1).unwrap_or_default();

@@ -234,15 +234,15 @@ fn project_delete_takes_explicit_bins_and_items_without_a_selection() {
     assert_eq!(disabled(s.execute("project.delete", json!({}))), "select an item in the Project panel");
     // an empty bin, by its id alone
     let r = s.execute("project.delete", json!({"items": [empty]})).unwrap();
-    assert_eq!(r, json!({"items": 0, "bins": 1}));
+    assert_eq!(r, json!({"items": 0, "bins": 1, "offline": 0}));
     assert!(s.project.root.find_bin(filmcraft_project::BinId(empty)).is_none());
     // a bin with a clip in it, and an item, each by id alone
     let r = s.execute("project.delete", json!({"items": [outer]})).unwrap();
-    assert_eq!(r, json!({"items": 1, "bins": 1}));
+    assert_eq!(r, json!({"items": 1, "bins": 1, "offline": 0}));
     assert!(s.project.item(ocean).is_none());
     let dunes = item_named(&s, "Desert_Dunes.mp4");
     let r = s.execute("project.delete", json!({"items": [dunes.0]})).unwrap();
-    assert_eq!(r, json!({"items": 1, "bins": 0}));
+    assert_eq!(r, json!({"items": 1, "bins": 0, "offline": 0}));
     assert_eq!(s.project.items.len(), before - 2);
     assert!(s.state.project_selection.is_empty(), "the selection is left as it was");
     assert!(!s.is_enabled("project.delete"), "menu enablement still follows the selection");

@@ -606,6 +606,32 @@ fn replace_with_clip_from_source_match_frame_and_bin() {
     assert!(s.execute("clip.replaceFromBin", json!({"item": music.0})).is_err());
 }
 
+/// Match Frame on a reversed clip maps the Source monitor frame through reverse playback, not as
+/// if the clip still ran forward (source 50 at sequence 20 used to become source 69).
+#[test]
+fn replace_from_source_match_frame_on_a_reversed_clip() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let forest = item_named(&s, "Misty_Forest.mp4");
+    s.execute("file.newSequence", json!({"name": "MatchFrameReverse"})).unwrap();
+    s.execute("timeline.place", json!({"item": forest.0, "time": 0})).unwrap();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    s.execute("timeline.trim", json!({"clip": c.id.0, "edge": "out", "mode": "regular", "delta": (rate.tick_of(60) - c.duration).0})).unwrap();
+    select(&mut s, &[c.id.0]);
+    s.execute("clip.speedDuration", json!({"speed": 100, "reverse": true, "ripple": false})).unwrap();
+    let got = clip(&s, c.id.0);
+    assert_eq!(rate.frame_at(got.duration), 60);
+    assert!(got.reverse);
+    s.execute("source.open", json!({"item": forest.0})).unwrap();
+    s.execute("playhead.set", json!({"time": rate.tick_of(20).0})).unwrap();
+    s.execute("source.setPlayhead", json!({"frame": 50})).unwrap();
+    s.execute("clip.replaceFromSourceMatchFrame", json!({})).unwrap();
+    let got = clip(&s, c.id.0);
+    assert_eq!(got.source_time_at(rate.tick_of(20)), rate.tick_of(50));
+    assert_ne!(got.source_time_at(rate.tick_of(20)), rate.tick_of(69));
+}
+
 /// Replace With Clip ▸ From Bin restarts the clip at the new item's In point (as Premiere does);
 /// `keepSourceIn` keeps the clip's place in the media instead.
 #[test]
@@ -868,6 +894,29 @@ fn color_matte_color_changes_and_undoes() {
     assert!(s.execute("project.matteColor", json!({"item": matte, "color": "green"})).is_err());
 }
 
+/// #918: non-ripple Speed/Duration 200% halves a 100-frame clip; a 10-frame fade-out must
+/// move from frames 90–100 to 40–50 (the new clip end), not stay past the clip.
+#[test]
+fn speed_duration_moves_fade_out_to_the_new_clip_end() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Speed fade", "video": 1, "audio": 0})).unwrap();
+    let rate = s.sequence_rate();
+    let seconds = rate.tick_of(100).seconds();
+    let matte = s.execute("file.newColorMatte", json!({"color": "#ff0000", "seconds": seconds})).unwrap()["item"].as_u64().unwrap();
+    let c = s.execute("timeline.place", json!({"item": matte, "track": "V1", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap();
+    select(&mut s, &[c]);
+    s.execute("sequence.applyVideoTransition", json!({"edge": "out", "frames": 10})).unwrap();
+    let before = s.active_sequence().unwrap().video_tracks[0].transitions[0].clone();
+    assert_eq!((rate.frame_at(before.start), rate.frame_at(before.end())), (90, 100));
+    s.execute("clip.speedDuration", json!({"speed": 200})).unwrap();
+    let it = clip(&s, c);
+    let fade = &s.active_sequence().unwrap().video_tracks[0].transitions[0];
+    assert_eq!((rate.frame_at(it.start), rate.frame_at(it.end())), (0, 50));
+    assert_eq!((rate.frame_at(fade.start), rate.frame_at(fade.end())), (40, 50));
+    assert_eq!(fade.from, Some(filmcraft_project::ClipId(c)));
+    assert_eq!(fade.to, None);
+}
+
 /// A damaged project whose subclip is its own parent (#66): `media_duration` followed the chain
 /// without a bound and overflowed the stack. It gives up after a few hops now.
 #[test]
@@ -987,4 +1036,49 @@ fn keyboard_slip_keeps_linked_clips_in_sync_past_the_shorter_handle() {
     s.execute("timeline.select", json!({"clips": [v, a]})).unwrap();
     s.execute("timeline.slipLeft5", json!({})).unwrap();
     assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick(fr.0 * 30), Tick(fr.0 * 35)));
+}
+
+#[test]
+fn linked_rate_stretch_keeps_one_speed_when_a_neighbour_blocks_the_sound() {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Stretch"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Sequence", "fps": 25, "video": 1, "audio": 1, "width": 16, "height": 16})).unwrap();
+    let r = s.execute("file.newOfflineFile", json!({"name": "A", "seconds": 8, "fps": 25, "video": true, "audio": true})).unwrap();
+    let a = r["item"].as_u64().unwrap();
+    let r = s.execute("file.newOfflineFile", json!({"name": "B", "seconds": 2, "fps": 25, "video": true, "audio": true})).unwrap();
+    let b = r["item"].as_u64().unwrap();
+    let fr = s.sequence_rate().tick_of(1);
+    let r = s.execute("timeline.place", json!({"item": a, "track": "V1", "audioTrack": "A1", "time": 0, "duration": fr.0 * 60})).unwrap();
+    let (v, snd) = (r["clips"][0].as_u64().unwrap(), r["clips"][1].as_u64().unwrap());
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("timeline.place", json!({"item": b, "track": "A1", "time": fr.0 * 70, "duration": fr.0 * 10})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+    let r = s.execute("timeline.rateStretch", json!({"clip": v, "edge": "out", "deltaFrames": 20})).unwrap();
+    let (pic, sound) = (clip(&s, v), clip(&s, snd));
+    assert_eq!((pic.duration, sound.duration), (Tick(fr.0 * 70), Tick(fr.0 * 70)));
+    assert!((pic.speed - sound.speed).abs() < 1e-12);
+    assert!((r["speed"].as_f64().unwrap() - 60.0 / 70.0).abs() < 1e-9);
+}
+
+/// #2358: Toggle Animation on a parameter an older effect instance lacks (it was added to the
+/// effect later) creates it from its default and animates it, instead of "no such param".
+#[test]
+fn toggle_animation_creates_a_parameter_missing_from_an_older_instance() {
+    let mut s = crate::Session::default();
+    s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    // an older project: Motion without its Rotation entry
+    {
+        let p = std::sync::Arc::make_mut(&mut s.project);
+        let q = p.sequence_mut(seq).unwrap();
+        let (_, it) = q.find_item_mut(clip).unwrap();
+        let m = it.effects.iter_mut().find(|e| e.effect == "motion").unwrap();
+        m.params.remove("rotation");
+    }
+    // `"mask": null` is no mask, as in effects.setParam
+    s.execute("effects.toggleAnimation", serde_json::json!({"clip": clip.0, "effect": "motion", "param": "rotation", "mask": null})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    let rot = it.effect("motion").unwrap().param("rotation").unwrap();
+    assert!(rot.is_animated(), "the stopwatch is on");
 }

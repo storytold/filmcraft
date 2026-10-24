@@ -10,6 +10,7 @@ use serde_json::json;
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
+use crate::native_dialogs::FileDialog;
 use crate::state::SavePresetDraft;
 use crate::theme::Tokens;
 
@@ -25,7 +26,8 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover);
         }
-        let x = r.min.x + 30.0;
+        // inside the Presets folder: icon and label one level deeper than it (#2329)
+        let x = r.min.x + crate::panels::effects::tree_x(1) + 18.0;
         icons::paint(
             ui.painter(),
             Rect::from_center_size(pos2(x, r.center().y), vec2(13.0, 13.0)),
@@ -66,12 +68,23 @@ pub fn run(app: &mut FilmcraftApp, cmd: &str, name: &str) {
         "presets.apply" => app.session.execute(cmd, json!({"preset": name})),
         "presets.delete" => app.session.execute(cmd, json!({"name": name})),
         "presets.export" => {
-            let Some(path) = app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Effect presets"), &["json"], &format!("{name}.json"))) else { return };
-            app.session.execute(cmd, json!({"path": path, "names": [name]}))
+            let name = name.to_string();
+            app.pick_ui(FileDialog::save_as(tl!("Effect presets"), &["json"], &format!("{name}.json")), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return };
+                if let Err(e) = app.session.execute("presets.export", json!({"path": path, "names": [name]})) {
+                    app.ui.status = e.to_string();
+                }
+            });
+            return;
         }
         "presets.import" => {
-            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Effect presets"), &["json"])) else { return };
-            app.session.execute(cmd, json!({"path": path}))
+            app.pick_ui(FileDialog::open_file(tl!("Effect presets"), &["json"]), |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return };
+                if let Err(e) = app.session.execute("presets.import", json!({"path": path})) {
+                    app.ui.status = e.to_string();
+                }
+            });
+            return;
         }
         _ => return,
     };

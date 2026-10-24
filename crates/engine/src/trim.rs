@@ -171,7 +171,9 @@ pub fn toggle_type(s: &mut Session) -> Result<Value> {
 
 /// Trim every selected edit point by `delta` (edit point movement; positive = later).
 fn trim_all(s: &mut Session, delta: Tick) -> Result<Value> {
+    let n0 = s.history.undo.len();
     let applied = trim_all_raw(s, &|_, _| Some(delta))?;
+    crate::clip_ops::collapse_history(s, n0, "Trim by Frames");
     let first = applied.first().and_then(Value::as_i64).map(Tick).unwrap_or_default();
     add_shift(s, first);
     Ok(json!({"applied": applied}))
@@ -208,7 +210,7 @@ fn trim_all_raw(s: &mut Session, delta_for: &dyn Fn(&Sequence, &EditPoint) -> Op
         let r = match ep.kind {
             TrimKind::Roll => {
                 let Some((l, r)) = roll_pair(seq, ep) else { continue };
-                s.execute("timeline.roll", json!({"left": l.0, "right": r.0, "delta": delta.0}))?
+                s.execute("timeline.roll", json!({"left": l.0, "right": r.0, "delta": delta.0, "followLinks": false}))?
             }
             k => s.execute(
                 "timeline.trim",
@@ -230,7 +232,9 @@ pub fn nudge(s: &mut Session, p: &Value) -> Result<Value> {
 /// `trim.extendToPlayhead`: move each selected edit point to the playhead.
 pub fn extend_to_playhead(s: &mut Session) -> Result<Value> {
     let ph = s.playhead();
+    let n0 = s.history.undo.len();
     let applied = trim_all_raw(s, &|seq, e| edit_time(seq, e).map(|t| ph - t))?;
+    crate::clip_ops::collapse_history(s, n0, "Extend Edit to Playhead");
     let first = applied.first().and_then(Value::as_i64).map(Tick).unwrap_or_default();
     add_shift(s, first);
     Ok(json!({"applied": applied}))
@@ -343,6 +347,7 @@ pub fn monitor_info(s: &Session) -> Value {
 /// default video/audio transition at every selected edit point.
 pub fn apply_default_transitions(s: &mut Session) -> Result<Value> {
     let pts = s.state.edit_points.clone();
+    let n0 = s.history.undo.len();
     let mut ids = Vec::new();
     for ep in &pts {
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -356,6 +361,7 @@ pub fn apply_default_transitions(s: &mut Session) -> Result<Value> {
     if ids.is_empty() {
         return Err(EngineError::Other("no transition could be applied at the selected edit points".into()));
     }
+    crate::clip_ops::collapse_history(s, n0, "Apply Default Transitions");
     Ok(json!({"transitions": ids}))
 }
 

@@ -1,20 +1,33 @@
 //! In-loop post filters run by decode_frame_wrapup: loop filter (7.14), CDEF (7.15),
 //! super-resolution upscaling (7.16) and loop restoration (7.17).
 
+use crate::frame::RowBand;
 use crate::spec_tables::*;
 use crate::state::FrameState;
 use crate::stats::{DecodeStats, Stage, Timer};
 
-/// The post-filters run on the frame worker; `_pool` is for row-parallel filtering (not yet used).
-/// `draft`: only super-resolution (which sets the output size) runs.
-pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, _pool: &crate::par::Pool, draft: bool) {
+/// Luma rows per band of the row-parallel filters: whole 64x64 CDEF filter blocks, and no
+/// transform block crosses a band edge.
+const BAND_ROWS: usize = 64;
+
+/// The [start, end) luma rows of the bands covering `rows`: [`BAND_ROWS`] each (the last one
+/// runs to the end of the plane), or one band for everything when `pool` is sequential.
+pub(crate) fn bands(pool: &crate::par::Pool, rows: usize) -> Vec<(usize, usize)> {
+    let n = if pool.is_parallel() { rows.div_ceil(BAND_ROWS).max(1) } else { 1 };
+    (0..n).map(|b| (b * BAND_ROWS, if b + 1 == n { usize::MAX } else { (b + 1) * BAND_ROWS })).collect()
+}
+
+/// The post-filters run on the frame worker, each in row bands on `pool` (the result does not
+/// depend on how the bands are scheduled). `draft`: only super-resolution (which sets the
+/// output size) runs.
+pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, pool: &crate::par::Pool, draft: bool) {
     let mut t = Timer::start();
     let lvl = fs.fh.lf.level;
     if (lvl[0] != 0 || lvl[1] != 0) && !draft {
-        loop_filter(fs);
+        loop_filter(fs, pool);
     }
     stats.add(Stage::LoopFilter, t.lap());
-    let cdef = if draft { None } else { crate::cdef::apply(fs) };
+    let cdef = if draft { None } else { crate::cdef::apply(fs, pool) };
     stats.add(Stage::Cdef, t.lap());
     let (up_cur, up_cdef) = if fs.fh.use_superres {
         let c = crate::restoration::upscale(fs, &fs.cur);
@@ -25,7 +38,7 @@ pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, _pool: &crate:
     };
     stats.add(Stage::Superres, t.lap());
     fs.cur = if fs.fh.lr.uses_lr && !draft {
-        crate::restoration::loop_restoration(fs, &up_cur, up_cdef.as_ref().unwrap_or(&up_cur))
+        crate::restoration::loop_restoration(fs, &up_cur, up_cdef.as_ref().unwrap_or(&up_cur), pool)
     } else {
         up_cdef.unwrap_or(up_cur)
     };
@@ -35,28 +48,102 @@ pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, _pool: &crate:
 // ---------------------------------------------------------------------------------------------
 // Loop filter (7.14)
 
-fn loop_filter(fs: &mut FrameState) {
-    let (mi_rows, mi_cols) = (fs.fh.mi_rows as usize, fs.fh.mi_cols as usize);
-    for plane in 0..fs.num_planes {
-        if plane == 0 || fs.fh.lf.level[1 + plane] != 0 {
-            for pass in 0..2 {
-                let row_step = if plane == 0 { 1 } else { 1 << fs.ssy };
-                let col_step = if plane == 0 { 1 } else { 1 << fs.ssx };
-                let mut row = 0;
-                while row < mi_rows {
-                    let mut col = 0;
-                    while col < mi_cols {
-                        edge(fs, plane, pass, row, col);
-                        col += col_step;
-                    }
-                    row += row_step;
+/// Luma rows above a band that its horizontal edges read or write (p6 .. p0 of the widest
+/// filter, rounded up to whole 4x4 rows); chroma: `LF_MARGIN >> subsampling_y`.
+const LF_MARGIN: usize = 8;
+
+/// The loop filter in row bands, all of a frame's in one parallel pass (each join costs a
+/// worker wake-up, which is slow on a busy machine).
+///
+/// Vertical edges (pass 0) only touch the 4 rows of their own edge. A horizontal edge (pass 1)
+/// reads and writes at most `filter_size / 2` samples on each side, never more than the
+/// transform blocks on either side are high, so no two edges touch the same sample and
+/// any order gives the spec's raster-order result. Transform blocks never cross a band edge, so
+/// the only edges reaching outside a band are those on its top row, whose p side lies in the
+/// band above. Each band therefore also filters the vertical edges of a copy of the
+/// `LF_MARGIN` rows above it (the same work as the band above does on them), runs its top
+/// horizontal edges against that copy, and afterwards the samples those edges changed are
+/// written back; the band above never touches them.
+fn loop_filter(fs: &mut FrameState, pool: &crate::par::Pool) {
+    let luma = bands(pool, fs.fh.mi_rows as usize * 4);
+    let planes: Vec<usize> = (0..fs.num_planes).filter(|&p| p == 0 || fs.fh.lf.level[1 + p] != 0).collect();
+    let mut cur = std::mem::take(&mut fs.cur);
+    let f: &FrameState = fs;
+    // Unfiltered copies of the rows above each band but the first.
+    let margins: Vec<[Vec<u16>; 3]> = luma
+        .iter()
+        .map(|&(start, _)| {
+            std::array::from_fn(|p| {
+                let sub_y = if p == 0 { 0 } else { f.ssy };
+                let pl = &cur.planes[p];
+                let (y0, y1) = ((start.saturating_sub(LF_MARGIN)) >> sub_y, start >> sub_y);
+                let rows = pl.data.get(y0 * pl.stride..y1 * pl.stride);
+                if start == 0 || !planes.contains(&p) { Vec::new() } else { rows.map(<[u16]>::to_vec).unwrap_or_default() }
+            })
+        })
+        .collect();
+    let mut bands: Vec<([RowBand; 3], [Vec<u16>; 3])> = cur.row_bands(&luma).into_iter().zip(margins).collect();
+    let changed = pool.map_mut(&mut bands, |b, (band, margin)| {
+        let mut changed: [Vec<(usize, u16)>; 3] = Default::default();
+        for &p in &planes {
+            changed[p] = filter_band(f, p, luma[b], &mut band[p], &mut margin[p]);
+        }
+        changed
+    });
+    drop(bands);
+    for (&(start, _), ch) in luma.iter().zip(&changed) {
+        for (p, list) in ch.iter().enumerate() {
+            let sub_y = if p == 0 { 0 } else { f.ssy };
+            let pl = &mut cur.planes[p];
+            let first = (start.saturating_sub(LF_MARGIN) >> sub_y) * pl.stride;
+            for &(i, v) in list {
+                if let Some(d) = pl.data.get_mut(first + i) {
+                    *d = v;
                 }
             }
         }
     }
+    fs.cur = cur;
 }
 
-fn edge(fs: &mut FrameState, plane: usize, pass: usize, row: usize, col: usize) {
+/// Both loop filter passes over the band of `plane` holding luma rows [start, end); `margin` is
+/// an unfiltered copy of the rows above the band (empty for the first band). Returns the samples
+/// of `margin` that the band's top horizontal edges changed, as (index, value).
+fn filter_band(fs: &FrameState, plane: usize, (start, end): (usize, usize), band: &mut RowBand, margin: &mut [u16]) -> Vec<(usize, u16)> {
+    let mi_rows = fs.fh.mi_rows as usize;
+    let (r0, r1) = (start / 4, mi_rows.min(end / 4));
+    let sub_y = if plane == 0 { 0 } else { fs.ssy };
+    let edges = |band: &mut RowBand, mut above: Option<&mut RowBand>, pass: usize, rows: std::ops::Range<usize>| {
+        let row_step = if plane == 0 { 1 } else { 1 << fs.ssy };
+        let col_step = if plane == 0 { 1 } else { 1 << fs.ssx };
+        let mi_cols = fs.fh.mi_cols as usize;
+        let mut row = rows.start;
+        while row < rows.end {
+            let mut col = 0;
+            while col < mi_cols {
+                edge(fs, band, above.as_deref_mut(), plane, pass, row, col);
+                col += col_step;
+            }
+            row += row_step;
+        }
+    };
+    edges(band, None, 0, r0..r1);
+    if margin.is_empty() {
+        edges(band, None, 1, r0..r1);
+        return Vec::new();
+    }
+    let stride = band.stride;
+    let y0 = start.saturating_sub(LF_MARGIN) >> sub_y;
+    let mut above = RowBand { data: margin, stride, y0 };
+    edges(&mut above, None, 0, r0.saturating_sub(LF_MARGIN / 4)..r0);
+    let before = above.data.to_vec();
+    edges(band, Some(&mut above), 1, r0..r1);
+    above.data.iter().zip(&before).enumerate().filter(|(_, (a, b))| a != b).map(|(i, (&a, _))| (i, a)).collect()
+}
+
+/// One loop filter edge (7.14.2) at mode info position (row, col): 4 lines of samples across
+/// it. `above` holds the rows above `band` for horizontal edges on the band's top row.
+fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane: usize, pass: usize, row: usize, col: usize) {
     let (sub_x, sub_y) = if plane == 0 { (0, 0) } else { (fs.ssx, fs.ssy) };
     let (dx, dy) = if pass == 0 { (1i32, 0i32) } else { (0, 1) };
     let x = col * 4;
@@ -102,15 +189,39 @@ fn edge(fs: &mut FrameState, plane: usize, pass: usize, row: usize, col: usize) 
         return;
     }
     let t = LfThresh::new(limit, blimit, thresh, fs.bit_depth);
-    let pl = &mut fs.cur.planes[plane];
-    let stride = pl.stride;
-    let (step, along) = if pass == 0 { (1, stride) } else { (stride, 1) };
-    let base = yp * stride + xp;
     let chroma = plane > 0;
+    let stride = band.stride;
+    if let Some(above) = above.filter(|_| pass == 1 && yp == band.y0) {
+        // The p side is in the rows above the band: filter each line in a copy that spans both.
+        let (n_above, n_band) = (above.data.len() / stride.max(1), band.data.len() / stride.max(1));
+        for k in 0..4 {
+            let x = xp + k;
+            let mut line = [0u16; 2 * LF_LINE];
+            for j in 1..=n_above.min(LF_LINE) {
+                line[LF_LINE - j] = above.data[(n_above - j) * stride + x];
+            }
+            for j in 0..n_band.min(LF_LINE) {
+                line[LF_LINE + j] = band.data[j * stride + x];
+            }
+            sample_filter(&mut line, LF_LINE, 1, chroma, filter_size, t);
+            for j in 1..=n_above.min(LF_LINE) {
+                above.data[(n_above - j) * stride + x] = line[LF_LINE - j];
+            }
+            for j in 0..n_band.min(LF_LINE) {
+                band.data[j * stride + x] = line[LF_LINE + j];
+            }
+        }
+        return;
+    }
+    let (step, along) = if pass == 0 { (1, stride) } else { (stride, 1) };
+    let base = (yp - band.y0) * stride + xp;
     for k in 0..4 {
-        sample_filter(&mut pl.data, base + k * along, step, chroma, filter_size, t);
+        sample_filter(band.data, base + k * along, step, chroma, filter_size, t);
     }
 }
+
+/// Samples on each side of an edge that the sample filter can read (at most p6 .. q6).
+const LF_LINE: usize = 8;
 
 /// Adaptive filter strength (7.14.4): (lvl, limit, blimit, thresh).
 fn strength(fs: &FrameState, row: usize, col: usize, plane: usize, pass: usize) -> (i32, i32, i32, i32) {

@@ -17,6 +17,7 @@ fn cx() -> FxCtx<'static> {
         clip_name: "clip",
         project: None,
         env: None,
+        frame_rate: 24.0,
         working: filmcraft_color::WorkingSpace::Rec709,
     }
 }
@@ -1152,5 +1153,33 @@ mod pipeline {
         place(&mut p2, seq2, 0, ocean2, vec![echo]);
         let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
         assert!(e.px.iter().all(|v| v.is_finite()));
+    }
+}
+
+#[test]
+fn transform_shutter_uses_the_sequence_frame_rate_without_env() {
+    // An adjustment layer has no env: the shutter must still span one 60 fps frame at 360°, so
+    // the frames just before the motion starts and just after it ends stay sharp (#1088).
+    let mut e = inst("transform");
+    set(&mut e, "shutter_override", ParamValue::Bool(true));
+    setf(&mut e, "shutter_angle", 360.0);
+    let mut a = Keyframe::new(Tick::from_seconds_f64(1.0), ParamValue::Vec2(filmcraft_geom::Vec2::new(8.0, 16.0)));
+    a.interp = Interpolation::Linear;
+    let mut b = Keyframe::new(Tick::from_seconds_f64(2.0), ParamValue::Vec2(filmcraft_geom::Vec2::new(40.0, 16.0)));
+    b.interp = Interpolation::Linear;
+    e.params.insert("position".into(), Param { value: ParamValue::Vec2(filmcraft_geom::Vec2::new(8.0, 16.0)), keyframes: vec![a, b] });
+    let img = picture(32, 32);
+    let mut off = e.clone();
+    set(&mut off, "shutter_override", ParamValue::Bool(false));
+    let delta = |frame: i32| {
+        let s = f64::from(frame) / 60.0;
+        let cx = FxCtx { t: Tick::from_seconds_f64(s), seconds: s, frame_rate: 60.0, ..cx() };
+        max_diff(&run("transform", &off, &img, &cx), &run("transform", &e, &img, &cx))
+    };
+    for frame in [59, 121] {
+        assert!(delta(frame) < 1e-4, "frame {frame} is blurred outside the motion ({})", delta(frame));
+    }
+    for frame in [60, 90, 120] {
+        assert!(delta(frame) > 1e-3, "frame {frame} moves but is sharp");
     }
 }

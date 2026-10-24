@@ -320,12 +320,17 @@ impl FxOp {
                     g: 100.0 / f(e, "gamma", cx).max(1.0),
                 }
             }
-            "extract" => FxOp::Extract {
-                lo: f(e, "black", cx) / 255.0,
-                hi: f(e, "white", cx) / 255.0,
-                soft: f(e, "softness", cx) / 100.0 * 0.2 + 1e-4,
-                invert: b(e, "invert"),
-            },
+            "extract" => {
+                let softness = f(e, "softness", cx);
+                FxOp::Extract {
+                    lo: f(e, "black", cx) / 255.0,
+                    hi: f(e, "white", cx) / 255.0,
+                    // Zero softness is a hard cutoff. A tiny substitute fade amplifies
+                    // CPU/GPU transfer-function rounding and introduces unwanted grey edges.
+                    soft: if softness <= 0.0 { 0.0 } else { softness / 100.0 * 0.2 + 1e-4 },
+                    invert: b(e, "invert"),
+                }
+            }
             "invert" => FxOp::Invert { channel: choice(e, "channel"), blend: f(e, "blend", cx) / 100.0 },
             "posterize" => FxOp::Posterize { n: f(e, "levels", cx).max(2.0) - 1.0 },
             "gaussian_blur" | "gaussian_blur_legacy" => {
@@ -350,7 +355,9 @@ impl FxOp {
                 }
             }
             "sharpen" => {
-                let r = cx.px_scale.max(0.35);
+                // below a sigma of ~0.58 the three boxes all round to radius 0 and the mask is a
+                // no-op, so Sharpen vanished at 1/2 playback resolution and below (#1351)
+                let r = cx.px_scale.max(0.6);
                 let (rx, ry) = gaussian_boxes(w, h, r, r);
                 FxOp::Unsharp { rx, ry, amount: f(e, "amount", cx) / 100.0, threshold: 0.0 }
             }
@@ -730,7 +737,12 @@ impl FxOp {
                 let (lo, hi, soft, inv) = (*lo, *hi, *soft, *invert);
                 img.map_rgb(|c, _, _| {
                     let l = linear_to_srgb(luma709(c[0], c[1], c[2]).max(0.0));
-                    let inside = ((l - lo) / soft).clamp(0.0, 1.0).min(((hi - l) / soft).clamp(0.0, 1.0));
+                    let inside = if soft <= 0.0 {
+                        // Match the feathered function's limiting value at the cutoffs.
+                        if l > lo && l < hi { 1.0 } else { 0.0 }
+                    } else {
+                        ((l - lo) / soft).clamp(0.0, 1.0).min(((hi - l) / soft).clamp(0.0, 1.0))
+                    };
                     let v = if inv { 1.0 - inside } else { inside };
                     [v, v, v]
                 });
@@ -1085,4 +1097,57 @@ fn resample_cpu(src: &Image, inv: &Affine, rect: [u32; 4]) -> Image {
         }
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_project::{ParamValue, find_effect};
+    use filmcraft_time::Tick;
+
+    #[test]
+    fn extract_zero_softness_has_no_fractional_edge() {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        // Both sides of each cutoff, including samples inside the former artificial fade.
+        let lo = 90.0 / 255.0;
+        let hi = 160.0 / 255.0;
+        let samples = [lo - 0.00005, lo + 0.00005, hi - 0.00005, hi + 0.00005];
+        for softness in [0.0, -1.0] {
+            for invert in [false, true] {
+                for alpha in [1.0, 0.5] {
+                    let mut e = find_effect("extract").unwrap().instance();
+                    for (key, value) in [("black", 90.0), ("white", 160.0), ("softness", softness)] {
+                        e.params.get_mut(key).unwrap().value = ParamValue::Float(value);
+                    }
+                    e.params.get_mut("invert").unwrap().value = ParamValue::Bool(invert);
+                    let mut img = Image {
+                        w: 4,
+                        h: 1,
+                        px: samples
+                            .iter()
+                            .flat_map(|v| {
+                                let c = filmcraft_color::srgb_to_linear(*v) * alpha;
+                                [c, c, c, alpha]
+                            })
+                            .collect(),
+                    };
+                    FxOp::eval(&e, &cx, 4, 1).unwrap().apply(&mut img);
+                    for (pixel, inside) in img.px.as_chunks::<4>().0.iter().zip([false, true, true, false]) {
+                        let value = if inside != invert { alpha } else { 0.0 };
+                        assert_eq!(*pixel, [value, value, value, alpha], "softness={softness}, invert={invert}");
+                    }
+                }
+            }
+        }
+    }
 }

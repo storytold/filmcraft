@@ -150,7 +150,7 @@ fn tracks(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, elems: &mut Elems) {
     for (id, label, n) in [("video", "Video:", &mut d.video_tracks), ("audio", "Audio:", &mut d.audio_tracks)] {
         ui.horizontal(|ui| {
             ui.label(t(label));
-            let r = ui.add(egui::DragValue::new(n).range(0..=256));
+            let r = ui.add(crate::widgets::number_drag(n).range(0..=256));
             elems.push((format!("sequenceSettings.tracks.{id}"), r.rect, n.to_string()));
             ui.label(tl!("tracks"));
         });
@@ -331,10 +331,10 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
     });
     section(ui, "Video", |ui| {
         row(ui, label_w, "Frame Size:", true, |ui| {
-            let w = ui.add(egui::DragValue::new(&mut d.width).range(1..=filmcraft_project::MAX_FRAME_SIDE).speed(1.0));
+            let w = ui.add(crate::widgets::number_drag(&mut d.width).range(1..=filmcraft_project::MAX_FRAME_SIDE).speed(1.0));
             elems.push(("sequenceSettings.width".into(), w.rect, d.width.to_string()));
             ui.label(tl!("horizontal"));
-            let h = ui.add(egui::DragValue::new(&mut d.height).range(1..=filmcraft_project::MAX_FRAME_SIDE).speed(1.0));
+            let h = ui.add(crate::widgets::number_drag(&mut d.height).range(1..=filmcraft_project::MAX_FRAME_SIDE).speed(1.0));
             elems.push(("sequenceSettings.height".into(), h.rect, d.height.to_string()));
             ui.label(tl!("vertical"));
             // the display aspect: 1440 x 1080 with 4:3 pixels is 16:9
@@ -475,6 +475,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let audio_samples = app.session.project.settings.audio_display_samples;
     let accent = app.tokens.accent;
     let mut d = app.ui.sequence_settings.clone();
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("sequence-settings-before-drag"), &mut d);
     let mut keep = true;
     let mut apply = false;
     let mut elems: Elems = Vec::new();
@@ -490,7 +491,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         .collapsible(false)
         .resizable(false)
         .default_width(620.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             ui.set_width(620.0);
             ui.horizontal(|ui| {
@@ -526,7 +528,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         keep = false;
     }
     if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !ctx.egui_wants_keyboard_input() {
@@ -540,9 +542,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             .and_then(|_| if rest.is_empty() { Ok(Value::Null) } else { app.session.execute("sequence.settings", Value::Object(rest)) });
         if let Err(e) = r {
             app.ui.status = e.to_string();
+            keep = true;
+        } else {
+            keep = false;
         }
         app.ui.sequence_settings = d;
-        return false;
+        return keep;
     }
     if apply {
         let p = changes(&d, &cur, &cur_name);
@@ -551,8 +556,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             && let Err(e) = app.session.execute("sequence.settings", Value::Object(p))
         {
             app.ui.status = e.to_string();
+            keep = true;
+        } else {
+            keep = false;
         }
-        keep = false;
     }
     app.ui.sequence_settings = d;
     keep

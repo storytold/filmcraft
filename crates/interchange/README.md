@@ -24,6 +24,10 @@ read off files it exports, never from the application itself.
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
 
+**Invariant — Unicode media URLs:** file URL prefix probes must not panic when their byte boundary
+falls inside a UTF-8 character. Timeline importers use the shared converter; `tests/it/file_urls.rs`
+checks expected Unicode paths through the public converter, resolver and EDL importer.
+
 ## AAF and OMF
 
 `comp` holds a format-neutral mob-style model (compositions of slots whose sequences of fillers,
@@ -81,7 +85,7 @@ OMF carries no video at all.
 
 ## Tests
 
-- `tests/aaf_omf.rs`: AAF round trips at 25, 29.97 DF, 23.976 and 59.94 DF (clips, gaps,
+- `tests/it/aaf_omf.rs`: AAF round trips at 25, 29.97 DF, 23.976 and 59.94 DF (clips, gaps,
   two-sided and one-sided transitions, links, markers, start timecodes, constant and keyframed
   gain, media markers and timecode); 512-byte sectors; breakout to mono; embedded trimmed audio
   (sample data and source offsets); separate consolidated files with a video mixdown; OMF round
@@ -89,7 +93,7 @@ OMF carries no video at all.
   random corruption never panic. Nested sequences: AAF round trips as compositions (nests in
   nests, a nest used twice, another frame and sample rate, breakout to mono), OMF with the
   rendered sound, the audio needs of nests, a sequence inside itself.
-- `tests/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
+- `tests/it/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
   layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
   matches the report; the FCP7 XML import names a clip item whose file is not defined.
 - `src/aaf/tests.rs`: written files checked against the required properties of every class

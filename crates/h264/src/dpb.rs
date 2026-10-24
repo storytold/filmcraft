@@ -260,7 +260,7 @@ impl<F: Clone> Dpb<F> {
     }
 
     /// Adaptive memory control (8.2.5.4). Returns true if MMCO 5 was executed.
-    fn apply_mmcos(&mut self, mmcos: &[Mmco], cur_frame_num: u32, max_frame_num: u32, cur_long: &mut Option<u32>) -> bool {
+    fn apply_mmcos(&mut self, mmcos: &[Mmco], cur_frame_num: u32, max_frame_num: u32, cur_long: &mut Option<u32>) -> Result<bool> {
         let mut had5 = false;
         let curr_pic_num = cur_frame_num as i32;
         for m in mmcos {
@@ -281,6 +281,7 @@ impl<F: Clone> Dpb<F> {
                     }
                 }
                 3 => {
+                    ensure!(self.max_long_term_frame_idx.is_some_and(|max| m.long_term_frame_idx <= max), "MMCO long-term index exceeds the configured limit");
                     let pn = curr_pic_num - (m.difference_of_pic_nums_minus1 as i32 + 1);
                     for e in &mut self.entries {
                         if e.mark == RefMark::Long && e.long_term_frame_idx == m.long_term_frame_idx {
@@ -311,6 +312,7 @@ impl<F: Clone> Dpb<F> {
                     had5 = true;
                 }
                 6 => {
+                    ensure!(self.max_long_term_frame_idx.is_some_and(|max| m.long_term_frame_idx <= max), "MMCO long-term index exceeds the configured limit");
                     for e in &mut self.entries {
                         if e.mark == RefMark::Long && e.long_term_frame_idx == m.long_term_frame_idx {
                             e.mark = RefMark::Unused;
@@ -322,7 +324,7 @@ impl<F: Clone> Dpb<F> {
             }
         }
         self.prune();
-        had5
+        Ok(had5)
     }
 
     /// Reference marking for the just-decoded picture and insertion into the DPB with output bumping.
@@ -337,7 +339,7 @@ impl<F: Clone> Dpb<F> {
         max_num_ref_frames: usize,
         meta: Arc<OutputMeta>,
         out: &mut Vec<Output<F>>,
-    ) {
+    ) -> Result<()> {
         let mut mark = RefMark::Unused;
         let mut long_idx = 0;
         let mut had5 = false;
@@ -353,7 +355,7 @@ impl<F: Clone> Dpb<F> {
             } else {
                 let mut cur_long = None;
                 if sh.adaptive_ref_pic_marking {
-                    had5 = self.apply_mmcos(&sh.mmcos, sh.frame_num, max_frame_num, &mut cur_long);
+                    had5 = self.apply_mmcos(&sh.mmcos, sh.frame_num, max_frame_num, &mut cur_long)?;
                 } else {
                     self.sliding_window(sh.frame_num, max_frame_num, max_num_ref_frames);
                 }
@@ -368,6 +370,9 @@ impl<F: Clone> Dpb<F> {
                     }
                 }
             }
+        }
+        if mark == RefMark::Long {
+            ensure!(self.num_refs() < max_num_ref_frames.max(1), "long-term reference exceeds max_num_ref_frames");
         }
         if had5 {
             // All earlier pictures are output before the current one (C.4.4).
@@ -385,7 +390,7 @@ impl<F: Clone> Dpb<F> {
                 let min_poc = self.entries.iter().filter(|e| e.needed_for_output).map(|e| e.poc).min();
                 if min_poc.is_none_or(|m| poc < m) {
                     out.push(Output { frame, poc, meta });
-                    return;
+                    return Ok(());
                 }
                 if !self.bump(out) {
                     break;
@@ -405,6 +410,7 @@ impl<F: Clone> Dpb<F> {
                 break;
             }
         }
+        Ok(())
     }
 }
 

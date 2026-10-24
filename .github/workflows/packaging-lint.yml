@@ -19,57 +19,5 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
-    env:
-      ACTIONLINT_VERSION: 1.7.12
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends shellcheck desktop-file-utils appstream libxml2-utils python3-yaml
-          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
-            | tar -xz -C "$RUNNER_TEMP" actionlint
-      - name: actionlint
-        run: |
-          "$RUNNER_TEMP/actionlint" -color
-      - name: shellcheck
-        run: shellcheck packaging/*.sh packaging/*/*.sh
-      - name: Linux tarball installer
-        run: python3 packaging/linux/test_install.py
-      - name: PowerShell
-        shell: pwsh
-        run: |
-          foreach ($f in Get-ChildItem packaging/windows/*.ps1) {
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
-            if ($errors) { $errors | ForEach-Object { Write-Output "::error file=$($f.Name)::$_" }; exit 1 }
-            Write-Output "ok $($f.Name)"
-          }
-      - name: XML, desktop entry, AppStream, Flatpak manifest
-        run: |
-          xmllint --noout packaging/windows/filmcraft.wxs packaging/macos/*.plist* packaging/linux/*.xml*
-          # Windows Installer needs Icon ids ending in .ico or .exe, or shortcuts show a blank icon.
-          if grep -oE '<Icon Id="[^"]*"' packaging/windows/filmcraft.wxs | grep -vE '\.(ico|exe)"$'; then
-            echo "::error::Icon Id must end in .ico or .exe"; exit 1
-          fi
-          desktop-file-validate packaging/linux/ai.storyteller.filmcraft.desktop
-          sed -e 's/@VERSION@/0.0.0/' -e 's/@DATE@/2026-01-01/' packaging/linux/ai.storyteller.filmcraft.metainfo.xml.in >"$RUNNER_TEMP/ai.storyteller.filmcraft.metainfo.xml"
-          appstreamcli validate --no-net --explain "$RUNNER_TEMP/ai.storyteller.filmcraft.metainfo.xml"
-          python3 - <<'EOF'
-          import yaml
-          src = yaml.safe_load(open("packaging/linux/flatpak/ai.storyteller.filmcraft.yml"))
-          bundle = yaml.safe_load(open("packaging/linux/flatpak/ai.storyteller.filmcraft.bundle.yml"))
-          for m in (src, bundle):
-              assert m["id"] == "ai.storyteller.filmcraft" and m["command"] == "filmcraft", m["id"]
-          for key in ("runtime", "runtime-version", "sdk", "finish-args"):
-              assert src[key] == bundle[key], f"Flatpak manifests disagree on {key}: {src[key]} vs {bundle[key]}"
-          # Both install the app and the CLI/MCP server (#346).
-          import re
-          def programs(m):
-              return {p for c in m["modules"][0]["build-commands"] for p in re.findall(r"/app/bin/([\w.-]+)", c)}
-          assert programs(src) == programs(bundle) == {"filmcraft", "filmcraft-cli"}, f"Flatpak manifests install {programs(src)} vs {programs(bundle)}"
-          print("Flatpak manifests ok")
-          EOF
-      - name: FreeBSD package layout (stub binaries)
-        run: bash packaging/freebsd/package.sh --dry-run
+    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
+    uses: storytold/craft-common-actions/.github/workflows/packaging-lint.yml@main

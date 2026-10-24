@@ -73,6 +73,8 @@ pub enum Icon {
     Close,
     Fullscreen,
     Export,
+    /// An arrow down into a tray (Import).
+    Import,
     Gear,
     Info,
     Captions,
@@ -578,6 +580,11 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(5.0, 5.0), (8.0, 2.0), (11.0, 5.0)]);
             pen.line(&[(3.0, 8.0), (3.0, 14.0), (13.0, 14.0), (13.0, 8.0)]);
         }
+        Import => {
+            pen.line(&[(8.0, 2.0), (8.0, 10.0)]);
+            pen.line(&[(5.0, 7.0), (8.0, 10.0), (11.0, 7.0)]);
+            pen.line(&[(3.0, 8.0), (3.0, 14.0), (13.0, 14.0), (13.0, 8.0)]);
+        }
         Gear => {
             pen.circle(8.0, 8.0, 2.2);
             for i in 0..8 {
@@ -866,6 +873,7 @@ mod tests {
         Close,
         Fullscreen,
         Export,
+        Import,
         Gear,
         Info,
         Captions,

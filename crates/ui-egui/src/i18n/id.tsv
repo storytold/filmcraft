@@ -1,0 +1,3584 @@
+# Indonesian (id) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation.
+#
+# Clean-room: every entry was written from the plain meaning of the English text using ordinary
+# Indonesian (Bahasa Indonesia) video-editing vocabulary. No proprietary localisation resource,
+# string table or product UI was consulted or copied; add entries the same way. Commands use the
+# base verb ("Simpan Sebagai…", "Tambah Penanda"), messages address the user as "Anda", and menu
+# labels keep the title case of the English source. Product, format and technology names
+# (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
+# of the trade (render, preset, mixer, gain, ripple, roll, slip, slide, snap, scrub, offline) stay
+# as they are. Decimal fractions in descriptions use a comma (29,97 fps). This catalog has the same
+# entries as `es.tsv` plus the native macOS Settings menu; strings added later show in English until
+# they are translated. A native-speaker review is welcome.
+#
+# Terms: clip = klip, track = trek, sequence = sekuens, timeline = linimasa, bin = bin, playhead =
+# kepala putar, In/Out = Masuk / Keluar (titik masuk / titik keluar), marker = penanda, keyframe =
+# bingkai kunci, frame = bingkai, frame hold = tahan bingkai, edit point = titik edit, trim =
+# pangkas, panel = panel, workspace = ruang kerja, captions = takarir, subtitle = subtitel, proxy =
+# proksi, insert = sisipkan, overwrite = timpa, lift = angkat, extract = ekstrak, nest = sarangkan,
+# footage = rekaman, waveform = bentuk gelombang, scopes = skop, blur = buram, dissolve = larut,
+# wipe = sapuan, glow = pendar, noise = derau, error = galat, file = berkas, guide = garis bantu,
+# thumbnail = gambar mini, voice-over = sulih suara, default = bawaan, preferences (also the native
+# macOS Settings menu) = Preferensi, settings = pengaturan.
+
+	About FilmCraft	Tentang FilmCraft
+	Add Audio Submix Track	Tambah Trek Submix Audio
+	Add Caption at Playhead	Tambah Takarir di Kepala Putar
+	Add Chapter Marker…	Tambah Penanda Bab…
+	Add Edit	Tambah Titik Edit
+	Add Edit to All Tracks	Tambah Titik Edit ke Semua Trek
+	Add Flash Cue Marker…	Tambah Penanda Isyarat Flash…
+	Add Frame Hold	Tambah Tahan Bingkai
+	Add Guide…	Tambah Garis Bantu…
+	Add Marker	Tambah Penanda
+	Add New Caption Track…	Tambah Trek Takarir Baru…
+	Add Range Marker	Tambah Penanda Rentang
+	Add Range Marker to In and Out	Tambah Penanda Rentang dari Masuk ke Keluar
+	Add Tracks…	Tambah Trek…
+	Adjustment Layer…	Lapisan Penyesuaian…
+	Align to Selection	Ratakan ke Pilihan
+	Align to Video Frame	Ratakan ke Bingkai Video
+	Align to Video Frame as Group	Ratakan ke Bingkai Video sebagai Grup
+	All Panels	Semua Panel
+	Alpha	Alfa
+	Appearance	Penampilan
+	Appearance…	Penampilan…
+	Apply Audio Transition	Terapkan Transisi Audio
+	Apply Default Transitions to Selection	Terapkan Transisi Bawaan ke Pilihan
+	Apply Video Transition	Terapkan Transisi Video
+	Arrange	Susun
+	ArtCraft Website	Situs Web ArtCraft
+	Assembly	Perakitan
+	Attach Proxies…	Lampirkan Proksi…
+	Audio Channels…	Kanal Audio…
+	Audio Clip Mixer	Mixer Klip Audio
+	Audio Gain…	Gain Audio…
+	Audio Hardware…	Perangkat Keras Audio…
+	Audio In	Audio Masuk
+	Audio Meters	Meter Audio
+	Audio Options	Opsi Audio
+	Audio Out	Audio Keluar
+	Audio Track Mixer	Mixer Trek Audio
+	Audio Waveform	Bentuk Gelombang Audio
+	Auto Save…	Simpan Otomatis…
+	Automate to Sequence…	Otomatiskan ke Sekuens…
+	Bars and Tone…	Bar dan Nada…
+	Bin	Bin
+	Bin From Selection	Bin dari Pilihan
+	Black Video…	Video Hitam…
+	Blue	Biru
+	Bottom	Bawah
+	Breakout to Mono	Pecah ke Mono
+	Bring Forward	Bawa Maju
+	Bring to Front	Bawa ke Depan
+	Brown	Cokelat
+	Captions	Takarir
+	Captions and Graphics	Takarir dan Grafis
+	Captions…	Takarir…
+	Caribbean	Karibia
+	Center Horizontally	Tengahkan Secara Horizontal
+	Center Vertically	Tengahkan Secara Vertikal
+	Cerulean	Biru Langit
+	Clear	Bersihkan
+	Clear Guides	Hapus Garis Bantu
+	Clear In	Hapus Masuk
+	Clear In and Out	Hapus Masuk dan Keluar
+	Clear Markers	Hapus Penanda
+	Clear Out	Hapus Keluar
+	Clear Selected Marker	Hapus Penanda Terpilih
+	Close	Tutup
+	Close All Other Projects	Tutup Semua Proyek Lain
+	Close All Projects	Tutup Semua Proyek
+	Close Gap	Tutup Celah
+	Close Project	Tutup Proyek
+	Color Management…	Manajemen Warna…
+	Color Matte…	Matte Warna…
+	Comparison View	Tampilan Perbandingan
+	Composite Video	Video Komposit
+	Consolidate Duplicates	Gabungkan Duplikat
+	Copy	Salin
+	Copy Paste Includes Sequence Markers	Salin Tempel Menyertakan Penanda Sekuens
+	Create Captions from Transcript…	Buat Takarir dari Transkrip…
+	Create Multi-Camera Source Sequence…	Buat Sekuens Sumber Multi-Kamera…
+	Create Proxies…	Buat Proksi…
+	Cut	Potong
+	Darkest	Tergelap
+	Delete Render Files	Hapus Berkas Render
+	Delete Render Files In to Out	Hapus Berkas Render dari Masuk ke Keluar
+	Delete Tracks…	Hapus Trek…
+	Delete Transcript	Hapus Transkrip
+	Demo Footage	Rekaman Demo
+	Demo Project	Proyek Demo
+	Deselect All	Batalkan Semua Pilihan
+	Detach Proxies	Lepaskan Proksi
+	Display Mode	Mode Tampilan
+	Distribute	Distribusikan
+	Distribute Horizontally	Distribusikan Secara Horizontal
+	Distribute Space Horizontally	Distribusikan Jarak Secara Horizontal
+	Distribute Space Vertically	Distribusikan Jarak Secara Vertikal
+	Distribute Vertically	Distribusikan Secara Vertikal
+	Duplicate	Duplikat
+	Dynamic Audio Waveforms	Bentuk Gelombang Audio Dinamis
+	Edit	Edit
+	Edit Offline…	Edit Offline…
+	Edit Original	Edit Asli
+	Edit Subclip…	Edit Subklip…
+	Editing	Penyuntingan
+	Effect Controls	Kontrol Efek
+	Effects	Efek
+	Ellipse	Elips
+	Enable	Aktifkan
+	Enable Remix	Aktifkan Remix
+	Essential Graphics	Grafis Esensial
+	Essential Sound	Suara Esensial
+	Events	Peristiwa
+	Export	Ekspor
+	Export As Motion Graphics Template…	Ekspor sebagai Templat Grafis Gerak…
+	Extract	Ekstrak
+	Extract Audio	Ekstrak Audio
+	Field Options…	Opsi Field…
+	File	Berkas
+	File…	Berkas…
+	Fill frame	Isi bingkai
+	FilmCraft Help…	Bantuan FilmCraft…
+	FilmCraft on GitHub	FilmCraft di GitHub
+	FilmCraft on getartcraft.com	FilmCraft di getartcraft.com
+	Find Next	Cari Berikutnya
+	Find…	Cari…
+	Fit	Pas
+	Fit to frame	Paskan ke bingkai
+	Flatten	Ratakan
+	Forest	Hijau Hutan
+	Frame Blending	Pencampuran Bingkai
+	Frame Hold Options…	Opsi Tahan Bingkai…
+	Frame Sampling	Pengambilan Sampel Bingkai
+	From Bin	Dari Bin
+	From Source Monitor	Dari Monitor Sumber
+	From Source Monitor, Match Frame	Dari Monitor Sumber, Cocokkan Bingkai
+	From file…	Dari berkas…
+	Full	Penuh
+	Generate Audio Waveform	Buat Bentuk Gelombang Audio
+	Get Media File Properties for	Dapatkan Properti Berkas Media untuk
+	Go to Gap	Ke Celah
+	Go to In	Ke Masuk
+	Go to Next Caption Segment	Ke Segmen Takarir Berikutnya
+	Go to Next Marker	Ke Penanda Berikutnya
+	Go to Out	Ke Keluar
+	Go to Previous Caption Segment	Ke Segmen Takarir Sebelumnya
+	Go to Previous Marker	Ke Penanda Sebelumnya
+	Go to Split	Ke Split
+	Graphics and Titles	Grafis dan Judul
+	Graphics…	Grafis…
+	Green	Hijau
+	Group	Grupkan
+	Guide Templates	Templat Garis Bantu
+	Help	Bantuan
+	Hide All Caption Tracks	Sembunyikan Semua Trek Takarir
+	High Quality Playback	Pemutaran Kualitas Tinggi
+	History	Riwayat
+	Import From	Impor Dari
+	Import Image Sequence…	Impor Urutan Gambar…
+	Import from Media Browser	Impor dari Peramban Media
+	Import…	Impor…
+	Info	Info
+	Ingest Settings…	Pengaturan Ingest…
+	Insert	Sisipkan
+	Insert Frame Hold Segment	Sisipkan Segmen Tahan Bingkai
+	Install Motion Graphics Template…	Pasang Templat Grafis Gerak…
+	Interpret Footage…	Interpretasikan Rekaman…
+	Join the ArtCraft Discord…	Gabung ke Discord ArtCraft…
+	Keyboard Shortcuts…	Pintasan Keyboard…
+	Label	Label
+	Labels…	Label…
+	Language	Bahasa
+	Lavender	Lavender
+	Learning	Belajar
+	Left	Kiri
+	Libraries	Pustaka
+	Lift	Angkat
+	Light	Terang
+	Link	Tautkan
+	Link Media…	Tautkan Media…
+	Refresh Changed Media	Segarkan Media yang Berubah
+	Linked Selection	Pilihan Tertaut
+	Lock Guides	Kunci Garis Bantu
+	Lumetri Color	Lumetri Color
+	Lumetri Scopes	Lumetri Scopes
+	Magnification	Pembesaran
+	Make Offline…	Jadikan Offline…
+	Make Subclip…	Buat Subklip…
+	Make Subsequence	Buat Subsekuens
+	Manage Guides…	Kelola Garis Bantu…
+	Mark Clip	Tandai Klip
+	Mark In	Tandai Masuk
+	Mark Out	Tandai Keluar
+	Mark Selection	Tandai Pilihan
+	Mark Split	Tandai Split
+	Markers	Penanda
+	Match Frame	Cocokkan Bingkai
+	Media Analysis & Transcription…	Analisis Media & Transkripsi…
+	Media Browser	Peramban Media
+	Media Cache…	Cache Media…
+	Media…	Media…
+	Medium	Sedang
+	Memory…	Memori…
+	Merge Clips…	Gabungkan Klip…
+	Metadata	Metadata
+	Modify	Ubah
+	Motion Graphics Template…	Templat Grafis Gerak…
+	Multi-Camera	Multi-Kamera
+	Multi-Camera View	Tampilan Multi-Kamera
+	Nest…	Sarangkan…
+	New	Baru
+	New Layer	Lapisan Baru
+	New Project Panel	Panel Proyek Baru
+	Next in Sequence	Berikutnya di Sekuens
+	Next in Track	Berikutnya di Trek
+	Normalize Mix Track…	Normalisasi Trek Mix…
+	Offline File…	Berkas Offline…
+	Open Project…	Buka Proyek…
+	Open Recent	Terakhir Dibuka
+	Clear Recent Files	Hapus Daftar Berkas Terakhir
+	Recent	Terbaru
+	Optical Flow	Aliran Optik
+	Overwrite	Timpa
+	Paste	Tempel
+	Paste Attributes…	Tempel Atribut…
+	Paste Insert	Tempel Sisip
+	Paused Resolution	Resolusi Saat Jeda
+	Playback Resolution	Resolusi Pemutaran
+	Playback…	Pemutaran…
+	Plugins…	Plugin…
+	Polygon	Poligon
+	Preferences	Preferensi
+	Previous in Sequence	Sebelumnya di Sekuens
+	Previous in Track	Sebelumnya di Trek
+	Program	Program
+	Progress	Kemajuan
+	Project	Proyek
+	Project Manager…	Manajer Proyek…
+	Project Settings	Pengaturan Proyek
+	Project…	Proyek…
+	Properties	Properti
+	Purple	Ungu
+	Reconnect Full Resolution Media…	Sambungkan Ulang Media Resolusi Penuh…
+	Recover Unsaved Changes…	Pulihkan Perubahan yang Belum Disimpan…
+	Rectangle	Persegi Panjang
+	Red	Merah
+	Redo	Ulangi
+	Reference Monitor	Monitor Referensi
+	Remix	Remix
+	Remix Properties…	Properti Remix…
+	Remove Attributes…	Hapus Atribut…
+	Remove Filler Words	Hapus Kata Pengisi
+	Remove Pauses	Hapus Jeda
+	Remove Unused	Hapus yang Tidak Dipakai
+	Rename…	Ganti Nama…
+	Render Audio	Render Audio
+	Render Effects In to Out	Render Efek dari Masuk ke Keluar
+	Render In to Out	Render dari Masuk ke Keluar
+	Render Selection	Render Pilihan
+	Replace Fonts in Projects…	Ganti Font di Proyek…
+	Replace With Clip	Ganti dengan Klip
+	Report an Issue…	Laporkan Masalah…
+	Reset All Parameters	Atur Ulang Semua Parameter
+	Reset Duration	Atur Ulang Durasi
+	Reset to Saved Layout	Kembalikan ke Tata Letak Tersimpan
+	Restore Captions from Source Clip	Pulihkan Takarir dari Klip Sumber
+	Reveal Log Files…	Tampilkan Berkas Log…
+	Reverse Match Frame	Cocokkan Bingkai Terbalik
+	Revert	Kembalikan
+	Revert Remix	Kembalikan Remix
+	Review	Tinjauan
+	Right	Kanan
+	Ripple Delete	Hapus Ripple
+	Ripple Delete Head Frame	Hapus Ripple Frame Awal
+	Ripple Sequence Markers	Ripple Penanda Sekuens
+	Rose	Merah Mawar
+	Safe Margins	Margin Aman
+	Save	Simpan
+	Save All	Simpan Semua
+	Save As…	Simpan Sebagai…
+	Save Guides as Template…	Simpan Garis Bantu sebagai Templat…
+	Save a Copy…	Simpan Salinan…
+	Save as Template…	Simpan sebagai Templat…
+	Scale to Frame Size	Skalakan ke Ukuran Bingkai
+	Scene Edit Detection…	Deteksi Pergantian Adegan…
+	Scratch Disks…	Disk Kerja…
+	Search Bin	Bin Pencarian
+	Select	Pilih
+	Select All	Pilih Semua
+	Select All Matching	Pilih Semua yang Cocok
+	Select Label Group	Pilih Grup Label
+	Select Next Graphic	Pilih Grafis Berikutnya
+	Select Next Layer	Pilih Lapisan Berikutnya
+	Select Previous Graphic	Pilih Grafis Sebelumnya
+	Select Previous Layer	Pilih Lapisan Sebelumnya
+	Selection Follows Playhead	Pilihan Mengikuti Kepala Putar
+	Selection as FilmCraft Project…	Pilihan sebagai Proyek FilmCraft…
+	Selection…	Pilihan…
+	Send Backward	Kirim Mundur
+	Send to Back	Kirim ke Belakang
+	Sequence	Sekuens
+	Sequence From Clip	Sekuens dari Klip
+	Sequence Settings…	Pengaturan Sekuens…
+	Sequence…	Sekuens…
+	Show Active Caption Tracks Only	Tampilkan Hanya Trek Takarir Aktif
+	Show All Caption Tracks	Tampilkan Semua Trek Takarir
+	Show All Marker Colors	Tampilkan Semua Warna Penanda
+	Show Guides	Tampilkan Garis Bantu
+	Show Rulers	Tampilkan Penggaris
+	Show Through Edits	Tampilkan Edit Tembus
+	Simplify Sequence…	Sederhanakan Sekuens…
+	Snap in Program Monitor	Snap di Monitor Program
+	Snap in Timeline	Snap di Linimasa
+	Source	Sumber
+	Source Settings…	Pengaturan Sumber…
+	Speed/Duration…	Kecepatan/Durasi…
+	Synchronize…	Sinkronkan…
+	System Compatibility Report…	Laporan Kompatibilitas Sistem…
+	Tan	Cokelat Muda
+	Teal	Hijau Toska
+	Text	Teks
+	Time Interpolation	Interpolasi Waktu
+	Timecode	Kode Waktu
+	Timecode…	Kode Waktu…
+	Timeline	Linimasa
+	Timeline…	Linimasa…
+	Toggle Proxies	Alihkan Proksi
+	Tools	Alat
+	Top	Atas
+	Transcribe Sequence…	Transkripsikan Sekuens…
+	Transcribe…	Transkripsikan…
+	Transcript	Transkrip
+	Transparent Video…	Video Transparan…
+	Trim Edit	Edit Pangkas
+	Trim…	Pangkas…
+	Undo	Urungkan
+	Ungroup	Pisahkan Grup
+	Universal Counting Leader…	Leader Hitung Mundur Universal…
+	Update Metadata…	Perbarui Metadata…
+	Upgrade Caption to Graphic	Tingkatkan Takarir menjadi Grafis
+	Upgrade to Source Graphic	Tingkatkan menjadi Grafis Sumber
+	Vertical Text	Teks Vertikal
+	Video In	Video Masuk
+	Video Options	Opsi Video
+	Video Out	Video Keluar
+	Video and Audio Waveform Split	Video dan Bentuk Gelombang Audio Terpisah
+	View	Tampilan
+	Violet	Violet
+	Window	Jendela
+	Workspaces	Ruang Kerja
+	Yellow	Kuning
+	Zoom In	Perbesar
+	Zoom Out	Perkecil
+	Zoom to Sequence	Zoom ke Sekuens
+	Home	Beranda
+	Import	Impor
+	{name} - Edited	{name} - Diedit
+	Full screen	Layar penuh
+	Volume	Volume
+	Master volume: use the Audio Track Mixer	Volume master: gunakan Mixer Trek Audio
+	Search	Cari
+	Quick Export	Ekspor Cepat
+	Join the ArtCraft Discord (discord.gg/artcraft)	Gabung ke Discord ArtCraft (discord.gg/artcraft)
+	Cancel	Batal
+	OK	OK
+	Interpret Footage	Interpretasikan Rekaman
+	Color Management · {n} item	Manajemen Warna · {n} item
+	Color Management · {n} items	Manajemen Warna · {n} item
+	Media colour space (from file metadata): {detected}	Ruang warna media (dari metadata berkas): {detected}
+	Override media colour space:	Timpa ruang warna media:
+	Use file metadata	Gunakan metadata berkas
+	Sequence Color Management	Manajemen Warna Sekuens
+	Working Color Space	Ruang Warna Kerja
+	Wide gamut color (composite in BT.2020)	Warna gamut lebar (komposit dalam BT.2020)
+	Auto tone map media (HDR and log into SDR)	Pemetaan nada otomatis media (HDR dan log ke SDR)
+	Audio Gain	Gain Audio
+	Set Gain to:	Atur Gain ke:
+	Adjust Gain by:	Sesuaikan Gain sebesar:
+	Normalize Max Peak to:	Normalisasi Puncak Maks ke:
+	Normalize All Peaks to:	Normalisasi Semua Puncak ke:
+	Peak Amplitude: {peak}	Amplitudo Puncak: {peak}
+	Standard	Standar
+	Adaptive	Adaptif
+	Mono	Mono
+	Stereo	Stereo
+	Add Tracks	Tambah Trek
+	Amount	Jumlah
+	Placement	Penempatan
+	Track type	Jenis trek
+	Add video tracks	Tambah trek video
+	Add audio tracks	Tambah trek audio
+	Add audio submix tracks	Tambah trek submix audio
+	After {name}	Setelah {name}
+	Before First Track	Sebelum Trek Pertama
+	Delete Tracks	Hapus Trek
+	Video Tracks	Trek Video
+	Audio Tracks	Trek Audio
+	Delete Video Tracks	Hapus Trek Video
+	Delete Audio Tracks	Hapus Trek Audio
+	All Empty Tracks	Semua Trek Kosong
+	Caption Tracks	Trek Takarir
+	Delete Caption Tracks	Hapus Trek Takarir
+	Delete Caption Track	Hapus Trek Takarir
+	Delete Empty Caption Tracks	Hapus Trek Takarir Kosong
+	Version {version}	Versi {version}
+	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Editor video non-linear clean-room berbahasa Rust murni. Bagian dari keluarga ArtCraft.
+	Join the ArtCraft Discord	Gabung ke Discord ArtCraft
+	Source code on GitHub	Kode sumber di GitHub
+	Report an issue	Laporkan masalah
+	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT OR Apache-2.0. Font: Inter, Noto Serif dan JetBrains Mono (SIL OFL 1.1).
+	just now	baru saja
+	{n} s ago	{n} dtk lalu
+	{n} min ago	{n} mnt lalu
+	{n} h ago	{n} jam lalu
+	All Events	Semua Peristiwa
+	Warnings and Errors	Peringatan dan Galat
+	Errors Only	Hanya Galat
+	Clear All	Hapus Semua
+	No events.	Tidak ada peristiwa.
+	Show finished jobs	Tampilkan tugas yang selesai
+	Cancelled	Dibatalkan
+	Failed: {e}	Gagal: {e}
+	Done	Selesai
+	No background jobs.	Tidak ada tugas latar belakang.
+	Recover Unsaved Changes	Pulihkan Perubahan yang Belum Disimpan
+	Untitled	Tanpa Judul
+	FilmCraft was closed while “{name}” had unsaved changes.	FilmCraft ditutup saat “{name}” masih memiliki perubahan yang belum disimpan.
+	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	FilmCraft keluar secara tak terduga saat “{name}” masih memiliki perubahan yang belum disimpan.
+	Recover unsaved changes from {when}?	Pulihkan perubahan yang belum disimpan dari {when}?
+	The project had not been saved yet.	Proyek ini belum pernah disimpan.
+	{n} sessions have unsaved changes:	{n} sesi memiliki perubahan yang belum disimpan:
+	Discard	Buang
+	Recover	Pulihkan
+	Not Now	Jangan Sekarang
+	Are you sure you want to discard your changes to '{file}'?	Yakin ingin membuang perubahan Anda pada '{file}'?
+	Yes	Ya
+	No	Tidak
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	Tambahkan media ke proyek Anda. Letakkan berkas di mana saja di jendela, atau pilih sumber di bawah.
+	Browse files…	Telusuri berkas…
+	Movies, audio and stills from disk	Film, audio, dan gambar diam dari disk
+	Demo footage	Rekaman demo
+	Six procedural 1080p clips with sound	Enam klip prosedural 1080p dengan suara
+	Demo project	Proyek demo
+	A cut sequence with transitions, effects and music	Sekuens yang sudah dipotong dengan transisi, efek, dan musik
+	Bars and Tone	Bar dan Nada
+	SMPTE HD bars with 1 kHz reference tone	Bar SMPTE HD dengan nada referensi 1 kHz
+	Community	Komunitas
+	Join us on Discord	Bergabunglah dengan kami di Discord
+	OMF Export Settings	Pengaturan Ekspor OMF
+	AAF Export Settings	Pengaturan Ekspor AAF
+	OMF Title:	Judul OMF:
+	Mixdown video	Mixdown video
+	Audio:	Audio:
+	Encapsulate	Enkapsulasi
+	Separate Audio	Audio Terpisah
+	Embed	Sematkan
+	Separate Files	Berkas Terpisah
+	Link to Media	Tautkan ke Media
+	Audio File Format:	Format Berkas Audio:
+	Sample Rate:	Laju Sampel:
+	Bits per Sample:	Bit per Sampel:
+	Rendering:	Rendering:
+	Trim audio files	Pangkas berkas audio
+	Handle Frames:	Bingkai Handle:
+	Render audio clip effects	Render efek klip audio
+	Breakout to mono	Pecah ke mono
+	Exported {path}	Diekspor: {path}
+	Select a clip to view its metadata.	Pilih klip untuk melihat metadatanya.
+	Clip: {name}	Klip: {name}
+	Open	Buka
+	(no sequence)	(tanpa sekuens)
+	Show or hide {color} markers	Tampilkan atau sembunyikan penanda {color}
+	Marker	Penanda
+	{tc}  Chapter	{tc}  Bab
+	No markers. Press M to add one.	Tidak ada penanda. Tekan M untuk menambahkan.
+	All markers are hidden by the colour filter.	Semua penanda disembunyikan oleh filter warna.
+	Type:	Jenis:
+	Video:	Video:
+	Codec:	Codec:
+	Duration:	Durasi:
+	Settings:	Pengaturan:
+	Playhead:	Kepala putar:
+	Video {n}:	Video {n}:
+	Audio {n}:	Audio {n}:
+	UI:	UI:
+	{fps} fps · {n} frames queued	{fps} fps · {n} bingkai dalam antrean
+	{panel} — coming in a later milestone	{panel} — hadir di milestone berikutnya
+	Close Panel	Tutup Panel
+	Close Other Timeline Panels	Tutup Panel Linimasa Lain
+	Close All	Tutup Semua
+	Maximize Frame	Maksimalkan Bingkai
+	Restore Frame	Pulihkan Bingkai
+	Restore Workspace	Pulihkan Ruang Kerja
+	Reveal Sequence in Project	Tampilkan Sekuens di Proyek
+	Video Thumbnails	Gambar Mini Video
+	Audio Waveforms	Bentuk Gelombang Audio
+	Delete Preset	Hapus Preset
+	Export Preset…	Ekspor Preset…
+	Import Presets…	Impor Preset…
+	Effect presets	Preset efek
+	Save Preset	Simpan Preset
+	Name:	Nama:
+	Type	Jenis
+	Scale	Skala
+	Anchor to In Point	Jangkarkan ke Titik Masuk
+	Anchor to Out Point	Jangkarkan ke Titik Keluar
+	Without keyframes	Tanpa bingkai kunci
+	Description:	Deskripsi:
+	Saved preset “{name}”	Preset “{name}” disimpan
+	Current duration {seconds} s	Durasi saat ini {seconds} dtk
+	Remix Properties	Properti Remix
+	Target Duration:	Durasi Target:
+	Segments:	Segmen:
+	Fewer · More	Lebih Sedikit · Lebih Banyak
+	Variations:	Variasi:
+	Remixed to {seconds} s	Di-remix menjadi {seconds} dtk
+	{mode} · no clip	{mode} · tanpa klip
+	{mode} · no sequence	{mode} · tanpa sekuens
+	Remove Row	Hapus Baris
+	Add a timecode row	Tambah baris kode waktu
+	Panner	Panner
+	Mute	Bisukan
+	Send {n} Level	Level Kirim {n}
+	Show Keyframes	Tampilkan Bingkai Kunci
+	Clip Keyframes	Bingkai Kunci Klip
+	Track Keyframes	Bingkai Kunci Trek
+	Delete	Hapus
+	Untitled Workspace	Ruang Kerja Tanpa Judul
+	New Workspace	Ruang Kerja Baru
+	Edit Workspaces	Edit Ruang Kerja
+	Rename	Ganti Nama
+	Restore Original	Pulihkan Asli
+	Search effects	Cari efek
+	Apply to Selected Clips	Terapkan ke Klip Terpilih
+	Metadata Display	Tampilan Metadata
+	Save As New View Preset	Simpan sebagai Preset Tampilan Baru
+	Manage Saved View Presets	Kelola Preset Tampilan Tersimpan
+	Freeform View Options	Opsi Tampilan Bebas
+	Save Arrangement	Simpan Susunan
+	Saves the view, columns, sort, thumbnail and font size.	Menyimpan tampilan, kolom, urutan, gambar mini, dan ukuran font.
+	Grid spacing:	Jarak kisi:
+	Default clip size:	Ukuran klip bawaan:
+	Snap to grid	Snap ke kisi
+	Show clip names	Tampilkan nama klip
+	Show durations	Tampilkan durasi
+	Show:	Tampilkan:
+	Search fields	Bidang pencarian
+	Project Metadata	Metadata Proyek
+	Add Property…	Tambah Properti…
+	Column order	Urutan kolom
+	{n}. (empty)	{n}. (kosong)
+	Restore	Pulihkan
+	Overwrite with Current View	Timpa dengan Tampilan Saat Ini
+	Graphics text search arrives with M10.1–M10.2	Pencarian teks grafis hadir pada M10.1–M10.2
+	Open a sequence to work with captions	Buka sekuens untuk bekerja dengan takarir
+	Add captions	Tambah takarir
+	Create a caption track or import a caption file.	Buat trek takarir atau impor berkas takarir.
+	Create new caption track	Buat trek takarir baru
+	Import captions file…	Impor berkas takarir…
+	New {format} track	Trek {format} baru
+	Add caption at playhead	Tambah takarir di kepala putar
+	Split caption at playhead	Pisahkan takarir di kepala putar
+	Merge selected captions	Gabungkan takarir terpilih
+	Delete selected captions	Hapus takarir terpilih
+	No captions on this track. Press + to add one at the playhead.	Tidak ada takarir di trek ini. Tekan + untuk menambahkan di kepala putar.
+	No matching captions.	Tidak ada takarir yang cocok.
+	Open a sequence to see its transcript	Buka sekuens untuk melihat transkripnya
+	Transcribe sequence	Transkripsikan sekuens
+	Speech-to-text turns the dialogue into editable text.	Ucapan-ke-teks mengubah dialog menjadi teks yang dapat diedit.
+	This build has no speech-to-text; import a transcript with transcript.set.	Build ini tidak memiliki ucapan-ke-teks; impor transkrip dengan transcript.set.
+	Transcribe	Transkripsikan
+	Extract selected text	Ekstrak teks terpilih
+	Lift selected text	Angkat teks terpilih
+	Remove filler words	Hapus kata pengisi
+	Create captions	Buat takarir
+	Speaker	Pembicara
+	Box	Kotak
+	Align	Ratakan
+	Align left	Rata kiri
+	Align center	Rata tengah
+	Align right	Rata kanan
+	Position	Posisi
+	Position: top	Posisi: atas
+	Position: middle	Posisi: tengah
+	Position: bottom	Posisi: bawah
+	(gap)	(celah)
+	Out: {name}	Keluar: {name}
+	In: {name}	Masuk: {name}
+	Play Around Edit (Space loops, Shift+K once)	Putar di Sekitar Edit (Space berulang, Shift+K sekali)
+	Trim Backward Many	Pangkas Mundur Banyak
+	Trim Backward	Pangkas Mundur
+	Apply Default Transitions	Terapkan Transisi Bawaan
+	Apply Default Transitions to Selection (Shift+D)	Terapkan Transisi Bawaan ke Pilihan (Shift+D)
+	Trim Forward	Pangkas Maju
+	Trim Forward Many	Pangkas Maju Banyak
+	Exit Trim Mode	Keluar dari Mode Pangkas
+	Voice-over record (right-click: Voice-Over Record Settings…)	Rekam sulih suara (klik kanan: Pengaturan Rekam Sulih Suara…)
+	Voice-Over Record Settings…	Pengaturan Rekam Sulih Suara…
+	Recording voice-over…	Merekam sulih suara…
+	Voice-over recorded: {p}	Sulih suara direkam: {p}
+	Voice-over recording stopped (nothing recorded)	Perekaman sulih suara dihentikan (tidak ada yang direkam)
+	Post-roll	Post-roll
+	● Recording	● Merekam
+	Voice-Over Record Settings	Pengaturan Rekam Sulih Suara
+	Source:	Sumber:
+	Default Input	Input Bawaan
+	Input:	Input:
+	Channel {n}	Kanal {n}
+	Countdown Sound Cues	Isyarat Suara Hitung Mundur
+	Pre-roll:	Pre-roll:
+	 seconds	 detik
+	Post-roll:	Post-roll:
+	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	Pemutaran memulai pre-roll sebelum kepala putar (atau titik Masuk); jika Masuk/Keluar ditandai, perekaman dimulai dan berhenti di sana.
+	Effect	Efek
+	Clip Fx Editor	Editor Fx Klip
+	Track Fx Editor	Editor Fx Trek
+	Master Gain	Gain Master
+	Reset	Atur Ulang
+	Band {n}	Pita {n}
+	Solo	Solo
+	Bypass	Lewati
+	Thr	Amb
+	Ratio	Rasio
+	Att	Atk
+	Rel	Lps
+	Gain	Gain
+	Output Gain	Gain Output
+	Limiter	Limiter
+	Link Channels	Tautkan Kanal
+	Limiter Threshold	Ambang Limiter
+	Limiter Release	Pelepasan Limiter
+	Auto Gate	Gate Otomatis
+	Threshold	Ambang
+	Attack	Serangan
+	Release	Pelepasan
+	Hold	Tahan
+	Compressor	Kompresor
+	Auto Makeup	Makeup Otomatis
+	Makeup	Makeup
+	Expander	Ekspander
+	Soft Clip	Soft Clip
+	(no sequences)	(tidak ada sekuens)
+	(no clips)	(tidak ada klip)
+	Show Transport Controls	Tampilkan Kontrol Transport
+	Loop	Putar Berulang
+	Multi-Camera Audio Follows Video	Audio Multi-Kamera Mengikuti Video
+	Multi-Camera Record	Rekam Multi-Kamera
+	Multi-Camera Selection Top Down	Pilihan Multi-Kamera dari Atas ke Bawah
+	Show Multi-Camera Preview Monitor	Tampilkan Monitor Pratinjau Multi-Kamera
+	Auto-Adjust Multi-Camera Playback Quality	Sesuaikan Otomatis Kualitas Pemutaran Multi-Kamera
+	Transmit Multi-Camera View	Kirim Tampilan Multi-Kamera
+	Multi-Camera Layout	Tata Letak Multi-Kamera
+	Automatic	Otomatis
+	Edit Cameras…	Edit Kamera…
+	Add Marker (M)	Tambah Penanda (M)
+	Mark In (I)	Tandai Masuk (I)
+	Mark Out (O)	Tandai Keluar (O)
+	Go to In (Shift+I)	Ke Masuk (Shift+I)
+	Step Back 1 Frame (Left)	Mundur 1 Bingkai (Kiri)
+	Play-Stop Toggle (Space)	Putar/Berhenti (Space)
+	Step Forward 1 Frame (Right)	Maju 1 Bingkai (Kanan)
+	Go to Out (Shift+O)	Ke Keluar (Shift+O)
+	Insert (,)	Sisipkan (,)
+	Overwrite (.)	Timpa (.)
+	Export Frame (Shift+E)	Ekspor Bingkai (Shift+E)
+	Lift (;)	Angkat (;)
+	Extract (')	Ekstrak (')
+	Export Frame: use Export mode (M6)	Ekspor Bingkai: gunakan mode Ekspor (M6)
+	Button Editor	Editor Tombol
+	Multi-Camera Record on	Rekam Multi-Kamera aktif
+	Multi-Camera Record off	Rekam Multi-Kamera nonaktif
+	{first} - Merged	{first} - Digabung
+	{first} Multicam	{first} Multikamera
+	In Points	Titik Masuk
+	Out Points	Titik Keluar
+	Clip Marker	Penanda Klip
+	Audio	Audio
+	Merge Clips	Gabungkan Klip
+	Create Multi-Camera Source Sequence	Buat Sekuens Sumber Multi-Kamera
+	Synchronize Clips	Sinkronkan Klip
+	Clip Name:	Nama Klip:
+	Sequence Name:	Nama Sekuens:
+	{n} clip(s): {names}	{n} klip: {names}
+	{n} clip(s) selected; the clip on the reference track stays put.	{n} klip dipilih; klip di trek referensi tetap di tempatnya.
+	Synchronize Point	Titik Sinkronisasi
+	Ignore Hours	Abaikan Jam
+	first marker	penanda pertama
+	Offset Audio by:	Geser Audio sebesar:
+	Offset:	Offset:
+	 frames	 bingkai
+	Reference track:	Trek referensi:
+	lowest (V1…)	terendah (V1…)
+	Remove Audio from AV Clip	Hapus Audio dari Klip AV
+	Camera 1	Kamera 1
+	All Cameras	Semua Kamera
+	Switch Audio	Ganti Audio
+	Camera Names	Nama Kamera
+	Clip Names	Nama Klip
+	Enumerate Cameras	Nomori Kamera
+	Camera Angle Metadata	Metadata Sudut Kamera
+	Move source clips to Processed Clips bin	Pindahkan klip sumber ke bin Klip Terproses
+	Synchronized {n} clip group(s)	{n} grup klip disinkronkan
+	Merged clip created	Klip gabungan dibuat
+	Multi-camera source sequence with {n} camera(s)	Sekuens sumber multi-kamera dengan {n} kamera
+	No multi-camera clip at the playhead	Tidak ada klip multi-kamera di kepala putar
+	Camera {n} — {name}	Kamera {n} — {name}
+	Page {page} of {pages}	Halaman {page} dari {pages}
+	Previous page	Halaman sebelumnya
+	Next page	Halaman berikutnya
+	Multi-Camera Record On/Off (0)	Rekam Multi-Kamera Aktif/Nonaktif (0)
+	Record	Rekam
+	Edit Cameras	Edit Kamera
+	Cameras shown in the Multi-Camera view (uncheck to hide).	Kamera yang ditampilkan di tampilan Multi-Kamera (hapus centang untuk menyembunyikan).
+	Recorded {n} multi-camera cut(s)	{n} potongan multi-kamera direkam
+	Clamp Signal	Batasi Sinyal
+	Presets	Preset
+	Parade ({kind})	Parade ({kind})
+	Waveform ({kind})	Bentuk Gelombang ({kind})
+	Parade Type	Jenis Parade
+	Waveform Type	Jenis Bentuk Gelombang
+	Vectorscope Targets	Target Vektorskop
+	Colour Space	Ruang Warna
+	Brightness	Kecerahan
+	Signal Scale	Skala Sinyal
+	Histogram	Histogram
+	Paste Attributes	Tempel Atribut
+	Remove Attributes	Hapus Atribut
+	New Offline File	Berkas Offline Baru
+	Nested Sequence Name	Nama Sekuens Bersarang
+	Make Subclip	Buat Subklip
+	Edit Subclip	Edit Subklip
+	Modify Clip: Audio Channels	Ubah Klip: Kanal Audio
+	Modify Clip: Timecode	Ubah Klip: Kode Waktu
+	Frame Hold Options	Opsi Tahan Bingkai
+	Field Options	Opsi Field
+	Save Project	Simpan Proyek
+	Motion	Gerak
+	Opacity	Opasitas
+	Time Remapping	Pemetaan Ulang Waktu
+	Channel Volume	Volume Kanal
+	In Point	Titik Masuk
+	Out Point	Titik Keluar
+	Playhead	Kepala Putar
+	Source Timecode	Kode Waktu Sumber
+	Sequence Time	Waktu Sekuens
+	Video Attributes	Atribut Video
+	Audio Attributes	Atribut Audio
+	No effects	Tidak ada efek
+	Scale Attribute Times	Skalakan Waktu Atribut
+	File Name:	Nama Berkas:
+	Tape Name:	Nama Pita:
+	Contains:	Berisi:
+	Video	Video
+	Width:	Lebar:
+	Height:	Tinggi:
+	Frame Rate:	Laju Bingkai:
+	Media Start:	Awal Media:
+	Subclip: {name}	Subklip: {name}
+	Start:	Mulai:
+	End:	Akhir:
+	Restrict Trims To Subclip Boundaries	Batasi Pemangkasan ke Batas Subklip
+	Convert to Master Clip	Konversi ke Klip Master
+	Clip Channel Format:	Format Kanal Klip:
+	Number of Audio Clips:	Jumlah Klip Audio:
+	Media Source Channels	Kanal Sumber Media
+	Ch. {n}	Kan. {n}
+	Clip {n}	Klip {n}
+	Source channels the selected audio clips play:	Kanal sumber yang diputar klip audio terpilih:
+	Set Timecode:	Atur Kode Waktu:
+	Use the file's timecode	Gunakan kode waktu berkas
+	Hold On	Tahan Pada
+	Timecode:	Kode Waktu:
+	Hold Filters	Tahan Filter
+	Reverse Field Dominance	Balik Dominasi Field
+	Processing Options	Opsi Pemrosesan
+	None	Tidak Ada
+	Always Deinterlace	Selalu Deinterlace
+	Flicker Removal	Penghilangan Kedip
+	Save changes to “{project_name}” before closing?	Simpan perubahan pada “{project_name}” sebelum menutup?
+	Don't Save	Jangan Simpan
+	All media is online.	Semua media online.
+	{name} (copy)	{name} (salinan)
+	Offline	Offline
+	Missing	Hilang
+	Link Media	Tautkan Media
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} klip tidak dapat menemukan medianya. Temukan, cari di folder, atau biarkan offline.
+	Clip Name	Nama Klip
+	File Name	Nama Berkas
+	File Path	Jalur Berkas
+	Status	Status
+	Match file properties:	Cocokkan properti berkas:
+	File Extension	Ekstensi Berkas
+	Clip ID (fingerprint)	ID Klip (sidik jari)
+	Duration	Durasi
+	Media Start	Awal Media
+	Frame Size / Rate	Ukuran / Laju Bingkai
+	Align Timecode	Selaraskan Kode Waktu
+	Relink others automatically	Tautkan ulang yang lain secara otomatis
+	Search in:	Cari di:
+	Browse…	Telusuri…
+	Exact name matches only	Hanya nama yang sama persis
+	No candidates yet — Search a folder or Locate the file.	Belum ada kandidat — Cari di folder atau Temukan berkasnya.
+	✔ same file	✔ berkas sama
+	✔ matches	✔ cocok
+	✖ different file	✖ berkas berbeda
+	Preview	Pratinjau
+	Offline All	Jadikan Semua Offline
+	Locate…	Temukan…
+	Linked {n} clip(s)	{n} klip ditautkan
+	Nothing found with that name.	Tidak ditemukan apa pun dengan nama itu.
+	Make Offline	Jadikan Offline
+	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	Jadikan {n} klip terpilih offline. Klip tersebut menampilkan slate offline sampai Anda menautkannya lagi.
+	Media files remain on disk	Berkas media tetap ada di disk
+	Media files are deleted	Berkas media dihapus
+	Create Proxies	Buat Proksi
+	{n} clip(s) selected.	{n} klip dipilih.
+	Format and size	Format dan ukuran
+	Destination	Tujuan
+	Next to the original media, in a Proxies folder	Di samping media asli, dalam folder Proxies
+	Proxies are made in the background and attached when done. Export always uses full-resolution media.	Proksi dibuat di latar belakang dan dilampirkan setelah selesai. Ekspor selalu menggunakan media resolusi penuh.
+	Creating {n} proxy file(s)…	Membuat {n} berkas proksi…
+	Project Manager	Manajer Proyek
+	Sequences	Sekuens
+	Resulting Project	Proyek Hasil
+	Collect Files and Copy to New Location	Kumpulkan Berkas dan Salin ke Lokasi Baru
+	Consolidate and Transcode	Konsolidasi dan Transkode
+	Options	Opsi
+	Exclude Unused Clips	Kecualikan Klip yang Tidak Dipakai
+	Include Handles:	Sertakan Handle:
+	Include Proxies	Sertakan Proksi
+	Include Preview Files	Sertakan Berkas Pratinjau
+	Destination Path	Jalur Tujuan
+	Disk space: original {original} · resulting {result} ({n} files)	Ruang disk: asli {original} · hasil {result} ({n} berkas)
+	Disk space: —	Ruang disk: —
+	Calculate	Hitung
+	Project Manager: writing {path}	Manajer Proyek: menulis {path}
+	Timeline: (no sequences)	Linimasa: (tidak ada sekuens)
+	Browse	Telusuri
+	Select audio clips, then click a preset to apply it.	Pilih klip audio, lalu klik preset untuk menerapkannya.
+	{name} (user)	{name} (pengguna)
+	Select audio clips to edit them here	Pilih klip audio untuk mengeditnya di sini
+	Multiple Clips Selected	Beberapa Klip Dipilih
+	The selected clips have different audio types. Assign one type to edit them together.	Klip terpilih memiliki jenis audio yang berbeda. Tetapkan satu jenis untuk mengeditnya bersama.
+	Assign an audio type to the selection:	Tetapkan jenis audio untuk pilihan:
+	Clear Audio Type	Hapus Jenis Audio
+	Preset:	Preset:
+	(Custom)	(Kustom)
+	Preset name	Nama preset
+	Reduce Noise	Kurangi Derau
+	Reduce Rumble	Kurangi Gemuruh
+	DeHum	DeHum
+	DeEss	DeEss
+	Reduce Reverb	Kurangi Gema
+	Dynamics	Dinamika
+	EQ	EQ
+	Enhance Speech	Tingkatkan Ucapan
+	Low Tone	Nada Rendah
+	High Tone	Nada Tinggi
+	Mix	Campuran
+	Reverb	Reverb
+	Stereo Width	Lebar Stereo
+	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	Remix musik ke durasi target belum tersedia. Sebagai gantinya, pangkas klip dan tambahkan crossfade.
+	Pan	Pan
+	Auto-Match	Cocokkan Otomatis
+	Not matched yet	Belum dicocokkan
+	Matches each of the {n} clips on its own.	Mencocokkan masing-masing dari {n} klip secara terpisah.
+	Duck against:	Duck terhadap:
+	Untagged	Tanpa tag
+	Sensitivity	Sensitivitas
+	Reduce By	Kurangi Sebesar
+	Fades	Fade
+	Generate Keyframes	Buat Bingkai Kunci
+	Clip Volume	Volume Klip
+	(no clip selected)	(tidak ada klip yang dipilih)
+	Master · {name}	Master · {name}
+	Add Lumetri Color to clip	Tambahkan Lumetri Color ke klip
+	Input LUT	LUT Input
+	Color	Warna
+	Temperature	Suhu
+	Tint	Rona
+	Saturation	Saturasi
+	Exposure	Eksposur
+	Contrast	Kontras
+	Highlights	Sorotan
+	Shadows	Bayangan
+	Whites	Putih
+	Blacks	Hitam
+	HDR	HDR
+	HDR White	Putih HDR
+	HDR Specular	Spekular HDR
+	Look	Look
+	Look LUT	LUT Look
+	Intensity	Intensitas
+	Adjustments	Penyesuaian
+	Faded Film	Film Pudar
+	Sharpen	Pertajam
+	Vibrance	Vibrance
+	RGB Curves	Kurva RGB
+	HDR Range	Rentang HDR
+	Hue Saturation Curves	Kurva Hue Saturasi
+	Hue vs Sat	Hue vs Sat
+	Hue vs Hue	Hue vs Hue
+	Hue vs Luma	Hue vs Luma
+	Luma vs Sat	Luma vs Sat
+	Sat vs Sat	Sat vs Sat
+	Midtones	Nada Tengah
+	Key	Key
+	Hue	Hue
+	Hue Range	Rentang Hue
+	Saturation Min	Saturasi Min
+	Luma Min	Luma Min
+	Luma Max	Luma Maks
+	Soften	Lembutkan
+	Show Mask	Tampilkan Masker
+	Off	Mati
+	Color/Gray	Warna/Abu-abu
+	Color/Black	Warna/Hitam
+	White/Black	Putih/Hitam
+	Refine	Perhalus
+	Denoise	Hilangkan Derau
+	Blur	Buram
+	Correction	Koreksi
+	Hue Shift	Geser Hue
+	Midpoint	Titik Tengah
+	Roundness	Kebulatan
+	Feather	Feather
+	LUT	LUT
+	Color Match	Pencocokan Warna
+	Reference	Referensi
+	Face Detection (protect skin tones)	Deteksi Wajah (lindungi warna kulit)
+	Apply Match	Terapkan Pencocokan
+	Create ellipse mask	Buat masker elips
+	Create 4-point polygon mask	Buat masker poligon 4 titik
+	Free draw bezier	Gambar bezier bebas
+	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	Klik di monitor Program untuk menempatkan titik masker (seret untuk kurva); klik titik pertama atau tekan Enter untuk menutup
+	Delete Mask	Hapus Masker
+	Inverted	Terbalik
+	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	Seret: pindahkan · Alt-klik: halus/sudut · Cmd-klik: hapus
+	Track selected mask backward	Lacak masker terpilih mundur
+	Track selected mask backward 1 frame	Lacak masker terpilih mundur 1 bingkai
+	Track selected mask forward 1 frame	Lacak masker terpilih maju 1 bingkai
+	Track selected mask forward	Lacak masker terpilih maju
+	Stop tracking	Hentikan pelacakan
+	Tracking method: {method}	Metode pelacakan: {method}
+	Composite	Komposit
+	Comparison	Perbandingan
+	Video and Waveform	Video dan Bentuk Gelombang
+	System Default	Bawaan Sistem
+	Default location	Lokasi bawaan
+	Font family	Keluarga font
+	Label Colors	Warna Label
+	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	Bingkai terdekode yang disimpan untuk monitor dan gambar mini: {used} dari {budget}.
+	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft membiarkan sisa RAM bebas untuk aplikasi lain.
+	not available in this session	tidak tersedia di sesi ini
+	Currently: {loc} — {files} file(s), {size}	Saat ini: {loc} — {files} berkas, {size}
+	 ({ch} output channels)	 ({ch} kanal output)
+	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	Program kiri → output perangkat {l}, kanan → output perangkat {r}{dev}. Output di luar kanal perangkat kembali ke 1 dan 2.
+	Auto-saves go to: {dir}	Simpanan otomatis disimpan ke: {dir}
+	Recovery copy: {dir}	Salinan pemulihan: {dir}
+	Last auto-save {a} · last recovery copy {j}	Simpan otomatis terakhir {a} · salinan pemulihan terakhir {j}
+	Last auto-save {a}	Simpan otomatis terakhir {a}
+	Last recovery copy {j}	Salinan pemulihan terakhir {j}
+	Remove Media Cache Files	Hapus Berkas Cache Media
+	Deleted {n} file(s), {size}.	{n} berkas dihapus, {size}.
+	Reset…	Atur Ulang…
+	Source · {name}	Sumber · {name}
+	Reset Effect	Atur Ulang Efek
+	Reset Parameter	Atur Ulang Parameter
+	Save Preset…	Simpan Preset…
+	Custom Setup	Penyiapan Kustom
+	Edit…	Edit…
+	Show graphs	Tampilkan grafik
+	Toggle animation	Alihkan animasi
+	Eyedropper (pick a color from the Program monitor)	Pipet (ambil warna dari monitor Program)
+	Eyedropper: no picture to sample	Pipet: tidak ada gambar untuk diambil sampelnya
+	Add/Remove Keyframe	Tambah/Hapus Bingkai Kunci
+	Temporal Interpolation	Interpolasi Temporal
+	Linear	Linier
+	Bezier	Bezier
+	Auto Bezier	Bezier Otomatis
+	Continuous Bezier	Bezier Kontinu
+	Ease In	Ease In
+	Ease Out	Ease Out
+	Select a clip to grade	Pilih klip untuk di-grading
+	Select a clip to see its properties	Pilih klip untuk melihat propertinya
+	Anchor point	Titik jangkar
+	Rotation	Rotasi
+	Level	Level
+	Speed {n}%	Kecepatan {n}%
+	Value	Nilai
+	Velocity	Kecepatan
+	Default	Bawaan
+	Custom ({n} points)	Kustom ({n} titik)
+	Select a graphic clip, or use the Type tool (T) on the Program monitor	Pilih klip grafis, atau gunakan alat Teks (T) di monitor Program
+	Create new graphic	Buat grafis baru
+	New Text Layer	Lapisan Teks Baru
+	New Text	Teks Baru
+	New Rectangle	Persegi Panjang Baru
+	New Ellipse	Elips Baru
+	Delete Layer	Hapus Lapisan
+	Select a layer to edit its properties.	Pilih lapisan untuk mengedit propertinya.
+	Align Left	Ratakan Kiri
+	Align Center Horizontally	Ratakan Tengah Secara Horizontal
+	Align Right	Ratakan Kanan
+	Align Top	Ratakan Atas
+	Align Center Vertically	Ratakan Tengah Secara Vertikal
+	Align Bottom	Ratakan Bawah
+	Font	Font
+	Font Style	Gaya Font
+	Font Size	Ukuran Font
+	Alignment	Perataan
+	Left Align Text	Rata Kiri Teks
+	Center Align Text	Rata Tengah Teks
+	Right Align Text	Rata Kanan Teks
+	Justify	Rata Kiri-Kanan
+	Tracking	Tracking
+	Leading	Spasi Baris
+	Baseline Shift	Geser Garis Dasar
+	Text Box Width	Lebar Kotak Teks
+	Style	Gaya
+	Faux Bold	Tebal Semu
+	Faux Italic	Miring Semu
+	All Caps	Semua Kapital
+	Small Caps	Kapital Kecil
+	Underline	Garis Bawah
+	OpenType	OpenType
+	Kerning	Kerning
+	Ligatures	Ligatur
+	Shape	Bentuk
+	Size	Ukuran
+	Corner Radius	Radius Sudut
+	Polygon Sides	Sisi Poligon
+	Fill	Isian
+	Stroke	Garis Tepi
+	Stroke 2	Garis Tepi 2
+	Background	Latar Belakang
+	   Opacity	   Opasitas
+	   Size	   Ukuran
+	   Corner Radius	   Radius Sudut
+	Shadow	Bayangan
+	   Angle	   Sudut
+	   Distance	   Jarak
+	   Blur	   Buram
+	Search templates	Cari templat
+	All Categories	Semua Kategori
+	Install…	Pasang…
+	Install Motion Graphics Template (.fcgt)	Pasang Templat Grafis Gerak (.fcgt)
+	No templates match.	Tidak ada templat yang cocok.
+	{category} · My Template	{category} · Templat Saya
+	Apply	Terapkan
+	Remove	Hapus
+	{n} editable properties	{n} properti yang dapat diedit
+	   Template: {name}	   Templat: {name}
+	Intro Duration	Durasi Intro
+	Outro Duration	Durasi Outro
+	Roll	Gulung
+	Start Off Screen	Mulai di Luar Layar
+	End Off Screen	Berakhir di Luar Layar
+	Preroll	Preroll
+	Postroll	Postroll
+	Video Frame	Bingkai Video
+	Pin To	Sematkan ke
+	Pinned Edges	Tepi Tersemat
+	FilmCraft Graphics Template	Templat Grafis FilmCraft
+	{n} Font	Font {n}
+	{n} Size	Ukuran {n}
+	{n} Color	Warna {n}
+	{n} Position	Posisi {n}
+	Show {n}	Tampilkan {n}
+	My Templates	Templat Saya
+	Export As Motion Graphics Template	Ekspor sebagai Templat Grafis Gerak
+	Category:	Kategori:
+	Editable properties:	Properti yang dapat diedit:
+	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	Disimpan sebagai templat grafis FilmCraft (.fcgt) di folder templat Anda.
+	Exported graphics template to {path}	Templat grafis diekspor ke {path}
+	Replace Fonts in Projects	Ganti Font di Proyek
+	Fonts used in the project:	Font yang dipakai di proyek:
+	{f} (missing)	{f} (hilang)
+	Replace:	Ganti:
+	Replaced {n} font uses	{n} penggunaan font diganti
+	Show/Hide Effects and Sends	Tampilkan/Sembunyikan Efek dan Send
+	Audio Track Mixer menu	Menu Mixer Trek Audio
+	Show/Hide Tracks…	Tampilkan/Sembunyikan Trek…
+	Meter Input(s) Only	Hanya Meter Input
+	Show/Hide Tracks	Tampilkan/Sembunyikan Trek
+	Show All	Tampilkan Semua
+	Post-Fader	Pasca-Fader
+	Remove Effect	Hapus Efek
+	Fill the slots above first	Isi slot di atas terlebih dahulu
+	pre 	pra 
+	Pre-Fader	Pra-Fader
+	Mute Send	Bisukan Send
+	Remove Send	Hapus Send
+	New Submix	Submix Baru
+	Pan / balance (drag; double-click: centre)	Pan / keseimbangan (seret; klik ganda: tengah)
+	Solo safe	Aman dari solo
+	Enable track for recording	Aktifkan trek untuk perekaman
+	Volume (drag; double-click: 0 dB)	Volume (seret; klik ganda: 0 dB)
+	5.1 panner (drag the puck; double-click: front centre)	Panner 5.1 (seret penanda; klik ganda: tengah depan)
+	Center	Tengah
+	Go to In Point	Ke Titik Masuk
+	Go to Out Point	Ke Titik Keluar
+	Play In to Out	Putar dari Masuk ke Keluar
+	Record (voice-over on the record-enabled track)	Rekam (sulih suara di trek yang diaktifkan untuk perekaman)
+	Write keyframes	Tulis bingkai kunci
+	Something went wrong while drawing the window. Your project is still open; save it to be safe.	Terjadi kesalahan saat menggambar jendela. Proyek Anda masih terbuka; simpan agar aman.
+	Continue	Lanjutkan
+	Go Back	Kembali
+	Go Forward	Maju
+	Up One Level	Naik Satu Tingkat
+	File Types Displayed	Jenis Berkas yang Ditampilkan
+	List View	Tampilan Daftar
+	Thumbnail View	Tampilan Gambar Mini
+	Ingest	Ingest
+	Open Ingest Settings	Buka Pengaturan Ingest
+	Import as Image Sequence	Impor sebagai Urutan Gambar
+	{sel} of {total} items selected	{sel} dari {total} item dipilih
+	{total} items	{total} item
+	Cannot open {dir}: {e}	Tidak dapat membuka {dir}: {e}
+	Favorites	Favorit
+	Local Drives	Drive Lokal
+	Network	Jaringan
+	Recent Directories	Direktori Terbaru
+	  (none)	  (tidak ada)
+	Remove from Favorites	Hapus dari Favorit
+	Add to Favorites	Tambah ke Favorit
+	Clear Recent Directories	Hapus Direktori Terbaru
+	Open In Source Monitor	Buka di Monitor Sumber
+	Reveal in Finder	Tampilkan di Finder
+	Edit Columns…	Edit Kolom…
+	Hover Scrub	Scrub saat Melayang
+	New Media Browser Panel	Panel Peramban Media Baru
+	Create Folder For Imported Projects	Buat Folder untuk Proyek yang Diimpor
+	Allow Duplicate Media During Project Import	Izinkan Media Duplikat Saat Impor Proyek
+	Refresh	Segarkan
+	Edit Columns	Edit Kolom
+	Guides	Garis Bantu
+	(no audio)	(tanpa audio)
+	Generating waveform…	Membuat bentuk gelombang…
+	Reference  {tc}	Referensi  {tc}
+	Set	Atur
+	Set the reference to the playhead	Atur referensi ke kepala putar
+	Reference: next frame	Referensi: bingkai berikutnya
+	Reference: previous frame	Referensi: bingkai sebelumnya
+	RGBA Channels	Kanal RGBA
+	Add Guide	Tambah Garis Bantu
+	Save Guides as Template	Simpan Garis Bantu sebagai Templat
+	Manage Guides	Kelola Garis Bantu
+	Orientation:	Orientasi:
+	Vertical	Vertikal
+	Horizontal	Horizontal
+	Position:	Posisi:
+	No saved guide templates.	Tidak ada templat garis bantu tersimpan.
+	Project: {name}	Proyek: {name}
+	Bin: {name}	Bin: {name}
+	Up one level	Naik satu tingkat
+	Video Usage: {vu}  Audio Usage: {au}	Penggunaan Video: {vu}  Penggunaan Audio: {au}
+	Icon View	Tampilan Ikon
+	Freeform View	Tampilan Bebas
+	Sort Icons	Urutkan Ikon
+	Clear (Delete)	Hapus (Delete)
+	New Item	Item Baru
+	New Bin	Bin Baru
+	Find	Cari
+	Automate to Sequence	Otomatiskan ke Sekuens
+	Select items to clear	Pilih item yang akan dihapus
+	User Order	Urutan Pengguna
+	Descending	Menurun
+	Refresh Project	Segarkan Proyek
+	Reveal Project in Finder…	Tampilkan Proyek di Finder…
+	New Bin From Selection	Bin Baru dari Pilihan
+	New Search Bin	Bin Pencarian Baru
+	New Project Shortcut	Pintasan Proyek Baru
+	List	Daftar
+	Icon	Ikon
+	Freeform	Bebas
+	Preview Area	Area Pratinjau
+	Thumbnails	Gambar Mini
+	Thumbnails show effects applied	Gambar mini menampilkan efek yang diterapkan
+	Thumbnail controls for all pointing devices	Kontrol gambar mini untuk semua perangkat penunjuk
+	Refresh Sort Order	Segarkan Urutan
+	Metadata Display…	Tampilan Metadata…
+	Save Current View Preset	Simpan Preset Tampilan Saat Ini
+	Restore View Preset	Pulihkan Preset Tampilan
+	Project View Preset {n}	Preset Tampilan Proyek {n}
+	Freeform View Options…	Opsi Tampilan Bebas…
+	Media missing	Media hilang
+	Unreadable	Tidak terbaca
+	Open in Source Monitor	Buka di Monitor Sumber
+	Open in Timeline	Buka di Linimasa
+	New Sequence From Clip	Sekuens Baru dari Klip
+	Set Poster Frame	Atur Bingkai Poster
+	Proxy	Proksi
+	Open in Place	Buka di Tempat
+	Open in New Tab	Buka di Tab Baru
+	Open in New Window	Buka di Jendela Baru
+	{n} items	{n} item
+	Stack	Tumpuk
+	Unstack	Lepas Tumpukan
+	Clip Size	Ukuran Klip
+	Larger	Lebih Besar
+	Smaller	Lebih Kecil
+	Align to Grid	Ratakan ke Kisi
+	Reset to Grid	Atur Ulang ke Kisi
+	Save Arrangement…	Simpan Susunan…
+	Restore Arrangement	Pulihkan Susunan
+	Delete Arrangement	Hapus Susunan
+	Drop media here to create sequence.	Letakkan media di sini untuk membuat sekuens.
+	Double-click a sequence in the Project panel to open it here.	Klik ganda sekuens di panel Proyek untuk membukanya di sini.
+	Open Demo Project	Buka Proyek Demo
+	Insert and overwrite sequences as nests or individual clips	Sisipkan dan timpa sekuens sebagai sarang atau klip individual
+	Snap in Timeline (S)	Snap di Linimasa (S)
+	Caption track options	Opsi trek takarir
+	Timeline Display Settings	Pengaturan Tampilan Linimasa
+	Show Video Thumbnails	Tampilkan Gambar Mini Video
+	Head	Awal
+	Head and Tail	Awal dan Akhir
+	Continuous	Kontinu
+	Show Audio Waveform	Tampilkan Bentuk Gelombang Audio
+	Expand All Tracks	Bentangkan Semua Trek
+	Minimize All Tracks	Minimalkan Semua Trek
+	Unrendered: should play back in real time	Belum dirender: seharusnya dapat diputar secara real time
+	Unrendered: render to play back in real time	Belum dirender: render agar dapat diputar secara real time
+	Rendered preview	Pratinjau yang dirender
+	✓ Enable	✓ Aktifkan
+	Unlink	Lepas Tautan
+	(Default)	(Bawaan)
+	(RGB) Gamma	(RGB) Gamma
+	(RGB) Input Black Level	(RGB) Level Hitam Input
+	(RGB) Input White Level	(RGB) Level Putih Input
+	(RGB) Output Black Level	(RGB) Level Hitam Output
+	(RGB) Output White Level	(RGB) Level Putih Output
+	+ Cmd	+ Cmd
+	+ Opt	+ Opt
+	10 Bit Black Point	Titik Hitam 10 Bit
+	10 Bit White Point	Titik Putih 10 Bit
+	105mm Prime	Lensa Prime 105mm
+	29.97 fps Drop-Frame	29,97 fps Drop-Frame
+	29.97 fps Non Drop-Frame	29,97 fps Non Drop-Frame
+	35mm Prime	Lensa Prime 35mm
+	3D Roll	Gulung 3D
+	3D Rotate	Rotasi 3D
+	3D Spin	Putaran 3D
+	3D Spinback	Putaran Balik 3D
+	4-Color Gradient	Gradien 4 Warna
+	5.1 Media	Media 5.1
+	5.1 Mixdown Type	Jenis Mixdown 5.1
+	50-300mm Zoom	Lensa Zoom 50-300mm
+	59.94 fps Drop-Frame	59,94 fps Drop-Frame
+	59.94 fps Non Drop-Frame	59,94 fps Non Drop-Frame
+	ASC CDL	ASC CDL
+	Accessible color contrast	Kontras warna yang aksesibel
+	Animate zoom, scrolling and menus	Animasikan zoom, gulir, dan menu
+	Action-Safe Margin	Margin Aman Aksi
+	Active Monitor	Monitor Aktif
+	Add	Tambah
+	Add tracks automatically when editing source clips onto the Timeline	Tambah trek secara otomatis saat mengedit klip sumber ke Linimasa
+	Place files dropped onto the Timeline directly on the Timeline	Tempatkan berkas yang diletakkan ke Linimasa langsung di Linimasa
+	1 file	1 berkas
+	{n} files	{n} berkas
+	Additional Scale	Skala Tambahan
+	Additive Dissolve	Larut Aditif
+	Additive Dissolve (Legacy)	Larut Aditif (Lama)
+	Adjust	Sesuaikan
+	Advanced	Lanjutan
+	Aggressive	Agresif
+	Align and Transform	Ratakan dan Transformasi
+	All lines	Semua baris
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	Izinkan alat Seleksi memilih pemangkasan Roll dan Ripple tanpa tombol pengubah
+	Allow current tool to change trim type of previously selected edit point	Izinkan alat saat ini mengubah jenis pemangkasan titik edit yang dipilih sebelumnya
+	Allow duplicate media during project import	Izinkan media duplikat saat impor proyek
+	Alpha Adjust	Penyesuaian Alfa
+	Alpha Blurriness	Keburaman Alfa
+	Alpha Channel	Kanal Alfa
+	Alpha Glow	Pendar Alfa
+	Always import embedded CEA-708 closed captions with wide aspect.	Selalu impor takarir tertutup CEA-708 tersemat dengan aspek lebar.
+	Always override audio tags	Selalu timpa tag audio
+	Ambience	Ambiens
+	Ambience Intensity	Intensitas Ambiens
+	Ambience Light Color	Warna Cahaya Ambiens
+	Amount of Noise	Jumlah Derau
+	Amount to Decolor	Jumlah Penghilangan Warna
+	Amount to Tint	Jumlah Pewarnaan
+	Amplifier	Penguat
+	Amplify	Perkuat
+	Amplitude	Amplitudo
+	Amplitude and Compression	Amplitudo dan Kompresi
+	Analog	Analog
+	Analog Delay	Delay Analog
+	Analyze all imported media to search for visuals or audio	Analisis semua media yang diimpor untuk pencarian visual atau audio
+	Anamorphic	Anamorfik
+	Anchor	Jangkar
+	Anchor Point	Titik Jangkar
+	Angle	Sudut
+	Animation	Animasi
+	Anti-aliasing Quality	Kualitas Anti-aliasing
+	Anti-flicker Filter	Filter Anti-kedip
+	Antialiasing for Best Quality	Antialiasing untuk Kualitas Terbaik
+	Asymmetry	Asimetri
+	At Startup	Saat Memulai
+	At playback end, return to beginning when restarting playback	Di akhir pemutaran, kembali ke awal saat memulai ulang pemutaran
+	Attempt to force hardware to document sample rate	Coba paksa perangkat keras ke laju sampel dokumen
+	Audio Codec	Codec Audio
+	Audio Duration	Durasi Audio
+	Audio Effects	Efek Audio
+	Audio Hardware	Perangkat Keras Audio
+	Audio In Point	Titik Masuk Audio
+	Audio Info	Info Audio
+	Audio Out Point	Titik Keluar Audio
+	Audio Samples	Sampel Audio
+	Audio Time Units	Satuan Waktu Audio
+	Audio Transition Default Duration	Durasi Bawaan Transisi Audio
+	Audio Transitions	Transisi Audio
+	Audio Usage	Penggunaan Audio
+	Auto	Otomatis
+	Auto Align	Perataan Otomatis
+	Auto Reframe	Bingkai Ulang Otomatis
+	Auto Save	Simpan Otomatis
+	Auto Save also saves the current project(s)	Simpan Otomatis juga menyimpan proyek saat ini
+	Auto-tag audio types in the timeline	Tandai otomatis jenis audio di linimasa
+	Auto-transcribe all imported clips	Transkripsikan otomatis semua klip yang diimpor
+	Auto-transcribe only clips in sequences	Transkripsikan otomatis hanya klip di sekuens
+	Automatch Time	Waktu Pencocokan Otomatis
+	Automatic Click Remover	Penghapus Klik Otomatis
+	Automatically Hide Dependent Clips	Sembunyikan Otomatis Klip Dependen
+	Automatically Save Every	Simpan Otomatis Setiap
+	Automatically delete cache files older than	Hapus otomatis berkas cache yang lebih lama dari
+	Automatically delete oldest cache files when cache exceeds	Hapus otomatis berkas cache terlama saat cache melebihi
+	Automatically refresh growing files	Segarkan otomatis berkas yang sedang bertambah
+	Automatically resume playback for growing files in Source Monitor	Lanjutkan otomatis pemutaran berkas yang sedang bertambah di Monitor Sumber
+	Automatically save projects	Simpan proyek secara otomatis
+	Automatically transcribe clips	Transkripsikan klip secara otomatis
+	Automation Keyframe Optimization	Optimasi Bingkai Kunci Otomasi
+	Background Color	Warna Latar Belakang
+	Background Corner Radius	Radius Sudut Latar Belakang
+	Background Opacity	Opasitas Latar Belakang
+	Background Size	Ukuran Latar Belakang
+	Background fill	Isian latar belakang
+	Balance	Keseimbangan
+	Balanced Voice	Suara Seimbang
+	Band 1	Pita 1
+	Band 2	Pita 2
+	Band 3	Pita 3
+	Band 4	Pita 4
+	Band 5	Pita 5
+	Band Pass	Band Pass
+	Band Slide	Geser Pita
+	Band Stop	Band Stop
+	Bandpass	Bandpass
+	Barn Doors	Pintu Gudang
+	Basic	Dasar
+	Basic 3D	3D Dasar
+	Basic Correction	Koreksi Dasar
+	Bass	Bass
+	Behind	Di Belakang
+	Bessel	Bessel
+	Bevel Alpha	Bevel Alfa
+	Bevel join	Sambungan bevel
+	Binauralizer - Ambisonics	Binauralizer - Ambisonik
+	Bins	Bin
+	Black	Hitam
+	Black & White	Hitam & Putih
+	Black Input Level	Level Input Hitam
+	Black and white	Hitam putih
+	Black and white with crushed blacks and strong contrast	Hitam putih dengan hitam pekat dan kontras kuat
+	Bleach Bypass	Bleach Bypass
+	Bleach-bypass style: desaturated with hard contrast	Gaya bleach-bypass: saturasi rendah dengan kontras keras
+	Blend	Campur
+	Blend Mode	Mode Campur
+	Blend With Original	Campur dengan Asli
+	Blending Mode	Mode Pencampuran
+	Block Dissolve	Larut Blok
+	Block Height	Tinggi Blok
+	Block Motion	Gerak Blok
+	Block Size	Ukuran Blok
+	Block Width	Lebar Blok
+	Blocks	Blok
+	Blue Blurriness	Keburaman Biru
+	Blue Curve	Kurva Biru
+	Blue Offset	Offset Biru
+	Blue Power	Pangkat Biru
+	Blue Slope	Kemiringan Biru
+	Blue-Blue	Biru-Biru
+	Blue-Const	Biru-Konst
+	Blue-Green	Biru-Hijau
+	Blue-Red	Biru-Merah
+	Blur & Sharpen	Buram & Pertajam
+	Blur Amount	Jumlah Buram
+	Blur Angle	Sudut Buram
+	Blur Dimensions	Dimensi Buram
+	Blur Dissolve	Larut Buram
+	Blur Layer	Lapisan Buram
+	Blur Length	Panjang Buram
+	Blurriness	Keburaman
+	Bokeh Blur	Buram Bokeh
+	Boost	Penguatan
+	Border	Batas
+	Border Color	Warna Batas
+	Border Width	Lebar Batas
+	Borders	Batas
+	Bottom Center	Tengah Bawah
+	Bottom Left	Kiri Bawah
+	Bottom Right	Kanan Bawah
+	Bounce	Pantul
+	Branching	Percabangan
+	Bright	Cerah
+	Bright Air	Udara Cerah
+	Bright Studio	Studio Cerah
+	Brightness & Contrast	Kecerahan & Kontras
+	British Stack	Tumpukan Inggris
+	Brush Hardness	Kekerasan Kuas
+	Brush Opacity	Opasitas Kuas
+	Brush Position	Posisi Kuas
+	Brush Size	Ukuran Kuas
+	Brush Spacing (secs)	Jarak Kuas (dtk)
+	Brush Strokes	Sapuan Kuas
+	Bubbles	Gelembung
+	Bulge	Gembung
+	Bulge Smoother	Penghalus Gembung
+	Bump Height	Tinggi Tonjolan
+	Burn Alpha	Bakar Alfa
+	Burn Chroma	Bakar Kroma
+	Burn Color	Warna Bakar
+	Butt cap	Ujung rata
+	Butterworth	Butterworth
+	CEA-608	CEA-608
+	CEA-708	CEA-708
+	Cache analysis results for re-use	Simpan hasil analisis di cache untuk dipakai ulang
+	Camera Angle	Sudut Kamera
+	Camera Blur	Buram Kamera
+	Camera Shake	Guncangan Kamera
+	Capitalisation	Kapitalisasi
+	Cathedral	Katedral
+	Cell Pattern	Pola Sel
+	Center Channel Pan	Pan Kanal Tengah
+	Center Gradient	Gradien Tengah
+	Center Input	Input Tengah
+	Center Out	Tengah ke Luar
+	Center Point (Latitude)	Titik Tengah (Lintang)
+	Center Point (Longitude)	Titik Tengah (Bujur)
+	Center Split	Belah Tengah
+	Center of Sphere	Pusat Bola
+	Cents	Sen
+	Change to Color	Ubah ke Warna
+	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	Perubahan disalin di latar belakang sesaat setelah setiap edit. Jika FilmCraft keluar secara tak terduga, perubahan itu ditawarkan saat FilmCraft dimulai berikutnya.
+	Channel	Kanal
+	Channel Blur	Buram Kanal
+	Channel Mix	Campuran Kanal
+	Channel Mixer	Mixer Kanal
+	Chaos	Kekacauan
+	Chebyshev	Chebyshev
+	Checker Wipe	Sapuan Kotak-kotak
+	Checkerboard	Papan Catur
+	Chinese	Tionghoa
+	Choke	Choke
+	Chorus	Chorus
+	Chorus/Flanger	Chorus/Flanger
+	Chroma	Kroma
+	Chroma Leak	Kebocoran Kroma
+	Chromatic Aberration (Blue)	Aberasi Kromatik (Biru)
+	Chromatic Aberration (Green)	Aberasi Kromatik (Hijau)
+	Chromatic Aberration (Red)	Aberasi Kromatik (Merah)
+	Cineon Converter	Konverter Cineon
+	Circle	Lingkaran
+	Clarity	Kejernihan
+	Clean Combo	Kombo Bersih
+	Clean Up Noisy Dialogue	Bersihkan Dialog Berderau
+	Clear Muddiness	Hilangkan Kekeruhan
+	Client	Klien
+	Clip	Klip
+	Clip Level	Level Klip
+	Clipping	Clipping
+	Clock Wipe	Sapuan Jam
+	Clock Wipe (Legacy)	Sapuan Jam (Lama)
+	Clockwise	Searah Jarum Jam
+	Clone	Klon
+	Closed Captions	Takarir Tertutup
+	Color & Alpha	Warna & Alfa
+	Color 1	Warna 1
+	Color 2	Warna 2
+	Color 3	Warna 3
+	Color 4	Warna 4
+	Color Balance	Keseimbangan Warna
+	Color Burn	Bakar Warna
+	Color Channel	Kanal Warna
+	Color Correction	Koreksi Warna
+	Color Distortion	Distorsi Warna
+	Color Dodge	Dodge Warna
+	Color Emboss	Emboss Warna
+	Color Key	Key Warna
+	Color Pass	Lolos Warna
+	Color Replace	Ganti Warna
+	Color Space	Ruang Warna
+	Color Theme	Tema Warna
+	Color To Leave	Warna yang Dipertahankan
+	Color Tolerance	Toleransi Warna
+	Color Wheels & Match	Roda Warna & Pencocokan
+	Colorize	Warnai
+	Columns	Kolom
+	Comment	Komentar
+	Complexity	Kompleksitas
+	Composite In Back	Komposit di Belakang
+	Composite In Front	Komposit di Depan
+	Composite Using	Komposit Menggunakan
+	Composite on Original	Komposit pada Asli
+	Compound Blur	Buram Majemuk
+	Compression Before Clipping	Kompresi Sebelum Clipping
+	Constant Gain	Gain Konstan
+	Constant Power	Daya Konstan
+	Conversion Type	Jenis Konversi
+	Convolution Reverb	Reverb Konvolusi
+	Cool Blue	Biru Sejuk
+	Cool, desaturated and punchy	Sejuk, saturasi rendah, dan tegas
+	Core Width	Lebar Inti
+	Corner	Sudut
+	Corner Pin	Pin Sudut
+	Count	Jumlah
+	Counter-clockwise	Berlawanan Arah Jarum Jam
+	Crash Recovery	Pemulihan Crash
+	Crawl Left	Merayap ke Kiri
+	Crawl Right	Merayap ke Kanan
+	Create folder for imported projects	Buat folder untuk proyek yang diimpor
+	Creative	Kreatif
+	Crop	Potong Tepi
+	Crop Less <-> Smooth More	Potong Lebih Sedikit <-> Lebih Halus
+	Cross Displacement	Perpindahan Silang
+	Cross Dissolve	Larut Silang
+	Cross Dissolve (Legacy)	Larut Silang (Lama)
+	Cross Zoom	Zoom Silang
+	Cross Zoom (Legacy)	Zoom Silang (Lama)
+	Crossfade	Crossfade
+	Crossovers	Crossover
+	Crystallize	Kristalisasi
+	Crystals	Kristal
+	Cube Spin	Putaran Kubus
+	Curl Radius	Radius Gulungan
+	Current Time	Waktu Saat Ini
+	Cursor	Kursor
+	Curvature	Kelengkungan
+	Curve	Kurva
+	Curves	Kurva
+	Custom	Kustom
+	Custom Color	Warna Kustom
+	Cutoff	Batas Potong
+	Cyan-teal shadows and warm highlights with a little more contrast	Bayangan sian-toska dan sorotan hangat dengan sedikit lebih banyak kontras
+	Cycle (in Revolutions)	Siklus (dalam Putaran)
+	Cycle Evolution	Evolusi Siklus
+	Damping	Peredaman
+	Damping HF	Peredaman HF
+	Damping LF	Peredaman LF
+	Dark	Gelap
+	Darken	Gelapkan
+	Darker Color	Warna Lebih Gelap
+	Date Created	Tanggal Dibuat
+	Date Modified	Tanggal Diubah
+	Day for night: darker, cooler and less saturated	Siang jadi malam: lebih gelap, lebih sejuk, dan saturasi lebih rendah
+	DeEsser	DeEsser
+	DeHummer	DeHummer
+	DeNoise	DeNoise
+	DeReverb	DeReverb
+	Decay	Peluruhan
+	Decay Time (RT60)	Waktu Peluruhan (RT60)
+	Default Audio Tracks	Trek Audio Bawaan
+	Default Emoji font	Font Emoji bawaan
+	Default Media Scaling	Penskalaan Media Bawaan
+	Default Output	Output Bawaan
+	Default closed caption font	Font takarir tertutup bawaan
+	Default language	Bahasa bawaan
+	Default paragraph direction	Arah paragraf bawaan
+	Default subtitle and text font	Font subtitel dan teks bawaan
+	Delay	Delay
+	Delay 1	Delay 1
+	Delay 2	Delay 2
+	Delay 3	Delay 3
+	Delay 4	Delay 4
+	Delay and Echo	Delay dan Gema
+	Delete files older than	Hapus berkas yang lebih lama dari
+	Delete oldest files when the cache exceeds	Hapus berkas terlama saat cache melebihi
+	Delete…	Hapus…
+	Depth	Kedalaman
+	Desaturate	Hilangkan Saturasi
+	Description	Deskripsi
+	Detail Amplitude	Amplitudo Detail
+	Detail Level	Level Detail
+	Detailed Analysis	Analisis Terperinci
+	Device Class	Kelas Perangkat
+	Dialogue	Dialog
+	Diamond	Berlian
+	Difference	Selisih
+	Dimensions	Dimensi
+	Dimmed	Diredupkan
+	Dip to Black	Celup ke Hitam
+	Dip to Black (Legacy)	Celup ke Hitam (Lama)
+	Dip to Color	Celup ke Warna
+	Dip to White	Celup ke Putih
+	Dip to White (Legacy)	Celup ke Putih (Lama)
+	Direction	Arah
+	Directional	Terarah
+	Directional Blur	Buram Terarah
+	Directional Blur (Legacy)	Buram Terarah (Lama)
+	Disable video output when in the background	Nonaktifkan output video saat di latar belakang
+	Disperse	Sebarkan
+	Displacement	Perpindahan
+	Display Color Management	Manajemen Warna Layar
+	Display Color Settings	Pengaturan Warna Layar
+	Display out of sync indicators for unlinked clips	Tampilkan indikator tidak sinkron untuk klip yang tidak tertaut
+	Dissolve	Larut
+	Dissolve Blocks	Blok Larut
+	Distance	Jarak
+	Distance to Image	Jarak ke Gambar
+	Distort	Distorsi
+	Distortion	Distorsi
+	Distortion Complexity	Kompleksitas Distorsi
+	Distortion Rate	Laju Distorsi
+	Distortion Type	Jenis Distorsi
+	Divide	Bagi
+	Do not delete cache files automatically	Jangan hapus berkas cache secara otomatis
+	Don't label speakers	Jangan beri label pembicara
+	Double-click	Klik ganda
+	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Dekode draf pada resolusi pemutaran rendah (H.264: lebih cepat, beberapa bingkai kurang tersaring)
+	Drive	Drive
+	Drop Shadow	Bayangan Jatuh
+	Dry	Kering
+	Dry Out	Output Kering
+	Dry Up a Roomy Voice	Keringkan Suara yang Bergema
+	Duck Deep Under Dialogue	Duck Dalam di Bawah Dialog
+	Duck Under Dialogue	Duck di Bawah Dialog
+	Duck Under Voice and Effects	Duck di Bawah Suara dan Efek
+	Ducking	Ducking
+	Dutch	Belanda
+	Dynamic Link	Dynamic Link
+	Dynamics Processing	Pemrosesan Dinamika
+	Early Reflections	Pantulan Awal
+	Earthquake	Gempa Bumi
+	Ease In and Out	Ease In dan Out
+	Easing	Easing
+	Echo	Gema
+	Echo Glow	Pendar Gema
+	Echo Operator	Operator Gema
+	Echo Time (seconds)	Waktu Gema (detik)
+	Echoes	Gema
+	Edge Color	Warna Tepi
+	Edge Feather	Feather Tepi
+	Edge Glow	Pendar Tepi
+	Edge Sharpness	Ketajaman Tepi
+	Edge Softness	Kelembutan Tepi
+	Edge Thickness	Ketebalan Tepi
+	Edge Thin	Penipisan Tepi
+	Edge Threshold	Ambang Tepi
+	Edge Type	Jenis Tepi
+	Edge Width	Lebar Tepi
+	Elliptical	Eliptis
+	Emboss	Emboss
+	Enable HSL Secondary	Aktifkan HSL Sekunder
+	Enable Mercury Transmit	Aktifkan Mercury Transmit
+	Enable ProRes hardware accelerated encoding, if available	Aktifkan enkode ProRes dengan akselerasi perangkat keras, jika tersedia
+	Enable clip and XMP metadata linking	Aktifkan penautan metadata klip dan XMP
+	Enable developer mode	Aktifkan mode pengembang
+	Enable hardware accelerated decoding (requires restart)	Aktifkan dekode dengan akselerasi perangkat keras (perlu mulai ulang)
+	Enable language auto-detection	Aktifkan deteksi bahasa otomatis
+	Enable proxies	Aktifkan proksi
+	End Color	Warna Akhir
+	End Point	Titik Akhir
+	End of Ramp	Akhir Gradasi
+	Error	Galat
+	Evolution	Evolusi
+	Evolution Options	Opsi Evolusi
+	Exciter Amount	Jumlah Exciter
+	Exciter Mode	Mode Exciter
+	Exclusion	Eksklusi
+	Exponential Fade	Fade Eksponensial
+	Extended Dynamic Range Monitoring	Pemantauan Rentang Dinamis Diperluas
+	FFT Filter	Filter FFT
+	Fade	Fade
+	Fade Out	Fade Out
+	Faded Matte	Matte Pudar
+	Falloff	Penurunan
+	Far Away	Jauh
+	Fast	Cepat
+	Faster Motion	Gerak Lebih Cepat
+	Feedback	Umpan Balik
+	Feedback 1	Umpan Balik 1
+	Feedback 2	Umpan Balik 2
+	Feedback 3	Umpan Balik 3
+	Feedback 4	Umpan Balik 4
+	Feet + Frames 16mm	Kaki + Bingkai 16mm
+	Feet + Frames 35mm	Kaki + Bingkai 35mm
+	Female	Perempuan
+	File Size	Ukuran Berkas
+	Fill Background	Isi Latar Belakang
+	Fill Color	Warna Isian
+	Fill Left with Right	Isi Kiri dengan Kanan
+	Fill Point	Titik Isian
+	Fill Right with Left	Isi Kanan dengan Kiri
+	Fill Selector	Pemilih Isian
+	Film Dissolve	Larut Film
+	Film Dissolve (Legacy)	Larut Film (Lama)
+	Film Roll	Gulungan Film
+	Filter	Filter
+	Filter Frequency	Frekuensi Filter
+	Filter Resonance	Resonansi Filter
+	Filter and EQ	Filter dan EQ
+	Final Delay	Delay Akhir
+	Find Edges	Temukan Tepi
+	Flanger	Flanger
+	Flare	Suar
+	Flare Brightness	Kecerahan Suar
+	Flare Center	Pusat Suar
+	Flare Color	Warna Suar
+	Flash	Kilat
+	Flicker	Kedip
+	Flickers	Kedipan
+	Flip Motion	Gerak Balik
+	Flip Over	Balik
+	Float	Melayang
+	Focus	Fokus
+	Focus Blur	Buram Fokus
+	Focus Point	Titik Fokus
+	Focus Shape	Bentuk Fokus
+	Focus Size	Ukuran Fokus
+	Fold Motion	Gerak Lipat
+	Foldback	Foldback
+	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Untuk parameter manajemen warna, buka tab Pengaturan di panel Lumetri Color.
+	Format	Format
+	Four Scopes (RGB, 8 bit)	Empat Skop (RGB, 8 bit)
+	Four Scopes (YUV, float, no clamp)	Empat Skop (YUV, float, tanpa pembatasan)
+	Fractal Influence	Pengaruh Fraktal
+	Fractal Type	Jenis Fraktal
+	Frame	Bingkai
+	Frame Color	Warna Bingkai
+	Frame Count	Jumlah Bingkai
+	Frame Layout	Tata Letak Bingkai
+	Frame Rate	Laju Bingkai
+	Frame Width	Lebar Bingkai
+	Frame cache for monitors and thumbnails	Cache bingkai untuk monitor dan gambar mini
+	Frames	Bingkai
+	Framing	Pembingkaian
+	French	Prancis
+	Frequency	Frekuensi
+	From	Dari
+	From East	Dari Timur
+	From North	Dari Utara
+	From South	Dari Selatan
+	From West	Dari Barat
+	From the Left	Dari Kiri
+	From the Right	Dari Kanan
+	Front + LFE	Depan + LFE
+	Front + Rear	Depan + Belakang
+	Front + Rear + LFE	Depan + Belakang + LFE
+	Front Only	Hanya Depan
+	Fuzz	Fuzz
+	GB	GB
+	Gamma	Gamma
+	Gamma Correction	Koreksi Gamma
+	Gamut Warning	Peringatan Gamut
+	Gamut Warning Color	Warna Peringatan Gamut
+	Gap	Celah
+	Gap Color	Warna Celah
+	Gaussian Blur	Buram Gaussian
+	Gaussian Blur (Legacy)	Buram Gaussian (Lama)
+	General	Umum
+	Generate	Buat
+	Generate Timecode	Buat Kode Waktu
+	Generate waveforms and conform audio using multithreading	Buat bentuk gelombang dan sesuaikan audio menggunakan multithreading
+	Generate waveforms automatically during import	Buat bentuk gelombang secara otomatis saat impor
+	German	Jerman
+	Ghosts	Bayangan Hantu
+	Glass	Kaca
+	Glint	Kilau
+	Glitch	Glitch
+	Glow	Pendar
+	Glow Brightness	Kecerahan Pendar
+	Glow Color	Warna Pendar
+	Glow Only	Hanya Pendar
+	Glow Radius	Radius Pendar
+	Glow Saturation	Saturasi Pendar
+	Glow Width	Lebar Pendar
+	Golden Hour	Golden Hour
+	Good	Baik
+	Gradient	Gradien
+	Gradient End	Akhir Gradien
+	Gradient Layer	Lapisan Gradien
+	Gradient Placement	Penempatan Gradien
+	Gradient Scatter	Sebaran Gradien
+	Gradient Shape	Bentuk Gradien
+	Gradient Start	Awal Gradien
+	Gradient Wipe	Sapuan Gradien
+	Gradient Wipe (Legacy)	Sapuan Gradien (Lama)
+	Grain Size	Ukuran Butiran
+	Graphic Equalizer (10 Bands)	Equalizer Grafis (10 Pita)
+	Graphic Equalizer (20 Bands)	Equalizer Grafis (20 Pita)
+	Graphic Equalizer (30 Bands)	Equalizer Grafis (30 Pita)
+	Graphics	Grafis
+	Green Blurriness	Keburaman Hijau
+	Green Curve	Kurva Hijau
+	Green Offset	Offset Hijau
+	Green Power	Pangkat Hijau
+	Green Slope	Kemiringan Hijau
+	Green-Blue	Hijau-Biru
+	Green-Const	Hijau-Konst
+	Green-Green	Hijau-Hijau
+	Green-Red	Hijau-Merah
+	Grid	Kisi
+	Grow	Tumbuh
+	Growing Files	Berkas yang Bertambah
+	Grunge	Grunge
+	Grunge & Distort	Grunge & Distorsi
+	GuitarSuite	GuitarSuite
+	HDR Graphics White (Nits)	Putih Grafis HDR (Nit)
+	HLS Vectorscope + Histogram	Vektorskop HLS + Histogram
+	HSL Secondary	HSL Sekunder
+	Hard	Keras
+	Hard Clip	Clip Keras
+	Hard Light	Cahaya Keras
+	Hard Limiter	Limiter Keras
+	Hard Mix	Campuran Keras
+	Hardware decoding	Dekode perangkat keras
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Dekode perangkat keras: Otomatis menggunakan dekoder video sistem (VideoToolbox di macOS, Media Foundation di Windows, VA-API atau NVDEC untuk H.264 dan HEVC di Linux) untuk stream yang didukungnya, dan dekoder FilmCraft sendiri untuk yang lainnya atau jika perangkat keras gagal. Media yang sudah terbuka tetap memakai dekodernya sampai dibuka ulang.
+	Head Size	Ukuran Kepala
+	Heart	Hati
+	Height	Tinggi
+	Hexagon	Segi Enam
+	Hide Back Face	Sembunyikan Sisi Belakang
+	High	Tinggi
+	High Cutoff	Batas Atas
+	High Frequency Cut	Potong Frekuensi Tinggi
+	High Frequency Damping	Peredaman Frekuensi Tinggi
+	High Pass	High Pass
+	High Shelf	High Shelf
+	High Shelf Gain	Gain High Shelf
+	High contrast with held highlights and deep shadows	Kontras tinggi dengan sorotan terjaga dan bayangan pekat
+	Highlight	Sorotan
+	Highlight Blue Balance	Keseimbangan Biru Sorotan
+	Highlight Brightness	Kecerahan Sorotan
+	Highlight Color	Warna Sorotan
+	Highlight Green Balance	Keseimbangan Hijau Sorotan
+	Highlight Red Balance	Keseimbangan Merah Sorotan
+	Highlight Rolloff	Rolloff Sorotan
+	Highlight Threshold	Ambang Sorotan
+	Highlight Tint	Rona Sorotan
+	Highlights Lightness	Kecerahan Sorotan
+	Highpass	Highpass
+	Hindi	Hindi
+	Hindi digits	Angka Hindi
+	Horizontal 16:9	Horizontal 16:9
+	Horizontal Alignment	Perataan Horizontal
+	Horizontal Blocks	Blok Horizontal
+	Horizontal Decentering	Pergeseran Pusat Horizontal
+	Horizontal Displacement	Perpindahan Horizontal
+	Horizontal Flip	Balik Horizontal
+	Horizontal Margin	Margin Horizontal
+	Horizontal and Vertical	Horizontal dan Vertikal
+	Hue Center	Pusat Hue
+	Hue Tolerance	Toleransi Hue
+	I/O Buffer Size	Ukuran Buffer I/O
+	Ignore Alpha	Abaikan Alfa
+	Image Control	Kontrol Gambar
+	Immersive Video	Video Imersif
+	Import numbered stills as image sequences	Impor gambar diam bernomor sebagai urutan gambar
+	Impulse	Impuls
+	In a Room	Di Dalam Ruangan
+	In the Media Cache	Di Cache Media
+	In the project	Di proyek
+	In/Out Duration	Durasi Masuk/Keluar
+	Include captions on import	Sertakan takarir saat impor
+	Incoming	Masuk
+	Indeterminate Media Timebase	Basis Waktu Media Tak Tentu
+	Initial Delay	Delay Awal
+	Inner	Dalam
+	Inner Radius	Radius Dalam
+	Input Boost	Penguatan Input
+	Inset	Sisipan
+	Inside	Di Dalam
+	Inside Color	Warna Dalam
+	Inter	Inter
+	Interior Room Tone	Nada Ruang Interior
+	Internal Black Point	Titik Hitam Internal
+	Internal White Point	Titik Putih Internal
+	Interpolation	Interpolasi
+	Intersect	Perpotongan
+	Inverse Falloff	Penurunan Terbalik
+	Invert	Balikkan
+	Invert Alpha	Balikkan Alfa
+	Invert Blur	Balikkan Buram
+	Invert Fill	Balikkan Isian
+	Invert Gradient	Balikkan Gradien
+	Invert Left	Balikkan Kiri
+	Invert Right	Balikkan Kanan
+	Iris	Iris
+	Iris Box	Iris Kotak
+	Iris Cross	Iris Silang
+	Iris Diamond	Iris Berlian
+	Iris Radius	Radius Iris
+	Iris Rotation	Rotasi Iris
+	Iris Round	Iris Bulat
+	Iris Shape	Bentuk Iris
+	Italian	Italia
+	Japanese	Jepang
+	JetBrains Mono	JetBrains Mono
+	Join Through Edits	Gabungkan Edit Tembus
+	Ripple Trim In	Pangkas Ripple Masuk
+	Ripple Trim Out	Pangkas Ripple Keluar
+	Roll Edit	Edit Roll
+	Trim In	Pangkas Masuk
+	Trim Out	Pangkas Keluar
+	Kaleidoscope	Kaleidoskop
+	Keep a recovery copy of unsaved changes	Simpan salinan pemulihan untuk perubahan yang belum disimpan
+	Key Color	Warna Key
+	Keying	Keying
+	Korean	Korea
+	Label Defaults	Label Bawaan
+	Label speakers	Beri label pembicara
+	Labels	Label
+	Large Hall	Aula Besar
+	Large Trim Offset	Offset Pangkas Besar
+	Large Volume Adjustment	Penyesuaian Volume Besar
+	Latch	Latch
+	Layer Name	Nama Lapisan
+	Layers	Lapisan
+	Leave Color	Pertahankan Warna
+	Left - Left	Kiri - Kiri
+	Left - Right	Kiri - Kanan
+	Left channel to device output	Kanal kiri ke output perangkat
+	Left to Right	Kiri ke Kanan
+	Left to right	Kiri ke kanan
+	Legacy	Lama
+	Length	Panjang
+	Lens Blur	Buram Lensa
+	Lens Distortion	Distorsi Lensa
+	Lens Flare	Suar Lensa
+	Lens Type	Jenis Lensa
+	Level 1	Level 1
+	Level 2	Level 2
+	Level 3	Level 3
+	Level 4	Level 4
+	Levels	Level
+	Lifted blacks, softer contrast, muted colour	Hitam terangkat, kontras lebih lembut, warna redup
+	Light 1	Cahaya 1
+	Light 2	Cahaya 2
+	Light 3	Cahaya 3
+	Light 4	Cahaya 4
+	Light 5	Cahaya 5
+	Light Angle	Sudut Cahaya
+	Light Color	Warna Cahaya
+	Light Intensity	Intensitas Cahaya
+	Light Leak	Kebocoran Cahaya
+	Light Leaks	Kebocoran Cahaya
+	Light Sweep	Sapuan Cahaya
+	Light Type	Jenis Cahaya
+	Lighten	Terangkan
+	Lighter Color	Warna Lebih Terang
+	Lighting Effects	Efek Pencahayaan
+	Lightning	Petir
+	Lights & Blurs	Cahaya & Buram
+	Lights & Glows	Cahaya & Pendar
+	Line Thickness	Ketebalan Garis
+	Linear Burn	Bakar Linier
+	Linear Dodge (Add)	Dodge Linier (Tambah)
+	Linear Light	Cahaya Linier
+	Linear Ramp	Gradasi Linier
+	Linear Wipe	Sapuan Linier
+	Linear Wipe (Legacy)	Sapuan Linier (Lama)
+	Linear keyframe thinning	Penipisan bingkai kunci linier
+	Linear to Log	Linier ke Log
+	Liquid Distortion	Distorsi Cair
+	Local Projects	Proyek Lokal
+	Location	Lokasi
+	Log Note	Catatan Log
+	Log to Linear	Log ke Linier
+	Log to Log	Log ke Log
+	Logo Cutout	Potongan Logo
+	Long Shadow	Bayangan Panjang
+	Look-Ahead Time	Waktu Lihat ke Depan
+	Loudness	Kenyaringan
+	Loudness Maximizer	Pemaksimal Kenyaringan
+	Loudness Meter	Meter Kenyaringan
+	Louver	Kisi-kisi
+	Low	Rendah
+	Low Frequency Cut	Potong Frekuensi Rendah
+	Low Pass	Low Pass
+	Low Shelf	Low Shelf
+	Low Shelf Gain	Gain Low Shelf
+	Lower Left	Kiri Bawah
+	Lower Right	Kanan Bawah
+	Lowpass	Lowpass
+	Luma	Luma
+	Luma Curve	Kurva Luma
+	Luma Fade	Fade Luma
+	Luma Key	Key Luma
+	Luma Source	Sumber Luma
+	Luma and Chroma	Luma dan Kroma
+	Lumetri Presets	Preset Lumetri
+	Luminance	Luminans
+	Luminance Threshold	Ambang Luminans
+	Luminosity	Luminositas
+	MB	MB
+	Magenta	Magenta
+	Magnify	Pembesar
+	Magnify (Legacy)	Pembesar (Lama)
+	Maintain pitch while shuttling	Pertahankan nada saat shuttle
+	Major Radius	Radius Mayor
+	Male	Laki-laki
+	Mango	Mangga
+	Map Black To	Petakan Hitam ke
+	Map White To	Petakan Putih ke
+	Maps full-range levels into 16–235 (video range) with a luma curve	Memetakan level rentang penuh ke 16–235 (rentang video) dengan kurva luma
+	Mask Only	Hanya Masker
+	Master Amplitude	Amplitudo Master
+	Mastering	Mastering
+	Match frame sets in point	Cocokkan bingkai menetapkan titik masuk
+	Matte	Matte
+	Matte Alpha	Alfa Matte
+	Matte Cleanup	Pembersihan Matte
+	Matte Generation	Pembuatan Matte
+	Matte Luma	Luma Matte
+	Maximum	Maksimum
+	Maximum Amplitude	Amplitudo Maksimum
+	Maximum Block Size	Ukuran Blok Maksimum
+	Maximum Blur	Buram Maksimum
+	Maximum Project Versions	Versi Proyek Maksimum
+	Maximum Reduction	Pengurangan Maksimum
+	Maximum Scale	Skala Maksimum
+	Media	Media
+	Media Analysis	Analisis Media
+	Media Analysis & Transcription	Analisis Media & Transkripsi
+	Media Cache	Cache Media
+	Media Cache Database	Basis Data Cache Media
+	Media Cache Files	Berkas Cache Media
+	Media Cache Management	Manajemen Cache Media
+	Media Duration	Durasi Media
+	Media End	Akhir Media
+	Media Time	Waktu Media
+	Media Timecode	Kode Waktu Media
+	Media Type	Jenis Media
+	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	Analisis media dan transkripsi akan disimpan di folder Cache Media. Analisis ulang tidak diperlukan jika media diimpor ke proyek lain di komputer ini.
+	Median	Median
+	Medium Room	Ruangan Sedang
+	Memory	Memori
+	Metadata & Timecode Burn-in	Burn-in Metadata & Kode Waktu
+	Method	Metode
+	Metrics Kerning	Kerning Metrik
+	Mid	Tengah
+	Mid Point	Titik Tengah
+	Midtone Blue Balance	Keseimbangan Biru Nada Tengah
+	Midtone Green Balance	Keseimbangan Hijau Nada Tengah
+	Midtone Red Balance	Keseimbangan Merah Nada Tengah
+	Midtones Lightness	Kecerahan Nada Tengah
+	Minimum	Minimum
+	Minimum time	Waktu minimum
+	Minimum time interval thinning	Penipisan interval waktu minimum
+	Minor Radius	Radius Minor
+	Mirror	Cermin
+	Mirror Alternate	Cermin Bergantian
+	Missing font replacement	Pengganti font yang hilang
+	Miter join	Sambungan miter
+	Miter limit	Batas miter
+	Mixed Crystals	Kristal Campuran
+	Mode	Mode
+	Modern High Gain	Gain Tinggi Modern
+	Modulation	Modulasi
+	Modulation Rate	Laju Modulasi
+	Mono Media	Media Mono
+	Monochrome	Monokrom
+	Monochrome toned cyan-blue	Monokrom bernuansa biru sian
+	Monochrome toned warm brown	Monokrom bernuansa cokelat hangat
+	Monoscopic	Monoskopik
+	Monospace only	Hanya monospace
+	More colour in the less saturated areas	Lebih banyak warna di area yang kurang jenuh
+	Morph Cut	Morph Cut
+	Mosaic	Mozaik
+	Mosaic (Legacy)	Mozaik (Lama)
+	Motion Blur	Buram Gerak
+	Motion Camera	Kamera Gerak
+	Motion Preset	Preset Gerak
+	Motion Tween	Tween Gerak
+	Move	Pindah
+	Movie	Film
+	Movie (audio and video)	Film (audio dan video)
+	Multiband Compressor	Kompresor Multiband
+	Multichannel Mono Media	Media Mono Multikanal
+	Multiply	Kalikan
+	Multitap Delay	Delay Multitap
+	Music	Musik
+	Mute input during timeline recording	Bisukan input saat perekaman di linimasa
+	Name	Nama
+	Narrow	Sempit
+	Neon Color	Warna Neon
+	Neon Wipe	Sapuan Neon
+	Next to original media files	Di samping berkas media asli
+	Night	Malam
+	No Motion	Tanpa Gerak
+	No Scroll	Tanpa Gulir
+	No plugins are installed. Changes will take effect the next time you start FilmCraft.	Tidak ada plugin yang terpasang. Perubahan akan berlaku saat Anda memulai FilmCraft berikutnya.
+	Noise	Derau
+	Noise & Grain	Derau & Butiran
+	Noise (Legacy)	Derau (Lama)
+	Noise Level	Level Derau
+	Noise Reduction/Restoration	Pengurangan Derau/Restorasi
+	Noise Type	Jenis Derau
+	Non-Additive Dissolve	Larut Non-Aditif
+	Normal	Normal
+	Notch 1	Notch 1
+	Notch 2	Notch 2
+	Notch 3	Notch 3
+	Notch 4	Notch 4
+	Notch 5	Notch 5
+	Notch 6	Notch 6
+	Notch Filter	Filter Notch
+	Notch Width	Lebar Notch
+	Number Of Echoes	Jumlah Gema
+	Number of Harmonics	Jumlah Harmonik
+	Obsolete	Usang
+	Octagon	Segi Delapan
+	Offset	Offset
+	Offset (Turbulence)	Offset (Turbulensi)
+	Offset From	Offset Dari
+	Offset To	Offset Ke
+	Omni	Omni
+	On	Nyala
+	On Original Image	Pada Gambar Asli
+	On Transparent	Pada Transparan
+	Open Air	Udara Terbuka
+	Open Most Recent	Buka yang Terbaru
+	Open in new window	Buka di jendela baru
+	Open in place	Buka di tempat
+	Open new tab	Buka tab baru
+	Opens up the shadows	Membuka bayangan
+	Order	Urutan
+	Orientation	Orientasi
+	Outer	Luar
+	Outgoing	Keluar
+	Output	Output
+	Output Mapping	Pemetaan Output
+	Outside	Di Luar
+	Outside Color	Warna Luar
+	Overflow	Luapan
+	Overlay	Overlay
+	Overshoot	Overshoot
+	Page Peel	Kelupas Halaman
+	Page Scroll	Gulir Halaman
+	Page Turn	Balik Halaman
+	Paint Bucket	Ember Cat
+	Paint On Black	Lukis di Atas Hitam
+	Paint On Original Image	Lukis di Atas Gambar Asli
+	Paint On Transparent	Lukis di Atas Transparan
+	Paint On White	Lukis di Atas Putih
+	Paint Style	Gaya Lukis
+	Paint Surface	Permukaan Lukis
+	Pan (Y Axis)	Pan (Sumbu Y)
+	Panel Wipe	Sapuan Panel
+	Panels	Panel
+	Panner - Ambisonics	Panner - Ambisonik
+	Parade	Parade
+	Parade (RGB)	Parade (RGB)
+	Parametric Equalizer	Equalizer Parametrik
+	Passband Ripple	Riak Passband
+	Path	Jalur
+	Path Points	Titik Jalur
+	Pause Media Encoder queue during playback	Jeda antrean Media Encoder selama pemutaran
+	Peak Frequency	Frekuensi Puncak
+	Peak Gain	Gain Puncak
+	Pedestal	Pedestal
+	Pentagon	Segi Lima
+	Per line	Per baris
+	Percent Blur	Persen Buram
+	Perspective	Perspektif
+	Phase Difference	Selisih Fase
+	Phaser	Phaser
+	Phone Call	Panggilan Telepon
+	Phosphor	Fosfor
+	Phosphor Color	Warna Fosfor
+	Photocopy	Fotokopi
+	Photocopy Color	Warna Fotokopi
+	Pillow	Bantal
+	Pin All	Sematkan Semua
+	Pin Horizontal	Sematkan Horizontal
+	Pin Light	Pin Light
+	Pin Vertical	Sematkan Vertikal
+	Pinning	Penyematan
+	Pitch Shifter	Pengubah Nada
+	Plate	Pelat
+	Plateau Wipe	Sapuan Dataran
+	Plateaus	Dataran
+	Plates	Pelat
+	Play after rendering previews	Putar setelah merender pratinjau
+	Play audio while scrubbing in Source and Program Monitors	Putar audio saat scrub di Monitor Sumber dan Program
+	Playback	Pemutaran
+	Playhead position determines trim monitor loop playback	Posisi kepala putar menentukan pemutaran berulang monitor pangkas
+	Plugins	Plugin
+	Podcast Voice	Suara Podcast
+	Point 1	Titik 1
+	Point 1 Color	Warna Titik 1
+	Point 1 Latitude	Lintang Titik 1
+	Point 1 Longitude	Bujur Titik 1
+	Point 2	Titik 2
+	Point 2 Color	Warna Titik 2
+	Point 2 Latitude	Lintang Titik 2
+	Point 2 Longitude	Bujur Titik 2
+	Point 3	Titik 3
+	Point 3 Color	Warna Titik 3
+	Point 3 Latitude	Lintang Titik 3
+	Point 3 Longitude	Bujur Titik 3
+	Point 4	Titik 4
+	Point 5	Titik 5
+	Point 6	Titik 6
+	Point 7	Titik 7
+	Point 8	Titik 8
+	Points	Titik
+	Policy	Kebijakan
+	Pop Motion	Gerak Pop
+	Portuguese	Portugis
+	Position & Rotation	Posisi & Rotasi
+	Position Amount	Jumlah Posisi
+	Position, Scale & Rotation	Posisi, Skala & Rotasi
+	Position, Scale, Rotation	Posisi, Skala, Rotasi
+	Posterize	Posterisasi
+	Posterize Time	Posterisasi Waktu
+	Pre-Delay	Pra-Delay
+	Prefix	Awalan
+	Presence Lift	Angkat Presence
+	Preserve Luminosity	Pertahankan Luminositas
+	Preserve Scale	Pertahankan Skala
+	ProcAmp	ProcAmp
+	Projecting cap	Ujung menonjol
+	Projects	Proyek
+	Pull Motion	Gerak Tarik
+	Pulls highlights and whites down	Menurunkan sorotan dan putih
+	Push	Dorong
+	Push (Legacy)	Dorong (Lama)
+	Q	Q
+	RAM reserved for other applications	RAM yang dicadangkan untuk aplikasi lain
+	RGB	RGB
+	RGB Split	Pisah RGB
+	RGB-White	RGB-Putih
+	Radial	Radial
+	Radial Blur	Buram Radial
+	Radial Ramp	Gradasi Radial
+	Radial Wipe	Sapuan Radial
+	Radial Wipe (Legacy)	Sapuan Radial (Lama)
+	Radio Announcer	Penyiar Radio
+	Radio Voice	Suara Radio
+	Radius	Radius
+	Ramp	Gradasi
+	Ramp Shape	Bentuk Gradasi
+	Random	Acak
+	Random Seed	Benih Acak
+	Range	Rentang
+	Ray	Sinar
+	Ray Color	Warna Sinar
+	Ray Length	Panjang Sinar
+	Rays	Sinar
+	Rays Only	Hanya Sinar
+	Read	Baca
+	Rec. 2100	Rec. 2100
+	Rec. 601	Rec. 601
+	Rec. 709	Rec. 709
+	Red Blurriness	Keburaman Merah
+	Red Curve	Kurva Merah
+	Red Offset	Offset Merah
+	Red Power	Pangkat Merah
+	Red Slope	Kemiringan Merah
+	Red-Blue	Merah-Biru
+	Red-Const	Merah-Konst
+	Red-Green	Merah-Hijau
+	Red-Red	Merah-Merah
+	Reduce Axis	Kurangi Sumbu
+	Reduce Interlace Flicker	Kurangi Kedip Interlace
+	Reflected	Terpantul
+	Reflection Angle	Sudut Pantulan
+	Reflection Center	Pusat Pantulan
+	Refraction	Refraksi
+	Reframe Offset	Offset Bingkai Ulang
+	Reframe Zoom	Zoom Bingkai Ulang
+	Refresh growing Files Every	Segarkan Berkas yang Bertambah Setiap
+	Relaxed	Santai
+	Release Time	Waktu Pelepasan
+	Relief	Relief
+	Remaining	Tersisa
+	Remove Fringe	Hapus Pinggiran
+	Render Edit in Audition files to:	Render berkas Edit in Audition ke:
+	Render audio when rendering video	Render audio saat merender video
+	Repair	Perbaikan
+	Repeat Edge Pixels	Ulangi Piksel Tepi
+	Replace Color	Ganti Warna
+	Replace With Clip From Source Monitor	Ganti dengan Klip dari Monitor Sumber
+	Replicate	Replikasi
+	Responsive Design - Position	Desain Responsif - Posisi
+	Responsive Design - Time	Desain Responsif - Waktu
+	Restore open sequences when opening projects	Pulihkan sekuens yang terbuka saat membuka proyek
+	Result	Hasil
+	Retro	Retro
+	Reveal Nested Sequence	Tampilkan Sekuens Bersarang
+	Reveal Original Image	Tampilkan Gambar Asli
+	Reveal in Project	Tampilkan di Proyek
+	Reverb Amount	Jumlah Reverb
+	Reverse	Balik
+	Right - Left	Kanan - Kiri
+	Right - Right	Kanan - Kanan
+	Right channel to device output	Kanal kanan ke output perangkat
+	Right to left	Kanan ke kiri
+	Ripple trim adds edits to keep both sides of trim in sync	Pangkas ripple menambahkan edit agar kedua sisi pemangkasan tetap sinkron
+	Roll (Z Axis)	Gulung (Sumbu Z)
+	Room Size	Ukuran Ruangan
+	Rotation Amount	Jumlah Rotasi
+	Roughen	Kasarkan
+	Roughen Color	Warna Kasar
+	Roughen Edges	Kasarkan Tepi
+	Round cap	Ujung bulat
+	Round join	Sambungan bulat
+	Rounded Crop	Potong Tepi Membulat
+	Rows	Baris
+	Russian	Rusia
+	Rusty	Berkarat
+	Rusty Color	Warna Karat
+	SFX	SFX
+	Sample Rate	Laju Sampel
+	Saturation at 50 %	Saturasi pada 50 %
+	Save .cfa and .pek media cache files next to original media files when possible	Simpan berkas cache media .cfa dan .pek di samping berkas media asli bila memungkinkan
+	Scale (Degrees)	Skala (Derajat)
+	Scale Amount	Jumlah Skala
+	Scale From	Skala Dari
+	Scale Height	Skala Tinggi
+	Scale Match	Pencocokan Skala
+	Scale To	Skala Ke
+	Scale Width	Skala Lebar
+	Scale to frame size	Skalakan ke ukuran bingkai
+	Scan Lines	Garis Pindai
+	Scene	Adegan
+	Scientific Filter	Filter Ilmiah
+	Scratch disk location for Captured Audio	Lokasi disk kerja untuk Audio Rekaman
+	Screen	Layar
+	Seconds	Detik
+	Segments	Segmen
+	Semi-tones	Semiton
+	Sequence Name	Nama Sekuens
+	Sequence Timecode	Kode Waktu Sekuens
+	Set focus on the Timeline when performing Insert/Overwrite edits	Fokuskan ke Linimasa saat melakukan edit Sisipkan/Timpa
+	Set to frame size	Atur ke ukuran bingkai
+	Setting	Pengaturan
+	Shadow Angle	Sudut Bayangan
+	Shadow Blue Balance	Keseimbangan Biru Bayangan
+	Shadow Blur	Buram Bayangan
+	Shadow Color	Warna Bayangan
+	Shadow Distance	Jarak Bayangan
+	Shadow Green Balance	Keseimbangan Hijau Bayangan
+	Shadow Only	Hanya Bayangan
+	Shadow Opacity	Opasitas Bayangan
+	Shadow Red Balance	Keseimbangan Merah Bayangan
+	Shadow Size	Ukuran Bayangan
+	Shadow Tint	Rona Bayangan
+	Shadows Lightness	Kecerahan Bayangan
+	Shake	Guncang
+	Shape Dissolve	Larut Bentuk
+	Shape Flow	Aliran Bentuk
+	Shape Size	Ukuran Bentuk
+	Shapes	Bentuk
+	Shard Size	Ukuran Serpihan
+	Sharp Colors	Warna Tajam
+	Sharpen Amount	Jumlah Penajaman
+	Shift Center To	Geser Pusat ke
+	Shift clips that overlap trim point during ripple trimming	Geser klip yang tumpang tindih dengan titik pangkas saat pemangkasan ripple
+	Shot	Shot
+	Show "Project:" and "Bin:" in Project panel tab	Tampilkan "Proyek:" dan "Bin:" di tab panel Proyek
+	Show Clip Mismatch Warning dialog	Tampilkan dialog Peringatan Ketidakcocokan Klip
+	Show Event Indicator	Tampilkan Indikator Peristiwa
+	Show Focus Area	Tampilkan Area Fokus
+	Show Home	Tampilkan Beranda
+	Show Mask Tracker Preview	Tampilkan Pratinjau Pelacak Masker
+	Show Only Noise	Tampilkan Hanya Derau
+	Show Open Dialog	Tampilkan Dialog Buka
+	Show Project Load Error Dialog	Tampilkan Dialog Galat Memuat Proyek
+	Show Rich Tool Tips	Tampilkan Tooltip Lengkap
+	Show Tool Tips	Tampilkan Tooltip
+	Show Workspace Reset Warning dialog on double click	Tampilkan dialog Peringatan Atur Ulang Ruang Kerja saat klik ganda
+	Show system compatibility issues at startup	Tampilkan masalah kompatibilitas sistem saat memulai
+	Shrink	Susutkan
+	Shutter Angle	Sudut Rana
+	Similarity	Kemiripan
+	Simple Notch Filter	Filter Notch Sederhana
+	Simple Parametric EQ	EQ Parametrik Sederhana
+	Simple Text	Teks Sederhana
+	Single-band Compressor	Kompresor Pita Tunggal
+	Sinusoidal	Sinusoidal
+	Skew	Miring
+	Skew Axis	Sumbu Kemiringan
+	Slats	Bilah
+	Slice	Irisan
+	Slices	Irisan-irisan
+	Slide	Geser
+	Slide (Legacy)	Geser (Lama)
+	Slope	Kemiringan
+	Slow	Lambat
+	Slower Motion	Gerak Lebih Lambat
+	Small Room	Ruangan Kecil
+	Smart Limit	Batas Cerdas
+	Smart Tools	Alat Cerdas
+	Smart quotes	Tanda kutip cerdas
+	Smooth	Halus
+	Smooth Motion	Gerak Halus
+	Smooth Scroll	Gulir Halus
+	Smoothness	Kehalusan
+	Snap playhead in Timeline when Snap is enabled	Snap kepala putar di Linimasa saat Snap diaktifkan
+	Soft	Lembut
+	Soft Clamp	Pembatasan Lembut
+	Soft Edges (Best Quality)	Tepi Lembut (Kualitas Terbaik)
+	Soft Light	Cahaya Lembut
+	Soft Wipe	Sapuan Lembut
+	Soften Harshness	Lembutkan Kekasaran
+	Softness	Kelembutan
+	Solarize	Solarisasi
+	Solid Colors	Warna Solid
+	Source Point	Titik Sumber
+	Source Text	Teks Sumber
+	Spacer	Pengatur Jarak
+	Spanish	Spanyol
+	Speaker Angle	Sudut Speaker
+	Speaker Labeling	Pelabelan Pembicara
+	Special	Khusus
+	Special Effects	Efek Khusus
+	Speech model	Model ucapan
+	Speed	Kecepatan
+	Spherize	Bulatkan
+	Spiky	Berduri
+	Spill	Tumpahan
+	Spill Suppression	Penekanan Tumpahan
+	Spin	Putaran
+	Spin Direction	Arah Putaran
+	Spin Motion	Gerak Putar
+	Split	Belah
+	Split (Legacy)	Belah (Lama)
+	Spotlight	Lampu Sorot
+	Spread	Sebaran
+	Spring Motion	Gerak Pegas
+	Square	Persegi
+	Square (Width Only)	Persegi (Hanya Lebar)
+	Square 1:1	Persegi 1:1
+	Stabilization	Stabilisasi
+	Stabilize Only	Hanya Stabilkan
+	Stabilize, Crop	Stabilkan, Potong Tepi
+	Stabilize, Crop, Auto-scale	Stabilkan, Potong Tepi, Skala Otomatis
+	Stabilize, Synthesize Edges	Stabilkan, Sintesis Tepi
+	Stages	Tahap
+	Star	Bintang
+	Star Wipe	Sapuan Bintang
+	Start Angle	Sudut Awal
+	Start Color	Warna Awal
+	Start Point	Titik Awal
+	Start at 0	Mulai dari 0
+	Start at 1	Mulai dari 1
+	Start of Ramp	Awal Gradasi
+	Start with an Empty Project	Mulai dengan Proyek Kosong
+	Starting Intensity	Intensitas Awal
+	Static Plates	Pelat Statis
+	Step forward/back many	Maju/mundur banyak
+	Stereo Expand	Perluas Stereo
+	Stereo Expander	Pelebar Stereo
+	Stereo Imagery	Citra Stereo
+	Stereo Media	Media Stereo
+	Stereo Phasing	Fase Stereo
+	Stereoscopic - Over/Under	Stereoskopik - Atas/Bawah
+	Stereoscopic - Side by Side	Stereoskopik - Berdampingan
+	Still	Diam
+	Still Image Default Duration	Durasi Bawaan Gambar Diam
+	Stone Church	Gereja Batu
+	Stopband Attenuation	Atenuasi Stopband
+	Straight Color	Warna Lurus
+	Strength	Kekuatan
+	Stretch	Regangkan
+	Stretch Gradient to Fit	Regangkan Gradien agar Pas
+	Stretch Map to Fit	Regangkan Peta agar Pas
+	Stretch Width or Height	Regangkan Lebar atau Tinggi
+	Stretch Wipe	Sapuan Regang
+	Stretch to Fit Frame	Regangkan agar Pas Bingkai
+	Stripe	Garis
+	Stripes	Garis-garis
+	Strobe Color	Warna Strobo
+	Strobe Duration (secs)	Durasi Strobo (dtk)
+	Strobe Light	Lampu Strobo
+	Strobe Period (secs)	Periode Strobo (dtk)
+	Stroke 2 Color	Warna Garis Tepi 2
+	Stroke 2 Type	Jenis Garis Tepi 2
+	Stroke 2 Width	Lebar Garis Tepi 2
+	Stroke Angle	Sudut Sapuan
+	Stroke Color	Warna Garis Tepi
+	Stroke Density	Kerapatan Sapuan
+	Stroke Length	Panjang Sapuan
+	Stroke Length (secs)	Panjang Sapuan (dtk)
+	Stroke Only	Hanya Garis Tepi
+	Stroke Randomness	Keacakan Sapuan
+	Stroke Type	Jenis Garis Tepi
+	Stroke Width	Lebar Garis Tepi
+	Stroke line cap	Ujung garis tepi
+	Stroke line join	Sambungan garis tepi
+	Studio Reverb	Reverb Studio
+	Stylize	Stilisasi
+	Subclip End	Akhir Subklip
+	Subclip Start	Awal Subklip
+	Subspace Warp	Warp Subruang
+	Subtitle	Subtitel
+	Subtract	Kurangi
+	Sum multichannel outputs to mono in Source Monitor	Jumlahkan output multikanal ke mono di Monitor Sumber
+	Super Narrow	Ultra Sempit
+	Surface Gloss	Kilap Permukaan
+	Surface Material	Bahan Permukaan
+	Surround Reverb	Reverb Surround
+	Swap	Tukar
+	Swap Channels	Tukar Kanal
+	Swivel	Ayun Poros
+	Synthetic	Sintetis
+	TV Power	Daya TV
+	Tape	Pita
+	Tape Name	Nama Pita
+	Tape/Tube	Pita/Tabung
+	Target Aspect	Aspek Target
+	Target Color	Warna Target
+	Target Field of View	Bidang Pandang Target
+	Target Loudness	Kenyaringan Target
+	Teal & Orange	Toska & Oranye
+	Telephone	Telepon
+	Teletext	Teleteks
+	Template Properties	Properti Templat
+	Text Animator	Animator Teks
+	Text Color	Warna Teks
+	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	Cache media menyimpan pratinjau render dari proyek yang belum disimpan dan berkas lain yang dapat dibuat ulang oleh FilmCraft. Menghapusnya selalu aman; FilmCraft membangunnya kembali bila diperlukan.
+	Thickness	Ketebalan
+	Tile Gradient	Gradien Ubin
+	Tilt	Miringkan
+	Tilt (X Axis)	Miringkan (Sumbu X)
+	Time	Waktu
+	Time and Pitch	Waktu dan Nada
+	Timecode Conversion	Konversi Kode Waktu
+	Timeline Mouse Scrolling	Gulir Mouse di Linimasa
+	Timeline Playback Auto-Scrolling	Gulir Otomatis Pemutaran Linimasa
+	Tint Color	Warna Rona
+	To	Ke
+	Tolerance	Toleransi
+	Tone	Nada
+	Top Center	Tengah Atas
+	Top Left	Kiri Atas
+	Top Right	Kanan Atas
+	Touch	Touch
+	Track Matte Key	Key Matte Trek
+	Transcription	Transkripsi
+	Transcription preferences	Preferensi transkripsi
+	Transform	Transformasi
+	Transformers	Trafo
+	Transience	Transien
+	Transition Completion	Penyelesaian Transisi
+	Transition Softness	Kelembutan Transisi
+	Transparency	Transparansi
+	Trash	Sampah
+	Travel Motion	Gerak Perjalanan
+	Treble	Treble
+	Triangle	Segitiga
+	Trim	Pangkas
+	Tube	Tabung
+	Tube-modeled Compressor	Kompresor Model Tabung
+	Tubular	Tubular
+	Turbulent	Turbulen
+	Turbulent Displace	Perpindahan Turbulen
+	Turbulent Sharp	Turbulen Tajam
+	Turbulent Smooth	Turbulen Halus
+	Turbulent Smoother	Turbulen Lebih Halus
+	Tweed	Tweed
+	Twirl	Pusaran
+	Twirl (Legacy)	Pusaran (Lama)
+	Twirl Center	Pusat Pusaran
+	Twirl Radius	Radius Pusaran
+	Twist	Pilin
+	Twist Smoother	Pilin Lebih Halus
+	Typewriter	Mesin Tik
+	Ultra Key	Ultra Key
+	Uniform Scale	Skala Seragam
+	Uniform Spacing	Jarak Seragam
+	Unsharp Mask	Unsharp Mask
+	Update it at least every	Perbarui setidaknya setiap
+	Update timeline dynamically during ripple edits.	Perbarui linimasa secara dinamis selama edit ripple.
+	Upper Frequency	Frekuensi Atas
+	Upper Left	Kiri Atas
+	Upper Right	Kanan Atas
+	Use Color Noise	Gunakan Derau Warna
+	Use End Color	Gunakan Warna Akhir
+	Use File	Gunakan Berkas
+	Use Glow Color	Gunakan Warna Pendar
+	Use Media Source	Gunakan Sumber Media
+	Use Tint Color	Gunakan Warna Rona
+	Utility	Utilitas
+	VHS Damage	Kerusakan VHS
+	VR Blur	Buram VR
+	VR Chroma Leaks	Kebocoran Kroma VR
+	VR Chromatic Aberrations	Aberasi Kromatik VR
+	VR Color Gradients	Gradien Warna VR
+	VR De-Noise	Hilangkan Derau VR
+	VR Digital Glitch	Glitch Digital VR
+	VR Fractal Noise	Derau Fraktal VR
+	VR Glow	Pendar VR
+	VR Gradient Wipe	Sapuan Gradien VR
+	VR Iris Wipe	Sapuan Iris VR
+	VR Light Leaks	Kebocoran Cahaya VR
+	VR Light Rays	Sinar Cahaya VR
+	VR Mobius Zoom	Zoom Mobius VR
+	VR Plane to Sphere	Bidang ke Bola VR
+	VR Projection	Proyeksi VR
+	VR Random Blocks	Blok Acak VR
+	VR Rotate Sphere	Putar Bola VR
+	VR Sharpen	Pertajam VR
+	VR Spherical Blur	Buram Bola VR
+	Validate Content Credentials on import	Validasi Kredensial Konten saat impor
+	Vectorscope (YUV)	Vektorskop (YUV)
+	Vectorscope + Waveform YC	Vektorskop + Bentuk Gelombang YC
+	Vectorscope HLS	Vektorskop HLS
+	Vectorscope YUV	Vektorskop YUV
+	Venetian Blinds	Kerai Venesia
+	Vertical 4:5	Vertikal 4:5
+	Vertical 9:16	Vertikal 9:16
+	Vertical Alignment	Perataan Vertikal
+	Vertical Blocks	Blok Vertikal
+	Vertical Decentering	Pergeseran Pusat Vertikal
+	Vertical Displacement	Perpindahan Vertikal
+	Vertical Flip	Balik Vertikal
+	Vertical Margin	Margin Vertikal
+	Very Narrow	Sangat Sempit
+	Video 1	Video 1
+	Video 2	Video 2
+	Video 3	Video 3
+	Video 4	Video 4
+	Video 5	Video 5
+	Video 6	Video 6
+	Video 7	Video 7
+	Video 8	Video 8
+	Video Codec	Codec Video
+	Video Duration	Durasi Video
+	Video Effects	Efek Video
+	Video In Point	Titik Masuk Video
+	Video Info	Info Video
+	Video Limiter	Limiter Video
+	Video Out Point	Titik Keluar Video
+	Video Transition Default Duration	Durasi Bawaan Transisi Video
+	Video Transitions	Transisi Video
+	Video Usage	Penggunaan Video
+	Vignette	Vinyet
+	Vivid Light	Cahaya Terang
+	Vocal Booth	Bilik Vokal
+	Vocal Enhancer	Penguat Vokal
+	Voice	Suara
+	Voice in a Hall	Suara di Aula
+	Volumetric Rays	Sinar Volumetrik
+	Warm Film	Film Hangat
+	Warm Room	Ruangan Hangat
+	Warm Voice	Suara Hangat
+	Warm print stock with gentle roll-off	Stok cetak hangat dengan roll-off lembut
+	Warm, soft late-afternoon light	Cahaya sore yang hangat dan lembut
+	Warning	Peringatan
+	Warp Stabilizer	Warp Stabilizer
+	Wave	Gelombang
+	Wave Height	Tinggi Gelombang
+	Wave Speed	Kecepatan Gelombang
+	Wave Warp	Lengkung Gelombang
+	Wave Width	Lebar Gelombang
+	Waveform	Bentuk Gelombang
+	Waveform (Luma)	Bentuk Gelombang (Luma)
+	Waveform (RGB)	Bentuk Gelombang (RGB)
+	Wavelength	Panjang Gelombang
+	Wet	Basah
+	Wet Out	Output Basah
+	When Opening a Project	Saat Membuka Proyek
+	Whip	Cambuk
+	Whip (Legacy)	Cambuk (Lama)
+	Whisper base (balanced)	Whisper base (seimbang)
+	Whisper small (most accurate)	Whisper small (paling akurat)
+	Whisper tiny (fastest)	Whisper tiny (tercepat)
+	White	Putih
+	White Input Level	Level Input Putih
+	White Is High	Putih Berarti Tinggi
+	Wide Outdoor	Luar Ruangan Luas
+	Widener	Pelebar
+	Width	Lebar
+	Wiggle	Goyang
+	Wipe	Sapuan
+	Wipe Angle	Sudut Sapuan
+	Wonder Glow	Pendar Ajaib
+	Wrap Back	Bungkus Balik
+	Write	Tulis
+	Write XMP ID to files on import	Tulis ID XMP ke berkas saat impor
+	Write clip markers to XMP	Tulis penanda klip ke XMP
+	Write-on	Tulis Muncul
+	X Rotation	Rotasi X
+	Y Rotation	Rotasi Y
+	YC	YC
+	YC no Chroma	YC tanpa Kroma
+	YUV	YUV
+	Yellow-green highlights and blue-lifted shadows from crossed channel curves	Sorotan kuning-hijau dan bayangan kebiruan dari kurva kanal bersilang
+	Z Position	Posisi Z
+	Z Rotation	Rotasi Z
+	Zoom	Zoom
+	Zoom Amount	Jumlah Zoom
+	Zoom Blur	Buram Zoom
+	Zoom Strength	Kekuatan Zoom
+	days	hari
+	frames	bingkai
+	milliseconds	milidetik
+	minute(s)	menit
+	second(s)	detik
+	seconds	detik
+	AAF…	AAF…
+	Audio…	Audio…
+	Avid Log Exchange…	Avid Log Exchange…
+	Color…	Warna…
+	EDL…	EDL…
+	Edit Workspaces…	Edit Ruang Kerja…
+	FCPXML…	FCPXML…
+	Final Cut Pro XML…	Final Cut Pro XML…
+	General…	Umum…
+	OMF…	OMF…
+	OpenTimelineIO…	OpenTimelineIO…
+	Save Changes to this Workspace	Simpan Perubahan pada Ruang Kerja Ini
+	Save as New Workspace…	Simpan sebagai Ruang Kerja Baru…
+	Create Search Bin	Buat Bin Pencarian
+	Edit Offline File	Edit Berkas Offline
+	Source Settings	Pengaturan Sumber
+	Update Metadata	Perbarui Metadata
+	Automate To Sequence	Otomatiskan ke Sekuens
+	Scene Edit Detection	Deteksi Pergantian Adegan
+	Analyze	Analisis
+	Normalize Mix Track	Normalisasi Trek Mix
+	Simplify Sequence	Sederhanakan Sekuens
+	Simplify	Sederhanakan
+	Transcribe Sequence	Transkripsikan Sekuens
+	Save as Template	Simpan sebagai Templat
+	Flash Cue Marker	Penanda Isyarat Flash
+	System Compatibility Report	Laporan Kompatibilitas Sistem
+	no GPU adapter: the CPU compositor is used	tidak ada adaptor GPU: kompositor CPU digunakan
+	Avid Log Exchange	Avid Log Exchange
+	FilmCraft Project	Proyek FilmCraft
+	{name} Selection.fcproj	{name} Pilihan.fcproj
+	{name} (Simplified)	{name} (Disederhanakan)
+	Find in:	Cari di:
+	Find:	Cari:
+	Search:	Cari:
+	Clip Names and Markers	Nama Klip dan Penanda
+	Match:	Cocokkan:
+	All	Semua
+	Any	Salah Satu
+	Case Sensitive	Peka Huruf Besar/Kecil
+	Scratch Disks	Disk Kerja
+	Ingest Settings	Pengaturan Ingest
+	Captured and Generated:	Direkam dan Dibuat:
+	Video Previews:	Pratinjau Video:
+	Audio Previews:	Pratinjau Audio:
+	Project Auto Save:	Simpan Otomatis Proyek:
+	Same as Project	Sama dengan Proyek
+	Path: {path}	Jalur: {path}
+	Transcode	Transkode
+	Copy and Create Proxies	Salin dan Buat Proksi
+	Action:	Tindakan:
+	Destination:	Tujuan:
+	Next to the media	Di samping media
+	Video Rendering and Playback	Rendering dan Pemutaran Video
+	Renderer:	Perender:
+	Display Format:	Format Tampilan:
+	Milliseconds	Milidetik
+	Capture	Rekam
+	Capture Format:	Format Rekam:
+	Action and Title Safe Areas	Area Aman Aksi dan Judul
+	Title Safe Area	Area Aman Judul
+	Action Safe Area	Area Aman Aksi
+	Total Duration	Durasi Total
+	Average Data Rate	Laju Data Rata-rata
+	Colour	Warna
+	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Hz · {n} kanal
+	Media Name:	Nama Media:
+	Scene:	Adegan:
+	Shot/Take:	Shot/Take:
+	Log Note:	Catatan Log:
+	Codec: {codec}	Codec: {codec}
+	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	Tulis metadata klip terpilih ({n}) ke berkas XMP di samping medianya?
+	Existing XMP files written by other applications are left unchanged.	Berkas XMP yang ditulis oleh aplikasi lain dibiarkan tidak berubah.
+	To {name}	Ke {name}
+	Ordering:	Pengurutan:
+	Sort Order	Urutan Sortir
+	Selection Order	Urutan Pilihan
+	Placement:	Penempatan:
+	Sequentially	Berurutan
+	At Unnumbered Markers	Di Penanda Tanpa Nomor
+	Method:	Metode:
+	Insert Edit	Edit Sisip
+	Overwrite Edit	Edit Timpa
+	Clip Overlap:	Tumpang Tindih Klip:
+	Frames per Still:	Bingkai per Gambar Diam:
+	Transitions	Transisi
+	Apply Default Audio Transition	Terapkan Transisi Audio Bawaan
+	Apply Default Video Transition	Terapkan Transisi Video Bawaan
+	Ignore Options	Opsi Abaikan
+	Ignore Audio	Abaikan Audio
+	Ignore Video	Abaikan Video
+	Apply a cut at each detected cut point	Terapkan potongan di setiap titik potong yang terdeteksi
+	Create a bin of subclips from each detected cut point	Buat bin subklip dari setiap titik potong yang terdeteksi
+	Create a clip marker at each detected cut point	Buat penanda klip di setiap titik potong yang terdeteksi
+	Sensitivity:	Sensitivitas:
+	Normalize Mix Track to:	Normalisasi Trek Mix ke:
+	Disabled clips	Klip nonaktif
+	Empty tracks	Trek kosong
+	Gaps	Celah
+	Video effects	Efek video
+	Audio effects	Efek audio
+	Text (graphics and captions)	Teks (grafis dan takarir)
+	Clips	Klip
+	Move clips to the lowest track possible	Pindahkan klip ke trek serendah mungkin
+	Keep:	Pertahankan:
+	Video and Audio	Video dan Audio
+	Video Only	Hanya Video
+	Audio Only	Hanya Audio
+	Language:	Bahasa:
+	Audio on track {t}	Audio di trek {t}
+	Audio analysis:	Analisis audio:
+	Recognize when different speakers are talking	Kenali saat pembicara yang berbeda sedang berbicara
+	Template Name:	Nama Templat:
+	Comments:	Komentar:
+	 (unavailable)	 (tidak tersedia)
+	Decoders	Dekoder
+	Containers	Kontainer
+	Export formats	Format ekspor
+	Match {n} of {total}	Kecocokan {n} dari {total}
+	Saved template {path}	Templat disimpan: {path}
+	Scene Edit Detection: analysing in the background (see Progress)	Deteksi Pergantian Adegan: menganalisis di latar belakang (lihat Kemajuan)
+	Delete Search Bin	Hapus Bin Pencarian
+	 (removed from {list})	 (dihapus dari {list})
+	{key} can't be used as a shortcut	{key} tidak dapat digunakan sebagai pintasan
+	Keyboard Shortcuts	Pintasan Keyboard
+	{active} (modified)	{active} (diubah)
+	Loaded “{name}”	“{name}” dimuat
+	My Shortcuts	Pintasan Saya
+	Deleted preset “{active}”	Preset “{active}” dihapus
+	Export…	Ekspor…
+	Exported to {path}	Diekspor ke {path}
+	Export: no file chosen (agents: shortcuts.export {path})	Ekspor: tidak ada berkas yang dipilih (agen: shortcuts.export {path})
+	Imported “{name}”	“{name}” diimpor
+	Import: no file chosen (agents: shortcuts.import {path})	Impor: tidak ada berkas yang dipilih (agen: shortcuts.import {path})
+	Keyboard: US (macOS)	Keyboard: US (macOS)
+	Keyboard: US	Keyboard: US
+	Save preset as:	Simpan preset sebagai:
+	Commands:	Perintah:
+	{panel} Panel	Panel {panel}
+	Application shortcuts work whatever panel has focus	Pintasan aplikasi berfungsi di panel mana pun yang sedang fokus
+	Panel shortcuts override application shortcuts while that panel has focus	Pintasan panel menggantikan pintasan aplikasi selama panel itu sedang fokus
+	Modifier held / selected	Pengubah ditahan / dipilih
+	Search commands or keys	Cari perintah atau tombol
+	Selected: {command}	Dipilih: {command}
+	Command	Perintah
+	Shortcut	Pintasan
+	Type a shortcut… (Esc cancels)	Ketik pintasan… (Esc membatalkan)
+	Add another shortcut	Tambah pintasan lain
+	No matching commands	Tidak ada perintah yang cocok
+	Key:	Tombol:
+	Modifiers	Pengubah
+	Nothing is assigned to this key	Tidak ada yang ditetapkan ke tombol ini
+	Click a key on the keyboard to see its shortcuts	Klik tombol pada keyboard untuk melihat pintasannya
+	Assign {key} to {command}	Tetapkan {key} ke {command}
+	Conflict: {key} is assigned to {commands} ({ctx})	Konflik: {key} ditetapkan ke {commands} ({ctx})
+	 and 	 dan 
+	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	Klik sel Pintasan suatu perintah lalu tekan tombol untuk menetapkannya; + menambahkan pintasan lain.
+	Cleared {n} shortcut(s) of {command}	{n} pintasan dari {command} dihapus
+	No export preset named `{name}`	Tidak ada preset ekspor bernama `{name}`
+	Open a sequence to export	Buka sekuens untuk mengekspor
+	Destinations	Tujuan
+	Media File	Berkas Media
+	Queue ({n})	Antrean ({n})
+	Send exports here with Send to Queue, then start the queue.	Kirim ekspor ke sini dengan Kirim ke Antrean, lalu mulai antrean.
+	Ready	Siap
+	Encoding {n}%	Mengenkode {n}%
+	Start Queue	Mulai Antrean
+	Stop	Berhenti
+	Clear Finished	Hapus yang Selesai
+	Not supported by FilmCraft's encoders yet	Belum didukung oleh enkoder FilmCraft
+	Sequence name	Nama sekuens
+	Folder	Folder
+	Preset	Preset
+	More presets…	Preset lainnya…
+	Multiplexer	Multiplexer
+	The sequence has no caption track.	Sekuens tidak memiliki trek takarir.
+	Export Options	Opsi Ekspor
+	Burn Captions Into Video	Tanamkan Takarir ke Video
+	Create Sidecar File	Buat Berkas Pendamping
+	File Format	Format Berkas
+	SubRip Subtitle (.srt)	Subtitel SubRip (.srt)
+	WebVTT (.vtt)	WebVTT (.vtt)
+	Title	Judul
+	Creator	Pembuat
+	Copyright	Hak Cipta
+	Image	Gambar
+	Frame Size	Ukuran Bingkai
+	Match Source	Cocokkan Sumber
+	Field Order	Urutan Field
+	Aspect	Aspek
+	Profile	Profil
+	Bitrate Encoding	Enkode Bitrate
+	Target Bitrate	Bitrate Target
+	Adaptive ({bpp} bits per pixel)	Adaptif ({bpp} bit per piksel)
+	Maximum Bitrate	Bitrate Maksimum
+	Quality (CRF)	Kualitas (CRF)
+	Key Frame Distance	Jarak Bingkai Kunci
+	Quality	Kualitas
+	Render at Maximum Depth	Render pada Kedalaman Maksimum
+	Use Maximum Render Quality	Gunakan Kualitas Render Maksimum
+	Export Audio	Ekspor Audio
+	Audio Format	Format Audio
+	Uncompressed (PCM)	Tanpa Kompresi (PCM)
+	Match Source ({seq_sr} Hz)	Cocokkan Sumber ({seq_sr} Hz)
+	Channels	Kanal
+	Audio Bitrate	Bitrate Audio
+	Sample Size	Ukuran Sampel
+	16 bit	16 bit
+	24 bit	24 bit
+	32 bit	32 bit
+	32 bit float	32 bit titik mengambang
+	FLAC stores whole-number samples only	FLAC hanya menyimpan sampel bilangan bulat
+	MXF export writes integer PCM only	Ekspor MXF hanya menulis PCM bilangan bulat
+	Size / Opacity	Ukuran / Opasitas
+	Image Overlay	Overlay Gambar
+	PNG or JPEG file	Berkas PNG atau JPEG
+	Name Overlay	Overlay Nama
+	Timecode Overlay	Overlay Kode Waktu
+	Luma Min / Max	Luma Min / Maks
+	Loudness Normalization	Normalisasi Kenyaringan
+	True Peak Limit	Batas True Peak
+	Audio only	Hanya audio
+	Scaling	Penskalaan
+	Scale To Fit	Skalakan agar Pas
+	Scale To Fill	Skalakan untuk Mengisi
+	Stretch To Fill	Regangkan untuk Mengisi
+	Summary	Ringkasan
+	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Sekuens, {w}x{h}, {fps} fps, {rate} Hz
+	Estimated file size: {size}	Perkiraan ukuran berkas: {size}
+	Send to Queue	Kirim ke Antrean
+	Exporting {path}	Mengekspor {path}
+	Added to the export queue	Ditambahkan ke antrean ekspor
+	Preset Manager	Manajer Preset
+	Search presets	Cari preset
+	Favorites only	Hanya favorit
+	Show in the Preset menu	Tampilkan di menu Preset
+	User	Pengguna
+	Save current settings as:	Simpan pengaturan saat ini sebagai:
+	Export presets	Ekspor preset
+	Import: no file chosen (agents: export.presets.import {path})	Impor: tidak ada berkas yang dipilih (agen: export.presets.import {path})
+	Export: no file chosen (agents: export.presets.export {path, names})	Ekspor: tidak ada berkas yang dipilih (agen: export.presets.export {path, names})
+	Quick Export: open a sequence first	Ekspor Cepat: buka sekuens terlebih dahulu
+	File Name & Location	Nama & Lokasi Berkas
+	Quick Export: {path}	Ekspor Cepat: {path}
+	Graphics problem: switched to software compositing	Masalah grafis: beralih ke pengomposisian perangkat lunak
+	GPU acceleration is unavailable; preview renders on the CPU	Akselerasi GPU tidak tersedia; pratinjau dirender di CPU
+	Exporting	Mengekspor
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Klik untuk memilih, atau klik di ruang kosong lalu seret untuk memilih dengan bingkai. Gunakan Shift, Opt, dan Cmd untuk opsi lain.
+	Click to select all clips to the right in all tracks. Shift-click for a single track.	Klik untuk memilih semua klip di sebelah kanan di semua trek. Shift-klik untuk satu trek.
+	Click to select all clips to the left in all tracks. Shift-click for a single track.	Klik untuk memilih semua klip di sebelah kiri di semua trek. Shift-klik untuk satu trek.
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	Seret titik edit untuk pangkas ripple; klip berikutnya bergeser agar celah tetap tertutup.
+	Drag an edit point to roll it: the out of one clip and the in of the next move together.	Seret titik edit untuk roll: titik keluar satu klip dan titik masuk klip berikutnya bergeser bersama.
+	Drag an edge to change the clip's speed so it fills the new duration.	Seret tepi untuk mengubah kecepatan klip agar mengisi durasi baru.
+	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	Seret tepi klip musik untuk me-remix-nya ke durasi baru pada ketukan yang sesuai secara musikal.
+	Click to split a clip. Shift-click to split all tracks.	Klik untuk membelah klip. Shift-klik untuk membelah semua trek.
+	Drag a clip to slip its source in/out without moving it.	Seret klip untuk menggeser masuk/keluar sumbernya tanpa memindahkannya.
+	Drag a clip to slide it between its neighbours.	Seret klip untuk menggesernya di antara klip tetangganya.
+	Drag to scroll the timeline.	Seret untuk menggulir linimasa.
+	Click to zoom in; Opt-click to zoom out.	Klik untuk memperbesar; Opt-klik untuk memperkecil.
+	FilmCraft hit an error	FilmCraft mengalami galat
+	Details: {path}	Detail: {path}
+	Opened {url}	Membuka {url}
+	(empty)	(kosong)
+	Step Back 1 Frame	Mundur 1 Bingkai
+	Step Forward 1 Frame	Maju 1 Bingkai
+	Match Playhead	Cocokkan Kepala Putar
+	Gang to Program	Gabungkan ke Program
+	AAC Audio	Audio AAC
+	AAC Audio 48 kHz 320 kbps	Audio AAC 48 kHz 320 kbps
+	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Audio MPEG-4 (.m4a), stereo 48 kHz AAC-LC pada 320 kbps
+	AIFF	AIFF
+	AIFF 48 kHz 16-bit	AIFF 48 kHz 16-bit
+	AIFF, stereo 48 kHz 16-bit PCM	AIFF, PCM stereo 48 kHz 16-bit
+	APV	APV
+	APV 422-10	APV 422-10
+	APV 422-12	APV 422-12
+	Anamorphic 2:1 (2.0)	Anamorfik 2:1 (2.0)
+	Animated GIF	GIF Animasi
+	Animated GIF 640×360	GIF Animasi 640×360
+	Apple ProRes	Apple ProRes
+	Apple ProRes 422	Apple ProRes 422
+	Apple ProRes 422 HQ	Apple ProRes 422 HQ
+	Apple ProRes 422 LT	Apple ProRes 422 LT
+	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444 dengan Alfa
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
+	Application	Aplikasi
+	Apply Guide Template	Terapkan Templat Garis Bantu
+	Auto Save Now	Simpan Otomatis Sekarang
+	Auto-Match Loudness	Cocokkan Kenyaringan Otomatis
+	Avid DNxHR	Avid DNxHR
+	Avid DNxHR HQ	Avid DNxHR HQ
+	Avid DNxHR LB	Avid DNxHR LB
+	Avid DNxHR SQ	Avid DNxHR SQ
+	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	OP-Atom gaya Avid: berkas gambar DNxHR HQ ditambah satu berkas PCM 24-bit 48 kHz per kanal (_A1, _A2…)
+	BMP	BMP
+	BMP Sequence	Urutan BMP
+	Baseline	Baseline
+	Begin Text Editing for a Graphic Layer	Mulai Mengedit Teks pada Lapisan Grafis
+	Begins With	Diawali Dengan
+	Blur In	Buram Masuk
+	Blur Out	Buram Keluar
+	Brightens inside a feathered circular mask	Mencerahkan bagian dalam masker lingkaran ber-feather
+	Broadcast	Siaran
+	CBR	CBR
+	Cancel Dynamic Trim	Batalkan Pangkas Dinamis
+	Cancel Queued Export	Batalkan Ekspor dalam Antrean
+	Center Left	Kiri Tengah
+	Center Right	Kanan Tengah
+	Center align text	Rata tengah teks
+	Change Mask	Ubah Masker
+	Clear All Events	Hapus Semua Peristiwa
+	Clear Edit Point Selection	Hapus Pilihan Titik Edit
+	Clear Finished Exports	Hapus Ekspor yang Selesai
+	Clear Poster Frame	Hapus Bingkai Poster
+	Close Bin	Tutup Bin
+	Close Sequence	Tutup Sekuens
+	Contains	Berisi
+	Cut to Camera 1	Potong ke Kamera 1
+	Cut to Camera 2	Potong ke Kamera 2
+	Cut to Camera 3	Potong ke Kamera 3
+	Cut to Camera 4	Potong ke Kamera 4
+	Cut to Camera 5	Potong ke Kamera 5
+	Cut to Camera 6	Potong ke Kamera 6
+	Cut to Camera 7	Potong ke Kamera 7
+	Cut to Camera 8	Potong ke Kamera 8
+	Cut to Camera 9	Potong ke Kamera 9
+	D1/DV NTSC (0.9091)	D1/DV NTSC (0.9091)
+	D1/DV PAL (1.0940)	D1/DV PAL (1.0940)
+	DVCPRO HD (1.5)	DVCPRO HD (1.5)
+	Darkens outside a feathered oval mask	Menggelapkan bagian luar masker oval ber-feather
+	Decrease Audio Tracks Height	Kurangi Tinggi Trek Audio
+	Decrease Clip Volume	Kurangi Volume Klip
+	Decrease Clip Volume Many	Kurangi Volume Klip Banyak
+	Decrease Font Size by Five Units	Kurangi Ukuran Font Lima Satuan
+	Decrease Font Size by One Unit	Kurangi Ukuran Font Satu Satuan
+	Decrease Leading by Five Units	Kurangi Spasi Baris Lima Satuan
+	Decrease Leading by One Unit	Kurangi Spasi Baris Satu Satuan
+	Decrease Video Tracks Height	Kurangi Tinggi Trek Video
+	Delete Captions	Hapus Takarir
+	Delete Graphic Layer	Hapus Lapisan Grafis
+	Delete Guide Template	Hapus Templat Garis Bantu
+	Delete Media Cache Files	Hapus Berkas Cache Media
+	Discard Unsaved Changes	Buang Perubahan yang Belum Disimpan
+	Does Not Contain	Tidak Berisi
+	Download Speech Model	Unduh Model Ucapan
+	Dynamic Trim Stop	Hentikan Pangkas Dinamis
+	Edit Caption Text	Edit Teks Takarir
+	Ellipse Tool	Alat Elips
+	Ends With	Diakhiri Dengan
+	Entire Source	Seluruh Sumber
+	EssentialSound	EssentialSound
+	Export Frame	Ekspor Bingkai
+	Extend Next Edit To Playhead	Perpanjang Edit Berikutnya ke Kepala Putar
+	Extend Previous Edit To Playhead	Perpanjang Edit Sebelumnya ke Kepala Putar
+	Extend Selected Edit to Playhead	Perpanjang Edit Terpilih ke Kepala Putar
+	Extend Selection Down	Perluas Pilihan ke Bawah
+	Extend Selection Left	Perluas Pilihan ke Kiri
+	Extend Selection Right	Perluas Pilihan ke Kanan
+	Extend Selection Up	Perluas Pilihan ke Atas
+	Fade In	Fade In
+	Gaussian Blur from 0 to 60 over the last second	Buram Gaussian dari 0 ke 60 selama detik terakhir
+	Gaussian Blur from 60 to 0 over the first second	Buram Gaussian dari 60 ke 0 selama detik pertama
+	Generate Ducking Keyframes	Buat Bingkai Kunci Ducking
+	Go to Next Edit Point	Ke Titik Edit Berikutnya
+	Go to Next Edit Point on Any Track	Ke Titik Edit Berikutnya di Trek Mana Pun
+	Go to Previous Edit Point	Ke Titik Edit Sebelumnya
+	Go to Previous Edit Point on Any Track	Ke Titik Edit Sebelumnya di Trek Mana Pun
+	Go to Selected Clip End	Ke Akhir Klip Terpilih
+	Go to Selected Clip Start	Ke Awal Klip Terpilih
+	Go to Sequence End	Ke Akhir Sekuens
+	Go to Sequence Start	Ke Awal Sekuens
+	H.264	H.264
+	AV1	AV1
+	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	H.264 1920×1080 untuk situs berbagi video, VBR 1 pass, 16 Mbps
+	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080, VBR 1 pass, target 20 Mbps, AAC 320 kbps
+	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080, VBR 2 pass, 18 Mbps
+	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	H.264 3840×2160 untuk situs berbagi video, VBR 1 pass, 45 Mbps
+	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160, VBR 1 pass, target 60 Mbps, AAC 320 kbps
+	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160, VBR 2 pass, 50 Mbps
+	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	H.264 potret 9:16 untuk video sosial pendek, diskalakan untuk mengisi, 12 Mbps
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264 pada ukuran dan laju bingkai sekuens; 0,05 bit per piksel
+	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	H.264 pada ukuran dan laju bingkai sekuens; 0,1 bit per piksel
+	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	H.264 pada ukuran dan laju bingkai sekuens; bitrate menyesuaikan ukuran bingkai (0,2 bit per piksel)
+	HD Anamorphic 1080 (1.333)	HD Anamorfik 1080 (1.333)
+	Hand Tool	Alat Tangan
+	High Quality 1080p HD	Kualitas Tinggi 1080p HD
+	High Quality 2160p 4K	Kualitas Tinggi 2160p 4K
+	Image Sequence	Urutan Gambar
+	Increase Audio Tracks Height	Tambah Tinggi Trek Audio
+	Increase Clip Volume	Naikkan Volume Klip
+	Increase Clip Volume Many	Naikkan Volume Klip Banyak
+	Increase Font Size by Five Units	Perbesar Ukuran Font Lima Satuan
+	Increase Font Size by One Unit	Perbesar Ukuran Font Satu Satuan
+	Increase Leading by Five Units	Tambah Spasi Baris Lima Satuan
+	Increase Leading by One Unit	Tambah Spasi Baris Satu Satuan
+	Increase Video Tracks Height	Tambah Tinggi Trek Video
+	Large blocks resolving to the picture over the first second	Blok besar yang berubah menjadi gambar selama detik pertama
+	Left align text	Rata kiri teks
+	Looping GIF, 640×360 at 15 fps	GIF berulang, 640×360 pada 15 fps
+	Lower First	Bawah Dulu
+	Lumetri	Lumetri
+	MXF OP-Atom	MXF OP-Atom
+	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
+	MXF OP1a	MXF OP1a
+	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ
+	MXF OP1a H.264	MXF OP1a H.264
+	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ
+	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a, DNxHR HQ (8-bit 4:2:2), PCM 24-bit 48 kHz, kode waktu awal
+	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a, H.264 High long GOP (0,3 bit per piksel), PCM 24-bit 48 kHz
+	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a, ProRes 422 HQ, PCM 24-bit 48 kHz, kode waktu awal
+	Main	Main
+	Mark In (Hover Scrub)	Tandai Masuk (Scrub saat Melayang)
+	Mark Out (Hover Scrub)	Tandai Keluar (Scrub saat Melayang)
+	Masks	Masker
+	Match Source – Adaptive High Bitrate	Cocokkan Sumber – Bitrate Tinggi Adaptif
+	Match Source – Adaptive Low Bitrate	Cocokkan Sumber – Bitrate Rendah Adaptif
+	Match Source – Adaptive Medium Bitrate	Cocokkan Sumber – Bitrate Sedang Adaptif
+	Matches	Cocok Dengan
+	Maximize or Restore Active Frame	Maksimalkan atau Pulihkan Bingkai Aktif
+	Maximize or Restore Frame Under Cursor	Maksimalkan atau Pulihkan Bingkai di Bawah Kursor
+	Media Browser Settings	Pengaturan Peramban Media
+	MediaBrowser	MediaBrowser
+	MediaCache	MediaCache
+	Merge Captions	Gabungkan Takarir
+	Mixer	Mixer
+	Mosaic In	Mozaik Masuk
+	Move All Audio Targets Down	Pindahkan Semua Target Audio ke Bawah
+	Move All Audio Targets Up	Pindahkan Semua Target Audio ke Atas
+	Move All Video Targets Down	Pindahkan Semua Target Video ke Bawah
+	Move All Video Targets Up	Pindahkan Semua Target Video ke Atas
+	Move Selection Down	Pindahkan Pilihan ke Bawah
+	Move Selection End	Pindahkan Pilihan ke Akhir
+	Move Selection Home	Pindahkan Pilihan ke Awal
+	Move Selection Left	Pindahkan Pilihan ke Kiri
+	Move Selection Page Down	Pindahkan Pilihan Satu Halaman ke Bawah
+	Move Selection Page Up	Pindahkan Pilihan Satu Halaman ke Atas
+	Move Selection Right	Pindahkan Pilihan ke Kanan
+	Move Selection Up	Pindahkan Pilihan ke Atas
+	Multi-Camera Record On/Off Toggle	Alihkan Rekam Multi-Kamera Aktif/Nonaktif
+	Multicam	Multikamera
+	Navigate to End of Segment	Navigasi ke Akhir Segmen
+	Navigate to Next Line	Navigasi ke Baris Berikutnya
+	Navigate to Next Word	Navigasi ke Kata Berikutnya
+	Navigate to Previous Line	Navigasi ke Baris Sebelumnya
+	Navigate to Previous Word	Navigasi ke Kata Sebelumnya
+	Navigate to Start of Segment	Navigasi ke Awal Segmen
+	Navigation	Navigasi
+	Next Multi-Camera Page	Halaman Multi-Kamera Berikutnya
+	Nudge Clip Selection Down	Geser Sedikit Pilihan Klip ke Bawah
+	Nudge Clip Selection Left Five Frames	Geser Sedikit Pilihan Klip ke Kiri Lima Bingkai
+	Nudge Clip Selection Left One Frame	Geser Sedikit Pilihan Klip ke Kiri Satu Bingkai
+	Nudge Clip Selection Right Five Frames	Geser Sedikit Pilihan Klip ke Kanan Lima Bingkai
+	Nudge Clip Selection Right One Frame	Geser Sedikit Pilihan Klip ke Kanan Satu Bingkai
+	Nudge Clip Selection Up	Geser Sedikit Pilihan Klip ke Atas
+	Nudge Selected Object down by five	Geser Sedikit Objek Terpilih ke bawah sebanyak lima
+	Nudge Selected Object down by one	Geser Sedikit Objek Terpilih ke bawah sebanyak satu
+	Nudge Selected Object to left by five	Geser Sedikit Objek Terpilih ke kiri sebanyak lima
+	Nudge Selected Object to left by one	Geser Sedikit Objek Terpilih ke kiri sebanyak satu
+	Nudge Selected Object to right by five	Geser Sedikit Objek Terpilih ke kanan sebanyak lima
+	Nudge Selected Object to right by one	Geser Sedikit Objek Terpilih ke kanan sebanyak satu
+	Nudge Selected Object up by five	Geser Sedikit Objek Terpilih ke atas sebanyak lima
+	Nudge Selected Object up by one	Geser Sedikit Objek Terpilih ke atas sebanyak satu
+	Nudge Volume +1dB	Geser Volume +1dB
+	Nudge Volume +3dB	Geser Volume +3dB
+	Nudge Volume -1dB	Geser Volume -1dB
+	Nudge Volume -3dB	Geser Volume -3dB
+	Numbered BMP stills (24-bit)	Gambar diam BMP bernomor (24-bit)
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	Urutan JPEG
+	Targa Sequence	Urutan Targa
+	DPX Sequence	Urutan DPX
+	Numbered JPEG stills (quality 90)	Gambar diam JPEG bernomor (kualitas 90)
+	Numbered Targa stills (24-bit, uncompressed)	Gambar diam Targa bernomor (24-bit, tanpa kompresi)
+	Numbered DPX stills (10-bit RGB)	Gambar diam DPX bernomor (RGB 10-bit)
+	OpenEXR	OpenEXR
+	OpenEXR Sequence	Urutan OpenEXR
+	Numbered OpenEXR stills (half float, linear, uncompressed)	Gambar diam OpenEXR bernomor (half float, linier, tanpa kompresi)
+	Numbered PNG stills at the sequence's frame size	Gambar diam PNG bernomor pada ukuran bingkai sekuens
+	Numbered TIFF stills (RGB, 8-bit)	Gambar diam TIFF bernomor (RGB, 8-bit)
+	Opacity 0 → 100 % over the first second	Opasitas 0 → 100 % selama detik pertama
+	Opacity 100 → 0 % over the last second	Opasitas 100 → 0 % selama detik terakhir
+	Open Bin	Buka Bin
+	Open Search	Buka Pencarian
+	PNG	PNG
+	PNG Sequence	Urutan PNG
+	Panel	Panel
+	Pen Tool	Alat Pena
+	PiP 35% Upper Right	PiP 35% Kanan Atas
+	Picture-in-picture: 35 % scale in the upper right	Gambar-dalam-gambar: skala 35 % di kanan atas
+	Play Around	Putar di Sekitar
+	Play In to Out with Preroll/Postroll	Putar dari Masuk ke Keluar dengan Preroll/Postroll
+	Play from Playhead to Out Point	Putar dari Kepala Putar ke Titik Keluar
+	Play/Stop	Putar/Berhenti
+	Previous Multi-Camera Page	Halaman Multi-Kamera Sebelumnya
+	Progressive	Progresif
+	ProjectPanel	ProjectPanel
+	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-10 (10-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-12 (12-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR HQ (8-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR LB (8-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR SQ (8-bit 4:2:2), PCM 24-bit 48 kHz
+	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime, ProRes 422 HQ, PCM 24-bit 48 kHz
+	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime, ProRes 422 LT, PCM 24-bit 48 kHz
+	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime, ProRes 422 Proxy, PCM 24-bit 48 kHz
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), PCM 24-bit 48 kHz
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) dengan kanal alfa, PCM 24-bit 48 kHz
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), PCM 24-bit 48 kHz
+	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, PCM 24-bit 48 kHz
+	Quit FilmCraft	Keluar dari FilmCraft
+	Rate Stretch Tool	Alat Regang Laju
+	Razor Tool	Alat Silet
+	Rectangle Tool	Alat Persegi Panjang
+	Remix Tool	Alat Remix
+	Right align text	Rata kanan teks
+	Ripple Edit Tool	Alat Edit Ripple
+	Ripple Trim Next Edit to Playhead	Pangkas Ripple Edit Berikutnya ke Kepala Putar
+	Ripple Trim Previous Edit to Playhead	Pangkas Ripple Edit Sebelumnya ke Kepala Putar
+	Rolling Edit Tool	Alat Edit Roll
+	Select Camera 1	Pilih Kamera 1
+	Select Camera 2	Pilih Kamera 2
+	Select Camera 3	Pilih Kamera 3
+	Select Camera 4	Pilih Kamera 4
+	Select Camera 5	Pilih Kamera 5
+	Select Camera 6	Pilih Kamera 6
+	Select Camera 7	Pilih Kamera 7
+	Select Camera 8	Pilih Kamera 8
+	Select Camera 9	Pilih Kamera 9
+	Select Clip at Playhead	Pilih Klip di Kepala Putar
+	Select Find Box	Pilih Kotak Pencarian
+	Select Next Clip	Pilih Klip Berikutnya
+	Select Next Panel	Pilih Panel Berikutnya
+	Select Previous Clip	Pilih Klip Sebelumnya
+	Select Previous Panel	Pilih Panel Sebelumnya
+	Select to Next Line	Pilih sampai Baris Berikutnya
+	Select to Next Word	Pilih sampai Kata Berikutnya
+	Select to Previous Line	Pilih sampai Baris Sebelumnya
+	Select to Previous Word	Pilih sampai Kata Sebelumnya
+	Select to Segment End	Pilih sampai Akhir Segmen
+	Select to Segment Start	Pilih sampai Awal Segmen
+	Selection Tool	Alat Seleksi
+	Set Comparison Reference	Atur Referensi Perbandingan
+	Set Creative Look	Atur Look Kreatif
+	Set Input LUT	Atur LUT Input
+	Set Project Panel View	Atur Tampilan Panel Proyek
+	Show Next Screen	Tampilkan Layar Berikutnya
+	Show Previous Screen	Tampilkan Layar Sebelumnya
+	Show Program Transcript	Tampilkan Transkrip Program
+	Shuttle Left	Shuttle ke Kiri
+	Shuttle Right	Shuttle ke Kanan
+	Shuttle Slow Left	Shuttle Lambat ke Kiri
+	Shuttle Slow Right	Shuttle Lambat ke Kanan
+	Shuttle Stop	Hentikan Shuttle
+	Slide Clip Selection Left Five Frames	Slide Pilihan Klip ke Kiri Lima Bingkai
+	Slide Clip Selection Left One Frame	Slide Pilihan Klip ke Kiri Satu Bingkai
+	Slide Clip Selection Right Five Frames	Slide Pilihan Klip ke Kanan Lima Bingkai
+	Slide Clip Selection Right One Frame	Slide Pilihan Klip ke Kanan Satu Bingkai
+	Slide Tool	Alat Slide
+	Slip Clip Selection Left Five Frames	Slip Pilihan Klip ke Kiri Lima Bingkai
+	Slip Clip Selection Left One Frame	Slip Pilihan Klip ke Kiri Satu Bingkai
+	Slip Clip Selection Right Five Frames	Slip Pilihan Klip ke Kanan Lima Bingkai
+	Slip Clip Selection Right One Frame	Slip Pilihan Klip ke Kanan Satu Bingkai
+	Slip Tool	Alat Slip
+	Social Vertical 1080×1920	Sosial Vertikal 1080×1920
+	Soft Vignette	Vinyet Lembut
+	Source In/Out	Masuk/Keluar Sumber
+	Split Caption	Pisahkan Takarir
+	Square Pixels (1.0)	Piksel Persegi (1.0)
+	Stack Clips	Tumpuk Klip
+	Start Export Queue	Mulai Antrean Ekspor
+	Start Voice-over Recording	Mulai Perekaman Sulih Suara
+	Step Back Five Frames	Mundur Lima Bingkai
+	Step Back One Frame	Mundur Satu Bingkai
+	Step Forward Five Frames	Maju Lima Bingkai
+	Step Forward One Frame	Maju Satu Bingkai
+	Stop Export Queue	Hentikan Antrean Ekspor
+	Stop Multi-Camera Recording	Hentikan Perekaman Multi-Kamera
+	Stop Voice-over Recording	Hentikan Perekaman Sulih Suara
+	Sync Voice-over Capture	Sinkronkan Perekaman Sulih Suara
+	TIFF	TIFF
+	TIFF Sequence	Urutan TIFF
+	TextPanel	TextPanel
+	Thumbnail Size Next	Ukuran Gambar Mini Berikutnya
+	Thumbnail Size Previous	Ukuran Gambar Mini Sebelumnya
+	Toggle All Audio Targets	Alihkan Semua Target Audio
+	Toggle All Source Audio	Alihkan Semua Audio Sumber
+	Toggle All Source Video	Alihkan Semua Video Sumber
+	Toggle All Video Targets	Alihkan Semua Target Video
+	Toggle Audio During Scrubbing	Alihkan Audio Saat Scrub
+	Toggle Full Screen	Alihkan Layar Penuh
+	Toggle Mute for All Targeted Audio Tracks	Alihkan Bisu untuk Semua Trek Audio Target
+	Toggle Solo for All Targeted Audio Tracks	Alihkan Solo untuk Semua Trek Audio Target
+	Toggle Source/Program Monitor Focus	Alihkan Fokus Monitor Sumber/Program
+	Toggle Target Audio 1	Alihkan Target Audio 1
+	Toggle Target Audio 2	Alihkan Target Audio 2
+	Toggle Target Audio 3	Alihkan Target Audio 3
+	Toggle Target Audio 4	Alihkan Target Audio 4
+	Toggle Target Audio 5	Alihkan Target Audio 5
+	Toggle Target Audio 6	Alihkan Target Audio 6
+	Toggle Target Audio 7	Alihkan Target Audio 7
+	Toggle Target Audio 8	Alihkan Target Audio 8
+	Toggle Target Video 1	Alihkan Target Video 1
+	Toggle Target Video 2	Alihkan Target Video 2
+	Toggle Target Video 3	Alihkan Target Video 3
+	Toggle Target Video 4	Alihkan Target Video 4
+	Toggle Target Video 5	Alihkan Target Video 5
+	Toggle Target Video 6	Alihkan Target Video 6
+	Toggle Target Video 7	Alihkan Target Video 7
+	Toggle Target Video 8	Alihkan Target Video 8
+	Toggle Track Output for All Targeted Video Tracks	Alihkan Output Trek untuk Semua Trek Video Target
+	Toggle Trim Type	Alihkan Jenis Pangkas
+	Toggle View	Alihkan Tampilan
+	Track Select Backward Tool	Alat Pilih Trek Mundur
+	Track Select Forward Tool	Alat Pilih Trek Maju
+	Track Selected Mask	Lacak Masker Terpilih
+	Trim Next Edit to Playhead	Pangkas Edit Berikutnya ke Kepala Putar
+	Trim Previous Edit to Playhead	Pangkas Edit Sebelumnya ke Kepala Putar
+	Trimming	Pemangkasan
+	Type Tool	Alat Teks
+	Unstack Clips	Lepas Tumpukan Klip
+	Upper First	Atas Dulu
+	VBR, 1 pass	VBR, 1 pass
+	VBR, 2 pass	VBR, 2 pass
+	CRF (constant quality)	CRF (kualitas konstan)
+	Vimeo 1080p Full HD	Vimeo 1080p Full HD
+	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
+	Voice-over Record	Rekam Sulih Suara
+	Voiceover	Sulih Suara
+	WAV, stereo 48 kHz 16-bit PCM	WAV, PCM stereo 48 kHz 16-bit
+	WAV, stereo 48 kHz 24-bit PCM	WAV, PCM stereo 48 kHz 24-bit
+	Warm Tint	Rona Hangat
+	Warm highlights, brown shadows	Sorotan hangat, bayangan cokelat
+	Waveform Audio	Waveform Audio
+	Waveform Audio 48 kHz 16-bit	Waveform Audio 48 kHz 16-bit
+	Waveform Audio 48 kHz 24-bit	Waveform Audio 48 kHz 24-bit
+	Web & Social	Web & Sosial
+	Work Area	Area Kerja
+	Write Automation	Tulis Otomasi
+	YouTube 1080p Full HD	YouTube 1080p Full HD
+	YouTube 2160p 4K Ultra HD	YouTube 2160p 4K Ultra HD
+	Zoom Program Monitor to 100%	Zoom Monitor Program ke 100%
+	Zoom Program Monitor to Fit	Zoom Monitor Program agar Pas
+	Zoom Source Monitor to 100%	Zoom Monitor Sumber ke 100%
+	Zoom Source Monitor to Fit	Zoom Monitor Sumber agar Pas
+	Zoom Tool	Alat Zoom
+	with:	dengan:
+	Interface Language	Bahasa Antarmuka
+	System Language	Bahasa Sistem
+	Cinematic	Sinematik
+	Film Emulation	Emulasi Film
+	Technical	Teknis
+	Teal Shadows, Warm Skin	Bayangan Toska, Kulit Hangat
+	Night Exterior	Eksterior Malam
+	Golden Dusk	Senja Keemasan
+	Steel Blue	Biru Baja
+	Hard Sun	Matahari Terik
+	Faded Print	Cetakan Pudar
+	Silver Retention	Retensi Perak
+	Cross Processed	Proses Silang
+	Warm Negative	Negatif Hangat
+	Neutral Mono	Mono Netral
+	Hard Mono	Mono Keras
+	Sepia Tone	Nada Sepia
+	Cold Mono	Mono Dingin
+	Lift Shadows	Angkat Bayangan
+	Protect Highlights	Lindungi Sorotan
+	Half Saturation	Setengah Saturasi
+	Boost Vibrance	Tingkatkan Vibrance
+	Legal Range Squeeze	Pemampatan Rentang Legal
+	A boxed label with a round pointer; move the label and the pointer follows.	Label berbingkai dengan penunjuk bulat; pindahkan label dan penunjuk akan mengikuti.
+	A rounded tag that fits its text, with a status dot.	Tag membulat yang menyesuaikan teksnya, dengan titik status.
+	A title on a rounded card with a soft shadow.	Judul pada kartu membulat dengan bayangan lembut.
+	Accent Color	Warna Aksen
+	Bar Color	Warna Bilah
+	Box Color	Warna Kotak
+	Box Opacity	Opasitas Kotak
+	Callout – Pointer	Callout – Penunjuk
+	Callout – Tag	Callout – Tag
+	Callouts	Callout
+	Credits	Kredit
+	Dot Color	Warna Titik
+	Heading	Judul Utama
+	Large centred title, accent rule and subtitle.	Judul besar di tengah, garis aksen, dan subjudul.
+	Lower Third – Rule	Lower Third – Garis
+	Lower Third – Slab	Lower Third – Lempeng
+	Lower Thirds	Lower Third
+	Name Color	Warna Nama
+	Name Size	Ukuran Nama
+	Name and role on a coloured slab that widens with the name.	Nama dan peran pada lempeng berwarna yang melebar mengikuti nama.
+	Name over a thin rule that always matches the name's width.	Nama di atas garis tipis yang selalu menyamai lebar nama.
+	Pointer Color	Warna Penunjuk
+	Role	Peran
+	Rule Color	Warna Garis
+	Show Dot	Tampilkan Titik
+	Show Role	Tampilkan Peran
+	Slab Color	Warna Lempeng
+	Tag Color	Warna Tag
+	Title Color	Warna Judul
+	Title Size	Ukuran Judul
+	Title – Boxed	Judul – Berbingkai
+	Title – Centered	Judul – Di Tengah
+	Titles	Judul
+	Select an item to preview it	Pilih item untuk melihat pratinjaunya
+	End Credits	Kredit Penutup
+	End Credits – Roll	Kredit Penutup – Gulung
+	Ticker – Crawl	Ticker – Merayap
+	Centred credits that roll up from below the frame and leave at the top.	Kredit di tengah yang bergulung naik dari bawah bingkai dan keluar di atas.
+	A news-style line that crawls in from the right and leaves at the left.	Baris bergaya berita yang merayap masuk dari kanan dan keluar di kiri.
+	out	keluar
+	in	masuk
+	The language changed but could not be saved: {e}	Bahasa telah diubah tetapi tidak dapat disimpan: {e}
+	no Chinese font is installed on this system; the interface stays in English	tidak ada font Tionghoa yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
+	no Korean font is installed on this system; the interface stays in English	tidak ada font Korea yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
+	no Japanese font is installed on this system; the interface stays in English	tidak ada font Jepang yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
+	Show	Tampilkan
+	Sort	Urutkan
+	Reverse the order	Balik urutan
+	Grab bag	Campur aduk
+	Table	Tabel
+	No contributor data was built into this copy.	Tidak ada data kontributor yang disertakan dalam salinan ini.
+	No model credits were built into this copy.	Tidak ada kredit model yang disertakan dalam salinan ini.
+	Company	Perusahaan
+	Model	Model
+	Version	Versi
+	Commits	Commit
+	% of all commits	% dari semua commit
+	Lines +/−	Baris +/−
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Output audio gagal: memutar tanpa suara (periksa Pengaturan ▸ Perangkat Keras Audio)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Output audio tidak merespons: memutar tanpa suara (periksa Pengaturan ▸ Perangkat Keras Audio)
+	Clip Speed / Duration	Kecepatan / Durasi Klip
+	Speed:	Kecepatan:
+	Reverse Speed	Balik Kecepatan
+	Ripple Edit, Shifting Trailing Clips	Edit Ripple, Geser Klip Berikutnya
+	About	Tentang
+	Contributors	Kontributor
+	Models	Model
+	Main (8-bit)	Main (8-bit)
+	Main 10 (10-bit, HDR)	Main 10 (10-bit, HDR)
+	Main (8-bit; Main 10 for HDR sequences)	Main (8-bit; Main 10 untuk sekuens HDR)
+	Encoder	Enkoder
+	Hardware (H.265 has no software encoder)	Perangkat keras (H.265 tidak memiliki enkoder perangkat lunak)
+	Hardware (AV1 has no software encoder)	Perangkat keras (AV1 tidak memiliki enkoder perangkat lunak)
+	Text Properties	Properti Teks
+	Text Box Height	Tinggi Kotak Teks
+	Paragraph Text	Teks Paragraf
+	Point Text	Teks Titik
+	Text Layer Type	Jenis Lapisan Teks
+	Text Styling	Gaya Teks
+	New Color Matte	Matte Warna Baru
+	Color Matte Color	Warna Matte Warna
+	Color:	Warna:
+	 · {time} left	 · sisa {time}
+	Discard take	Buang take
+	Voice-over take discarded	Take sulih suara dibuang
+	Binary assets added	Aset biner ditambahkan
+	Binary assets removed	Aset biner dihapus
+	Deselect All Project Items	Batalkan Pilihan Semua Item Proyek
+	Display name	Nama tampilan
+	First commit	Commit pertama
+	H.265 (HEVC)	H.265 (HEVC)
+	Last commit	Commit terakhir
+	Line delta	Delta baris
+	Lines added	Baris ditambahkan
+	Lines deleted	Baris dihapus
+	Merged PRs	PR yang digabung
+	Name (A–Z)	Nama (A–Z)
+	Real name	Nama asli
+	Select All Project Items	Pilih Semua Item Proyek
+	Username	Nama pengguna
+	Vertical Type Tool	Alat Teks Vertikal
+	Go to previous keyframe	Ke bingkai kunci sebelumnya
+	Go to next keyframe	Ke bingkai kunci berikutnya
+	Add keyframe	Tambah bingkai kunci
+	Remove keyframe	Hapus bingkai kunci
+	Turn on animation and add keyframe	Aktifkan animasi dan tambah bingkai kunci
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Klik untuk memilih, atau klik di ruang kosong lalu seret untuk memilih dengan bingkai. Gunakan Shift, Alt, dan Ctrl untuk opsi lain.
+	Click to zoom in; Alt-click to zoom out.	Klik untuk memperbesar; Alt-klik untuk memperkecil.
+	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Seret: pindahkan · Alt-klik: halus/sudut · Ctrl-klik: hapus
+	Include Alpha Channel	Sertakan Kanal Alfa
+	Sequence Settings	Pengaturan Sekuens
+	Color Management	Manajemen Warna
+	VR Properties	Properti VR
+	Editing Mode:	Mode Penyuntingan:
+	Timebase:	Basis Waktu:
+	Frame Size:	Ukuran Bingkai:
+	Pixel Aspect Ratio:	Rasio Aspek Piksel:
+	Fields:	Field:
+	Channel Format:	Format Kanal:
+	Number of Channels:	Jumlah Kanal:
+	Preview File Format:	Format Berkas Pratinjau:
+	Working Color Space:	Ruang Warna Kerja:
+	Projection:	Proyeksi:
+	Layout:	Tata Letak:
+	Captured View:	Tampilan yang Direkam:
+	Video Previews	Pratinjau Video
+	No Fields (Progressive Scan)	Tanpa Field (Pindai Progresif)
+	Custom ({ratio})	Kustom ({ratio})
+	{rate} frames/second	{rate} bingkai/detik
+	{rate} fps Drop-Frame Timecode	Kode Waktu Drop-Frame {rate} fps
+	{rate} fps Non Drop-Frame Timecode	Kode Waktu Non Drop-Frame {rate} fps
+	{rate} fps Timecode	Kode Waktu {rate} fps
+	horizontal	horizontal
+	vertical	vertikal
+	Scale motion effects proportionally when changing frame size	Skalakan efek gerak secara proporsional saat mengubah ukuran bingkai
+	Maximum Bit Depth	Kedalaman Bit Maksimum
+	Maximum Render Quality	Kualitas Render Maksimum
+	Composite in Linear Color	Komposit dalam Warna Linier
+	Auto Tone Map Media (HDR and log into SDR)	Pemetaan Nada Otomatis Media (HDR dan log ke SDR)
+	Configure…	Konfigurasi…
+	Not supported in FilmCraft yet	Belum didukung di FilmCraft
+	FilmCraft always composites in linear light	FilmCraft selalu mengomposit dalam cahaya linier
+	Loop marked range	Ulangi rentang yang ditandai
+	Play Source	Putar Sumber
+	Source Play/Stop	Putar/Berhenti Sumber
+	Stop Source	Hentikan Sumber
+	New Sequence	Sekuens Baru
+	Tracks	Trek
+	tracks	trek
+	Clear Transition	Hapus Transisi
+	Set Transition Duration	Atur Durasi Transisi
+	Active	Aktif
+	Appearance Mode	Mode Penampilan
+	Dark Theme	Tema Gelap
+	Light Theme	Tema Terang
+	Next Appearance Mode	Mode Penampilan Berikutnya
+	Sync with system	Sinkronkan dengan sistem
+	UI Scale	Skala UI
+	Auto (system)	Otomatis (sistem)
+	In	Masuk
+	Out	Keluar
+	Export Markers as CSV…	Ekspor Penanda sebagai CSV…
+	Fill Type	Jenis Isian
+	Gradient Angle	Sudut Gradien
+	Linear Gradient	Gradien Linier
+	Solid	Solid
+	GPU Rendering	Rendering GPU
+	Composite on the GPU when available	Komposit di GPU bila tersedia
+	Text to Speech	Teks ke Ucapan
+	Edit Narration	Edit Narasi
+	Project Notes	Catatan Proyek
+	Get Project Notes	Ambil Catatan Proyek
+	Edit Project Notes	Edit Catatan Proyek
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Catatan untuk proyek ini: daftar tugas, instruksi, nomor bingkai… Disimpan bersama proyek.
+	Use Effect Shutter Angle	Gunakan Sudut Rana Efek
+	Settings	Preferensi
+
+	Appearance Settings…	Pengaturan Tampilan…
+	Add to favorites	Tambahkan ke favorit
+	Remove from favorites	Hapus dari favorit
+# View ▸ Reset Interface Zoom (#2253).
+	Reset Interface Zoom	Atur Ulang Zoom Antarmuka
+	Track Color	Warna Trek
+	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
+	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
+	No matching text.	Tidak ada teks yang cocok.

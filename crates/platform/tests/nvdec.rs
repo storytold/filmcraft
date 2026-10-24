@@ -4,9 +4,11 @@
 //! `reset` + reseek; a forced mid-stream failure must continue in software with the software
 //! decoder's exact output; what the hardware path does not take is declined; damaged samples give
 //! errors or fall back, never crash or hang. Skips without ffmpeg (fixture generator) or without
-//! an NVIDIA GPU.
+//! an NVIDIA GPU. Its own test binary: one test turns the process-wide Hardware decoding switch
+//! off and on.
 #![cfg(all(target_os = "linux", target_pointer_width = "64"))]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::time::Duration;

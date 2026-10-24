@@ -74,11 +74,26 @@ pub fn marker_rect(layout: &Layout, start: Tick) -> Rect {
     Rect::from_center_size(pos2(layout.x_of(start), layout.ruler.min.y + 8.0), vec2(10.0, 13.0))
 }
 
-/// The start of the marker whose pentagon is under `pos` on the ruler (the topmost, i.e. last
-/// drawn, when several overlap). A press there puts the playhead on the marker, so Markers ▸ Clear
-/// Selected Marker removes it (#695).
+/// The visible duration band, shared by painting and hit testing (#1143).
+pub fn marker_range_rect(layout: &Layout, marker: &filmcraft_project::Marker) -> Option<Rect> {
+    (marker.duration > Tick::ZERO).then(|| {
+        let y = layout.ruler.min.y + 2.0;
+        Rect::from_min_max(pos2(layout.x_of(marker.start), y), pos2(layout.x_of(marker.start + marker.duration), y + 8.0)).intersect(layout.ruler)
+    })
+}
+
+/// The topmost marker under the pointer, including its range band. Preserve its id when opening
+/// a context menu: several markers can share a start, and the playhead can move while it is open.
+pub fn marker_under_pointer<'a>(seq: &'a Sequence, layout: &Layout, pos: Pos2) -> Option<&'a filmcraft_project::Marker> {
+    if !layout.ruler.contains(pos) {
+        return None;
+    }
+    seq.markers.iter().rev().find(|m| marker_rect(layout, m.start).contains(pos) || marker_range_rect(layout, m).is_some_and(|r| r.contains(pos)))
+}
+
+/// A press on a marker puts the playhead on its start for Clear Selected Marker (#695).
 pub fn marker_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Tick> {
-    seq.markers.iter().rev().map(|m| m.start).find(|t| marker_rect(layout, *t).contains(pos))
+    marker_under_pointer(seq, layout, pos).map(|m| m.start)
 }
 
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
@@ -435,6 +450,31 @@ mod tests {
         assert_eq!(marker_at(&seq, &l, pos2(310.0, 10.0)), None);
         assert_eq!(marker_at(&seq, &l, pos2(301.7, 30.0)), None);
         assert_eq!(marker_at(&seq, &l, pos2(f32::NAN, 10.0)), None);
+    }
+
+    #[test]
+    fn range_bands_hit_the_last_drawn_marker_and_stay_on_the_ruler() {
+        let (mut seq, layout, _) = fixture(clips());
+        for id in [9, 10] {
+            seq.markers.push(filmcraft_project::Marker {
+                id: filmcraft_project::MarkerId(id),
+                start: Tick::from_seconds_f64(3.0),
+                duration: Tick::from_seconds_f64(2.0),
+                name: String::new(),
+                comment: String::new(),
+                kind: filmcraft_project::MarkerKind::Comment,
+                color: Label::Green,
+            });
+        }
+        let band = marker_range_rect(&layout, &seq.markers[1]).unwrap();
+        let at = band.center();
+        assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 10);
+        assert_eq!(marker_at(&seq, &layout, at), Some(seq.markers[1].start));
+        assert!(marker_under_pointer(&seq, &layout, at + vec2(0.0, 20.0)).is_none());
+        assert!(marker_under_pointer(&seq, &layout, pos2(f32::NAN, at.y)).is_none());
+        seq.markers[1].duration = Tick(-1);
+        assert!(marker_range_rect(&layout, &seq.markers[1]).is_none());
+        assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 9);
     }
 
     use egui::Modifiers;

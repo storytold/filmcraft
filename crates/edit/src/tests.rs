@@ -275,6 +275,17 @@ fn regular_trim_respects_neighbours_and_handles() {
 }
 
 #[test]
+fn trim_on_a_locked_track_is_refused() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 100, 0);
+    fx.seq.track_mut(v1).unwrap().locked = true;
+    let mut n = fx.next;
+    assert_eq!(trim(&mut fx.seq, a, Edge::Out, TrimMode::Regular, -f(20), &mut Fx::ctx(&mut n)), Err(EditError::Locked));
+    assert_eq!(fx.spans(v1), vec![(0, 100)]);
+}
+
+#[test]
 fn held_regular_in_trim_stops_at_previous_clip() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);
@@ -493,6 +504,30 @@ fn fades_follow_a_regular_trim() {
 }
 
 #[test]
+fn fades_follow_a_non_ripple_speed_change() {
+    // #918: faster without ripple shortens the clip; the fade-out stays on the new out point.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 100, 0);
+    fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
+        id: TransitionId(1),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(90),
+        duration: f(10),
+        from: Some(a),
+        to: None,
+        align: Default::default(),
+        reverse: false,
+    }];
+    let mut n = fx.next;
+    set_speed(&mut fx.seq, a, 2.0, false, false, &mut Fx::ctx(&mut n)).unwrap();
+    let tr = &fx.seq.track(v1).unwrap().transitions[0];
+    assert_eq!(fx.spans(v1), vec![(0, 50)]);
+    assert_eq!((tr.start, tr.duration), (f(40), f(10)));
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn transitions_travel_with_moved_clips() {
     // V1: a [0,10) fading in, b [10,20), c [20,30); b→c crossfade, c fading out
     let mut fx = Fx::new();
@@ -519,7 +554,7 @@ fn transitions_travel_with_moved_clips() {
     // a cut whose two clips move together keeps its transition, in an insert move as well
     move_items(&mut fx.seq, &[(b, v1, f(60)), (c, v1, f(70))], true, &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(at(&fx, v1), vec![(2, 68), (3, 76)]);
-    // a crossfade whose partner stays behind is dropped; the other clip's fade stays with it
+    // a crossfade whose partner stays behind is dropped; the moving clip's own fade stays with it
     move_items(&mut fx.seq, &[(c, v1, f(90))], false, &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(at(&fx, v1), vec![(3, 96)]);
     fx.seq.check().unwrap();
@@ -535,6 +570,29 @@ fn rate_stretch_and_speed() {
     assert!((s - 0.5).abs() < 1e-9);
     set_speed(&mut fx.seq, a, 2.0, false, true, &mut Fx::ctx(&mut n)).unwrap();
     assert_eq!(fx.spans(v1), vec![(0, 5)]);
+}
+
+#[test]
+fn linked_rate_stretch_uses_the_tighter_neighbour() {
+    // picture and sound are 60 frames; a later clip on A1 starts at 70, so the sound has only 10
+    // frames of room. Stretching the pair +20 must not leave the picture at 80f / 0.75x and the
+    // sound at 70f / 6/7x while still linked.
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let pic = fx.put(v1, 0, 60, 0);
+    let snd = fx.put(a1, 0, 60, 0);
+    fx.put(a1, 70, 10, 0);
+    for c in [pic, snd] {
+        fx.seq.find_item_mut(c).unwrap().1.link = Some(1);
+    }
+    let mut n = fx.next;
+    let speed = rate_stretch_items(&mut fx.seq, &[pic, snd], Edge::Out, f(20), &mut Fx::ctx(&mut n)).unwrap();
+    assert!((speed - 60.0 / 70.0).abs() < 1e-9);
+    let (p, s) = (fx.seq.find_item(pic).unwrap().1, fx.seq.find_item(snd).unwrap().1);
+    assert_eq!((R.frame_at(p.duration), R.frame_at(s.duration)), (70, 70));
+    assert!((p.speed - s.speed).abs() < 1e-12);
+    assert_eq!(fx.spans(a1), vec![(0, 70), (70, 10)]);
+    fx.seq.check().unwrap();
 }
 
 #[test]

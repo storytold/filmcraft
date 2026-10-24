@@ -130,7 +130,7 @@ with ffmpeg; tests print a message and skip when ffmpeg is absent).
   default, also with 4 slices per picture), `no_wpp` and B pyramids at 2, 4 and 8 threads against
   one thread and that every picture was split; the synthetic tile / slice / dependent-segment
   streams are decoded at 2, 3 and 8 threads against one thread.
-- Conformance (`tests/conformance.rs`): every fixture is decoded with 1, 2 and 3 threads, every
+- Conformance (`tests/it/conformance.rs`): every fixture is decoded with 1, 2 and 3 threads, every
   core, and 2 and 3 threads splitting pictures, and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le`; on mismatch
   the first differing frame, plane, sample, CTB and 8x8 block are reported. Output pts/POC order is
   checked too, and that no picture is flagged draft without draft mode. `compare_detects_mismatch`
@@ -169,12 +169,12 @@ libx265 unless noted (x265 enables WPP by default, so most streams carry entry p
 | vt_main / vt_main10 | 640x360 | Apple VideoToolbox (hevc_videotoolbox), macOS only |
 | synthetic (7 streams) | 96x64 | tiles, PCM, slices, dependent segments, LTR, list modification |
 
-`cargo test -p filmcraft-hevc --test conformance coverage_report -- --ignored --nocapture` prints the
+`cargo test -p filmcraft-hevc --test it conformance::coverage_report -- --ignored --nocapture` prints the
 decoder statistics per fixture.
 
 ## Performance
 
-`cargo test --release -p filmcraft-hevc --test perf -- --ignored --nocapture` (bit-exactness is
+`cargo test --release -p filmcraft-hevc --test it perf:: -- --ignored --nocapture` (bit-exactness is
 verified first). Apple M4 Pro (14 cores), measured while the machine was heavily shared (load
 average 50-100), so these are lower bounds:
 

@@ -299,3 +299,28 @@ fn a_region_layer_expands_to_the_whole_layer() {
     assert_eq!(full.px.iter().filter(|v| **v == 1.0).count(), 2 * 2 * 4);
     assert!(full.px[..(2 * 6 + 4) * 4].iter().all(|v| *v == 0.0));
 }
+
+/// HDR and wide-gamut Y'CbCr on a Rec. 709 sequence is planned as a GPU layer carrying its input
+/// transform, not converted to a float image on the CPU (#965: 4K HLG / PQ playback fell to a
+/// third of real time), and the plan still renders what the reference renderer does.
+#[test]
+fn hdr_media_is_planned_for_the_gpu_with_its_colour_management() {
+    use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer};
+    let hdr = |transfer| ColorInfo { matrix: Matrix::Bt2020Ncl, transfer, primaries: Primaries::Bt2020, range: Range::Limited };
+    for (name, color) in
+        [("HLG", hdr(Transfer::Hlg)), ("PQ", hdr(Transfer::Pq)), ("BT.2020 SDR", ColorInfo { primaries: Primaries::Bt2020, ..ColorInfo::REC709 })]
+    {
+        let f = Arc::new(VideoFrame { color, ..(*camera(W, H)).clone() });
+        let (p, seq, map) = scene(&[Spec::new(f)]);
+        let opts = RenderOptions::default();
+        let plan = plan::plan_frame(&p, seq, Tick::ZERO, opts, &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("{name}: not a layer plan") };
+        assert_eq!(layers.len(), 1, "{name}");
+        assert!(matches!(layers[0].frame.data, PixelData::Yuv8 { .. }), "{name}: converted on the CPU");
+        assert!(layers[0].input.is_some(), "{name}: no colour management for the GPU");
+        let reference = render_sequence(&p, seq, Tick::ZERO, opts, &map);
+        let got = plan::execute_cpu(&plan);
+        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(max < 1e-4, "{name}: plan differs from the reference by {max}");
+    }
+}

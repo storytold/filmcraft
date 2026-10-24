@@ -383,7 +383,12 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
         case OP_EXTRACT: {
             let lo = u.p0.x; let hi = u.p0.y; let soft = u.p0.z;
             let l = linear_to_srgb1(max(luma709(c), 0.0));
-            let inside = min(clamp((l - lo) / soft, 0.0, 1.0), clamp((hi - l) / soft, 0.0, 1.0));
+            // Hard cutoffs avoid both division by zero and an artificial narrow fade
+            // that amplifies transfer-function rounding relative to the CPU reference.
+            var inside = select(0.0, 1.0, l > lo && l < hi);
+            if soft > 0.0 {
+                inside = min(clamp((l - lo) / soft, 0.0, 1.0), clamp((hi - l) / soft, 0.0, 1.0));
+            }
             return vec3(select(inside, 1.0 - inside, u.i1.x != 0u));
         }
         case OP_INVERT: {

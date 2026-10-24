@@ -6,22 +6,39 @@ use filmcraft_time::{FrameRate, Tick, parse_timecode};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
-/// Premiere "hot text": a blue number you drag horizontally to scrub, click to type.
+/// Premiere "hot text": a blue number you drag horizontally to scrub, click to type a number or a
+/// calculation ([`crate::calc`]).
 /// Returns (response, Some(new value) when changed).
 pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64, f64), decimals: usize, suffix: &str, t: &Tokens) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
+    let edit_id = id.with("edit");
+    let select_all_id = id.with("select-all");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
     if let Some(buf) = editing.as_mut() {
-        let r = ui.add(egui::TextEdit::singleline(buf).desired_width(56.0).font(Tokens::ui(12.0)));
+        let r = ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0)));
         let mut out = None;
         if r.lost_focus() {
-            if let Ok(v) = buf.trim().trim_end_matches(suffix).trim().parse::<f64>() {
+            // the field's own unit can be typed anywhere; calc ignores the common ones
+            let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
+            if let Some(v) = crate::calc::eval(&typed, value) {
                 out = Some(v.clamp(range.0, range.1));
             }
             ui.data_mut(|d| d.remove::<String>(editing_id));
         } else {
             let b = buf.clone();
             ui.data_mut(|d| d.insert_temp(editing_id, b));
+            // select the whole value once the field has focus (egui collapses a selection to a caret
+            // in a field that does not have it yet), so typing replaces it as in Premiere
+            let selected_now = r.has_focus() && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
+            if selected_now {
+                let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
+                st.store(ui.ctx(), edit_id);
+            }
+            // the focus and the selection show on the next frame, which nothing else would trigger
+            if !r.has_focus() || selected_now {
+                ui.ctx().request_repaint();
+            }
             r.request_focus();
         }
         return (r, out);
@@ -54,7 +71,11 @@ pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64
         }
     }
     if resp.clicked() {
-        ui.data_mut(|d| d.insert_temp(editing_id, format!("{value:.decimals$}")));
+        ui.data_mut(|d| {
+            d.insert_temp(editing_id, format!("{value:.decimals$}"));
+            d.insert_temp(select_all_id, true);
+        });
+        ui.ctx().request_repaint();
     }
     (resp, out)
 }
@@ -163,6 +184,35 @@ pub fn timecode_field(
     out
 }
 
+/// Escape closes a dialog or popup only when no mouse button is held: with one held it cancels the
+/// drag in progress instead (#580).
+pub fn escape_closes(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.key_pressed(egui::Key::Escape) && !i.pointer.any_down())
+}
+
+/// Keep a dialog's `draft` as a mouse press begins; Escape while the button is held puts it back,
+/// so a dragged number, slider or color returns to its value (#580). Call before drawing the
+/// dialog's widgets, and close the dialog with [`escape_closes`] so the same Escape keeps it open.
+/// The draft is put back on every frame until the button comes up: on the Escape frame itself a
+/// color picker's popup, drawn after this call, still sets its color from the pointer.
+pub fn revert_drag_on_escape<T: Clone + Send + Sync + 'static>(ctx: &egui::Context, id: egui::Id, draft: &mut T) {
+    let (pressed, down, escape) = ctx.input(|i| (i.pointer.any_pressed(), i.pointer.any_down(), i.key_pressed(egui::Key::Escape)));
+    if pressed && down {
+        ctx.data_mut(|d| d.insert_temp(id, (draft.clone(), false)));
+        return;
+    }
+    // (the draft when the press began, whether Escape cancelled the drag)
+    let Some((before, cancelled)) = ctx.data(|d| d.get_temp::<(T, bool)>(id)) else { return };
+    if escape || cancelled {
+        *draft = before.clone();
+    }
+    if !down {
+        ctx.data_mut(|d| d.remove::<(T, bool)>(id));
+    } else if escape && !cancelled {
+        ctx.data_mut(|d| d.insert_temp(id, (before, true)));
+    }
+}
+
 /// A twirl-down section header (Effect Controls / Lumetri style). Returns open state.
 pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &Tokens, bold: bool) -> (Response, bool) {
     let w = ui.available_width();
@@ -244,6 +294,24 @@ pub fn dropdown_text(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::
     resp
 }
 
+/// Where dialogs open: the centre of the app window. Dialogs use it as `default_pos` with a
+/// centre pivot instead of `Window::anchor`, which would pin them: egui makes anchored windows
+/// immovable, so they could not be dragged by the title bar.
+pub fn dialog_center(ctx: &egui::Context) -> egui::Pos2 {
+    ctx.content_rect().center()
+}
+
+/// `.pivot(CENTER_CENTER).default_pos(dialog_center(ctx))` in one call, for short window chains.
+pub trait CenteredDialog {
+    fn centered(self, ctx: &egui::Context) -> Self;
+}
+
+impl CenteredDialog for egui::Window<'_> {
+    fn centered(self, ctx: &egui::Context) -> Self {
+        self.pivot(Align2::CENTER_CENTER).default_pos(dialog_center(ctx))
+    }
+}
+
 /// Level meter bar (dBFS), vertical.
 pub fn meter_bar(painter: &egui::Painter, rect: Rect, db: f32, peak_db: f32, t: &Tokens) {
     // Premiere: green gradient (#579f51 → #70dc5d), yellow above −12 dB, red above −3 dB.
@@ -277,4 +345,77 @@ pub fn meter_bar(painter: &egui::Painter, rect: Rect, db: f32, peak_db: f32, t: 
         [pos2(rect.min.x, py), pos2(rect.max.x, py)],
         Stroke::new(1.0, if peak_db > -0.5 { t.danger } else { Color32::from_rgb(0xf0, 0xf0, 0x4f) }),
     );
+}
+
+/// An egui `DragValue` (the number fields of dialogs and Settings) that also takes a calculation
+/// ([`crate::calc`]) applied to the value it holds: `100*2`, or `*2` to double it.
+pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> egui::DragValue<'_> {
+    let current = value.to_f64();
+    egui::DragValue::new(value).custom_parser(move |s| crate::calc::eval(s, current))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeKind;
+
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, id: egui::Id) {
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let input = egui::RawInput { events, ..Default::default() };
+        // no renderer takes the font atlas upload here; drop it explicitly (epaint panics otherwise)
+        ctx.run_ui(input, |ui| {
+            hot_number(ui, id, 123.5, 1.0, (0.0, 1000.0), 1, "", &t);
+        })
+        .textures_delta
+        .clear();
+    }
+
+    #[test]
+    fn clicking_a_hot_number_selects_its_whole_value() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("hot");
+        let pos = egui::pos2(14.0, 12.0);
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&ctx, vec![egui::Event::PointerMoved(pos)], id);
+        frame(&ctx, vec![button(true)], id);
+        frame(&ctx, vec![button(false)], id);
+        for _ in 0..4 {
+            frame(&ctx, vec![], id);
+        }
+        let st = egui::text_edit::TextEditState::load(&ctx, id.with("edit")).unwrap_or_default();
+        let range = st.cursor.char_range().map(|c| c.sorted_cursors());
+        assert_eq!(range, Some([egui::text::CCursor::new(0), egui::text::CCursor::new(5)]));
+    }
+
+    /// Dialogs open centred and can be dragged by their title bar (anchored ones could not).
+    #[test]
+    fn dialogs_open_centered_and_drag() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut rect = egui::Rect::NOTHING;
+            let mut out = ctx.run_ui(input, |ui| {
+                let ctx = ui.ctx().clone();
+                let win = egui::Window::new("Dialog").collapsible(false).resizable(false);
+                if let Some(r) = win.pivot(egui::Align2::CENTER_CENTER).default_pos(super::dialog_center(&ctx)).show(&ctx, |ui| ui.label("body")) {
+                    rect = r.response.rect;
+                }
+            });
+            out.textures_delta.clear();
+            rect
+        };
+        frame(Vec::new());
+        let start = frame(Vec::new());
+        assert!((start.center() - screen.center()).length() < 1.0, "opens centred: {start:?}");
+        let grab = egui::pos2(start.center().x, start.min.y + 8.0);
+        let to = grab + egui::vec2(-200.0, -150.0);
+        let press = |p, pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(vec![egui::Event::PointerMoved(grab), press(grab, true)]);
+        frame(vec![egui::Event::PointerMoved(grab + egui::vec2(-100.0, -75.0))]);
+        frame(vec![egui::Event::PointerMoved(to)]);
+        frame(vec![press(to, false)]);
+        let end = frame(Vec::new());
+        assert!((end.center() - (start.center() + egui::vec2(-200.0, -150.0))).length() < 2.0, "moved with the drag: {start:?} -> {end:?}");
+    }
 }

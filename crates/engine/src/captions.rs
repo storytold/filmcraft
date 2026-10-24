@@ -82,7 +82,11 @@ fn parse_color(v: &Value) -> Option<[u8; 4]> {
             _ => None,
         };
     }
-    let h = v.as_str()?.trim_start_matches('#');
+    let h = v.as_str()?;
+    let h = h.strip_prefix('#').unwrap_or(h);
+    if !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let b = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
     match h.len() {
         6 => Some([b(0)?, b(2)?, b(4)?, 255]),
@@ -299,7 +303,15 @@ pub fn commands() -> Vec<CommandSpec> {
             r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
             has_caption_track,
             |s, p| {
-                let tid = track_param(s, p).ok_or_else(|| bad("captions.setStyle", "no such caption track"))?;
+                let tid = track_param(s, p).ok_or_else(|| {
+                    bad(
+                        "captions.setStyle",
+                        format!(
+                            "no such caption track ({}) — pass the track id from captions.list, or \"C1\"…",
+                            p.get("track").map(|v| v.to_string()).unwrap_or_else(|| "no `track` given".into())
+                        ),
+                    )
+                })?;
                 let p = p.clone();
                 s.edit("Caption Style", |pr, st| {
                     let seq = st.active_sequence.ok_or(EngineError::NoSequence)?;

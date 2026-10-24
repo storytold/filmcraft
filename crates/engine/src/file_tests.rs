@@ -93,3 +93,25 @@ fn project_is_named_after_its_file() {
     assert_eq!(s.project.name, "Apollo 11 - Tranquility");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Opening the demo after a saved project must not keep that path: Save would overwrite it.
+#[test]
+fn open_demo_project_clears_saved_path_so_save_does_not_overwrite() {
+    let d = temp_dir("demo-path");
+    let original = d.join("original.fcproj").to_string_lossy().to_string();
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Original"})).unwrap();
+    s.execute("file.newBin", json!({"name": "ORIGINAL"})).unwrap();
+    s.execute("file.saveAs", json!({"path": original})).unwrap();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    assert!(s.path.is_none(), "demo is unsaved, like New Project");
+    let err = s.execute("file.save", json!({})).unwrap_err().to_string();
+    assert!(err.contains("no path") || err.contains("Save As"), "{err}");
+    let mut reopen = Session::default();
+    reopen.execute("file.open", json!({"path": original})).unwrap();
+    assert!(
+        reopen.project.root.children.iter().any(|e| matches!(e, filmcraft_project::BinEntry::Bin(b) if b.name == "ORIGINAL")),
+        "original.fcproj still has the ORIGINAL bin"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

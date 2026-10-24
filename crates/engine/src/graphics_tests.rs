@@ -658,3 +658,34 @@ fn a_layer_saved_before_the_box_height_existed_can_still_get_one() {
     s.execute("graphics.set", json!({"clip": clip.0, "props": {"box_height": 100}})).unwrap();
     assert_eq!(s.execute("graphics.list", json!({"clip": clip.0})).unwrap()["layers"][0]["box"], json!([500.0, 100.0]));
 }
+
+#[test]
+fn align_to_frame_moves_selected_video_clips_by_position_only() {
+    // #1081
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let (fw, fh) = (q.settings.width as f64, q.settings.height as f64);
+    let it = q.video_tracks[0].items[0].clone();
+    let (sw, _) = s.project.source_size(it.item).unwrap();
+    let c = it.id.0;
+    assert!(!s.is_enabled("graphics.alignFrame.hcenter"), "nothing selected");
+    s.execute("timeline.select", json!({"clips": [c]})).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 50.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "position", "value": [300.0, 200.0]})).unwrap();
+    let pos = |s: &Session| {
+        let it = s.active_sequence().unwrap().find_item(ClipId(c)).unwrap().1.clone();
+        let m = it.effect("motion").unwrap();
+        (m.vec2_at("position", Tick::ZERO), m.f64_at("scale", Tick::ZERO))
+    };
+    s.execute("graphics.alignFrame.hcenter", json!({})).unwrap();
+    let (p, scale) = pos(&s);
+    assert!((p.x - fw / 2.0).abs() < 1e-6 && (p.y - 200.0).abs() < 1e-6, "{p:?}");
+    assert_eq!(scale, 50.0, "scale untouched");
+    s.execute("graphics.alignFrame.left", json!({})).unwrap();
+    assert!((pos(&s).0.x - sw as f64 * 0.25).abs() < 1e-6, "left edge on the frame's: {:?}", pos(&s).0);
+    s.execute("graphics.alignFrame.bottom", json!({})).unwrap();
+    let h = s.project.source_size(it.item).unwrap().1 as f64;
+    assert!((pos(&s).0.y - (fh - h * 0.25)).abs() < 1e-6, "{:?}", pos(&s).0);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!((pos(&s).0.y - 200.0).abs() < 1e-6, "one undo step per alignment");
+}

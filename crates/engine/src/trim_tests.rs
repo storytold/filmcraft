@@ -237,6 +237,34 @@ fn extend_to_playhead_moves_each_unequal_out_point_to_the_playhead() {
     assert_eq!(q.find_item(b).unwrap().1.end(), ph);
 }
 
+/// #914: Trim by Frames on two selected edit points is one undo (and redo) step.
+#[test]
+fn multipoint_trim_by_frames_is_one_undo_step() {
+    let mut s = demo();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let c = v1(&s);
+    let (a, b) = (c[0], c[1]);
+    s.execute("trim.selectEditPoint", json!({"clip": a.0, "edge": "out", "kind": "trim"})).unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": b.0, "edge": "out", "kind": "trim", "add": true})).unwrap();
+    let undo0 = s.history.undo.len();
+    let d = s.sequence_rate().tick_of(-1);
+    s.execute("trim.nudge", json!({"frames": -1})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let a1 = q.find_item(ClipId(a.0)).unwrap().1.end();
+    let b1 = q.find_item(ClipId(b.0)).unwrap().1.end();
+    assert_eq!(a1, a.2 + d);
+    assert_eq!(b1, b.2 + d);
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step for both clips");
+    s.execute("edit.undo", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.find_item(ClipId(a.0)).unwrap().1.end(), a.2);
+    assert_eq!(q.find_item(ClipId(b.0)).unwrap().1.end(), b.2);
+    s.execute("edit.redo", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.find_item(ClipId(a.0)).unwrap().1.end(), a1);
+    assert_eq!(q.find_item(ClipId(b.0)).unwrap().1.end(), b1);
+}
+
 /// #653: the delta the Timeline previews while an edge is dragged is the one `timeline.trim`
 /// applies on release: dragging the last clip's Out edge far past the end of its media stops at
 /// the media's end instead of following the pointer.

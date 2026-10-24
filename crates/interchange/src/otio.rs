@@ -273,9 +273,10 @@ impl Exp<'_, '_> {
             let mut s = self.stack_json(base, &it.name, Some((it.source_in, it.duration, rate)));
             self.stack.pop();
             s["effects"] = json!(effects);
-            s["markers"] = json!(markers);
             s["enabled"] = json!(it.enabled);
             s["metadata"]["filmcraft"]["clip"] = meta["filmcraft"].clone();
+            // Nested sequence markers stay on the Stack; clip instance markers live on the clip metadata.
+            s["metadata"]["filmcraft"]["clip"]["markers"] = json!(markers);
             return s;
         }
         let _ = generator_of(self.p, base);
@@ -665,7 +666,10 @@ impl Imp<'_, '_> {
         let name = name_of(c);
         let mut ti = self.b.clip(item, kind, if name.is_empty() { "Nested Sequence" } else { &name }, pos, dur, src_in);
         let clip_meta = meta.and_then(|m| m.get("clip")).cloned();
-        // Stack markers belong to the nested sequence, not the clip instance.
+        // Stack markers belong to the nested sequence; instance markers are on filmcraft.clip.
+        if let Some(ref cm) = clip_meta {
+            ti.markers = self.markers(cm);
+        }
         self.apply_clip_meta(&mut ti, c, clip_meta.as_ref());
         Some(ti)
     }

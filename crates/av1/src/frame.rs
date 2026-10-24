@@ -106,6 +106,48 @@ impl Plane {
             dst.row_from_mut(self.oy + y, self.ox)[..self.stride].copy_from_slice(s);
         }
     }
+
+    /// Disjoint mutable bands of whole rows, for filtering in parallel: one per `[start, end)`
+    /// range of rows (relative to `oy`; ascending and not overlapping, else the later band is
+    /// cut to what is left). Ranges are clipped to the stored rows.
+    pub fn row_bands(&mut self, ranges: &[(usize, usize)]) -> Vec<RowBand<'_>> {
+        let (stride, oy) = (self.stride.max(1), self.oy);
+        let mut out = Vec::with_capacity(ranges.len());
+        let mut rest = self.data.as_mut_slice();
+        // First row of `rest`.
+        let mut y = 0usize;
+        for &(start, end) in ranges {
+            let skip = start.saturating_sub(y).saturating_mul(stride).min(rest.len());
+            rest = std::mem::take(&mut rest).split_at_mut(skip).1;
+            y = y.saturating_add(skip / stride);
+            let len = end.saturating_sub(y).saturating_mul(stride).min(rest.len());
+            let (band, tail) = std::mem::take(&mut rest).split_at_mut(len);
+            out.push(RowBand { data: band, stride, y0: oy.saturating_add(y) });
+            y = y.saturating_add(len / stride);
+            rest = tail;
+        }
+        out
+    }
+}
+
+/// Mutable whole rows [y0, y0 + data.len() / stride) of a plane, addressed with the plane's
+/// coordinates (see [`Plane::row_bands`]).
+pub struct RowBand<'a> {
+    pub data: &'a mut [u16],
+    pub stride: usize,
+    pub y0: usize,
+}
+
+impl RowBand<'_> {
+    #[inline(always)]
+    pub fn set(&mut self, x: usize, y: usize, v: u16) {
+        self.data[(y - self.y0) * self.stride + x] = v;
+    }
+    #[inline(always)]
+    pub fn row_mut(&mut self, y: usize) -> &mut [u16] {
+        let o = (y - self.y0) * self.stride;
+        &mut self.data[o..o + self.stride]
+    }
 }
 
 /// A frame's three planes, sized to the macroblock-aligned coded area plus margins.
@@ -156,6 +198,16 @@ impl FrameBuf {
             width: self.width,
             height: self.height,
         }
+    }
+
+    /// [`Plane::row_bands`] of all three planes for ranges of luma rows (chroma rows scaled
+    /// down): element `i` holds the bands of range `i`.
+    pub fn row_bands(&mut self, luma: &[(usize, usize)]) -> Vec<[RowBand<'_>; 3]> {
+        let ssy = self.subsampling_y;
+        let chroma: Vec<(usize, usize)> = luma.iter().map(|&(s, e)| (s >> ssy, e >> ssy)).collect();
+        let [p0, p1, p2] = &mut self.planes;
+        let (b1, b2) = (p1.row_bands(&chroma), p2.row_bands(&chroma));
+        p0.row_bands(luma).into_iter().zip(b1).zip(b2).map(|((y, u), v)| [y, u, v]).collect()
     }
 
     pub fn plane_width(&self, plane: usize) -> usize {
@@ -283,5 +335,42 @@ impl MiInfo {
                 dst.palette_colors[k][d..d + w].copy_from_slice(&self.palette_colors[k][y * w..(y + 1) * w]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows(b: &RowBand) -> (usize, usize) {
+        (b.y0, b.data.len() / b.stride)
+    }
+
+    #[test]
+    fn row_bands_split_whole_rows() {
+        let mut p = Plane::new(8, 20);
+        for (i, v) in p.data.iter_mut().enumerate() {
+            *v = (i / 8) as u16;
+        }
+        let bands = p.row_bands(&[(0, 8), (8, 16), (16, usize::MAX)]);
+        assert_eq!(bands.iter().map(rows).collect::<Vec<_>>(), [(0, 8), (8, 8), (16, 4)]);
+        // Each band's row y holds the samples of plane row y.
+        for mut b in bands {
+            let y = b.y0 + 1;
+            assert!(b.row_mut(y).iter().all(|&v| v as usize == y));
+        }
+        // Gaps between bands (the loop filter's even / odd turns).
+        let bands = p.row_bands(&[(0, 4), (10, 14), (18, 30)]);
+        assert_eq!(bands.iter().map(rows).collect::<Vec<_>>(), [(0, 4), (10, 4), (18, 2)]);
+    }
+
+    #[test]
+    fn row_bands_never_overlap_or_panic() {
+        let mut p = Plane::new(4, 10);
+        // Overlapping, descending and out-of-range ranges are cut to what is left.
+        let bands = p.row_bands(&[(2, 6), (4, 8), (1, 3), (9, 2), (50, 60), (usize::MAX, usize::MAX)]);
+        assert_eq!(bands.iter().map(rows).collect::<Vec<_>>(), [(2, 4), (6, 2), (8, 0), (9, 0), (10, 0), (10, 0)]);
+        let mut empty = Plane::default();
+        assert!(empty.row_bands(&[(0, 64), (64, usize::MAX)]).iter().all(|b| b.data.is_empty()));
     }
 }

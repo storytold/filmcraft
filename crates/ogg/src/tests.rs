@@ -2,6 +2,15 @@
 
 use super::*;
 
+#[test]
+fn recovery_scan_stops_when_its_shared_budget_is_spent() {
+    let source = b"junkOggS".to_vec();
+    let mut budget = 3;
+    assert_eq!(find_capture(&source, 0, source.len() as u64, &mut budget).unwrap(), None);
+    let mut budget = source.len();
+    assert_eq!(find_capture(&source, 0, source.len() as u64, &mut budget).unwrap(), Some(4));
+}
+
 /// Write one page holding `segments` (lacing already computed by `lace`).
 fn page(out: &mut Vec<u8>, flags: u8, granule: i64, serial: u32, seq: u32, lacing: &[u8], body: &[u8]) {
     let start = out.len();

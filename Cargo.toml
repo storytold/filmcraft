@@ -4,7 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.12.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -17,21 +17,26 @@ filmcraft-geom = { path = "crates/geom" }
 filmcraft-color = { path = "crates/color" }
 filmcraft-bitstream = { path = "crates/bitstream" }
 filmcraft-isobmff = { path = "crates/isobmff" }
+filmcraft-avi = { path = "crates/avi" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-mxf = { path = "crates/mxf" }
 filmcraft-cfb = { path = "crates/cfb" }
 filmcraft-mpegts = { path = "crates/mpegts" }
 filmcraft-mpeg2v = { path = "crates/mpeg2v" }
 filmcraft-ac3 = { path = "crates/ac3" }
+filmcraft-mpa = { path = "crates/mpa" }
 filmcraft-ogg = { path = "crates/ogg" }
 filmcraft-h264 = { path = "crates/h264" }
 filmcraft-hevc = { path = "crates/hevc" }
+filmcraft-vp8 = { path = "crates/vp8" }
 filmcraft-vp9 = { path = "crates/vp9" }
 filmcraft-prores = { path = "crates/prores" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-apv = { path = "crates/apv" }
+filmcraft-dng = { path = "crates/dng" }
 filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
+filmcraft-flac = { path = "crates/flac" }
 filmcraft-opus = { path = "crates/opus" }
 filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
@@ -62,9 +67,13 @@ thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 log = "0.4"
+# All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; AGENTS.md).
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
+craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82a24b006eefa036b43c09a67fb9a3fbd17ffe63" }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "f0ad6c1e1d297908915f4be315b0fcfc9be7b5d4", default-features = false }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
@@ -84,11 +93,15 @@ too_many_arguments = "allow"
 needless_range_loop = "allow"
 type_complexity = "allow"
 
+# Line tables keep file and line in panics and backtraces at a fraction of full debug info's size;
+# dependencies need none.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
 # Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
 [profile.dev.package.filmcraft-h264]
@@ -109,10 +122,16 @@ opt-level = 3
 [profile.dev.package.filmcraft-apv]
 opt-level = 3
 
+[profile.dev.package.filmcraft-dng]
+opt-level = 3
+
 [profile.dev.package.filmcraft-av1]
 opt-level = 3
 
 [profile.dev.package.filmcraft-aac]
+opt-level = 3
+
+[profile.dev.package.filmcraft-flac]
 opt-level = 3
 
 # Audio effects: realtime-factor tests and long convolution / spectral runs.
@@ -123,6 +142,9 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-opus]
+opt-level = 3
+
+[profile.dev.package.filmcraft-vp8]
 opt-level = 3
 
 [profile.dev.package.filmcraft-vp9]

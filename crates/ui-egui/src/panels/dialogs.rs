@@ -18,6 +18,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::workspaces::dialogs(app, ctx);
     crate::panels::voiceover::show(app, ctx);
     crate::panels::remix::show(app, ctx);
+    crate::links::show_failed(app, ctx);
     crate::panels::interchange_export::show(app, ctx);
     crate::panels::frame_export::show(app, ctx);
     crate::panels::project_dialogs::show(app, ctx);
@@ -37,9 +38,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(crate::widgets::dialog_center(ctx))
                 .show(ctx, |ui| about(app, ui));
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if crate::widgets::escape_closes(ctx) {
                 open = false;
             }
         }
@@ -104,6 +106,7 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         }
     };
     let mut draft = app.ui.audio_gain.clone();
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("audio-gain-before-drag"), &mut draft);
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
@@ -111,7 +114,8 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         .id(egui::Id::new("Audio Gain"))
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             ui.add_space(6.0);
             egui::Grid::new("audio-gain").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
@@ -127,7 +131,7 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                     if r.clicked() {
                         draft.mode = id.to_string();
                     }
-                    let f = ui.add_enabled(draft.mode == id, egui::DragValue::new(v).speed(0.1).range(-96.0..=96.0).suffix(" dB"));
+                    let f = ui.add_enabled(draft.mode == id, crate::widgets::number_drag(v).speed(0.1).range(-96.0..=96.0).suffix(" dB"));
                     elems.push((format!("audioGain.{id}.value"), f.rect, format!("{v:.1} dB")));
                     ui.end_row();
                 }
@@ -153,7 +157,7 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         keep = false;
     }
     if apply {
@@ -188,6 +192,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let names = |tracks: &[filmcraft_engine::project::Track]| tracks.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
     let (vnames, anames, snames) = (names(&seq.video_tracks), names(&seq.audio_tracks), names(&seq.submix_tracks));
     let mut d = app.ui.add_tracks.clone();
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("add-tracks-before-drag"), &mut d);
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
@@ -198,7 +203,8 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         .collapsible(false)
         .resizable(false)
         .default_width(320.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             // everything spans the width the window has: no empty band beside the fields
             ui.set_width(ui.available_width());
@@ -225,7 +231,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         label(ui, tl!("Amount"));
-                        let r = ui.add(egui::DragValue::new(amount).range(0..=99).speed(0.1));
+                        let r = ui.add(crate::widgets::number_drag(amount).range(0..=99).speed(0.1));
                         elems.push((format!("addTracks.{kind}.amount"), r.rect, amount.to_string()));
                     });
                     ui.horizontal(|ui| {
@@ -282,7 +288,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         keep = false;
     }
     if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !ctx.egui_wants_keyboard_input() {
@@ -327,7 +333,8 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         .id(egui::Id::new("Delete Tracks"))
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             ui.set_min_width(300.0);
             for (kind, title, delete, on, target, list) in [
@@ -379,7 +386,7 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         keep = false;
     }
     if apply {

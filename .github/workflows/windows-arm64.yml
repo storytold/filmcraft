@@ -4,19 +4,18 @@
 # out for now: PdfCraft saw an intermittent access violation in egui UI tests there.)
 name: Windows ARM64
 
+# The package build takes about 15 minutes, so it runs nightly on main and on pushes to `release`
+# rather than on every push to main: a dependency or runner-image change still shows up within a
+# day. PRs that change the Windows packaging itself still run it.
 on:
+  schedule:
+    - cron: "41 4 * * *"
   push:
-    branches: [main]
+    branches: [release]
   pull_request:
     paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "**/Cargo.toml"
-      - "**/build.rs"
       - .github/workflows/windows-arm64.yml
       - packaging/windows/**
-  schedule:
-    - cron: "41 4 * * 1" # weekly, so drift in the runner images shows up
   workflow_dispatch:
 
 concurrency:
@@ -26,70 +25,10 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 0
-
 jobs:
-  package:
-    name: package (cross-compiled on x64)
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-        with:
-          targets: aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: windows-arm64-package
-      - name: Install WiX
-        shell: pwsh
-        run: dotnet tool install --global wix --version 5.0.2
-      - name: Build and package (unsigned)
-        shell: pwsh
-        env:
-          DIST: ${{ github.workspace }}\dist\arm64
-        run: ./packaging/windows/package.ps1 -Arch arm64
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: filmcraft-windows-arm64
-          path: dist/arm64/*
-          if-no-files-found: error
-          retention-days: 7
-
-  install:
-    name: install and run on ARM64
-    needs: package
-    runs-on: windows-11-arm
-    timeout-minutes: 30
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: filmcraft-windows-arm64
-          path: dist
-      - name: Install the MSI, check it, run it, uninstall it
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $msi = (Get-ChildItem dist/*.msi | Select-Object -First 1).FullName
-          $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/l*v', 'install.log' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; throw "msiexec /i exited $($p.ExitCode)" }
-          $dir = Join-Path $env:ProgramFiles 'FilmCraft'
-          foreach ($exe in 'filmcraft.exe', 'filmcraft-cli.exe') {
-            $path = Join-Path $dir $exe
-            if (-not (Test-Path $path)) { throw "$exe not installed in $dir" }
-            $bytes = [System.IO.File]::ReadAllBytes($path)
-            $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
-            if ($machine -ne 0xAA64) { throw "$exe is for machine 0x$('{0:X}' -f $machine), not ARM64" }
-            Write-Output "ok $path (ARM64)"
-          }
-          # The installed CLI runs natively on ARM64.
-          $cli = Join-Path $dir 'filmcraft-cli.exe'
-          $out = & $cli --version 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) { Write-Output $out; throw "filmcraft-cli --version exited $LASTEXITCODE" }
-          Write-Output "ok filmcraft-cli --version: $($out.Trim())"
-          $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
-          if (Test-Path (Join-Path $dir 'filmcraft.exe')) { throw 'uninstall left filmcraft.exe behind' }
-          Write-Output 'ok uninstalled'
+  windows-arm64:
+    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
+    uses: storytold/craft-common-actions/.github/workflows/windows-arm64.yml@main
+    with:
+      app-name: filmcraft
+      app-dir: FilmCraft

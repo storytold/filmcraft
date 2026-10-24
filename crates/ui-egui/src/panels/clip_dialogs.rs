@@ -30,7 +30,8 @@
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
 //!   `quit.save`, `quit.dontSave`, `quit.cancel`.
 
-use egui::{Align2, RichText};
+use crate::widgets::CenteredDialog as _;
+use egui::RichText;
 use filmcraft_project::{AudioChannelMap, AudioChannels, ItemKind, TrackKind};
 use serde_json::{Value, json};
 
@@ -274,7 +275,7 @@ fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-        let r = ui.add(egui::DragValue::new(&mut v).range(range).suffix(suffix));
+        let r = ui.add(crate::widgets::number_drag(&mut v).range(range).suffix(suffix));
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
@@ -286,7 +287,7 @@ fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_i64).unwrap_or(0);
-        let r = ui.add(egui::DragValue::new(&mut v).range(0..=i64::MAX / 4).suffix(" fr"));
+        let r = ui.add(crate::widgets::number_drag(&mut v).range(0..=i64::MAX / 4).suffix(" fr"));
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
@@ -299,6 +300,7 @@ fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.clip_dialog.clone() else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("clip-dialog-before-drag"), &mut d);
     let Some((title, pre)) = meta(&d.command) else {
         app.ui.clip_dialog = None;
         return;
@@ -310,7 +312,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some();
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("clip-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
@@ -421,7 +423,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         ui.label(tl!("Number of Audio Clips:"));
                         let mut count = clips.len() as u32;
-                        let r = ui.add(egui::DragValue::new(&mut count).range(1..=n as u32));
+                        let r = ui.add(crate::widgets::number_drag(&mut count).range(1..=n as u32));
                         push(&mut elems, format!("{pre}.count"), &r, "Number of Audio Clips");
                         if r.changed() {
                             let count = count.max(1) as usize;
@@ -581,7 +583,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
     if action.is_some() {

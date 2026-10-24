@@ -114,6 +114,62 @@ fn assign_reassigns_conflicts_and_undoes() {
 }
 
 #[test]
+fn clear_close_sequence_also_clears_file_close() {
+    // #773: File ▸ Close (`file.close`, Cmd+W) aliases Close Sequence (`sequence.close`).
+    // The editor's Clear sends panel Application against `sequence.close`, which had only a
+    // Timeline binding — Cmd+W stayed on `file.close`.
+    let mut s = Session::default();
+    assert_eq!(s.shortcuts.primary("file.close").as_deref(), Some("Cmd+W"));
+    assert_eq!(s.shortcuts.primary("sequence.close").as_deref(), Some("Cmd+W"));
+    assert!(s.shortcuts.for_command("sequence.close").iter().any(|b| b.keys == "Cmd+W"));
+    let r = s.execute("shortcuts.clear", json!({"command": "sequence.close", "panel": "Application"})).unwrap();
+    assert!(r["removed"].as_u64().unwrap() >= 1, "{r}");
+    assert!(s.shortcuts.for_command("sequence.close").is_empty(), "{:?}", s.shortcuts.for_command("sequence.close"));
+    assert!(s.shortcuts.primary("file.close").is_none());
+    let w = Chord::parse("Cmd+W").unwrap();
+    assert!(s.shortcuts.resolve(&w, None, Platform::current()).is_none());
+    assert!(s.shortcuts.resolve(&w, Some("Timeline"), Platform::current()).is_none());
+    s.execute("shortcuts.set", json!({"command": "sequence.addEdit", "keys": "Cmd+W", "add": true})).unwrap();
+    assert_eq!(s.shortcuts.resolve(&w, None, Platform::current()).unwrap().command, "sequence.addEdit");
+}
+
+#[test]
+fn clear_new_bin_frees_cmd_b_in_the_project_panel_too() {
+    // #1333: New Bin has Cmd+B application-wide and again in the Project panel. The editor's Clear
+    // sends panel Application, so only the first went; the Project panel kept Cmd+B.
+    let dir = temp_dir("new-bin");
+    let mut s = Session::default();
+    s.shortcuts.set_dir(&dir);
+    let b = Chord::parse("Cmd+B").unwrap();
+    let p = Platform::current();
+    assert_eq!(s.shortcuts.resolve(&b, Some("Project"), p).unwrap().command, "file.newBin");
+    s.execute("shortcuts.clear", json!({"command": "file.newBin", "panel": "Application"})).unwrap();
+    assert!(s.shortcuts.for_command("file.newBin").is_empty(), "{:?}", s.shortcuts.for_command("file.newBin"));
+    s.execute("shortcuts.set", json!({"command": "sequence.addEdit", "keys": "Cmd+B"})).unwrap();
+    let mut t = Shortcuts::new();
+    t.set_dir(&dir);
+    for sc in [&s.shortcuts, &t] {
+        assert_eq!(sc.resolve(&b, None, p).unwrap().command, "sequence.addEdit");
+        assert_eq!(sc.resolve(&b, Some("Project"), p).unwrap().command, "sequence.addEdit");
+        assert!(sc.for_command("file.newBin").is_empty());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reassigning_new_bin_moves_its_project_panel_key_too() {
+    // #1333: assigning New Bin another key replaced Cmd+B application-wide only.
+    let mut s = Session::default();
+    s.execute("shortcuts.set", json!({"command": "file.newBin", "keys": "Cmd+Alt+B"})).unwrap();
+    let keys: Vec<(&str, Option<&str>)> = s.shortcuts.for_command("file.newBin").iter().map(|b| (b.keys.as_str(), b.panel.as_deref())).collect();
+    assert_eq!(keys, [("Cmd+Alt+B", None)]);
+    assert!(s.shortcuts.resolve(&Chord::parse("Cmd+B").unwrap(), Some("Project"), Platform::Mac).is_none());
+    // a panel key of its own (History ▸ Left for Undo) is not a copy of the application one: it stays
+    s.execute("shortcuts.set", json!({"command": "edit.undo", "keys": "Cmd+Alt+Z"})).unwrap();
+    assert!(s.shortcuts.for_command("edit.undo").iter().any(|b| b.panel.as_deref() == Some("History") && b.keys == "Left"));
+}
+
+#[test]
 fn panel_shortcuts_override_application_ones_with_focus() {
     let s = Session::default();
     let left = Chord::parse("Left").unwrap();

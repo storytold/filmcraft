@@ -5,9 +5,11 @@
 //! (version 2.0 header): one RGB image element, 10 bits per component packed into 32-bit
 //! big-endian words (method A, two padding bits at the bottom), BT.709 transfer and colorimetry.
 //! OpenEXR follows the public OpenEXR file layout (version 2, single-part scan-line file): half-float
-//! B, G, R (and A) channels, no compression, one scan line per chunk, scene-linear Rec.709 values
-//! with premultiplied alpha, as EXR readers expect.
-use crate::{ExportError, Result};
+//! B, G, R (and A) channels, scene-linear Rec.709 values with premultiplied alpha, as EXR readers
+//! expect; uncompressed, RLE, ZIPS (zlib per scan line) or ZIP (zlib per 16 scan lines). The
+//! compressed modes first split each chunk's bytes into even and odd halves and delta-code them
+//! (the format's predictor); a chunk that would not shrink is stored raw, as the format allows.
+use crate::{ExportError, ExrCompression, Result};
 
 /// `w * h * 4` when `rgba` holds exactly that many bytes.
 fn checked_len(rgba: &[u8], w: u32, h: u32) -> Result<usize> {
@@ -164,15 +166,20 @@ fn half(v: f32) -> u16 {
 
 /// An OpenEXR file: half-float scene-linear Rec.709 RGB, or RGBA with `alpha` (premultiplied, as
 /// EXR defines alpha; the frame's straight alpha is multiplied in after linearisation).
-pub(crate) fn exr(rgba: &[u8], w: u32, h: u32, alpha: bool) -> Result<Vec<u8>> {
+pub(crate) fn exr(rgba: &[u8], w: u32, h: u32, alpha: bool, compression: ExrCompression) -> Result<Vec<u8>> {
     let n = checked_len(rgba, w, h)?;
+    let too_large = || ExportError::Unsupported(format!("an OpenEXR frame of {w}×{h} is too large"));
     let (Ok(x_max), Ok(y_max)) = (i32::try_from(w - 1), i32::try_from(h - 1)) else {
-        return Err(ExportError::Unsupported(format!("an OpenEXR frame of {w}×{h} is too large")));
+        return Err(too_large());
     };
     // channels in the alphabetical order the file layout requires
     let names: &[u8] = if alpha { b"ABGR" } else { b"BGR" };
     let line = (w as usize).checked_mul(names.len() * 2).ok_or_else(|| ExportError::Encode("frame size".into()))?;
-    let line_size = i32::try_from(line).map_err(|_| ExportError::Unsupported(format!("an OpenEXR frame of {w}×{h} is too large")))?;
+    // a chunk's byte count is a signed 32-bit field
+    let lines = compression.lines();
+    if line.checked_mul(lines).and_then(|c| i32::try_from(c).ok()).is_none() {
+        return Err(too_large());
+    }
 
     let mut hd = Vec::with_capacity(512);
     hd.extend_from_slice(&[0x76, 0x2F, 0x31, 0x01]); // magic number 20000630
@@ -198,7 +205,7 @@ pub(crate) fn exr(rgba: &[u8], w: u32, h: u32, alpha: bool) -> Result<Vec<u8>> {
     let window: Vec<u8> = [0, 0, x_max, y_max].iter().flat_map(|v| v.to_le_bytes()).collect();
     attr(&mut hd, "channels", "chlist", &channels);
     attr(&mut hd, "chromaticities", "chromaticities", &le(&[0.64, 0.33, 0.30, 0.60, 0.15, 0.06, 0.3127, 0.3290]));
-    attr(&mut hd, "compression", "compression", &[0]); // NO_COMPRESSION
+    attr(&mut hd, "compression", "compression", &[compression.code()]);
     attr(&mut hd, "dataWindow", "box2i", &window);
     attr(&mut hd, "displayWindow", "box2i", &window);
     attr(&mut hd, "lineOrder", "lineOrder", &[0]); // INCREASING_Y
@@ -207,43 +214,100 @@ pub(crate) fn exr(rgba: &[u8], w: u32, h: u32, alpha: bool) -> Result<Vec<u8>> {
     attr(&mut hd, "screenWindowWidth", "float", &le(&[1.0]));
     hd.push(0); // end of header
 
-    // offset table (one chunk per scan line), then the chunks: y, data size, pixel data
-    let chunk = line + 8;
-    let table = (h as usize).checked_mul(8);
-    let body = (h as usize).checked_mul(chunk);
+    // offset table (one entry per chunk), then the chunks: first y, data size, data
+    let chunks = (h as usize).div_ceil(lines);
+    let table = chunks.checked_mul(8);
+    let body = (h as usize).checked_mul(line + 8);
     let size = table.zip(body).and_then(|(t, b)| hd.len().checked_add(t)?.checked_add(b)).ok_or_else(|| ExportError::Encode("frame size".into()))?;
+    // the uncompressed size: compressed chunks only shrink it
     let mut out = Vec::with_capacity(size);
     out.extend_from_slice(&hd);
-    let first = (hd.len() + h as usize * 8) as u64;
-    for y in 0..h as u64 {
-        out.extend_from_slice(&(first + y * chunk as u64).to_le_bytes());
-    }
+    let table_at = out.len();
+    out.resize(table_at + chunks * 8, 0);
     let lin = filmcraft_color::srgb_u8_to_linear_table();
     let opaque: [u16; 256] = std::array::from_fn(|i| half(lin[i]));
     let row = w as usize * 4;
-    let mut px = vec![0_u16; w as usize * names.len()];
-    for (y, src) in rgba[..n].chunks_exact(row).enumerate() {
-        // planar per line: every pixel of the first channel, then the next channel …
-        let wn = w as usize;
-        for (x, &[r, g, b, a]) in src.as_chunks::<4>().0.iter().enumerate() {
-            let rgb = [b, g, r];
-            if alpha {
-                let k = f32::from(a) / 255.0;
-                px[x] = half(k);
-                for (c, &v) in rgb.iter().enumerate() {
-                    px[(c + 1) * wn + x] = if a == 255 { opaque[v as usize] } else { half(lin[v as usize] * k) };
-                }
-            } else {
-                for (c, &v) in rgb.iter().enumerate() {
-                    px[c * wn + x] = opaque[v as usize];
+    let wn = w as usize;
+    let mut px = vec![0_u16; wn * names.len()];
+    let mut raw = Vec::with_capacity(line * lines);
+    for (k, block) in rgba[..n].chunks(row * lines).enumerate() {
+        raw.clear();
+        for src in block.chunks_exact(row) {
+            // planar per line: every pixel of the first channel, then the next channel …
+            for (x, &[r, g, b, a]) in src.as_chunks::<4>().0.iter().enumerate() {
+                let rgb = [b, g, r];
+                if alpha {
+                    let k = f32::from(a) / 255.0;
+                    px[x] = half(k);
+                    for (c, &v) in rgb.iter().enumerate() {
+                        px[(c + 1) * wn + x] = if a == 255 { opaque[v as usize] } else { half(lin[v as usize] * k) };
+                    }
+                } else {
+                    for (c, &v) in rgb.iter().enumerate() {
+                        px[c * wn + x] = opaque[v as usize];
+                    }
                 }
             }
+            raw.extend(px.iter().flat_map(|v| v.to_le_bytes()));
         }
-        out.extend_from_slice(&(y as i32).to_le_bytes());
-        out.extend_from_slice(&line_size.to_le_bytes());
-        out.extend(px.iter().flat_map(|v| v.to_le_bytes()));
+        let packed = match compression {
+            ExrCompression::None => None,
+            ExrCompression::Rle => Some(rle(&predict(&raw))),
+            ExrCompression::Zips | ExrCompression::Zip => Some(crate::deflate::zlib(&predict(&raw))),
+        };
+        // a chunk that does not shrink is stored as it is (readers compare the sizes)
+        let data = packed.as_deref().filter(|p| p.len() < raw.len()).unwrap_or(&raw);
+        let offset = (out.len() as u64).to_le_bytes();
+        out[table_at + k * 8..table_at + k * 8 + 8].copy_from_slice(&offset);
+        out.extend_from_slice(&((k * lines) as i32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as i32).to_le_bytes());
+        out.extend_from_slice(data);
     }
     Ok(out)
+}
+
+/// The OpenEXR RLE / ZIP predictor: bytes split into even and odd halves, then each byte replaced
+/// by its difference from the previous one, plus 128.
+fn predict(raw: &[u8]) -> Vec<u8> {
+    let half = raw.len().div_ceil(2);
+    let mut t = vec![0_u8; raw.len()];
+    for (i, &b) in raw.iter().enumerate() {
+        t[if i % 2 == 0 { i / 2 } else { half + i / 2 }] = b;
+    }
+    let mut p = t.first().copied().unwrap_or(0);
+    for v in t.iter_mut().skip(1) {
+        let d = v.wrapping_sub(p).wrapping_add(128);
+        p = *v;
+        *v = d;
+    }
+    t
+}
+
+/// OpenEXR run-length coding: a signed count byte, then either `count + 1` copies of one byte
+/// (count ≥ 0, runs of 3 to 128) or `-count` literal bytes (1 to 127).
+fn rle(src: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(src.len() + src.len() / 127 + 1);
+    let mut i = 0;
+    while i < src.len() {
+        let b = src[i];
+        let run = src[i..].iter().take(128).take_while(|&&x| x == b).count();
+        if run >= 3 {
+            out.extend_from_slice(&[(run - 1) as u8, b]);
+            i += run;
+            continue;
+        }
+        // literals up to the next run of three (or 127 bytes)
+        let s = i;
+        while i < src.len() && i - s < 127 {
+            if src.get(i..i + 3).is_some_and(|t| t[0] == t[1] && t[1] == t[2]) {
+                break;
+            }
+            i += 1;
+        }
+        out.push(((i - s) as u8).wrapping_neg());
+        out.extend_from_slice(&src[s..i]);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -322,7 +386,7 @@ mod tests {
         // 2×1: opaque white, then (255, 0, 0) at alpha 0.5
         let px = [255, 255, 255, 255, 255, 0, 0, 128];
         for alpha in [false, true] {
-            let f = exr(&px, 2, 1, alpha).unwrap();
+            let f = exr(&px, 2, 1, alpha, ExrCompression::None).unwrap();
             let nch = if alpha { 4 } else { 3 };
             assert_eq!(&f[..8], &[0x76, 0x2F, 0x31, 0x01, 2, 0, 0, 0]);
             let ch = find(&f, b"channels\0chlist\0") + 16;
@@ -353,36 +417,134 @@ mod tests {
         }
     }
 
+    /// A 40×35 test picture: gradients, a flat band and a noisy corner, with varying alpha (35
+    /// rows: the last 16-line ZIP chunk is short).
+    fn picture() -> (Vec<u8>, u32, u32) {
+        let (w, h) = (40_u32, 35_u32);
+        let px = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                let noise = (x * 7919 + y * 104_729) % 251;
+                let r = if y < 12 {
+                    (x * 6) as u8
+                } else if y < 20 {
+                    200
+                } else {
+                    noise as u8
+                };
+                [r, (y * 7) as u8, ((x + y) * 3) as u8, [255, 128, 0, 64][(x / 10) as usize % 4]]
+            })
+            .collect();
+        (px, w, h)
+    }
+
+    /// The chunks of an OpenEXR file we wrote: (first y, data).
+    fn chunks(f: &[u8], count: usize) -> Vec<(u32, &[u8])> {
+        let end = find(f, b"screenWindowWidth\0float\0") + 24 + 4 + 4 + 1;
+        (0..count)
+            .map(|k| {
+                let off = u64::from_le_bytes(f[end + k * 8..end + k * 8 + 8].try_into().unwrap()) as usize;
+                let n = le32(f, off + 4) as usize;
+                (le32(f, off), &f[off + 8..off + 8 + n])
+            })
+            .collect()
+    }
+
+    /// Undo [`predict`].
+    fn unpredict(t: &[u8]) -> Vec<u8> {
+        let mut t = t.to_vec();
+        for i in 1..t.len() {
+            t[i] = t[i - 1].wrapping_add(t[i]).wrapping_sub(128);
+        }
+        let half = t.len().div_ceil(2);
+        (0..t.len()).map(|i| t[if i % 2 == 0 { i / 2 } else { half + i / 2 }]).collect()
+    }
+
+    fn unrle(mut s: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let [c, rest @ ..] = s {
+            let c = *c as i8;
+            if c < 0 {
+                out.extend_from_slice(&rest[..c.unsigned_abs() as usize]);
+                s = &rest[c.unsigned_abs() as usize..];
+            } else {
+                out.extend(std::iter::repeat_n(rest[0], c as usize + 1));
+                s = &rest[1..];
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn rle_codes_runs_and_literals() {
+        for src in [vec![], vec![5], vec![1, 1], vec![9; 300], (0..=255).collect::<Vec<u8>>(), [vec![1, 2], vec![3; 3], vec![4, 4, 5]].concat()] {
+            assert_eq!(unrle(&rle(&src)), src);
+        }
+        assert_eq!(rle(&[7; 130]), vec![127, 7, 0xFE, 7, 7]);
+        assert_eq!(rle(&[1, 2, 2, 2]), vec![0xFF, 1, 2, 2]);
+    }
+
+    /// Every compression stores the same pixels as the uncompressed file, in chunks of the right
+    /// height, and the compressed files are smaller.
+    #[test]
+    fn compressed_exr_holds_the_same_pixels() {
+        let (px, w, h) = picture();
+        for alpha in [false, true] {
+            let plain = exr(&px, w, h, alpha, ExrCompression::None).unwrap();
+            let lines: Vec<&[u8]> = chunks(&plain, h as usize).into_iter().map(|(_, d)| d).collect();
+            for c in [ExrCompression::Rle, ExrCompression::Zips, ExrCompression::Zip] {
+                let f = exr(&px, w, h, alpha, c).unwrap();
+                let cmp = find(&f, b"compression\0compression\0") + 24;
+                assert_eq!(f[cmp + 4], c.code());
+                assert!(f.len() < plain.len() * 3 / 4, "{c:?}: {} vs {}", f.len(), plain.len());
+                let n = (h as usize).div_ceil(c.lines());
+                for (k, (y, data)) in chunks(&f, n).into_iter().enumerate() {
+                    assert_eq!(y as usize, k * c.lines());
+                    let want: Vec<u8> = lines[k * c.lines()..((k + 1) * c.lines()).min(h as usize)].concat();
+                    let got = if data.len() == want.len() {
+                        data.to_vec()
+                    } else if c == ExrCompression::Rle {
+                        unpredict(&unrle(data))
+                    } else {
+                        unpredict(&crate::deflate::tests::inflate(data).unwrap())
+                    };
+                    assert_eq!(got, want, "{c:?} chunk {k}");
+                }
+            }
+        }
+    }
+
     /// ffmpeg (external test oracle) decodes our OpenEXR files to the values we meant: linear
-    /// light, premultiplied alpha, rows top to bottom.
+    /// light, premultiplied alpha, rows top to bottom; in every compression.
     #[test]
     fn exr_decodes_in_ffmpeg() {
         let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("OpenEXR stills") else { return };
-        let (w, h) = (5_u32, 3_u32);
-        let px: Vec<u8> = (0..w * h).flat_map(|i| [(i * 17) as u8, (255 - i * 13) as u8, (i * 40 % 256) as u8, [255, 128, 0, 64][i as usize % 4]]).collect();
+        let (px, w, h) = picture();
         let dir = filmcraft_testkit::fixtures::workspace_root().join("target").join("export-tests").join(format!("exr-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let lin = filmcraft_color::srgb_u8_to_linear_table();
-        for alpha in [false, true] {
-            let path = dir.join(format!("f{alpha}.exr"));
-            std::fs::write(&path, exr(&px, w, h, alpha).unwrap()).unwrap();
-            let out = std::process::Command::new(&ffmpeg)
-                .args(["-v", "error", "-i"])
-                .arg(&path)
-                .args(["-f", "rawvideo", "-pix_fmt", "gbrapf32le", "-"])
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-            let n = (w * h) as usize;
-            assert_eq!(out.stdout.len(), n * 4 * 4);
-            let plane = |p: usize, i: usize| f32::from_le_bytes(out.stdout[(p * n + i) * 4..][..4].try_into().unwrap());
-            for (i, &[r, g, b, a]) in px.as_chunks::<4>().0.iter().enumerate() {
-                let k = if alpha { f32::from(a) / 255.0 } else { 1.0 };
-                // gbrap planes: G, B, R, A
-                let want = [lin[g as usize] * k, lin[b as usize] * k, lin[r as usize] * k, k];
-                for (p, want) in want.into_iter().enumerate() {
-                    let got = plane(p, i);
-                    assert!((got - want).abs() <= 1e-3 + want * 1e-3, "alpha {alpha}, pixel {i}, plane {p}: {got} vs {want}");
+        for c in ExrCompression::ALL {
+            for alpha in [false, true] {
+                let path = dir.join(format!("f{alpha}-{c:?}.exr"));
+                std::fs::write(&path, exr(&px, w, h, alpha, c).unwrap()).unwrap();
+                let out = std::process::Command::new(&ffmpeg)
+                    .args(["-v", "error", "-i"])
+                    .arg(&path)
+                    .args(["-f", "rawvideo", "-pix_fmt", "gbrapf32le", "-"])
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "{c:?}: {}", String::from_utf8_lossy(&out.stderr));
+                let n = (w * h) as usize;
+                assert_eq!(out.stdout.len(), n * 4 * 4, "{c:?}");
+                let plane = |p: usize, i: usize| f32::from_le_bytes(out.stdout[(p * n + i) * 4..][..4].try_into().unwrap());
+                for (i, &[r, g, b, a]) in px.as_chunks::<4>().0.iter().enumerate() {
+                    let k = if alpha { f32::from(a) / 255.0 } else { 1.0 };
+                    // gbrap planes: G, B, R, A
+                    let want = [lin[g as usize] * k, lin[b as usize] * k, lin[r as usize] * k, k];
+                    for (p, want) in want.into_iter().enumerate() {
+                        let got = plane(p, i);
+                        assert!((got - want).abs() <= 1e-3 + want * 1e-3, "{c:?}, alpha {alpha}, pixel {i}, plane {p}: {got} vs {want}");
+                    }
                 }
             }
         }
@@ -397,8 +559,10 @@ mod tests {
         assert!(tga(&[0; 4], u32::MAX, u32::MAX, false).is_err());
         assert!(rgb(&[0; 3], 1, 1).is_err());
         assert!(dpx(&[0; 4], u32::MAX, u32::MAX).is_err());
-        assert!(exr(&[0; 4], u32::MAX, u32::MAX, true).is_err());
-        assert!(exr(&[0; 7], 2, 1, false).is_err());
-        assert!(exr(&[], 0, 1, false).is_err());
+        for c in ExrCompression::ALL {
+            assert!(exr(&[0; 4], u32::MAX, u32::MAX, true, c).is_err());
+            assert!(exr(&[0; 7], 2, 1, false, c).is_err());
+            assert!(exr(&[], 0, 1, false, c).is_err());
+        }
     }
 }

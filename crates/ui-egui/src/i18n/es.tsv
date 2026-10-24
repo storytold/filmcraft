@@ -230,6 +230,9 @@
 	Normalize Mix Track…	Normalizar pista de mezcla…
 	Offline File…	Archivo sin conexión…
 	Open Project…	Abrir proyecto…
+	Open Recent	Archivos recientes
+	Clear Recent Files	Vaciar archivos recientes
+	Recent	Recientes
 	Optical Flow	Flujo óptico
 	Overwrite	Sobrescribir
 	Paste	Pegar
@@ -282,6 +285,7 @@
 	Review	Revisión
 	Right	Derecha
 	Ripple Delete	Eliminar y cerrar hueco
+	Ripple Delete Head Frame	Eliminar frames iniciales y cerrar hueco
 	Ripple Sequence Markers	Desplazar marcadores de secuencia
 	Rose	Rosa
 	Safe Margins	Márgenes seguros
@@ -293,7 +297,7 @@
 	Save as Template…	Guardar como plantilla…
 	Scale to Frame Size	Escalar al tamaño del fotograma
 	Scene Edit Detection…	Detección de cambios de escena…
-	Scratch Disks…	Discos de memoria virtual…
+	Scratch Disks…	Discos de trabajo…
 	Search Bin	Bandeja de búsqueda
 	Select	Seleccionar
 	Select All	Seleccionar todo
@@ -317,7 +321,7 @@
 	Show All Marker Colors	Mostrar todos los colores de marcador
 	Show Guides	Mostrar guías
 	Show Rulers	Mostrar reglas
-	Show Through Edits	Mostrar ediciones pasantes
+	Show Through Edits	Mostrar cortes continuos
 	Simplify Sequence…	Simplificar secuencia…
 	Snap in Program Monitor	Ajustar en el monitor de programa
 	Snap in Timeline	Ajustar en la línea de tiempo
@@ -341,7 +345,7 @@
 	Transcribe…	Transcribir…
 	Transcript	Transcripción
 	Transparent Video…	Video transparente…
-	Trim Edit	Recortar edición
+	Trim Edit	Edición de recorte
 	Trim…	Recorte…
 	Undo	Deshacer
 	Ungroup	Desagrupar
@@ -543,8 +547,8 @@
 	Search effects	Buscar efectos
 	Apply to Selected Clips	Aplicar a los clips seleccionados
 	Metadata Display	Visualización de metadatos
-	Save As New View Preset	Guardar como nuevo ajuste de vista
-	Manage Saved View Presets	Gestionar ajustes de vista guardados
+	Save As New View Preset	Guardar como nuevo ajuste preestablecido de vista
+	Manage Saved View Presets	Gestionar ajustes preestablecidos de vista guardados
 	Freeform View Options	Opciones de la vista de forma libre
 	Save Arrangement	Guardar disposición
 	Saves the view, columns, sort, thumbnail and font size.	Guarda la vista, las columnas, el orden, la miniatura y el tamaño de fuente.
@@ -597,12 +601,12 @@
 	Out: {name}	Salida: {name}
 	In: {name}	Entrada: {name}
 	Play Around Edit (Space loops, Shift+K once)	Reproducir alrededor de la edición (Espacio en bucle, Mayús+K una vez)
-	Trim Backward Many	Recortar muchos hacia atrás
+	Trim Backward Many	Recortar varios fotogramas hacia atrás
 	Trim Backward	Recortar hacia atrás
 	Apply Default Transitions	Aplicar transiciones predeterminadas
 	Apply Default Transitions to Selection (Shift+D)	Aplicar transiciones predeterminadas a la selección (Mayús+D)
 	Trim Forward	Recortar hacia delante
-	Trim Forward Many	Recortar muchos hacia delante
+	Trim Forward Many	Recortar varios fotogramas hacia delante
 	Exit Trim Mode	Salir del modo de recorte
 	Voice-over record (right-click: Voice-Over Record Settings…)	Grabar voz en off (clic derecho: ajustes de grabación de voz en off…)
 	Voice-Over Record Settings…	Ajustes de grabación de voz en off…
@@ -677,7 +681,7 @@
 	Extract (')	Extraer (')
 	Export Frame: use Export mode (M6)	Exportar fotograma: usa el modo Exportar (M6)
 	Button Editor	Editor de botones
-	More transport controls	Más controles de reproducción
+	More transport controls	Más controles de transporte
 	Multi-Camera Record on	Grabación multicámara activada
 	Multi-Camera Record off	Grabación multicámara desactivada
 	{first} - Merged	{first} - Combinado
@@ -710,7 +714,7 @@
 	Enumerate Cameras	Numerar cámaras
 	Camera Angle Metadata	Metadatos de ángulo de cámara
 	Move source clips to Processed Clips bin	Mover los clips de origen a la bandeja Clips procesados
-	Synchronized {n} clip group(s)	Sincronizado(s) {n} grupo(s) de clips
+	Synchronized {n} clip group(s)	{n} grupo(s) de clips sincronizado(s)
 	Merged clip created	Clip combinado creado
 	Multi-camera source sequence with {n} camera(s)	Secuencia de origen multicámara con {n} cámara(s)
 	No multi-camera clip at the playhead	No hay ningún clip multicámara en el cabezal
@@ -722,7 +726,7 @@
 	Record	Grabar
 	Edit Cameras	Editar cámaras
 	Cameras shown in the Multi-Camera view (uncheck to hide).	Cámaras mostradas en la vista multicámara (desmarca para ocultar).
-	Recorded {n} multi-camera cut(s)	Grabado(s) {n} corte(s) multicámara
+	Recorded {n} multi-camera cut(s)	{n} corte(s) multicámara grabado(s)
 	Clamp Signal	Limitar señal
 	Presets	Ajustes preestablecidos
 	Parade ({kind})	Desfile ({kind})
@@ -794,7 +798,7 @@
 	Offline	Sin conexión
 	Missing	No encontrado
 	Link Media	Vincular medios
-	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} clip(s) no encuentran sus medios. Localízalos, busca en una carpeta o déjalos sin conexión.
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} clip(s) no encuentra(n) sus medios. Localízalo(s), busca en una carpeta o déjalo(s) sin conexión.
 	Clip Name	Nombre del clip
 	File Name	Nombre de archivo
 	File Path	Ruta del archivo
@@ -809,6 +813,7 @@
 	Relink others automatically	Volver a vincular los demás automáticamente
 	Search in:	Buscar en:
 	Browse…	Examinar…
+	A file dialog is already open	Ya hay un cuadro de diálogo de archivos abierto
 	Exact name matches only	Solo coincidencias exactas de nombre
 	No candidates yet — Search a folder or Locate the file.	Aún no hay candidatos: busca en una carpeta o localiza el archivo.
 	✔ same file	✔ mismo archivo
@@ -1191,9 +1196,9 @@
 	Thumbnail controls for all pointing devices	Controles de miniaturas para todos los dispositivos señaladores
 	Refresh Sort Order	Actualizar el orden
 	Metadata Display…	Visualización de metadatos…
-	Save Current View Preset	Guardar el ajuste de vista actual
-	Restore View Preset	Restaurar ajuste de vista
-	Project View Preset {n}	Ajuste de vista del proyecto {n}
+	Save Current View Preset	Guardar el ajuste preestablecido de vista actual
+	Restore View Preset	Restaurar ajuste preestablecido de vista
+	Project View Preset {n}	Ajuste preestablecido de vista del proyecto {n}
 	Freeform View Options…	Opciones de la vista de forma libre…
 	Media missing	Medio no encontrado
 	Unreadable	Ilegible
@@ -1261,6 +1266,7 @@
 	59.94 fps Non Drop-Frame	59,94 fps sin eliminación de fotogramas
 	ASC CDL	ASC CDL
 	Accessible color contrast	Contraste de color accesible
+	Animate zoom, scrolling and menus	Animar el zoom, el desplazamiento y los menús
 	Action-Safe Margin	Margen seguro de acción
 	Active Monitor	Monitor activo
 	Add	Añadir
@@ -1374,7 +1380,7 @@
 	Black and white	Blanco y negro
 	Black and white with crushed blacks and strong contrast	Blanco y negro con negros aplastados y contraste fuerte
 	Bleach Bypass	Blanqueo omitido
-	Bleach-bypass style: desaturated with hard contrast	Estilo blanqueo omitido: desaturado y con contraste duro
+	Bleach-bypass style: desaturated with hard contrast	Estilo de blanqueo omitido: desaturado y con contraste duro
 	Blend	Mezclar
 	Blend Mode	Modo de fusión
 	Blend With Original	Mezclar con el original
@@ -1417,7 +1423,7 @@
 	Bright Air	Aire brillante
 	Bright Studio	Estudio brillante
 	Brightness & Contrast	Brillo y contraste
-	British Stack	Pila británica
+	British Stack	Stack británico
 	Brush Hardness	Dureza del pincel
 	Brush Opacity	Opacidad del pincel
 	Brush Position	Posición del pincel
@@ -1431,14 +1437,14 @@
 	Burn Alpha	Quemar alfa
 	Burn Chroma	Quemar croma
 	Burn Color	Quemar color
-	Butt cap	Extremo cuadrado
+	Butt cap	Extremo plano
 	Butterworth	Butterworth
 	CEA-608	CEA-608
 	CEA-708	CEA-708
 	Cache analysis results for re-use	Guardar en caché los resultados del análisis para reutilizarlos
 	Camera Angle	Ángulo de cámara
 	Camera Blur	Desenfoque de cámara
-	Camera Shake	Movimiento de cámara
+	Camera Shake	Vibración de cámara
 	Capitalisation	Uso de mayúsculas
 	Cathedral	Catedral
 	Cell Pattern	Patrón de celdas
@@ -1723,7 +1729,7 @@
 	Flip Motion	Movimiento de volteo
 	Flip Over	Voltear
 	Float	Coma flotante
-	Focus	Foco
+	Focus	Enfoque
 	Focus Blur	Desenfoque de foco
 	Focus Point	Punto de enfoque
 	Focus Shape	Forma del foco
@@ -1831,6 +1837,8 @@
 	Height	Altura
 	Hexagon	Hexágono
 	Hide Back Face	Ocultar la cara posterior
+	Hide FilmCraft	Ocultar FilmCraft
+	Hide Others	Ocultar otras
 	High	Alta
 	High Cutoff	Corte de agudos
 	High Frequency Cut	Corte de altas frecuencias
@@ -1907,7 +1915,7 @@
 	Italian	Italiano
 	Japanese	Japonés
 	JetBrains Mono	JetBrains Mono
-	Join Through Edits	Unir ediciones pasantes
+	Join Through Edits	Unir cortes continuos
 	Ripple Trim In	Recorte de rizo de entrada
 	Ripple Trim Out	Recorte de rizo de salida
 	Roll Edit	Edición de rodillo
@@ -2046,7 +2054,7 @@
 	Median	Mediana
 	Medium Room	Sala mediana
 	Memory	Memoria
-	Metadata & Timecode Burn-in	Impresión de metadatos y código de tiempo
+	Metadata & Timecode Burn-in	Incrustación de metadatos y código de tiempo
 	Method	Método
 	Metrics Kerning	Ajuste entre pares métrico
 	Mid	Medios
@@ -2337,7 +2345,7 @@
 	Scan Lines	Líneas de exploración
 	Scene	Escena
 	Scientific Filter	Filtro científico
-	Scratch disk location for Captured Audio	Ubicación del disco de memoria virtual para el audio capturado
+	Scratch disk location for Captured Audio	Ubicación del disco de trabajo para el audio capturado
 	Screen	Trama
 	Seconds	Segundos
 	Segments	Segmentos
@@ -2347,6 +2355,7 @@
 	Set focus on the Timeline when performing Insert/Overwrite edits	Enfocar la línea de tiempo al insertar o sobrescribir
 	Set to frame size	Ajustar al tamaño del fotograma
 	Setting	Ajuste
+	Settings	Ajustes
 	Shadow Angle	Ángulo de la sombra
 	Shadow Blue Balance	Balance de azul en sombras
 	Shadow Blur	Desenfoque de la sombra
@@ -2752,7 +2761,7 @@
 	All	Todos
 	Any	Cualquiera
 	Case Sensitive	Distinguir mayúsculas y minúsculas
-	Scratch Disks	Discos de memoria virtual
+	Scratch Disks	Discos de trabajo
 	Ingest Settings	Ajustes de ingesta
 	Captured and Generated:	Capturado y generado:
 	Video Previews:	Previsualizaciones de video:
@@ -2804,8 +2813,8 @@
 	Ignore Audio	Ignorar audio
 	Ignore Video	Ignorar video
 	Apply a cut at each detected cut point	Aplicar un corte en cada punto de corte detectado
-	Create a subclip for each detected cut point	Crear un subclip para cada punto de corte detectado
-	Generate clip markers at each detected cut point	Generar marcadores de clip en cada punto de corte detectado
+	Create a bin of subclips from each detected cut point	Crear una bandeja de subclips a partir de cada punto de corte detectado
+	Create a clip marker at each detected cut point	Crear un marcador de clip en cada punto de corte detectado
 	Sensitivity:	Sensibilidad:
 	Normalize Mix Track to:	Normalizar pista de mezcla a:
 	Disabled clips	Clips desactivados
@@ -2890,7 +2899,7 @@
 	The sequence has no caption track.	La secuencia no tiene pista de subtítulos.
 	Export Options	Opciones de exportación
 	Burn Captions Into Video	Grabar los subtítulos en el video
-	Create Sidecar File	Crear archivo adjunto
+	Create Sidecar File	Crear archivo complementario
 	File Format	Formato de archivo
 	SubRip Subtitle (.srt)	Subtítulo SubRip (.srt)
 	WebVTT (.vtt)	WebVTT (.vtt)
@@ -2921,6 +2930,10 @@
 	Sample Size	Tamaño de muestra
 	16 bit	16 bits
 	24 bit	24 bits
+	32 bit	32 bits
+	32 bit float	32 bits de coma flotante
+	FLAC stores whole-number samples only	FLAC solo guarda muestras enteras
+	MXF export writes integer PCM only	La exportación MXF solo escribe PCM entero
 	Size / Opacity	Tamaño / opacidad
 	Image Overlay	Superposición de imagen
 	PNG or JPEG file	Archivo PNG o JPEG
@@ -2953,7 +2966,7 @@
 	File Name & Location	Nombre y ubicación del archivo
 	Quick Export: {path}	Exportación rápida: {path}
 	Graphics problem: switched to software compositing	Problema de gráficos: se ha cambiado a la composición por software
-	GPU acceleration is unavailable; preview renders on the CPU	La aceleración por GPU no está disponible; la vista previa se renderiza en la CPU
+	GPU acceleration is unavailable; preview renders on the CPU	La aceleración por GPU no está disponible; la vista previa se procesa en la CPU
 	Exporting	Exportando
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Haz clic para seleccionar, o haz clic en un espacio vacío y arrastra para seleccionar con un marco. Usa Mayús, Opción y Cmd para otras opciones.
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	Haz clic para seleccionar todos los clips a la derecha en todas las pistas. Mayús+clic para una sola pista.
@@ -2973,7 +2986,7 @@
 	(empty)	(vacío)
 	Step Back 1 Frame	Retroceder 1 fotograma
 	Step Forward 1 Frame	Avanzar 1 fotograma
-	Match Playhead	Igualar cabezal
+	Match Playhead	Igualar al cabezal
 	Gang to Program	Vincular al programa
 	AAC Audio	AAC Audio
 	AAC Audio 48 kHz 320 kbps	AAC Audio 48 kHz 320 kbps
@@ -2981,6 +2994,12 @@
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 bits
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF, estéreo, PCM de 48 kHz y 16 bits
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24 bits
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, estéreo, 48 kHz y 24 bits, sin pérdida
+	FLAC (lossless)	FLAC (sin pérdida)
+	Compression Level	Nivel de compresión
+	0 fastest, 8 smallest	0 más rápido, 8 más pequeño
 	APV	APV
 	APV 422-10	APV 422-10
 	APV 422-12	APV 422-12
@@ -3164,14 +3183,14 @@
 	Nudge Clip Selection Right Five Frames	Desplazar la selección de clips cinco fotogramas a la derecha
 	Nudge Clip Selection Right One Frame	Desplazar la selección de clips un fotograma a la derecha
 	Nudge Clip Selection Up	Desplazar la selección de clips hacia arriba
-	Nudge Selected Object down by five	Desplazar el objeto seleccionado cinco hacia abajo
-	Nudge Selected Object down by one	Desplazar el objeto seleccionado uno hacia abajo
-	Nudge Selected Object to left by five	Desplazar el objeto seleccionado cinco a la izquierda
-	Nudge Selected Object to left by one	Desplazar el objeto seleccionado uno a la izquierda
-	Nudge Selected Object to right by five	Desplazar el objeto seleccionado cinco a la derecha
-	Nudge Selected Object to right by one	Desplazar el objeto seleccionado uno a la derecha
-	Nudge Selected Object up by five	Desplazar el objeto seleccionado cinco hacia arriba
-	Nudge Selected Object up by one	Desplazar el objeto seleccionado uno hacia arriba
+	Nudge Selected Object down by five	Desplazar el objeto seleccionado cinco píxeles hacia abajo
+	Nudge Selected Object down by one	Desplazar el objeto seleccionado un píxel hacia abajo
+	Nudge Selected Object to left by five	Desplazar el objeto seleccionado cinco píxeles a la izquierda
+	Nudge Selected Object to left by one	Desplazar el objeto seleccionado un píxel a la izquierda
+	Nudge Selected Object to right by five	Desplazar el objeto seleccionado cinco píxeles a la derecha
+	Nudge Selected Object to right by one	Desplazar el objeto seleccionado un píxel a la derecha
+	Nudge Selected Object up by five	Desplazar el objeto seleccionado cinco píxeles hacia arriba
+	Nudge Selected Object up by one	Desplazar el objeto seleccionado un píxel hacia arriba
 	Nudge Volume +1dB	Ajustar volumen +1 dB
 	Nudge Volume +3dB	Ajustar volumen +3 dB
 	Nudge Volume -1dB	Ajustar volumen -1 dB
@@ -3380,7 +3399,7 @@
 	Protect Highlights	Proteger luces
 	Half Saturation	Saturación al 50 %
 	Boost Vibrance	Aumentar intensidad
-	Legal Range Squeeze	Compresión al rango de vídeo
+	Legal Range Squeeze	Compresión al rango legal
 	A boxed label with a round pointer; move the label and the pointer follows.	Una etiqueta enmarcada con un indicador redondo; al mover la etiqueta, el indicador la sigue.
 	A rounded tag that fits its text, with a status dot.	Una etiqueta redondeada que se ajusta al texto, con un punto de estado.
 	A title on a rounded card with a soft shadow.	Un título en una tarjeta redondeada con una sombra suave.
@@ -3424,11 +3443,12 @@
 	in	entrada
 	The language changed but could not be saved: {e}	El idioma ha cambiado, pero no se ha podido guardar: {e}
 	no Chinese font is installed on this system; the interface stays in English	no hay ninguna fuente china instalada en este sistema; la interfaz sigue en inglés
+	no Korean font is installed on this system; the interface stays in English	No hay ninguna fuente coreana instalada en este sistema; la interfaz sigue en inglés
 	no Japanese font is installed on this system; the interface stays in English	no hay ninguna fuente japonesa instalada en este sistema; la interfaz sigue en inglés
 	Show	Mostrar
 	Sort	Ordenar
 	Reverse the order	Invertir el orden
-	Grab bag	Mosaico
+	Grab bag	Miscelánea
 	Table	Tabla
 	No contributor data was built into this copy.	Esta copia no incluye datos de colaboradores.
 	No model credits were built into this copy.	Esta copia no incluye créditos de modelos.
@@ -3489,6 +3509,7 @@
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Haz clic para seleccionar, o haz clic en un espacio vacío y arrastra para seleccionar con un marco. Usa Mayús, Alt y Ctrl para otras opciones.
 	Click to zoom in; Alt-click to zoom out.	Haz clic para acercar; Alt+clic para alejar.
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Arrastrar: mover · Alt+clic: suave/esquina · Ctrl+clic: eliminar
+	Drag inward to round the corners	Arrastrar hacia dentro para redondear las esquinas
 	Include Alpha Channel	Incluir canal alfa
 	Sequence Settings	Ajustes de secuencia
 	Color Management	Gestión del color
@@ -3548,7 +3569,7 @@
 	Gradient Angle	Ángulo del degradado
 	Linear Gradient	Degradado lineal
 	Solid	Sólido
-	GPU Rendering	Renderizado por GPU
+	GPU Rendering	Procesamiento por GPU
 	Composite on the GPU when available	Componer en la GPU cuando esté disponible
 	Text to Speech	Texto a voz
 	Edit Narration	Editar narración
@@ -3562,3 +3583,37 @@
 	Edit Project Notes	Editar notas del proyecto
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas de este proyecto: tareas pendientes, instrucciones, números de fotograma… Se guardan con el proyecto.
 	Use Effect Shutter Angle	Usar el ángulo de obturación del efecto
+
+	Appearance Settings…	Ajustes de apariencia…
+
+	Add to favorites	Añadir a favoritos
+
+	Remove from favorites	Quitar de favoritos
+	Compression	Compresión
+	ZIP (1 scan line)	ZIP (1 línea de exploración)
+	ZIP (16 scan lines)	ZIP (16 líneas de exploración)
+	Safe graphics mode: {mode}	Modo gráfico seguro: {mode}
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	Un inicio anterior falló con los gráficos predeterminados. Actualizar el controlador gráfico suele solucionarlo.
+	Use Default Graphics	Usar gráficos predeterminados
+	The default graphics are used from the next start.	Los gráficos predeterminados se usarán a partir del próximo inicio.
+	DirectX 12 only	Solo DirectX 12
+	software rendering	procesamiento por software
+	Label Color Presets	Ajustes preestablecidos de color de etiqueta
+	{name} (Modified)	{name} (modificado)
+	Revert to the preset's colors and names	Volver a los colores y nombres del ajuste preestablecido
+	Import a preset file…	Importar un archivo de ajuste preestablecido…
+	Export the labels to a preset file…	Exportar las etiquetas a un archivo de ajuste preestablecido…
+	Show the presets folder	Mostrar la carpeta de ajustes preestablecidos
+	Delete this preset	Eliminar este ajuste preestablecido
+	Opens in your web browser: {url}	Se abre en el navegador web: {url}
+	Saves this session's log and shows it in your file manager.	Guarda el registro de esta sesión y lo muestra en el explorador de archivos.
+	Shows a report on this computer.	Muestra un informe sobre este equipo.
+	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
+	Couldn't open your web browser	No se pudo abrir el navegador web
+	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+# View ▸ Reset Interface Zoom (#2253).
+	Reset Interface Zoom	Restablecer zoom de la interfaz
+	Track Color	Color de pista
+	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
+	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
+	No matching text.	Ningún texto coincide.

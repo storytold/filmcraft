@@ -133,6 +133,10 @@ pub(crate) fn apply(pic: &mut Picture, g: &FilmGrainParams, seq: &SequenceHeader
         for i in 0..n - 1 {
             let dy = ys[i + 1] as i32 - ys[i] as i32;
             let dx = xs[i + 1] as i32 - xs[i] as i32;
+            // The header parser rejects non-increasing points; never divide by zero regardless.
+            if dx <= 0 {
+                continue;
+            }
             let delta = dy * ((65536 + (dx >> 1)) / dx);
             for x in 0..dx {
                 l[xs[i] as usize + x as usize] = ys[i] as i32 + ((x * delta + 32768) >> 16);
@@ -272,5 +276,36 @@ pub(crate) fn apply(pic: &mut Picture, g: &FilmGrainParams, seq: &SequenceHeader
                 py[y * w + x] = (orig + noise).clamp(min_value, max_luma) as u16;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: two equal scaling points divided by zero building the scaling lookup.
+    #[test]
+    fn equal_scaling_points_do_not_panic() {
+        let mut g = FilmGrainParams { apply_grain: true, num_y_points: 2, ..Default::default() };
+        g.point_y_value[..2].copy_from_slice(&[64, 64]);
+        g.point_y_scaling[..2].copy_from_slice(&[20, 40]);
+        let (w, h) = (16usize, 16usize);
+        let mut pic = Picture {
+            width: w as u32,
+            height: h as u32,
+            bit_depth: 10,
+            subsampling_x: 1,
+            subsampling_y: 1,
+            mono_chrome: false,
+            planes: [vec![512; w * h], vec![512; w * h / 4], vec![512; w * h / 4]],
+            color_primaries: 1,
+            transfer_characteristics: 1,
+            matrix_coefficients: 1,
+            full_range: false,
+            pts: 0,
+            draft: false,
+        };
+        apply(&mut pic, &g, &SequenceHeader::default());
+        assert_eq!(pic.planes[0].len(), w * h);
     }
 }

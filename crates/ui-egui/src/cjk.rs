@@ -23,23 +23,40 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fon
     filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| matches!(*s, "Hans" | "Hant")))
 }
 
-/// A font collection's face index matters: Windows Chinese UI fonts commonly live in TTC files.
-/// Keep the owned bytes behind an Arc so theme reinstalls do not reread or leak a font file.
+// Hangul: neither the UI fonts nor the Chinese/Japanese fallbacks have it, so typed, pasted and
+// IME-composed Korean drew as missing-glyph boxes (artcraft#2093).
+const KOREAN_SAMPLE: &str = "한국어입력테스트";
+const KOREAN_PREFERRED: &[&str] = &["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Source Han Sans K", "NanumGothic"];
+
 fn system_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
-    FONT.get_or_init(|| {
-        if cfg!(target_arch = "wasm32") {
-            return None;
-        }
-        filmcraft_text::fonts::scan_system();
-        let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
-        let covers = |f: &filmcraft_text::fonts::Face| f.covers_text(SAMPLE);
-        let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
-        let preferred = PREFERRED.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
-        let face = preferred.or_else(|| faces.iter().filter(|f| covers(f)).min_by_key(by_weight))?;
-        Some(Arc::new(FontData { font: std::borrow::Cow::Owned(face.data()?), index: face.info.index, tweak: Default::default() }))
-    })
-    .clone()
+    FONT.get_or_init(|| find_system_font(SAMPLE, PREFERRED)).clone()
+}
+
+fn korean_font() -> Option<Arc<FontData>> {
+    static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+    FONT.get_or_init(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)).clone()
+}
+
+/// A font collection's face index matters: Windows CJK UI fonts commonly live in TTC files.
+/// Keep the owned bytes behind an Arc so theme reinstalls do not reread or leak a font file.
+fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    filmcraft_text::fonts::scan_system();
+    let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
+    let covers = |f: &filmcraft_text::fonts::Face| f.covers_text(sample);
+    let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
+    let found = preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
+    let face = found.or_else(|| faces.iter().filter(|f| covers(f)).min_by_key(by_weight))?;
+    Some(Arc::new(FontData { font: std::borrow::Cow::Owned(face.data()?), index: face.info.index, tweak: Default::default() }))
+}
+
+/// Whether [`install`] has a Hangul face to add (an installed system face; none is bundled).
+/// The Korean interface needs one.
+pub(crate) fn korean_available() -> bool {
+    korean_font().is_some()
 }
 
 /// Whether [`install`] has a Chinese face to add: craft-fonts Hans/Hant faces, or an installed
@@ -52,6 +69,16 @@ pub(crate) fn available() -> bool {
 /// interface's Latin typography and Japanese glyph forms, and covers the simplified and
 /// traditional hanzi in media and track names that Japanese fonts lack.
 pub(crate) fn install(fonts: &mut FontDefinitions) {
+    install_chinese(fonts);
+    if let Some(font) = korean_font() {
+        fonts.font_data.insert("system-korean".into(), font);
+        for stack in fonts.families.values_mut() {
+            stack.push("system-korean".into());
+        }
+    }
+}
+
+fn install_chinese(fonts: &mut FontDefinitions) {
     let chinese: Vec<_> = craft_fonts().collect();
     if chinese.is_empty() {
         if let Some(font) = system_font() {

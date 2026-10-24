@@ -5,7 +5,8 @@
 //! `crates/text`) this embeds every font listed in its
 //! `fonts/manifest.txt` as [`CRAFT_FONTS`](crate::fonts::CRAFT_FONTS); unset, `CRAFT_FONTS` is
 //! empty and nothing else changes. A `CRAFT_FONTS_DIR` that is not a checkout is a warning, or an
-//! error with `CRAFT_FONTS_REQUIRED=1` (release builds).
+//! error with `CRAFT_FONTS_REQUIRED=1` (release builds), which also makes an unset or empty
+//! `CRAFT_FONTS_DIR` an error.
 //!
 //! Native builds embed every font. The web (wasm32) build embeds only the UI font (BIZ UDPGothic
 //! Regular, ~4.5 MB) to stay under the web size budget (Cloudflare serves files up to 25 MiB).
@@ -18,15 +19,18 @@ fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
+    let required = std::env::var_os("CRAFT_FONTS_REQUIRED").is_some_and(|v| v == "1");
     let mut src = String::from("pub static CRAFT_FONTS: &[CraftFont] = &[\n");
-    if let Some(dir) = std::env::var_os("CRAFT_FONTS_DIR").map(PathBuf::from) {
-        match craft_fonts(&dir) {
+    match std::env::var_os("CRAFT_FONTS_DIR").filter(|d| !d.is_empty()).map(PathBuf::from) {
+        Some(dir) => match craft_fonts(&dir) {
             Ok(entries) => src.push_str(&entries),
-            Err(e) if std::env::var_os("CRAFT_FONTS_REQUIRED").is_some() => {
-                println!("cargo::error=CRAFT_FONTS_DIR={}: {e}", dir.display());
-            }
+            Err(e) if required => println!("cargo::error=CRAFT_FONTS_DIR={}: {e}", dir.display()),
             Err(e) => println!("cargo::warning=building without craft-fonts: CRAFT_FONTS_DIR={}: {e}", dir.display()),
+        },
+        None if required => {
+            println!("cargo::error=CRAFT_FONTS_REQUIRED=1 but CRAFT_FONTS_DIR is unset or empty: point it at a craft-fonts checkout (absolute path)");
         }
+        None => {}
     }
     src.push_str("];\n");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("craft_fonts.rs");

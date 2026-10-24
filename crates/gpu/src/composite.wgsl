@@ -15,6 +15,13 @@ struct U {
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
     p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, unused
+    // Colour management of HDR / wide-gamut Y'CbCr (`filmcraft_color::InputTransform`, #965):
+    q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg), HLG OOTF scale (0: none), reference white cd/m²
+    q1: vec4<f32>,   // HLG OOTF luma weights, gamut matrix on
+    q2: vec4<f32>,   // gamut matrix row 0, tone mapping on
+    q3: vec4<f32>,   // gamut matrix row 1, tone-mapping source peak cd/m²
+    q4: vec4<f32>,   // gamut matrix row 2, tone-mapping target peak cd/m²
+    q5: vec4<f32>,   // desaturation luma weights, desaturation on
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -85,6 +92,82 @@ fn to_linear(v: vec3<f32>) -> vec3<f32> {
     return srgb_to_linear(clamp(v, vec3(0.0), vec3(1.0)));
 }
 
+// ---- colour management (`filmcraft_color::transform`), for `u.q0.x` = 1
+
+// SMPTE ST 2084 on a 0..1 scale (1 = 10 000 cd/m²) and back.
+fn pq1(e: f32) -> f32 {
+    let m1 = 0.1593017578125; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.8515625; let c3 = 18.6875;
+    let p = pow(max(e, 0.0), 1.0 / m2);
+    return pow(max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+}
+fn pq1_inv(y: f32) -> f32 {
+    let m1 = 0.1593017578125; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.8515625; let c3 = 18.6875;
+    let p = pow(clamp(y, 0.0, 1.0), m1);
+    return pow((c1 + c2 * p) / (1.0 + c3 * p), m2);
+}
+
+// ITU-R BT.2390 EETF (`bt2390_eetf`), source peak s to target peak d, in cd/m².
+fn eetf(nits: f32, s: f32, d: f32) -> f32 {
+    if d >= s || nits <= 0.0 { return clamp(nits, 0.0, max(s, d)); }
+    let smax = pq1_inv(s / 10000.0);
+    let e1 = min(pq1_inv(nits / 10000.0) / smax, 1.0);
+    let max_lum = pq1_inv(d / 10000.0) / smax;
+    let ks = 1.5 * max_lum - 0.5;
+    var e2 = e1;
+    if e1 >= ks {
+        let t = (e1 - ks) / (1.0 - ks);
+        let t2 = t * t; let t3 = t2 * t;
+        e2 = (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * max_lum;
+    }
+    return pq1(e2 * smax) * 10000.0;
+}
+
+// Signal → working linear: `InputTransform::convert` (curve, HLG OOTF, gamut matrix, tone
+// mapping, desaturation into the working gamut). The CPU's decode tables clamp the signal to 0..1.
+fn managed(rgb: vec3<f32>) -> vec3<f32> {
+    let v = clamp(rgb, vec3(0.0), vec3(1.0));
+    let curve = u32(u.q0.y);
+    let white = u.q0.w;
+    var c = v;
+    if curve == 0u { c = srgb_to_linear(v); }
+    if curve == 2u { c = vec3(pq1(v.r), pq1(v.g), pq1(v.b)) * (10000.0 / white); }
+    if curve == 3u { c = hlg_inv(v); }
+    if u.q0.z > 0.0 {
+        let ys = max(dot(u.q1.xyz, c), 0.0);
+        var g = 0.0;
+        if ys > 0.0 { g = u.q0.z * pow(ys, 0.2); }
+        c = c * g;
+    }
+    if u.q1.w > 0.5 {
+        c = vec3(dot(u.q2.xyz, c), dot(u.q3.xyz, c), dot(u.q4.xyz, c));
+    }
+    if u.q2.w > 0.5 {
+        let m = max(max(c.r, c.g), c.b);
+        if m > 0.0 {
+            let nits = m * white;
+            var k = 1.0;
+            if nits >= u.q3.w {
+                k = u.q4.w / white / m;
+            } else if nits > 1e-6 {
+                k = eetf(nits, u.q3.w, u.q4.w) / nits;
+            }
+            c = c * k;
+        }
+    }
+    if u.q5.w > 0.5 {
+        let mn = min(min(c.r, c.g), c.b);
+        if mn < 0.0 {
+            let y = dot(u.q5.xyz, c);
+            if y <= 0.0 {
+                c = vec3(0.0);
+            } else {
+                c = max(y + (c - y) * (y / (y - mn)), vec3(0.0));
+            }
+        }
+    }
+    return c;
+}
+
 // One linear premultiplied sample at source position p.
 fn sample(p: vec2<f32>) -> vec4<f32> {
     let kind = u32(u.p0.y);
@@ -113,7 +196,9 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     if u.p3.y > 0.0 {
         a = clamp(load4(tex3, p).r * u.p3.y, 0.0, 1.0);
     }
-    return vec4(to_linear(vec3(R, G, B)) * a, a);
+    var lin = to_linear(vec3(R, G, B));
+    if u.q0.x > 0.5 { lin = managed(vec3(R, G, B)); }
+    return vec4(lin * a, a);
 }
 
 // The layer's premultiplied linear colour at this pixel, opacity applied.

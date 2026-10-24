@@ -14,7 +14,7 @@
 //!   clip markers. Transitions are supported on the primary storyline (and read from secondary
 //!   storylines); transitions elsewhere are reported.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use filmcraft_geom::Vec2;
 use filmcraft_media::MediaKind;
@@ -26,8 +26,8 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use roxmltree::Node;
 
 use crate::common::{
-    Builder, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, gain_to_db, generator_of, item_media, item_path, kind_from_ext, param,
-    param_modified, path_to_file_url, resolve_path, scaled, set_param, settings_for, standard_effects, transition_effect, transition_name,
+    Builder, MAX_IMPORTED_TRACKS, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, gain_to_db, generator_of, item_media, item_path, kind_from_ext,
+    param, param_modified, path_to_file_url, resolve_path, scaled, set_param, settings_for, standard_effects, transition_effect, transition_name,
 };
 use crate::xml::{child, children, elements, num};
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
@@ -105,10 +105,11 @@ fn audio_rate_str(sr: u32) -> String {
 
 fn parse_audio_rate(s: &str) -> Option<u32> {
     let s = s.trim();
-    match s.strip_suffix('k') {
+    let r = match s.strip_suffix('k') {
         Some(k) => k.parse::<f64>().ok().map(|v| (v * 1000.0).round() as u32),
         None => s.parse().ok(),
-    }
+    };
+    r.filter(|&sr| sr > 0 && sr <= 384_000)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -132,6 +133,7 @@ struct Imp<'a, 'i, 'r> {
     assets: HashMap<String, Asset>,
     media_nodes: HashMap<String, Node<'a, 'i>>,
     media_items: HashMap<String, ItemId>,
+    media_active: HashSet<String>,
     effects: HashMap<String, String>,
 }
 
@@ -163,6 +165,7 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
         assets: HashMap::new(),
         media_nodes: HashMap::new(),
         media_items: HashMap::new(),
+        media_active: HashSet::new(),
         effects: HashMap::new(),
     };
     if let Some(res) = child(root, "resources") {
@@ -281,9 +284,15 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let n = *self.media_nodes.get(id)?;
         let s = child(n, "sequence")?;
-        // Reserve first so recursion terminates.
+        if !self.media_active.insert(id.into()) {
+            self.report.warn(format!("recursive FCPXML media resource {id:?} ignored"));
+            return None;
+        }
+        // Mark the resource before descending: a compound clip can reference itself through a
+        // ref-clip before a completed sequence is available to cache.
         let name = n.attribute("name").unwrap_or("Compound Clip").to_string();
         let item = self.sequence(s, &name, None);
+        self.media_active.remove(id);
         self.media_items.insert(id.into(), item);
         Some(item)
     }
@@ -431,20 +440,23 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
                 self.adjustments(&mut ti, el, local_start, src_in, speed, ctx, kind);
                 if !primary || kind == TrackKind::Audio {
-                    ti.markers = self.markers(el, local_start, src_in, speed);
+                    ti.markers = self.markers(el, local_start, src_in, speed, ctx.seq_rate);
                 }
                 let pref = match kind {
                     TrackKind::Video => lane.max(0) as usize,
                     TrackKind::Audio => {
                         if lane < 0 {
-                            (-lane - 1) as usize
+                            lane.unsigned_abs() as usize - 1
                         } else {
                             lane as usize
                         }
                     }
                 };
                 let id = ti.id;
-                self.b.place(seq, kind, pref, ti);
+                if self.b.place(seq, kind, pref, ti).is_none() {
+                    self.report.warn(format!("FCPXML {kind:?} lane exceeds the {MAX_IMPORTED_TRACKS}-track import limit; clip was skipped"));
+                    continue;
+                }
                 placed.push((kind, id));
                 if kind == TrackKind::Video {
                     vclip = Some(id);
@@ -453,7 +465,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         if primary {
             // Markers on primary storyline elements are timeline markers.
-            for m in self.markers(el, local_start, Tick::ZERO, 1.0) {
+            for m in self.markers(el, local_start, Tick::ZERO, 1.0, ctx.seq_rate) {
                 seq.markers.push(Marker { start: t0 + m.start, ..m });
             }
         }
@@ -462,7 +474,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let Some(l) = c.attribute("lane").and_then(|l| l.parse::<i32>().ok()) else { continue };
             let off = attr_time(c, "offset").unwrap_or(Tick::ZERO);
             let ct0 = t0 + (off - local_start);
-            let clane = if lane > 0 && l > 0 { lane + l } else { l };
+            let clane = if lane > 0 && l > 0 { lane.saturating_add(l) } else { l };
             if c.has_tag_name("spine") {
                 // Secondary storyline: children offsets are in the storyline's local time.
                 let first = elements(c).filter(|x| !x.has_tag_name("transition")).find_map(|x| attr_time(x, "offset")).unwrap_or(Tick::ZERO);
@@ -475,8 +487,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         (t0 + dur, vclip)
     }
 
-    fn markers(&mut self, el: Node, local_start: Tick, src_in: Tick, speed: f64) -> Vec<Marker> {
+    fn markers(&mut self, el: Node, local_start: Tick, src_in: Tick, speed: f64, rate: FrameRate) -> Vec<Marker> {
         let mut out = Vec::new();
+        // FCPXML has no zero-duration marker: a point is written as one frame at the sequence rate.
+        let frame = rate.frame_duration();
         for m in elements(el).filter(|m| matches!(m.tag_name().name(), "marker" | "chapter-marker")) {
             let rel = attr_time(m, "start").unwrap_or(Tick::ZERO) - local_start;
             let start = if src_in == Tick::ZERO && speed == 1.0 { rel } else { src_in + scaled(rel, speed) };
@@ -484,7 +498,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             out.push(Marker {
                 id: MarkerId(self.b.alloc()),
                 start,
-                duration: if d.0 <= 1 { Tick::ZERO } else { d },
+                duration: if d <= frame { Tick::ZERO } else { d },
                 name: m.attribute("value").unwrap_or("").to_string(),
                 comment: m.attribute("note").unwrap_or("").to_string(),
                 kind: if m.has_tag_name("chapter-marker") { MarkerKind::Chapter } else { MarkerKind::Comment },
@@ -671,8 +685,8 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
         out.push_str(r);
     }
     out.push_str("  </resources>\n");
-    out.push_str(&format!("  <library>\n    <event name=\"{}\">\n", crate::xml::escape(&p.name)));
-    out.push_str(&format!("      <project name=\"{}\">\n", crate::xml::escape(&name)));
+    out.push_str(&format!("  <library>\n    <event name=\"{}\">\n", crate::xml::escape_attr(&p.name)));
+    out.push_str(&format!("      <project name=\"{}\">\n", crate::xml::escape_attr(&name)));
     out.push_str(&body);
     out.push_str("      </project>\n    </event>\n  </library>\n</fcpxml>\n");
     Ok(out)
@@ -726,7 +740,7 @@ impl Exp<'_, '_> {
         let start = m.info.start_timecode.map(|f| mrate.tick_of(f)).unwrap_or(Tick::ZERO);
         let mut a = format!(
             "    <asset id=\"{id}\" name=\"{}\" start=\"{}\" duration=\"{}\" hasVideo=\"{}\" hasAudio=\"{}\"",
-            crate::xml::escape(&name),
+            crate::xml::escape_attr(&name),
             fmt_time(start, mrate),
             fmt_time(m.info.duration, mrate),
             m.info.video.is_some() as u8,
@@ -740,7 +754,7 @@ impl Exp<'_, '_> {
         }
         let path = item_path(self.p, item).unwrap_or("");
         let src = if crate::common::is_absolute(path) { path_to_file_url(path, false) } else { path.to_string() };
-        a.push_str(&format!(">\n      <media-rep kind=\"original-media\" src=\"{}\"/>\n    </asset>\n", crate::xml::escape(&src)));
+        a.push_str(&format!(">\n      <media-rep kind=\"original-media\" src=\"{}\"/>\n    </asset>\n", crate::xml::escape_attr(&src)));
         self.res_out.push(a);
         self.assets.insert(item, Res { id: id.clone() });
         let _ = file_name;
@@ -762,7 +776,7 @@ impl Exp<'_, '_> {
         let body = self.sequence_xml(item, &fmt, 3);
         self.building.pop();
         let name = self.p.item(item).map(|i| i.name.clone()).unwrap_or_default();
-        self.res_out.push(format!("    <media id=\"{id}\" name=\"{}\">\n{body}    </media>\n", crate::xml::escape(&name)));
+        self.res_out.push(format!("    <media id=\"{id}\" name=\"{}\">\n{body}    </media>\n", crate::xml::escape_attr(&name)));
         id
     }
 
@@ -771,7 +785,11 @@ impl Exp<'_, '_> {
             return r.id.clone();
         }
         let id = self.rid();
-        self.res_out.push(format!("    <effect id=\"{id}\" name=\"{}\" uid=\"filmcraft.{}\"/>\n", crate::xml::escape(name), crate::xml::escape(id_hint)));
+        self.res_out.push(format!(
+            "    <effect id=\"{id}\" name=\"{}\" uid=\"filmcraft.{}\"/>\n",
+            crate::xml::escape_attr(name),
+            crate::xml::escape_attr(id_hint)
+        ));
         self.effects.insert(name.to_string(), Res { id: id.clone() });
         id
     }
@@ -932,7 +950,7 @@ impl Exp<'_, '_> {
             "<transition name=\"{n}\" offset=\"{}\" duration=\"{}\"><filter-video ref=\"{r}\" name=\"{n}\"/></transition>",
             fmt_time(tc0 + tr.start, rate),
             fmt_time(tr.duration, rate),
-            n = crate::xml::escape(&name)
+            n = crate::xml::escape_attr(&name)
         )
     }
 
@@ -944,7 +962,7 @@ impl Exp<'_, '_> {
         let is_seq = matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_)));
         let generator = generator_of(self.p, base).cloned();
         let lane_attr = lane.map(|l| format!(" lane=\"{l}\"")).unwrap_or_default();
-        let name = crate::xml::escape(&it.name);
+        let name = crate::xml::escape_attr(&it.name);
         if let Some(g) = generator {
             self.report.warn(format!("generator \"{}\" is not supported in FCPXML; written as a gap", g.label()));
             return El {
@@ -1041,7 +1059,7 @@ impl Exp<'_, '_> {
             let n = e.def().map(|d| d.name).unwrap_or(&e.effect).to_string();
             let r = self.effect(&n, &e.effect);
             let tag = if kind == TrackKind::Video { "filter-video" } else { "filter-audio" };
-            let mut s = format!("<{tag} ref=\"{r}\" name=\"{}\"", crate::xml::escape(&n));
+            let mut s = format!("<{tag} ref=\"{r}\" name=\"{}\"", crate::xml::escape_attr(&n));
             if !e.enabled {
                 s.push_str(" enabled=\"0\"");
             }
@@ -1167,8 +1185,8 @@ fn kparam_xml(
 fn marker_xml(m: &Marker, local: Tick, rate: FrameRate) -> String {
     let tag = if m.kind == MarkerKind::Chapter { "chapter-marker" } else { "marker" };
     let dur = if m.duration > Tick::ZERO { m.duration } else { rate.frame_duration() };
-    let note = if m.comment.is_empty() { String::new() } else { format!(" note=\"{}\"", crate::xml::escape(&m.comment)) };
-    format!("<{tag} start=\"{}\" duration=\"{}\" value=\"{}\"{note}/>", fmt_time(local, rate), fmt_time(dur, rate), crate::xml::escape(&m.name))
+    let note = if m.comment.is_empty() { String::new() } else { format!(" note=\"{}\"", crate::xml::escape_attr(&m.comment)) };
+    format!("<{tag} start=\"{}\" duration=\"{}\" value=\"{}\"{note}/>", fmt_time(local, rate), fmt_time(dur, rate), crate::xml::escape_attr(&m.name))
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
+use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
 type Actions = Vec<Value>;
@@ -51,13 +52,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions: Actions = Vec::new();
     // header: clip context + fx toggle
+    // the fx toggle is laid out first so a long clip name is truncated instead of widening the panel
     bui.horizontal(|ui| {
-        ui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let fx = ui.add(egui::Button::new(egui::RichText::new("fx").italics().color(if e.enabled { t.text } else { t.text_faint })).frame(false));
             if fx.clicked() {
                 let _ = app.session.execute("effects.toggleEnabled", json!({"clip": clip.0, "index": idx}));
             }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim)).truncate());
+            });
         });
     });
     let set = |actions: &mut Actions, param: &str, v: Value| actions.push(json!({"clip": clip.0, "effect": idx, "param": param, "value": v}));
@@ -235,11 +239,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add(&id, r, label);
         }
     }
-    for a in actions {
-        if let Err(err) = app.session.execute("effects.setParam", a) {
-            app.ui.status = err.to_string();
-        }
-    }
+    // a dragged value is one undo step, as in Effect Controls
+    crate::panels::effect_controls::run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());
     for sec in sections {
         if let Err(err) = app.session.execute("lumetri.setSection", json!({"clip": clip.0, "section": sec})) {
             app.ui.status = err.to_string();
@@ -255,8 +256,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             continue;
         }
         if p.get("browse").is_some() {
-            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("LUT"), &["cube", "3dl"])) else { continue };
-            p = json!({"path": path});
+            let (cmd, clip) = (cmd.to_string(), clip.0);
+            app.pick_ui(FileDialog::open_file(tl!("LUT"), &["cube", "3dl"]), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return };
+                if let Err(err) = app.session.execute(&cmd, json!({"path": path, "clip": clip})) {
+                    app.ui.status = err.to_string();
+                }
+            });
+            continue;
         }
         p["clip"] = json!(clip.0);
         if let Err(err) = app.session.execute(cmd, p) {

@@ -1,12 +1,16 @@
 //! The desktop app's command line (`filmcraft --help`).
 
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
 /// `filmcraft --help`.
 pub const USAGE: &str = "\
 Usage: filmcraft [options] [project.fcproj | media files...]
 
 Options:
   --control <port>   start the localhost JSON-lines control server
-                     (also: FILMCRAFT_CONTROL_PORT)
+                     (also: FILMCRAFT_CONTROL_PORT; requires FILMCRAFT_CONTROL_TOKEN,
+                     64 random hex characters; see docs/control-protocol.md)
   --control-input-only  accept widget input only from the control server
                      (requires --control or FILMCRAFT_CONTROL_PORT)
   --demo             open the demo project
@@ -15,6 +19,9 @@ Options:
   --no-recover       start without asking about unsaved changes
   --data-dir <dir>   folder for auto-save, crash recovery and logs
                      (also: FILMCRAFT_DATA_DIR)
+  --graphics <mode>  start with this graphics mode and keep it: default,
+                     dx12 (Windows), software (Windows, Linux);
+                     `--graphics default` undoes an automatic fallback
   --version          print the version and exit
   -h, --help         print this help and exit
 ";
@@ -28,7 +35,7 @@ pub enum Cli {
 }
 
 /// Options of a normal start.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Launch {
     pub control_port: Option<u16>,
     pub control_input_only: bool,
@@ -39,6 +46,8 @@ pub struct Launch {
     pub startup_flag: bool,
     pub recover: Option<bool>,
     pub data_dir: Option<std::path::PathBuf>,
+    /// `--graphics <mode>`: start with this graphics mode and keep it (see `graphics.rs`).
+    pub graphics: Option<crate::graphics::Mode>,
 }
 
 /// Parse the arguments after the program name. `env_control_port` is the value of
@@ -48,16 +57,31 @@ pub struct Launch {
 /// mistyped flag helps nobody, and starting without the control server that was asked for leaves
 /// a script waiting for it. That holds for the whole line, so `--version --bogus` is an error
 /// too, and for a port from the environment exactly as for one from `--control`.
-pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-    let mut l = Launch { control_port: None, control_input_only: false, files: Vec::new(), demo: true, startup_flag: false, recover: None, data_dir: None };
+///
+/// The arguments come from `std::env::args_os`: not every argument is Unicode (a Linux file name
+/// in Latin-1), and `std::env::args` panics on one. A file name that is not is passed on lossily
+/// (its import then reports it missing); `--data-dir` keeps the folder exactly.
+pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
+    let mut l = Launch {
+        control_port: None,
+        control_input_only: false,
+        files: Vec::new(),
+        demo: true,
+        startup_flag: false,
+        recover: None,
+        data_dir: None,
+        graphics: None,
+    };
     let (mut help, mut version) = (false, false);
     let mut args = args.into_iter();
-    while let Some(a) = args.next() {
-        match a.as_str() {
+    while let Some(raw) = args.next() {
+        let a = raw.to_string_lossy();
+        match a.as_ref() {
             "-h" | "--help" => help = true,
             "--version" => version = true,
             "--control" => {
                 let port = args.next().ok_or("--control needs a port number")?;
+                let port = port.to_string_lossy();
                 l.control_port = Some(port.parse().map_err(|_| format!("--control needs a port number, got `{port}`"))?);
             }
             "--demo" => (l.demo, l.startup_flag) = (true, true),
@@ -65,13 +89,17 @@ pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = St
             "--empty" => (l.demo, l.startup_flag) = (false, true),
             "--recover" => l.recover = Some(true),
             "--no-recover" => l.recover = Some(false),
-            "--data-dir" => l.data_dir = Some(args.next().map(std::path::PathBuf::from).ok_or("--data-dir needs a folder")?),
+            "--data-dir" => l.data_dir = Some(args.next().map(PathBuf::from).ok_or("--data-dir needs a folder")?),
+            "--graphics" => {
+                let name = args.next().ok_or("--graphics needs a mode: default, dx12 or software")?;
+                l.graphics = Some(graphics_mode(&name.to_string_lossy())?);
+            }
             // everything after `--` is a file, whatever it looks like
-            "--" => l.files.extend(args.by_ref()),
+            "--" => l.files.extend(args.by_ref().map(|f| f.to_string_lossy().into_owned())),
             // macOS adds a process serial number when it launches an app bundle
             _ if a.starts_with("-psn_") => {}
             _ if a.len() > 1 && a.starts_with('-') => return Err(format!("unknown option `{a}`")),
-            _ => l.files.push(a),
+            _ => l.files.push(a.into_owned()),
         }
     }
     if help {
@@ -91,12 +119,45 @@ pub fn parse(env_control_port: Option<String>, args: impl IntoIterator<Item = St
     Ok(Cli::Run(l))
 }
 
+/// Whether a launch file is a FilmCraft project. The extension's case does not matter: Windows file
+/// associations and the Linux MIME glob start the app for `CUT.FCPROJ` too (#850).
+pub fn is_project(path: &str) -> bool {
+    Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"))
+}
+
+/// `path` made absolute against the working directory, so a project or media file named relative
+/// to a terminal's folder is still found once the app runs from another one (Recent Projects, the
+/// media paths saved in the project). Unlike `canonicalize`, `std::path::absolute` keeps symlinks
+/// and adds no Windows verbatim `\\?\` prefix. A path it cannot resolve is kept as given.
+pub fn absolute(path: &str) -> String {
+    std::path::absolute(path).ok().and_then(|p| p.into_os_string().into_string().ok()).unwrap_or_else(|| path.to_string())
+}
+
+/// The launch files as the project to open (the first one, see [`is_project`]) and the media files
+/// to import (every file that is not a project), all made [`absolute`].
+pub fn project_and_media(files: &[String]) -> (Option<String>, Vec<String>) {
+    let project = files.iter().find(|f| is_project(f)).map(|f| absolute(f));
+    let media = files.iter().filter(|f| !is_project(f)).map(|f| absolute(f)).collect();
+    (project, media)
+}
+
+/// A `--graphics` value: one of this platform's modes.
+fn graphics_mode(name: &str) -> Result<crate::graphics::Mode, String> {
+    use crate::graphics::{LADDER, Mode};
+    let here = || LADDER.iter().map(|m| m.name()).collect::<Vec<_>>().join(", ");
+    let mode = Mode::parse(name).ok_or_else(|| format!("--graphics needs one of {}, got `{name}`", here()))?;
+    if !LADDER.contains(&mode) {
+        return Err(format!("--graphics {name} is not available on this platform (use one of {})", here()));
+    }
+    Ok(mode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn parse_env(env: Option<&str>, args: &[&str]) -> Result<Cli, String> {
-        parse(env.map(str::to_string), args.iter().map(|a| a.to_string()))
+        parse(env.map(str::to_string), args.iter().map(OsString::from))
     }
 
     fn parse_args(args: &[&str]) -> Result<Cli, String> {
@@ -166,7 +227,16 @@ mod tests {
         let none = launch(&[]);
         assert_eq!(
             none,
-            Launch { control_port: None, control_input_only: false, files: vec![], demo: true, startup_flag: false, recover: None, data_dir: None }
+            Launch {
+                control_port: None,
+                control_input_only: false,
+                files: vec![],
+                demo: true,
+                startup_flag: false,
+                recover: None,
+                data_dir: None,
+                graphics: None
+            }
         );
         let l = launch(&["--control", "9876", "--empty", "--no-recover", "--data-dir", "/tmp/fc", "cut.fcproj", "a.mp4"]);
         assert_eq!(l.control_port, Some(9876));
@@ -179,6 +249,52 @@ mod tests {
         assert_eq!(launch(&["-", "-psn_0_12345"]).files, ["-"]);
     }
 
+    /// `std::env::args` panics on an argument that is not Unicode, so such a file name (Latin-1 on
+    /// Linux) stopped the app before its window opened.
+    #[cfg(unix)]
+    #[test]
+    fn arguments_that_are_not_unicode_still_start_the_app() {
+        use std::os::unix::ffi::OsStringExt;
+        let dir = OsString::from_vec(b"/tmp/d\xe9".to_vec());
+        let file = OsString::from_vec(b"caf\xe9.mov".to_vec());
+        let Ok(Cli::Run(l)) = parse(None, [OsString::from("--data-dir"), dir.clone(), file.clone(), OsString::from("--"), file]) else {
+            panic!("should start the app");
+        };
+        assert_eq!(l.data_dir, Some(PathBuf::from(dir)), "the data folder is kept exactly");
+        assert_eq!(l.files, ["caf\u{fffd}.mov", "caf\u{fffd}.mov"]);
+    }
+
+    /// Windows file associations and the Linux MIME glob match `CUT.FCPROJ` too; it used to be
+    /// imported as a media file instead of opened (#850).
+    #[test]
+    fn a_project_is_recognised_whatever_the_case_of_its_extension() {
+        for p in ["cut.fcproj", "CUT.FCPROJ", "Cut.FcProj", "/edits/a b.fcproj", r"C:\Edits\CUT.FCPROJ"] {
+            assert!(is_project(p), "{p}");
+        }
+        for p in ["cut.mp4", "fcproj", ".fcproj", "a.fcproj.mov", "a.fcprojx", ""] {
+            assert!(!is_project(p), "{p}");
+        }
+    }
+
+    /// Relative launch paths were opened and imported as given, so the project's media paths and
+    /// Recent Projects pointed nowhere once the app ran from another folder (#850).
+    #[test]
+    fn launch_files_are_made_absolute_and_split_case_insensitively() {
+        let cwd = std::env::current_dir().unwrap();
+        let nested = Path::new("clips").join("a.mp4");
+        let already = cwd.join("b.wav").to_string_lossy().into_owned();
+        let files = ["Cut.FCPROJ".to_string(), nested.to_string_lossy().into_owned(), "other.fcproj".to_string(), already.clone()];
+        let (project, media) = project_and_media(&files);
+        assert_eq!(project, Some(cwd.join("Cut.FCPROJ").to_string_lossy().into_owned()));
+        assert_eq!(media, [cwd.join(&nested).to_string_lossy().into_owned(), already]);
+        for p in media.iter().chain(&project) {
+            assert!(Path::new(p).is_absolute() && !p.starts_with(r"\\?\"), "{p}");
+        }
+        assert_eq!(project_and_media(&[]), (None, vec![]));
+        // nothing to resolve against: kept as given rather than dropped
+        assert_eq!(absolute(""), "");
+    }
+
     #[test]
     fn isolated_input_is_explicit_and_requires_a_control_server() {
         assert!(!launch(&["--control", "9876"]).control_input_only);
@@ -187,5 +303,24 @@ mod tests {
         assert!(matches!(parse_env(Some("9876"), &["--control-input-only"]), Ok(Cli::Run(Launch { control_input_only: true, control_port: Some(9876), .. }))));
         assert_eq!(parse_args(&["--control-input-only", "--help"]), Ok(Cli::Help));
         assert!(USAGE.contains("--control-input-only"));
+    }
+
+    #[test]
+    fn graphics_picks_one_of_this_platforms_modes() {
+        use crate::graphics::{LADDER, Mode};
+        assert_eq!(launch(&[]).graphics, None);
+        assert_eq!(launch(&["--graphics", "default"]).graphics, Some(Mode::Default));
+        for mode in LADDER {
+            assert_eq!(launch(&["--graphics", mode.name()]).graphics, Some(*mode));
+        }
+        // a mode this platform has not is refused, not ignored
+        for mode in [Mode::Dx12, Mode::Software].into_iter().filter(|m| !LADDER.contains(m)) {
+            assert!(parse_args(&["--graphics", mode.name()]).unwrap_err().contains("not available"));
+        }
+        assert!(parse_args(&["--graphics"]).is_err(), "missing mode");
+        assert!(parse_args(&["--graphics", "vulkan"]).unwrap_err().contains("vulkan"));
+        assert!(parse_args(&["--graphics", "DEFAULT"]).is_err());
+        assert!(parse_args(&["--graphics", &"x".repeat(1 << 16)]).is_err());
+        assert!(USAGE.contains("--graphics"));
     }
 }

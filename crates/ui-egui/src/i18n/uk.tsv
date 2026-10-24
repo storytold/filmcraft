@@ -222,6 +222,8 @@
 	Normalize Mix Track…	Нормалізувати доріжку міксу…
 	Offline File…	Автономний файл…
 	Open Project…	Відкрити проєкт…
+	Open Recent	Нещодавні файли
+	Clear Recent Files	Очистити список нещодавніх файлів
 	Optical Flow	Оптичний потік
 	Overwrite	Перезаписати
 	Paste	Вставити
@@ -274,6 +276,7 @@
 	Review	Перегляд
 	Right	Праворуч
 	Ripple Delete	Видалити зі зсувом
+	Ripple Delete Head Frame	Видалити початок зі зсувом
 	Ripple Sequence Markers	Зсувати маркери секвенції
 	Rose	Рожевий
 	Safe Margins	Безпечні поля
@@ -356,3 +359,4 @@
 	Zoom Out	Зменшити
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
+

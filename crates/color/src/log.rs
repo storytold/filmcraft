@@ -42,11 +42,25 @@ pub enum LogCurve {
     AppleLog,
     /// DJI D-Log.
     DLog,
+    /// Fujifilm F-Log.
+    FLog,
+    /// Fujifilm F-Log2 (also the curve of F-Log2 C).
+    FLog2,
 }
 
 impl LogCurve {
-    pub const ALL: [LogCurve; 8] =
-        [LogCurve::SLog3, LogCurve::VLog, LogCurve::CLog2, LogCurve::CLog3, LogCurve::LogC3, LogCurve::LogC4, LogCurve::AppleLog, LogCurve::DLog];
+    pub const ALL: [LogCurve; 10] = [
+        LogCurve::SLog3,
+        LogCurve::VLog,
+        LogCurve::CLog2,
+        LogCurve::CLog3,
+        LogCurve::LogC3,
+        LogCurve::LogC4,
+        LogCurve::AppleLog,
+        LogCurve::DLog,
+        LogCurve::FLog,
+        LogCurve::FLog2,
+    ];
 
     pub fn domain(self) -> Domain {
         match self {
@@ -65,6 +79,8 @@ impl LogCurve {
             LogCurve::LogC4 => "ARRI LogC4",
             LogCurve::AppleLog => "Apple Log",
             LogCurve::DLog => "DJI D-Log",
+            LogCurve::FLog => "Fujifilm F-Log",
+            LogCurve::FLog2 => "Fujifilm F-Log2",
         }
     }
 
@@ -79,6 +95,8 @@ impl LogCurve {
             LogCurve::LogC4 => logc4_encode(x),
             LogCurve::AppleLog => apple_log_encode(x),
             LogCurve::DLog => dlog_encode(x),
+            LogCurve::FLog => fujifilm_encode(&FLOG, x),
+            LogCurve::FLog2 => fujifilm_encode(&FLOG2, x),
         }
     }
 
@@ -93,6 +111,8 @@ impl LogCurve {
             LogCurve::LogC4 => logc4_decode(y),
             LogCurve::AppleLog => apple_log_decode(y),
             LogCurve::DLog => dlog_decode(y),
+            LogCurve::FLog => fujifilm_decode(&FLOG, y),
+            LogCurve::FLog2 => fujifilm_decode(&FLOG2, y),
         }
     }
 
@@ -262,6 +282,35 @@ pub fn dlog_decode(y: f64) -> f64 {
     if y <= 0.14 { (y - 0.0929) / 6.025 } else { (10f64.powf(3.896_16 * y - 2.277_52) - 0.0108) / 0.9892 }
 }
 
+// ---------------------------------------------------------------- Fujifilm F-Log / F-Log2
+// Fujifilm, "GFX ETERNA Technical Guide - White Paper" v1.01 (2026), F-Log / F-Log2 C / F-Log2
+// conversion formulas (the same as the F-Log and F-Log2 data sheets). `in` is scene-linear
+// reflection, `out` 10-bit code value / 1023: 0 % → 95, 18 % → 470 (F-Log) / 400 (F-Log2).
+
+/// a, b, c, d, e, f, cut1 (encoding: scene-linear), cut2 (decoding: signal).
+struct Fujifilm {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    e: f64,
+    f: f64,
+    cut1: f64,
+    cut2: f64,
+}
+
+const FLOG: Fujifilm =
+    Fujifilm { a: 0.555_556, b: 0.009_468, c: 0.344_676, d: 0.790_453, e: 8.735_631, f: 0.092_864, cut1: 0.000_89, cut2: 0.100_537_775_223_865 };
+const FLOG2: Fujifilm =
+    Fujifilm { a: 5.555_556, b: 0.064_829, c: 0.245_281, d: 0.384_316, e: 8.799_461, f: 0.092_864, cut1: 0.000_889, cut2: 0.100_686_685_370_811 };
+
+fn fujifilm_encode(k: &Fujifilm, x: f64) -> f64 {
+    if x >= k.cut1 { k.c * (k.a * x + k.b).log10() + k.d } else { k.e * x + k.f }
+}
+fn fujifilm_decode(k: &Fujifilm, y: f64) -> f64 {
+    if y >= k.cut2 { 10f64.powf((y - k.d) / k.c) / k.a - k.b / k.a } else { (y - k.f) / k.e }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +366,16 @@ mod tests {
         // DJI D-Log: 0 → 0.0929, 18 % → 0.398 (white paper).
         close(LogCurve::DLog.encode(0.0), 0.0929, 1e-9, "D-Log 0");
         close(LogCurve::DLog.encode(0.18), 0.398, 0.002, "D-Log 18%");
+        // Fujifilm (white paper code-value table): 0 % → 95, 18 % → 470 / 400, 90 % → 705 / 570.
+        close(cv(LogCurve::FLog, 0.0), 95.0, 0.5, "F-Log 0%");
+        close(cv(LogCurve::FLog, 0.18), 470.0, 0.5, "F-Log 18%");
+        close(cv(LogCurve::FLog, 0.9), 705.0, 0.6, "F-Log 90%");
+        close(cv(LogCurve::FLog2, 0.0), 95.0, 0.5, "F-Log2 0%");
+        close(cv(LogCurve::FLog2, 0.18), 400.0, 0.5, "F-Log2 18%");
+        close(cv(LogCurve::FLog2, 0.9), 570.0, 0.5, "F-Log2 90%");
+        // the decoding cut is where the encoding's two pieces meet (within the published rounding)
+        close(LogCurve::FLog.encode(0.000_89), 0.100_537_775_223_865, 2e-4, "F-Log cut");
+        close(LogCurve::FLog2.encode(0.000_889), 0.100_686_685_370_811, 2e-4, "F-Log2 cut");
     }
 
     #[test]

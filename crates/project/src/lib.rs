@@ -760,6 +760,9 @@ pub struct Track {
     /// Audio Track Mixer state: automation mode and lanes, sends, output, record arm.
     #[serde(default)]
     pub mixer: MixerStrip,
+    /// Colour label tinting the track's header and lane background (`None` = no colour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<Label>,
 }
 
 impl Track {
@@ -780,6 +783,7 @@ impl Track {
             pan: 0.0,
             effects: Vec::new(),
             mixer: MixerStrip::default(),
+            label: None,
         }
     }
     pub fn end(&self) -> Tick {
@@ -1320,6 +1324,9 @@ impl ProjectView {
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
+/// Largest embedded LUT source accepted from a project or import (8 MiB).
+pub const MAX_LUT_TEXT_BYTES: usize = 8 << 20;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectLut {
     pub id: String,
@@ -1340,6 +1347,11 @@ impl Default for Project {
 }
 
 impl Project {
+    /// The highest `next_id` a loaded project may carry. Ids are handed out one at a time, so no
+    /// amount of editing gets near it; a file past it is damaged, and refusing it keeps
+    /// `alloc_id` from overflowing.
+    pub const MAX_NEXT_ID: u64 = u64::MAX / 2;
+
     pub fn new(name: &str) -> Self {
         Self {
             name: name.into(),
@@ -1360,6 +1372,72 @@ impl Project {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    /// The largest id in use, of any kind. They all come from `next_id`, so a project read from a
+    /// file must have its `next_id` past this. Ids that are only referenced count too (a clip whose
+    /// item is gone): a new item taking that id would be picked up by the reference. The root bin
+    /// counts, so there is always one.
+    pub fn max_id(&self) -> u64 {
+        let mut max = 0;
+        let mut see = |id: u64| max = max.max(id);
+        let mut bins = vec![&self.root];
+        while let Some(bin) = bins.pop() {
+            see(bin.id.0);
+            for c in &bin.children {
+                match c {
+                    BinEntry::Item(i) => see(i.0),
+                    BinEntry::Bin(sub) => bins.push(sub),
+                }
+            }
+        }
+        self.search_bins.iter().for_each(|b| see(b.id.0));
+        // deleting an item leaves these entries behind: a new item taking that id would inherit them
+        self.transcripts.keys().chain(self.source_graphics.keys()).chain(self.narrations.keys()).for_each(|i| see(i.0));
+        // `lut.import` names LUTs `lut<id>`
+        self.luts.iter().filter_map(|l| l.id.strip_prefix("lut")?.parse().ok()).for_each(&mut see);
+        fn mixer(m: &MixerStrip) -> impl Iterator<Item = u64> + '_ {
+            m.sends.iter().map(|s| s.target.0).chain(m.output.map(|t| t.0))
+        }
+        for (id, item) in &self.items {
+            see(id.0);
+            see(item.id.0);
+            match &item.kind {
+                ItemKind::Media(m) => m.markers.iter().for_each(|mk| see(mk.id.0)),
+                ItemKind::Subclip { parent, .. } => see(parent.0),
+                ItemKind::Sequence(s) => {
+                    s.markers.iter().for_each(|mk| see(mk.id.0));
+                    mixer(&s.master_mixer).for_each(&mut see);
+                    for t in s.all_tracks().chain(&s.submix_tracks) {
+                        see(t.id.0);
+                        mixer(&t.mixer).for_each(&mut see);
+                        for c in &t.items {
+                            see(c.id.0);
+                            see(c.item.0);
+                            c.link.into_iter().chain(c.group).for_each(&mut see);
+                            c.markers.iter().for_each(|mk| see(mk.id.0));
+                        }
+                        for tr in &t.transitions {
+                            see(tr.id.0);
+                            tr.from.into_iter().chain(tr.to).for_each(|c| see(c.0));
+                        }
+                    }
+                    for t in &s.caption_tracks {
+                        see(t.id.0);
+                        t.captions.iter().for_each(|c| see(c.id.0));
+                    }
+                    for cam in s.multicam.iter().flat_map(|m| &m.cameras) {
+                        cam.video_track.iter().chain(&cam.audio_tracks).for_each(|t| see(t.0));
+                        cam.source.iter().for_each(|i| see(i.0));
+                    }
+                    if let Some(m) = &s.merged {
+                        m.video.iter().chain(&m.audio).for_each(|i| see(i.0));
+                    }
+                }
+                _ => {}
+            }
+        }
+        max
     }
 
     /// Add an item to a bin (root when None / not found).
@@ -1595,9 +1673,10 @@ impl Project {
         // a multi-camera source sequence edits in as a multi-camera clip showing its first angle
         let multicam =
             it.as_sequence().and_then(|q| q.multicam.as_ref()).map(|m| MulticamSel { enabled: true, angle: m.first_video_angle().unwrap_or(0) as u32 });
-        let source_channels = match (kind, &it.kind) {
-            (TrackKind::Audio, ItemKind::Media(m)) => m.interpret.audio_channels.as_ref().and_then(|a| a.clips.first().cloned()).unwrap_or_default(),
-            _ => Vec::new(),
+        let source_channels = if kind == TrackKind::Audio {
+            self.resolve_media(item).and_then(|(_, m, _)| m.interpret.audio_channels.as_ref()).and_then(|a| a.clips.first().cloned()).unwrap_or_default()
+        } else {
+            Vec::new()
         };
         let id = ClipId(self.alloc_id());
         let dur = seq_rate.snap_nearest(source.duration).max(seq_rate.frame_duration());
@@ -1671,6 +1750,16 @@ fn resolve_auto_points_sized(e: &mut EffectInstance, frame: (u32, u32), source: 
 }
 
 impl Project {
+    /// Available picture and sound, resolving a subclip to its parent media. Missing parents,
+    /// cycles and overly deep subclip chains carry neither stream.
+    pub fn source_streams(&self, item: ItemId) -> (bool, bool) {
+        let Some(pi) = self.item(item) else { return (false, false) };
+        match &pi.kind {
+            ItemKind::Subclip { .. } => self.resolve_media(item).map_or((false, false), |(_, m, _)| (m.info.has_video(), m.info.has_audio())),
+            _ => (pi.has_video(), pi.has_audio()),
+        }
+    }
+
     /// Resolve media through at most sixteen items, preserving the outermost subclip range.
     /// Missing parents, cycles and longer chains are unavailable media.
     pub fn resolve_media(&self, item: ItemId) -> Option<(ItemId, &MediaClip, Option<TimeRange>)> {
@@ -1895,6 +1984,7 @@ mod tests {
     fn media_resolution_bounds_depth_and_preserves_the_outer_range() {
         let (mut p, media, _) = demo_project();
         assert_eq!(p.resolve_media(media).map(|(id, _, range)| (id, range)), Some((media, None)));
+        let streams = p.source_streams(media);
         let mut parent = media;
         let mut last_range = TimeRange::default();
         for n in 0..15 {
@@ -1902,9 +1992,14 @@ mod tests {
             parent = p.add_item("Sub", Label::Iris, ItemKind::Subclip { parent, range: last_range, restrict_trims: false }, None);
         }
         assert_eq!(p.resolve_media(parent).map(|(id, _, range)| (id, range)), Some((media, Some(last_range))));
+        assert_eq!(p.source_streams(parent), streams);
         let too_deep = p.add_item("Too deep", Label::Iris, ItemKind::Subclip { parent, range: last_range, restrict_trims: false }, None);
         assert!(p.resolve_media(too_deep).is_none());
         assert!(p.resolve_media(ItemId(u64::MAX)).is_none());
+        assert_eq!(p.source_streams(too_deep), (false, false));
+        assert_eq!(p.source_streams(ItemId(u64::MAX)), (false, false));
+        p.item_mut(parent).unwrap().kind = ItemKind::Subclip { parent, range: last_range, restrict_trims: false };
+        assert_eq!(p.source_streams(parent), (false, false));
     }
 
     #[test]

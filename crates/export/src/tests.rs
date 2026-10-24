@@ -89,6 +89,31 @@ fn wav_png_gif() {
     assert!(std::path::Path::new(&tmp("seq005.png")).exists());
 }
 
+/// GIF delays are whole centiseconds (#854): at 24 fps they alternate 4/4/5 cs so a second of
+/// frames lasts 1000 ms, not 24 × 40 ms = 960 ms.
+#[test]
+fn gif_frame_delays_add_up_to_the_duration() {
+    let d: Vec<u16> = (0..6).map(|i| gif_delay_cs(FrameRate::FPS_24, i)).collect();
+    assert_eq!(d, [4, 4, 5, 4, 4, 4]);
+    let ntsc: u64 = (0..30).map(|i| u64::from(gif_delay_cs(FrameRate::FPS_29_97, i))).sum();
+    assert_eq!(ntsc, 100, "30 frames at 29.97 fps last 1.001 s");
+    // hostile rates neither panic nor overflow
+    assert_eq!(gif_delay_cs(FrameRate { num: 0, den: 0 }, 3), 0);
+    let _ = gif_delay_cs(FrameRate { num: 1, den: i64::MAX }, i64::MAX);
+
+    let (p, seq, m) = project();
+    let path = tmp("timing.gif");
+    let mut s = ExportSettings { format: Format::Gif, path: path.clone(), scale: 0.25, ..Default::default() };
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(24)));
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    use image::AnimationDecoder;
+    let dec = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(std::fs::read(&path).unwrap())).unwrap();
+    let frames = dec.into_frames().collect_frames().unwrap();
+    assert_eq!(frames.len(), 24);
+    let ms: u32 = frames.iter().map(|f| f.delay().numer_denom_ms()).map(|(n, d)| n / d.max(1)).sum();
+    assert_eq!(ms, 1000);
+}
+
 #[test]
 fn prores_export_roundtrip() {
     let (p, seq, m) = project();
@@ -99,6 +124,31 @@ fn prores_export_roundtrip() {
     assert!(src.info().video.as_ref().unwrap().codec.contains("ProRes 422 HQ"));
     let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
+}
+
+/// #2142: SDR ProRes, DNxHR and APV (MOV) and H.264 (MP4) exports carry a `colr` box with the
+/// export's BT.709 colour: Apple's media stack reads the colour of the MOV codecs only from there.
+#[test]
+fn sdr_exports_carry_a_colr_box() {
+    use filmcraft_isobmff::ColorInfo;
+    let (p, seq, m) = project();
+    let nclc = ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 };
+    let nclx = ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false };
+    for (format, name, want) in [
+        (Format::ProRes, "colr-prores.mov", nclc.clone()),
+        (Format::DnxHr, "colr-dnxhr.mov", nclc.clone()),
+        (Format::Apv, "colr-apv.mov", nclc.clone()),
+        (Format::H264, "colr-h264.mp4", nclx),
+    ] {
+        let path = tmp(name);
+        export(&p, seq, &ExportSettings { format, path: path.clone(), include_audio: false, ..Default::default() }, &m, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let file = filmcraft_isobmff::open(bytes).unwrap();
+        let t = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        let v = file.tracks[t].entries[0].video.as_ref().unwrap();
+        assert_eq!(v.color.as_ref(), Some(&want), "{name}");
+        assert!(v.mastering_display.is_none() && v.content_light.is_none(), "{name}: no HDR metadata on SDR");
+    }
 }
 
 /// ProRes 4444 / 4444 XQ export (#342): 4:4:4 frames under the `ap4h` / `ap4x` codes, and with
