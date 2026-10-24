@@ -28,6 +28,7 @@ mod appearance;
 mod args;
 mod audio;
 mod audio_in;
+mod clipboard;
 mod control_server;
 #[cfg(target_os = "linux")]
 mod dev_icon;
@@ -409,10 +410,11 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
 /// Files copied in the file manager, else an image, on the system clipboard (Paste, #611).
 fn clipboard_media() -> Option<filmcraft_ui_egui::ClipboardMedia> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
-    if let Ok(files) = clipboard.get().file_list()
-        && !files.is_empty()
-    {
-        return Some(filmcraft_ui_egui::ClipboardMedia::Files(files.iter().map(|p| p.to_string_lossy().into_owned()).collect()));
+    if let Ok(files) = clipboard.get().file_list() {
+        let paths = crate::clipboard::paste_paths(&files);
+        if !paths.is_empty() {
+            return Some(filmcraft_ui_egui::ClipboardMedia::Files(paths));
+        }
     }
     let image = clipboard.get_image().ok()?;
     Some(filmcraft_ui_egui::ClipboardMedia::Image { width: image.width, height: image.height, rgba: image.bytes.into_owned() })
