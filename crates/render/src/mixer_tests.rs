@@ -146,7 +146,7 @@ fn volume_automation_is_sample_accurate_and_block_invariant() {
         lane.keyframes = vec![kf(0, 0.0), kf(1000, -20.0), kf(1500, -20.0), kf(1600, 0.0)];
     }
     let whole = r.mix(0, 2000);
-    for k in [0usize, 1, 63, 64, 65, 127, 128, 500, 999, 1000, 1500, 1550, 1599, 1600] {
+    for k in [0usize, 1, 63, 64, 65, 127, 128, 500, 999, 1000, 1500, 1550, 1599, 1600, 1601, 1999] {
         let db = if k <= 1000 {
             -20.0 * k as f64 / 1000.0
         } else if k <= 1500 {
@@ -164,6 +164,7 @@ fn volume_automation_is_sample_accurate_and_block_invariant() {
         let cut = r.mix_cut(0, 2000, sizes, None);
         assert_eq!(cut, whole, "cut {sizes:?}");
     }
+    assert_eq!(r.mix(1600, 400)[0], whole[0][1600..], "a request entirely after the last keyframe");
     // Off mode ignores the automation
     r.track(0).mixer.mode = AutomationMode::Off;
     assert!(close(r.mix(1200, 16)[0][0], 0.5, 1e-7));
@@ -380,6 +381,8 @@ fn live_override_holds_and_ramps_back() {
     live.hold(id, LANE_VOLUME, -6.0);
     let b = mix_graph(&r.p, r.p.sequence(r.seq).unwrap(), 0, 64, &r.map, Some(&live));
     assert!(close(b.channels[0][0], 0.5 * 10f32.powf(-0.3), 1e-6));
+    let tail = mix_graph(&r.p, r.p.sequence(r.seq).unwrap(), 100_000, 64, &r.map, Some(&live));
+    assert!(close(tail.channels[0][0], b.channels[0][0], 1e-6), "a live hold still applies after the last keyframe");
     // released at sample 4800 with a 4800-sample ramp: halfway back at 7200
     live.release(id, LANE_VOLUME, Tick::from_units(4800, SR), Tick::from_units(4800, SR));
     let b = mix_graph(&r.p, r.p.sequence(r.seq).unwrap(), 7200, 1, &r.map, Some(&live));
