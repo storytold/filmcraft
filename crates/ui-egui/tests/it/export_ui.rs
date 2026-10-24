@@ -520,3 +520,47 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+#[test]
+fn export_preview_plays_steps_and_scrubs_without_changing_settings() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::new("preview");
+    d.ok("ui.set", json!({"mode":"export","export":{"range":"custom","customStart":2.0,"customEnd":4.0}}));
+    let settings = serde_json::to_value(&d.app().ui.export.settings).unwrap();
+    let project = serde_json::to_value(&d.app().session.project).unwrap();
+    let dirty = d.app().session.is_dirty();
+    d.click("export.preview.first");
+    let rate = d.app().session.sequence_rate();
+    assert_eq!(d.app().session.playhead(), rate.snap(filmcraft_engine::time::Tick::from_seconds_f64(2.0)));
+    d.click("export.preview.stepForward");
+    assert_eq!(rate.frame_at(d.app().session.playhead()), rate.frame_at(filmcraft_engine::time::Tick::from_seconds_f64(2.0)) + 1);
+    d.click("export.preview.stepBack");
+    d.click("export.preview");
+    d.app().ui.focused = PanelKind::Source;
+    d.ok("ui.key", json!({"key":"Space"}));
+    assert!(d.app().playback.playing);
+    assert!(!d.app().source_playback.clock.playing);
+    d.click("export.preview.toggle");
+    assert!(!d.app().playback.playing);
+    let elements = d.ok("ui.elements", json!({"prefix":"export.preview.scrub"}));
+    let rect = elements[0]["rect"].as_array().unwrap();
+    let x = rect[0].as_f64().unwrap();
+    let y = rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() / 2.0;
+    let w = rect[2].as_f64().unwrap();
+    d.ok("ui.drag", json!({"from":{"x":x+12.0,"y":y},"to":{"x":x+w*0.65,"y":y},"steps":8}));
+    assert!(d.app().session.playhead().seconds() > 2.5);
+    assert!(d.app().session.playhead().seconds() < 4.0);
+    assert!(!d.app().playback.playing);
+    d.click("export.preview.last");
+    assert_eq!(rate.frame_at(d.app().session.playhead()), rate.frame_at(filmcraft_engine::time::Tick::from_seconds_f64(4.0) - filmcraft_engine::time::Tick(1)));
+    assert_eq!(serde_json::to_value(&d.app().ui.export.settings).unwrap(), settings);
+    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
+    assert_eq!(d.app().session.is_dirty(), dirty);
+    d.snapshot("export-preview-controls");
+    // Audio-only exports keep navigation and audition available without requesting picture.
+    d.app().ui.export.settings.format = filmcraft_engine::export::Format::Wav;
+    d.frames(3);
+    d.click("export.preview.first");
+    assert!(d.has("export.preview.scrub"));
+    d.snapshot("export-preview-audio");
+}

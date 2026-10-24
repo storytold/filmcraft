@@ -41,6 +41,12 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
+    uic!("export.preview.toggle", "Play/Stop", [], None),
+    uic!("export.preview.seek", "Set Playhead", [], None),
+    uic!("export.preview.first", "Go to In", [], None),
+    uic!("export.preview.last", "Go to Out", [], None),
+    uic!("export.preview.stepBack", "Step Back 1 Frame", [], None),
+    uic!("export.preview.stepForward", "Step Forward 1 Frame", [], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -173,12 +179,29 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     match params.get("monitor").and_then(Value::as_str) {
         Some("source") => true,
         Some(_) => false,
-        None => app.ui.focused == PanelKind::Source,
+        None => app.ui.mode != Mode::Export && app.ui.focused == PanelKind::Source,
     }
 }
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if id.starts_with("export.preview.") {
+        return crate::panels::export_mode::preview_command(app, id, &params);
+    }
+    // Export owns the transport even if Source had focus before changing workspaces.
+    if app.ui.mode == Mode::Export && params.get("monitor").is_none() {
+        let preview = match id {
+            "playback.toggle" => Some("export.preview.toggle"),
+            "playhead.stepBack" => Some("export.preview.stepBack"),
+            "playhead.stepForward" => Some("export.preview.stepForward"),
+            "markers.goToIn" => Some("export.preview.first"),
+            "markers.goToOut" => Some("export.preview.last"),
+            _ => None,
+        };
+        if let Some(command) = preview {
+            return crate::panels::export_mode::preview_command(app, command, &params);
+        }
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }

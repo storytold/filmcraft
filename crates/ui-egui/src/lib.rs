@@ -1196,25 +1196,32 @@ impl FilmcraftApp {
         let t = self.playback.anchor_tick + Tick::from_seconds_f64(elapsed * self.playback.speed);
         let seq = self.session.active_sequence();
         let dur = seq.map(|q| q.duration()).unwrap_or_default();
-        let (lo, hi) = if self.playback.looping {
+        let exporting = self.ui.mode == state::Mode::Export;
+        let looping = self.playback.looping && !exporting;
+        let (lo, hi) = if exporting {
+            panels::export_mode::preview_bounds(self)
+                .map(|(first, last)| (rate.tick_of(first), rate.tick_of(last.saturating_add(1))))
+                .unwrap_or((Tick::ZERO, dur))
+        } else if looping {
             (seq.and_then(|q| q.mark_in).unwrap_or(Tick::ZERO), seq.and_then(|q| q.mark_out).map(|o| o + rate.frame_duration()).unwrap_or(dur))
         } else {
             (Tick::ZERO, dur)
         };
-        if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
+        let reverse_end = if exporting { lo } else { Tick::ZERO };
+        if let Some(end) = self.playback.stop_at.filter(|e| !exporting && t >= *e && self.playback.speed > 0.0 && !looping) {
             self.session.set_playhead(self.playback.rest_at.unwrap_or(end));
             self.stop();
-        } else if t >= hi && self.playback.speed > 0.0 && (self.playback.looping || !self.session.voiceover.recording()) {
+        } else if t >= hi && self.playback.speed > 0.0 && (looping || !self.session.voiceover.recording()) {
             // a voice-over take keeps playing (and recording) into the empty timeline past the end
-            if self.playback.looping {
+            if looping {
                 self.session.set_playhead(lo);
                 self.play(self.playback.speed);
             } else {
                 self.session.set_playhead(hi - rate.frame_duration());
                 self.stop();
             }
-        } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
-            self.session.set_playhead(Tick::ZERO);
+        } else if t <= reverse_end && self.playback.speed < 0.0 {
+            self.session.set_playhead(reverse_end);
             self.stop();
         } else {
             self.session.set_playhead(t);
