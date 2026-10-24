@@ -1203,6 +1203,20 @@ fn pv(e: &EffectInstance, id: &str, mt: Tick) -> ParamValue {
     e.params.get(id).map(|p| p.value_at(mt)).or_else(|| e.def().and_then(|d| d.param(id)).map(|d| d.default.clone())).unwrap_or(ParamValue::Float(0.0))
 }
 
+/// The color shown by a text layer's Fill picker. When a text selection starts inside a styled
+/// character run, show that character's override instead of the layer's inherited color.
+fn displayed_color(e: &EffectInstance, id: &str, mt: Tick, range: Option<(usize, usize)>) -> [f32; 4] {
+    if id == "fill_color"
+        && let Some((start, end)) = range
+        && start < end
+        && let Some(fill) =
+            e.layer.as_ref().and_then(|layer| layer.runs.iter().find(|run| run.start <= start && start < run.end)).and_then(|run| run.style.fill)
+    {
+        return fill;
+    }
+    pv(e, id, mt).as_color().unwrap_or([1.0; 4])
+}
+
 fn color32(c: [f32; 4]) -> Color32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     Color32::from_rgba_unmultiplied(q(c[0]), q(c[1]), q(c[2]), q(c[3]))
@@ -1344,7 +1358,7 @@ impl Ctx<'_> {
         b
     }
     fn color(&mut self, vui: &mut egui::Ui, id: &str) {
-        let c = pv(self.e, id, self.mt).as_color().unwrap_or([1.0; 4]);
+        let c = displayed_color(self.e, id, self.mt, self.range);
         let mut c32 = color32(c);
         let r = egui::color_picker::color_edit_button_srgba(vui, &mut c32, egui::color_picker::Alpha::Opaque);
         self.auto(id, r.rect, id);
@@ -1925,4 +1939,24 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.gfx_edit = None;
     }
     app.ui.text_props_dialog = if ok || close { None } else { Some(d) };
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+
+    #[test]
+    fn selected_text_fill_picker_uses_the_character_override() {
+        let mut e = filmcraft_project::find_effect(filmcraft_project::graphic::TEXT_LAYER).expect("text layer definition").instance();
+        let selected = [0.2, 0.4, 0.8, 1.0];
+        e.layer = Some(Box::new(filmcraft_project::LayerExtra {
+            runs: vec![filmcraft_project::StyleRun { start: 2, end: 6, style: filmcraft_project::CharStyle { fill: Some(selected), ..Default::default() } }],
+            ..Default::default()
+        }));
+
+        let inherited = pv(&e, "fill_color", Tick::ZERO).as_color().unwrap_or([1.0; 4]);
+        assert_eq!(displayed_color(&e, "fill_color", Tick::ZERO, Some((2, 6))), selected);
+        assert_eq!(displayed_color(&e, "fill_color", Tick::ZERO, Some((0, 6))), inherited);
+        assert_eq!(displayed_color(&e, "fill_color", Tick::ZERO, None), inherited);
+    }
 }
