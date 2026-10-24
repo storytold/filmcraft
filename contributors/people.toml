@@ -54,6 +54,9 @@ sync_github_name = true
 display_name = "ReReddo"
 sync_github_name = false
 
+[people.UdayaSri0]
+real_name = "Udaya Sri"
+
 [people.liangforstudy]
 sync_github_name = true
 
