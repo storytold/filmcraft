@@ -58,6 +58,11 @@ pub trait AudioInput: Send {
     fn error(&self) -> Option<String> {
         None
     }
+    /// Peak level (linear, per device channel) of what was captured since the last call, without
+    /// consuming it; empty when nothing new arrived. Feeds the mixer's input meter while recording.
+    fn take_peaks(&mut self) -> Vec<f32> {
+        Vec::new()
+    }
     /// Drop everything captured so far: the next sample read is "now".
     fn discard(&mut self);
     fn stop(&mut self);
@@ -188,6 +193,19 @@ impl VoiceOver {
     }
     fn input(&mut self) -> &mut Box<dyn AudioInput> {
         self.input.get_or_insert_with(|| Box::new(SyntheticInput::clicks()))
+    }
+}
+
+/// While recording, post the input's peaks since the last call to the live mixer's input meter
+/// (the UI calls this once per frame before reading the meters).
+pub fn post_input_meter(s: &mut Session) {
+    if !s.voiceover.recording() {
+        return;
+    }
+    let Some(input) = s.voiceover.input.as_mut() else { return };
+    let peaks = input.take_peaks();
+    if !peaks.is_empty() {
+        s.previews.live.post_input_meter(&peaks);
     }
 }
 

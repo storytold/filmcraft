@@ -209,3 +209,46 @@ fn cue_times_count_down_whole_seconds() {
     assert_eq!(tone.len(), 4_800);
     assert!(tone.iter().all(|x| x.abs() <= 0.25) && tone[0] == 0.0);
 }
+
+/// The synthetic input, reporting fixed peaks to the input meter.
+struct PeakInput(SyntheticInput);
+
+impl crate::voiceover::AudioInput for PeakInput {
+    fn devices(&self) -> Vec<String> {
+        self.0.devices()
+    }
+    fn channels(&self, device: &str) -> u16 {
+        self.0.channels(device)
+    }
+    fn start(&mut self, device: &str, sample_rate: u32) -> std::result::Result<crate::voiceover::InputFormat, String> {
+        self.0.start(device, sample_rate)
+    }
+    fn read(&mut self, frames: usize) -> Vec<Vec<f32>> {
+        self.0.read(frames)
+    }
+    fn take_peaks(&mut self) -> Vec<f32> {
+        vec![0.5, 0.25]
+    }
+    fn discard(&mut self) {
+        self.0.discard()
+    }
+    fn stop(&mut self) {
+        self.0.stop()
+    }
+}
+
+#[test]
+fn the_input_meter_follows_the_input_while_recording() {
+    let (mut s, track, _) = demo();
+    s.voiceover.input = Some(Box::new(PeakInput(SyntheticInput::clicks())));
+    crate::voiceover::post_input_meter(&mut s);
+    assert!(s.previews.live.take_input_meter().is_empty(), "not recording: the meter stays idle");
+    s.execute("audio.voiceover.start", json!({"track": track, "preroll": 0})).unwrap();
+    crate::voiceover::post_input_meter(&mut s);
+    assert_eq!(s.previews.live.take_input_meter(), [0.5, 0.25]);
+    let dir = tmp("input-meter");
+    s.execute("audio.voiceover.stop", json!({"time": sec(1.0), "dir": dir, "discard": true})).unwrap();
+    crate::voiceover::post_input_meter(&mut s);
+    assert!(s.previews.live.take_input_meter().is_empty(), "stopped: the meter stays idle");
+    let _ = std::fs::remove_dir_all(&dir);
+}
