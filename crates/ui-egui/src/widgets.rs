@@ -252,11 +252,15 @@ pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: 
     resp
 }
 
-/// A flat icon toggle inside a rect.
+/// A flat icon toggle inside a rect: a rounded grey background behind the icon while it is on.
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
+    if on {
+        ui.painter().rect_filled(rect, t.radius_sm, t.toggle_on);
+    }
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 2.0, t.hover);
+        // over an on toggle, a second layer of its background, so hovering never looks like off
+        ui.painter().rect_filled(rect, t.radius_sm, if on { t.toggle_on } else { t.hover });
     }
     let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
     icons::paint(ui.painter(), rect.shrink(rect.width() * 0.16), icon, col);
@@ -417,5 +421,30 @@ mod tests {
         frame(vec![press(to, false)]);
         let end = frame(Vec::new());
         assert!((end.center() - (start.center() + egui::vec2(-200.0, -150.0))).length() < 2.0, "moved with the drag: {start:?} -> {end:?}");
+    }
+
+    /// The fills of the rectangles an icon toggle paints, on or off.
+    fn fills(on: bool, t: &Tokens) -> Vec<Color32> {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            icon_toggle(ui, Rect::from_min_size(pos2(10.0, 10.0), vec2(22.0, 22.0)), Icon::Lock, on, t, egui::Id::new("toggle"), None);
+        });
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) => Some(r.fill),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_icon_toggle_that_is_on_has_a_background_and_one_that_is_off_has_none() {
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let t = Tokens::for_kind(kind);
+            assert!(fills(true, &t).contains(&t.toggle_on), "{kind:?}");
+            assert!(!fills(false, &t).contains(&t.toggle_on), "{kind:?}");
+        }
     }
 }

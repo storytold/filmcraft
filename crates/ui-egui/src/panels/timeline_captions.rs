@@ -100,26 +100,26 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
                 }
             }
         });
-        let lock_r = Rect::from_center_size(pos2(hrect.min.x + 49.0, row.center().y), vec2(18.0, 18.0));
+        let lock_r = Rect::from_center_size(pos2(hrect.min.x + 49.0, row.center().y), vec2(22.0, 22.0));
         let lresp = crate::widgets::icon_toggle(
             ui,
             lock_r,
             if tr.locked { Icon::Lock } else { Icon::Unlock },
-            true,
+            tr.locked,
             t,
             egui::Id::new(("cap-lock", tr.id.0)),
-            Some(if tr.locked { t.icon_active } else { t.text_dim }),
+            Some(t.icon_active),
         );
         app.auto.add(&format!("timeline.captionTrack.{label}.locked"), lock_r, "Toggle Caption Track Lock");
         if lresp.clicked() {
             actions.push(("captions.setTrack".into(), json!({"track": tr.id.0, "locked": !tr.locked})));
         }
-        let eye_r = Rect::from_center_size(pos2(hrect.min.x + 73.0, row.center().y), vec2(18.0, 18.0));
+        let eye_r = Rect::from_center_size(pos2(hrect.min.x + 73.0, row.center().y), vec2(22.0, 22.0));
         let eresp = crate::widgets::icon_toggle(
             ui,
             eye_r,
             if tr.enabled { Icon::Eye } else { Icon::EyeOff },
-            true,
+            tr.enabled,
             t,
             egui::Id::new(("cap-eye", tr.id.0)),
             Some(t.text_dim),
