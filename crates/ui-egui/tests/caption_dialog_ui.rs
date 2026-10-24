@@ -125,3 +125,25 @@ fn saved_presets_are_kept_in_preferences() {
     assert_eq!((presets[0].name.as_str(), presets[0].settings.max_chars), ("Shorts", 7));
     assert!(d.app().ui.caption_dialog.as_ref().unwrap().saving.is_none());
 }
+
+/// Create still makes the captions when the preferences can't be written, and the status bar
+/// keeps the save error instead of "Created n captions" covering it.
+#[test]
+fn a_failed_settings_save_stays_in_the_status_bar() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("not-a-directory");
+    std::fs::write(&blocker, b"").unwrap();
+    let mut s = session();
+    s.prefs_path = Some(blocker.join("preferences.json"));
+    let mut d = Driver::new(s);
+    d.ok("engine.execute", json!({"command": "transcript.createCaptions"}));
+    d.frames(10);
+    d.app().ui.caption_dialog.as_mut().unwrap().settings.max_chars = 7;
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "captions.create"}));
+    d.frames(3);
+    assert!(d.app().ui.caption_dialog.is_none(), "Create closes the dialog");
+    assert_eq!(d.app().session.active_sequence().unwrap().caption_tracks.len(), 1);
+    let status = d.app().ui.status.clone();
+    assert!(status.starts_with("Couldn't save caption settings"), "{status}");
+}

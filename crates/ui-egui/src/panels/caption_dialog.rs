@@ -380,10 +380,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         Some("cancelSave") => d.saving = None,
         Some("create") => match app.session.execute(COMMAND, d.settings.params()) {
             Ok(r) => {
-                let settings = d.settings.clone();
-                save_prefs(app, |c| c.last = settings);
                 let n = r["captions"].as_u64().unwrap_or(0);
                 app.ui.status = tlf!("Created {n} captions", n = n);
+                // after the status, so a save error replaces it instead of being covered by it
+                let settings = d.settings.clone();
+                save_prefs(app, |c| c.last = settings);
                 app.ui.text_tab = "Captions".into();
                 app.ui.caption_dialog = None;
                 return;
