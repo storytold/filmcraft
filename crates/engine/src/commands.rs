@@ -369,6 +369,13 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     if listed.is_empty() {
         return Err(bad(CMD, "need `moves`"));
     }
+    // One destination per clip: a clip listed twice would end up on both tracks under one id
+    // (#1903). Copies may repeat a source, each copy getting its own id.
+    if !bool_p(p, "copy").unwrap_or(false)
+        && let Some(dup) = listed.iter().enumerate().find_map(|(i, m)| listed[..i].iter().any(|o| o.0 == m.0).then_some(m.0))
+    {
+        return Err(bad(CMD, format!("clip {} is listed more than once; a move takes one destination per clip (copies may repeat a source)", dup.0)));
+    }
     let follow = bool_p(p, "linked").unwrap_or(s.state.linked_selection);
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     // (clip, destination track, new start, where a partner starts now). `time` is any i64: the
