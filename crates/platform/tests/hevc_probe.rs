@@ -1,6 +1,6 @@
 //! `register()` answers the HEVC availability probe in the background, so the first draw of the
-//! format list does not create a hardware session on the UI thread. One test in this file on
-//! purpose: anything else that asked `hevc_available()` first would make the wait below meaningless.
+//! format list does not create a hardware session on the UI thread. Keep this in its own test
+//! binary: other hardware tests call `register()` and would invalidate the initial unprobed state.
 #![cfg(target_os = "macos")]
 
 use std::time::{Duration, Instant};
