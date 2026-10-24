@@ -729,7 +729,14 @@ pub fn decode_dvd_lpcm(data: &[u8], channels: usize, bits: u32) -> Vec<Vec<f32>>
 /// Decode interleaved PCM bytes into planar f32.
 pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f32>> {
     let ch = cfg.channels.max(1) as usize;
+    // #2064: an `ipcm`/`fpcm` entry may declare `bits == 0`, which would make `bps` 0 and
+    // `data.len() / 0` panic. The other arms (`sowt`/`twos`/`raw`) already default a 0 sample size
+    // to 16/8, and MXF's `decode_pcm` rejects `bps == 0`; this is the path that fell through.
+    // Return silence of the right channel count so the worker doesn't crash.
     let bps = (cfg.bits as usize).div_ceil(8);
+    if bps == 0 {
+        return vec![Vec::new(); ch];
+    }
     let n = data.len() / (bps * ch);
     let mut out = vec![Vec::with_capacity(n); ch];
     for i in 0..n {
@@ -760,6 +767,42 @@ pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f3
         }
     }
     out
+}
+
+#[cfg(test)]
+mod decode_pcm_tests {
+    use super::*;
+    use filmcraft_isobmff::PcmConfig;
+
+    /// #2064: an `ipcm`/`fpcm` entry declaring `bits == 0` used to divide by zero
+    /// (`0.div_ceil(8) == 0` → `data.len() / 0`). The other arms (`sowt`/`twos`/`raw`) already
+    /// default a 0 sample size to 16/8, and MXF's `decode_pcm` rejects `bps == 0`; this is the
+    /// path that fell through. The function now returns silence of the right channel count.
+    #[test]
+    fn bits_zero_does_not_divide_by_zero() {
+        let cfg = PcmConfig { bits: 0, channels: 2, ..Default::default() };
+        let out = decode_pcm(&[0u8; 32], &cfg);
+        assert_eq!(out.len(), 2, "two channels of silence");
+        for ch in &out {
+            assert!(ch.is_empty(), "no samples decoded: {ch:?}");
+        }
+    }
+
+    /// Sanity check: a normal 16-bit little-endian mono frame round-trips through the matcher.
+    #[test]
+    fn sixteen_bit_little_endian_mono_decodes() {
+        let cfg = PcmConfig { bits: 16, channels: 1, signed: true, ..Default::default() };
+        // 4 samples: 0, 32767, -32768, 0 → bytes 00 00, FF 7F, 00 80, 00 00 (little-endian).
+        let bytes = [0x00, 0x00, 0xFF, 0x7F, 0x00, 0x80, 0x00, 0x00];
+        let out = decode_pcm(&bytes, &cfg);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].len(), 4);
+        // 0 and ±32768 are exact; 32767 / 32768 is the closest representable f32 ≈ 0.999969.
+        assert_eq!(out[0][0], 0.0);
+        assert!((out[0][1] - 1.0).abs() < 1e-4, "{}", out[0][1]);
+        assert_eq!(out[0][2], -1.0);
+        assert_eq!(out[0][3], 0.0);
+    }
 }
 
 /// Resample-read `frames` from planar source audio at `src_rate` into a buffer at `rate`,
