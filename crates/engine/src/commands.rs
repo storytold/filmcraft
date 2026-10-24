@@ -1352,6 +1352,18 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                if crate::premiere::is_project(&path) {
+                    let mut options = p.clone();
+                    options["path"] = json!(path);
+                    match crate::premiere::import(s, &options) {
+                        Ok(r) => {
+                            sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                            reports.push(r);
+                        }
+                        Err(e) => errors.push(format!("{path}: {e}")),
+                    }
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
@@ -3426,6 +3438,7 @@ fn build() -> Vec<CommandSpec> {
     ];
     crate::sequence_tools::splice(&mut v);
     v.extend(crate::captions::commands());
+    v.extend(crate::premiere::commands());
     v.extend(crate::settings::commands());
     v.extend(crate::mixer::commands());
     v.extend(crate::multicam::commands());

@@ -1,6 +1,6 @@
 # Roadmap detail
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (M8: Fujifilm F-Log / F-Log2 / F-Log2 C colour spaces) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-23 · **Change:** minor (bounded Premiere import; remaining fidelity gaps explicit; M8 Fujifilm colour spaces retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Forward-looking plan: milestones with status, the current focus and what's next, with estimates in
 Opus 5.5 agent-hours (calibration in [target-app-parity.md](target-app-parity.md#calibration)).
@@ -12,7 +12,7 @@ There is no `cargo xtask scorecard` or `cargo xtask parity` yet ([G7](gaps.md#g7
 In order. Each item links to its gap entry, which says what "done" means.
 
 1. **Stop launch crashes and add pull-request CI** ([G4](gaps.md#g4-crashes-at-start-up-and-no-test-ci-on-pull-requests)): `cargo xtask ci` on macOS, Windows and Linux for every PR; old-macOS and Intel-GPU start-up. 40–80 h.
-2. **Open `.prproj`** ([G2](gaps.md#g2-premieres-prproj-cannot-be-opened)): the beta blocker. 60–120 h.
+2. **Expand `.prproj` import fidelity** ([G2](gaps.md#g2-premieres-prproj-cannot-be-opened)): still a beta requirement; remaining effort not re-estimated.
 3. **10-bit / 4:2:2 camera media in software** ([G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)). 30–50 h.
 4. **Fidelity harness against Premiere** ([G1](gaps.md#g1-nothing-compares-our-output-with-premieres)) and **`cargo xtask parity`** ([G7](gaps.md#g7-no-measured-parity-tool-in-ci)): turns estimates into measurements. 50–90 h.
 5. **Real-world media corpus and workflow tests** ([G6](gaps.md#g6-no-real-world-media-corpus-or-workflow-acceptance-tests)). 40–70 h.
@@ -47,7 +47,7 @@ Beta = ready for real work ≥ ~75% and `.prproj` opens reliably ([target-app-pa
 | # | Milestone | Status | Est. |
 |---|---|---|---|
 | B1 | PR CI on three OSs + launch-crash fixes | ⬜ | 40–80 |
-| B2 | `.prproj` import (sequences, clips, transitions, markers, bins, common effect parameters) | ⬜ | 60–120 |
+| B2 | `.prproj` import: sequences/clips/timing/provenance available; markers, bins and full effect fidelity remain ([limits](premiere-import.md)) | partial | not re-estimated |
 | B3 | Camera media: H.264 High 10 / 4:2:2, HEVC 4:2:2, E-AC-3, AVI, multi-track audio confirmed | 🟡 (multi-stream audio #361) | 50–90 |
 | B4 | Fidelity harness + `cargo xtask parity` + media corpus + workflow tests | ⬜ | 90–160 |
 | B5 | Hardware: zero-copy, more GPU effects, Windows vendor encoders, VideoToolbox Main 10 | 🟡 | 60–100 |
@@ -89,3 +89,4 @@ the web app shell ([G20](gaps.md#g20-the-web-app-shell)).
 |---|---|---|
 | 2026-10-10 | minor | Alpha gate table added (craftrules core-workflow gate): six core workflows, all pass on macOS; stage stays alpha |
 | 2026-10-10 | major | Created: milestone table moved from ROADMAP.md (M5 and M9 remaining work updated), HW and L10N rows, beta milestones B1–B7, Current focus from the re-measure |
+| 2026-10-17 | minor | B2 is partial: bounded Premiere import works; bins, markers and fidelity remain. Alpha stage and overall estimates unchanged. |

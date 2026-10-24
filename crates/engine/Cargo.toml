@@ -45,6 +45,7 @@ log = { workspace = true }
 chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

@@ -209,6 +209,8 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
             let la = la.map(|l| l.0).unwrap_or_else(|| Image::new(w, h));
             let lb = lb.map(|l| l.0).unwrap_or_else(|| Image::new(w, h));
             let p = tr.progress(t) as f32;
+            let p =
+                if matches!(tr.effect.effect.as_str(), "dip_to_black" | "dip_to_white") { transitions::dip_progress(p, a.is_some(), b.is_some()) } else { p };
             // Reverse plays the transition backwards (e.g. an iris closing on the outgoing clip)
             // while still going from A to B.
             let mixed = if tr.reverse {

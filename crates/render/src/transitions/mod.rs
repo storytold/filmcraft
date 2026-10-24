@@ -39,6 +39,16 @@ pub mod wipe;
 #[cfg(test)]
 mod tests;
 
+/// A dip with a missing side is a single fade over the full transition duration.
+/// Two-sided dips keep their outgoing/colour/incoming halves.
+pub(crate) fn dip_progress(p: f32, from: bool, to: bool) -> f32 {
+    match (from, to) {
+        (true, false) => p * 0.5,
+        (false, true) => 0.5 + p * 0.5,
+        _ => p,
+    }
+}
+
 /// Render transition `e` at progress `p` (full-resolution parameters).
 pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
     apply_scaled(e, a, b, p, 1.0)

@@ -21,6 +21,10 @@ read off files it exports, never from the application itself.
 | OMF | Avid *OMF Interchange Specification* | Version 2.0 (1997) | classes (`HEAD`, `CMOB`, `MMOB`, `SMOB`, `MSLT`, `TRKD`, `SEQU`, `SCLP`, `FILL`, `TRAN`, `EFFE`, `ESLT`, `CVAL`, `VVAL`, `TCCP`, `WAVD`, `AIFD`, `WAVE`, `AIFC`, locators), property and type names |
 | OMF | Apple *Bento Specification* | revision 1.0d5 | container label, TOC encoding, objects / properties / types, references |
 | WAVE / AIFF | Microsoft RIFF WAVE; Apple AIFF 1.3 | — | embedded and separate audio files |
+| Premiere `.prproj` | no public specification; the author's [LLM Video Editor Python parser][python-parser] ([MIT][python-license]) and structural observations of user-owned gzip/XML project files; picture mappings additionally informed by existing FilmCraft PRs #1694 and #495 (see docs/premiere-import.md); no Adobe application code or proprietary documentation consulted | files written by Premiere Pro 25.5 and 25.6 | gzip envelope, object graph (`ObjectID` / `ObjectUID` / `ObjectRef` / `ObjectURef`), sequence identity, track groups and frame rate, clip source chains, exact ticks, media paths, caption text, static Motion `MatchName` / `ParameterID` |
+
+[python-parser]: https://github.com/willluecke/llm-video-editor/blob/1539ae2be12c0a783df86182dffb08dabef25ba1/src/video_pipeline/premiere.py
+[python-license]: https://github.com/willluecke/llm-video-editor/blob/1539ae2be12c0a783df86182dffb08dabef25ba1/LICENSE
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
 

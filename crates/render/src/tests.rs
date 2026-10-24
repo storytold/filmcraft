@@ -521,3 +521,42 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let all: Vec<i64> = (0..20).flat_map(|f| shown(&p, f, false)).collect();
     assert_eq!(all, (10..=29).rev().collect::<Vec<_>>());
 }
+
+#[test]
+fn one_sided_dips_use_the_entire_duration_on_cpu_and_gpu_plan() {
+    for effect in ["dip_to_black", "dip_to_white"] {
+        for incoming in [false, true] {
+            for reverse in [false, true] {
+                let (mut p, red, _, seq, map) = setup();
+                let clip = place(&mut p, seq, 0, red, 0, 48);
+                let r = FrameRate::FPS_24;
+                p.sequence_mut(seq).unwrap().video_tracks[0].transitions.push(filmcraft_project::Transition {
+                    id: filmcraft_project::TransitionId(999),
+                    effect: filmcraft_project::find_effect(effect).unwrap().instance(),
+                    start: Tick::ZERO,
+                    duration: r.tick_of(24),
+                    from: (!incoming).then_some(clip),
+                    to: incoming.then_some(clip),
+                    align: Default::default(),
+                    reverse,
+                });
+                for frame in [0, 6, 12, 18, 23] {
+                    let t = r.tick_of(frame);
+                    let progress = frame as f32 / 24.0;
+                    let amount = if incoming { progress } else { 1.0 - progress };
+                    let background = if effect == "dip_to_white" { 1.0 } else { 0.0 };
+                    let expected = [amount + background * (1.0 - amount), background * (1.0 - amount), background * (1.0 - amount), 1.0];
+                    let opts = RenderOptions { scale: 0.1, ..Default::default() };
+                    let cpu = render_sequence(&p, seq, t, opts, &map);
+                    let planned = plan::execute_cpu(&plan::plan_frame(&p, seq, t, opts, &map));
+                    for image in [cpu, planned] {
+                        let pixel = image.get(10, 10);
+                        for (got, want) in pixel.into_iter().zip(expected) {
+                            assert!((got - want).abs() < 0.001, "{effect}, incoming={incoming}, reverse={reverse}, frame={frame}: {pixel:?} != {expected:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
