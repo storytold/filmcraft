@@ -55,6 +55,7 @@ filmcraft-interchange = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
 # synthetic DNG footage for the Source Settings dialog test
 filmcraft-dng = { workspace = true, features = ["writer"] }
+tempfile = "3"
 
 # build.rs bakes contributors/contributors.json into the binary (About ▸ Contributors).
 [build-dependencies]

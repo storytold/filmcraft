@@ -12,7 +12,7 @@ workspace = true
 [features]
 default = []
 # Kokoro-82M neural voices on the CPU via candle (pure Rust). Off by default and in wasm builds.
-kokoro = ["dep:candle-core", "dep:candle-nn", "dep:zip", "dep:serde_json", "dep:filmcraft-tts-text", "dep:filmcraft-audio-dsp"]
+kokoro = ["dep:candle-core", "dep:candle-nn", "dep:zip", "dep:serde_json", "dep:sha2", "dep:filmcraft-tts-text", "dep:filmcraft-audio-dsp"]
 
 [dependencies]
 filmcraft-tts-text = { workspace = true, optional = true }
@@ -23,6 +23,7 @@ candle-core = { version = "0.9", default-features = false, optional = true }
 candle-nn = { version = "0.9", default-features = false, optional = true }
 zip = { version = "7", default-features = false, optional = true }
 serde_json = { workspace = true, optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [[example]]
 name = "kokoro_say"

@@ -11,6 +11,7 @@
 //! `FILMCRAFT_REQUIRE_ORACLES=1` is set (CI), which turns every skip into a failure.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 /// Environment variable that makes missing oracles a hard failure.
@@ -116,6 +117,19 @@ pub fn ffmpeg_or_skip(context: &str) -> Option<PathBuf> {
     tool_or_skip("ffmpeg", ffmpeg(), context)
 }
 
+/// Whether `ffmpeg -encoders` lists `encoder` (e.g. `libx265`): lets a test tell "this ffmpeg lacks the encoder"
+/// (skip) from "the encoder is there but failed" (a real failure).
+pub fn ffmpeg_has_encoder(ffmpeg: &Path, encoder: &str) -> bool {
+    let Ok(out) = Command::new(ffmpeg).args(["-hide_banner", "-encoders"]).stdin(Stdio::null()).output() else { return false };
+    encoders_output_lists(&String::from_utf8_lossy(&out.stdout), encoder)
+}
+
+/// Pure function of the `ffmpeg -encoders` output: whether `encoder` is one of the listed names.
+fn encoders_output_lists(output: &str, encoder: &str) -> bool {
+    // rows look like ` V....D libx264   libx264 H.264 …`; the name is the second whitespace-separated token
+    output.lines().any(|line| line.split_whitespace().nth(1) == Some(encoder))
+}
+
 /// ffprobe, or `None` after reporting a skip (see [`skip`]).
 pub fn ffprobe_or_skip(context: &str) -> Option<PathBuf> {
     tool_or_skip("ffprobe", ffprobe(), context)
@@ -177,12 +191,19 @@ pub fn ffmpeg_with_format_or_skip(context: &str, format_name: &str, min_version:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoder_lookup_matches_the_name_column_only() {
+        let out = " V....D libx264              libx264 H.264 / AVC\n V....D libx265              libx265 H.265 / HEVC (libx265)\n A....D aac                  AAC (libx264 inside)\n";
+        assert!(encoders_output_lists(out, "libx264"));
+        assert!(encoders_output_lists(out, "libx265"));
+        assert!(!encoders_output_lists(out, "libsvtav1"));
+        assert!(!encoders_output_lists(out, "H.264"));
+    }
     use std::ffi::OsString;
 
-    fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("filmcraft-testkit-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmpdir(_tag: &str) -> PathBuf {
+        tempfile::tempdir().unwrap().keep()
     }
 
     #[test]

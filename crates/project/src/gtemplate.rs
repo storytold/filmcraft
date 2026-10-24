@@ -35,6 +35,8 @@
 //! The built-in templates ([`builtin_templates`]) are original designs made for FilmCraft in code
 //! (no image, font or template files), under the project licence.
 
+use std::collections::{HashMap, HashSet};
+
 use filmcraft_geom::Vec2;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde::{Deserialize, Serialize};
@@ -278,24 +280,22 @@ impl GraphicsTemplate {
         if self.canvas[0] == 0 || self.canvas[1] == 0 || self.canvas[0] > 16384 || self.canvas[1] > 16384 {
             return bad(format!("bad canvas size {:?}", self.canvas));
         }
-        let mut uids = Vec::new();
+        let mut layers = HashMap::with_capacity(self.layers.len());
         for (i, l) in self.layers.iter().enumerate() {
             if !graphic::is_layer(l) {
                 return bad(format!("layer {i} is `{}`, not a graphic layer", l.effect));
             }
             let uid = layer_uid(l);
-            if uid == 0 || uids.contains(&uid) {
+            if uid == 0 || layers.insert(uid, l).is_some() {
                 return bad(format!("layer {i} has no unique uid"));
             }
-            uids.push(uid);
         }
-        let mut ids = Vec::new();
+        let mut ids = HashSet::with_capacity(self.controls.len());
         for c in &self.controls {
-            if c.id.is_empty() || ids.contains(&c.id) {
+            if c.id.is_empty() || !ids.insert(c.id.as_str()) {
                 return bad(format!("control `{}` has no unique id", c.name));
             }
-            ids.push(c.id.clone());
-            let Some(l) = self.layers.iter().find(|l| layer_uid(l) == c.layer) else {
+            let Some(l) = layers.get(&c.layer) else {
                 return bad(format!("control `{}` points at a missing layer", c.name));
             };
             if c.param != "enabled" && !l.params.contains_key(&c.param) {

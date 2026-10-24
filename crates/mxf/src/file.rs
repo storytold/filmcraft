@@ -1,6 +1,7 @@
 //! Opening an MXF file: KLV walk, partitions, metadata resolution, sample tables.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::essence::{Codec, PictureInfo, SoundFormat, SoundInfo, decode_pcm, identify_picture, sniff_picture};
 use crate::index::{IndexEntry, IndexSegment};
@@ -326,12 +327,13 @@ fn walk(src: &(impl ByteSource + ?Sized)) -> Result<WalkResult> {
     let mut win = Window { src, off: 0, buf: Vec::new() };
     let mut pos = run_in;
     let mut cur_meta: Option<usize> = None;
+    let mut resync_budget = 64 << 20;
     while pos + 17 <= len {
         let hdr = win.get(pos, 25)?.to_vec();
         let key = Ul(hdr[..16].try_into().unwrap_or([0; 16]));
         if !key.is_smpte() {
             // Lost sync (corrupt data): look for the next partition pack.
-            match resync(src, pos + 1, len)? {
+            match resync(src, pos + 1, len, &mut resync_budget)? {
                 Some(p) => {
                     w.warnings.push(format!("lost KLV sync at byte {pos}; resumed at {p}"));
                     pos = p;
@@ -417,12 +419,14 @@ fn is_essence_item(k: &Ul) -> bool {
     matches!(k.0[12], 0x05 | 0x06 | 0x07 | 0x15 | 0x16 | 0x17 | 0x18)
 }
 
-/// The next partition pack key at or after `from` (scans at most 16 MiB).
-fn resync(src: &(impl ByteSource + ?Sized), from: u64, len: u64) -> Result<Option<u64>> {
+/// The next partition pack key at or after `from` (scans at most 16 MiB and shares `budget`
+/// with every other recovery attempt in this file).
+fn resync(src: &(impl ByteSource + ?Sized), from: u64, len: u64, budget: &mut usize) -> Result<Option<u64>> {
     let mut at = from;
     let end = len.min(from + (16 << 20));
-    while at < end {
-        let chunk = read_upto(src, at, 1 << 20)?;
+    while at < end && *budget > 0 {
+        let chunk = read_upto(src, at, (1 << 20).min(*budget))?;
+        *budget = budget.saturating_sub(chunk.len());
         if chunk.len() < 16 {
             break;
         }
@@ -544,8 +548,8 @@ struct TrackRef {
     origin: i64,
     start_position: i64,
     duration: Option<i64>,
-    descriptor: Option<Set>,
-    sub_descriptors: Vec<Set>,
+    descriptor: Option<Arc<Set>>,
+    sub_descriptors: Vec<Arc<Set>>,
     body_sid: u32,
     index_sid: u32,
 }
@@ -567,9 +571,13 @@ fn resolve_tracks(md: &Metadata, warnings: &mut Vec<String>) -> (Vec<TrackRef>, 
     }
     let material = md.of_kind(st::MATERIAL_PACKAGE).next();
     let mut out = Vec::new();
+    let mut descriptor_cache: HashMap<[u8; 16], Arc<Set>> = HashMap::new();
+    let intern_descriptor = |set: &Set, cache: &mut HashMap<[u8; 16], Arc<Set>>| {
+        if set.instance_uid == [0; 16] { Arc::new(set.clone()) } else { cache.entry(set.instance_uid).or_insert_with(|| Arc::new(set.clone())).clone() }
+    };
     let mut timecode = material.and_then(|m| package_timecode(md, m));
     let name = material.and_then(|m| m.string(tag::PACKAGE_NAME));
-    let file_track = |pkg: &Set, kind: Option<TrackKind>, id: Option<u32>, start: i64, duration: Option<i64>, name: Option<String>| -> Option<TrackRef> {
+    let mut file_track = |pkg: &Set, kind: Option<TrackKind>, id: Option<u32>, start: i64, duration: Option<i64>, name: Option<String>| -> Option<TrackRef> {
         let umid = umid_of(pkg, tag::PACKAGE_UID).unwrap_or([0; 32]);
         for r in pkg.references(tag::PACKAGE_TRACKS) {
             let Some(t) = md.get(&r) else { continue };
@@ -588,10 +596,16 @@ fn resolve_tracks(md: &Metadata, warnings: &mut Vec<String>) -> (Vec<TrackRef>, 
                 continue;
             }
             let desc = descriptor_for(md, pkg, tid, tk);
-            let subs: Vec<Set> = desc
+            let descriptor = desc.map(|d| intern_descriptor(d, &mut descriptor_cache));
+            let subs: Vec<Arc<Set>> = desc
                 .and_then(|d| d.dynamic_item(&SUB_DESCRIPTORS_ITEM))
                 .map(|v| {
-                    crate::klv::batch_of(v).into_iter().filter_map(|b| b.get(..16)).filter_map(|b| md.get(&b.try_into().unwrap_or([0; 16]))).cloned().collect()
+                    crate::klv::batch_of(v)
+                        .into_iter()
+                        .filter_map(|b| b.get(..16))
+                        .filter_map(|b| md.get(&b.try_into().unwrap_or([0; 16])))
+                        .map(|s| intern_descriptor(s, &mut descriptor_cache))
+                        .collect()
                 })
                 .unwrap_or_default();
             let (body_sid, index_sid) = sids.get(&umid).copied().unwrap_or((0, 0));
@@ -604,7 +618,7 @@ fn resolve_tracks(md: &Metadata, warnings: &mut Vec<String>) -> (Vec<TrackRef>, 
                 origin: t.i(tag::ORIGIN).unwrap_or(0),
                 start_position: start,
                 duration,
-                descriptor: desc.cloned(),
+                descriptor,
                 sub_descriptors: subs,
                 body_sid,
                 index_sid,
@@ -807,7 +821,7 @@ fn build_track(
     };
     match r.kind {
         TrackKind::Picture => {
-            let pi = desc.map(picture_info).unwrap_or_default();
+            let pi = desc.map(|d| picture_info(d)).unwrap_or_default();
             let mpeg_desc = desc.is_some_and(|d| d.kind() == Some(st::MPEG2_VIDEO_DESCRIPTOR));
             let mut codec = identify_picture(pi.picture_coding, container, mpeg_desc);
             if r.sub_descriptors.iter().any(|s| s.kind() == Some(st::AVC_SUBDESCRIPTOR)) && !matches!(codec, Codec::Avc { .. }) {
@@ -832,7 +846,7 @@ fn build_track(
             build_pictures(src, &mut t, elements, index, warnings)?;
         }
         TrackKind::Sound => {
-            let si = desc.map(sound_info).unwrap_or(SoundInfo { channels: 1, bits: 16, ..Default::default() });
+            let si = desc.map(|d| sound_info(d)).unwrap_or(SoundInfo { channels: 1, bits: 16, ..Default::default() });
             let d10 = container.is_some_and(|c| c.item_starts_with(&[0x0D, 0x01, 0x03, 0x01, 0x02, 0x01]));
             let aes_element = d10 || key4[0] == 0x06 && key4[2] == 0x10;
             let pcm_desc = desc.is_some_and(|d| matches!(d.kind(), Some(st::AES3_DESCRIPTOR) | Some(st::WAVE_DESCRIPTOR)));

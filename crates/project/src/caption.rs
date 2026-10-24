@@ -239,25 +239,36 @@ pub fn plain_text(s: &str) -> String {
     while let Some(c) = chars.next() {
         match c {
             '<' => {
-                // a tag runs to the next '>' (if none, keep the '<' literally)
-                let rest: String = chars.clone().collect();
-                if let Some(end) = rest.find('>') {
-                    for _ in 0..rest[..=end].chars().count() {
-                        chars.next();
+                // A tag runs to the next '>'.  Scan forward once; preserving an unterminated
+                // tag as literal text must not rescan every later opening bracket.
+                let mut literal = String::new();
+                let mut closed = false;
+                for next in chars.by_ref() {
+                    if next == '>' {
+                        closed = true;
+                        break;
                     }
-                } else {
+                    literal.push(next);
+                }
+                if !closed {
                     out.push('<');
+                    out.push_str(&literal);
                 }
             }
             '{' if chars.peek() == Some(&'\\') => {
                 // SSA-style override blocks some SRT files carry: {\an8}
-                let rest: String = chars.clone().collect();
-                if let Some(end) = rest.find('}') {
-                    for _ in 0..rest[..=end].chars().count() {
-                        chars.next();
+                let mut literal = String::new();
+                let mut closed = false;
+                for next in chars.by_ref() {
+                    if next == '}' {
+                        closed = true;
+                        break;
                     }
-                } else {
+                    literal.push(next);
+                }
+                if !closed {
                     out.push('{');
+                    out.push_str(&literal);
                 }
             }
             '&' => {
@@ -298,6 +309,14 @@ mod tests {
         assert_eq!(plain_text("{\\an8}Top"), "Top");
         assert_eq!(plain_text("a < b"), "a < b");
         assert_eq!(plain_text("<v Bob>Hi</v>"), "Hi");
+    }
+
+    #[test]
+    fn malformed_caption_markup_is_preserved_without_repeated_suffix_scans() {
+        let angle = "<".repeat(10_000);
+        let ssa = format!("{{\\{}", "{".repeat(10_000));
+        assert_eq!(plain_text(&angle), angle);
+        assert_eq!(plain_text(&ssa), ssa);
     }
 
     #[test]

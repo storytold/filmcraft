@@ -1026,7 +1026,7 @@ fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
 
 /// Remember the Scratch Disks folders chosen in this session, so projects naming them may use
 /// them later (see [`trusted_scratch`]).
-fn remember_scratch_folders(s: &mut Session, dirs: &[String]) {
+pub(crate) fn remember_scratch_folders(s: &mut Session, dirs: &[String]) {
     const KEEP: usize = 64;
     let mut prefs = s.prefs.clone();
     let list = &mut prefs.auto_save.scratch_folders;
@@ -1075,12 +1075,10 @@ fn project_settings_scratch(s: &mut Session, p: &Value) -> Result<Value> {
             None => {}
             Some(Value::Null) => *slot = None,
             Some(Value::String(x)) if x.is_empty() || x.eq_ignore_ascii_case("same as project") => *slot = None,
-            Some(Value::String(x))
-                if matches!(crate::doc_path::resolve(x, s.path.as_deref().map(std::path::Path::new)), Err(crate::doc_path::NotFollowed::Refused(_))) =>
-            {
-                return Err(bad("file.projectSettings.scratchDisks", format!("`{k}` must be a folder on this computer, not a network share or device")));
-            }
             Some(Value::String(x)) => {
+                if let Err(crate::doc_path::NotFollowed::Refused(why)) = crate::doc_path::resolve(x, s.path.as_deref().map(std::path::Path::new)) {
+                    return Err(bad("file.projectSettings.scratchDisks", format!("`{k}` must be a folder on this computer: {why}")));
+                }
                 chosen.push(x.clone());
                 *slot = Some(x.clone());
             }

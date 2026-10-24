@@ -232,6 +232,10 @@ pub struct Playback {
     /// The audio clock's last reading and when (egui time, s) it last moved: a device that stops
     /// consuming samples hands the clock back to the wall clock (see [`AUDIO_STALL_S`]).
     audio_seen: (u64, f64),
+    /// When playback lost its output (a failed open or a dead stream), when it is opened again
+    /// (egui time, s; 0 = not retrying). Pause/play proves a fresh stream works, so a stream the
+    /// device keeps dropping is reopened on a timer (see [`AUDIO_RETRY_S`]).
+    audio_retry_at: f64,
     /// Audio underruns for the current (or last) play (desktop: sound is mixed ahead).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio_stats: std::sync::Arc<play_ahead::AudioStats>,
@@ -255,6 +259,11 @@ pub struct Playback {
 /// #136); playback must not freeze on it. Devices that are slow to start (Bluetooth) stay well
 /// under this.
 pub const AUDIO_STALL_S: f64 = 1.0;
+
+/// How often (s) playback re-opens the output after its stream or device failed, while playing
+/// goes on silently on the wall clock. Reopening is what pause/play does by hand; doing it on a
+/// timer brings the sound back when the device recovers (#2503).
+pub const AUDIO_RETRY_S: f64 = 2.0;
 
 /// How long `ui.screenshot` waits for the window to present the frame.
 const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
@@ -770,7 +779,7 @@ impl FilmcraftApp {
             let now = ctx.input(|i| i.time);
             self.playback.anchor_time = now;
             self.playback.audio_seen = (0, now);
-            self.start_audio();
+            self.start_audio(now);
         }
         if let Some(note) = self.audio.as_ref().and_then(|a| a.note()) {
             self.ui.status = note;
@@ -1002,6 +1011,7 @@ impl FilmcraftApp {
             a.stop();
         }
         self.playback.audio_clock = false;
+        self.playback.audio_retry_at = 0.0;
     }
 
     /// Start the clock (and audio) once the first frames are ready or the preroll timed out.
@@ -1010,7 +1020,7 @@ impl FilmcraftApp {
         self.playback.anchor_time = now;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.audio_seen = (0, now);
-        self.start_audio();
+        self.start_audio(now);
         // Audio Track Mixer: an automation pass runs while playing forward in real time
         if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
             let t = self.session.playhead();
@@ -1062,6 +1072,7 @@ impl FilmcraftApp {
         }
         self.scrub.device_stopped();
         self.playback.audio_clock = false;
+        self.playback.audio_retry_at = 0.0;
         if self.session.mixrec.active() {
             let t = self.session.playhead();
             if let Err(e) = self.session.execute("mixer.recordStop", json!({"time": t.0})) {
@@ -1072,7 +1083,7 @@ impl FilmcraftApp {
         panels::voiceover::on_stop(self);
     }
 
-    fn start_audio(&mut self) {
+    fn start_audio(&mut self, now: f64) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let start_tick = self.session.playhead();
         let Some(a) = self.audio.as_mut() else { return };
@@ -1081,6 +1092,7 @@ impl FilmcraftApp {
         // either the original rate conversion or pitch-corrected program audio.
         let Some((mix_rate, mix)) = shuttle::mix(&self.session, seq_id, sr, self.playback.speed) else {
             a.stop();
+            self.playback.audio_retry_at = 0.0;
             return;
         };
         let cursor = start_tick.to_units_floor(i64::from(mix_rate));
@@ -1100,6 +1112,7 @@ impl FilmcraftApp {
         match a.start(fill) {
             Ok(_) => {
                 self.playback.audio_clock = true;
+                self.playback.audio_retry_at = 0.0;
                 if let Some(note) = self.audio.as_ref().and_then(|audio| audio.note()) {
                     self.ui.status = note;
                 }
@@ -1107,6 +1120,7 @@ impl FilmcraftApp {
             Err(e) => {
                 log::warn!("audio output unavailable: {e}");
                 self.playback.audio_clock = false;
+                self.playback.audio_retry_at = now + AUDIO_RETRY_S;
             }
         }
     }
@@ -1129,6 +1143,15 @@ impl FilmcraftApp {
         if self.playback.anchor_time < 0.0 {
             self.playback.anchor_time = now;
         }
+        if !self.playback.audio_clock && self.playback.audio_retry_at > 0.0 && now >= self.playback.audio_retry_at {
+            // The output failed mid-play: open it again where the wall clock got to (what
+            // pause/play does by hand), so a recovering device brings the sound back.
+            self.playback.audio_retry_at = now + AUDIO_RETRY_S;
+            self.playback.anchor_tick = self.session.playhead();
+            self.playback.anchor_time = now;
+            self.playback.audio_seen = (0, now);
+            self.start_audio(now);
+        }
         let rate = self.session.sequence_rate();
         if self.playback.audio_clock
             && let Some(audio) = self.audio.as_mut()
@@ -1142,6 +1165,7 @@ impl FilmcraftApp {
             self.playback.anchor_tick = self.session.playhead();
             self.playback.anchor_time = now;
             self.playback.audio_clock = false;
+            self.playback.audio_retry_at = now + AUDIO_RETRY_S;
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
@@ -1821,7 +1845,8 @@ impl FilmcraftApp {
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
-                if self.control_input_only {
+                // control-only mode ignores native menu commands, but Quit stays available (#1943)
+                if self.control_input_only && id != "app.quit" {
                     continue;
                 }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
@@ -2477,7 +2502,7 @@ mod audio_recovery_tests {
     use super::*;
     use std::sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     struct Device {
@@ -2722,6 +2747,74 @@ mod audio_recovery_tests {
             shown <= second && shown + app.session.sequence_rate().frame_duration() > second,
             "the playhead follows the frames the device played: {shown:?}"
         );
+        app.stop();
+    }
+
+    /// A device whose stream dies mid-play (`ticking`) or whose open fails (`opens`).
+    struct Reviving {
+        starts: Arc<AtomicUsize>,
+        opens: Arc<AtomicBool>,
+        ticking: Arc<AtomicBool>,
+    }
+
+    impl AudioOut for Reviving {
+        fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            if self.opens.load(Ordering::Relaxed) { Ok(48_000) } else { Err("device unavailable".into()) }
+        }
+        fn stop(&mut self) {}
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+        fn played_frames(&self) -> Option<u64> {
+            self.ticking.load(Ordering::Relaxed).then_some(0)
+        }
+    }
+
+    #[test]
+    fn a_lost_output_is_reopened_and_the_sound_returns() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let ticking = Arc::new(AtomicBool::new(true));
+        app.audio = Some(Box::new(Reviving { starts: starts.clone(), opens: Arc::new(AtomicBool::new(true)), ticking: ticking.clone() }));
+        app.play(1.0);
+        app.end_preroll(0.0);
+        assert!(app.playback.audio_clock && starts.load(Ordering::Relaxed) == 1);
+        // the stream dies: the device stops reporting a playback clock
+        ticking.store(false, Ordering::Relaxed);
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!app.playback.audio_clock);
+        // the device recovers before the next retry: playback reopens it itself
+        ticking.store(true, Ordering::Relaxed);
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0 + AUDIO_RETRY_S + 0.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "the output is reopened without pause/play");
+        assert!(app.playback.audio_clock, "the fresh stream is the master clock again");
+        app.stop();
+    }
+
+    #[test]
+    fn a_device_that_appears_mid_playback_starts_sounding() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let opens = Arc::new(AtomicBool::new(false));
+        app.audio = Some(Box::new(Reviving { starts: starts.clone(), opens: opens.clone(), ticking: Arc::new(AtomicBool::new(true)) }));
+        app.play(1.0);
+        app.end_preroll(0.0);
+        assert!(!app.playback.audio_clock, "no device yet: playing on the wall clock");
+        // headphones plug in while playing: the next retry opens them
+        opens.store(true, Ordering::Relaxed);
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(AUDIO_RETRY_S + 0.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "the output is retried without pause/play");
+        assert!(app.playback.audio_clock);
         app.stop();
     }
 }

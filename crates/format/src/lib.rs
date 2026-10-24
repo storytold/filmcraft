@@ -52,7 +52,7 @@ use filmcraft_project::{Project, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use atomic::atomic_write;
+pub use atomic::{atomic_write, atomic_write_new};
 
 /// The `format` tag written in every envelope.
 pub const FORMAT_ID: &str = "filmcraft.project";
@@ -221,6 +221,17 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
 /// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
 /// structural rules such as overlaps are left to the editor, so projects that open today still open.
 fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
+    // Embedded LUT text is rendered on the hot path. Drop oversize entries at load time so a
+    // hostile project cannot retain an unrenderable multi-megabyte source or repeatedly offer it
+    // to renderers. Clips that refer to one simply have no LUT, like a deleted library entry.
+    let max_lut = filmcraft_project::MAX_LUT_TEXT_BYTES;
+    loaded.project.luts.retain(|lut| {
+        let keep = lut.text.len() <= max_lut;
+        if !keep {
+            log::warn!("LUT `{}`: {} bytes, dropping entry above {max_lut} byte limit", lut.name, lut.text.len());
+        }
+        keep
+    });
     // Out-of-range audio stream data is repaired, not refused: failing the load would lose the
     // whole project over one bad index. A media item keeps its first `MAX_AUDIO_STREAMS` streams; a
     // clip pointing past that plays stream 0.
@@ -228,9 +239,14 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
     for item in loaded.project.items.values_mut() {
         let name = item.name.clone();
         match &mut item.kind {
-            filmcraft_project::ItemKind::Media(m) if m.info.audio_streams.len() > max => {
-                log::warn!("media `{name}`: {} audio streams, keeping the first {max}", m.info.audio_streams.len());
-                m.info.audio_streams.truncate(max);
+            filmcraft_project::ItemKind::Media(m) => {
+                if let Some(video) = &m.info.video {
+                    filmcraft_project::validate_frame_size(video.width, video.height).map_err(|e| FormatError::Corrupt(format!("media `{name}`: {e}")))?;
+                }
+                if m.info.audio_streams.len() > max {
+                    log::warn!("media `{name}`: {} audio streams, keeping the first {max}", m.info.audio_streams.len());
+                    m.info.audio_streams.truncate(max);
+                }
             }
             filmcraft_project::ItemKind::Sequence(sequence) => {
                 let sequence = std::sync::Arc::make_mut(sequence);
@@ -248,6 +264,18 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
         if let filmcraft_project::ItemKind::Sequence(sequence) = &item.kind {
             sequence.check_bounds().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
         }
+    }
+    // Every new id is `next_id`, read from the file as is. One that lags behind the ids in it (an
+    // older build, a hand edit) would hand out an id in use, and the new item replace the old (#2809).
+    let project = &mut loaded.project;
+    let max = project.max_id();
+    let past = max.checked_add(1).ok_or_else(|| FormatError::Corrupt(format!("project ID space exhausted (id {max} in use)")))?;
+    if project.next_id < past {
+        log::warn!("next id {} is not past the largest id in the project, raised to {past}", project.next_id);
+        project.next_id = past;
+    }
+    if project.next_id > Project::MAX_NEXT_ID {
+        return Err(FormatError::Corrupt(format!("project ID space exhausted (next id {})", project.next_id)));
     }
     Ok(loaded)
 }
@@ -431,6 +459,20 @@ mod tests {
             assert!(!l.migrated());
             assert_eq!(l.generator.as_deref(), Some(generator().as_str()));
         }
+    }
+
+    #[test]
+    fn oversized_embedded_luts_are_dropped_on_load() {
+        let mut p = Project::new("LUT limit");
+        p.luts.push(filmcraft_project::ProjectLut {
+            id: "huge".into(),
+            name: "huge".into(),
+            source_path: None,
+            format: "cube".into(),
+            text: "#".repeat(filmcraft_project::MAX_LUT_TEXT_BYTES + 1).into(),
+        });
+        let loaded = decode(&encode(&p, false)).unwrap();
+        assert!(loaded.project.luts.is_empty());
     }
 
     /// What is open is stored beside the project. A file without it, or with one that cannot be

@@ -465,10 +465,11 @@ impl VideoSamples for MxfVideo<'_> {
         self.src.vpts[i]
     }
     fn sync_before(&self, i: usize) -> usize {
-        let key = self.src.file.tracks[self.track].sync_before(i);
         // a leading picture of an open GOP (stored after its random-access picture, shown
         // before it) is predicted from the previous GOP too
-        if key > 0 && i < self.src.vpts.len() && self.src.vpts[i] < self.src.vpts[key] { self.sync_before(key - 1) } else { key }
+        let track = &self.src.file.tracks[self.track];
+        let pts = &self.src.vpts;
+        crate::gop::open_gop_sync(i, |i| track.sync_before(i), |i, key| matches!((pts.get(i), pts.get(key)), (Some(a), Some(b)) if a < b))
     }
     fn sample_at(&self, t: i64) -> Option<usize> {
         usize::try_from(t).ok().and_then(|t| self.src.vorder.get(t).copied())

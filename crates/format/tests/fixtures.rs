@@ -35,7 +35,8 @@ fn v1_edit_loads_with_defaults_for_later_fields() {
     assert_eq!(l.schema_version, 1);
     let p = &l.project;
     assert_eq!(p.name, "Legacy Edit");
-    assert_eq!(p.next_id, 48);
+    // the file says 48, but its sequence marker is 800000: new ids start past it (#2809)
+    assert_eq!(p.next_id, 800_001);
     let media = p.item(ItemId(5)).unwrap();
     assert_eq!(media.name, "Ocean_Sunset.mp4");
     assert!(media.metadata.is_empty());
@@ -82,6 +83,20 @@ fn hostile_audio_stream_counts_and_indices_are_repaired_not_rejected() {
     media.info.audio_streams.resize(filmcraft_media::MAX_AUDIO_STREAMS + 1, stream);
     let loaded = decode(&encode(&p, false)).unwrap().project;
     assert_eq!(loaded.item(ItemId(5)).unwrap().as_media().unwrap().info.audio_streams.len(), filmcraft_media::MAX_AUDIO_STREAMS);
+}
+
+/// Persisted media metadata is used to allocate synthetic and offline source frames, so it must
+/// have the same bounded dimensions as a sequence before the project is opened.
+#[test]
+fn hostile_media_video_dimensions_are_rejected() {
+    let mut p = decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    let media = p.item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+    let video = media.info.video.as_mut().unwrap();
+    video.width = u32::MAX;
+    video.height = 1;
+
+    let err = decode(&encode(&p, false)).unwrap_err();
+    assert!(matches!(err, FormatError::Corrupt(ref message) if message.contains("media `Ocean_Sunset.mp4`") && message.contains("frame size")), "{err}");
 }
 
 /// Schema 8 (before M3.10): no time interpolation / Hold Filters / Field Options / source channels
@@ -219,6 +234,8 @@ fn v8_loads_without_transcripts_and_v9_roundtrips_them() {
     t.normalize();
     p.transcripts.insert(ItemId(7), std::sync::Arc::new(t));
     let again = decode(&encode(&p, true)).unwrap();
+    // the transcript's key is an id in use, so new ids start past it (#2809)
+    p.next_id = 8;
     assert!(!again.migrated());
     assert_eq!(again.project, p);
     assert_eq!(again.project.transcripts[&ItemId(7)].speakers[0].name, "Speaker 1");
@@ -295,4 +312,201 @@ fn raw_settings_roundtrip() {
     p.item_mut(filmcraft_project::ItemId(1)).and_then(|i| i.as_media_mut()).unwrap().interpret.raw = Some(s);
     let l = decode(&encode(&p, false)).unwrap();
     assert_eq!(l.project.item(filmcraft_project::ItemId(1)).and_then(|i| i.as_media()).unwrap().interpret.raw, Some(s));
+}
+
+/// #2809: `next_id` is read from the file, and nothing raised it past the ids already in it. A file
+/// whose `next_id` lagged behind (an older build, a hand edit, a merge) handed out an id in use, and
+/// the new item silently replaced the old one. Each kind of id is raised past on its own, so a kind
+/// the loader forgets fails here.
+#[test]
+fn next_id_is_raised_past_every_id_in_the_file() {
+    use filmcraft_project::{
+        BinId, Camera, Caption, CaptionFormat, CaptionTrack, Label, Marker, MarkerId, MarkerKind, MergedClip, MulticamSource, Narration, ProjectLut, SearchBin,
+        Track, TrackId, TrackKind, TrackSend, Transition, TransitionId,
+    };
+    const BIG: u64 = 5_000_000;
+    let base = decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    let seq = ItemId(21);
+    let marker = |id| Marker {
+        id: MarkerId(id),
+        start: Tick::ZERO,
+        duration: Tick::ZERO,
+        name: String::new(),
+        comment: String::new(),
+        kind: MarkerKind::Comment,
+        color: Label::Green,
+    };
+    let kinds: Vec<(&str, Box<dyn Fn(&mut Project)>)> = vec![
+        (
+            "item",
+            Box::new(|p| {
+                p.next_id = BIG;
+                p.add_item("Layer", Label::Iris, p.item(ItemId(5)).unwrap().kind.clone(), None);
+            }),
+        ),
+        (
+            "bin",
+            Box::new(|p| {
+                p.next_id = BIG;
+                p.add_bin("Bin", None);
+            }),
+        ),
+        ("search bin", Box::new(|p| p.search_bins.push(SearchBin { id: BinId(BIG), name: "Find".into(), query: Default::default() }))),
+        ("media marker", Box::new(move |p| p.item_mut(ItemId(5)).unwrap().as_media_mut().unwrap().markers.push(marker(BIG)))),
+        ("sequence marker", Box::new(move |p| p.sequence_mut(seq).unwrap().markers[0].id = MarkerId(BIG))),
+        ("track", Box::new(move |p| p.sequence_mut(seq).unwrap().audio_tracks[0].id = TrackId(BIG))),
+        ("submix track", Box::new(move |p| p.sequence_mut(seq).unwrap().submix_tracks.push(Track::new(TrackId(BIG), TrackKind::Audio, "Submix".into())))),
+        ("clip", Box::new(move |p| p.sequence_mut(seq).unwrap().video_tracks[0].items[0].id = ClipId(BIG))),
+        ("link", Box::new(move |p| p.sequence_mut(seq).unwrap().video_tracks[0].items[0].link = Some(BIG))),
+        ("group", Box::new(move |p| p.sequence_mut(seq).unwrap().video_tracks[0].items[0].group = Some(BIG))),
+        ("clip marker", Box::new(move |p| p.sequence_mut(seq).unwrap().video_tracks[0].items[0].markers.push(marker(BIG)))),
+        (
+            "transition",
+            Box::new(move |p| {
+                let s = p.sequence_mut(seq).unwrap();
+                let clip = s.video_tracks[0].items[0].clone();
+                let effect = clip.effects[0].clone();
+                s.video_tracks[0].transitions.push(Transition {
+                    id: TransitionId(BIG),
+                    effect,
+                    start: clip.start,
+                    duration: Tick::ZERO,
+                    from: None,
+                    to: Some(clip.id),
+                    align: Default::default(),
+                    reverse: false,
+                });
+            }),
+        ),
+        (
+            "caption track",
+            Box::new(move |p| p.sequence_mut(seq).unwrap().caption_tracks.push(CaptionTrack::new(TrackId(BIG), "Subtitle".into(), CaptionFormat::Subtitle))),
+        ),
+        (
+            "caption",
+            Box::new(move |p| {
+                let mut track = CaptionTrack::new(TrackId(7), "Subtitle".into(), CaptionFormat::Subtitle);
+                track.captions.push(Caption {
+                    id: ClipId(BIG),
+                    start: Tick::ZERO,
+                    duration: Tick(1),
+                    text: "Hi".into(),
+                    speaker: None,
+                    cue_id: None,
+                    settings: String::new(),
+                });
+                p.sequence_mut(seq).unwrap().caption_tracks.push(track);
+            }),
+        ),
+        (
+            "LUT",
+            Box::new(|p| p.luts.push(ProjectLut { id: format!("lut{BIG}"), name: "Look".into(), source_path: None, format: "cube".into(), text: "".into() })),
+        ),
+        // left behind by a deleted item: a new item must not take its id and inherit them
+        ("transcript", Box::new(|p| _ = p.transcripts.insert(ItemId(BIG), Default::default()))),
+        ("source graphic", Box::new(|p| _ = p.source_graphics.insert(ItemId(BIG), Default::default()))),
+        (
+            "narration",
+            Box::new(|p| {
+                let narration = Narration {
+                    text: "Hello".into(),
+                    language: "en-US".into(),
+                    voice: "basic-female".into(),
+                    pitch: Default::default(),
+                    pace: 1.0,
+                    speech_duration: Tick(1),
+                };
+                p.narrations.insert(ItemId(BIG), narration);
+            }),
+        ),
+        // only referenced, the target gone: a new item taking that id would be picked up by the reference
+        ("clip's item", Box::new(move |p| p.sequence_mut(seq).unwrap().video_tracks[0].items[0].item = ItemId(BIG))),
+        (
+            "subclip's parent",
+            Box::new(|p| {
+                let range = filmcraft_time::TimeRange::new(Tick::ZERO, Tick(1));
+                p.add_item("Subclip", Label::Iris, ItemKind::Subclip { parent: ItemId(BIG), range, restrict_trims: false }, None);
+            }),
+        ),
+        (
+            "transition's clip",
+            Box::new(move |p| {
+                let s = p.sequence_mut(seq).unwrap();
+                let clip = s.video_tracks[0].items[0].clone();
+                s.video_tracks[0].transitions.push(Transition {
+                    id: TransitionId(9),
+                    effect: clip.effects[0].clone(),
+                    start: clip.start,
+                    duration: Tick::ZERO,
+                    from: None,
+                    to: Some(ClipId(BIG)),
+                    align: Default::default(),
+                    reverse: false,
+                });
+            }),
+        ),
+        ("send target", Box::new(move |p| p.sequence_mut(seq).unwrap().audio_tracks[0].mixer.sends.push(TrackSend::new(TrackId(BIG))))),
+        ("track output", Box::new(move |p| p.sequence_mut(seq).unwrap().master_mixer.output = Some(TrackId(BIG)))),
+        (
+            "camera's source",
+            Box::new(move |p| {
+                let camera = Camera { name: "Cam 1".into(), video_track: None, audio_tracks: Vec::new(), enabled: true, source: Some(ItemId(BIG)) };
+                p.sequence_mut(seq).unwrap().multicam = Some(MulticamSource { cameras: vec![camera], ..Default::default() });
+            }),
+        ),
+        (
+            "camera's track",
+            Box::new(move |p| {
+                let camera = Camera { name: "Cam 1".into(), video_track: Some(TrackId(BIG)), audio_tracks: Vec::new(), enabled: true, source: None };
+                p.sequence_mut(seq).unwrap().multicam = Some(MulticamSource { cameras: vec![camera], ..Default::default() });
+            }),
+        ),
+        ("merged clip", Box::new(move |p| p.sequence_mut(seq).unwrap().merged = Some(MergedClip { audio: vec![ItemId(BIG)], ..Default::default() }))),
+    ];
+    for (kind, add) in &kinds {
+        let mut p = base.clone();
+        add(&mut p);
+        p.next_id = 1;
+        let loaded = decode(&encode(&p, false)).unwrap_or_else(|e| panic!("{kind}: {e}"));
+        assert_eq!(loaded.project.next_id, BIG + 1, "{kind}");
+    }
+}
+
+/// #2809: the case the issue describes. A file whose `next_id` names an item already in it: the next
+/// new item used to take that id and replace the item. It gets a fresh id, and both are still there
+/// after a save and a reload.
+#[test]
+fn a_new_item_never_replaces_one_from_a_file_with_a_stale_next_id() {
+    let mut p = decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    p.next_id = 5;
+    let mut p = decode(&encode(&p, false)).unwrap().project;
+    let before = p.items.len();
+    let kind = p.item(ItemId(5)).unwrap().kind.clone();
+    let new = p.add_item("Copy", filmcraft_project::Label::Iris, kind, None);
+    assert_ne!(new, ItemId(5));
+    assert_eq!(p.items.len(), before + 1, "a new item replaced an old one");
+    assert_eq!(p.item(ItemId(5)).unwrap().name, "Ocean_Sunset.mp4");
+    let again = decode(&encode(&p, false)).unwrap().project;
+    assert_eq!(again, p, "the round trip keeps both items and the raised next_id");
+    assert!(again.next_id > new.0);
+}
+
+/// #2809: ids past what can ever be allocated. The largest possible id has no successor, and a
+/// `next_id` that high overflows `alloc_id`; such a file is refused instead of panicking (debug) or
+/// wrapping to 0 (release) on the first new item.
+#[test]
+fn an_exhausted_id_space_is_refused_on_load() {
+    use filmcraft_project::MarkerId;
+    let base = decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    let mut p = base.clone();
+    p.sequence_mut(ItemId(21)).unwrap().markers[0].id = MarkerId(u64::MAX);
+    let e = decode(&encode(&p, false)).unwrap_err();
+    assert!(matches!(&e, FormatError::Corrupt(m) if m.contains("ID space exhausted")), "{e}");
+    let mut p = base.clone();
+    p.next_id = u64::MAX;
+    let e = decode(&encode(&p, false)).unwrap_err();
+    assert!(matches!(&e, FormatError::Corrupt(m) if m.contains("ID space exhausted")), "{e}");
+    let mut p = base;
+    p.next_id = Project::MAX_NEXT_ID;
+    assert_eq!(decode(&encode(&p, false)).unwrap().project.next_id, Project::MAX_NEXT_ID, "the last usable next_id still opens");
 }

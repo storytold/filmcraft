@@ -19,6 +19,15 @@ fn accel(s: &str) -> Option<Accelerator> {
     mapped.parse().ok()
 }
 
+/// The app menu's Quit item: the `app.quit` command (which asks to save unsaved changes) on its
+/// shortcut, Cmd+Q unless remapped in the Keyboard Shortcuts editor. The key equivalent is read
+/// once, when the menu bar is built: `app.quit` has no menu path, so it is not in the menu tree the
+/// updater receives, and a remap shows on the Quit item after the next launch.
+fn quit_item(app: &FilmcraftApp) -> (&'static str, Option<Accelerator>) {
+    let keys = app.session.shortcuts.primary("app.quit").unwrap_or_else(|| "Cmd+Q".into());
+    ("app.quit", accel(&keys))
+}
+
 /// Updates native item labels, key equivalents and enablement when the menu tree changes.
 pub type MenuUpdater = Box<dyn FnMut(&[Item])>;
 
@@ -53,9 +62,12 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
     let predefined = [
         (hide_label, PredefinedMenuItem::hide(Some(app.ui.language.tr(hide_label)))),
         (hide_others_label, PredefinedMenuItem::hide_others(Some(app.ui.language.tr(hide_others_label)))),
-        (quit_label, PredefinedMenuItem::quit(Some(app.ui.language.tr(quit_label)))),
     ];
-    let [(_, hide), (_, hide_others), (_, quit)] = &predefined;
+    let [(_, hide), (_, hide_others)] = &predefined;
+    // Quit is ours, not the predefined item: that one calls `terminate:` and skips the unsaved
+    // changes prompt (#1943); the `app.quit` command closes the window through it
+    let (quit_id, quit_accel) = quit_item(app);
+    let quit = MenuItem::with_id(quit_id, app.ui.language.tr(quit_label), true, quit_accel);
     let _ = app_menu.append_items(&[
         &about,
         &discord,
@@ -65,7 +77,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
         hide,
         hide_others,
         &PredefinedMenuItem::separator(),
-        quit,
+        &quit,
     ]);
     let _ = bar.append(&app_menu);
     for top in MENUS {
@@ -147,6 +159,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
         for (label, item) in &predefined {
             item.set_text(language.tr(label));
         }
+        quit.set_text(language.tr(quit_label));
         for (shown, mi) in &mut native {
             let Some(it) = items.iter().find(|i| i.id == shown.id) else { continue };
             if it.label != shown.label {
@@ -163,4 +176,21 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
         }
     });
     (rx, update)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_engine::Session;
+
+    /// #1943: Cmd+Q must reach the `app.quit` command, which closes the window through the unsaved
+    /// changes prompt, instead of the predefined Quit item's `terminate:`.
+    #[test]
+    fn quit_item_runs_the_app_quit_command_on_cmd_q() {
+        let app = FilmcraftApp::new(Session::default());
+        let (id, accelerator) = quit_item(&app);
+        assert_eq!(id, "app.quit");
+        assert_eq!(accelerator, accel("Cmd+Q"));
+        assert!(accelerator.is_some(), "Cmd+Q is a native key equivalent");
+    }
 }
