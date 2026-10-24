@@ -32,6 +32,8 @@ const DIVIDER_H: f32 = 5.0;
 const MASTER_H: f32 = 34.0;
 /// The selected gap between two clips (#648, #668).
 const GAP_FILL: Color32 = Color32::from_gray(224);
+/// The narrowest a selected gap is drawn, so a one-frame gap zoomed out still shows as a line.
+const GAP_MIN_W: f32 = 3.0;
 const SNAP_PX: f32 = 9.0;
 
 /// Waveform peaks are kept per audio stream: (item, index into the media's `audio_streams`).
@@ -502,16 +504,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         let p = painter.with_clip_rect(Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y)));
         let volume_line = r.kind == TrackKind::Audio && !r.lane;
-        // the selected gap (#648, #668): a light block across the empty time, as in Premiere Pro
-        if let Some(g) = app.session.state.gap_selection.filter(|g| g.track == r.track) {
-            let x0 = layout.x_of(g.range.start).max(content.min.x - 1.0);
-            let x1 = layout.x_of(g.range.end()).min(content.max.x + 1.0);
-            if x1 > x0 {
-                let gap = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1, r.rect.max.y - 1.0));
-                p.rect_filled(gap, 0.0, GAP_FILL);
-                app.auto.add("timeline.gap", gap.intersect(content), "Selected gap");
+        // the selected gap (#648, #668): a light block across the empty time, as in Premiere Pro.
+        // A gap narrower than GAP_MIN_W (a frame or two, zoomed out) still shows, as a thin line
+        // centred on it and drawn over the clips' edges after them.
+        let gap_block = app.session.state.gap_selection.filter(|g| g.track == r.track).and_then(|g| {
+            let (mut x0, mut x1) = (layout.x_of(g.range.start), layout.x_of(g.range.end()));
+            if x1 - x0 < GAP_MIN_W {
+                let mid = (x0 + x1) / 2.0;
+                (x0, x1) = (mid - GAP_MIN_W / 2.0, mid + GAP_MIN_W / 2.0);
             }
-        }
+            let (x0, x1) = (x0.max(content.min.x - 1.0), x1.min(content.max.x + 1.0));
+            (x1 > x0).then(|| Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1, r.rect.max.y - 1.0)))
+        });
         for it in &tr.items {
             let it = edited.get(&it.id).unwrap_or(it);
             let (start, dur, moved_track) = previews.get(&it.id).copied().unwrap_or((it.start, it.duration, None));
@@ -540,6 +544,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     app.auto.add(&format!("timeline.clip.{}.empty", it.id.0), er.intersect(content), "past the end of the nested sequence");
                 }
             }
+        }
+        if let Some(gap) = gap_block {
+            p.rect_filled(gap, 0.0, GAP_FILL);
+            app.auto.add("timeline.gap", gap.intersect(content), "Selected gap");
         }
         // items dragged onto this track from another
         for (cid, (start, dur, mt)) in &previews {
