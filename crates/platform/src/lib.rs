@@ -52,6 +52,11 @@ pub mod videotoolbox;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox_encode;
+/// Vulkan: the DMABUF import probe for the zero-copy path (64-bit Linux: the structure layouts
+/// are pinned against the LP64 C ABI, with 8-byte pointers).
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+#[allow(unsafe_code)]
+pub mod vulkan;
 
 pub use hybrid::HybridDecoder;
 
