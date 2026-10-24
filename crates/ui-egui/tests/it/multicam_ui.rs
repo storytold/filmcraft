@@ -11,7 +11,7 @@ use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
-use filmcraft_engine::project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+use filmcraft_engine::project::{ItemId, ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{DemoScene, Generator, MediaSource};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
@@ -388,6 +388,49 @@ fn multicam_view_pages_beyond_sixteen_angles_and_edit_cameras() {
     let mc = d.app().session.project.sequence(filmcraft_engine::project::ItemId(src)).unwrap().multicam.clone().unwrap();
     assert!(!mc.cameras[1].enabled);
     assert_eq!(d.exec("multicam.grid", json!({}))["angles"], 19);
+}
+
+/// #2241: Create Multi-Camera with Timecode groups the clips that share a Camera Label into one
+/// camera, and names the clips without timecode so they can be left out.
+#[test]
+fn create_multicam_groups_takes_by_camera_label() {
+    let (mut s, items) = session();
+    let rate = FrameRate::FPS_24;
+    let mut p = (*s.project).clone();
+    // Cam A and Cam B are two takes of camera "X" (B starts when A ends), Cam C is camera "Y",
+    // Cam D has no timecode
+    for (i, tc, label) in [(0, Some(86_400), "X"), (1, Some(86_400 + 96), "X"), (2, Some(86_400 + 24), "Y"), (3, None, "Z")] {
+        let it = p.item_mut(ItemId(items[i])).unwrap();
+        it.metadata.insert("Camera Label".into(), label.into());
+        it.as_media_mut().unwrap().info.start_timecode = tc;
+    }
+    s.project = Arc::new(p);
+    let mut d = Driver::new(s);
+    d.exec("project.select", json!({"items": items}));
+    d.ok("ui.menu.invoke", json!({"id": "clip.createMulticam"}));
+    d.frames(3);
+    // the grouping only applies to a timecode sync
+    d.click("mcam.method.audio");
+    d.click("mcam.group.cameraLabel");
+    assert_eq!(d.app().ui.sync_dialog.as_ref().unwrap().group, "none", "greyed out without timecode");
+    assert!(d.ids("mcam.noTimecode").is_empty());
+    d.click("mcam.method.timecode");
+    d.click("mcam.group.cameraLabel");
+    assert_eq!(d.app().ui.sync_dialog.as_ref().unwrap().group, "cameraLabel");
+    assert_eq!(d.ids("mcam.noTimecode").len(), 1, "Cam D is named");
+    d.click("mcam.excludeNoTimecode");
+    d.snapshot("multicam-group-dialog");
+    d.click("mcam.ok");
+    assert!(d.app().ui.sync_dialog.is_none(), "dialog closed: {}", d.app().ui.status);
+    let src = d.app().session.state.project_selection[0];
+    let q = d.app().session.project.sequence(src).unwrap().clone();
+    let mc = q.multicam.clone().unwrap();
+    assert_eq!(mc.cameras.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["X", "Y"]);
+    let x = &q.video_tracks[0];
+    assert_eq!(x.items.iter().map(|i| i.item.0).collect::<Vec<_>>(), [items[0], items[1]], "both takes on camera X");
+    assert_eq!(x.items[1].start - x.items[0].start, rate.tick_of(96));
+    assert_eq!(q.video_tracks[1].items[0].start - x.items[0].start, rate.tick_of(24));
+    assert!(q.video_tracks.iter().flat_map(|t| &t.items).all(|i| i.item.0 != items[3]), "Cam D was left out");
 }
 
 /// #1362: with nothing selected in the Project panel, Create Multi-Camera Source Sequence works on

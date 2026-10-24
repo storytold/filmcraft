@@ -70,6 +70,8 @@ pub struct SyncClip {
     pub out_point: Tick,
     /// Start timecode in ticks (0 when the media has none).
     pub timecode: Tick,
+    /// The media carries a start timecode (a `timecode` of 0 can be either).
+    pub has_timecode: bool,
     /// Clip markers: (media time, name).
     pub markers: Vec<(Tick, String)>,
 }
@@ -99,6 +101,7 @@ pub fn project_clip(p: &Project, item: ItemId) -> Option<SyncClip> {
         in_point,
         out_point,
         timecode: start_timecode(m),
+        has_timecode: m.info.start_timecode.is_some(),
         markers: m.markers.iter().map(|k| (k.start, k.name.clone())).collect(),
     })
 }
@@ -118,6 +121,7 @@ pub fn timeline_clip(p: &Project, ti: &TrackItem) -> SyncClip {
         in_point: range.start,
         out_point: range.end(),
         timecode: media.map(|(_, m, _)| start_timecode(m)).unwrap_or(Tick::ZERO),
+        has_timecode: media.is_some_and(|(_, m, _)| m.info.start_timecode.is_some()),
         markers,
     }
 }

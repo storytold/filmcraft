@@ -193,6 +193,39 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                             }
                         });
                     });
+                    // #2241: with timecode, clips that share a Camera Label / Angle are one camera
+                    let timecode = d.method == "timecode";
+                    ui.add_enabled_ui(timecode, |ui| {
+                        ui.group(|ui| {
+                            ui.set_min_width(400.0);
+                            ui.label(RichText::new(tl!("Group Clips into Cameras")).strong());
+                            ui.horizontal(|ui| {
+                                for (a, label) in [("none", tl!("None")), ("cameraLabel", tl!("Camera Label")), ("cameraAngle", tl!("Camera Angle"))] {
+                                    let r = ui.radio(d.group == a, label);
+                                    push(&mut elems, format!("mcam.group.{a}"), &r, label);
+                                    if r.clicked() {
+                                        d.group = a.into();
+                                    }
+                                }
+                            });
+                            let missing: Vec<&str> = d
+                                .items
+                                .iter()
+                                .filter_map(|i| {
+                                    let it = app.session.project.item(ItemId(*i))?;
+                                    let (_, m, _) = app.session.project.resolve_media(it.id)?;
+                                    m.info.start_timecode.is_none().then_some(it.name.as_str())
+                                })
+                                .collect();
+                            if timecode && !missing.is_empty() {
+                                let warn = tlf!("No timecode: {names}", names = missing.join(", "));
+                                let r = ui.colored_label(Color32::from_rgb(0xe0, 0xb0, 0x5a), warn.clone());
+                                push(&mut elems, "mcam.noTimecode", &r, warn);
+                                let r = ui.checkbox(&mut d.exclude_no_timecode, tl!("Leave out clips without timecode"));
+                                push(&mut elems, "mcam.excludeNoTimecode", &r, "Leave out clips without timecode");
+                            }
+                        });
+                    });
                     let r = ui.checkbox(&mut d.processed_bin, tl!("Move source clips to Processed Clips bin"));
                     push(&mut elems, "mcam.processedBin", &r, "Move source clips to Processed Clips bin");
                 }
@@ -244,6 +277,10 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     p["audio"] = json!(d.audio);
                     p["cameraNames"] = json!(d.camera_names);
                     p["processedBin"] = json!(d.processed_bin);
+                    if d.method == "timecode" {
+                        p["group"] = json!(d.group);
+                        p["excludeNoTimecode"] = json!(d.exclude_no_timecode);
+                    }
                     if !d.name.is_empty() {
                         p["name"] = json!(d.name);
                     }

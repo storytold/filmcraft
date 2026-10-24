@@ -158,7 +158,7 @@ fn base_commands() -> Vec<CommandSpec> {
             "clip.createMulticam",
             "Create Multi-Camera Source Sequence…",
             &["Clip"],
-            r#"{"items":[id]?,"name":str?,"method":"in|out|timecode|marker|audio","ignoreHours":bool?,"marker":str?,"offset":frames?,"audio":"camera1|all|switch","cameraNames":"clip|track|metadata","processedBin":bool?,"reference":item?}"#,
+            r#"{"items":[id]?,"name":str?,"method":"in|out|timecode|marker|audio","ignoreHours":bool?,"marker":str?,"offset":frames?,"audio":"camera1|all|switch","cameraNames":"clip|track|metadata","processedBin":bool?,"reference":item?,"group":"none|cameraLabel|cameraAngle"?,"excludeNoTimecode":bool?}"#,
             has_items,
             create_multicam,
             true,
@@ -590,16 +590,111 @@ fn merge_clips(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"item": id.0, "clips": rep}))
 }
 
+/// Metadata field that groups clips into cameras ("group": cameraLabel | cameraAngle).
+fn group_p(p: &Value, cmd: &str) -> Result<Option<&'static str>> {
+    match str_p(p, "group") {
+        None | Some("none") => Ok(None),
+        Some("cameraLabel" | "label" | "Camera Label") => Ok(Some("Camera Label")),
+        Some("cameraAngle" | "angle" | "Camera Angle") => Ok(Some("Camera Angle")),
+        Some(o) => Err(bad(cmd, format!("unknown grouping `{o}` (none, cameraLabel, cameraAngle)"))),
+    }
+}
+
+/// One camera of a new multi-camera source sequence: its name and the clips (indices) on it.
+struct CamPlan {
+    name: String,
+    /// The metadata value the clips share (None: one clip of its own).
+    key: Option<String>,
+    video: bool,
+    audio: bool,
+    clips: Vec<usize>,
+}
+
+/// Group `clips` into cameras. Without a field every clip is a camera; with one, clips whose
+/// `field` has the same (non-empty) value share a camera, laid out on one video and one audio
+/// track at their own synchronised times. A clip that would overlap another on its camera's tracks
+/// gets a camera of its own with the same value ("Name (2)"), and a clip without the value is a
+/// camera by itself, so nothing is ever dropped or stacked.
+fn plan_cameras(project: &Project, clips: &[SyncClip], starts: &[Tick], flags: &[(bool, bool)], field: Option<&str>, names_mode: &str) -> Vec<CamPlan> {
+    let key = |c: &SyncClip| -> Option<String> {
+        let f = field?;
+        project.item(c.item).and_then(|i| i.metadata.get(f)).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    };
+    let span = |k: usize| (starts[k], Tick(starts[k].0.saturating_add(clips[k].range.duration.0)));
+    let mut cams: Vec<CamPlan> = Vec::new();
+    for (k, c) in clips.iter().enumerate() {
+        let (hv, ha) = flags[k];
+        let kv = key(c);
+        let (s0, e0) = span(k);
+        let fits = |cam: &CamPlan| {
+            cam.key.is_some()
+                && cam.key == kv
+                && cam.clips.iter().all(|&j| {
+                    let (s1, e1) = span(j);
+                    let shares = (hv && flags[j].0) || (ha && flags[j].1);
+                    !shares || e0 <= s1 || e1 <= s0
+                })
+        };
+        match cams.iter_mut().find(|cam| fits(cam)) {
+            Some(cam) => {
+                cam.clips.push(k);
+                cam.video |= hv;
+                cam.audio |= ha;
+            }
+            None => {
+                let n = cams.len() + 1;
+                let name = match (&kv, names_mode) {
+                    (_, "track" | "tracks" | "trackname" | "trackNames" | "enumerate") => format!("Camera {n}"),
+                    (Some(v), _) => match cams.iter().filter(|cam| cam.key.as_deref() == Some(v.as_str())).count() {
+                        0 => v.clone(),
+                        m => format!("{v} ({})", m + 1),
+                    },
+                    (None, mode) => camera_name(project, c.item, mode, n),
+                };
+                cams.push(CamPlan { name, key: kv, video: hv, audio: ha, clips: vec![k] });
+            }
+        }
+    }
+    // cameras with video first, as without grouping; enumerated names follow that order
+    cams.sort_by_key(|cam| !cam.video);
+    if matches!(names_mode, "track" | "tracks" | "trackname" | "trackNames" | "enumerate") {
+        for (i, cam) in cams.iter_mut().enumerate() {
+            cam.name = format!("Camera {}", i + 1);
+        }
+    }
+    cams
+}
+
 fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "clip.createMulticam";
     let method = method_p(p, cmd)?;
+    let group = group_p(p, cmd)?;
+    let by_timecode = matches!(method, Method::Timecode { .. });
+    if group.is_some() && !by_timecode {
+        return Err(bad(cmd, "grouping clips into cameras needs Timecode as the sync point"));
+    }
     let mut clips = sync_items(s, &items_p(s, p), cmd)?;
-    let has_v = |s: &Session, c: &SyncClip| s.project.item(c.item).is_some_and(|i| i.has_video());
-    let has_a = |s: &Session, c: &SyncClip| s.project.item(c.item).is_some_and(|i| i.has_audio());
+    // clips without a start timecode: listed in the result, or left out with `excludeNoTimecode`
+    let no_timecode: Vec<String> = if by_timecode { clips.iter().filter(|c| !c.has_timecode).map(|c| c.name.clone()).collect() } else { Vec::new() };
+    let exclude = by_timecode && bool_p(p, "excludeNoTimecode").unwrap_or(false);
+    // the items left out, by id (names can repeat)
+    let excluded: Vec<ItemId> = if exclude { clips.iter().filter(|c| !c.has_timecode).map(|c| c.item).collect() } else { Vec::new() };
+    if exclude {
+        clips.retain(|c| c.has_timecode);
+    }
+    // a subclip has what its media has (a take cut from a camera file keeps its sound)
+    let has_v = |s: &Session, c: &SyncClip| match s.project.resolve_media(c.item) {
+        Some((_, m, _)) => m.info.has_video(),
+        None => s.project.item(c.item).is_some_and(|i| i.has_video()),
+    };
+    let has_a = |s: &Session, c: &SyncClip| match s.project.resolve_media(c.item) {
+        Some((_, m, _)) => m.info.has_audio(),
+        None => s.project.item(c.item).is_some_and(|i| i.has_audio()),
+    };
     // cameras with video first (selection order), then audio-only sources
     clips.sort_by_key(|c| !has_v(s, c));
     if !clips.iter().any(|c| has_v(s, c)) {
-        return Err(bad(cmd, "select at least one clip with video"));
+        return Err(bad(cmd, if exclude { "no selected clip with video has a timecode" } else { "select at least one clip with video" }));
     }
     let names_mode = str_p(p, "cameraNames").unwrap_or("clip").to_string();
     if names_mode == "metadata" {
@@ -610,7 +705,15 @@ fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
         clips = v.into_iter().map(|x| x.2).collect();
     }
     let reference = match item_p(p, "reference") {
-        Some(r) => clips.iter().position(|c| c.item == r).ok_or_else(|| bad(cmd, "`reference` is not among the items"))?,
+        Some(r) => clips.iter().position(|c| c.item == r).ok_or_else(|| {
+            // left out on purpose: say why rather than that it isn't there
+            let name = s.project.item(r).map(|i| i.name.clone()).unwrap_or_default();
+            if excluded.contains(&r) {
+                bad(cmd, format!("the reference clip {name} has no timecode, so excludeNoTimecode left it out"))
+            } else {
+                bad(cmd, "`reference` is not among the items")
+            }
+        })?,
         None => 0,
     };
     let audio = match str_p(p, "audio") {
@@ -621,13 +724,23 @@ fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
     let rate = settings.frame_rate;
     let anchors = sync::anchors(s, &clips, reference, &method, offset_p(p, rate))?;
     let starts = sync::placements(&clips, &anchors, rate, false);
-    let rep = sync::report(&clips, &anchors, &starts, rate);
+    let mut rep = sync::report(&clips, &anchors, &starts, rate);
     let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("{} Multicam", clips[reference].name));
     let move_processed = bool_p(p, "processedBin").unwrap_or(false);
     let flags: Vec<(bool, bool)> = clips.iter().map(|c| (has_v(s, c), has_a(s, c))).collect();
-    let names: Vec<String> = clips.iter().enumerate().map(|(i, c)| camera_name(&s.project, c.item, &names_mode, i + 1)).collect();
-    let nv = flags.iter().filter(|f| f.0).count();
-    let na = flags.iter().filter(|f| f.1).count();
+    let plan = plan_cameras(&s.project, &clips, &starts, &flags, group, &names_mode);
+    let names: Vec<String> = plan.iter().map(|cam| cam.name.clone()).collect();
+    if let Some(rows) = rep.as_array_mut() {
+        for cam in &plan {
+            for &k in &cam.clips {
+                if let Some(r) = rows.get_mut(k) {
+                    r["camera"] = json!(cam.name);
+                }
+            }
+        }
+    }
+    let nv = plan.iter().filter(|cam| cam.video).count();
+    let na = plan.iter().filter(|cam| cam.audio).count();
     let id = s.edit("Create Multi-Camera Source Sequence", |pr, st| {
         let sid = pr.new_sequence(&name, settings.clone(), nv, na.max(1), None);
         let mut cameras = Vec::new();
@@ -637,22 +750,31 @@ fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
             let q = pr.sequence(sid).ok_or(EngineError::NoSequence)?;
             (q.video_tracks.iter().map(|t| t.id).collect(), q.audio_tracks.iter().map(|t| t.id).collect())
         };
-        for (k, c) in clips.iter().enumerate() {
-            let (hv, ha) = flags[k];
-            let link = (hv && ha).then(|| pr.alloc_id());
-            let mut cam = Camera { name: names[k].clone(), video_track: None, audio_tracks: Vec::new(), enabled: true, source: Some(c.item) };
-            if hv {
-                let mut v = placed_item(pr, c.item, TrackKind::Video, starts[k], c.range, &settings).ok_or_else(|| bad(cmd, "bad clip"))?;
-                v.link = link;
-                placed.push((TrackKind::Video, vi, v));
-                cam.video_track = Some(vtracks[vi]);
+        for cam_plan in &plan {
+            let first = cam_plan.clips.first().map(|&k| clips[k].item);
+            let mut cam = Camera { name: cam_plan.name.clone(), video_track: None, audio_tracks: Vec::new(), enabled: true, source: first };
+            let (v_at, a_at) = (cam_plan.video.then_some(vi), cam_plan.audio.then_some(ai));
+            for &k in &cam_plan.clips {
+                let c = &clips[k];
+                let (hv, ha) = flags[k];
+                let link = (hv && ha).then(|| pr.alloc_id());
+                if let (true, Some(t)) = (hv, v_at) {
+                    let mut v = placed_item(pr, c.item, TrackKind::Video, starts[k], c.range, &settings).ok_or_else(|| bad(cmd, "bad clip"))?;
+                    v.link = link;
+                    placed.push((TrackKind::Video, t, v));
+                }
+                if let (true, Some(t)) = (ha, a_at) {
+                    let mut a = placed_item(pr, c.item, TrackKind::Audio, starts[k], c.range, &settings).ok_or_else(|| bad(cmd, "bad clip"))?;
+                    a.link = link;
+                    placed.push((TrackKind::Audio, t, a));
+                }
+            }
+            if let Some(t) = v_at {
+                cam.video_track = vtracks.get(t).copied();
                 vi += 1;
             }
-            if ha {
-                let mut a = placed_item(pr, c.item, TrackKind::Audio, starts[k], c.range, &settings).ok_or_else(|| bad(cmd, "bad clip"))?;
-                a.link = link;
-                placed.push((TrackKind::Audio, ai, a));
-                cam.audio_tracks.push(atracks[ai]);
+            if let Some(t) = a_at {
+                cam.audio_tracks.extend(atracks.get(t).copied());
                 ai += 1;
             }
             cameras.push(cam);
@@ -660,7 +782,12 @@ fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
         {
             let q = pr.sequence_mut(sid).ok_or(EngineError::NoSequence)?;
             for (kind, idx, it) in placed {
-                q.tracks_mut(kind)[idx].items.push(it);
+                if let Some(tr) = q.tracks_mut(kind).get_mut(idx) {
+                    tr.items.push(it);
+                }
+            }
+            for tr in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
+                tr.items.sort_by_key(|it| it.start);
             }
             for cam in &cameras {
                 if let Some(vt) = cam.video_track.and_then(|id| q.video_tracks.iter_mut().find(|x| x.id == id)) {
@@ -690,7 +817,7 @@ fn create_multicam(s: &mut Session, p: &Value) -> Result<Value> {
         st.project_selection = vec![sid];
         Ok(sid)
     })?;
-    Ok(json!({"sequence": id.0, "cameras": names, "clips": rep}))
+    Ok(json!({"sequence": id.0, "cameras": names, "clips": rep, "noTimecode": no_timecode, "excluded": if exclude { no_timecode.len() } else { 0 }}))
 }
 
 // ---------------------------------------------------------------- multi-camera clips
