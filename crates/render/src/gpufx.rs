@@ -106,6 +106,18 @@ pub enum FxOp {
         dy: f32,
         steps: u32,
     },
+    /// Bokeh Blur: `levels` halvings of the working image, highlights boosted (`boost` × a
+    /// smoothstep from `threshold`), an iris-shaped gather of `rings` rings out to radius `rr`
+    /// (`sides` 0 = circle, rotated by `rot` radians), then scaled back up. `rings` 0: no-op.
+    Bokeh {
+        levels: u32,
+        boost: f32,
+        threshold: f32,
+        sides: u32,
+        rot: f32,
+        rr: f32,
+        rings: u32,
+    },
     /// Unsharp mask over a repeat-edge Gaussian of the given box radii (per axis).
     Unsharp {
         rx: Vec<u32>,
@@ -219,6 +231,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "camera_blur",
     "directional_blur",
     "directional_blur_legacy",
+    "bokeh_blur",
     "sharpen",
     "unsharp_mask",
     "crop",
@@ -352,6 +365,29 @@ impl FxOp {
                 } else {
                     let steps = (len.ceil() as usize).clamp(2, 64) as u32;
                     FxOp::DirectionalBlur { dx: (dir.sin() as f32) * len, dy: (-dir.cos() as f32) * len, steps }
+                }
+            }
+            "bokeh_blur" => {
+                let r = f(e, "amount", cx) * cx.px_scale;
+                if !r.is_finite() || r < 0.5 {
+                    return Some(FxOp::Bokeh { levels: 0, boost: 0.0, threshold: 0.0, sides: 0, rot: 0.0, rr: 0.0, rings: 0 });
+                }
+                // Large radii work on a halved (and halved again…) image: the result is smooth.
+                let (mut ww, mut wh, mut down, mut levels) = (w, h, 1.0f32, 0u32);
+                while r / down > 12.0 && ww >= 8 && wh >= 8 {
+                    (ww, wh) = ((ww / 2).max(1), (wh / 2).max(1));
+                    down *= 2.0;
+                    levels += 1;
+                }
+                let rr = r / down;
+                FxOp::Bokeh {
+                    levels,
+                    boost: f(e, "highlight", cx) / 100.0 * 6.0,
+                    threshold: f(e, "threshold", cx) / 100.0,
+                    sides: [0u32, 3, 4, 5, 6, 8][crate::vfx::chv(e, "shape").min(5) as usize],
+                    rot: f(e, "rotation", cx).to_radians(),
+                    rr,
+                    rings: (rr.ceil() as usize).clamp(1, 12) as u32,
                 }
             }
             "sharpen" => {
@@ -605,6 +641,7 @@ impl FxOp {
             FxOp::Posterize { n } => n.is_finite(),
             FxOp::Gaussian { .. } => true,
             FxOp::DirectionalBlur { dx, dy, .. } => fin(&[*dx, *dy]),
+            FxOp::Bokeh { boost, threshold, sides, rot, rr, rings, .. } => fin(&[*boost, *threshold, *rot, *rr]) && *sides <= 8 && *rings <= 12,
             FxOp::Unsharp { amount, threshold, .. } => fin(&[*amount, *threshold]),
             FxOp::Crop { x0, x1, y0, y1, feather } => fin(&[*x0, *x1, *y0, *y1, *feather]),
             FxOp::Resample(r) => {
@@ -778,6 +815,11 @@ impl FxOp {
             }
             FxOp::Gaussian { rx, ry, repeat } => crate::effects::box_blur(img, rx, ry, *repeat),
             FxOp::DirectionalBlur { dx, dy, steps } => crate::effects::directional_taps(img, *dx, *dy, *steps as usize),
+            FxOp::Bokeh { levels, boost, threshold, sides, rot, rr, rings } => {
+                if *rings > 0 {
+                    crate::vfx::bokeh(img, *levels, *boost, *threshold, *sides, *rot, *rr, *rings);
+                }
+            }
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
             FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
             FxOp::Resample(r) => {

@@ -157,6 +157,12 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("directional_blur", vec![("length", fl(10.0)), ("direction", fl(30.0))], false),
         ("directional_blur", vec![("length", fl(0.2))], false),
         ("directional_blur", vec![("length", fl(1000.0)), ("direction", fl(-100.0))], false),
+        ("bokeh_blur", vec![("amount", fl(0.2))], false),
+        ("bokeh_blur", vec![("amount", fl(3.0)), ("shape", ch(0)), ("highlight", fl(0.0))], false),
+        ("bokeh_blur", vec![("amount", fl(11.0)), ("shape", ch(4)), ("rotation", fl(20.0))], false),
+        ("bokeh_blur", vec![("amount", fl(30.0)), ("shape", ch(1)), ("rotation", fl(-75.0)), ("highlight", fl(100.0)), ("threshold", fl(40.0))], false),
+        ("bokeh_blur", vec![("amount", fl(60.0)), ("shape", ch(5)), ("highlight", fl(300.0)), ("threshold", fl(0.0))], false),
+        ("bokeh_blur", vec![("amount", fl(500.0)), ("shape", ch(2))], false),
         ("sharpen", vec![("amount", fl(80.0))], false),
         ("sharpen", vec![("amount", fl(4000.0))], false),
         ("unsharp_mask", vec![("amount", fl(150.0)), ("radius", fl(3.0)), ("threshold", fl(10.0))], true),
@@ -455,6 +461,8 @@ fn hostile_parameters_are_bounded() {
         effect("brightness_contrast", &[("brightness", fl(f64::NAN))]),
         effect("gaussian_blur", &[("blurriness", fl(f64::INFINITY))]),
         effect("directional_blur", &[("length", fl(f64::NAN))]),
+        effect("bokeh_blur", &[("rotation", fl(f64::NAN))]),
+        effect("bokeh_blur", &[("highlight", fl(f64::INFINITY))]),
         effect("transform", &[("rotation", fl(f64::NAN))]),
         effect("crop", &[("left", fl(f64::NAN))]),
         effect("offset", &[("shift", pt(f64::INFINITY, 0.0))]),
@@ -504,6 +512,8 @@ fn hostile_parameters_are_bounded() {
         FxOp::eval(&effect("gaussian_blur", &[("blurriness", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
         FxOp::eval(&effect("unsharp_mask", &[("radius", fl(1e30)), ("amount", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
         FxOp::eval(&effect("directional_blur", &[("length", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
+        FxOp::eval(&effect("bokeh_blur", &[("amount", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
+        FxOp::eval(&effect("bokeh_blur", &[("amount", fl(f64::NAN))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
     ];
     let t0 = std::time::Instant::now();
     let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, ops }).expect("effect image");

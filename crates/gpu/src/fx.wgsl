@@ -50,6 +50,10 @@ const OP_MIRROR: u32 = 28u;
 const OP_OFFSET: u32 = 29u;
 const OP_VIDEO_LIMITER: u32 = 30u;
 const OP_LUMETRI: u32 = 31u;
+const OP_BOKEH_DOWN: u32 = 32u;
+const OP_BOKEH_BOOST: u32 = 33u;
+const OP_BOKEH: u32 = 34u;
+const OP_BOKEH_UP: u32 = 35u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -104,6 +108,134 @@ fn sample_clamped(x: f32, y: f32) -> vec4<f32> {
     let top = a + (b - a) * tx;
     let bot = c + (d - c) * tx;
     return top + (bot - top) * ty;
+}
+
+// ---- Bokeh Blur works on the top-left `r` pixels of the textures (the halved image)
+
+// `Image::get_clamped` within `r`
+fn ld_in(p: vec2<i32>, r: vec2<i32>) -> vec4<f32> {
+    return textureLoad(src, clamp(p, vec2(0), r - 1), 0);
+}
+
+// `Image::sample_bilinear_clamped` within `r`
+fn sample_clamped_in(x: f32, y: f32, r: vec2<i32>) -> vec4<f32> {
+    let fx = clamp(x - 0.5, 0.0, f32(r.x) - 1.0);
+    let fy = clamp(y - 0.5, 0.0, f32(r.y) - 1.0);
+    let x0 = i32(floor(fx));
+    let y0 = i32(floor(fy));
+    let x1 = min(x0 + 1, r.x - 1);
+    let y1 = min(y0 + 1, r.y - 1);
+    let tx = fx - f32(x0);
+    let ty = fy - f32(y0);
+    let a = ld(vec2(x0, y0));
+    let b = ld(vec2(x1, y0));
+    let c = ld(vec2(x0, y1));
+    let d = ld(vec2(x1, y1));
+    let top = a + (b - a) * tx;
+    let bot = c + (d - c) * tx;
+    return top + (bot - top) * ty;
+}
+
+// `Image::get_or_clear` within `r`
+fn ld_or_clear_in(p: vec2<i32>, r: vec2<i32>) -> vec4<f32> {
+    if p.x < 0 || p.y < 0 || p.x >= r.x || p.y >= r.y {
+        return vec4(0.0);
+    }
+    return textureLoad(src, p, 0);
+}
+
+// `Image::sample_bilinear` within `r`
+fn sample_bilinear_in(x: f32, y: f32, r: vec2<i32>) -> vec4<f32> {
+    let fx = x - 0.5;
+    let fy = y - 0.5;
+    let x0 = floor(fx);
+    let y0 = floor(fy);
+    let tx = fx - x0;
+    let ty = fy - y0;
+    let i = vec2<i32>(i32(x0), i32(y0));
+    let a = ld_or_clear_in(i, r);
+    let b = ld_or_clear_in(i + vec2(1, 0), r);
+    let c = ld_or_clear_in(i + vec2(0, 1), r);
+    let d = ld_or_clear_in(i + vec2(1, 1), r);
+    let top = a + (b - a) * tx;
+    let bot = c + (d - c) * tx;
+    return top + (bot - top) * ty;
+}
+
+// `vfx::blur::poly_radius`: radius of a regular `n`-gon (circumradius 1, rotated by `rot`) in
+// direction `theta`; n = 0 is a circle.
+fn poly_radius(n: u32, theta: f32, rot: f32) -> f32 {
+    if n == 0u {
+        return 1.0;
+    }
+    let seg = 6.2831855 / f32(n);
+    var m = (theta - rot) % seg;
+    if m < 0.0 {
+        m += seg;
+    }
+    let a = m - seg / 2.0;
+    return cos(3.1415927 / f32(n)) / cos(a);
+}
+
+// Bokeh Blur's passes (`vfx::bokeh`); i1.xy = the size of the image they read.
+fn bokeh(op: u32, p: vec2<i32>) -> vec4<f32> {
+    let r = vec2<i32>(i32(u.i1.x), i32(u.i1.y));
+    switch op {
+        case OP_BOKEH_DOWN: {
+            // `Image::downsample2`: the mean of each 2x2 block (edge-clamped)
+            let o = max(r / 2, vec2(1));
+            if p.x >= o.x || p.y >= o.y {
+                return vec4(0.0);
+            }
+            let q = p * 2;
+            return (ld_in(q, r) + ld_in(q + vec2(1, 0), r) + ld_in(q + vec2(0, 1), r) + ld_in(q + vec2(1, 1), r)) * 0.25;
+        }
+        case OP_BOKEH_BOOST: {
+            if p.x >= r.x || p.y >= r.y {
+                return vec4(0.0);
+            }
+            let o = ld(p);
+            if o.a <= 1e-6 {
+                return o;
+            }
+            let l = luma709(enc(o.rgb / o.a));
+            let k = 1.0 + u.p0.x * smoothstep_fx(u.p0.y, 1.0, l);
+            return vec4(o.rgb * k, o.a);
+        }
+        case OP_BOKEH: {
+            if p.x >= r.x || p.y >= r.y {
+                return vec4(0.0);
+            }
+            let pc = vec2<f32>(p) + 0.5;
+            let sides = u.i1.z;
+            let rings = u.i1.w;
+            let rr = u.p0.x;
+            let rot = u.p0.y;
+            var acc = sample_clamped_in(pc.x, pc.y, r);
+            var n_taps = 1u;
+            for (var ring = 1u; ring <= rings; ring++) {
+                let rad = rr * f32(ring) / f32(rings);
+                let n = max(ring * 8u, 6u);
+                for (var i = 0u; i < n; i++) {
+                    let th = 6.2831855 * (f32(i) + 0.5 * f32(ring % 2u)) / f32(n);
+                    let pr = rad * poly_radius(sides, th, rot);
+                    acc += sample_clamped_in(pc.x + cos(th) * pr, pc.y + sin(th) * pr, r);
+                }
+                n_taps += n;
+            }
+            return acc * (1.0 / f32(n_taps));
+        }
+        default: {
+            // OP_BOKEH_UP: `Image::transformed` by the scale back to the whole image
+            let pc = vec2<f32>(p) + 0.5;
+            let uu = u.p0.x * pc.x + u.p0.z;
+            let vv = u.p0.y * pc.y + u.p0.w;
+            if uu < -1.0 || vv < -1.0 || uu > f32(r.x) + 1.0 || vv > f32(r.y) + 1.0 {
+                return vec4(0.0);
+            }
+            return sample_bilinear_in(uu, vv, r);
+        }
+    }
 }
 
 // ---- colour helpers (`filmcraft_color`, `effects::enc` / `dec`)
@@ -534,6 +666,9 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
+    if op >= OP_BOKEH_DOWN && op <= OP_BOKEH_UP {
+        return bokeh(op, p);
+    }
     switch op {
         case OP_INVERT_ALPHA: {
             let o = ld(p);
