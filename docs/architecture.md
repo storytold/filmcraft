@@ -593,7 +593,11 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   HDR sequences are shown tone mapped. macOS EDR (extended-range `CAMetalLayer` output) is not
   wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
   values above SDR white are never sent to the display. The scopes of an HDR sequence show the
-  working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope).
+  working-space values (waveform in cd/m² on a PQ scale, BT.2020 vectorscope). The Lumetri Scopes
+  panel computes its signal and images on the UI's scope worker (`crates/ui-egui/src/scope_worker.rs`),
+  never in the UI pass: the newest request per scope wins and the last result stays on screen until
+  the next lands. An HDR scope render (the frame rendered again, in working space) starts at most
+  every 100 ms while playing.
 - **LUTs.** Lumetri Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
   `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
   conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
