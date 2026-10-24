@@ -6,6 +6,8 @@ Shortening either candle endpoint changes only its visible coverage. Script mark
 
 Backspace or forward Delete removes the selected Script object: a mark, a candle, or a setup selected by its thumbnail. Deleting a thumbnail removes that entire setup with all its candles and marks. Deleting the last candle also removes its empty setup. Script text and Project media stay intact, and Undo restores the deleted objects. With no object selected these keys do nothing; in a text field they retain normal text-editing behavior.
 
+Clips dragged from the Project panel can be dropped across the entire Script canvas width, including open space between take columns. The highlighted line or selected range determines coverage for the new setup. A drop below the last line uses the last line. Dropping directly onto a thumbnail adds a candle to that setup; dropping onto a candle rebinds its source, with confirmation when it has marks.
+
 | Control | FilmCraft state |
 | --- | --- |
 | Font and size | Text-size control in the gear menu; font-family choice pending. |

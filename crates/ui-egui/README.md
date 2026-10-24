@@ -16,6 +16,8 @@ Deleting the final candle removes the empty setup. These commands retain script 
 media, support Undo, and leave text-field editing alone. Selection clears after deletion to avoid
 deleting another object on a repeated key press. Layout and search caches retain the document Arc,
 so unrelated project edits do not rescan the script and document changes invalidate them safely.
+Project clips can be dropped across the full canvas width. A shared row hit-test previews the
+covered line range, with explicit thumbnail and candle targets taking precedence on release.
 The `script_ui` integration tests cover endpoint drags, hidden-mark targets and repeated labels;
 engine tests cover saved data, undo/redo, section copies and deleting hidden lines.
 

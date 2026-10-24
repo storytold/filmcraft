@@ -135,6 +135,7 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
     let empty_canvas = ui.interact(body, egui::Id::new("script.emptyCanvas"), Sense::click());
     app.auto.add("script.emptyCanvas", empty_canvas.rect, "Clear script selection");
     let mut scroll_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+    let project_drag = crate::panels::dragged_project_item(ui).is_some();
     let mut drop_line = None;
     let mut clicked_mark = None;
     let mut clicked_candle = None;
@@ -151,6 +152,24 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
         scroll_origin = base_y;
         let start = first_visible(&tops, viewport.min.y).min(doc.lines.len());
         let end = first_visible(&tops, viewport.max.y).saturating_add(2).min(doc.lines.len());
+        // A Project drag belongs to its source widget, so ordinary widget hover is
+        // suppressed. Hit-test the whole canvas, including the open take columns.
+        let project_drop_row = pointer
+            .filter(|_| project_drag && ui.rect_contains_pointer(body) && !doc.lines.is_empty())
+            .map(|pointer| first_visible(&tops, (pointer.y - base_y).max(0.0)).min(doc.lines.len() - 1));
+        let project_drop_range = project_drop_row.map(|index| range.filter(|(a, b)| (*a..=*b).contains(&index)).unwrap_or((index, index)));
+        if let Some((a, b)) = project_drop_range
+            && let Some((&y0, &y1)) = tops.get(a).zip(tops.get(b + 1))
+        {
+            let preview = Rect::from_min_max(pos2(body.left(), base_y + y0), pos2(body.right(), base_y + y1)).intersect(body);
+            ui.painter().rect_filled(preview, 0.0, t.accent.gamma_multiply(0.18));
+            ui.painter().rect_stroke(preview, 0.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+            app.auto.add("script.dropPreview", preview, "Drop clip on these script lines");
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+            if released {
+                drop_line = project_drop_row.and_then(|index| doc.lines.get(index)).map(|line| line.id.0);
+            }
+        }
         let drag_hover_row =
             app.ui.script.drag_mark.and_then(|_| ui.input(|input| input.pointer.hover_pos())).filter(|pointer| body.contains(*pointer)).and_then(|pointer| {
                 let row = first_visible(&tops, (pointer.y - base_y).max(0.0)).min(doc.lines.len().saturating_sub(1));
@@ -221,7 +240,6 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
                     &column_centers,
                     &line_indices,
                     &tops,
-                    &mut drop_line,
                     &mut clicked_mark,
                     &mut clicked_candle,
                     &mut foreground_click,
@@ -500,7 +518,6 @@ fn row_view(
     column_centers: &[f32],
     line_indices: &HashMap<u64, usize>,
     tops: &[f32],
-    drop_line: &mut Option<u64>,
     clicked_mark: &mut Option<(u64, u64)>,
     clicked_candle: &mut Option<(u64, u64)>,
     foreground_click: &mut bool,
@@ -519,9 +536,6 @@ fn row_view(
     if interaction.double_clicked() {
         app.ui.script.edit_line = Some(line.id.0);
         app.ui.script.edit_text = line.text.clone();
-    }
-    if interaction.hovered() && ui.input(|input| input.pointer.any_released()) && crate::panels::dragged_project_item(ui).is_some() {
-        *drop_line = Some(line.id.0);
     }
     interaction.clone().context_menu(|ui| {
         if ui.button(tl!("Edit Line")).clicked() {
@@ -723,7 +737,7 @@ fn row_view(
             *clicked_candle = Some((take.id.0, line.id.0));
         }
         response.clone().context_menu(|ui| take_menu(app, ui, take, actions));
-        if response.hovered()
+        if response.contains_pointer()
             && ui.input(|input| input.pointer.any_released())
             && let Some(source) = crate::panels::dragged_project_item(ui)
         {
@@ -951,7 +965,7 @@ fn thumbnail_interaction(
             ui.close();
         }
     });
-    if response.hovered()
+    if response.contains_pointer()
         && ui.input(|input| input.pointer.any_released())
         && let Some(source) = crate::panels::dragged_project_item(ui)
     {
