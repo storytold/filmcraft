@@ -43,6 +43,7 @@ struct EffectDrag {
     clip: u64,
     from: usize,
     target: Option<usize>,
+    name: String,
 }
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
@@ -162,55 +163,84 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, duration:
     }
 }
 
-/// Alt+wheel scales the lane around the timeline time directly under the pointer. The modified
-/// wheel is consumed here so it cannot also scroll the effect rows or the surrounding view.
-fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, duration: Tick, rate: filmcraft_time::FrameRate) -> bool {
-    let Some(pointer) = ui.input(|i| i.pointer.hover_pos()).filter(|p| lane.contains(*p)) else { return false };
-    let (delta, has_alt) = ui.input(|input| {
+/// UI-data key for the wheel gesture under way: set while Alt+wheel keeps zooming the lane, so the
+/// smoothed tail of that gesture is still treated as a zoom after the events themselves stop.
+fn zoom_gesture_id() -> egui::Id {
+    egui::Id::unique("effect-controls-zoom-gesture")
+}
+
+/// A wheel delta in points, whatever unit the platform reports it in.
+fn wheel_points(unit: egui::MouseWheelUnit) -> f32 {
+    match unit {
+        egui::MouseWheelUnit::Point => 1.0,
+        egui::MouseWheelUnit::Line => 40.0,
+        egui::MouseWheelUnit::Page => 400.0,
+    }
+}
+
+/// Alt+wheel scales the lane around the playback cursor. The gesture is consumed here so it cannot
+/// also scroll the effect rows or the surrounding view.
+///
+/// egui smooths one wheel notch over several frames, so the frames after the events stop carrying a
+/// wheel event still hold a leftover `smooth_scroll_delta`. Keying the guard on a wheel event alone
+/// (as before) left those frames to the shared ScrollArea, which scrolled the rows while zooming.
+/// The guard therefore follows the held Alt state and the settling gesture it began, not just the
+/// frames that carry an event.
+#[allow(clippy::too_many_arguments)]
+fn zoom_at_playhead(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    lane: Rect,
+    clip_start: Tick,
+    duration: Tick,
+    playhead: Tick,
+    rate: filmcraft_time::FrameRate,
+) -> bool {
+    let (hovering, alt, scrolling) = ui.input(|i| (i.pointer.hover_pos().is_some_and(|p| lane.contains(p)), i.modifiers.alt, i.is_scrolling()));
+    if !hovering {
+        ui.data_mut(|d| d.remove::<bool>(zoom_gesture_id()));
+        return false;
+    }
+    let (delta, alt_wheel) = ui.input(|input| {
         let mut delta = 0.0f32;
-        let mut has_alt = false;
+        let mut alt_wheel = false;
         for event in &input.events {
             if let egui::Event::MouseWheel { unit, delta: d, modifiers, .. } = event
+                && modifiers.alt
                 && d.y.is_finite()
                 && d.x.is_finite()
             {
-                has_alt |= modifiers.alt;
-                if modifiers.alt {
-                    let scale = match unit {
-                        egui::MouseWheelUnit::Point => 1.0,
-                        egui::MouseWheelUnit::Line => 40.0,
-                        egui::MouseWheelUnit::Page => 400.0,
-                    };
-                    delta += d.y * scale;
-                }
+                alt_wheel = true;
+                delta += d.y * wheel_points(*unit);
             }
         }
-        (delta, has_alt)
+        (delta, alt_wheel)
     });
-    if !has_alt {
+    // A gesture keeps its zoom meaning only while its smoothing tail lasts; a fresh scroll that is
+    // not Alt+wheel is left to the ScrollArea.
+    let stored = ui.data(|d| d.get_temp::<bool>(zoom_gesture_id()).unwrap_or(false));
+    let gesture = alt_wheel || (stored && scrolling);
+    if !(alt || gesture) {
+        ui.data_mut(|d| d.remove::<bool>(zoom_gesture_id()));
         return false;
     }
-    // ScrollArea reads the aggregated deltas, while other panel gestures can inspect raw events.
-    // Remove Alt-wheel events and rebuild both deltas from any ordinary wheel events left in this
-    // frame, so zooming cannot also move the Timeline or a surrounding scroll view.
-    ui.input_mut(|input| {
-        let mut remaining = egui::Vec2::ZERO;
-        input.raw.events.retain(|event| match event {
-            egui::Event::MouseWheel { modifiers, .. } if modifiers.alt => false,
-            egui::Event::MouseWheel { unit, delta, .. } if delta.x.is_finite() && delta.y.is_finite() => {
-                let scale = match unit {
-                    egui::MouseWheelUnit::Point => 1.0,
-                    egui::MouseWheelUnit::Line => 40.0,
-                    egui::MouseWheelUnit::Page => 400.0,
-                };
-                remaining += *delta * scale;
-                true
-            }
-            _ => true,
-        });
-        input.smooth_scroll_delta = remaining;
+    // Remember an actual Alt+wheel (and its settling tail), never a bare Alt hover: a later
+    // ordinary scroll must not be mistaken for a zoom.
+    ui.data_mut(|d| {
+        if gesture {
+            d.insert_temp(zoom_gesture_id(), true);
+        } else {
+            d.remove::<bool>(zoom_gesture_id());
+        }
     });
-    // The keyframe lane shares a vertical ScrollArea with the effect rows. An Alt-wheel event
+    // Consume the gesture: drop the Alt+wheel events so no other view acts on them, and zero the
+    // smoothed delta the shared ScrollArea would otherwise apply as a vertical scroll.
+    ui.input_mut(|input| {
+        input.events.retain(|event| !matches!(event, egui::Event::MouseWheel { modifiers, .. } if modifiers.alt));
+        input.raw.events.retain(|event| !matches!(event, egui::Event::MouseWheel { modifiers, .. } if modifiers.alt));
+        input.smooth_scroll_delta = egui::Vec2::ZERO;
+    });
+    // The keyframe lane shares a vertical ScrollArea with the effect rows. An Alt-wheel gesture
     // belongs to zooming, not that ScrollArea; disable its mouse-wheel source below even for tiny
     // high-resolution wheel deltas which do not yet change the zoom range.
     if delta.abs() < 0.01 {
@@ -218,18 +248,42 @@ fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, durati
     }
     let (start, end) = time_zoom_range(app.ui.effect_controls_time_zoom);
     let span = end - start;
-    let under_pointer = ((pointer.x - lane.min.x) / lane.width().max(1.0)).clamp(0.0, 1.0) as f64;
-    let anchor = start + under_pointer * span;
+    let clip_ticks = duration.0.max(1);
+    // Keep the playback cursor at its current screen position. When it is just outside the zoomed
+    // range, it is already drawn against the nearest edge, so anchor it there rather than jumping
+    // the view to a different point.
+    let cursor_time = playhead.0.saturating_sub(clip_start.0) as f64 / clip_ticks as f64;
+    let cursor_time = cursor_time.clamp(0.0, 1.0);
+    let cursor_x = ((cursor_time - start) / span).clamp(0.0, 1.0);
+    let anchor = start + cursor_x * span;
     // A positive wheel delta is content moving down: this is a wheel-down gesture, so it widens
     // the view; wheel-up has a negative delta and narrows it (zooms in).
     let factor = f64::from(-delta / 300.0).exp().clamp(0.1, 10.0);
-    let clip_ticks = duration.0.max(1);
     let min_span = (rate.frame_duration().0.max(1).saturating_mul(MIN_ZOOM_FRAMES) as f64 / clip_ticks as f64).clamp(0.0, 1.0);
     let new_span = (span * factor).clamp(min_span, 1.0);
-    let new_start = (anchor - under_pointer * new_span).clamp(0.0, 1.0 - new_span);
+    let new_start = (anchor - cursor_x * new_span).clamp(0.0, 1.0 - new_span);
     app.ui.effect_controls_time_zoom = (new_start > 0.0 || new_start + new_span < 1.0).then_some([new_start, new_start + new_span]);
-    ui.input_mut(|input| input.smooth_scroll_delta = egui::Vec2::ZERO);
     true
+}
+
+/// Show the effect's name below-right of the pointer while its row is being reordered, using the
+/// same translucent blue plate and white label as the "reordering tabs" ghost.
+fn paint_effect_drag_label(ui: &egui::Ui, drag: Option<&EffectDrag>, t: &Tokens) -> Option<Rect> {
+    let drag = drag?;
+    let pointer = ui.input(|i| i.pointer.latest_pos())?;
+    let ctx = ui.ctx();
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("effect-drag-label")));
+    let galley = painter.layout_no_wrap(drag.name.clone(), Tokens::ui(12.0), Color32::WHITE);
+    let size = galley.size() + vec2(16.0, 8.0);
+    let desired = pointer + vec2(12.0, 14.0);
+    let screen = ctx.content_rect();
+    let max_x = (screen.max.x - size.x).max(screen.min.x);
+    let max_y = (screen.max.y - size.y).max(screen.min.y);
+    let min = pos2(desired.x.clamp(screen.min.x, max_x), desired.y.clamp(screen.min.y, max_y));
+    let rect = Rect::from_min_size(min, size);
+    painter.rect_filled(rect, 4.0, t.focus.gamma_multiply(0.85));
+    painter.galley(min + vec2(8.0, 4.0), galley, Color32::WHITE);
+    Some(rect)
 }
 
 // The press frame can include movement before the button went down. Start from the press
@@ -698,7 +752,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ph = app.session.playhead();
     let rate = seq.settings.frame_rate;
     app.ui.effect_controls_time_zoom = constrained_time_zoom(app.ui.effect_controls_time_zoom, it.duration, rate);
-    let zooming_at_pointer = zoom_at_pointer(app, ui, lane, it.duration, rate);
+    let zooming_at_pointer = zoom_at_playhead(app, ui, lane, it.start, it.duration, ph, rate);
     let (shown_start, shown_end) = shown_range(it.start, it.duration, app.ui.effect_controls_time_zoom);
     let shown_duration = shown_end.0.saturating_sub(shown_start.0).max(1) as f64;
     let lx = |tk: Tick| -> f32 { lane.min.x + (((tk.0.saturating_sub(shown_start.0) as f64 / shown_duration) as f32).clamp(0.0, 1.0)) * lane.width() };
@@ -778,7 +832,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     || (app.ui.selected_effects.is_empty()
                         && app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx)));
                 let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click_and_drag());
-                let resp = if def.intrinsic { resp } else { resp.on_hover_cursor(egui::CursorIcon::Grab) };
+                // The hand cursor appears only once the effect is actually being dragged, as with
+                // dragging a tab; hovering a row keeps the ordinary cursor.
                 if selected {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
                 } else if resp.hovered() {
@@ -838,7 +893,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
                 }
                 if resp.drag_started() && !def.intrinsic {
-                    effect_drag = Some(EffectDrag { clip: clip.0, from: idx, target: Some(idx) });
+                    effect_drag = Some(EffectDrag { clip: clip.0, from: idx, target: Some(idx), name: crate::i18n::t(def.name).to_owned() });
                     bui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
                 if let Some(drag) = effect_drag.as_mut() {
@@ -1051,6 +1106,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.painter().text(pos2(rect.min.x + 10.0, rect.max.y - 13.0), Align2::LEFT_CENTER, tc, Tokens::mono(13.0), t.timecode);
     keys.finish(app, ui);
     run(app, ui.ctx(), actions);
+    paint_effect_drag_label(ui, effect_drag.as_ref(), &t);
 }
 
 /// The thin line under a row, across the names, the values and the keyframe lane, so a row can be
@@ -2406,41 +2462,88 @@ mod lane_tests {
         app.ui.effect_controls_time_zoom = Some([0.2, 0.8]);
         let ctx = context();
         let lane = Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 30.0));
-        let pointer = pos2(120.0, 15.0);
+        let pointer = pos2(210.0, 15.0);
         let rate = filmcraft_time::FrameRate { num: 30, den: 1 };
+        let clip_start = Tick::ZERO;
+        let duration = Tick(filmcraft_time::TICKS_PER_SECOND * 10);
+        let playhead = Tick(filmcraft_time::TICKS_PER_SECOND * 4);
         let before = app.ui.effect_controls_time_zoom;
-        let mut draw = |events: Vec<egui::Event>| {
+        let mut time = 0.0;
+        // Returns (did the frame count as a zoom?, wheel delta on entry, wheel delta left for the
+        // ScrollArea). The delta left behind is what the shared ScrollArea would turn into a scroll.
+        let mut draw = |app: &mut FilmcraftApp, events: Vec<egui::Event>| {
+            time += 0.016;
             let mut zooming = false;
-            let mut scroll_offset = egui::Vec2::ZERO;
-            let mut output =
-                ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 120.0))), events, ..Default::default() }, |ui| {
-                    zooming = zoom_at_pointer(&mut app, ui, lane, Tick(filmcraft_time::TICKS_PER_SECOND * 10), rate);
+            let (mut incoming, mut leftover) = (egui::Vec2::ZERO, egui::Vec2::ZERO);
+            let mut output = ctx.run_ui(
+                egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 120.0))), events, ..Default::default() },
+                |ui| {
+                    incoming = ui.input(|i| i.smooth_scroll_delta);
+                    zooming = zoom_at_playhead(app, ui, lane, clip_start, duration, playhead, rate);
+                    leftover = ui.input(|i| i.smooth_scroll_delta);
+                    // the panel hands the same source to its shared vertical ScrollArea
                     let source = egui::scroll_area::ScrollSource { mouse_wheel: !zooming, ..Default::default() };
-                    scroll_offset = egui::ScrollArea::vertical()
-                        .id_salt("alt-wheel-scroll-test")
-                        .max_height(40.0)
-                        .scroll_source(source)
-                        .show(ui, |ui| ui.add_space(400.0))
-                        .state
-                        .offset;
-                });
+                    let _ =
+                        egui::ScrollArea::vertical().id_salt("alt-wheel-scroll-test").max_height(40.0).scroll_source(source).show(ui, |ui| ui.add_space(400.0));
+                },
+            );
             output.textures_delta.clear();
-            (zooming, scroll_offset)
+            (zooming, incoming, leftover)
         };
 
-        draw(vec![egui::Event::PointerMoved(pointer)]);
-        let (zooming, scroll_offset) = draw(vec![
-            egui::Event::PointerMoved(pointer),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: vec2(0.0, -120.0),
-                modifiers: egui::Modifiers::ALT,
-                phase: egui::TouchPhase::Move,
-            },
-        ]);
+        draw(&mut app, vec![egui::Event::PointerMoved(pointer)]);
+        let (zooming, _incoming, leftover) = draw(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    source: egui::MouseWheelSource::Wheel,
+                    delta: vec2(0.0, -3.0),
+                    modifiers: egui::Modifiers::ALT,
+                    phase: egui::TouchPhase::Move,
+                },
+            ],
+        );
         assert!(zooming);
         assert_ne!(app.ui.effect_controls_time_zoom, before, "Alt-wheel still changes keyframe zoom");
-        assert_eq!(scroll_offset.y, 0.0, "the effect rows must not scroll during zoom");
+        assert_eq!(leftover, egui::Vec2::ZERO, "an Alt+wheel frame leaves nothing for the ScrollArea");
+        let Some([start, end]) = app.ui.effect_controls_time_zoom else { panic!("zoom range changed") };
+        let cursor_before = (0.4 - before.map_or(0.0, |range| range[0])) / before.map_or(1.0, |range| range[1] - range[0]);
+        let cursor_after = (0.4 - start) / (end - start);
+        assert!((cursor_after - cursor_before).abs() < 1e-9, "zoom keeps the playback cursor at the same lane position");
+        assert_ne!(cursor_after, (pointer.x - lane.min.x) as f64 / lane.width() as f64, "mouse position is not the zoom anchor");
+
+        // egui smooths one wheel notch over the next frames: those carry no wheel event, only the
+        // leftover smooth delta. Keying the guard on the event alone left them to the ScrollArea,
+        // which scrolled the rows while the user kept zooming.
+        let (zooming, incoming, leftover) = draw(&mut app, vec![egui::Event::PointerMoved(pointer)]);
+        assert!(incoming.y.abs() > 0.01, "the smoothed tail of the gesture is still pending: {incoming:?}");
+        assert!(zooming, "the smoothed tail of the Alt+wheel gesture is still part of the zoom");
+        assert_eq!(leftover, egui::Vec2::ZERO, "the smoothed tail is consumed, not scrolled");
+    }
+
+    #[test]
+    fn effect_reorder_label_is_painted_below_and_right_of_the_pointer() {
+        let ctx = context();
+        let pointer = pos2(40.0, 30.0);
+        let drag = EffectDrag { clip: 1, from: 2, target: Some(2), name: "Gaussian Blur".to_owned() };
+        let t = Tokens::for_kind(Default::default());
+        let mut label_rect = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))),
+                events: vec![egui::Event::PointerMoved(pointer)],
+                ..Default::default()
+            },
+            |ui| {
+                label_rect = paint_effect_drag_label(ui, Some(&drag), &t);
+            },
+        );
+        output.textures_delta.clear();
+        let Some(label_rect) = label_rect else { panic!("drag label is painted while the pointer is present") };
+        assert!(label_rect.min.x > pointer.x && label_rect.min.y > pointer.y, "the label appears right and below the drag cursor");
+        assert!(output.shapes.iter().any(|clipped| matches!(&clipped.shape, egui::Shape::Text(text) if text.galley.text() == "Gaussian Blur")));
     }
 
     /// A project file is only checked for overflow, so a damaged one can carry a clip with no

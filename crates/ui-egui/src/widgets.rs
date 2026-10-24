@@ -182,14 +182,16 @@ fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberO
     }
     let mut out = None;
     if resp.dragged() {
-        let dx = resp.drag_delta().x as f64;
+        // Locked-cursor integrations keep the pointer position fixed and report raw relative
+        // movement instead. Use it so long scrubs do not stop at the viewport edge.
+        let dx = resp.drag_motion().x as f64;
         let mult = hot_number_drag_multiplier(ui);
         let nv = (value + dx * speed * mult).clamp(range.0, range.1);
         if (nv - value).abs() > f64::EPSILON {
             out = Some(nv);
         }
     }
-    confine_pointer_while_dragging(ui, &resp);
+    lock_pointer_while_dragging(ui, &resp);
     if resp.clicked() {
         ui.data_mut(|d| {
             d.insert_temp(id.with("editing"), format!("{value:.decimals$}"));
@@ -221,6 +223,19 @@ fn confine_pointer_while_dragging(ui: &Ui, response: &Response) {
     }
     if response.drag_stopped() {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+    }
+}
+
+/// Lock and hide the pointer during hot-number scrubs; relative mouse motion still drives the value
+/// when the pointer reaches the edge of the window.
+fn lock_pointer_while_dragging(ui: &Ui, response: &Response) {
+    if response.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+    }
+    if response.drag_stopped() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
     }
 }
 
@@ -880,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_hot_number_confines_the_cursor_and_releases_it() {
+    fn dragging_a_hot_number_locks_and_releases_the_cursor() {
         let ctx = egui::Context::default();
         let id = egui::Id::unique("captured-hot-number");
         let t = Tokens::for_kind(ThemeKind::Dark);
@@ -889,7 +904,7 @@ mod tests {
         let frame = |events: Vec<egui::Event>, value: &mut f64, rect: &mut Rect| {
             let mut output =
                 ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))), events, ..Default::default() }, |ui| {
-                    *rect = hot_number(ui, id, *value, 1.0, (0.0, 1000.0), 1, "", &t).0.rect;
+                    *rect = hot_number(ui, "Value", id, *value, HotNumberOptions::new(1.0, (0.0, 1000.0), 1, "", &t)).0.rect;
                 });
             let commands = output.viewport_output.get(&egui::ViewportId::ROOT).map(|viewport| viewport.commands.clone()).unwrap_or_default();
             output.textures_delta.clear();
@@ -902,10 +917,48 @@ mod tests {
         frame(vec![egui::Event::PointerMoved(start)], &mut value, &mut rect);
         frame(vec![button(true, start)], &mut value, &mut rect);
         let commands = frame(vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0))], &mut value, &mut rect);
-        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined))));
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked))));
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorVisible(false))));
 
         let commands = frame(vec![button(false, start + vec2(20.0, 0.0))], &mut value, &mut rect);
         assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorGrab(egui::CursorGrab::None))));
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorVisible(true))));
+    }
+
+    #[test]
+    fn hot_number_keeps_changing_from_relative_motion_with_a_locked_cursor() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("relative-hot-number");
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let mut value = 100.0;
+        let mut rect = Rect::NOTHING;
+        let frame = |events: Vec<egui::Event>, value: &mut f64, rect: &mut Rect| {
+            let mut changed = false;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))), events, ..Default::default() }, |ui| {
+                    let (response, next) = hot_number(ui, "Value", id, *value, HotNumberOptions::new(1.0, (0.0, 1000.0), 1, "", &t));
+                    *rect = response.rect;
+                    if let Some(next) = next {
+                        *value = next;
+                        changed = true;
+                    }
+                });
+            output.textures_delta.clear();
+            changed
+        };
+
+        frame(vec![], &mut value, &mut rect);
+        let start = rect.center();
+        let button = |pressed, pos| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(vec![egui::Event::PointerMoved(start)], &mut value, &mut rect);
+        frame(vec![button(true, start)], &mut value, &mut rect);
+        frame(vec![egui::Event::PointerMoved(start + vec2(8.0, 0.0))], &mut value, &mut rect);
+        let before_relative_motion = value;
+
+        // Once locked, the cursor position stays put; the relative event still advances the value.
+        assert!(frame(vec![egui::Event::MouseMoved(vec2(40.0, 0.0))], &mut value, &mut rect));
+        assert!(value > before_relative_motion, "relative motion keeps scrubbing after the cursor reaches an edge");
+        frame(vec![button(false, start + vec2(8.0, 0.0))], &mut value, &mut rect);
     }
 
     /// Dialogs open centred and can be dragged by their title bar (anchored ones could not).
