@@ -341,7 +341,7 @@ pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     q.check_bounds().map_err(|e| bad(cmd, e))?;
     let fd = q.settings.frame_rate.frame_duration();
-    let whole = TimeRange::from_bounds(Tick::ZERO, q.duration().max(fd));
+    let whole = TimeRange::from_bounds(Tick::ZERO, q.export_end().max(fd));
     let mode = match v {
         None | Some(Value::Null) if time_p(s, p, "start").is_some() || time_p(s, p, "end").is_some() => "custom".to_string(),
         None | Some(Value::Null) => return Ok(None),
