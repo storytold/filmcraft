@@ -469,6 +469,9 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<T
             }
             shift_track_from(tr, span.end(), -span.duration);
         }
+        for ct in work.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
+            captions::extract_range(ct, *span);
+        }
     }
     *seq = work;
     Ok(spans)

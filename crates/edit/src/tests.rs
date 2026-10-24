@@ -1,5 +1,5 @@
 use super::*;
-use filmcraft_project::{Label, Project, SequenceSettings, TrackKind};
+use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, Label, Project, SequenceSettings, TrackKind};
 use filmcraft_time::FrameRate;
 use proptest::prelude::*;
 
@@ -74,6 +74,22 @@ impl Fx {
     }
     fn spans(&self, track: TrackId) -> Vec<(i64, i64)> {
         self.seq.track(track).unwrap().items.iter().map(|i| (R.frame_at(i.start), R.frame_at(i.duration))).collect()
+    }
+    fn add_caption_track(&mut self, name: &str, format: CaptionFormat) -> TrackId {
+        let tid = TrackId(self.next);
+        self.next += 1;
+        let ct = CaptionTrack::new(tid, name.into(), format);
+        self.seq.caption_tracks.push(ct);
+        tid
+    }
+    fn add_caption(&mut self, track: TrackId, start: i64, dur: i64, text: &str) -> ClipId {
+        let mut n = self.next;
+        let id = captions::add_caption(&mut self.seq, track, f(start), f(dur), text, &mut Self::ctx(&mut n)).unwrap();
+        self.next = n;
+        id
+    }
+    fn caption_spans(&self, track: TrackId) -> Vec<(i64, i64, String)> {
+        self.seq.caption_track(track).unwrap().captions.iter().map(|c| (R.frame_at(c.start), R.frame_at(c.duration), c.text.clone())).collect()
     }
 }
 
@@ -222,6 +238,107 @@ fn ripple_delete_closes_the_time_free_on_every_track() {
     let before = fx.seq.clone();
     assert!(matches!(ripple_delete_items(&mut fx.seq, &[x, y]), Err(EditError::Other(_))));
     assert_eq!(fx.seq, before);
+}
+
+#[test]
+fn ripple_delete_sync_locked_caption_tracks() {
+    // 1. Basic ripple delete with before, inside, overlapping, and after captions.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a1 = fx.a(0);
+    let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+
+    let _v0 = fx.put(v1, 0, 10, 0);
+    let v1_clip = fx.put(v1, 10, 10, 0);
+    let _v2 = fx.put(v1, 20, 10, 0);
+    let _a0 = fx.put(a1, 0, 10, 0);
+    let a1_clip = fx.put(a1, 10, 10, 0);
+    let _a2 = fx.put(a1, 20, 10, 0);
+
+    fx.add_caption(c1, 2, 6, "before");
+    fx.add_caption(c1, 12, 4, "inside");
+    fx.add_caption(c1, 18, 6, "overlap");
+    fx.add_caption(c1, 26, 4, "after");
+
+    ripple_delete_items(&mut fx.seq, &[v1_clip, a1_clip]).unwrap();
+
+    assert_eq!(
+        fx.caption_spans(c1),
+        vec![(2, 6, "before".into()), (10, 4, "overlap".into()), (16, 4, "after".into()),],
+        "captions follow ripple delete on sync-locked track"
+    );
+
+    // 2. Locked caption track and sync_lock=false caption track remain untouched.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let c_locked = fx.add_caption_track("C_Locked", CaptionFormat::Subtitle);
+    let c_unsynced = fx.add_caption_track("C_Unsynced", CaptionFormat::Subtitle);
+    fx.seq.caption_track_mut(c_locked).unwrap().locked = true;
+    fx.seq.caption_track_mut(c_unsynced).unwrap().sync_lock = false;
+
+    fx.seq.caption_track_mut(c_locked).unwrap().captions.push(Caption {
+        id: ClipId(50001),
+        start: f(15),
+        duration: f(10),
+        text: "locked".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    fx.seq.caption_track_mut(c_unsynced).unwrap().captions.push(Caption {
+        id: ClipId(50002),
+        start: f(15),
+        duration: f(10),
+        text: "unsynced".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+
+    let _v0 = fx.put(v1, 0, 10, 0);
+    let v1_clip = fx.put(v1, 10, 10, 0);
+    let _v2 = fx.put(v1, 20, 10, 0);
+    ripple_delete_items(&mut fx.seq, &[v1_clip]).unwrap();
+
+    assert_eq!(fx.caption_spans(c_locked), vec![(15, 10, "locked".into())]);
+    assert_eq!(fx.caption_spans(c_unsynced), vec![(15, 10, "unsynced".into())]);
+
+    // 3. Multiple separated spans: right-to-left ripple updates captions correctly for each span.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+    let _v0 = fx.put(v1, 0, 10, 0);
+    let v1_clip = fx.put(v1, 10, 10, 0);
+    let _v2 = fx.put(v1, 20, 10, 0);
+    let v3_clip = fx.put(v1, 30, 10, 0);
+    let _v4 = fx.put(v1, 40, 10, 0);
+
+    fx.add_caption(c1, 5, 3, "c0");
+    fx.add_caption(c1, 12, 4, "c1_inside");
+    fx.add_caption(c1, 22, 6, "c2_between");
+    fx.add_caption(c1, 32, 4, "c3_inside");
+    fx.add_caption(c1, 42, 6, "c4_after");
+
+    ripple_delete_items(&mut fx.seq, &[v1_clip, v3_clip]).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(5, 3, "c0".into()), (12, 6, "c2_between".into()), (22, 6, "c4_after".into()),]);
+
+    // 4. A later span can already ripple captions before an earlier media conflict aborts.
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+    let _v0 = fx.put(v1, 0, 10, 0);
+    let v1_clip = fx.put(v1, 10, 10, 0);
+    let _v2 = fx.put(v1, 20, 10, 0);
+    let v3_clip = fx.put(v1, 30, 10, 0);
+    let _v4 = fx.put(v1, 40, 10, 0);
+    fx.put(a1, 12, 5, 0);
+    fx.add_caption(c1, 2, 4, "cap_before");
+    fx.add_caption(c1, 12, 4, "cap_inside");
+    fx.add_caption(c1, 42, 4, "cap_after");
+
+    let before = fx.seq.clone();
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[v1_clip, v3_clip]), Err(EditError::SyncLockConflict("A1".into())));
+    assert_eq!(fx.seq, before, "conflict restores the complete sequence after a later span was processed");
 }
 
 #[test]
