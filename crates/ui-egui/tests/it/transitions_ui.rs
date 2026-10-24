@@ -344,3 +344,20 @@ fn transition_timeline_in_effect_controls() {
     assert!(ph.is_some_and(|p| p > c.cut), "{ph:?}");
     assert!(d.find("effectControls.transition.timeline.playhead").is_some(), "the playhead shows in the transition's timeline");
 }
+
+/// #2397 review: copying a transition puts its name on the system clipboard, as copying clips
+/// puts theirs: on Windows and Linux Ctrl+V reaches the app only when the system clipboard holds
+/// text (#199), so with an empty one the copied transition could not be pasted from the keyboard.
+#[test]
+fn a_copied_transition_puts_its_name_on_the_system_clipboard() {
+    let mut d = Driver::demo();
+    let clip = d.harness.state().session.active_sequence().unwrap().video_tracks[0].items[2].id.0;
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    let r = d.exec("sequence.applyVideoTransition", json!({"effect": "dip_to_color", "frames": 7, "edge": "in"}));
+    let id = r["transitions"][0].as_u64().unwrap();
+    d.exec("timeline.select", json!({"transitions": [id]}));
+    d.ok("ui.menu.invoke", json!({"id": "edit.copy"}));
+    let copied = d.harness.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "Dip to Color"));
+    assert!(copied, "{:?}", d.harness.output().platform_output.commands);
+    assert!(d.harness.state().session.state.transition_clipboard.is_some());
+}

@@ -638,6 +638,11 @@ fn clipboard_media_key(media: &crate::ClipboardMedia) -> String {
 fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
     let names: Vec<&str> = app.session.state.clipboard.iter().map(|(_, _, c)| c.name.as_str()).collect();
     if names.is_empty() {
+        // a copied transition: its name, so Ctrl+V reaches the app on Windows and Linux too (#199)
+        if let Some((_, tr)) = &app.session.state.transition_clipboard {
+            let name = filmcraft_project::find_effect(&tr.effect.effect).map_or(tr.effect.effect.as_str(), |d| d.name);
+            ctx.copy_text(crate::i18n::t(name).to_string());
+        }
         return;
     }
     let text = names.join("\n");

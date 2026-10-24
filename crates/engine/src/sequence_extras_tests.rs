@@ -313,3 +313,55 @@ fn cmd_d_on_an_adjustment_layer_fades_its_effects_in_and_out() {
         assert!((0.25..0.75).contains(&k), "halfway through the dissolve the grade is about half on: {k:.3}");
     }
 }
+
+#[test]
+fn copy_and_paste_a_transition() {
+    // #2350: a selected transition is copied and pasted at the selected clip's free edges, settings included
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let a = q.video_tracks[0].items[2].clone();
+    s.execute("timeline.select", json!({"clips": [a.id.0]})).unwrap();
+    let r = s
+        .execute("sequence.applyVideoTransition", json!({"effect": "dip_to_color", "frames": 7, "edge": "in", "params": {"hold": 30.0}, "reverse": true}))
+        .unwrap();
+    let id = filmcraft_project::TransitionId(r["transitions"][0].as_u64().unwrap());
+    // another clip with an edge free of transitions
+    let tr = s.active_sequence().unwrap().video_tracks[0].clone();
+    let free = |c: &filmcraft_project::TrackItem| tr.transitions.iter().filter(|t| t.from == Some(c.id) || t.to == Some(c.id)).count() < 2;
+    let b = tr.items.iter().find(|c| c.id != a.id && free(c)).expect("a clip with a free edge").clone();
+    s.state.selection.clear();
+    s.state.transition_selection = vec![id];
+    assert!(s.is_enabled("edit.copy"), "a selected transition can be copied");
+    s.execute("edit.copy", json!({})).unwrap();
+    assert!(s.state.clipboard.is_empty() && s.state.transition_clipboard.is_some());
+    // paste at the edges of another clip
+    s.execute("timeline.select", json!({"clips": [b.id.0]})).unwrap();
+    let before = s.active_sequence().unwrap().video_tracks[0].transitions.clone();
+    let n_undo = s.history.undo.len();
+    let r = s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(s.history.undo.len(), n_undo + 1, "one undo step");
+    let q = s.active_sequence().unwrap();
+    let copied = q.video_tracks[0].transitions.iter().find(|t| t.id == id).unwrap().clone();
+    let pasted: Vec<_> = q.video_tracks[0].transitions.iter().filter(|t| !before.iter().any(|x| x.id == t.id)).cloned().collect();
+    assert!(!pasted.is_empty(), "{r}");
+    for t in &pasted {
+        assert!(t.from == Some(b.id) || t.to == Some(b.id), "at the selected clip's edges");
+        assert_eq!((&t.effect, t.duration, t.reverse), (&copied.effect, copied.duration, true));
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].transitions, before);
+    // still one undo step with a one-entry history
+    let limit = std::mem::replace(&mut s.history.limit, 1);
+    s.execute("edit.paste", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].transitions, before, "undo with a one-entry history");
+    s.history.limit = limit;
+    // nothing to paste at: an error, not a clip paste
+    s.state.selection.clear();
+    s.state.edit_points.clear();
+    assert!(s.execute("edit.paste", json!({})).is_err());
+    // copying clips replaces the copied transition
+    s.execute("timeline.select", json!({"clips": [b.id.0]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert!(s.state.transition_clipboard.is_none() && !s.state.clipboard.is_empty());
+}

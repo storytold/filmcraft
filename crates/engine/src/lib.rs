@@ -397,6 +397,10 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// A transition copied from the Timeline (its track kind), pasted at the selected edit points
+    /// or clip edges. Copying clips clears it, copying a transition clears the clip clipboard.
+    #[serde(skip)]
+    pub transition_clipboard: Option<(TrackKind, filmcraft_project::Transition)>,
     /// Captions copied from the Timeline, with their caption track's index (starts relative to the
     /// copied range). Copying clips empties it and copying captions empties `clipboard`, so Paste
     /// places whichever was copied last.
