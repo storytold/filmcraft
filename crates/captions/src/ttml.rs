@@ -541,7 +541,7 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, 
     for c in n.children() {
         if c.is_text() {
             for ch in c.text().unwrap_or("").chars() {
-                if ch.is_whitespace() {
+                if is_xml_space(ch) {
                     out.pending = true;
                 } else {
                     out.flush();
@@ -578,8 +578,13 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, 
     }
 }
 
+/// XML whitespace: only these characters collapse (U+00A0 and other Unicode spaces are content).
+fn is_xml_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r')
+}
+
 fn clean(s: &str) -> String {
-    s.lines().map(str::trim).collect::<Vec<_>>().join("\n").trim().to_string()
+    s.lines().map(|l| l.trim_matches(is_xml_space)).collect::<Vec<_>>().join("\n").trim_matches(is_xml_space).to_string()
 }
 
 pub fn parse(text: &str) -> Result<Document> {
@@ -730,6 +735,17 @@ mod tests {
 
     fn tm(rate: FrameRate) -> Timing {
         Timing { rate, base: rate.timecode_base(), sub_frame_rate: 1, tick_rate: FrameRate::new(1, 1) }
+    }
+
+    #[test]
+    fn only_xml_whitespace_collapses_in_cue_text() {
+        let xml =
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"1s\" end=\"2s\">\t 10\u{a0}km\u{2009}a\u{3000}b \t\r\n  c \n</p></div></body></tt>";
+        let doc = parse(xml).unwrap();
+        assert_eq!(doc.cues[0].text, "10\u{a0}km\u{2009}a\u{3000}b c");
+        let xml = "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"1s\" end=\"2s\">\u{a0}x<br/>y\u{a0}</p></div></body></tt>";
+        let doc = parse(xml).unwrap();
+        assert_eq!(doc.cues[0].text, "\u{a0}x\ny\u{a0}");
     }
 
     #[test]
