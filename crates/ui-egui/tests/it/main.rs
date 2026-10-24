@@ -1,5 +1,6 @@
 mod audio51_ui;
 mod audio_fx_editor_ui;
+mod caption_copy_paste_ui;
 mod caption_option_drag_ui;
 mod caption_properties_ui;
 mod caption_razor_ui;
