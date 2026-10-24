@@ -50,6 +50,105 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `assets/app-icon/hicolor/512x512/apps/ai.storyteller.filmcraft.png` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; Linux hicolor theme 512 px | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `assets/app-icon/hicolor/scalable/apps/ai.storyteller.filmcraft.svg` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; Linux hicolor theme scalable | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `apps/filmcraft-web/web/favicon.png` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; 128 px | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
+| `assets/icons/tabler/pointer.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/chevrons-right.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/chevrons-left.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrow-bar-right.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrow-bar-both.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrow-autofit-width.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrows-shuffle.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/blade.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrows-horizontal.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrows-move-horizontal.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/pencil.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/rectangle.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/circle.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/hand-stop.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/zoom-in.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/typography.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/player-skip-back.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/player-skip-forward.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrow-bar-to-left.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrow-bar-to-right.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/brackets-contain-start.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/brackets-contain-end.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/bookmark.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/inbox.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/replace.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/upload.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/package-export.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/camera.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/repeat.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/tool.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/plus.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/eye.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/eye-off.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/volume.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/volume-off.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/lock.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/lock-open.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/microphone.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/folder.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/movie.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/timeline.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/wave-sine.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/photo.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/search.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/list.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/layout-grid.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/layout-dashboard.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/file-plus.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/trash.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/home.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/layout-sidebar.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/menu-2.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/chevron-down.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/chevron-right.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/magnet.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/link.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/diamond.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/stopwatch.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/function.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/rotate-2.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/x.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrows-maximize.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/file-export.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/file-import.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/settings.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/info-circle.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/subtitles.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/adjustments-horizontal.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/box-multiple.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrow-back-up.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrow-forward-up.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/bell.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/message-dots.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/world.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/code.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/sparkles.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/grid-3x3.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/square.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/picture-in-picture.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/unlink.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/player-track-prev.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/player-track-next.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/sort-descending.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/wand.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/star.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/chevron-left.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/arrow-up.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/device-floppy.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/network.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/clock.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/device-desktop.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/sun.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/moon.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/color-picker.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, outline) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/filled/player-play.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, filled) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/tabler/filled/player-pause.svg` | Paweł Kuna (Tabler Icons) | https://tabler.io/icons (Tabler Icons v3.49.0, filled) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/filmcraft/sync-lock.svg` | Paweł Kuna (Tabler Icons), modified by @Fallzola | https://tabler.io/icons (Tabler Icons v3.49.0 'lock', modified) | MIT (`assets/icons/tabler/LICENSE`) |
+| `assets/icons/filmcraft/track-mask-back-frame.svg` | @Fallzola | original work in the Tabler Icons style | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
+| `assets/icons/filmcraft/track-mask-fwd-frame.svg` | @Fallzola | original work in the Tabler Icons style | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
 
 ## Golden test images
 
@@ -102,12 +201,12 @@ repository; each screenshot's sidecar lists exactly which appear.
 
 ## Assets drawn or generated in code
 
-These are original work by FilmCraft contributors under the project licence (MIT OR Apache-2.0). None
+These are original work by FilmCraft contributors under the project licence (MIT OR Apache-2.0), except the UI icons (see the first row). None
 is traced or derived from Adobe artwork.
 
 | Asset | Where |
 |---|---|
-| UI icons (tools, transport, panels, header) | `crates/ui-egui/src/icons.rs`: vector paths on a 16×16 grid |
+| UI icons (tools, transport, panels, header) | `assets/icons/`: 99 SVG files, one per icon, all listed above (96 Tabler Icons under MIT; 1 modified Tabler icon, SyncLock, from `lock`, MIT; 2 original drawings, MIT OR Apache-2.0). Drawn by `crates/ui-egui/src/icons_svg.rs` |
 | Source and Program range braces and trim hover cues | `crates/ui-egui/src/panels/monitor.rs` and `source_range.rs`: original generic vector shapes by FilmCraft contributors, MIT OR Apache-2.0; no third-party artwork |
 | Align / distribute / paragraph-alignment glyphs in the graphics panel | `crates/ui-egui/src/panels/graphics.rs` (`align_glyph`): bars and lines drawn with the egui painter |
 | Demo footage (ocean sunset, aurora, city night, dunes, forest, plasma), bars and tone, counting leader, colour matte | `crates/media/src/generators.rs` |

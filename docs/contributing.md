@@ -260,7 +260,7 @@ stream is cut into blocks (there are tests for this).
 - UI state that should survive or be scriptable goes in `crates/ui-egui/src/state.rs` (serde), so
   `ui.inspect` and `ui.set` can reach it.
 - Project changes go through `session.execute(…)`, never by mutating the project directly.
-- Icons are drawn in code in `crates/ui-egui/src/icons.rs`, from scratch (AGENTS.md §1).
+- UI icons are SVG files in `assets/icons/`: Tabler Icons (MIT) plus original drawings in the same style, drawn by `crates/ui-egui/src/icons_svg.rs`. A new icon follows the set's spec (24 × 24 grid, stroke 2, round caps and joins, `<path>` elements only) and needs a `.attribution` sidecar (AGENTS.md §1).
 - Look at the result: run with `--control`, drive it, take `ui.screenshot`
   ([agents.md](agents.md#3-verifying-ui-work)).
 

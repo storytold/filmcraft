@@ -1,0 +1,8 @@
+asset:        player-track-next.svg
+title:        FilmCraft icon: TrackMaskFwd (Tabler 'player-track-next')
+author:       Paweł Kuna (Tabler Icons)
+source:       https://tabler.io/icons — Tabler Icons v3.49.0
+license:      MIT
+license-file: assets/icons/tabler/LICENSE
+added:        2026-10-16 by @Fallzola
+notes:        copied unchanged from Tabler Icons v3.49.0 (outline, byte-identical to the @tabler/icons 3.49.0 npm file); crates/ui-egui/src/icons_svg.rs reads its path data
