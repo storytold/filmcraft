@@ -3586,7 +3586,7 @@
 	No matching text.	Aucun texte ne correspond.
 # Parakeet speech model and word-by-word captions.
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (précision maximale, minutage par mot)
-	0 = no limit. 1 makes word-by-word captions that keep each word's own timing.	0 = aucune limite. 1 crée des sous-titres mot à mot qui gardent le minutage de chaque mot.
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = aucune limite. 1 crée des sous-titres mot à mot ; avec une durée minimale de 0, chaque mot garde son propre minutage.
 	A shorter caption is held into the silence after it, never over the next caption.	Un sous-titre plus court est prolongé dans le silence qui le suit, jamais sur le sous-titre suivant.
 	Caption preset	Paramètre prédéfini de sous-titres
 	Captioning Preferences (format, max/min length, lines)	Préférences de sous-titrage (format, longueur max./min., lignes)

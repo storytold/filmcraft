@@ -3584,7 +3584,7 @@
 	No matching text.	Tidak ada teks yang cocok.
 # Parakeet speech model and word-by-word captions.
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (akurasi terbaik, waktu per kata)
-	0 = no limit. 1 makes word-by-word captions that keep each word's own timing.	0 = tanpa batas. 1 membuat takarir kata demi kata yang mempertahankan waktu setiap kata.
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = tanpa batas. 1 membuat takarir kata demi kata; dengan durasi minimum 0, setiap kata mempertahankan waktunya sendiri.
 	A shorter caption is held into the silence after it, never over the next caption.	Takarir yang lebih pendek diperpanjang ke jeda sesudahnya, tidak pernah menimpa takarir berikutnya.
 	Caption preset	Prasetel takarir
 	Captioning Preferences (format, max/min length, lines)	Preferensi takarir (format, panjang maks./min., baris)

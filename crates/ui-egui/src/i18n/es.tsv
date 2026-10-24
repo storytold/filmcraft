@@ -3628,7 +3628,7 @@
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
 # Parakeet speech model and word-by-word captions.
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (máxima precisión, tiempos por palabra)
-	0 = no limit. 1 makes word-by-word captions that keep each word's own timing.	0 = sin límite. 1 crea subtítulos palabra por palabra que conservan la temporización de cada palabra.
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = sin límite. 1 crea subtítulos palabra por palabra; con una duración mínima de 0, cada palabra conserva su propia temporización.
 	A shorter caption is held into the silence after it, never over the next caption.	Un subtítulo más corto se mantiene en el silencio que le sigue, nunca sobre el siguiente subtítulo.
 	Caption preset	Ajuste preestablecido de subtítulos
 	Captioning Preferences (format, max/min length, lines)	Preferencias de subtítulos (formato, longitud máx./mín., líneas)

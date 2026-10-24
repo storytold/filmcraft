@@ -3603,7 +3603,7 @@
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。
 # Parakeet speech model and word-by-word captions.
 	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3（最高准确度，逐词时间）
-	0 = no limit. 1 makes word-by-word captions that keep each word's own timing.	0 = 不限制。1 会创建逐词字幕,并保留每个词自身的时间。
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = 不限制。1 会创建逐词字幕；最短持续时间为 0 时，每个词保留自身的时间。
 	A shorter caption is held into the silence after it, never over the next caption.	较短的字幕会延续到其后的静音部分,但不会覆盖下一条字幕。
 	Caption preset	字幕预设
 	Captioning Preferences (format, max/min length, lines)	字幕首选项(格式、最大/最小长度、行数)
