@@ -1,5 +1,5 @@
-//! Vector icons drawn in code on a 16×16 design grid (crisp at any DPI, recolourable, no
-//! third-party or Adobe artwork). Shapes follow NLE conventions (ripple brackets, razor blade…).
+//! Vector icons: Lucide-compatible craft-icons SVGs where we have them, otherwise original
+//! 16×16 drawings (crisp at any DPI, recolourable, no Adobe artwork).
 
 use egui::epaint::{PathShape, PathStroke};
 use egui::{Color32, Painter, Pos2, Rect, Stroke, pos2, vec2};
@@ -235,6 +235,10 @@ impl Pen16<'_> {
 
 /// Paint `icon` centred in `rect`.
 pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
+    if let Some(svg) = crate::icons_svg::svg_for(icon) {
+        crate::icons_svg::paint(painter, rect, svg, color);
+        return;
+    }
     let pen = Pen16 { painter, rect, color, width: 1.25 };
     use Icon::*;
     match icon {
@@ -932,6 +936,36 @@ mod tests {
     fn on_grid(v: f32, ppp: f32, width_px: f32) -> bool {
         let want = if width_px.round() as i32 % 2 == 1 { 0.5 } else { 0.0 };
         ((v * ppp).fract().abs() - want).abs() < 1e-3 || ((v * ppp).fract().abs() - (1.0 - want)).abs() < 1e-3
+    }
+
+    #[test]
+    fn craft_icons_draw_strokes() {
+        for &icon in ALL {
+            if crate::icons_svg::svg_for(icon).is_none() {
+                continue;
+            }
+            let shapes = drawn(icon, 2.0, 16.0);
+            assert!(!shapes.is_empty(), "{icon:?} produced no strokes");
+            let mut stroked = false;
+            for shape in &shapes {
+                match shape {
+                    Shape::Path(p) => {
+                        let w = p.stroke.width * 2.0;
+                        assert!((w - w.round()).abs() < 1e-3 && w >= 1.0, "{icon:?} at 16px 2x: width {w} px");
+                        stroked = true;
+                    }
+                    Shape::Circle(c) => {
+                        let w = c.stroke.width * 2.0;
+                        if w > 0.0 {
+                            assert!((w - w.round()).abs() < 1e-3 && w >= 1.0, "{icon:?} at 16px 2x: circle width {w} px");
+                            stroked = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(stroked, "{icon:?} at 16px drew no stroked path");
+        }
     }
 
     /// Every straight line of every icon covers whole device pixels at 1x and 2x (no half-pixel

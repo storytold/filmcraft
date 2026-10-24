@@ -32,6 +32,59 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `docs/images/filmcraft-scopes.png` | FilmCraft contributors | Original work: FilmCraft UI crop (scopes of a Charade (1963) frame, public domain) | MIT OR Apache-2.0 |
 | `docs/images/filmcraft-effects.png` | FilmCraft contributors | Original work: FilmCraft screenshot crop; NASA Earth Views (US Government work, public domain) | MIT OR Apache-2.0; footage public domain |
 | `docs/images/filmcraft-timeline.png` | FilmCraft contributors | Original work: FilmCraft UI crop; thumbnails from Night of the Living Dead (1968) and Carnival of Souls (1962), CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
+| `assets/icons/craft/copy.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/extract.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/eye-off.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/eye.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/film.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/folder-open.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/folder.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/hand.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/image.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/insert.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/keyframe-ease.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/keyframe-hold.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/keyframe-linear.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/keyframe.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/lift.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/link.svg` | Cole Bemis / Feather; Lucide Contributors | Lucide (https://lucide.dev), derived from Feather (MIT); vendored via craft-icons | ISC + MIT (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/lock-open.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/lock.svg` | Cole Bemis / Feather; Lucide Contributors | Lucide (https://lucide.dev), derived from Feather (MIT); vendored via craft-icons | ISC + MIT (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/magnet.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/mark-in.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/mark-out.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/marker-timeline.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/mouse-pointer.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/music.svg` | Cole Bemis / Feather; Lucide Contributors | Lucide (https://lucide.dev), derived from Feather (MIT); vendored via craft-icons | ISC + MIT (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/overwrite.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/pause.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/pen-tool.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/play.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/playhead.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/range-select.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/rate-stretch.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/razor.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/redo-2.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/ripple-edit.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/rolling-edit.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/scissors.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/skip-back.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/skip-forward.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/slide.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/slip.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/square.svg` | Cole Bemis / Feather; Lucide Contributors | Lucide (https://lucide.dev), derived from Feather (MIT); vendored via craft-icons | ISC + MIT (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/timeline-zoom-fit.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/track-select-backward.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/track-select-forward.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/transition-dissolve.svg` | ArtCraft Team | original work in craft-icons (Lucide-compatible; ISC) | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/trash.svg` | Cole Bemis / Feather; Lucide Contributors | Lucide (https://lucide.dev), derived from Feather (MIT); vendored via craft-icons | ISC + MIT (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/type.svg` | Cole Bemis / Feather; Lucide Contributors | Lucide (https://lucide.dev), derived from Feather (MIT); vendored via craft-icons | ISC + MIT (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/undo-2.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/unlink.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/volume-2.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/volume-x.svg` | Lucide Contributors | Lucide (https://lucide.dev), vendored via craft-icons | ISC (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/zoom-in.svg` | Cole Bemis / Feather; Lucide Contributors | Lucide (https://lucide.dev), derived from Feather (MIT); vendored via craft-icons | ISC + MIT (`assets/icons/craft/LICENSE`) |
+| `assets/icons/craft/zoom-out.svg` | Cole Bemis / Feather; Lucide Contributors | Lucide (https://lucide.dev), derived from Feather (MIT); vendored via craft-icons | ISC + MIT (`assets/icons/craft/LICENSE`) |
 | `assets/app-icon/filmcraft.svg` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; canonical vector | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `packaging/macos/dmg/background.svg` | @XusBadia | Original work: FilmCraft macOS DMG window background, derived from the FilmCraft app icon (`assets/app-icon/filmcraft.svg`); rendered to `background.tiff` by `packaging/macos/dmg/generate.py` | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
 | `packaging/macos/dmg/background.tiff` | @XusBadia | Rendered from `packaging/macos/dmg/background.svg` by `packaging/macos/dmg/generate.py` | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
