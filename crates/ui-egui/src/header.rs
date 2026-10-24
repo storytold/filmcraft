@@ -114,7 +114,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let ws_resp = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app);
     // workspace name (caps)
-    let ws = crate::i18n::t(&app.ui.workspace).to_uppercase();
+    let ws = crate::i18n::to_uppercase(crate::i18n::t(&app.ui.workspace));
     let wg = p.layout_no_wrap(ws.clone(), Tokens::ui(11.0), t.text_dim);
     let wr = Rect::from_min_size(pos2(rx - wg.size().x + 10.0, rect.center().y - 10.0), vec2(wg.size().x + 8.0, 20.0));
     let wresp = ui.interact(wr, egui::Id::new("hdr-ws-name"), Sense::click());
@@ -180,5 +180,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if area.response.clicked_elsewhere() && !(ws_resp.clicked() || wresp.clicked()) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn workspace_name_uppercasing_is_turkish_aware() {
+        crate::i18n::set_current(crate::i18n::Language::Tr);
+        assert_eq!(crate::i18n::to_uppercase("Birleştirme"), "BİRLEŞTİRME");
+        assert_eq!(crate::i18n::to_uppercase("Altyazılar ve Grafikler"), "ALTYAZILAR VE GRAFİKLER");
+        crate::i18n::set_current(crate::i18n::Language::En);
+        assert_eq!(crate::i18n::to_uppercase("Birleştirme"), "BIRLEŞTIRME");
     }
 }

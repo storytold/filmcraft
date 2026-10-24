@@ -32,7 +32,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     };
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("fx-body"));
     bui.set_clip_rect(body);
-    let filter = q.to_lowercase();
+    let filter = q.trim();
     let defs = filmcraft_project::effect_defs();
     // folder tree: top-level categories in Premiere's order
     let tops = filmcraft_project::vtransition::EFFECT_TOP_FOLDERS;
@@ -42,19 +42,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     egui::ScrollArea::vertical().id_salt("fx-scroll").auto_shrink([false, false]).show(&mut bui, |ui| {
         for &top in tops {
             if top == "Presets" {
-                let any = app.session.presets.all().iter().any(|p| crate::i18n::matches_query(&p.name, &filter));
-                if any && folder_row(app, ui, top, 0, &filter) {
-                    preset_action = crate::panels::presets::folder_rows(app, ui, &filter).or(preset_action.take());
+                let any = app.session.presets.all().iter().any(|p| crate::i18n::matches_query(&p.name, filter));
+                if any && folder_row(app, ui, top, 0, filter) {
+                    preset_action = crate::panels::presets::folder_rows(app, ui, filter).or(preset_action.take());
                 }
                 continue;
             }
             if top == "Lumetri Presets" {
-                if let Some(name) = lumetri_rows(app, ui, &filter) {
+                if let Some(name) = lumetri_rows(app, ui, filter) {
                     lumetri_apply = Some(name);
                 }
                 continue;
             }
-            let mut items: Vec<_> = defs.iter().filter(|d| d.category.first() == Some(&top)).filter(|d| crate::i18n::matches_query(d.name, &filter)).collect();
+            let mut items: Vec<_> = defs.iter().filter(|d| d.category.first() == Some(&top)).filter(|d| crate::i18n::matches_query(d.name, filter)).collect();
             // Premiere lists effect folders and effects alphabetically (obsolete ones last)
             if top == "Video Effects" || top == "Legacy" {
                 items.sort_by_key(|d| (d.category.get(1) == Some(&"Obsolete"), d.category.get(1).copied().unwrap_or(""), d.name.to_ascii_lowercase()));
@@ -62,7 +62,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if !filter.is_empty() && items.is_empty() {
                 continue;
             }
-            let open = folder_row(app, ui, top, 0, &filter);
+            let open = folder_row(app, ui, top, 0, filter);
             if !open {
                 continue;
             }
@@ -79,7 +79,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 seen.push(s);
                 let key = format!("{top}/{s}");
-                if !s.is_empty() && !folder_row(app, ui, &key, 1, &filter) {
+                if !s.is_empty() && !folder_row(app, ui, &key, 1, filter) {
                     continue;
                 }
                 for d in items.iter().filter(|d| sub(d) == s) {
@@ -305,4 +305,28 @@ fn preset_grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) -> Option<
         }
     }
     apply
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effects_search_matches_turkish_casing() {
+        crate::i18n::set_current(crate::i18n::Language::Tr);
+        let ctx = egui::Context::default();
+        let session = filmcraft_engine::Session::default();
+        let mut app = FilmcraftApp::new(session);
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 600.0));
+        for query in ["IŞIK", "ışık", "Işık"] {
+            app.ui.effects_search = query.to_string();
+            app.auto.begin_frame();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                show(&mut app, ui, rect);
+            });
+            out.textures_delta.clear();
+            assert!(app.auto.find("effects.item.light_leaks").is_some(), "query `{query}` through effects search caller must find `light_leaks`",);
+        }
+        crate::i18n::set_current(crate::i18n::Language::En);
+    }
 }

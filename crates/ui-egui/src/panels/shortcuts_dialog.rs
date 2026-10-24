@@ -604,8 +604,8 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
     ui.add_space(4.0);
     let rows = app.session.execute("shortcuts.list", json!({})).unwrap_or_default();
     let rows = rows.as_array().cloned().unwrap_or_default();
-    let query = app.shortcut_editor.search.to_lowercase();
-    let rows: Vec<_> = rows.into_iter().filter(|row| matches_search(row, &query)).collect();
+    let query = app.shortcut_editor.search.trim();
+    let rows: Vec<_> = rows.into_iter().filter(|row| matches_search(row, query)).collect();
     let w = ui.available_width();
     // column header
     let (hr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
@@ -832,6 +832,16 @@ mod localization_tests {
             }
             let redo = l.tr("Redo").to_lowercase();
             assert!(!matches_search(&row, &redo), "{}: {redo}", l.code());
+        }
+        crate::i18n::set_current(crate::i18n::Language::En);
+    }
+
+    #[test]
+    fn command_search_accepts_turkish_casing() {
+        crate::i18n::set_current(crate::i18n::Language::Tr);
+        let row = json!({"id": "marker.in_out", "label": "Add Range Marker to In and Out", "category": "Marker", "shortcuts": []});
+        for query in ["ÇIKIŞ", "çıkış", "Çıkış"] {
+            assert!(matches_search(&row, query), "{query}");
         }
         crate::i18n::set_current(crate::i18n::Language::En);
     }

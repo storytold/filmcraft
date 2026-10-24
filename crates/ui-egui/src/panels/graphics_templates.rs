@@ -192,16 +192,16 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         install = r.clicked();
     });
     b.add_space(6.0);
-    let q = st.query.to_lowercase();
+    let q = st.query.trim();
     let shown: Vec<&LibraryEntry> = lib
         .iter()
         .filter(|e| {
             let tt = &e.template;
             (st.category.is_empty() || tt.category == st.category)
-                && (crate::i18n::matches_query(&tt.name, &q)
-                    || crate::i18n::matches_query(&tt.category, &q)
-                    || crate::i18n::matches_query(&tt.description, &q)
-                    || tt.tags.iter().any(|x| crate::i18n::matches_query(x, &q)))
+                && (crate::i18n::matches_query(&tt.name, q)
+                    || crate::i18n::matches_query(&tt.category, q)
+                    || crate::i18n::matches_query(&tt.description, q)
+                    || tt.tags.iter().any(|x| crate::i18n::matches_query(x, q)))
         })
         .collect();
     let selected = st.selected.clone();

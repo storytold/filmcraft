@@ -1231,7 +1231,6 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut pick: Option<&'static str> = None;
     let all = app.session.export_presets.all();
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
-    let q = m.query.to_lowercase();
     egui::Window::new(tl!("Preset Manager"))
         .id(egui::Id::new("Preset Manager"))
         .id(egui::Id::new("preset-manager"))
@@ -1247,11 +1246,12 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 reg.add("presetManager.search", r.rect, "Search");
                 check(ui, &mut reg, "presetManager.favoritesOnly", &mut m.favorites_only, tl!("Favorites only"));
             });
+            let q = m.query.trim();
             ui.separator();
             egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, false]).show(ui, |ui| {
                 let mut cat = String::new();
                 for p in all.iter().filter(|p| {
-                    (crate::i18n::matches_query(&p.name, &q) || crate::i18n::matches_query(&p.description, &q) || crate::i18n::matches_query(&p.category, &q))
+                    (crate::i18n::matches_query(&p.name, q) || crate::i18n::matches_query(&p.description, q) || crate::i18n::matches_query(&p.category, q))
                         && (!m.favorites_only || favorite(&p.name))
                 }) {
                     if p.category != cat {
