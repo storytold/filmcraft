@@ -165,15 +165,28 @@ pub(crate) struct Scratch {
     pub coef_c: [[i32; 64]; 2],
     /// Luma blocks with coefficients: raster 4x4 bits, or b8 bits in 8x8 mode.
     pub blk_nz: u16,
+    /// Subset of `blk_nz` with a non-zero AC coefficient (the others take the DC-only transform).
+    pub blk_ac: u16,
     /// Chroma blocks with coefficients (bit per raster 2x2 block).
     pub c_nz: [u8; 2],
+    /// Subset of `c_nz` with a non-zero AC coefficient.
+    pub c_ac: [u8; 2],
     pub pred: [[u8; 256]; 2],
     pub pred_c: [[[u8; 64]; 2]; 2],
 }
 
 impl Scratch {
     pub fn new() -> Box<Self> {
-        Box::new(Scratch { coef: [0; 256], coef_c: [[0; 64]; 2], blk_nz: 0, c_nz: [0; 2], pred: [[0; 256]; 2], pred_c: [[[0; 64]; 2]; 2] })
+        Box::new(Scratch {
+            coef: [0; 256],
+            coef_c: [[0; 64]; 2],
+            blk_nz: 0,
+            blk_ac: 0,
+            c_nz: [0; 2],
+            c_ac: [0; 2],
+            pred: [[0; 256]; 2],
+            pred_c: [[[0; 64]; 2]; 2],
+        })
     }
 }
 
@@ -891,8 +904,14 @@ impl<'a> SliceDecoder<'a> {
         let Some(blk) = self.s.coef.get_mut(raster * 16..).and_then(|c| c.first_chunk_mut::<16>()) else {
             return;
         };
-        transform::idct4_add(blk, &mut self.pic.planes.y[py * stride + px..], stride);
-        blk.fill(0);
+        let dst = &mut self.pic.planes.y[py * stride + px..];
+        if self.s.blk_ac & (1 << raster) == 0 {
+            transform::idct_dc_add::<4>(blk[0], dst, stride);
+            blk[0] = 0;
+        } else {
+            transform::idct4_add(blk, dst, stride);
+            blk.fill(0);
+        }
     }
 
     fn add_luma_block8(&mut self, b8: usize) {
@@ -905,8 +924,14 @@ impl<'a> SliceDecoder<'a> {
         let Some(blk) = self.s.coef.get_mut(b8 * 64..).and_then(|c| c.first_chunk_mut::<64>()) else {
             return;
         };
-        transform::idct8_add(blk, &mut self.pic.planes.y[py * stride + px..], stride);
-        blk.fill(0);
+        let dst = &mut self.pic.planes.y[py * stride + px..];
+        if self.s.blk_ac & (1 << b8) == 0 {
+            transform::idct_dc_add::<8>(blk[0], dst, stride);
+            blk[0] = 0;
+        } else {
+            transform::idct8_add(blk, dst, stride);
+            blk.fill(0);
+        }
     }
 
     fn add_chroma(&mut self) {
@@ -925,10 +950,17 @@ impl<'a> SliceDecoder<'a> {
                     continue;
                 };
                 let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
-                transform::idct4_add(blk, &mut plane[py * stride + px..], stride);
-                blk.fill(0);
+                let dst = &mut plane[py * stride + px..];
+                if self.s.c_ac[c] & (1 << b) == 0 {
+                    transform::idct_dc_add::<4>(blk[0], dst, stride);
+                    blk[0] = 0;
+                } else {
+                    transform::idct4_add(blk, dst, stride);
+                    blk.fill(0);
+                }
             }
             self.s.c_nz[c] = 0;
+            self.s.c_ac[c] = 0;
         }
     }
 
@@ -1003,6 +1035,7 @@ impl<'a> SliceDecoder<'a> {
         intra::pred_chroma(&mut self.pic.planes.cr, cs, cx, cy, mode, av);
         self.add_chroma();
         self.s.blk_nz = 0;
+        self.s.blk_ac = 0;
     }
 
     /// Add the residual of an inter MB (prediction already written).
@@ -1018,6 +1051,7 @@ impl<'a> SliceDecoder<'a> {
         }
         self.add_chroma();
         self.s.blk_nz = 0;
+        self.s.blk_ac = 0;
     }
 
     /// Write I_PCM samples.
@@ -1081,16 +1115,21 @@ impl<'a> SliceDecoder<'a> {
         let qp = self.qp;
         let ls = &self.ls.ls4[self.luma_list4()][(qp % 6) as usize];
         let blk = &mut self.s.coef[raster * 16..raster * 16 + 16];
-        let mut any = false;
-        for (k, &lv) in levels.iter().enumerate().skip(ac_only as usize) {
+        let dc = !ac_only && levels[0] != 0;
+        if dc {
+            blk[0] = transform::scale4(levels[0], ls[0], qp);
+        }
+        let mut ac = false;
+        for (k, &lv) in levels.iter().enumerate().skip(1) {
             if lv != 0 {
                 let p = ZIGZAG4[k] as usize;
                 blk[p] = transform::scale4(lv, ls[p], qp);
-                any = true;
+                ac = true;
             }
         }
-        if any {
+        if dc || ac {
             self.s.blk_nz |= 1 << raster;
+            self.s.blk_ac |= (ac as u16) << raster;
             self.pic.mbs[self.mb_addr].nz_mask |= 1 << raster;
         }
     }
@@ -1101,16 +1140,21 @@ impl<'a> SliceDecoder<'a> {
         let list = if self.mb().kind.is_intra() { 0 } else { 1 };
         let ls = &self.ls.ls8[list][(qp % 6) as usize];
         let blk = &mut self.s.coef[b8 * 64..b8 * 64 + 64];
-        let mut any = false;
-        for (k, &lv) in levels.iter().enumerate() {
+        let dc = levels[0] != 0;
+        if dc {
+            blk[0] = transform::scale8(levels[0], ls[0], qp);
+        }
+        let mut ac = false;
+        for (k, &lv) in levels.iter().enumerate().skip(1) {
             if lv != 0 {
                 let p = ZIGZAG8[k] as usize;
                 blk[p] = transform::scale8(lv, ls[p], qp);
-                any = true;
+                ac = true;
             }
         }
-        if any {
+        if dc || ac {
             self.s.blk_nz |= 1 << b8;
+            self.s.blk_ac |= (ac as u16) << b8;
             let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
             let m = (0b11u16 << (by * 4 + bx)) | (0b11u16 << ((by + 1) * 4 + bx));
             self.pic.mbs[self.mb_addr].nz_mask |= m;
@@ -1165,6 +1209,7 @@ impl<'a> SliceDecoder<'a> {
         }
         if any {
             self.s.c_nz[c] |= 1 << b;
+            self.s.c_ac[c] |= 1 << b;
         }
     }
 
