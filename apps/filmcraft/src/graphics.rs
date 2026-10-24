@@ -52,6 +52,10 @@ use eframe::{
 pub const STATE_FILE: &str = "graphics-start.json";
 /// The folder in the data folder with one attempt file per start that has not painted yet.
 pub const ATTEMPTS_DIR: &str = "graphics-start";
+/// The record left in the data folder when the graphics device was lost while the window ran
+/// (`{"reason", "unix", "mode", "recoveredIn"}`, see [`GraphicsStart::device_lost`]). The start
+/// mode in [`STATE_FILE`] is left alone: the next launch tries the GPU again.
+pub const DEVICE_LOST_FILE: &str = "graphics-device-lost.json";
 /// How long after launch a start that has not painted may die and still count as failed. A
 /// driver crash in instance or device creation happens within a second or two.
 pub const DEATH_WINDOW: Duration = Duration::from_secs(15);
@@ -107,6 +111,17 @@ pub const LADDER: &[Mode] = if cfg!(target_os = "windows") {
 } else {
     &[Mode::Default, Mode::Software]
 };
+
+/// The mode a window is recreated in after the graphics device was lost: the software adapter
+/// where the platform has one (nothing else survives a GPU without memory), else the default
+/// again on a new device.
+pub fn recovery_mode() -> Mode {
+    recovery_mode_in(LADDER)
+}
+
+fn recovery_mode_in(ladder: &[Mode]) -> Mode {
+    if ladder.contains(&Mode::Software) { Mode::Software } else { Mode::Default }
+}
 
 /// The mode after `mode` in `ladder`, if any.
 fn next_in(ladder: &[Mode], mode: Mode) -> Option<Mode> {
@@ -262,6 +277,9 @@ pub struct GraphicsStart {
     mode: Mode,
     /// [`Self::reset_to_default`] was used: a later [`Self::confirm`] must not save this mode over it.
     reset: Arc<AtomicBool>,
+    /// The window was recreated after a device loss ([`Self::device_lost`]): this process's mode
+    /// is temporary and never saved as the start mode.
+    recovering: bool,
 }
 
 impl GraphicsStart {
@@ -282,7 +300,7 @@ impl GraphicsStart {
         let forced = forced.map(|m| if LADDER.contains(&m) { m } else { first });
         let reset = Arc::new(AtomicBool::new(false));
         let Some(dir) = data_dir.filter(|_| !explicit_backend) else {
-            return Self { state: None, attempt: None, mode: forced.unwrap_or(Mode::Default), reset };
+            return Self { state: None, attempt: None, mode: forced.unwrap_or(Mode::Default), reset, recovering: false };
         };
         let state = dir.join(STATE_FILE);
         let attempts_dir = dir.join(ATTEMPTS_DIR);
@@ -323,7 +341,7 @@ impl GraphicsStart {
         {
             log::warn!("can't write {file}: {e}");
         }
-        let start = Self { state: Some(state), attempt: None, mode: next.mode, reset };
+        let start = Self { state: Some(state), attempt: None, mode: next.mode, reset, recovering: false };
         start.with_new_attempt(&attempts_dir, now, pid)
     }
 
@@ -371,11 +389,30 @@ impl GraphicsStart {
         true
     }
 
+    /// The graphics device was lost while the window ran: this start is over, the loss is recorded
+    /// in [`DEVICE_LOST_FILE`] and the window is recreated in `mode` for the rest of this process.
+    /// The saved start mode is left alone: another process taking the GPU's memory is a passing
+    /// condition, and the next launch should try the GPU again.
+    pub fn device_lost(&mut self, reason: &str, mode: Mode) {
+        self.finish();
+        self.attempt = None;
+        self.recovering = true;
+        let from = self.mode;
+        self.mode = mode;
+        log::warn!("graphics device lost ({reason}); the window is recreated with {} for the rest of this session", mode.label());
+        let Some(dir) = self.state.as_ref().and_then(|s| s.parent()) else { return };
+        let path = dir.join(DEVICE_LOST_FILE);
+        let text = serde_json::json!({ "reason": reason, "unix": unix_now(), "mode": from.name(), "recoveredIn": mode.name() }).to_string();
+        if let Err(e) = write_atomic(&path, &text) {
+            log::warn!("can't write {}: {e}", path.display());
+        }
+    }
+
     /// The window is up: keep this mode, and the failed starts in a row are over.
     pub fn confirm(&self) {
         self.finish();
         let Some(state) = &self.state else { return };
-        if self.reset.load(Ordering::Relaxed) {
+        if self.reset.load(Ordering::Relaxed) || self.recovering {
             return;
         }
         let ok = Saved { mode: self.mode, failures: 0 };

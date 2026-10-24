@@ -9,6 +9,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../assets/app-icon/filmcraft.ico");
     println!("cargo:rerun-if-env-changed=FILMCRAFT_REQUIRE_WINRES");
+    // Baked into the start-up log line (packaging sets it; a plain `cargo build` logs "unknown").
+    println!("cargo:rerun-if-env-changed=FILMCRAFT_BUILD_SHA");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }

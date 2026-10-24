@@ -28,7 +28,16 @@ pub fn install(log_dir: Option<std::path::PathBuf>) {
             let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
             let summary = format!("{msg} (at {at}, thread {thread})");
             *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(summary.clone());
+            // The app log too, so the panic sits next to what led up to it (the crash log has
+            // the backtrace; reading a crash means opening both otherwise).
+            log::error!("panic: {summary}");
             write_log(&summary);
+            // The normal app log too (`<data dir>/Logs/filmcraft.log` on the desktop), so the
+            // record sits next to what led up to it; the crash log has the backtrace.
+            match log_path() {
+                Some(path) => log::error!("panic: {summary}; backtrace in {}", path.display()),
+                None => log::error!("panic: {summary}"),
+            }
             prev(info);
         }));
     });
