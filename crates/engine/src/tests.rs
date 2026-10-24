@@ -26,6 +26,7 @@ fn clip_ids(s: &Session, track: usize) -> Vec<u64> {
 #[test]
 fn demo_project_is_valid_and_renders() {
     let s = demo();
+    assert_eq!(s.project.name, "FilmCraft – Demo Project");
     let q = s.active_sequence().unwrap();
     q.check().unwrap();
     assert_eq!(q.video_tracks[0].items.len(), 6);
