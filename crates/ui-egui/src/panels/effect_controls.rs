@@ -125,6 +125,13 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+/// The clip Effect Controls shows to paste onto: of the clips it lists (a linked video and audio
+/// pair shows both), the first on a track of `kind`, else the first.
+pub(crate) fn shown_clip(app: &FilmcraftApp, kind: Option<TrackKind>) -> Option<ClipId> {
+    let clips = selected_clips(app);
+    clips.iter().find(|(_, _, k)| Some(*k) == kind).or(clips.first()).map(|(c, ..)| *c)
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
@@ -262,6 +269,28 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let mut save_preset = false;
                 let fx_id = e.effect.clone();
                 resp.context_menu(|ui| {
+                    // Copy / Paste / Paste Settings (#1680)
+                    let copy = ui.button(tl!("Copy"));
+                    app.auto.add(&format!("effectControls.effect.{fx_id}.copy"), copy.rect, "Copy");
+                    if copy.clicked() {
+                        actions.push(("effects.copy".into(), json!({"clip": clip.0, "indices": [idx]})));
+                        ui.close();
+                    }
+                    let copied = app.session.state.effect_clipboard.as_ref();
+                    let paste = ui.add_enabled(copied.is_some(), egui::Button::new(tl!("Paste")));
+                    app.auto.add(&format!("effectControls.effect.{fx_id}.paste"), paste.rect, "Paste");
+                    if paste.clicked() {
+                        actions.push(("effects.paste".into(), json!({"clips": [clip.0]})));
+                        ui.close();
+                    }
+                    let same = copied.is_some_and(|c| c.effects.iter().any(|e| e.effect == fx_id));
+                    let settings = ui.add_enabled(same, egui::Button::new(tl!("Paste Settings")));
+                    app.auto.add(&format!("effectControls.effect.{fx_id}.pasteSettings"), settings.rect, "Paste Settings");
+                    if settings.clicked() {
+                        actions.push(("effects.pasteSettings".into(), json!({"clip": clip.0, "index": idx})));
+                        ui.close();
+                    }
+                    ui.separator();
                     let sp = ui.button(tl!("Save Preset…"));
                     app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
                     if sp.clicked() {

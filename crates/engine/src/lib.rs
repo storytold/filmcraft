@@ -18,6 +18,7 @@ pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod doc_path;
+pub mod effect_clipboard;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -397,6 +398,9 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// Effects copied in Effect Controls (`effects.copy`, #1680).
+    #[serde(skip)]
+    pub effect_clipboard: Option<effect_clipboard::CopiedEffects>,
     /// Captions copied from the Timeline, with their caption track's index (starts relative to the
     /// copied range). Copying clips empties it and copying captions empties `clipboard`, so Paste
     /// places whichever was copied last.
@@ -1270,6 +1274,8 @@ mod avi_import_tests;
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
+#[cfg(test)]
+mod effect_clipboard_tests;
 #[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]
