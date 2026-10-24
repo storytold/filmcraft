@@ -15,7 +15,9 @@
 //!   `pm.calculate`, `pm.sizes`, `pm.ok`, `pm.cancel`.
 
 use egui::{Color32, RichText};
+use filmcraft_project::{ItemId, MediaRef};
 use serde_json::{Value, json};
+use std::path::Path;
 
 use crate::native_dialogs::FileDialog;
 use crate::state::{LinkMediaDraft, ProjectManagerDraft, ProxyDraft};
@@ -29,6 +31,61 @@ fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: imp
 
 fn mb(b: u64) -> String {
     if b >= 1 << 30 { format!("{:.2} GB", b as f64 / (1u64 << 30) as f64) } else { format!("{:.1} MB", b as f64 / (1u64 << 20) as f64) }
+}
+
+fn proxy_path_matches(original: &str, proxy_path: &str) -> bool {
+    let Some(proxy_stem) = Path::new(proxy_path).file_stem().map(|s| s.to_string_lossy()) else { return false };
+    if proxy_stem.eq_ignore_ascii_case(original) {
+        return true;
+    }
+    let Some((base, suffix)) = proxy_stem.rsplit_once('_') else { return false };
+    suffix.eq_ignore_ascii_case("proxy") && base.eq_ignore_ascii_case(original)
+}
+
+fn match_proxy_paths(originals: &[(ItemId, String)], paths: &[String]) -> Result<Vec<(ItemId, String)>, String> {
+    if originals.len() != paths.len() {
+        return Err("select exactly one proxy file for each selected clip".into());
+    }
+    let mut used = vec![false; paths.len()];
+    let mut pairs = Vec::with_capacity(originals.len());
+    for (item, original_path) in originals {
+        let Some(original_stem) = Path::new(original_path).file_stem().map(|s| s.to_string_lossy()) else {
+            return Err(format!("{} has no file name to match a proxy", original_path));
+        };
+        let mut match_index = None;
+        for (index, proxy_path) in paths.iter().enumerate() {
+            if used.get(index).copied() == Some(false) && proxy_path_matches(&original_stem, proxy_path) {
+                if match_index.is_some() {
+                    return Err(format!("more than one selected proxy matches {}", original_stem));
+                }
+                match_index = Some(index);
+            }
+        }
+        let Some(index) = match_index else {
+            return Err(format!("no selected proxy matches {}; use the original file name or FilmCraft's _Proxy suffix", original_stem));
+        };
+        let Some(used_slot) = used.get_mut(index) else {
+            return Err("selected proxy list changed while matching".into());
+        };
+        *used_slot = true;
+        let Some(path) = paths.get(index) else { return Err("selected proxy path is missing".into()) };
+        pairs.push((*item, path.clone()));
+    }
+    Ok(pairs)
+}
+
+fn selected_proxy_sources(app: &FilmcraftApp, items: &[ItemId]) -> Result<Vec<(ItemId, String)>, String> {
+    items
+        .iter()
+        .map(|item| {
+            let project_item = app.session.project.item(*item).ok_or_else(|| format!("no project item {}", item.0))?;
+            let media = project_item.as_media().ok_or_else(|| format!("{} is not media", project_item.name))?;
+            match &media.media {
+                MediaRef::File { path } => Ok((*item, path.clone())),
+                MediaRef::Generator(_) => Err(format!("{} is not file media", project_item.name)),
+            }
+        })
+        .collect()
 }
 
 /// Draw whichever media dialogs are open; open Link Media when a project needs it.
@@ -78,7 +135,30 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             app.ui.create_proxies = Some(ProxyDraft { items, preset: filmcraft_engine::proxies::DEFAULT_PROXY_PRESET.into(), destination: String::new() });
             json!({"dialog": "createProxies"})
         })),
-        "media.attachProxies" | "media.reconnectFullRes" => {
+        "media.attachProxies" => {
+            let items = app.session.state.project_selection.clone();
+            let Some(item) = items.first().copied() else { return Some(Err("select a clip in the Project panel".into())) };
+            let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS.to_vec();
+            if items.len() == 1 {
+                let hint = RelinkHint { command: id.to_string(), params: json!({"item": item.0}) };
+                let id = id.to_string();
+                Some(app.pick(FileDialog::Relink { exts: exts.iter().map(|e| e.to_string()).collect(), hint }, move |app, paths| {
+                    let Some(picked) = paths.into_iter().next() else { return Ok(Value::Null) };
+                    app.session.execute(&id, json!({"item": item.0, "path": picked})).map_err(|e| e.to_string())
+                }))
+            } else {
+                Some(app.pick(FileDialog::open_files(&exts), move |app, paths| {
+                    if paths.is_empty() {
+                        return Ok(Value::Null);
+                    }
+                    let originals = selected_proxy_sources(app, &items)?;
+                    let pairs = match_proxy_paths(&originals, &paths)?;
+                    let (items, paths): (Vec<_>, Vec<_>) = pairs.into_iter().map(|(item, path)| (item.0, path)).unzip();
+                    app.session.execute("media.attachProxies", json!({"items": items, "paths": paths})).map_err(|e| e.to_string())
+                }))
+            }
+        }
+        "media.reconnectFullRes" => {
             let item = app.session.state.project_selection.first().copied();
             let Some(item) = item else { return Some(Err("select a clip in the Project panel".into())) };
             let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS.to_vec();
@@ -642,5 +722,29 @@ fn relink_to(app: &mut FilmcraftApp, d: &mut LinkMediaDraft, item: &Value, path:
             app.ui.status = tlf!("Linked {n} clip(s)", n = v["relinked"].as_array().map_or(0, Vec::len));
         }
         Err(e) => d.message = e.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod proxy_attach_tests {
+    use super::{match_proxy_paths, proxy_path_matches};
+    use filmcraft_project::ItemId;
+
+    #[test]
+    fn selected_proxy_files_match_clips_by_name_instead_of_picker_order() {
+        let originals = vec![(ItemId(4), "D:/Footage/Scene A.mov".to_string()), (ItemId(9), "D:/Footage/Scene B.mp4".to_string())];
+        let picked = vec!["D:/Proxies/Scene B_Proxy.mov".to_string(), "D:/Proxies/Scene A.mov".to_string()];
+        assert_eq!(
+            match_proxy_paths(&originals, &picked).unwrap(),
+            vec![(ItemId(4), "D:/Proxies/Scene A.mov".to_string()), (ItemId(9), "D:/Proxies/Scene B_Proxy.mov".to_string())]
+        );
+        assert!(proxy_path_matches("Scene B", "D:/Proxies/scene b_proxy.MOV"));
+    }
+
+    #[test]
+    fn proxy_batch_requires_one_unambiguous_filename_match_per_clip() {
+        let originals = vec![(ItemId(4), "D:/Footage/Scene A.mov".to_string()), (ItemId(9), "D:/Footage/Scene B.mp4".to_string())];
+        assert!(match_proxy_paths(&originals, &["D:/Proxies/Scene A_Proxy.mov".to_string()]).is_err());
+        assert!(match_proxy_paths(&originals[..1], &["D:/Proxies/Scene A_Proxy.mov".to_string(), "D:/Proxies/Scene A.mov".to_string()]).is_err());
     }
 }
