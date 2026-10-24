@@ -5,7 +5,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (language table: German covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (language table: Czech, #1156; previously: German covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -86,6 +86,7 @@ Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings
 | Indonesian | partial (whole interface; native review welcome) | ~100% |
 | Italian | partial (whole interface; native review welcome) | ~100% |
 | Korean | partial (whole interface; needs an installed Hangul font; native review welcome) | ~100% |
+| Czech | partial (whole interface; native review needed) | 100% |
 | Japanese | partial (whole interface) | 99.7% |
 | German | partial (whole interface; menus native-reviewed, the rest welcome) | ~100% |
 | Vietnamese | none | 0% |
@@ -166,6 +167,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | Language table: Czech (#1156, 100%) |
 | 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
 | 2026-10-11 | minor | Language table: German ships the menus (#630, 10.6%) |
