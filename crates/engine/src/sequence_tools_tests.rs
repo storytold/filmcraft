@@ -671,3 +671,30 @@ fn move_to_new_track_adds_it_in_one_undo_step() {
     assert_eq!(*s.active_sequence().unwrap(), before);
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// The Timeline's clip menu offered Reveal Nested Sequence on plain clips and Join Through Edits
+/// with no through edits; both failed when chosen. They are enabled when there is something to
+/// reveal or join.
+#[test]
+fn reveal_nested_and_join_through_edits_are_enabled_only_when_they_can_act() {
+    let mut s = demo();
+    let first = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    s.execute("timeline.select", json!({"clips": [first.0]})).unwrap();
+    s.execute("playhead.set", json!({"frame": 5})).unwrap();
+    assert!(!s.is_enabled("sequence.revealNested"), "a plain clip, nothing nested under the playhead");
+    assert!(!s.is_enabled("sequence.joinThroughEdits"), "the demo has no through edits");
+    // a nested clip to reveal
+    s.execute("clip.nest", json!({"name": "Nest"})).unwrap();
+    let nest = s.active_sequence().unwrap().all_tracks().flat_map(|t| &t.items).find(|i| s.project.sequence(i.item).is_some()).map(|i| i.id).unwrap();
+    s.execute("timeline.select", json!({"clips": [nest.0]})).unwrap();
+    assert!(s.is_enabled("sequence.revealNested"));
+    s.execute("sequence.revealNested", json!({})).unwrap();
+    // a through edit to join
+    let mut s = demo();
+    s.execute("playhead.set", json!({"frame": 30})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    assert!(s.is_enabled("sequence.joinThroughEdits"));
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    s.execute("sequence.joinThroughEdits", json!({})).unwrap();
+    assert!(!s.is_enabled("sequence.joinThroughEdits"), "all joined");
+}
