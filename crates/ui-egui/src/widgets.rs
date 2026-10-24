@@ -189,6 +189,7 @@ fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberO
             out = Some(nv);
         }
     }
+    confine_pointer_while_dragging(ui, &resp);
     if resp.clicked() {
         ui.data_mut(|d| {
             d.insert_temp(id.with("editing"), format!("{value:.decimals$}"));
@@ -210,6 +211,17 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
             1.0
         }
     })
+}
+
+/// Keep a numeric drag inside the application window. Egui still receives ordinary pointer
+/// movement, but the operating system no longer lets the cursor leave the viewport mid-edit.
+fn confine_pointer_while_dragging(ui: &Ui, response: &Response) {
+    if response.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined));
+    }
+    if response.drag_stopped() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+    }
 }
 
 /// A compact colour swatch whose popup includes a copyable/pastable hex text field.
@@ -538,11 +550,57 @@ pub fn meter_bar(painter: &egui::Painter, rect: Rect, db: f32, peak_db: f32, t: 
     );
 }
 
+/// A drag value that confines the cursor while scrubbing and accepts calculations such as `100*2`
+/// or `*2` to double the value.
+pub struct NumberDrag<'a> {
+    inner: egui::DragValue<'a>,
+}
+
+impl<'a> NumberDrag<'a> {
+    pub fn range<Num: egui::emath::Numeric>(mut self, range: std::ops::RangeInclusive<Num>) -> Self {
+        self.inner = self.inner.range(range);
+        self
+    }
+
+    pub fn speed(mut self, speed: impl Into<f64>) -> Self {
+        self.inner = self.inner.speed(speed);
+        self
+    }
+
+    pub fn prefix(mut self, prefix: impl egui::IntoAtoms<'a>) -> Self {
+        self.inner = self.inner.prefix(prefix);
+        self
+    }
+
+    pub fn suffix(mut self, suffix: impl egui::IntoAtoms<'a>) -> Self {
+        self.inner = self.inner.suffix(suffix);
+        self
+    }
+
+    pub fn max_decimals(mut self, decimals: usize) -> Self {
+        self.inner = self.inner.max_decimals(decimals);
+        self
+    }
+
+    pub fn fixed_decimals(mut self, decimals: usize) -> Self {
+        self.inner = self.inner.fixed_decimals(decimals);
+        self
+    }
+}
+
+impl egui::Widget for NumberDrag<'_> {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let response = ui.add(self.inner);
+        confine_pointer_while_dragging(ui, &response);
+        response
+    }
+}
+
 /// An egui `DragValue` (the number fields of dialogs and Settings) that also takes a calculation
 /// ([`crate::calc`]) applied to the value it holds: `100*2`, or `*2` to double it.
-pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> egui::DragValue<'_> {
+pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> NumberDrag<'_> {
     let current = value.to_f64();
-    egui::DragValue::new(value).custom_parser(move |s| crate::calc::eval(s, current))
+    NumberDrag { inner: egui::DragValue::new(value).custom_parser(move |s| crate::calc::eval(s, current)) }
 }
 
 /// What a pointer is over on a zoom scroll bar (the Timeline's and the monitors'): the circular
@@ -819,6 +877,35 @@ mod tests {
         let Some([from, to]) = range else { panic!("the drag leaves a selection") };
         assert_ne!(from, egui::text::CCursor::new(0), "the selection starts where the drag began");
         assert_eq!(to, egui::text::CCursor::new(5));
+    }
+
+    #[test]
+    fn dragging_a_hot_number_confines_the_cursor_and_releases_it() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("captured-hot-number");
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let mut value = 123.5;
+        let mut rect = Rect::NOTHING;
+        let frame = |events: Vec<egui::Event>, value: &mut f64, rect: &mut Rect| {
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))), events, ..Default::default() }, |ui| {
+                    *rect = hot_number(ui, id, *value, 1.0, (0.0, 1000.0), 1, "", &t).0.rect;
+                });
+            let commands = output.viewport_output.get(&egui::ViewportId::ROOT).map(|viewport| viewport.commands.clone()).unwrap_or_default();
+            output.textures_delta.clear();
+            commands
+        };
+
+        frame(vec![], &mut value, &mut rect);
+        let start = rect.center();
+        let button = |pressed, pos| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(vec![egui::Event::PointerMoved(start)], &mut value, &mut rect);
+        frame(vec![button(true, start)], &mut value, &mut rect);
+        let commands = frame(vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0))], &mut value, &mut rect);
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined))));
+
+        let commands = frame(vec![button(false, start + vec2(20.0, 0.0))], &mut value, &mut rect);
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorGrab(egui::CursorGrab::None))));
     }
 
     /// Dialogs open centred and can be dragged by their title bar (anchored ones could not).

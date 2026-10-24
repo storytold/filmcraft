@@ -164,8 +164,8 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, duration:
 
 /// Alt+wheel scales the lane around the timeline time directly under the pointer. The modified
 /// wheel is consumed here so it cannot also scroll the effect rows or the surrounding view.
-fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, duration: Tick, rate: filmcraft_time::FrameRate) {
-    let Some(pointer) = ui.input(|i| i.pointer.hover_pos()).filter(|p| lane.contains(*p)) else { return };
+fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, duration: Tick, rate: filmcraft_time::FrameRate) -> bool {
+    let Some(pointer) = ui.input(|i| i.pointer.hover_pos()).filter(|p| lane.contains(*p)) else { return false };
     let (delta, has_alt) = ui.input(|input| {
         let mut delta = 0.0f32;
         let mut has_alt = false;
@@ -188,7 +188,7 @@ fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, durati
         (delta, has_alt)
     });
     if !has_alt {
-        return;
+        return false;
     }
     // ScrollArea reads the aggregated deltas, while other panel gestures can inspect raw events.
     // Remove Alt-wheel events and rebuild both deltas from any ordinary wheel events left in this
@@ -210,8 +210,11 @@ fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, durati
         });
         input.smooth_scroll_delta = remaining;
     });
+    // The keyframe lane shares a vertical ScrollArea with the effect rows. An Alt-wheel event
+    // belongs to zooming, not that ScrollArea; disable its mouse-wheel source below even for tiny
+    // high-resolution wheel deltas which do not yet change the zoom range.
     if delta.abs() < 0.01 {
-        return;
+        return true;
     }
     let (start, end) = time_zoom_range(app.ui.effect_controls_time_zoom);
     let span = end - start;
@@ -226,6 +229,7 @@ fn zoom_at_pointer(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, durati
     let new_start = (anchor - under_pointer * new_span).clamp(0.0, 1.0 - new_span);
     app.ui.effect_controls_time_zoom = (new_start > 0.0 || new_start + new_span < 1.0).then_some([new_start, new_start + new_span]);
     ui.input_mut(|input| input.smooth_scroll_delta = egui::Vec2::ZERO);
+    true
 }
 
 // The press frame can include movement before the button went down. Start from the press
@@ -580,16 +584,50 @@ pub(crate) fn delete_for_shortcut(app: &mut FilmcraftApp, ctx: &egui::Context) {
         run(app, ctx, vec![("effects.deleteKeyframes".into(), json!({"keyframes": app.ui.keyframe_selection}))]);
         return;
     }
-    let Some((clip, item, _)) = selected_clip(app) else { return };
-    let mut indices = removable_effect_indices(app, clip, &item.effects, None);
-    if indices.is_empty()
-        && let Some(index) =
-            app.session.state.selected_effect.as_ref().filter(|selection| selection.clip == clip).and_then(|selection| selection.index(&item.effects))
-    {
-        indices = removable_effect_indices(app, clip, &item.effects, Some(index));
+    let mut actions = Vec::new();
+    for (clip, item, _) in selected_clips(app) {
+        let mut indices = removable_effect_indices(app, clip, &item.effects, None);
+        if indices.is_empty()
+            && let Some(index) =
+                app.session.state.selected_effect.as_ref().filter(|selection| selection.clip == clip).and_then(|selection| selection.index(&item.effects))
+        {
+            indices = removable_effect_indices(app, clip, &item.effects, Some(index));
+        }
+        if !indices.is_empty() {
+            actions.push(("effects.removeMany".into(), json!({"clip": clip.0, "indices": indices})));
+        }
     }
-    if !indices.is_empty() {
-        run(app, ctx, vec![("effects.removeMany".into(), json!({"clip": clip.0, "indices": indices}))]);
+    if !actions.is_empty() {
+        run(app, ctx, actions);
+    }
+}
+
+#[cfg(test)]
+mod delete_shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn deleting_a_selected_audio_effect_uses_the_linked_audio_clip() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let (video, audio) = {
+            let sequence = session.active_sequence().unwrap();
+            (sequence.video_tracks[0].items[0].id, sequence.audio_tracks[0].items[0].id)
+        };
+        session.execute("timeline.select", json!({"clips": [audio.0]})).unwrap();
+        session.execute("effects.apply", json!({"clips": [audio.0], "effect": "amplify"})).unwrap();
+        session.execute("effects.select", json!({"clip": audio.0, "effect": "amplify"})).unwrap();
+        let audio_effects = &session.active_sequence().unwrap().find_item(audio).unwrap().1.effects;
+        let selected =
+            filmcraft_engine::EffectSel::of(audio, audio_effects, audio_effects.iter().position(|effect| effect.effect == "amplify").unwrap()).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.selected_effects = vec![selected];
+
+        delete_for_shortcut(&mut app, &egui::Context::default());
+
+        let sequence = app.session.active_sequence().unwrap();
+        assert!(sequence.find_item(audio).unwrap().1.effects.iter().all(|effect| effect.effect != "amplify"));
+        assert!(sequence.find_item(video).unwrap().1.effects.iter().all(|effect| effect.effect != "amplify"));
     }
 }
 
@@ -660,7 +698,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ph = app.session.playhead();
     let rate = seq.settings.frame_rate;
     app.ui.effect_controls_time_zoom = constrained_time_zoom(app.ui.effect_controls_time_zoom, it.duration, rate);
-    zoom_at_pointer(app, ui, lane, it.duration, rate);
+    let zooming_at_pointer = zoom_at_pointer(app, ui, lane, it.duration, rate);
     let (shown_start, shown_end) = shown_range(it.start, it.duration, app.ui.effect_controls_time_zoom);
     let shown_duration = shown_end.0.saturating_sub(shown_start.0).max(1) as f64;
     let lx = |tk: Tick| -> f32 { lane.min.x + (((tk.0.saturating_sub(shown_start.0) as f64 / shown_duration) as f32).clamp(0.0, 1.0)) * lane.width() };
@@ -693,7 +731,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // scrollbar sits at the panel's right edge (#643)
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(body.min, pos2(lane.max.x, body.max.y))).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
-    let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).show(&mut bui, |bui| {
+    let scroll_source = egui::scroll_area::ScrollSource { mouse_wheel: !zooming_at_pointer, ..Default::default() };
+    let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).scroll_source(scroll_source).show(&mut bui, |bui| {
         for (clip, it, kind) in &clips {
             let clip = *clip;
             let (hr, _) = bui.allocate_exact_size(vec2(body.width(), 18.0), Sense::hover());
@@ -2359,6 +2398,49 @@ mod lane_tests {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, &Tokens::for_kind(Default::default()));
         ctx
+    }
+
+    #[test]
+    fn alt_wheel_zoom_does_not_scroll_the_effect_rows() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.effect_controls_time_zoom = Some([0.2, 0.8]);
+        let ctx = context();
+        let lane = Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 30.0));
+        let pointer = pos2(120.0, 15.0);
+        let rate = filmcraft_time::FrameRate { num: 30, den: 1 };
+        let before = app.ui.effect_controls_time_zoom;
+        let mut draw = |events: Vec<egui::Event>| {
+            let mut zooming = false;
+            let mut scroll_offset = egui::Vec2::ZERO;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 120.0))), events, ..Default::default() }, |ui| {
+                    zooming = zoom_at_pointer(&mut app, ui, lane, Tick(filmcraft_time::TICKS_PER_SECOND * 10), rate);
+                    let source = egui::scroll_area::ScrollSource { mouse_wheel: !zooming, ..Default::default() };
+                    scroll_offset = egui::ScrollArea::vertical()
+                        .id_salt("alt-wheel-scroll-test")
+                        .max_height(40.0)
+                        .scroll_source(source)
+                        .show(ui, |ui| ui.add_space(400.0))
+                        .state
+                        .offset;
+                });
+            output.textures_delta.clear();
+            (zooming, scroll_offset)
+        };
+
+        draw(vec![egui::Event::PointerMoved(pointer)]);
+        let (zooming, scroll_offset) = draw(vec![
+            egui::Event::PointerMoved(pointer),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -120.0),
+                modifiers: egui::Modifiers::ALT,
+                phase: egui::TouchPhase::Move,
+            },
+        ]);
+        assert!(zooming);
+        assert_ne!(app.ui.effect_controls_time_zoom, before, "Alt-wheel still changes keyframe zoom");
+        assert_eq!(scroll_offset.y, 0.0, "the effect rows must not scroll during zoom");
     }
 
     /// A project file is only checked for overflow, so a damaged one can carry a clip with no
