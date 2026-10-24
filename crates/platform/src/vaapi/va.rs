@@ -510,6 +510,10 @@ impl Accel for Session {
         &self.surfaces
     }
 
+    fn decoded_refs_only(&self) -> bool {
+        super::radeonsi(self.vendor())
+    }
+
     fn decode_h264(
         &mut self,
         target: usize,

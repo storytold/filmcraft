@@ -56,6 +56,20 @@ pub trait Accel: Send {
     /// when `None`: the stand-ins for reference pictures that were never decoded, as the software
     /// decoders make them.
     fn fill(&mut self, index: usize, from: Option<usize>) -> std::result::Result<(), String>;
+    /// Whether the driver decodes only from reference pictures it decoded itself, so no stand-in
+    /// ([`Accel::fill`]) may be handed to it as a reference (Mesa radeonsi with VCN dynamic DPB).
+    /// Elsewhere stand-ins are listed as references, as before, and a picture predicted from a
+    /// frame_num gap still decodes in hardware.
+    fn decoded_refs_only(&self) -> bool {
+        true
+    }
+}
+
+/// Mesa's radeonsi VA-API driver, by its vendor string ("Mesa Gallium driver 26.1.0 for AMD Radeon
+/// 8060S Graphics (radeonsi, gfx1151, …)").
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux session and the tests
+pub(crate) fn radeonsi(vendor: &str) -> bool {
+    vendor.contains("radeonsi")
 }
 
 #[cfg(target_os = "linux")]

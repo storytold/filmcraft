@@ -23,15 +23,29 @@ use crate::biplanar::{self, Biplanar, Geometry};
 struct Recorder {
     ids: Vec<ffi::VASurfaceID>,
     decoded: Vec<bool>,
+    /// Surfaces holding a stand-in ([`Accel::fill`]) rather than a picture the hardware decoded.
+    filled: Vec<bool>,
     pictures: usize,
     frame: VideoFrame,
+    /// [`Accel::decoded_refs_only`]: true like radeonsi, false like a driver that takes stand-ins.
+    strict: bool,
+    /// For each [`Accel::read`], in order: whether that surface held a stand-in.
+    reads: Vec<bool>,
 }
 
 impl Recorder {
     fn new(count: usize) -> Self {
         let g = Geometry { crop: (0, 0, 2, 2), bits: 8, color: Default::default(), par: (1, 1) };
         let frame = biplanar::to_frame(&Biplanar { luma: &[128; 4], chroma: &[128; 2], stride: 2, rows: 2 }, &g).unwrap();
-        Self { ids: (0..count as u32).map(|i| 0x100 + i).collect(), decoded: vec![false; count], pictures: 0, frame }
+        Self {
+            ids: (0..count as u32).map(|i| 0x100 + i).collect(),
+            decoded: vec![false; count],
+            filled: vec![false; count],
+            pictures: 0,
+            frame,
+            strict: true,
+            reads: Vec::new(),
+        }
     }
 }
 
@@ -104,6 +118,9 @@ impl Accel for Recorder {
         for r in &refs {
             let i = self.ids.iter().position(|&id| id == r.picture_id).expect("reference is a decoder surface");
             assert!(self.decoded[i], "reference surface {i} holds a picture");
+            // never a stand-in ([`Accel::fill`]): a driver keeping its own copy of each picture it
+            // decoded has none for one (and list entries are reference frames, checked below)
+            assert!(!self.strict || !self.filled[i], "reference surface {i} holds a picture the hardware decoded, not a stand-in");
             assert!(r.flags & (ffi::VA_PICTURE_H264_SHORT_TERM_REFERENCE | ffi::VA_PICTURE_H264_LONG_TERM_REFERENCE) != 0, "reference flags");
         }
         assert!(!slices.is_empty());
@@ -124,19 +141,26 @@ impl Accel for Recorder {
             }
         }
         self.decoded[target] = true;
+        self.filled[target] = false;
         self.pictures += 1;
         Ok(())
     }
 
     fn read(&mut self, index: usize) -> Result<VideoFrame, String> {
         assert!(self.decoded[index], "read back a decoded surface");
+        self.reads.push(self.filled[index]);
         Ok(self.frame.clone())
     }
 
     fn fill(&mut self, index: usize, from: Option<usize>) -> Result<(), String> {
         assert!(from.is_none_or(|f| self.decoded[f]));
         self.decoded[index] = true;
+        self.filled[index] = true;
         Ok(())
+    }
+
+    fn decoded_refs_only(&self) -> bool {
+        self.strict
     }
 }
 
@@ -176,9 +200,16 @@ fn read_stream(path: &std::path::Path) -> Stream {
 }
 
 fn front(s: &Stream) -> Front<Recorder> {
+    front_with(s, true)
+}
+
+/// A front end over a recorder that is (`strict`) or is not held to decoded references.
+fn front_with(s: &Stream, strict: bool) -> Front<Recorder> {
     let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
     let mbs = (info.coded.0 / 16, info.coded.1 / 16);
-    Front::new(Recorder::new(18), info.length_size, mbs, &info.parameter_sets).unwrap()
+    let mut r = Recorder::new(18);
+    r.strict = strict;
+    Front::new(r, info.length_size, mbs, &info.parameter_sets).unwrap()
 }
 
 fn pts(frames: &[DecodedFrame]) -> Vec<i64> {
@@ -231,6 +262,88 @@ fn output_order_and_buffers_match_the_software_decoder() {
         b.extend(run_software(sw.as_mut(), &s.samples[mid..]));
         assert_eq!(a, b, "{name} with a flush at {mid}");
     }
+}
+
+/// A picture predicted from a frame_num gap within the stream (a lost reference picture) is not
+/// handed to the hardware with a stand-in as its reference: it is an error, so the hybrid decoder
+/// replays it in software. A gap at the start of a run (an open-GOP seek) is concealed instead,
+/// see [`output_order_and_buffers_match_the_software_decoder`].
+#[test]
+fn a_picture_predicted_from_a_frame_num_gap_is_unsupported() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    // baseline, no B pictures: every picture after the IDR is a P reference picture
+    let (name, profile, params) = STREAMS[1];
+    let Some(path) = fixture(&ff, name, profile, params) else { return };
+    let s = read_stream(&path);
+    assert!(!s.sync[1..4].iter().any(|&k| k), "{name}: samples 1 to 3 are P pictures");
+    let mut f = front(&s);
+    for (smp, p) in &s.samples[..2] {
+        f.decode(smp, *p).unwrap();
+    }
+    // sample 2 is lost: sample 3's frame_num skips one, and its first reference is the gap frame
+    let (smp, p) = &s.samples[3];
+    let Err(err) = f.decode(smp, *p) else { panic!("{name}: the picture after the gap was handed to the hardware") };
+    let err = err.to_string();
+    assert!(err.contains("a picture predicted from a frame_num gap"), "{err}");
+    assert_eq!(f.accel().pictures, 2, "nothing submitted with a stand-in reference");
+}
+
+/// A picture the front end concealed (filled from another picture
+/// or grey, never decoded) is emitted as inexact (`draft`), so the frame cache never serves it to
+/// an exact request; a decoded picture stays exact.
+#[test]
+fn a_concealed_picture_is_emitted_as_inexact() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let (name, profile, params) = STREAMS[2]; // open GOP: leading pictures after a seek
+    let Some(path) = fixture(&ff, name, profile, params) else { return };
+    let s = read_stream(&path);
+    let k = (1..s.samples.len()).find(|&i| s.sync[i]).expect("a second sync sample");
+    let mut f = front(&s);
+    let end = (k + 13).min(s.samples.len());
+    let mut frames = Vec::new();
+    for (smp, p) in &s.samples[k..end] {
+        frames.extend(f.decode(smp, *p).unwrap());
+    }
+    frames.extend(f.flush().unwrap());
+    let reads = f.accel().reads.clone();
+    assert_eq!(reads.len(), frames.len(), "one read per emitted frame");
+    assert!(reads.iter().any(|&filled| filled), "{name}: the seek conceals leading pictures");
+    for (fr, filled) in frames.iter().zip(&reads) {
+        assert_eq!(
+            fr.draft,
+            *filled,
+            "{name}: the frame at {} is {} but emitted with draft = {}",
+            fr.pts,
+            if *filled { "concealed" } else { "decoded" },
+            fr.draft
+        );
+    }
+}
+
+/// A driver that takes stand-in references (not radeonsi) keeps the old behaviour: the picture
+/// after a frame_num gap is decoded in hardware, its gap reference listed as before.
+#[test]
+fn a_driver_that_takes_stand_ins_decodes_past_a_frame_num_gap_in_hardware() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let (name, profile, params) = STREAMS[1];
+    let Some(path) = fixture(&ff, name, profile, params) else { return };
+    let s = read_stream(&path);
+    let mut f = front_with(&s, false);
+    for (smp, p) in &s.samples[..2] {
+        f.decode(smp, *p).unwrap();
+    }
+    let (smp, p) = &s.samples[3];
+    f.decode(smp, *p).unwrap_or_else(|e| panic!("{name}: the picture after the gap went to software: {e}"));
+    assert_eq!(f.accel().pictures, 3, "the picture after the gap was handed to the hardware");
+}
+
+#[test]
+fn only_radeonsi_is_held_to_decoded_references() {
+    use super::radeonsi;
+    assert!(radeonsi("Mesa Gallium driver 26.1.0 for AMD Radeon 8060S Graphics (radeonsi, gfx1151, ACO, DRM 3.64)"));
+    assert!(!radeonsi("Intel iHD driver for Intel(R) Gen Graphics - 25.2.0"));
+    assert!(!radeonsi("Mesa Gallium driver 26.1.0 for NV138 (nouveau)"));
+    assert!(!radeonsi("Splitted-Desktop Systems VDPAU backend for VA-API"));
 }
 
 /// Damaged samples give errors (the hybrid decoder then continues in software), never a panic.
