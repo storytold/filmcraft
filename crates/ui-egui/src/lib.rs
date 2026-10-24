@@ -894,7 +894,7 @@ impl FilmcraftApp {
         if !self.ui.dock.contains(p) && !self.ui.floating.iter().any(|group| group.panels.contains(&p)) {
             let near = match p {
                 // a side panel beside Properties (or Essential Sound), never over the Program monitor
-                PanelKind::TextToSpeech => [PanelKind::Properties, PanelKind::EssentialSound, PanelKind::EssentialGraphics]
+                PanelKind::TextToSpeech | PanelKind::Music => [PanelKind::Properties, PanelKind::EssentialSound, PanelKind::EssentialGraphics]
                     .into_iter()
                     .find(|k| self.ui.dock.contains(*k))
                     .unwrap_or(PanelKind::Program),
@@ -1863,7 +1863,8 @@ impl FilmcraftApp {
         self.scrub_audio(&ctx);
         // Text to Speech: a selected narration clip loads into the panel
         panels::tts::follow_selection(self);
-        if self.ui.tts.pending.is_some() || self.ui.tts.download_job.is_some() {
+        panels::music::poll(self);
+        if self.ui.tts.pending.is_some() || self.ui.tts.download_job.is_some() || self.ui.music.pending.is_some() || self.ui.music.download_job.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         let t = self.tokens;

@@ -1567,8 +1567,14 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"dir": dir, "files": files.iter().rev().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>()}))
         }),
         query!("prefs.get", "Get Preferences", r#"{"key":str?}"#, |s, p| match str_p(p, "key") {
+            Some(k) if k == "music" || k.starts_with("music.") =>
+                crate::music::redacted_get(&s.prefs, k).ok_or_else(|| bad("prefs.get", format!("unknown preference `{k}`"))),
             Some(k) => s.prefs.get(k).ok_or_else(|| bad("prefs.get", format!("unknown preference `{k}`"))),
-            None => Ok(json!({"values": s.prefs.to_value(), "keys": s.prefs.keys()})),
+            None => {
+                let mut values = s.prefs.to_value();
+                crate::music::redact(&mut values);
+                Ok(json!({"values": values, "keys": s.prefs.keys()}))
+            }
         }),
         cmd!("prefs.set", "Set Preferences", [], None, r#"{"key":str,"value":any}|{"values":{key:value}}"#, always, |s, p| {
             let mut next = s.prefs.clone();
@@ -3446,6 +3452,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::remix::commands());
     v.extend(crate::voiceover::commands());
     v.extend(crate::narration::commands());
+    v.extend(crate::music::commands());
     v.extend(crate::keyboard::commands());
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());
@@ -3570,7 +3577,7 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     Ok(Value::Null)
 }
 
-fn in_out_range(s: &Session) -> Result<TimeRange> {
+pub(crate) fn in_out_range(s: &Session) -> Result<TimeRange> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let fd = q.settings.frame_rate.frame_duration();
     let a = q.mark_in.unwrap_or(Tick::ZERO);

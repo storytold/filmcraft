@@ -33,6 +33,7 @@ pub enum PanelKind {
     EssentialGraphics,
     EssentialSound,
     TextToSpeech,
+    Music,
     Properties,
     Text,
     Events,
@@ -43,7 +44,7 @@ pub enum PanelKind {
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 28] = [
+    pub const ALL: [PanelKind; 29] = [
         PanelKind::Project,
         PanelKind::MediaBrowser,
         PanelKind::Libraries,
@@ -65,6 +66,7 @@ impl PanelKind {
         PanelKind::EssentialGraphics,
         PanelKind::EssentialSound,
         PanelKind::TextToSpeech,
+        PanelKind::Music,
         PanelKind::Properties,
         PanelKind::Text,
         PanelKind::Events,
@@ -96,6 +98,7 @@ impl PanelKind {
             PanelKind::EssentialGraphics => "Essential Graphics",
             PanelKind::EssentialSound => "Essential Sound",
             PanelKind::TextToSpeech => "Text to Speech",
+            PanelKind::Music => "Music",
             PanelKind::Properties => "Properties",
             PanelKind::Text => "Text",
             PanelKind::Events => "Events",
@@ -347,7 +350,7 @@ pub fn workspace(name: &str) -> DockNode {
                 hsplit(Ratio(0.5), tabs(&[AudioTrackMixer, Source, AudioClipMixer, EffectControls], 0), tabs(&[Program], 0)),
                 hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Effects, Markers, History], 0), bottom_editing()),
             ),
-            tabs(&[EssentialSound, TextToSpeech], 0),
+            tabs(&[EssentialSound, TextToSpeech, Music], 0),
         ),
         "Captions and Graphics" => hsplit(
             FixedB(330.0),
@@ -363,7 +366,11 @@ pub fn workspace(name: &str) -> DockNode {
             hsplit(
                 Ratio(0.5),
                 tabs(&[Source, EffectControls, AudioClipMixer, Metadata, LumetriScopes, Text], 0),
-                hsplit(Ratio(0.6), tabs(&[Program], 0), tabs(&[LumetriColor, EssentialGraphics, EssentialSound, TextToSpeech, Properties, AudioTrackMixer], 0)),
+                hsplit(
+                    Ratio(0.6),
+                    tabs(&[Program], 0),
+                    tabs(&[LumetriColor, EssentialGraphics, EssentialSound, TextToSpeech, Music, Properties, AudioTrackMixer], 0),
+                ),
             ),
             hsplit(Ratio(0.26), tabs(&[Project, MediaBrowser, Libraries, Info, Effects, Markers, History], 0), bottom_editing()),
         ),
