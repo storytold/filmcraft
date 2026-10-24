@@ -249,3 +249,85 @@ fn ctrl_c_then_ctrl_v_pastes_clips_not_lingering_files() {
     d.ctrl_v_with_text();
     assert_eq!(d.clips().iter().filter(|c| c.0 == 'V' && c.3 == first.3).count(), n + 1);
 }
+
+/// #2361: on macOS the native menu's key equivalent takes the Cmd+V press and runs Paste; the
+/// release that still reaches the app must not paste a second time.
+#[test]
+fn a_menu_paste_is_not_repeated_by_its_key_release() {
+    let mut d = Driver::demo("menu-paste");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.clipboard(None);
+    let (menu, inbox) = std::sync::mpsc::channel::<String>();
+    d.app().command_inbox = Some(inbox);
+    let first = d.clips().into_iter().find(|c| c.0 == 'V' && c.1 == 0).unwrap();
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [first.2]}}));
+    d.ok("ui.menu.invoke", json!({"id": "edit.copy"}));
+    let copies = |d: &mut Driver| d.clips().iter().filter(|c| c.0 == 'V' && c.3 == first.3).count();
+    let n = copies(&mut d);
+    // the key equivalent: Cmd is down when the menu runs Paste
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    d.frames(1);
+    menu.send("edit.paste".into()).unwrap();
+    d.frames(1);
+    assert_eq!(copies(&mut d), n + 1, "the menu pasted");
+    // the key is held for two seconds before it comes up
+    let t0 = d.harness.ctx.input(|i| i.time);
+    while d.harness.ctx.input(|i| i.time) - t0 < 2.0 {
+        d.frames(1);
+    }
+    d.ctrl_v_without_text(egui::Modifiers::COMMAND);
+    assert_eq!(copies(&mut d), n + 1, "the key release pasted again");
+    // a later Cmd+V whose press egui-winit dropped (#611) still pastes
+    d.frames(80);
+    d.ctrl_v_without_text(egui::Modifiers::COMMAND);
+    assert_eq!(copies(&mut d), n + 2);
+}
+
+/// A click on Edit ▸ Paste (no Cmd held) leaves no key release behind: the next Cmd+V whose press
+/// egui-winit dropped (#611) still pastes.
+#[test]
+fn a_menu_click_paste_does_not_swallow_the_next_cmd_v() {
+    let mut d = Driver::demo("menu-click-paste");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.clipboard(None);
+    let (menu, inbox) = std::sync::mpsc::channel::<String>();
+    d.app().command_inbox = Some(inbox);
+    let first = d.clips().into_iter().find(|c| c.0 == 'V' && c.1 == 0).unwrap();
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [first.2]}}));
+    d.ok("ui.menu.invoke", json!({"id": "edit.copy"}));
+    let copies = |d: &mut Driver| d.clips().iter().filter(|c| c.0 == 'V' && c.3 == first.3).count();
+    let n = copies(&mut d);
+    menu.send("edit.paste".into()).unwrap();
+    d.frames(1);
+    assert_eq!(copies(&mut d), n + 1, "the menu pasted");
+    d.ctrl_v_without_text(egui::Modifiers::COMMAND);
+    assert_eq!(copies(&mut d), n + 2, "Cmd+V right after a menu click pastes");
+}
+
+/// A menu paste whose V release never arrived (focus moved to another window while the key was
+/// down) leaves nothing armed once the window has the focus again: the next Cmd+V pastes.
+#[test]
+fn focus_return_clears_a_menu_paste_left_without_its_release() {
+    let mut d = Driver::demo("menu-paste-focus");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.clipboard(None);
+    let (menu, inbox) = std::sync::mpsc::channel::<String>();
+    d.app().command_inbox = Some(inbox);
+    let first = d.clips().into_iter().find(|c| c.0 == 'V' && c.1 == 0).unwrap();
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [first.2]}}));
+    d.ok("ui.menu.invoke", json!({"id": "edit.copy"}));
+    let copies = |d: &mut Driver| d.clips().iter().filter(|c| c.0 == 'V' && c.3 == first.3).count();
+    let n = copies(&mut d);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    d.frames(1);
+    menu.send("edit.paste".into()).unwrap();
+    d.frames(1);
+    assert_eq!(copies(&mut d), n + 1, "the menu pasted");
+    // the window loses the focus before the release, and gets it back
+    for focused in [false, true] {
+        d.harness.input_mut().events.push(egui::Event::WindowFocused(focused));
+        d.frames(1);
+    }
+    d.ctrl_v_without_text(egui::Modifiers::COMMAND);
+    assert_eq!(copies(&mut d), n + 2, "the next Cmd+V pastes");
+}
