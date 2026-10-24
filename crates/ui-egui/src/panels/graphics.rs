@@ -25,6 +25,7 @@ use crate::widgets::CenteredDialog as _;
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_project::graphic::{self, LayerContent, LayerSpec, eval_layer, layer_display_name, layer_indices};
+use filmcraft_project::graphic_design::char_style_at;
 use filmcraft_project::{ClipId, EffectInstance, ItemKind, ParamValue, TrackItem};
 use filmcraft_render::graphic_clip::{layer_local_bounds, layer_matrix, text_layout};
 use filmcraft_time::Tick;
@@ -1240,6 +1241,42 @@ fn char_style_key(id: &str) -> Option<&'static str> {
 }
 
 impl Ctx<'_> {
+    /// What a control shows for `id`: with a Type-tool selection, a character property reads the
+    /// selected characters' own style (what [`Ctx::set`] writes there), so the Fill colour and the
+    /// other character controls follow an edit made with text selected (#1996); otherwise, and for
+    /// characters without an override, the layer's value. The style is read at the start of the
+    /// selection, so a selection with mixed styles shows its first character's.
+    fn value(&self, id: &str) -> ParamValue {
+        let layer = pv(self.e, id, self.mt);
+        let Some((a, _)) = self.range else { return layer };
+        let Some(runs) = self.e.layer.as_ref().map(|x| x.runs.as_slice()) else { return layer };
+        let s = char_style_at(runs, a);
+        let own = match id {
+            "font" => s.font.map(ParamValue::Text),
+            "font_style" => s.font_style.map(ParamValue::Text),
+            "size" => s.size.map(|v| ParamValue::Float(v as f64)),
+            "fill_color" => s.fill.map(ParamValue::Color),
+            "faux_bold" => s.faux_bold.map(ParamValue::Bool),
+            "faux_italic" => s.faux_italic.map(ParamValue::Bool),
+            "underline" => s.underline.map(ParamValue::Bool),
+            "tracking" => s.tracking.map(|v| ParamValue::Float(v as f64)),
+            "baseline_shift" => s.baseline_shift.map(|v| ParamValue::Float(v as f64)),
+            "caps" => s.caps.map(ParamValue::Choice),
+            _ => None,
+        };
+        own.unwrap_or(layer)
+    }
+    /// Whether the Style row's button for the boolean property `id` (bold, italic, underline) is on.
+    fn flag(&self, id: &str) -> bool {
+        self.value(id).as_bool().unwrap_or(false)
+    }
+    /// The caps the All Caps / Small Caps buttons show: 0 none, 1 all caps, 2 small caps.
+    fn caps(&self) -> u32 {
+        match self.value("caps") {
+            ParamValue::Choice(c) => c,
+            _ => 0,
+        }
+    }
     fn set(&mut self, id: &str, v: Value) {
         if let (Some((a, b)), Some(k)) = (self.range, char_style_key(id)) {
             self.actions.push(("graphics.setCharStyle".into(), json!({"clip": self.clip.0, "layer": self.layer, "start": a, "end": b, "style": {k: v}})));
@@ -1286,7 +1323,7 @@ impl Ctx<'_> {
         }
     }
     fn number(&mut self, ui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
-        let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
+        let v = self.value(id).as_f64().unwrap_or(0.0);
         let (r, mut vui) = self.row(ui, label);
         let (resp, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, label);
@@ -1296,7 +1333,7 @@ impl Ctx<'_> {
         }
     }
     fn number_in(&mut self, vui: &mut egui::Ui, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
-        let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
+        let v = self.value(id).as_f64().unwrap_or(0.0);
         let (resp, nv) = crate::widgets::hot_number(vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, id);
         if let Some(nv) = nv {
@@ -1335,7 +1372,7 @@ impl Ctx<'_> {
         }
     }
     fn check(&mut self, vui: &mut egui::Ui, id: &str, label: &str) -> bool {
-        let mut b = pv(self.e, id, self.mt).as_bool().unwrap_or(false);
+        let mut b = self.value(id).as_bool().unwrap_or(false);
         let r = vui.checkbox(&mut b, label);
         self.auto(id, r.rect, label);
         if r.changed() {
@@ -1344,7 +1381,7 @@ impl Ctx<'_> {
         b
     }
     fn color(&mut self, vui: &mut egui::Ui, id: &str) {
-        let c = pv(self.e, id, self.mt).as_color().unwrap_or([1.0; 4]);
+        let c = self.value(id).as_color().unwrap_or([1.0; 4]);
         let mut c32 = color32(c);
         let r = egui::color_picker::color_edit_button_srgba(vui, &mut c32, egui::color_picker::Alpha::Opaque);
         self.auto(id, r.rect, id);
@@ -1354,7 +1391,7 @@ impl Ctx<'_> {
         }
     }
     fn choice(&mut self, vui: &mut egui::Ui, id: &str, opts: &[&str], width: f32) {
-        let cur = match pv(self.e, id, self.mt) {
+        let cur = match self.value(id) {
             ParamValue::Choice(c) => c as usize,
             _ => 0,
         };
@@ -1680,11 +1717,11 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if s != before {
                 cx.actions.push(("graphics.setText".into(), json!({"clip": clip.0, "layer": l, "text": s, "merge": true})));
             }
-            let family = match pv(e, "font", mt) {
+            let family = match cx.value("font") {
                 ParamValue::Text(f) => f,
                 _ => String::new(),
             };
-            let style = match pv(e, "font_style", mt) {
+            let style = match cx.value("font_style") {
                 ParamValue::Text(f) => f,
                 _ => String::new(),
             };
@@ -1750,11 +1787,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.number(ui, tl!("Text Box Width"), "box_width", 2.0, (0.0, 100_000.0), 0, "");
             cx.number(ui, tl!("Text Box Height"), "box_height", 2.0, (0.0, 100_000.0), 0, "");
             let (_, mut vui) = cx.row(ui, tl!("Style"));
-            let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
-            let caps = match pv(e, "caps", mt) {
-                ParamValue::Choice(c) => c,
-                _ => 0,
-            };
+            let flag = |id: &str| cx.flag(id);
+            let caps = cx.caps();
             for (id, label, tip, on, font) in [
                 ("faux_bold", "T", tl!("Faux Bold"), flag("faux_bold"), Tokens::semibold(14.0)),
                 ("faux_italic", "T", tl!("Faux Italic"), flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
@@ -1925,4 +1959,59 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.gfx_edit = None;
     }
     app.ui.text_props_dialog = if ok || close { None } else { Some(d) };
+}
+
+#[cfg(test)]
+mod tests {
+    use filmcraft_project::graphic_design::{CharStyle, LayerExtra, apply_char_style};
+
+    use super::*;
+
+    /// With text selected, the Properties controls show the selected characters' own style, not the
+    /// layer's (which an edit with a selection leaves unchanged), so the Fill colour and the RGB
+    /// fields follow the change (#1996).
+    #[test]
+    fn controls_read_the_selected_characters_style() {
+        let mut e = graphic::new_text_layer("Night Drive", Vec2::new(100.0, 100.0), 72.0);
+        let (layer_fill, layer_size) = (pv(&e, "fill_color", Tick(0)).as_color(), pv(&e, "size", Tick(0)).as_f64());
+        assert!(layer_fill.is_some_and(|c| c != [1.0, 0.0, 0.0, 1.0]) && layer_size == Some(72.0), "{layer_fill:?} {layer_size:?}");
+        let red = CharStyle {
+            fill: Some([1.0, 0.0, 0.0, 1.0]),
+            size: Some(120.0),
+            faux_bold: Some(true),
+            underline: Some(true),
+            caps: Some(1),
+            ..Default::default()
+        };
+        e.layer = Some(Box::new(LayerExtra { runs: apply_char_style(&[], 11, 6, 11, &red), ..Default::default() }));
+        let cx = |range| Ctx {
+            clip: ClipId(1),
+            layer: 0,
+            eidx: 0,
+            e: &e,
+            mt: Tick(0),
+            t: Tokens::for_kind(crate::theme::ThemeKind::Dark),
+            actions: Vec::new(),
+            autos: Vec::new(),
+            range,
+        };
+        // "Drive" selected: its own colour, size and bold
+        let sel = cx(Some((6, 11)));
+        assert_eq!(sel.value("fill_color").as_color(), Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(sel.value("size").as_f64(), Some(120.0));
+        assert_eq!(sel.value("faux_bold").as_bool(), Some(true));
+        // the Style row's buttons: T (bold), U and TT on, T (italic) and Tt off
+        assert!(sel.flag("faux_bold") && sel.flag("underline") && !sel.flag("faux_italic"));
+        assert_eq!(sel.caps(), 1);
+        // a property the selection doesn't override, and the layer's position: the layer's values
+        assert_eq!(sel.value("tracking").as_f64(), Some(0.0));
+        assert_eq!(sel.value("position").as_vec2(), Some(Vec2::new(100.0, 100.0)));
+        // "Night" selected, or nothing: the layer's colour and size
+        for c in [cx(Some((0, 5))), cx(None)] {
+            assert_eq!(c.value("fill_color").as_color(), layer_fill);
+            assert_eq!(c.value("size").as_f64(), layer_size);
+            assert!(!c.flag("faux_bold") && !c.flag("underline"));
+            assert_eq!(c.caps(), 0);
+        }
+    }
 }
