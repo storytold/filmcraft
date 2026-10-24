@@ -327,9 +327,19 @@ impl filmcraft_render::SourceProvider for JobProvider {
 pub struct GpuPlan {
     pub plan: filmcraft_render::plan::FramePlan,
     pub prepared: filmcraft_gpu::PreparedPlan,
+    /// Built from a render preview, which is exported display-referred.
+    pub from_preview: bool,
 }
 
 impl GpuPlan {
+    /// The display transform to resolve this plan with, for a sequence with pipeline `pipe` (none
+    /// for an item's frame). A CPU-rendered frame and a render preview are already in monitor
+    /// space, and transforming them again would tone map and gamut map them twice.
+    pub fn display(&self, pipe: Option<filmcraft_color::ColorPipeline>) -> Option<filmcraft_color::GpuOutputParams> {
+        let pipe = pipe.filter(|_| !self.from_preview)?;
+        filmcraft_gpu::sequence_display(&self.plan, filmcraft_render::colorman::display_transform(&pipe).gpu_params())
+    }
+
     /// Bytes this plan keeps alive (layer frames + converted texels).
     fn bytes(&self) -> usize {
         let frames = self.plan.source_bytes();
@@ -992,7 +1002,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
                             let prepared = filmcraft_gpu::prepare(&plan);
-                            sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
+                            sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared, from_preview: pv });
                         }
                         pv
                     } else {
@@ -1271,6 +1281,22 @@ mod tests {
         }
         assert_eq!(shared.strong_count(), 0, "a worker still holds the dropped server's state");
         assert_eq!(project.strong_count(), 0, "a queued job still holds its project");
+    }
+
+    /// A render preview is display-referred, so an HDR sequence's plan built from one resolves
+    /// without the display transform, unlike the same plan composited live.
+    #[test]
+    fn a_plan_from_a_render_preview_gets_no_display_transform() {
+        use filmcraft_color::{ColorPipeline, WorkingSpace};
+        let plan = |from_preview| super::GpuPlan {
+            plan: filmcraft_render::plan::FramePlan::Layers { width: 2, height: 2, layers: Vec::new() },
+            prepared: Default::default(),
+            from_preview,
+        };
+        let pq = ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 };
+        assert!(plan(false).display(Some(pq)).is_some(), "a live HDR plan is tone mapped");
+        assert!(plan(true).display(Some(pq)).is_none(), "a preview would be tone mapped twice");
+        assert!(plan(false).display(None).is_none(), "an item's frame has no sequence transform");
     }
 
     /// A job a worker took from the queue before the server was dropped runs cancelled.
