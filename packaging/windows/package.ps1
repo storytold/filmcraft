@@ -93,7 +93,7 @@ Copy-Item (Join-Path $Bin 'filmcraft.exe'), (Join-Path $Bin 'filmcraft-cli.exe')
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "filmcraft-$Version-windows-$Arch.msi"
 Invoke-Native 'wix build' {
-  wix build (Join-Path $PSScriptRoot 'filmcraft.wxs') -arch $Arch `
+  wix build (Join-Path $PSScriptRoot 'filmcraft.wxs') (Join-Path $PSScriptRoot 'installer-ui.wxs') -arch $Arch `
     -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\filmcraft.ico')" `
     -o $Msi
 }

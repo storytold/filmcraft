@@ -2,7 +2,7 @@
 <!--
   FilmCraft MSI (WiX Toolset v5: `dotnet tool install -g wix`). Built by package.ps1:
 
-    wix build filmcraft.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
+    wix build filmcraft.wxs installer-ui.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
 
   Per-machine install into Program Files and a Start Menu shortcut. No file associations.
 -->
@@ -28,6 +28,8 @@
     <Property Id="ARPURLUPDATEINFO" Value="https://getartcraft.com/apps/filmcraft" />
     <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
 
+    <!-- Shared native setup UI, including install/uninstall completion. -->
+
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="FilmCraft" />
     </StandardDirectory>
@@ -35,7 +37,10 @@
 
     <Feature Id="Main" Title="FilmCraft" Level="1">
       <ComponentGroupRef Id="FilmcraftFiles" />
+      <ComponentGroupRef Id="CraftInstallerSettings" />
     </Feature>
+    <!-- Shared full UI; app installation policy remains below. -->
+    <UIRef Id="CraftInstallerUI" />
   </Package>
 
   <Fragment>
