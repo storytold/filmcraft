@@ -9,7 +9,8 @@
 //! `CRAFT_FONTS_DIR` an error.
 //!
 //! Native builds embed every font. The web (wasm32) build embeds only the UI font (BIZ UDPGothic
-//! Regular, ~4.5 MB) to stay under the web size budget (Cloudflare serves files up to 25 MiB).
+//! Regular, ~4.5 MB) and the Georgian face (Noto Sans Georgian, ~230 KB) to stay under the web size
+//! budget (Cloudflare serves files up to 25 MiB).
 //! Only the local directory is read: no network.
 
 use std::fmt::Write as _;
@@ -51,7 +52,8 @@ fn craft_fonts(dir: &std::path::Path) -> Result<String, String> {
         let [family, style, file, scripts, ..] = f.as_slice() else {
             return Err(format!("malformed manifest line: {line}"));
         };
-        if wasm && !(*family == "BIZ UDPGothic" && *style == "Regular") {
+        // the web build embeds one Japanese face and the Georgian one (the interface has no other)
+        if wasm && !(*family == "BIZ UDPGothic" && *style == "Regular") && !scripts.split(',').any(|s| s.trim() == "Geor") {
             continue;
         }
         let path = dir.join(file).canonicalize().map_err(|e| format!("{file}: {e}"))?;

@@ -25,6 +25,7 @@ jobs:
       app-name: filmcraft
       app-title: FilmCraft
       craft-fonts-ref: bfcbf714e45a3ea8e98f88ab2b7971372a576414
+      web-craft-fonts: true
       version: ${{ inputs.version }}
     secrets:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
