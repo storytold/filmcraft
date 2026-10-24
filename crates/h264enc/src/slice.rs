@@ -1,5 +1,7 @@
 //! Slice encoding: macroblock analysis, mode decision, residual coding, reconstruction and entropy coding.
 
+use std::sync::LazyLock;
+
 use filmcraft_bitstream::BitWriter;
 
 use crate::cabac::{BinSink, CabacEncoder, CabacEstimator, Contexts, CostTable};
@@ -143,6 +145,9 @@ impl Cand {
         Box::new(Cand { code: MbCode::default(), info: MbInfo::default(), ry: [0; 256], ru: [0; 64], rv: [0; 64], cost: u64::MAX })
     }
 }
+
+/// Approximate bits of a luma coefficient by magnitude, used to compare transform sizes; larger magnitudes use the formula.
+static COEF_BITS: LazyLock<[f64; 256]> = LazyLock::new(|| std::array::from_fn(|n| if n == 0 { 0.4 } else { 3.0 + 2.0 * (n as f64).log2() }));
 
 #[inline]
 fn se_bits(v: i32) -> u32 {
@@ -784,45 +789,45 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     /// Code an inter candidate's residual given its luma/chroma prediction.
     fn code_inter(&self, src: &Src, py: &[u8; 256], pu: &[u8; 64], pv: &[u8; 64], qp: u8, c: &mut Cand) {
         let t8_allowed = self.f.p.t8x8;
-        let use8 = if t8_allowed {
-            if self.f.p.adaptive_t8 {
-                // Compare 4x4 and 8x8 transform by SSD + lambda * (approximate) bits.
-                let mut c4 = c.clone();
-                let cbp4 = self.code_luma4(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, &mut c4);
-                let mut c8 = c.clone();
-                let cbp8 = self.code_luma8(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, &mut c8);
-                let lam = self.f.lam.ssd[qp as usize];
-                let cost = |cc: &Cand, cbp: u8, eight: bool| {
-                    let d = ssd(&src.y, 16, &cc.ry, 16, 16, 16) as f64;
-                    let mut bits = 0f64;
-                    if eight {
-                        for b in 0..4 {
-                            if (cbp >> b) & 1 != 0 {
-                                bits += cc.code.luma8[b].iter().map(|&v| if v == 0 { 0.4 } else { 3.0 + 2.0 * (v.unsigned_abs() as f64).log2() }).sum::<f64>();
-                            }
-                        }
-                    } else {
-                        for b in 0..16 {
-                            if (cbp >> (b / 4)) & 1 != 0 {
-                                bits += 1.0
-                                    + cc.code.luma4[b].iter().map(|&v| if v == 0 { 0.4 } else { 3.0 + 2.0 * (v.unsigned_abs() as f64).log2() }).sum::<f64>();
-                            }
+        let (use8, cbpl) = if t8_allowed && self.f.p.adaptive_t8 {
+            // Compare 4x4 and 8x8 transform by SSD + lambda * (approximate) bits and keep the winner.
+            let mut c4 = c.clone();
+            let cbp4 = self.code_luma4(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, &mut c4);
+            let cbp8 = self.code_luma8(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, c);
+            let lam = self.f.lam.ssd[qp as usize];
+            let table: &[f64; 256] = &COEF_BITS;
+            let coef_bits = |v: i16| match table.get(v.unsigned_abs() as usize) {
+                Some(&b) => b,
+                None => 3.0 + 2.0 * (v.unsigned_abs() as f64).log2(),
+            };
+            let cost = |cc: &Cand, cbp: u8, eight: bool| {
+                let d = ssd(&src.y, 16, &cc.ry, 16, 16, 16) as f64;
+                let mut bits = 0f64;
+                if eight {
+                    for b in 0..4 {
+                        if (cbp >> b) & 1 != 0 {
+                            bits += cc.code.luma8[b].iter().map(|&v| coef_bits(v)).sum::<f64>();
                         }
                     }
-                    d + lam * bits
-                };
-                let _ = (cbp4, cbp8);
-                cost(&c8, cbp8, true) <= cost(&c4, cbp4, false)
+                } else {
+                    for b in 0..16 {
+                        if (cbp >> (b / 4)) & 1 != 0 {
+                            bits += 1.0 + cc.code.luma4[b].iter().map(|&v| coef_bits(v)).sum::<f64>();
+                        }
+                    }
+                }
+                d + lam * bits
+            };
+            if cost(c, cbp8, true) <= cost(&c4, cbp4, false) {
+                (true, cbp8)
             } else {
-                true
+                *c = c4;
+                (false, cbp4)
             }
+        } else if t8_allowed {
+            (true, self.code_luma8(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, c))
         } else {
-            false
-        };
-        let cbpl = if use8 {
-            self.code_luma8(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, c)
-        } else {
-            self.code_luma4(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, c)
+            (false, self.code_luma4(&src.y, py, qp, Deadzone::INTER, self.f.p.decimate, c))
         };
         c.code.t8x8 = use8 && cbpl != 0;
         c.info.t8x8 = c.code.t8x8;
@@ -1525,16 +1530,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             skip_pred = Some((y, u, v));
         }
         // --- 16x16 search
-        let mut cands = vec![skip_mv, Mv::ZERO];
-        let colo = r.mbs[my * f.p.mbw + mx];
-        if colo.ref_idx[0][0] >= 0 {
-            cands.push(colo.mv[0][0]);
-        }
-        let (mv16, mvp16, cost16) = {
-            let (m, p, c) = self.search_part(mx, my, r, Part::P16x16, 0, src, lam, skip_mv);
-            (m, p, c)
-        };
-        let _ = cands;
+        let (mv16, mvp16, cost16) = self.search_part(mx, my, r, Part::P16x16, 0, src, lam, skip_mv);
         let mut best_part = Part::P16x16;
         let mut best_mvs = mv16;
         let mut best_mvps = mvp16;
