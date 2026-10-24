@@ -417,16 +417,9 @@ pub struct FrameHeader {
     pub gm_params: [[i32; 6]; 8],
     pub prev_gm_params: [[i32; 6]; 8],
     pub film_grain: FilmGrainParams,
-    /// Temporal / spatial id of the OBU carrying the header.
-    pub temporal_id: u32,
-    pub spatial_id: u32,
 }
 
 impl FrameHeader {
-    pub fn get_relative_dist(&self, seq: &SequenceHeader, a: u32, b: u32) -> i32 {
-        relative_dist(seq, a, b)
-    }
-
     /// get_qindex( ignoreDeltaQ, segmentId ) with CurrentQIndex.
     pub fn get_qindex(&self, ignore_delta_q: bool, segment_id: usize, current_q_index: i32) -> i32 {
         let base = self.quant.base_q_idx as i32;
@@ -477,7 +470,7 @@ impl FrameHeader {
     /// uncompressed_header( ). `st` holds the cross-frame state.
     pub(crate) fn parse(r: &mut BitReader, st: &mut HeaderState, temporal_id: u32, spatial_id: u32) -> Result<FrameHeader> {
         let seq = st.seq;
-        let mut h = FrameHeader { temporal_id, spatial_id, ..Default::default() };
+        let mut h = FrameHeader::default();
         let id_len = if seq.frame_id_numbers_present { seq.additional_frame_id_length_minus_1 + seq.delta_frame_id_length_minus_2 + 3 } else { 0 };
         let all_frames = (1u32 << NUM_REF_FRAMES) - 1;
         if seq.reduced_still_picture_header {
