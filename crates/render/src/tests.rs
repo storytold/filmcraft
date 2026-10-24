@@ -4,6 +4,82 @@ use filmcraft_media::{DemoScene, Generator, MediaSource};
 use filmcraft_project::{Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
 
+#[test]
+fn effects_graphic_raster_stays_within_working_image_budget() {
+    for (source, want) in
+        [((32_768, 8_192), 1.0), ((8_192, 32_768), 1.0), ((u32::MAX, u32::MAX), 1.0), ((1, u32::MAX), 1.0), ((u32::MAX, 1), 1.0), ((3_840, 2_160), 1.0)]
+    {
+        let (w, h) = graphic_raster_dimensions(source, want);
+        assert!(w >= 1 && h >= 1);
+        assert!((w as u64) * (h as u64) <= MAX_EFFECT_GRAPHIC_PIXELS);
+    }
+    assert_eq!(graphic_raster_dimensions((1, u32::MAX), 1.0), (1, filmcraft_project::MAX_FRAME_SIDE as usize));
+    assert_eq!(graphic_raster_dimensions((3_840, 2_160), 1.0), (3_840, 2_160));
+    assert_eq!(graphic_raster_dimensions((1_920, 1_080), 0.5), (960, 540));
+    let (w, h) = graphic_raster_dimensions((32_768, 8_192), 1.0);
+    assert!((w as f64 / h as f64 - 4.0).abs() < 0.01);
+    let odd = graphic_raster_dimensions((3, 2), 0.5);
+    assert_eq!(odd, (2, 2));
+    let m = graphic_raster_matrix((3, 2), odd);
+    assert_eq!((m.a, m.d), (2.0 / 3.0, 2.0 / 3.0), "graphic and downstream width-derived scales must agree");
+}
+
+#[test]
+fn actual_effect_path_uses_a_bounded_graphic_working_image() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::graphic::new_shape_layer;
+
+    let mut project = Project::new("graphic budget");
+    let rate = FrameRate::FPS_24;
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 4096, height: 2049, rate }, None);
+    let sequence = project.new_sequence("sequence", SequenceSettings::default(), 1, 0, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    item.effects.push(new_shape_layer(0, Vec2::new(2048.0, 1024.0), Vec2::new(100.0, 50.0), vec![]));
+    item.effects.push(filmcraft_project::find_effect("invert").unwrap().instance());
+    assert!(graphic_needs_raster(&item, true));
+    let working = base_layer(&project, project.sequence(sequence).unwrap(), &item, Tick::ZERO, RenderOptions::default(), &SourceMap::default(), 1.0).unwrap();
+    assert!((working.w as u64) * (working.h as u64) <= MAX_EFFECT_GRAPHIC_PIXELS);
+    assert!(working.get(working.w / 2, working.h / 2)[3] > 0.9);
+}
+
+#[test]
+fn disabled_standard_effect_keeps_a_graphic_on_the_vector_path() {
+    let mut project = Project::new("graphic path");
+    let rate = FrameRate::FPS_24;
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 7680, height: 4320, rate }, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    let mut effect = filmcraft_project::find_effect("invert").unwrap().instance();
+    effect.enabled = false;
+    item.effects.push(effect);
+    assert!(item.has_standard_effects(), "the model still reports disabled effects in the fx badge");
+    assert!(!graphic_needs_raster(&item, true), "a disabled effect must not reduce vector detail");
+    item.effects.last_mut().unwrap().enabled = true;
+    assert!(graphic_needs_raster(&item, true));
+    assert!(!graphic_needs_raster(&item, false));
+}
+
+#[test]
+fn graphic_with_effect_renders_through_the_bounded_working_image() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::graphic::new_shape_layer;
+
+    let mut project = Project::new("graphic effect");
+    let rate = FrameRate::FPS_24;
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 640, height: 360, rate }, None);
+    let sequence = project.new_sequence("sequence", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    item.scale_to_frame = true;
+    item.effects.push(new_shape_layer(0, Vec2::new(320.0, 180.0), Vec2::new(200.0, 100.0), vec![]));
+    item.effects.push(filmcraft_project::find_effect("invert").unwrap().instance());
+    assert!(item.has_standard_effects());
+    project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
+    let output = render_sequence(&project, sequence, Tick::ZERO, RenderOptions::default(), &SourceMap::default());
+    assert_eq!((output.w, output.h), (320, 180));
+    assert!(output.get(160, 90)[3] > 0.9, "the effect path must still draw the graphic");
+    let plain = render_sequence(&project, sequence, Tick::ZERO, RenderOptions { effects: false, ..RenderOptions::default() }, &SourceMap::default());
+    assert!((output.get(160, 90)[0] - plain.get(160, 90)[0]).abs() > 0.1, "the standard effect must change the graphic's colour");
+}
+
 fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
     let mut p = Project::new("r");
     let mut map = SourceMap::default();

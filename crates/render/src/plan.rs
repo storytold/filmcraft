@@ -449,9 +449,7 @@ fn push_item(
     }
     // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
     // image the GPU places as a layer.
-    if !(opts.effects && item.has_standard_effects() || item.has_opacity_masks())
-        && project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Graphic { .. }))
-    {
+    if !crate::graphic_needs_raster(item, opts.effects) && project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Graphic { .. })) {
         let Some(size) = crate::source_size(project, item.item) else { return };
         let (w, h) = output_size(seq, opts.scale);
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion_matrix(seq, item, size, None, mt));
@@ -605,6 +603,30 @@ fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_graphic_effect_uses_a_tight_gpu_layer() {
+        use filmcraft_geom::Vec2;
+        use filmcraft_project::graphic::new_shape_layer;
+        use filmcraft_project::{Label, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, TimeRange};
+
+        let mut project = Project::new("disabled effect");
+        let rate = FrameRate::FPS_24;
+        let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 640, height: 360, rate }, None);
+        let sequence = project.new_sequence("sequence", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+        let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+        item.effects.push(new_shape_layer(0, Vec2::new(320.0, 180.0), Vec2::new(50.0, 25.0), vec![]));
+        let mut disabled = filmcraft_project::find_effect("invert").unwrap().instance();
+        disabled.enabled = false;
+        item.effects.push(disabled);
+        project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
+
+        let plan = plan_frame(&project, sequence, Tick::ZERO, RenderOptions::default(), &crate::SourceMap::default());
+        let FramePlan::Layers { layers, .. } = plan else { panic!("expected graphic layer plan") };
+        assert_eq!(layers.len(), 1);
+        assert!(layers[0].frame.width < 320 && layers[0].frame.height < 180, "disabled effect must not force a full-frame CPU layer");
+    }
 
     #[test]
     fn flattening_an_operation_preserves_its_picture() {

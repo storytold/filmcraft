@@ -472,7 +472,7 @@ pub(crate) fn item_layer_ex(
     let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
     let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
     let pi = project.item(item.item)?;
-    if matches!(pi.kind, ItemKind::Graphic { .. }) && !(item.has_opacity_masks() || opts.effects && item.has_standard_effects()) {
+    if matches!(pi.kind, ItemKind::Graphic { .. }) && !graphic_needs_raster(item, opts.effects) {
         // vectors straight to the output: no resampling, crisp at any Motion scale
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
         let mut canvas = Image::new(w, h);
@@ -589,6 +589,50 @@ fn media_image(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, src
     }
 }
 
+/// Disabled effects leave graphics on the direct vector path, so toggling one off cannot
+/// silently reduce the detail of a large graphic.
+fn graphic_needs_raster(item: &TrackItem, effects_enabled: bool) -> bool {
+    item.has_opacity_masks()
+        || effects_enabled && item.effects.iter().any(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e))
+}
+
+/// Bound the float working image used when effects or opacity masks rasterise a graphic.
+/// Graphics on the vector path draw directly into the output frame.
+const MAX_EFFECT_GRAPHIC_PIXELS: u64 = 3840 * 2160;
+
+fn graphic_raster_dimensions(src_size: (u32, u32), want: f32) -> (usize, usize) {
+    let source_w = u64::from(src_size.0.max(1));
+    let source_h = u64::from(src_size.1.max(1));
+    let scale = if want.is_finite() { f64::from(want).clamp(1.0 / 64.0, 1.0) } else { 1.0 / 64.0 };
+    let desired_w = (source_w as f64 * scale).ceil() as u64;
+    // The downstream Motion, effects and mask pipeline derives its pixel scale from
+    // raster width. Size the height from that same scale, including odd-size rounding.
+    let height_for = |w: u64| (u128::from(w) * u128::from(source_h)).div_ceil(u128::from(source_w)).max(1);
+    let budget = u128::from(MAX_EFFECT_GRAPHIC_PIXELS);
+    if height_for(1) > budget {
+        // No validated graphic has this aspect ratio. Limit malformed metadata to one
+        // legal frame side so its fallback does not allocate the entire pixel budget.
+        return (1, filmcraft_project::MAX_FRAME_SIDE as usize);
+    }
+    let (mut lo, mut hi) = (1, desired_w.max(1));
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if u128::from(mid) * height_for(mid) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    (lo as usize, height_for(lo) as usize)
+}
+
+fn graphic_raster_matrix(src_size: (u32, u32), raster_size: (usize, usize)) -> Affine {
+    // Use exactly the width-derived scale consumed by item_layer_ex for Motion,
+    // opacity masks and effects. raster_size's height is rounded from this scale.
+    let scale = raster_size.0 as f64 / f64::from(src_size.0.max(1));
+    Affine::scale(scale, scale)
+}
+
 /// A track item's picture at timeline `t` before any effect (decoded, colour managed, frame
 /// blended; nested sequences rendered; graphics rasterised), at `want` of its source size.
 pub(crate) fn base_layer(
@@ -628,10 +672,10 @@ pub(crate) fn base_layer(
         }
         ItemKind::AdjustmentLayer { .. } => return None,
         ItemKind::Graphic { .. } => {
-            // standard effects work on the graphic at source resolution, then Motion places it
-            let (gw, gh) = (((src_size.0 as f32 * want).ceil() as usize).max(1), ((src_size.1 as f32 * want).ceil() as usize).max(1));
+            let (gw, gh) = graphic_raster_dimensions(src_size, want);
             let mut img = Image::new(gw, gh);
-            graphic_clip::render_graphic(item, mt, src_size, &Affine::scale(want as f64, want as f64), &mut img);
+            let raster_matrix = graphic_raster_matrix(src_size, (gw, gh));
+            graphic_clip::render_graphic(item, mt, src_size, &raster_matrix, &mut img);
             img
         }
     })
