@@ -75,9 +75,9 @@ impl Services for FakeFs {
     }
     fn volumes(&self) -> Vec<Volume> {
         vec![
-            Volume { name: "Macintosh HD".into(), path: "/".into(), kind: VolumeKind::Local },
-            Volume { name: "Card".into(), path: "/Volumes/Card".into(), kind: VolumeKind::Local },
-            Volume { name: "Studio".into(), path: "/Network/Studio".into(), kind: VolumeKind::Network },
+            Volume { name: "Macintosh HD".into(), path: "/".into(), kind: VolumeKind::Local, pending: false },
+            Volume { name: "Card".into(), path: "/Volumes/Card".into(), kind: VolumeKind::Local, pending: false },
+            Volume { name: "Studio".into(), path: "/Network/Studio".into(), kind: VolumeKind::Network, pending: false },
         ]
     }
     fn home_dir(&self) -> Option<String> {
@@ -326,4 +326,222 @@ fn ale_logs_are_not_offered_for_import() {
     assert_eq!(media_browser::kind_of("clips.ale"), None);
     assert!(!media_browser::extensions().contains(&"ale"));
     assert_eq!(media_browser::kind_of("cut.edl"), Some("project"));
+}
+
+/// A file system whose drives and directories take `delay` to answer (a network share that is
+/// slow or gone), on top of [`FakeFs`].
+struct SlowFs {
+    fs: FakeFs,
+    delay: std::time::Duration,
+    /// Directory reads so far.
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl Services for SlowFs {
+    fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        self.fs.read_file(path)
+    }
+    fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        self.fs.write_file(path, data)
+    }
+    fn file_size(&self, path: &str) -> std::io::Result<u64> {
+        self.fs.file_size(path)
+    }
+    fn list_entries(&self, dir: &str) -> Option<std::io::Result<Vec<DirEntry>>> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::thread::sleep(self.delay);
+        self.fs.list_entries(dir)
+    }
+    fn volumes(&self) -> Vec<Volume> {
+        std::thread::sleep(self.delay);
+        self.fs.volumes()
+    }
+    fn home_dir(&self) -> Option<String> {
+        self.fs.home_dir()
+    }
+}
+
+/// A field report: `mediaBrowser.roots`, asked every frame the panel is open, looked at every drive
+/// on the UI thread, and two SMB shares that did not answer froze the window for 13.8 s and 16.1 s.
+/// The drives and the listings are read off the calling thread now: a share that does not answer
+/// shows as being looked at, and the call returns at once.
+#[test]
+fn a_drive_that_does_not_answer_never_holds_up_the_caller() {
+    let delay = std::time::Duration::from_millis(1500);
+    let mut s = Session::new(Arc::new(SlowFs { fs: FakeFs::new(), delay, reads: Default::default() }));
+    let quick = std::time::Duration::from_millis(500);
+    let t = std::time::Instant::now();
+    let roots = s.execute("mediaBrowser.roots", json!({})).unwrap();
+    assert!(t.elapsed() < quick, "roots took {:?}", t.elapsed());
+    assert_eq!(roots["scanning"], true, "{roots}");
+    // the panel's listing: pending at first, the entries once they are read
+    let services = s.services.clone();
+    let t = std::time::Instant::now();
+    assert!(matches!(s.browser.io.listing(&services, "/home/me/Movies", "all"), media_browser::Listing::Pending));
+    assert!(t.elapsed() < quick, "listing took {:?}", t.elapsed());
+    // navigating to it does not wait for it either
+    let t = std::time::Instant::now();
+    s.execute("mediaBrowser.navigate", json!({"path": "/home/me/Movies"})).unwrap();
+    assert!(t.elapsed() < quick + delay / 2, "navigate took {:?}", t.elapsed());
+    // the reads finish on their own
+    std::thread::sleep(delay + std::time::Duration::from_millis(500));
+    let roots = s.execute("mediaBrowser.roots", json!({})).unwrap();
+    assert_eq!(roots["scanning"], false, "{roots}");
+    assert_eq!(roots["localDrives"].as_array().map(Vec::len), Some(2));
+    match s.browser.io.listing(&services, "/home/me/Movies", "all") {
+        media_browser::Listing::Ready(v) => assert!(v.iter().any(|e| e.name == "b-roll.wav")),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Every file-type filter shares one read of a folder: going to a folder (all files), the panel's
+/// filtered view and the tree's expansion used to read it once each, each read holding one of the
+/// few reads a dead share may take.
+#[test]
+fn one_read_of_a_folder_serves_every_file_type() {
+    let fs = Arc::new(SlowFs { fs: FakeFs::new(), delay: std::time::Duration::ZERO, reads: Default::default() });
+    let s = Session::new(fs.clone());
+    let services = s.services.clone();
+    let ready = |l: media_browser::Listing| match l {
+        media_browser::Listing::Ready(v) => v.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let all = ready(s.browser.io.read(&services, "/home/me/Movies", "all", std::time::Duration::from_secs(5)));
+    assert!(all.contains(&"b-roll.wav".to_string()) && all.contains(&"clip.mov".to_string()), "{all:?}");
+    assert_eq!(ready(s.browser.io.listing(&services, "/home/me/Movies", "audio")), ["Selects", "A-interview.wav", "b-roll.wav"]);
+    assert_eq!(ready(s.browser.io.listing(&services, "/home/me/Movies", "srt")), ["Selects", "subs.srt"]);
+    assert_eq!(fs.reads.load(std::sync::atomic::Ordering::Relaxed), 1, "one read for three filters");
+}
+
+/// A reader thread the OS refuses (resource limits, threads held by dead shares) used to leave the
+/// drives "being looked at" and the folder "being read" for the rest of the session, a read slot
+/// gone for good. Now the scan is tried again on the next call and the folder says it failed.
+#[test]
+fn a_refused_reader_thread_leaves_nothing_in_progress() {
+    let s = Session::new(Arc::new(SlowFs { fs: FakeFs::new(), delay: std::time::Duration::ZERO, reads: Default::default() }));
+    let services = s.services.clone();
+    crate::media_browser::tests_hook::REFUSE_THREADS.with(|r| r.set(true));
+    let (_, scanning) = s.browser.io.volumes(&services);
+    let listing = s.browser.io.listing(&services, "/home/me/Movies", "all");
+    crate::media_browser::tests_hook::REFUSE_THREADS.with(|r| r.set(false));
+    assert!(!scanning, "no scan is running");
+    assert!(matches!(listing, media_browser::Listing::Failed(_)), "{listing:?}");
+    // the failure stands until it is old, then the folder is read again
+    assert!(matches!(s.browser.io.listing(&services, "/home/me/Movies", "all"), media_browser::Listing::Failed(_)));
+    s.browser.io.expire();
+    let wait = std::time::Duration::from_secs(5);
+    assert!(matches!(s.browser.io.read(&services, "/home/me/Movies", "all", wait), media_browser::Listing::Ready(_)));
+    let (volumes, scanning) = s.browser.io.volumes(&services);
+    assert!(!scanning && !volumes.is_empty(), "{volumes:?}");
+}
+
+/// A file system whose `/Volumes/Dead` share and `/Dead…` drives never answer until released.
+struct DeadShare {
+    fs: FakeFs,
+    released: std::sync::atomic::AtomicBool,
+}
+
+impl Services for DeadShare {
+    fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        self.fs.read_file(path)
+    }
+    fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        self.fs.write_file(path, data)
+    }
+    fn file_size(&self, path: &str) -> std::io::Result<u64> {
+        self.fs.file_size(path)
+    }
+    fn list_entries(&self, dir: &str) -> Option<std::io::Result<Vec<DirEntry>>> {
+        while (dir.starts_with("/Volumes/Dead") || dir.starts_with("/Dead")) && !self.released.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        self.fs.list_entries(dir)
+    }
+    fn volumes(&self) -> Vec<Volume> {
+        self.fs.volumes()
+    }
+    fn home_dir(&self) -> Option<String> {
+        self.fs.home_dir()
+    }
+}
+
+/// Every folder opened on a share that does not answer held a read, and once eight were held no
+/// folder anywhere could be read, local ones included, until the share gave up. A share now holds
+/// only a few of the reads.
+#[test]
+fn a_dead_share_cannot_take_every_read() {
+    let fs = Arc::new(DeadShare { fs: FakeFs::new(), released: Default::default() });
+    let s = Session::new(fs.clone());
+    let services = s.services.clone();
+    for n in 0..12 {
+        let dir = format!("/Volumes/Dead/Day{n}");
+        assert!(matches!(s.browser.io.listing(&services, &dir, "all"), media_browser::Listing::Pending), "{dir}");
+    }
+    let local = s.browser.io.read(&services, "/home/me/Movies", "all", std::time::Duration::from_secs(5));
+    fs.released.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(matches!(local, media_browser::Listing::Ready(_)), "a local folder is read: {local:?}");
+}
+
+/// Several dead shares together, each holding its share of the reads, still leave a read for a
+/// drive that has none going.
+#[test]
+fn dead_shares_together_cannot_take_every_read() {
+    let fs = Arc::new(DeadShare { fs: FakeFs::new(), released: Default::default() });
+    let s = Session::new(fs.clone());
+    let services = s.services.clone();
+    for share in ["A", "B", "C", "D", "E", "F"] {
+        for n in 0..5 {
+            let _ = s.browser.io.listing(&services, &format!("/Dead{share}/Day{n}"), "all");
+        }
+    }
+    let local = s.browser.io.read(&services, "/home/me/Movies", "all", std::time::Duration::from_secs(5));
+    fs.released.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(matches!(local, media_browser::Listing::Ready(_)), "a local folder is read: {local:?}");
+}
+
+/// `read` asks for a folder as it is now: while that read is still going, the answer is pending,
+/// not the listing from a moment ago.
+#[test]
+fn a_fresh_read_still_going_is_pending() {
+    let delay = std::time::Duration::from_millis(400);
+    let s = Session::new(Arc::new(SlowFs { fs: FakeFs::new(), delay, reads: Default::default() }));
+    let services = s.services.clone();
+    let wait = std::time::Duration::from_secs(5);
+    assert!(matches!(s.browser.io.read(&services, "/home/me/Movies", "all", wait), media_browser::Listing::Ready(_)));
+    let again = s.browser.io.read(&services, "/home/me/Movies", "all", std::time::Duration::from_millis(20));
+    assert!(matches!(again, media_browser::Listing::Pending), "{again:?}");
+    // a second fresh read while that one is going does not get the old listing either
+    let overlapping = s.browser.io.read(&services, "/home/me/Movies", "all", std::time::Duration::from_millis(20));
+    assert!(matches!(overlapping, media_browser::Listing::Pending), "{overlapping:?}");
+    // the panel's listing keeps showing the last one meanwhile
+    assert!(matches!(s.browser.io.listing(&services, "/home/me/Movies", "all"), media_browser::Listing::Ready(_)));
+}
+
+/// Going to a folder already listed reads it again: until that read is done the answer carries
+/// the last entries and says they are pending, instead of passing them off as current.
+#[test]
+fn navigating_to_a_folder_being_read_again_says_pending() {
+    let delay = std::time::Duration::from_millis(400);
+    let mut s = Session::new(Arc::new(SlowFs { fs: FakeFs::new(), delay, reads: Default::default() }));
+    // waits (bounded) until no read of `dir` is going, so the steps do not race the reads
+    let settle = |s: &Session, dir: &str| {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while s.browser.io.is_reading(dir) {
+            assert!(std::time::Instant::now() < until, "{dir} still being read");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    s.execute("mediaBrowser.navigate", json!({"path": "/home/me/Movies"})).unwrap();
+    settle(&s, "/home/me/Movies");
+    s.execute("mediaBrowser.navigate", json!({"path": "/home/me"})).unwrap();
+    settle(&s, "/home/me");
+    let out = s.execute("mediaBrowser.navigate", json!({"path": "/home/me/Movies"})).unwrap();
+    // the read again takes `delay`, far longer than navigate waits for it
+    assert!(s.browser.io.is_reading("/home/me/Movies"), "read again: {out}");
+    assert_eq!(out["pending"], true, "{out}");
+    assert!(out["entries"].as_array().is_some_and(|e| !e.is_empty()), "the last entries are kept: {out}");
+    settle(&s, "/home/me/Movies");
+    settle(&s, "/home/me");
+    let out = s.execute("mediaBrowser.navigate", json!({"back": true})).unwrap();
+    assert_eq!(out["dir"], "/home/me", "{out}");
 }

@@ -56,6 +56,10 @@ pub struct Volume {
     pub name: String,
     pub path: String,
     pub kind: VolumeKind,
+    /// A drive that has not answered yet (a network share that is slow or gone): listed, greyed,
+    /// and asked again on the next scan.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 /// File types shown (the "File Types Displayed" menu).
@@ -126,6 +130,9 @@ pub struct BrowserState {
     /// Probed media properties by path (None = not a readable media file).
     #[serde(skip)]
     pub probes: BTreeMap<String, Option<MediaInfo>>,
+    /// Volume scans and directory listings, read off the UI thread.
+    #[serde(skip)]
+    pub io: BrowserIo,
 }
 
 /// A listed entry with what the browser shows about it.
@@ -251,6 +258,240 @@ pub fn list(services: &dyn Services, dir: &str, filter: &str) -> std::io::Result
     Ok(out)
 }
 
+// ------------------------------------------------------------------------------------ off the UI thread
+
+/// How long `mediaBrowser.list` waits for a directory before saying it is still being read.
+const LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long `mediaBrowser.navigate` waits before going to a directory that has not answered.
+const NAVIGATE_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A directory listing read by [`BrowserIo`].
+#[derive(Clone, Debug)]
+pub enum Listing {
+    Ready(std::sync::Arc<Vec<Entry>>),
+    /// Not answered yet (a slow network share, a drive spinning up): ask again later.
+    Pending,
+    Failed(String),
+}
+
+/// The Media Browser's file system reads, each on a thread of its own and cached, so a slow or
+/// dead share shows as pending instead of freezing the window. In a field report `mediaBrowser.roots`
+/// looked at every drive letter on the UI thread, every frame the panel was open, and two SMB
+/// shares froze the window for 13.8 s and 16.1 s. A read that is done within [`BrowserIo::WAIT`]
+/// (a local disk, the tests' file system) is answered at once.
+#[derive(Clone, Debug, Default)]
+pub struct BrowserIo {
+    inner: std::sync::Arc<std::sync::Mutex<IoState>>,
+}
+
+#[derive(Debug, Default)]
+struct IoState {
+    volumes: Option<(web_time::Instant, Vec<Volume>)>,
+    scanning: bool,
+    /// By directory, unfiltered: every file-type filter shares one read of a folder.
+    lists: std::collections::HashMap<String, (web_time::Instant, Listing)>,
+    reading: std::collections::HashSet<String>,
+}
+
+impl BrowserIo {
+    /// How long a read is waited for before the caller gets the last result (or pending).
+    pub const WAIT: std::time::Duration = std::time::Duration::from_millis(40);
+    const VOLUMES_FRESH: std::time::Duration = std::time::Duration::from_secs(10);
+    const LIST_FRESH: std::time::Duration = std::time::Duration::from_secs(3);
+    /// Reads at once: a dead share holds its thread until the OS gives up, and no more are
+    /// started past this many in all, nor past [`Self::MAX_READS_PER_ROOT`] on one drive or share.
+    /// A drive or share with no read going may still start one up to [`Self::MAX_READS_HARD`], so
+    /// dead shares never keep another folder (a local one) from being read.
+    const MAX_READS: usize = 16;
+    const MAX_READS_PER_ROOT: usize = 4;
+    const MAX_READS_HARD: usize = 32;
+    const MAX_LISTS: usize = 512;
+
+    fn state(&self) -> std::sync::MutexGuard<'_, IoState> {
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The drives and network locations from the last scan, and whether a scan is going on.
+    pub fn volumes(&self, services: &std::sync::Arc<dyn Services>) -> (Vec<Volume>, bool) {
+        let start = {
+            let mut st = self.state();
+            let old = st.volumes.as_ref().is_none_or(|(t, _)| t.elapsed() >= Self::VOLUMES_FRESH);
+            let start = old && !st.scanning;
+            st.scanning |= start;
+            start
+        };
+        if start {
+            let inner = self.inner.clone();
+            let started = run_off_thread("filmcraft-volumes", services.clone(), Self::WAIT, move |services| {
+                let v = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| services.volumes())).unwrap_or_default();
+                let mut st = inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                st.volumes = Some((web_time::Instant::now(), v));
+                st.scanning = false;
+            });
+            if !started {
+                // no scan is going on: the next call tries again
+                self.state().scanning = false;
+            }
+        }
+        let st = self.state();
+        (st.volumes.as_ref().map(|(_, v)| v.clone()).unwrap_or_default(), st.scanning)
+    }
+
+    /// The entries of `dir` under `filter`: the cached listing (read again in the background
+    /// once it is a few seconds old), or pending until the first read is done.
+    pub fn listing(&self, services: &std::sync::Arc<dyn Services>, dir: &str, filter: &str) -> Listing {
+        self.list(services, dir, filter, Self::WAIT, false)
+    }
+
+    /// [`Self::listing`] read again now (a command that asks for the directory as it is),
+    /// waiting up to `wait` for it.
+    pub fn read(&self, services: &std::sync::Arc<dyn Services>, dir: &str, filter: &str, wait: std::time::Duration) -> Listing {
+        self.list(services, dir, filter, wait, true)
+    }
+
+    /// Whether `dir` is being read (again) now.
+    pub fn is_reading(&self, dir: &str) -> bool {
+        self.state().reading.contains(dir)
+    }
+
+    /// Mark every listing and the drives as old: they are read again when next asked for (the
+    /// panel shows the old ones meanwhile).
+    pub fn expire(&self) {
+        let mut st = self.state();
+        let long_ago = web_time::Instant::now().checked_sub(Self::VOLUMES_FRESH.saturating_mul(2));
+        if let Some(t) = long_ago {
+            for (at, _) in st.lists.values_mut() {
+                *at = t;
+            }
+            if let Some((at, _)) = st.volumes.as_mut() {
+                *at = t;
+            }
+        } else {
+            st.lists.clear();
+            st.volumes = None;
+        }
+    }
+
+    fn list(&self, services: &std::sync::Arc<dyn Services>, dir: &str, filter: &str, wait: std::time::Duration, fresh: bool) -> Listing {
+        let key = dir.to_string();
+        let start = {
+            let mut st = self.state();
+            let old = fresh || st.lists.get(&key).is_none_or(|(t, _)| t.elapsed() >= Self::LIST_FRESH);
+            let volumes = st.volumes.as_ref().map_or(&[][..], |(_, v)| v.as_slice());
+            let root = read_root(dir, volumes);
+            let on_root = st.reading.iter().filter(|d| read_root(d, volumes) == root).count();
+            let room =
+                if on_root == 0 { st.reading.len() < Self::MAX_READS_HARD } else { st.reading.len() < Self::MAX_READS && on_root < Self::MAX_READS_PER_ROOT };
+            let start = old && !st.reading.contains(&key) && room;
+            if start {
+                st.reading.insert(key.clone());
+            }
+            start
+        };
+        if start {
+            let (inner, k) = (self.inner.clone(), key.clone());
+            let started = run_off_thread("filmcraft-media-browser", services.clone(), wait, move |services| {
+                let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| list(&*services, &k, "all")));
+                let listing = match read {
+                    Ok(Ok(v)) => Listing::Ready(std::sync::Arc::new(v)),
+                    Ok(Err(e)) => Listing::Failed(e.to_string()),
+                    Err(_) => Listing::Failed("internal error while listing (see the crash log)".into()),
+                };
+                let mut st = inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if st.lists.len() >= Self::MAX_LISTS {
+                    st.lists.retain(|_, (t, _)| t.elapsed() < Self::LIST_FRESH);
+                }
+                st.reading.remove(&k);
+                st.lists.insert(k, (web_time::Instant::now(), listing));
+            });
+            if !started {
+                // nothing is reading it: say so (read again once this is old) rather than pending forever
+                let mut st = self.state();
+                st.reading.remove(&key);
+                st.lists.insert(key.clone(), (web_time::Instant::now(), Listing::Failed("could not start a thread to read the folder".into())));
+            }
+        }
+        let st = self.state();
+        let listing = match st.lists.get(&key) {
+            // the last listing stands in while a fresh one is read, but a read asked for now
+            // (`read`) is answered only by the read it started, once that is done
+            Some((_, l)) if !fresh || (start && !st.reading.contains(&key)) => l.clone(),
+            Some(_) | None => Listing::Pending,
+        };
+        match listing {
+            Listing::Ready(v) if !matches!(filter, "" | "all") => {
+                Listing::Ready(std::sync::Arc::new(v.iter().filter(|e| e.is_dir || passes(filter, e.kind, &e.name)).cloned().collect()))
+            }
+            l => l,
+        }
+    }
+}
+
+/// The drive or share `dir` is on, to share out the reads: the longest scanned volume that holds
+/// it (the system root aside), else its first component (`X:`, `server\share`, `/home`).
+fn read_root(dir: &str, volumes: &[Volume]) -> String {
+    const SEPS: [char; 2] = ['/', '\\'];
+    let holds = |v: &str| dir == v || dir.strip_prefix(v).is_some_and(|rest| v.ends_with(SEPS) || rest.starts_with(SEPS));
+    let volume = volumes.iter().map(|v| v.path.as_str()).filter(|v| !v.trim_matches(SEPS).is_empty() && holds(v)).max_by_key(|v| v.len());
+    if let Some(v) = volume {
+        return v.to_string();
+    }
+    if windows_style(dir) {
+        // a drive letter, or a UNC path's server and share
+        let parts = if dir.starts_with(r"\\") { 2 } else { 1 };
+        return dir.trim_start_matches('\\').split('\\').take(parts).collect::<Vec<_>>().join("\\");
+    }
+    dir.split('/').find(|c| !c.is_empty()).map_or_else(|| "/".to_string(), |c| format!("/{c}"))
+}
+
+/// Run `work` on a thread named `name` and wait up to `wait` for it (on the web, where there are
+/// no threads, run it now). False when the thread could not be started (the OS refused one): then
+/// `work` never runs, and the caller takes back what it marked as in progress.
+fn run_off_thread(
+    name: &str,
+    services: std::sync::Arc<dyn Services>,
+    wait: std::time::Duration,
+    work: impl FnOnce(std::sync::Arc<dyn Services>) + Send + 'static,
+) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (name, wait);
+        work(services);
+        true
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        #[cfg(test)]
+        if tests_hook::REFUSE_THREADS.with(std::cell::Cell::get) {
+            log::warn!("{name}: thread not started: refused (test)");
+            return false;
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let spawned = std::thread::Builder::new().name(name.to_string()).spawn(move || {
+            work(services);
+            let _ = tx.send(());
+        });
+        match spawned {
+            Ok(_) => {
+                let _ = rx.recv_timeout(wait);
+                true
+            }
+            Err(e) => {
+                log::warn!("{name}: thread not started: {e}");
+                false
+            }
+        }
+    }
+}
+
+/// Lets a test make [`run_off_thread`] fail as when the OS refuses a thread (on the test's own thread).
+#[cfg(test)]
+pub(crate) mod tests_hook {
+    thread_local! {
+        pub(crate) static REFUSE_THREADS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+}
+
 /// The directory shown: the current one, else the last one, else home, else the first volume.
 pub fn current_dir(s: &Session) -> String {
     if !s.browser.dir.is_empty() {
@@ -282,7 +523,8 @@ fn state_json(s: &Session) -> Value {
 }
 
 fn roots(s: &mut Session, _: &Value) -> Result<Value> {
-    let vols = s.services.volumes();
+    // the panel asks every frame: answered from the last scan, a new one started when it is old
+    let (vols, scanning) = s.browser.io.volumes(&s.services);
     let (local, network): (Vec<Volume>, Vec<Volume>) = vols.into_iter().partition(|v| v.kind == VolumeKind::Local);
     let mb = &s.prefs.media_browser;
     let named = |v: &Vec<String>| v.iter().map(|p| json!({"name": base_name(p), "path": p})).collect::<Vec<_>>();
@@ -292,23 +534,32 @@ fn roots(s: &mut Session, _: &Value) -> Result<Value> {
         "network": network,
         "recent": named(&mb.recent),
         "home": s.services.home_dir(),
+        // the drives are still being looked at (the first scan, or a share that is slow)
+        "scanning": scanning,
     }))
 }
 
 fn list_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = str_p(p, "path").map(str::to_string).unwrap_or_else(|| current_dir(s));
     let filter = str_p(p, "fileTypes").map(str::to_string).unwrap_or_else(|| s.prefs.media_browser.file_types.clone());
-    let entries = list(&*s.services, &dir, &filter).map_err(|e| bad("mediaBrowser.list", format!("{dir}: {e}")))?;
+    let entries = match s.browser.io.read(&s.services, &dir, &filter, LIST_WAIT) {
+        Listing::Ready(v) => v,
+        Listing::Pending => return Err(bad("mediaBrowser.list", format!("{dir}: still reading (the drive is not answering yet)"))),
+        Listing::Failed(e) => return Err(bad("mediaBrowser.list", format!("{dir}: {e}"))),
+    };
     let mut out = state_json(s);
     out["dir"] = json!(dir);
     out["fileTypes"] = json!(filter);
-    out["entries"] = serde_json::to_value(&entries).unwrap_or_default();
+    out["entries"] = serde_json::to_value(&*entries).unwrap_or_default();
     Ok(out)
 }
 
 fn go(s: &mut Session, dir: String, history: bool) -> Result<()> {
-    // the directory must be listable
-    list(&*s.services, &dir, "all").map_err(|e| bad("mediaBrowser.navigate", format!("{dir}: {e}")))?;
+    // The directory must be listable. A drive that does not answer within NAVIGATE_WAIT is gone
+    // to anyway: the panel shows it being read, and its error if it fails.
+    if let Listing::Failed(e) = s.browser.io.read(&s.services, &dir, "all", NAVIGATE_WAIT) {
+        return Err(bad("mediaBrowser.navigate", format!("{dir}: {e}")));
+    }
     let cur = current_dir(s);
     if history && cur != dir {
         s.browser.back.push(cur);
@@ -349,7 +600,28 @@ fn navigate(s: &mut Session, p: &Value) -> Result<Value> {
         let path = str_p(p, "path").ok_or_else(|| bad("mediaBrowser.navigate", "need `path`, or `back` / `forward` / `up`"))?;
         go(s, path.to_string(), true)?;
     }
-    list_cmd(s, &json!({}))
+    // the directory as far as it has been read: a drive that has not answered yet is gone to
+    // anyway (`pending`, no entries yet), the panel shows it being read
+    let (dir, filter) = (current_dir(s), s.prefs.media_browser.file_types.clone());
+    let listing = s.browser.io.listing(&s.services, &dir, &filter);
+    let mut out = state_json(s);
+    out["dir"] = json!(dir);
+    out["fileTypes"] = json!(filter);
+    match listing {
+        Listing::Ready(entries) => {
+            out["entries"] = serde_json::to_value(&*entries).unwrap_or_default();
+            // the last listing while the folder is read again: say it may be out of date
+            if s.browser.io.is_reading(&dir) {
+                out["pending"] = json!(true);
+            }
+        }
+        Listing::Pending => {
+            out["entries"] = json!([]);
+            out["pending"] = json!(true);
+        }
+        Listing::Failed(e) => return Err(bad("mediaBrowser.navigate", format!("{dir}: {e}"))),
+    }
+    Ok(out)
 }
 
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
@@ -729,6 +1001,62 @@ pub fn std_list_entries(dir: &str) -> std::io::Result<Vec<DirEntry>> {
         .collect())
 }
 
+/// How long [`std_volumes`] waits for the drive letters to answer.
+const DRIVE_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// The drive letters that exist, each looked at on a thread of its own: a mapped network drive
+/// that does not answer (`X:` on a share that is gone) takes the OS many seconds, and is listed
+/// as pending after [`DRIVE_WAIT`] instead of holding up the others. A letter still being looked
+/// at from an earlier scan is not asked again until it answers.
+fn windows_drives() -> Vec<Volume> {
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    static PROBING: OnceLock<Mutex<std::collections::BTreeSet<char>>> = OnceLock::new();
+    let probing = PROBING.get_or_init(Default::default);
+    let (tx, rx) = std::sync::mpsc::channel::<(char, bool)>();
+    let mut asked = Vec::new();
+    let mut busy = Vec::new();
+    for l in 'A'..='Z' {
+        if !probing.lock().unwrap_or_else(PoisonError::into_inner).insert(l) {
+            busy.push(l);
+            continue;
+        }
+        let tx = tx.clone();
+        let spawned = std::thread::Builder::new().name(format!("filmcraft-drive-{l}")).spawn(move || {
+            let there = std::path::Path::new(&format!("{l}:\\")).exists();
+            if let Some(p) = PROBING.get() {
+                p.lock().unwrap_or_else(PoisonError::into_inner).remove(&l);
+            }
+            let _ = tx.send((l, there));
+        });
+        match spawned {
+            Ok(_) => asked.push(l),
+            Err(_) => {
+                probing.lock().unwrap_or_else(PoisonError::into_inner).remove(&l);
+            }
+        }
+    }
+    drop(tx);
+    let deadline = web_time::Instant::now() + DRIVE_WAIT;
+    let mut answered = std::collections::BTreeMap::new();
+    while answered.len() < asked.len() {
+        let left = deadline.saturating_duration_since(web_time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((l, there)) => {
+                answered.insert(l, there);
+            }
+            Err(_) => break,
+        }
+    }
+    let mut v = Vec::new();
+    for l in 'A'..='Z' {
+        let pending = busy.contains(&l) || (asked.contains(&l) && !answered.contains_key(&l));
+        if pending || answered.get(&l) == Some(&true) {
+            v.push(Volume { name: format!("({l}:)"), path: format!("{l}:\\"), kind: VolumeKind::Local, pending });
+        }
+    }
+    v
+}
+
 /// Drives and network locations of the desktop host.
 pub fn std_volumes() -> Vec<Volume> {
     let mut v = Vec::new();
@@ -738,29 +1066,23 @@ pub fn std_volumes() -> Vec<Volume> {
             .unwrap_or_default()
     };
     if cfg!(windows) {
-        for l in 'A'..='Z' {
-            let p = format!("{l}:\\");
-            if std::path::Path::new(&p).exists() {
-                v.push(Volume { name: format!("({l}:)"), path: p, kind: VolumeKind::Local });
-            }
-        }
-        return v;
+        return windows_drives();
     }
     if cfg!(target_os = "macos") {
         let mut names = dir_names("/Volumes");
         names.sort();
         for n in names {
-            v.push(Volume { path: format!("/Volumes/{n}"), name: n, kind: VolumeKind::Local });
+            v.push(Volume { path: format!("/Volumes/{n}"), name: n, kind: VolumeKind::Local, pending: false });
         }
         if v.is_empty() {
-            v.push(Volume { name: "/".into(), path: "/".into(), kind: VolumeKind::Local });
+            v.push(Volume { name: "/".into(), path: "/".into(), kind: VolumeKind::Local, pending: false });
         }
         if std::path::Path::new("/Network").is_dir() {
-            v.push(Volume { name: "Network".into(), path: "/Network".into(), kind: VolumeKind::Network });
+            v.push(Volume { name: "Network".into(), path: "/Network".into(), kind: VolumeKind::Network, pending: false });
         }
         return v;
     }
-    v.push(Volume { name: "/".into(), path: "/".into(), kind: VolumeKind::Local });
+    v.push(Volume { name: "/".into(), path: "/".into(), kind: VolumeKind::Local, pending: false });
     for base in ["/media", "/mnt", "/run/media"] {
         for n in dir_names(base) {
             let p = format!("{base}/{n}");
@@ -768,10 +1090,10 @@ pub fn std_volumes() -> Vec<Volume> {
             let inner = dir_names(&p);
             if base != "/mnt" && !inner.is_empty() {
                 for m in inner {
-                    v.push(Volume { path: format!("{p}/{m}"), name: m, kind: VolumeKind::Local });
+                    v.push(Volume { path: format!("{p}/{m}"), name: m, kind: VolumeKind::Local, pending: false });
                 }
             } else {
-                v.push(Volume { name: n, path: p, kind: VolumeKind::Local });
+                v.push(Volume { name: n, path: p, kind: VolumeKind::Local, pending: false });
             }
         }
     }
@@ -788,6 +1110,21 @@ pub fn std_home_dir() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_are_shared_out_by_drive_or_share() {
+        let vol = |p: &str| Volume { name: String::new(), path: p.into(), kind: VolumeKind::Local, pending: false };
+        let vols = [vol("/"), vol("/Volumes/Card"), vol("/Network/Studio"), vol("X:\\")];
+        assert_eq!(read_root("/Volumes/Card/DCIM", &vols), "/Volumes/Card");
+        assert_eq!(read_root("/Volumes/Cardigan/x", &vols), "/Volumes", "a volume holds only its own folders");
+        assert_eq!(read_root("/Network/Studio", &vols), "/Network/Studio");
+        assert_eq!(read_root("/home/me/Movies", &vols), "/home", "the system root does not count as one drive");
+        assert_eq!(read_root("X:\\Footage\\Day1", &vols), "X:\\");
+        assert_eq!(read_root("Y:\\Footage", &[]), "Y:");
+        assert_eq!(read_root(r"\\nas\media\2026\day1", &[]), r"nas\media");
+        assert_eq!(read_root("/", &[]), "/");
+        assert_eq!(read_root("", &[]), "/");
+    }
 
     #[test]
     fn format_date_is_utc_minutes() {
