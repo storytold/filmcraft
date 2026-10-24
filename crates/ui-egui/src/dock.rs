@@ -177,7 +177,8 @@ fn vsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
     DockNode::Split { vertical: true, size, a: Box::new(a), b: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 10] =
+    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Vertical", "Learning", "Review", "All Panels"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -357,6 +358,21 @@ pub fn workspace(name: &str) -> DockNode {
                 hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Libraries], 0), bottom_editing()),
             ),
             tabs(&[EssentialGraphics, Properties], 0),
+        ),
+        // Vertical (9:16 editing, #1822): the Program monitor runs the full height on the right, beside
+        // the source and project panels and the timeline
+        "Vertical" => hsplit(
+            FixedB(420.0),
+            vsplit(
+                Ratio(0.5),
+                hsplit(
+                    Ratio(0.5),
+                    tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0),
+                    tabs(&[Project, MediaBrowser, Effects, Info, Markers, History], 0),
+                ),
+                bottom_editing(),
+            ),
+            tabs(&[Program], 0),
         ),
         "All Panels" => vsplit(
             Ratio(0.5),
@@ -919,6 +935,13 @@ mod tests {
         assert_eq!(split_first(SplitSize::FixedA(300.0), 1000.0), 300.0);
         assert_eq!(split_first(SplitSize::FixedB(300.0), 1000.0), 700.0);
         assert_eq!(split_first(SplitSize::Ratio(0.0), 1000.0), 20.0);
+    }
+
+    #[test]
+    fn vertical_workspace_gives_program_the_full_height() {
+        // #1822: Program alone on the right of the root split, spanning the window's height
+        let DockNode::Split { vertical: false, b, .. } = workspace("Vertical") else { panic!("a side-by-side root split") };
+        assert!(matches!(*b, DockNode::Tabs { ref panels, .. } if panels == &[PanelKind::Program]), "{b:?}");
     }
 
     #[test]
