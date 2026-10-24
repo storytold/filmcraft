@@ -191,7 +191,9 @@ pub struct CommandSpec {
 - **Editor state** (`EditorState`: active sequence, playheads, selection, targeting, edit points…)
   is serde, so agents can read it with `state.inspect`.
 - **Events** (`ProjectChanged`, `Toast`, `OpenSequence`, `OpenSource`) are drained by frontends
-  each frame.
+  each frame. The desktop UI draws `Toast` events as brief notices stacked at the bottom right
+  (`crates/ui-egui/src/toast.rs`; automation ids `toast.<n>`), red and longer-lived for
+  `error: true`. The web app shares this UI, so it draws them the same way.
 - **Event log** (`Session::log`, `engine::panels`): every failed top-level command (an error; a
   disabled one is a warning), messages and error toasts, auto-save errors, and background jobs
   starting, finishing, failing or being cancelled. Repeats of the newest entry bump its count. The

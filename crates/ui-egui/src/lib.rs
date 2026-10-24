@@ -61,6 +61,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod toast;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -378,7 +379,8 @@ pub struct FilmcraftApp {
     menu_sent: Vec<menus::MenuItem>,
     /// Keyboard Shortcuts dialog state.
     pub shortcut_editor: panels::shortcuts_dialog::EditorState,
-    pub toast: Option<(String, f64)>,
+    /// Brief notices over the window's bottom right corner ([`toast`]).
+    pub toasts: toast::Toasts,
     pub tl: panels::timeline::TlState,
     pub(crate) transcript_cache: panels::transcript_cache::TranscriptCache,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
@@ -606,7 +608,7 @@ impl FilmcraftApp {
             bindings_rev: 0,
             menu_sent: Vec::new(),
             shortcut_editor: Default::default(),
-            toast: None,
+            toasts: toast::Toasts::default(),
             graphics_notice: None,
             tl: Default::default(),
             transcript_cache: Default::default(),
@@ -969,6 +971,29 @@ impl FilmcraftApp {
 
     pub fn status(&mut self, s: impl Into<String>) {
         self.ui.status = s.into();
+    }
+
+    /// Show a toast ([`toast`]): a brief notice at the bottom right, red when `error`.
+    pub fn toast(&mut self, ctx: &egui::Context, text: impl Into<String>, error: bool) {
+        self.toasts.push(ctx.input(|i| i.time), text, error);
+        ctx.request_repaint();
+    }
+
+    /// Draw the toasts above the status bar, and above the safe-graphics notice while that is
+    /// parked in the same corner (measured from where the notice really is, so a hidden status
+    /// bar or a moved anchor cannot make them overlap).
+    fn draw_toasts(&mut self, ctx: &egui::Context) {
+        if self.toasts.is_empty() {
+            return;
+        }
+        let mut lift: f32 = if self.ui.show_status_bar { 32.0 } else { 12.0 };
+        if self.graphics_notice.as_ref().is_some_and(|n| !n.closed)
+            && let Some(r) = ctx.memory(|m| m.area_rect(egui::Id::new("graphics-notice")))
+        {
+            lift = lift.max(ctx.content_rect().bottom() - r.top() + 8.0);
+        }
+        let (tokens, auto) = (&self.tokens, &mut self.auto);
+        self.toasts.show(ctx, tokens, auto, lift);
     }
 
     // ---------------------------------------------------------------- playback
@@ -1779,10 +1804,10 @@ impl FilmcraftApp {
             match r {
                 Ok(r) => {
                     if let Some(n) = r["refreshed"].as_array().map(Vec::len).filter(|n| *n > 0) {
-                        self.toast = Some((format!("Refreshed {n} media item(s) changed on disk"), ctx.input(|i| i.time)));
+                        self.toast(ctx, format!("Refreshed {n} media item(s) changed on disk"), false);
                     }
                 }
-                Err(e) => self.toast = Some((e.to_string(), ctx.input(|i| i.time))),
+                Err(e) => self.toast(ctx, e.to_string(), true),
             }
         }
         let media = &self.session.prefs.media;
@@ -1837,7 +1862,7 @@ impl FilmcraftApp {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
-                filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
+                filmcraft_engine::Event::Toast { message, error } => self.toast(&ctx, message, error),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
@@ -2208,6 +2233,9 @@ impl eframe::App for FilmcraftApp {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.draw_toasts(ui.ctx()))).is_err() {
+            self.toasts.clear();
         }
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);
