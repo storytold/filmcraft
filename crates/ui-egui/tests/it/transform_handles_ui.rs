@@ -537,3 +537,68 @@ fn backspace_in_effect_controls_removes_the_selected_mask_not_the_clip() {
     d.exec("edit.undo", json!({}));
     assert_eq!(st(&mut d).0, Some(1), "Undo brings the mask back");
 }
+
+/// Every key that reaches Clear or Ripple Delete, pressed with Effect Controls focused, leaves the clip
+/// alone when nothing removable is selected, and after an effect or mask is gone a repeated press does
+/// not fall through to `edit.clear` (#1354 review).
+#[test]
+fn clear_keys_in_effect_controls_never_fall_through_to_the_clip() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::demo();
+    let (clip, _) = d.first_clip();
+    let clip_there = |d: &mut Driver| d.app().session.active_sequence().unwrap().find_item(ClipId(clip)).is_some();
+    let effects = |d: &mut Driver| d.app().session.active_sequence().unwrap().find_item(ClipId(clip)).map(|(_, it)| it.effects.len());
+    let masks =
+        |d: &mut Driver| d.app().session.active_sequence().unwrap().find_item(ClipId(clip)).map(|(_, it)| it.effect("transform").map_or(0, |e| e.masks.len()));
+    let focus_transform = |d: &mut Driver| {
+        d.click("effectControls.effect.transform");
+        assert_eq!(d.app().ui.focused, PanelKind::EffectControls, "the click focused Effect Controls");
+    };
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "transform"}));
+    d.frames(2);
+    for fx in ["motion", "opacity", "time_remap"] {
+        d.click(&format!("effectControls.effect.{fx}.twirl"));
+    }
+    let base = effects(&mut d).unwrap() - 1;
+    let keys = ["Backspace", "Delete", "Shift+Delete", "Shift+Backspace"];
+
+    // (b) effect: the first press removes it, repeated presses of every key remove nothing else
+    focus_transform(&mut d);
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(3);
+    assert_eq!(effects(&mut d), Some(base), "the effect is gone");
+    for k in keys {
+        d.ok("ui.key", json!({"key": k}));
+        d.frames(3);
+        assert!(clip_there(&mut d), "{k} after the removal must not delete the clip");
+        assert_eq!(effects(&mut d), Some(base), "{k} removed nothing else");
+    }
+
+    // (b) mask: same, one mask removed, then repeated presses
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "transform"}));
+    d.frames(2);
+    focus_transform(&mut d);
+    d.exec("masks.add", json!({"clip": clip, "effect": "transform", "shape": "ellipse"}));
+    d.frames(2);
+    assert_eq!(masks(&mut d), Some(1));
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(3);
+    assert_eq!(masks(&mut d), Some(0), "the mask is gone");
+    for k in keys {
+        d.ok("ui.key", json!({"key": k}));
+        d.frames(3);
+        assert!(clip_there(&mut d), "{k} after the mask removal must not delete the clip");
+        assert_eq!(effects(&mut d), Some(base + 1), "{k} kept the effect");
+    }
+
+    // (a) Effect Controls focused with no selection at all
+    focus_transform(&mut d);
+    d.app().session.state.selected_effect = None;
+    d.app().session.state.selected_mask = None;
+    for k in keys {
+        d.ok("ui.key", json!({"key": k}));
+        d.frames(3);
+        assert!(clip_there(&mut d), "{k} with nothing selected must not delete the clip");
+        assert_eq!(effects(&mut d), Some(base + 1), "{k} removed no effect");
+    }
+}
