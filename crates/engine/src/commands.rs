@@ -1655,7 +1655,7 @@ fn build() -> Vec<CommandSpec> {
             // An Alt selection is already exact; explicit targets keep the command's linked behavior.
             let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
             // Select All leaves clips and captions both selected: Delete takes both, one undo step (#1912)
-            let caps = clips_and_captions_selected(s, p).then(|| s.state.caption_selection.clone()).unwrap_or_default();
+            let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
             s.edit_sequence("Clear", |q, _, st| {
                 edit::delete_items(q, &sel);
                 st.selection.clear();
@@ -1678,7 +1678,7 @@ fn build() -> Vec<CommandSpec> {
                 return crate::captions::delete(s, &caps, true);
             }
             let sel = if p.get("clips").is_some() || p.get("clip").is_some() { with_links(s, &clips_p(s, p)) } else { s.state.selection.clone() };
-            let caps = clips_and_captions_selected(s, p).then(|| s.state.caption_selection.clone()).unwrap_or_default();
+            let caps = if clips_and_captions_selected(s, p) { s.state.caption_selection.clone() } else { Default::default() };
             s.edit_sequence("Ripple Delete", |q, _, st| {
                 let spans = edit::ripple_delete_items(q, &sel)?;
                 if st.ripple_sequence_markers {
