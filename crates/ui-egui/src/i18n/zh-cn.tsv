@@ -443,7 +443,7 @@
 	Are you sure you want to discard your changes to '{file}'?	确定要放弃对“{file}”的更改吗？
 	Yes	是
 	No	否
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	将媒体添加到你的项目。将文件拖到窗口任意位置，或在下方选择来源。
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	将媒体添加到你的项目。将文件或文件夹拖到窗口任意位置，或在下方选择来源。
 	Browse files…	浏览文件…
 	Movies, audio and stills from disk	来自磁盘的电影、音频与静帧
 	Demo footage	演示素材

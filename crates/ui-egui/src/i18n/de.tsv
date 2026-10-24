@@ -486,7 +486,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Möchtest du deine Änderungen an „{file}“ wirklich verwerfen?
 	Yes	Ja
 	No	Nein
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Füge deinem Projekt Medien hinzu. Zieh Dateien irgendwo ins Fenster oder wähle unten eine Quelle.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Füge deinem Projekt Medien hinzu. Zieh Dateien oder Ordner irgendwo ins Fenster oder wähle unten eine Quelle.
 	Browse files…	Dateien durchsuchen…
 	Movies, audio and stills from disk	Filme, Audio und Standbilder von der Festplatte
 	Demo footage	Demomaterial

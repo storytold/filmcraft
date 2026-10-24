@@ -451,7 +451,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Voulez-vous vraiment ignorer vos modifications de « {file} » ?
 	Yes	Oui
 	No	Non
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Ajoutez des médias à votre projet. Déposez des fichiers n'importe où dans la fenêtre ou choisissez une source ci-dessous.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Ajoutez des médias à votre projet. Déposez des fichiers ou des dossiers n'importe où dans la fenêtre ou choisissez une source ci-dessous.
 	Browse files…	Parcourir les fichiers…
 	Movies, audio and stills from disk	Films, audio et images fixes depuis le disque
 	Demo footage	Rushes de démonstration
