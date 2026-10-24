@@ -12,14 +12,12 @@
 
 mod inflate;
 
-use std::sync::Arc;
-
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
-use super::{DEFAULT_STILL_DURATION, StillSource};
+use super::{DEFAULT_STILL_DURATION, Decoded as StillDecoded};
 use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
 
 /// Magic number at the start of every OpenEXR file (20000630 little-endian).
@@ -58,7 +56,7 @@ pub struct Decoded {
 }
 
 /// Open an EXR file as a still.
-pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
+pub(crate) fn still(name: &str, bytes: &[u8]) -> Result<StillDecoded> {
     let d = decode(name, bytes)?;
     let info = MediaInfo {
         name: name.to_string(),
@@ -81,7 +79,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         start_timecode: None,
         file_size: Some(bytes.len() as u64),
     };
-    Ok(StillSource { info, frame: Arc::new(d.frame) })
+    Ok(StillDecoded { info, frame: d.frame })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

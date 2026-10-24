@@ -34,7 +34,7 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
-## Memory of clips on a timeline (MEM1–MEM3)
+## Memory of clips on a timeline (MEM1–MEM5)
 
 Measured on the desktop release build with `footprint`, `heap` and `malloc_history`
 (`MallocStackLogging=lite`), 2026-10-05: twelve H.264 clips dropped on a timeline took the process
@@ -75,6 +75,24 @@ to a 12 GB footprint, 10.8 GB of it live heap in three piles.
 The same session showed that the desktop app never used hardware decoding: `register()` was an
 argument of a `log::info!` that no logger evaluated (fixed under HW1; `decode.hardware.sessions`
 was 0 with every frame decoded in software).
+
+5. **Stills decoded for good (MEM5, #2464, #2469).** A still source decoded its whole picture
+   when it was opened and kept it as a field, and the media pool keeps every source until its
+   item leaves the project, so each still ever shown stayed resident at `width × height × 4`
+   bytes: ~48 MB per 12 MP photo, 26 GB for a Media Browser folder of 400 camera JPEGs (the
+   browser makes a source per thumbnail). The GOP caches' budget never saw them, because stills
+   do not go through a GOP cache. Stills now share one `media::FrameCache` under
+   `still::STILL_BUDGET` (1 GiB, the same as the video frame budget; float stills are 16 bytes a
+   pixel, and this holds a logo over a 61 MP raw or a dissolve between two 24 MP raws without
+   decoding either again every frame); a source keeps its reader (or the file's bytes when the host
+   gives no reader), not its picture, and decodes the file again when it is shown after being
+   evicted (least recently shown first). A source's picture leaves the cache with the source. The cache never evicts the picture it just added,
+   so one still larger than the budget plays from the cache on its own and is pushed out only by
+   the next still. Two stills that together exceed the budget on one frame (two 45 MP raws, 720 MB
+   each as float) still decode again every frame, bounded. Measured on 60 × 12 MP JPEGs in the thumbnail view:
+   3.3 GB resident before; after, 1.6 GB at the peak with the cache full at 961 MB, settling to
+   1.3 GB once the thumbnails are done. `perf.stats` reports `decode.stillsCacheMB`
+   and `decode.stillsBudgetMB`.
 
 What remains per live decoder is unchanged: the H.264 decoder publishes each macroblock row of a
 picture as its own allocations (`Frame::make_row`, five per row), which is where the 290 MB per

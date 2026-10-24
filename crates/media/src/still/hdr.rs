@@ -7,13 +7,11 @@
 //! `PRIMARIES` header lines are not applied, which is what other readers do too; the XYZE colour
 //! format is refused.
 
-use std::sync::Arc;
-
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
 
-use super::{DEFAULT_STILL_DURATION, StillSource};
+use super::{DEFAULT_STILL_DURATION, Decoded as StillDecoded};
 use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
 
 /// Largest picture we decode (each pixel takes 16 bytes as RGBA floats).
@@ -34,7 +32,7 @@ fn err(name: &str, what: &str) -> MediaError {
 }
 
 /// Open a Radiance picture as a still.
-pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
+pub(crate) fn still(name: &str, bytes: &[u8]) -> Result<StillDecoded> {
     let frame = decode(name, bytes)?;
     let info = MediaInfo {
         name: name.to_string(),
@@ -57,7 +55,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         start_timecode: None,
         file_size: Some(bytes.len() as u64),
     };
-    Ok(StillSource { info, frame: Arc::new(frame) })
+    Ok(StillDecoded { info, frame })
 }
 
 /// One resolution-line axis: `(is_x, positive)`.

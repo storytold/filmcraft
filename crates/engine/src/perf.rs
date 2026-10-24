@@ -26,6 +26,9 @@ pub fn decode_json() -> Value {
         // decoded frames all sources hold, and the budget idle sources are trimmed to
         "cacheMB": filmcraft_codecs::cached_bytes() as f64 / 1e6,
         "cacheBudgetMB": filmcraft_codecs::FRAME_BUDGET as f64 / 1e6,
+        // decoded still images all sources hold, and the budget they are evicted down to
+        "stillsCacheMB": filmcraft_media::still::cached_bytes() as f64 / 1e6,
+        "stillsBudgetMB": filmcraft_media::still::STILL_BUDGET as f64 / 1e6,
         // plane buffers of evicted frames waiting for the next decoded pictures, and how many
         // planes were decoded into a recycled buffer
         "planePoolMB": filmcraft_frame::pool::stats().idle_bytes as f64 / 1e6,
@@ -98,6 +101,8 @@ mod tests {
             "liveDecoders",
             "cacheMB",
             "cacheBudgetMB",
+            "stillsCacheMB",
+            "stillsBudgetMB",
             "planePoolMB",
             "planesReused",
         ] {

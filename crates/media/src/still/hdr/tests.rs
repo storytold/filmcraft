@@ -130,7 +130,7 @@ fn hostile_input_is_an_error_not_a_panic() {
 fn opens_as_a_float_still() {
     let body = [[128u8, 128, 128, 136]; 4].concat();
     let s = still("a.hdr", &file("-Y 2 +X 2", &body)).unwrap();
-    let info = crate::MediaSource::info(&s);
+    let info = &s.info;
     assert_eq!(info.video.as_ref().map(|v| (v.width, v.height, v.codec.as_str())), Some((2, 2, "HDR")));
     let src = crate::open_bytes("a.hdr", file("-Y 2 +X 2", &body).into(), &[]).unwrap();
     assert_eq!(src.info().kind, MediaKind::Still);

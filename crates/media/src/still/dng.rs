@@ -9,13 +9,11 @@
 //! A numbered folder of `.dng` frames imports as an image sequence (CinemaDNG); the first frame's
 //! CinemaDNG FrameRate and TimeCodes tags give the sequence its frame rate and start time code.
 
-use std::sync::Arc;
-
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
 
-use super::{DEFAULT_STILL_DURATION, StillSource};
+use super::{DEFAULT_STILL_DURATION, Decoded as StillDecoded};
 use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
 
 /// Whether `b` is a DNG file.
@@ -56,7 +54,7 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Decoded> {
 }
 
 /// Open a DNG file as a still.
-pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
+pub(crate) fn still(name: &str, bytes: &[u8]) -> Result<StillDecoded> {
     let d = decode(name, bytes)?;
     let info = MediaInfo {
         name: name.to_string(),
@@ -79,7 +77,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         start_timecode: None,
         file_size: Some(bytes.len() as u64),
     };
-    Ok(StillSource { info, frame: Arc::new(d.frame) })
+    Ok(StillDecoded { info, frame: d.frame })
 }
 
 /// The frame rate and start time code (in frames at that rate) of a CinemaDNG sequence whose first
@@ -96,6 +94,7 @@ pub fn sequence_timing(info: &filmcraft_dng::Info, default: FrameRate) -> (Frame
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use filmcraft_dng::tiff::tags;
     use filmcraft_dng::writer::{Compression, Options, Value, write};

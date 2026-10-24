@@ -187,18 +187,27 @@ pub fn is_importable(path: &Path) -> bool {
 pub type Opener = fn(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource>>;
 
 /// Open media from bytes, trying `extra` openers first, then the built-in ones (WAV, animated
-/// images, stills).
+/// images, stills). A still keeps the bytes to decode itself again (see [`still`]); when the
+/// file can be read again, [`open_bytes_from`] lets it keep a reader instead.
 pub fn open_bytes(name: &str, bytes: Arc<[u8]>, extra: &[Opener]) -> Result<SharedSource> {
+    open_bytes_from(name, bytes, extra, None)
+}
+
+/// [`open_bytes`] for bytes read whole from `reader`: a still keeps the reader, not the bytes.
+pub fn open_bytes_from(name: &str, bytes: Arc<[u8]>, extra: &[Opener], reader: Option<SharedReader>) -> Result<SharedSource> {
     for o in extra {
         if let Some(r) = o(name, bytes.clone()) {
             return r;
         }
     }
-    if still::exr::sniff(&bytes) {
-        return Ok(Arc::new(still::exr::still(name, &bytes)?));
-    }
-    if still::hdr::sniff(&bytes) {
-        return Ok(Arc::new(still::hdr::still(name, &bytes)?));
+    let still = |bytes: Arc<[u8]>| -> Result<SharedSource> {
+        Ok(Arc::new(match reader {
+            Some(r) => still::StillSource::open(name, r, &bytes)?,
+            None => still::StillSource::from_bytes(name, bytes)?,
+        }))
+    };
+    if still::exr::sniff(&bytes) || still::hdr::sniff(&bytes) {
+        return still(bytes);
     }
     if wav::sniff(&bytes) {
         return Ok(Arc::new(wav::WavSource::parse(name, bytes)?));
@@ -208,7 +217,7 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>, extra: &[Opener]) -> Result<Shar
         return Ok(Arc::new(r?));
     }
     if still::sniff(name, &bytes) {
-        return Ok(Arc::new(still::StillSource::decode(name, &bytes)?));
+        return still(bytes);
     }
     Err(MediaError::Unsupported(format!("{name}: unrecognised format")))
 }
