@@ -466,3 +466,225 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+/// A hand-made R3D NE item `name` at `path` (the SDK is optional; the dialog works on the project).
+fn add_r3d(d: &mut Driver, name: &str, path: &str) -> u64 {
+    let ocean = d.item_named("Ocean_Sunset.mp4");
+    let app = d.app();
+    let mut p = (*app.session.project).clone();
+    let mut clip = p.item(filmcraft_engine::project::ItemId(ocean)).unwrap().as_media().unwrap().clone();
+    clip.media = filmcraft_engine::project::MediaRef::File { path: path.into() };
+    clip.info.video.as_mut().unwrap().codec = "R3D NE".into();
+    let id = p.add_item(name, Label::Iris, ItemKind::Media(clip), None);
+    app.session.project = std::sync::Arc::new(p);
+    id.0
+}
+
+/// Clip ▸ Source Settings… on an R3D NE clip is a Camera Raw panel: every control in its three
+/// columns with an automation id, the three buttons; a new project's clip decodes using the
+/// project's settings until Decode Using ▸ Clip; a typed value is applied on OK as that clip's
+/// setting, a set value gets an As Shot button that puts it back, and the control channel reads
+/// and sets the same values through `clip.sourceSettings`.
+#[test]
+fn source_settings_camera_raw_panel_sets_and_resets_the_clip_settings() {
+    use filmcraft_media::{DecodeUsing, Hundredths, RawGamma};
+    let mut d = Driver::new();
+    let id = add_r3d(&mut d, "DSC_0003.R3D", "/footage/DSC_0003.R3D");
+    d.exec("project.select", json!({"items": [id]}));
+    let develop = |d: &mut Driver| d.app().session.project.item(filmcraft_engine::project::ItemId(id)).unwrap().as_media().unwrap().interpret.develop;
+    let r = d.menu("clip.sourceSettings");
+    assert_eq!(r["dialog"], "sourceSettings", "{r}");
+    for key in [
+        "quality",
+        "decodeUsing",
+        "colorScience",
+        "colorSpace",
+        "gamma",
+        "blendType",
+        "blendBias",
+        "metadataCurves",
+        "creativeLut",
+        "cdl",
+        "iso",
+        "toneMap",
+        "rolloff",
+        "hdrPeakNits",
+        "chromaNoiseReduction",
+        "flashingPixel",
+        "kelvin",
+        "tint",
+        "exposure",
+        "updateRmd",
+        "useChanges",
+        "useSettings",
+        "ok",
+    ] {
+        assert!(d.has(&format!("sourceSettings.{key}")), "{key} missing: {:?}", d.ok("ui.elements", json!({"prefix": "sourceSettings."})));
+    }
+    let dialog = d.app().ui.extras.dialog.clone().unwrap();
+    assert_eq!((dialog.params["decodeUsing"].as_str(), dialog.params["gamma"].as_str()), (Some("project"), Some("bt1886")), "the project's standard");
+    assert!(!d.has("sourceSettings.kelvin.asShot"), "nothing is set yet, so nothing to put back");
+    // Decode Using ▸ Clip: the clip gets settings of its own, from the project's
+    d.ok("ui.set", json!({"menuDialog": {"decodeUsing": "clip"}}));
+    d.frames(3);
+    assert_eq!(develop(&mut d).map(|x| (x.decode_using, x.gamma)), Some((DecodeUsing::Clip, RawGamma::Bt1886)));
+    // type a colour temperature into the Color Temp field and OK: the clip develops at 4300 K
+    d.click("sourceSettings.kelvin");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "4300"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert!(d.has("sourceSettings.kelvin.asShot"), "a set value gets its As Shot button: {:?}", d.ok("ui.elements", json!({"prefix": "sourceSettings."})));
+    d.click("sourceSettings.ok");
+    assert_eq!(develop(&mut d).map(|x| (x.kelvin, x.iso, x.tint, x.exposure)), Some((Some(4300), None, None, None)));
+    // the control channel sets the rest; reopened, the dialog shows them set and puts them back
+    d.exec("clip.sourceSettings", json!({"iso": 3200, "tint": -12.5, "exposure": 0.5}));
+    assert_eq!(develop(&mut d).map(|x| (x.kelvin, x.iso, x.tint, x.exposure)), Some((Some(4300), Some(3200), Some(Hundredths(-1250)), Some(Hundredths(50)))));
+    d.menu("clip.sourceSettings");
+    for key in ["kelvin", "tint", "exposure"] {
+        assert!(d.has(&format!("sourceSettings.{key}.asShot")), "{key}");
+        d.click(&format!("sourceSettings.{key}.asShot"));
+        d.frames(2);
+        assert!(!d.has(&format!("sourceSettings.{key}.asShot")), "{key}");
+    }
+    d.click("sourceSettings.ok");
+    assert_eq!(develop(&mut d).map(|x| (x.kelvin, x.iso, x.tint, x.exposure)), Some((None, Some(3200), None, None)));
+    let r = d.exec("clip.sourceSettings", json!({}));
+    assert_eq!(r["develop"]["kelvin"], Value::Null, "{r}");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(develop(&mut d).and_then(|x| x.kelvin), Some(4300), "one undo step");
+}
+
+/// Clip ▸ Source Settings… previews live: a changed control is applied to the
+/// clip while the dialog is open (the monitors develop the frame with it before OK), every change
+/// of one dialog shares one undo step, Cancel (and Escape) puts the opening values back and leaves
+/// no undo step, OK keeps them so one Undo restores the opening values, and a hostile value set
+/// over the control channel is refused with the error in the dialog, the clip untouched.
+#[test]
+fn source_settings_dialog_previews_live_and_cancel_or_undo_revert_in_one_step() {
+    use filmcraft_media::Hundredths;
+    let mut d = Driver::new();
+    let ocean = d.item_named("Ocean_Sunset.mp4");
+    let id = {
+        let app = d.app();
+        let mut p = (*app.session.project).clone();
+        let mut clip = p.item(filmcraft_engine::project::ItemId(ocean)).unwrap().as_media().unwrap().clone();
+        clip.media = filmcraft_engine::project::MediaRef::File { path: "/footage/DSC_0005.R3D".into() };
+        clip.info.video.as_mut().unwrap().codec = "R3D NE".into();
+        let id = p.add_item("DSC_0005.R3D", Label::Iris, ItemKind::Media(clip), None);
+        app.session.project = std::sync::Arc::new(p);
+        id.0
+    };
+    d.exec("project.select", json!({"items": [id]}));
+    d.exec("clip.sourceSettings", json!({"iso": 800}));
+    let develop = |d: &mut Driver| d.app().session.project.item(filmcraft_engine::project::ItemId(id)).unwrap().as_media().unwrap().interpret.develop;
+    let steps = |d: &mut Driver| d.app().session.history.undo.len();
+    let opened = (develop(&mut d), steps(&mut d));
+    // a drag of ISO and exposure: each change reaches the clip before OK, all of them one undo step
+    d.menu("clip.sourceSettings");
+    d.ok("ui.set", json!({"menuDialog": {"iso": 3200}}));
+    d.frames(3);
+    assert_eq!((develop(&mut d).unwrap().iso, steps(&mut d)), (Some(3200), opened.1 + 1), "applied live");
+    d.ok("ui.set", json!({"menuDialog": {"iso": 6400}}));
+    d.frames(3);
+    d.ok("ui.set", json!({"menuDialog": {"exposure": 1.5}}));
+    d.frames(3);
+    let x = develop(&mut d).unwrap();
+    assert_eq!((x.iso, x.exposure, steps(&mut d)), (Some(6400), Some(Hundredths(150)), opened.1 + 1), "one undo step for the dialog");
+    assert!(d.app().ui.extras.source_preview.is_some());
+    // a hostile value over the control channel (an ISO the decoder has not got; the number fields
+    // keep their values within the decoder's ranges themselves): refused, shown, the clip as it was
+    d.ok("ui.set", json!({"menuDialog": {"iso": 1250}}));
+    d.frames(3);
+    let dialog = d.app().ui.extras.dialog.clone().unwrap();
+    assert!(dialog.error.to_ascii_lowercase().contains("iso"), "{}", dialog.error);
+    assert_eq!((develop(&mut d).unwrap().iso, steps(&mut d)), (Some(6400), opened.1 + 1), "refused without applying");
+    d.ok("ui.set", json!({"menuDialog": {"iso": 12800, "kelvin": 4300}}));
+    d.frames(3);
+    assert_eq!((develop(&mut d).unwrap().iso, develop(&mut d).unwrap().kelvin), (Some(12800), Some(4300)));
+    assert!(d.app().ui.extras.dialog.clone().unwrap().error.is_empty(), "a good value clears the error");
+    // Cancel: the opening values are back and the history is as before the dialog
+    d.click("sourceSettings.cancel");
+    let extras = d.app().ui.extras.clone();
+    assert!(extras.dialog.is_none() && extras.source_preview.is_none(), "{:?} {:?}", extras.dialog, extras.source_preview);
+    assert_eq!((develop(&mut d), steps(&mut d)), opened, "Cancel reverts without a trace");
+    // Escape does the same
+    d.menu("clip.sourceSettings");
+    d.ok("ui.set", json!({"menuDialog": {"exposure": -2.0}}));
+    d.frames(3);
+    assert_eq!(develop(&mut d).unwrap().exposure, Some(Hundredths(-200)));
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(3);
+    assert!(d.app().ui.extras.dialog.is_none());
+    assert_eq!((develop(&mut d), steps(&mut d)), opened, "Escape reverts too");
+    // OK keeps the previewed values as one undo step; Undo restores the opening values in one go
+    d.menu("clip.sourceSettings");
+    d.ok("ui.set", json!({"menuDialog": {"iso": 1600}}));
+    d.frames(3);
+    d.ok("ui.set", json!({"menuDialog": {"gamma": "srgb", "toneMap": "medium"}}));
+    d.frames(3);
+    d.click("sourceSettings.ok");
+    assert!(d.app().ui.extras.dialog.is_none() && d.app().ui.extras.source_preview.is_none());
+    let x = develop(&mut d).unwrap();
+    assert_eq!((x.iso, x.gamma.id(), steps(&mut d)), (Some(1600), "srgb", opened.1 + 1));
+    d.exec("edit.undo", json!({}));
+    assert_eq!((develop(&mut d), steps(&mut d)), (opened.0, opened.1), "one Undo takes the whole dialog back");
+    d.exec("edit.redo", json!({}));
+    assert_eq!(develop(&mut d).unwrap().iso, Some(1600));
+}
+
+/// The Camera Raw panel's buttons and the project's Camera RAW settings: Use Changes copies the
+/// shown clip's settings to every selected clip and Use Settings puts it back to what it records,
+/// both inside the dialog's one undo step (Cancel takes them back); Update RMD without a decoder
+/// says why in the dialog; File ▸ Project Settings ▸ Camera RAW changes what the clips that
+/// decode using the project develop with, a gamma chosen alone bringing its colour space along.
+#[test]
+fn camera_raw_buttons_and_the_project_settings_tab() {
+    use filmcraft_media::{DecodeUsing, RawColorSpace, RawDevelop, RawGamma, RawToneMap};
+    let mut d = Driver::new();
+    let a = add_r3d(&mut d, "A.R3D", "/footage/A.R3D");
+    let b = add_r3d(&mut d, "B.R3D", "/footage/B.R3D");
+    let develop = |d: &mut Driver, id: u64| d.app().session.project.item(filmcraft_engine::project::ItemId(id)).unwrap().as_media().unwrap().interpret.develop;
+    d.exec("clip.sourceSettings", json!({"items": [a], "iso": 1600, "gamma": "srgb", "toneMap": "high"}));
+    let opened = (develop(&mut d, a), develop(&mut d, b), d.app().session.history.undo.len());
+    d.exec("project.select", json!({"items": [a, b]}));
+    d.menu("clip.sourceSettings");
+    d.click("sourceSettings.useChanges");
+    d.frames(2);
+    assert_eq!(develop(&mut d, b), develop(&mut d, a), "B has A's settings");
+    assert_eq!(develop(&mut d, b).map(|x| (x.iso, x.gamma)), Some((Some(1600), RawGamma::Srgb)));
+    d.click("sourceSettings.useSettings");
+    d.frames(2);
+    let x = develop(&mut d, a).unwrap();
+    assert_eq!((x.decode_using, x.iso, x.tone_map), (DecodeUsing::Clip, None, RawToneMap::Clip), "as recorded");
+    assert_eq!(d.app().ui.extras.dialog.clone().unwrap().params["iso"], Value::Null, "the panel shows it");
+    // no decoder (the file does not exist): Update RMD says why, nothing changes
+    d.click("sourceSettings.updateRmd");
+    d.frames(2);
+    let error = d.app().ui.extras.dialog.clone().unwrap().error;
+    assert!(error.contains("RMD not written"), "{error}");
+    d.click("sourceSettings.cancel");
+    assert_eq!((develop(&mut d, a), develop(&mut d, b), d.app().session.history.undo.len()), opened, "Cancel takes it all back");
+    // the project's Camera RAW tab
+    let r = d.menu("file.projectSettings.cameraRaw");
+    assert_eq!(r["dialog"], "projectSettings", "{r}");
+    for key in
+        ["tab.cameraRaw", "cameraRaw.quality", "cameraRaw.colorSpace", "cameraRaw.gamma", "cameraRaw.toneMap", "cameraRaw.kelvin", "cameraRaw.standard", "ok"]
+    {
+        assert!(d.has(&format!("projectSettings.{key}")), "{key} missing: {:?}", d.ok("ui.elements", json!({"prefix": "projectSettings."})));
+    }
+    assert!(!d.has("projectSettings.cameraRaw.decodeUsing"), "Decode Using is a clip setting");
+    let mut cr = d.app().ui.extras.dialog.clone().unwrap().params["cameraRaw"].clone();
+    assert_eq!(cr["gamma"], "bt1886");
+    cr["gamma"] = json!("log3g10");
+    d.ok("ui.set", json!({"menuDialog": {"cameraRaw": cr}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.extras.dialog.clone().unwrap().params["cameraRaw"]["colorSpace"], "redWideGamutRgb", "the gamma brought its colour space");
+    d.click("projectSettings.ok");
+    let st = d.app().session.project.settings.camera_raw;
+    assert_eq!((st.color_space, st.gamma), (RawColorSpace::RedWideGamutRgb, RawGamma::Log3G10));
+    assert_eq!(d.exec("media.colorInfo", json!({"item": b}))["effective"], "log3g10-rwg", "B decodes using the project");
+    assert_eq!(d.exec("media.colorInfo", json!({"item": a}))["effective"], "linear709", "A has settings of its own (sRGB, Rec. 709)");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project.settings.camera_raw, RawDevelop::STANDARD);
+}

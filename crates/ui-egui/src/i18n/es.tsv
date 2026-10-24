@@ -3624,5 +3624,77 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	As Shot	Como se grabó
+	As Shot (ISO {v})	Como se grabó (ISO {v})
+	as shot	como se grabó
+	as shot (decoder not open)	como se grabó (descodificador no abierto)
+	ISO	ISO
+	Applies to a display gamma curve (BT.1886, sRGB, ST 2084, Hybrid Log-Gamma).	Se aplica a una curva gamma de pantalla (BT.1886, sRGB, ST 2084, Hybrid Log-Gamma).
+	Applies to the ST 2084 (PQ) gamma curve only.	Solo se aplica a la curva gamma ST 2084 (PQ).
+	Apply CDL	Aplicar CDL
+	Apply Creative LUT	Aplicar LUT creativa
+	Apply Metadata Curves	Aplicar curvas de metadatos
+	Apply this clip's settings to every selected clip	Aplicar los ajustes de este clip a todos los clips seleccionados
+	As recorded	Como se grabó
+	BT.1886	BT.1886
+	Blend Bias	Sesgo de mezcla
+	Blend Type	Tipo de mezcla
+	Camera RAW	RAW de cámara
+	Camera RAW clips develop with these settings unless they have settings of their own (Clip ▸ Source Settings ▸ Decode Using ▸ Clip).	Los clips RAW de cámara se revelan con estos ajustes salvo que tengan ajustes propios (Clip ▸ Ajustes de origen ▸ Decodificar con ▸ Clip).
+	Camera RAW…	RAW de cámara…
+	Camera Raw	RAW de cámara
+	Chroma Noise Reduction	Reducción de ruido de croma
+	Color Science	Ciencia del color
+	Color Temp	Temp. de color
+	Decode Quality	Calidad de decodificación
+	Decode Using	Decodificar con
+	Display curves go with Rec. 709, Rec. 2020 and P3 D65, Log3G10 with REDWideGamutRGB, ST 2084 and Hybrid Log-Gamma with Rec. 2020; linear with any.	Las curvas de pantalla van con Rec. 709, Rec. 2020 y P3 D65; Log3G10, con REDWideGamutRGB; ST 2084 e Hybrid Log-Gamma, con Rec. 2020; la lineal, con cualquiera.
+	Eighth Res. Good	1/8 de res. buena
+	Exposure Adjust	Ajuste de exposición
+	Flashing Pixel Adjust	Ajuste de píxeles parpadeantes
+	Full Res. Premium	Res. completa premium
+	Full and half resolution premium decodes.	Decodificaciones premium a resolución completa y media.
+	Gamma Curve	Curva gamma
+	HDR Peak Nits	Pico HDR (nits)
+	HDRx blending is not available in FilmCraft yet.	La mezcla HDRx aún no está disponible en FilmCraft.
+	Half Res. Good	Media res. buena
+	Half Res. Premium	Media res. premium
+	Highlight Roll Off	Atenuación de altas luces
+	Hybrid Log-Gamma	Hybrid Log-Gamma
+	IPP2	IPP2
+	Log3G10	Log3G10
+	Mild	Leve
+	Nikon R3D NE is developed with RED IPP2 only.	Nikon R3D NE solo se revela con RED IPP2.
+	No RMD sidecar: the clip's recorded settings are the camera's.	Sin archivo RMD: los ajustes grabados del clip son los de la cámara.
+	Output Tone Map	Mapa de tonos de salida
+	P3 D65	P3 D65
+	Put this clip back to the settings it records (or its RMD sidecar says)	Devolver este clip a los ajustes que tiene grabados (o que indica su archivo RMD)
+	Quarter Res. Good	1/4 de res. buena
+	RED IPP2 development of the RAW picture. ISO, colour temperature, tint and exposure are applied by the SDK before development (as shot unless set); the output tone map and highlight roll-off shape a display gamma curve. Proxies keep the look they were made with.	Revelado RED IPP2 de la imagen RAW. El SDK aplica ISO, temperatura de color, matiz y exposición antes del revelado (como se grabó, salvo que se ajusten); el mapa de tonos de salida y la atenuación de altas luces dan forma a una curva gamma de pantalla. Los proxies conservan el aspecto con el que se crearon.
+	REDWideGamutRGB	REDWideGamutRGB
+	RMD sidecar in effect: {path}	Archivo RMD en uso: {path}
+	RMD written: {paths}	RMD escrito: {paths}
+	Rec. 2020	Rec. 2020
+	ST 2084 (PQ)	ST 2084 (PQ)
+	Sixteenth Res. Good	1/16 de res. buena
+	Standard (Rec. 709, BT.1886)	Estándar (Rec. 709, BT.1886)
+	Strong	Fuerte
+	The 3D LUT the clip (or its RMD) carries.	La LUT 3D que lleva el clip (o su RMD).
+	The ASC CDL the clip (or its RMD) records.	El ASC CDL que graba el clip (o su RMD).
+	The largest decode a preview uses; an export and a monitor at 100 % always decode at full resolution, premium.	La decodificación más grande que usa una vista previa; una exportación y un monitor al 100 % siempre decodifican a resolución completa, premium.
+	The linear output carries no look: choose a display or log gamma curve to apply it.	La salida lineal no lleva ningún aspecto: elija una curva gamma de pantalla o logarítmica para aplicarlo.
+	The luma and RGB curves the clip records.	Las curvas de luma y RGB que graba el clip.
+	This clip carries no creative LUT.	Este clip no lleva ninguna LUT creativa.
+	This clip decodes with the project's Camera RAW settings (File ▸ Project Settings ▸ Camera RAW). Choose Decode Using ▸ Clip to give it settings of its own.	Este clip se decodifica con los ajustes de RAW de cámara del proyecto (Archivo ▸ Ajustes del proyecto ▸ RAW de cámara). Elija Decodificar con ▸ Clip para darle ajustes propios.
+	This clip has no HDRx track (Nikon R3D NE records none): there is nothing to blend.	Este clip no tiene pista HDRx (Nikon R3D NE no la graba): no hay nada que mezclar.
+	Update RMD	Actualizar RMD
+	Use Changes	Usar cambios
+	Use Settings	Usar ajustes
+	Use project setting	Usar ajuste del proyecto
+	Very Soft	Muy suave
+	Write this clip's settings into its RMD sidecar beside the clip	Escribir los ajustes de este clip en su archivo RMD junto al clip
+	as recorded	como se grabó
+	sRGB	sRGB
+	{n} camera RAW clips decode using these settings.	{n} clips RAW de cámara se decodifican con estos ajustes.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.

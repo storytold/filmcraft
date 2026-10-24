@@ -12,6 +12,7 @@
 
 pub mod aaf_omf;
 pub mod autosave;
+pub mod camera_raw;
 pub mod captions;
 pub mod clip_ops;
 pub mod color;
@@ -988,6 +989,36 @@ impl Session {
         n
     }
 
+    /// Take back the merged step that `key` is building (a dialog's live preview, cancelled): the
+    /// project returns to how it was before its first [`Session::edit_merged`], and neither undo
+    /// nor redo keeps it. Nothing happens, and false is returned, when the last edit was not that
+    /// step (another edit, an undo or a commit ended it).
+    pub fn revert_merged(&mut self, key: &str) -> bool {
+        if self.history.merge_key.as_deref() != Some(key) {
+            return false;
+        }
+        let Some((_, prev)) = self.history.undo.pop() else {
+            self.history.merge_key = None;
+            return false;
+        };
+        self.project = prev;
+        self.history.merge_key = None;
+        self.fix_state();
+        self.bump();
+        true
+    }
+
+    /// End the merged step that `key` is building (a dialog's live preview, confirmed): it stays
+    /// one undo step, and the next edit with the same key starts another. Returns whether such a
+    /// step was open.
+    pub fn end_merged(&mut self, key: &str) -> bool {
+        let open = self.history.merge_key.as_deref() == Some(key);
+        if open {
+            self.history.merge_key = None;
+        }
+        open
+    }
+
     /// Edit the active sequence with the edit-algebra context.
     pub fn edit_sequence<R>(&mut self, label: &str, f: impl FnOnce(&mut Sequence, &mut EditCtx, &mut EditorState) -> Result<R>) -> Result<R> {
         self.edit_sequence_as(label, None, f)
@@ -1266,6 +1297,8 @@ mod audio_placement_tests;
 mod autosave_tests;
 #[cfg(test)]
 mod avi_import_tests;
+#[cfg(test)]
+mod camera_raw_tests;
 #[cfg(test)]
 mod clip_ops_tests;
 #[cfg(test)]

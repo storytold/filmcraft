@@ -13,6 +13,11 @@ use crate::{MediaError, Opener, Result, SharedSource};
 
 /// Random-access, read-only bytes.
 pub trait ByteReader: Send + Sync {
+    /// Native file backing this reader, when available. Optional external decoders may use it;
+    /// memory, remote and browser readers must not manufacture a filesystem path.
+    fn local_path(&self) -> Option<&std::path::Path> {
+        None
+    }
     /// Total length in bytes.
     fn len(&self) -> u64;
     /// Fill `buf` entirely from `offset`; `UnexpectedEof` past the end. Asynchronous readers fail
@@ -174,6 +179,9 @@ impl Drop for FileReader {
 
 #[cfg(any(unix, windows))]
 impl ByteReader for FileReader {
+    fn local_path(&self) -> Option<&std::path::Path> {
+        Some(&self.path)
+    }
     fn len(&self) -> u64 {
         self.len
     }

@@ -719,6 +719,7 @@ mod tests {
         filmcraft_engine::project_panel::BUILTIN_COLUMNS.iter().for_each(|c| push(&mut out, c));
         filmcraft_project::find::COLUMNS.iter().for_each(|c| push(&mut out, c));
         filmcraft_project::FindOp::ALL.iter().for_each(|o| push(&mut out, o.label()));
+        filmcraft_engine::camera_raw::panel_texts().iter().for_each(|t| push(&mut out, t));
         filmcraft_engine::media_browser::ALL_COLUMNS.iter().for_each(|c| push(&mut out, c));
         // export: presets, settings choices, ranges and pixel aspects
         use filmcraft_engine::export as ex;

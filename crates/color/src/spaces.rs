@@ -36,6 +36,8 @@ pub enum Gamut {
     DGamut,
     /// Fujifilm F-Gamut C (F-Log2 C). F-Gamut itself has the BT.2020 primaries.
     FGamutC,
+    /// REDWideGamutRGB.
+    Rwg,
 }
 
 impl Gamut {
@@ -54,6 +56,7 @@ impl Gamut {
             Gamut::Awg4 => [[0.7347, 0.2653], [0.1424, 0.8576], [0.0991, -0.0308]],
             Gamut::DGamut => [[0.71, 0.31], [0.21, 0.88], [0.09, -0.08]],
             Gamut::FGamutC => [[0.7347, 0.2653], [0.0263, 0.9737], [0.1173, -0.0224]],
+            Gamut::Rwg => [[0.780_308, 0.304_253], [0.121_595, 1.493_994], [0.095_612, -0.084_589]],
         }
     }
 
@@ -174,12 +177,14 @@ pub enum ColorSpace {
     FLog2FGamut,
     /// Fujifilm F-Log2 C / F-Gamut C.
     FLog2CFGamutC,
+    /// RED Log3G10 in REDWideGamutRGB (the R3D SDK's IPP2 grading output, also RED's log exports).
+    Log3G10Rwg,
     /// Linear light with BT.709 primaries (EXR-style float sources).
     Linear709,
 }
 
 impl ColorSpace {
-    pub const ALL: [ColorSpace; 19] = [
+    pub const ALL: [ColorSpace; 20] = [
         ColorSpace::Rec709,
         ColorSpace::Srgb,
         ColorSpace::Rec2020,
@@ -198,6 +203,7 @@ impl ColorSpace {
         ColorSpace::FLogFGamut,
         ColorSpace::FLog2FGamut,
         ColorSpace::FLog2CFGamutC,
+        ColorSpace::Log3G10Rwg,
         ColorSpace::Linear709,
     ];
 
@@ -222,6 +228,7 @@ impl ColorSpace {
             ColorSpace::FLogFGamut => "flog-fgamut",
             ColorSpace::FLog2FGamut => "flog2-fgamut",
             ColorSpace::FLog2CFGamutC => "flog2c-fgamutc",
+            ColorSpace::Log3G10Rwg => "log3g10-rwg",
             ColorSpace::Linear709 => "linear709",
         }
     }
@@ -246,6 +253,7 @@ impl ColorSpace {
             ColorSpace::FLogFGamut => "Fujifilm F-Log / F-Gamut",
             ColorSpace::FLog2FGamut => "Fujifilm F-Log2 / F-Gamut",
             ColorSpace::FLog2CFGamutC => "Fujifilm F-Log2 C / F-Gamut C",
+            ColorSpace::Log3G10Rwg => "RED Log3G10 / REDWideGamutRGB",
             ColorSpace::Linear709 => "Linear (Rec. 709 primaries)",
         }
     }
@@ -272,6 +280,7 @@ impl ColorSpace {
             ColorSpace::LogC4Awg4 => Gamut::Awg4,
             ColorSpace::DLogDGamut => Gamut::DGamut,
             ColorSpace::FLog2CFGamutC => Gamut::FGamutC,
+            ColorSpace::Log3G10Rwg => Gamut::Rwg,
         }
     }
 
@@ -292,6 +301,7 @@ impl ColorSpace {
             ColorSpace::DLogDGamut => Curve::Log(LogCurve::DLog),
             ColorSpace::FLogFGamut => Curve::Log(LogCurve::FLog),
             ColorSpace::FLog2FGamut | ColorSpace::FLog2CFGamutC => Curve::Log(LogCurve::FLog2),
+            ColorSpace::Log3G10Rwg => Curve::Log(LogCurve::Log3G10),
         }
     }
 

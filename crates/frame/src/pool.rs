@@ -18,8 +18,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{PixelData, VideoFrame};
 
-/// Bytes of idle buffers kept per sample type; a buffer that does not fit is freed.
-const MAX_BYTES: usize = 192 << 20;
+/// Bytes of idle buffers kept per sample type; a buffer that does not fit is freed. Sized for
+/// 6K camera RAW at half resolution: five 31 MB helper replies in flight and a couple of 41 MB
+/// half-float frames between the plan cache evicting one and the next decode taking it.
+const MAX_BYTES: usize = 320 << 20;
 
 /// Smaller buffers are not worth keeping (the allocator recycles those well).
 const MIN_BYTES: usize = 64 << 10;
@@ -102,6 +104,12 @@ pub fn take_u16(len: usize) -> Vec<u16> {
     take(&U16, len)
 }
 
+/// Keep a byte buffer nobody needs any more for the next [`take_u8`]: a decoder's own scratch,
+/// such as a reply read from a helper process, that never became a frame's plane.
+pub fn recycle_u8(buf: Vec<u8>) {
+    U8.lock().unwrap_or_else(PoisonError::into_inner).give(buf, MAX_BYTES);
+}
+
 /// A buffer of exactly `len` floats whose contents are unspecified (whatever it held last, or zeros
 /// when none was idle): the caller must write every element before it reads any. Handing it back
 /// ([`recycle_f32`]) is optional; a buffer that is dropped is simply freed.
@@ -133,9 +141,17 @@ pub fn recycle_f32(buf: Vec<f32>) {
 /// [`take_u16`] unless something else still holds the frame or a plane.
 pub fn recycle(frame: Arc<VideoFrame>) {
     let Ok(f) = Arc::try_unwrap(frame) else { return };
-    match f.data {
+    recycle_pixels(f.data);
+}
+
+/// [`recycle`] for a frame's pixels on their own: whoever holds the last reference to a plane
+/// hands it back (a GPU upload cache dropping a frame the plan cache evicted earlier, or the
+/// other way round); a plane something else still shows is theirs.
+pub fn recycle_pixels(data: PixelData) {
+    match data {
         PixelData::Rgba8(d) => give(&U8, d),
         PixelData::RgbaF32(_) => {}
+        PixelData::RgbaF16(d) => give(&U8, d),
         PixelData::Yuv8 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U8, p)),
         PixelData::Yuv16 { planes, alpha, .. } => planes.into_iter().chain(alpha).for_each(|p| give(&U16, p)),
     }

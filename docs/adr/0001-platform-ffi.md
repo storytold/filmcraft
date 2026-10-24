@@ -157,3 +157,28 @@ VA-API's. The rules above hold: `libnvcuvid.so.1` and `libcuda.so.1` are loaded 
 the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parses the stream
 itself; its callbacks run inside our parse call and never unwind into C (they record the first
 error and return 0, and the decoder then fails over to software like any other backend).
+
+## Addendum: the R3D NE helper's shared frame memory (proposed, with ADR 0002)
+
+The optional `red-sdk` backend ([ADR 0002](0002-optional-vendor-sdk-helpers.md), proposed;
+[r3d-ne.md](../r3d-ne.md)) keeps RED's decoder in a helper process. Its decoded frames reach the
+app through memory the helper creates and the app maps read-only, instead of two copies of every
+frame through a pipe: a named, pagefile-backed section on Windows, a POSIX shared memory object on
+Linux. The rules above hold:
+
+- Only `red::shm` carries `#[allow(unsafe_code)]` (`OpenFileMappingW`, `MapViewOfFile`,
+  `UnmapViewOfFile`, `CloseHandle` through the `windows` crate; `shm_open`, `mmap`,
+  `munmap`, `shm_unlink` through `libc`, an optional dependency of the feature, MIT OR Apache-2.0).
+  The rest of the backend (the protocol, the slot leases, the repack) is safe code.
+- Its surface (used only inside `red`) is safe and the same on both platforms (`Mapping::open`, a bounds-checked
+  `slice`, unmap on drop); every `unsafe` block says why it is sound. On Linux `open` checks the
+  object's size before mapping, since reading a mapping past the end of a file faults.
+- The slices are over memory another process can write. The protocol hands a slot to the app with
+  its reply and takes it back only after the app's `F`; a helper that exits leaves the pages valid
+  (the memory lives while the mapping does); the readers treat every byte as untrusted input and
+  validate it. No Rust invariant depends on the other process keeping to the protocol.
+- The module adds no callbacks into Rust, and nothing of it is compiled without the feature.
+
+There is no software decoder to fall back to (R3D NE has no public specification); without the
+feature, or when the helper cannot start, a clip is unsupported or offline media with a message,
+never a crash.

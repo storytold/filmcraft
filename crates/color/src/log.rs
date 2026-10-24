@@ -46,10 +46,12 @@ pub enum LogCurve {
     FLog,
     /// Fujifilm F-Log2 (also the curve of F-Log2 C).
     FLog2,
+    /// RED Log3G10 (18 % grey at 1/3, 10 stops above grey to 1.0).
+    Log3G10,
 }
 
 impl LogCurve {
-    pub const ALL: [LogCurve; 10] = [
+    pub const ALL: [LogCurve; 11] = [
         LogCurve::SLog3,
         LogCurve::VLog,
         LogCurve::CLog2,
@@ -60,6 +62,7 @@ impl LogCurve {
         LogCurve::DLog,
         LogCurve::FLog,
         LogCurve::FLog2,
+        LogCurve::Log3G10,
     ];
 
     pub fn domain(self) -> Domain {
@@ -81,6 +84,7 @@ impl LogCurve {
             LogCurve::DLog => "DJI D-Log",
             LogCurve::FLog => "Fujifilm F-Log",
             LogCurve::FLog2 => "Fujifilm F-Log2",
+            LogCurve::Log3G10 => "RED Log3G10",
         }
     }
 
@@ -97,6 +101,7 @@ impl LogCurve {
             LogCurve::DLog => dlog_encode(x),
             LogCurve::FLog => fujifilm_encode(&FLOG, x),
             LogCurve::FLog2 => fujifilm_encode(&FLOG2, x),
+            LogCurve::Log3G10 => log3g10_encode(x),
         }
     }
 
@@ -113,6 +118,7 @@ impl LogCurve {
             LogCurve::DLog => dlog_decode(y),
             LogCurve::FLog => fujifilm_decode(&FLOG, y),
             LogCurve::FLog2 => fujifilm_decode(&FLOG2, y),
+            LogCurve::Log3G10 => log3g10_decode(y),
         }
     }
 
@@ -311,6 +317,22 @@ fn fujifilm_decode(k: &Fujifilm, y: f64) -> f64 {
     if y >= k.cut2 { 10f64.powf((y - k.d) / k.c) / k.a - k.b / k.a } else { (y - k.f) / k.e }
 }
 
+// RED, "White Paper on REDWideGamutRGB and Log3G10" (Rev B, 2017): a = 0.224282, b = 155.975327,
+// offset c = 0.01, and the linear extension below −c with the curve's gradient at zero, g = 15.1927.
+// The signal is the full-scale float value (18 % grey → 1/3, 184.32 → 1.0).
+const LOG3G10_A: f64 = 0.224_282;
+const LOG3G10_B: f64 = 155.975_327;
+const LOG3G10_C: f64 = 0.01;
+const LOG3G10_G: f64 = 15.1927;
+
+pub fn log3g10_encode(x: f64) -> f64 {
+    let x = x + LOG3G10_C;
+    if x < 0.0 { x * LOG3G10_G } else { LOG3G10_A * (x * LOG3G10_B + 1.0).log10() }
+}
+pub fn log3g10_decode(y: f64) -> f64 {
+    if y < 0.0 { y / LOG3G10_G - LOG3G10_C } else { (10f64.powf(y / LOG3G10_A) - 1.0) / LOG3G10_B - LOG3G10_C }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +398,14 @@ mod tests {
         // the decoding cut is where the encoding's two pieces meet (within the published rounding)
         close(LogCurve::FLog.encode(0.000_89), 0.100_537_775_223_865, 2e-4, "F-Log cut");
         close(LogCurve::FLog2.encode(0.000_889), 0.100_686_685_370_811, 2e-4, "F-Log2 cut");
+        // RED Log3G10 mapping table: −0.01 → 0, 0 → 0.091551, 0.18 → 1/3, 1.0 → 0.493449, 184.322 → 1.0.
+        close(LogCurve::Log3G10.encode(-0.01), 0.0, 1e-12, "Log3G10 -1%");
+        close(LogCurve::Log3G10.encode(0.0), 0.091_551, 1e-6, "Log3G10 0");
+        close(LogCurve::Log3G10.encode(0.18), 1.0 / 3.0, 1e-6, "Log3G10 18%");
+        close(LogCurve::Log3G10.encode(1.0), 0.493_449, 1e-6, "Log3G10 100%");
+        close(LogCurve::Log3G10.encode(184.322), 1.0, 1e-6, "Log3G10 peak");
+        close(LogCurve::Log3G10.decode(1.0), 184.322, 0.001, "Log3G10 peak linear");
+        close(LogCurve::Log3G10.decode(-0.1), -0.1 / 15.1927 - 0.01, 1e-12, "Log3G10 linear toe");
     }
 
     #[test]

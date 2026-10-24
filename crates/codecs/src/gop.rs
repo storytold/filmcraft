@@ -556,7 +556,7 @@ impl GopCache {
     /// container's clean aperture and then its display rotation are applied.
     fn finish(&self, mut f: VideoFrame) -> VideoFrame {
         if let Some(c) = self.explicit_color
-            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
+            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_) | filmcraft_frame::PixelData::RgbaF16(_))
         {
             f.color = c;
         }

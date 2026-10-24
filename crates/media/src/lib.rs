@@ -16,6 +16,7 @@ pub mod digits;
 pub mod dpx;
 pub mod generators;
 pub mod pending;
+pub mod raw;
 pub mod reader;
 pub mod sequence;
 pub mod still;
@@ -32,6 +33,7 @@ use serde::{Deserialize, Serialize};
 
 pub use cache::FrameCache;
 pub use generators::{DemoScene, Generator};
+pub use raw::*;
 pub use reader::{ByteReader, ReaderOpener, SharedReader};
 
 #[derive(Debug, thiserror::Error)]
@@ -78,6 +80,35 @@ pub struct VideoStreamInfo {
     /// HDR static metadata (mastering display, content light level) when the file carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hdr: Option<filmcraft_color::HdrMetadata>,
+}
+
+/// The pixel aspect ratio of a lens squeeze a camera recorded as a number (`1.33`, `1.5`, `2.0`,
+/// the RED SDK's `pixel_aspect_ratio`): the squeeze to two decimals as an exact ratio (1.33 is
+/// 133:100, 1.5 is 3:2, 1.8 is 9:5), except a value within 0.0005 of 4/3, which is 4:3 (a
+/// camera that stores 1.3333 means the 4:3 pixel). `None` for no squeeze (1.0) and for a value
+/// that is not a usable ratio (beyond 8:1 either way, as `filmcraft_project::checked_par`
+/// refuses).
+pub fn lens_squeeze_par(factor: f64) -> Option<(u32, u32)> {
+    if !factor.is_finite() || factor <= 0.0 {
+        return None;
+    }
+    if (factor - 4.0 / 3.0).abs() < 0.0005 {
+        return Some((4, 3));
+    }
+    let hundredths = (factor * 100.0).round();
+    if !(1.0..=f64::from(u32::MAX)).contains(&hundredths) {
+        return None;
+    }
+    let n = hundredths as u32;
+    if !(13..=800).contains(&n) {
+        return None;
+    }
+    let (mut a, mut b) = (n, 100u32);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let g = a.max(1);
+    Some((n / g, 100 / g)).filter(|p| *p != (1, 1))
 }
 
 /// Most audio streams a source reports (the count comes from the file: never trusted).
@@ -155,10 +186,65 @@ impl FrameRequest {
     }
 }
 
+/// How a source delivers video frames, for playback scheduling ([`MediaSource::frame_delivery`]).
+///
+/// Playback asks for every frame while the source keeps up. A source that cannot (a 6K camera
+/// RAW decoder at 25 fps under a 59.94 fps sequence) gets every frame requested, delivers each
+/// one after the playhead has passed it, and shows nothing. With `independent` set, playback
+/// asks only for the frames the source can finish in time, evenly spaced and early enough.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameDelivery {
+    /// Frames decode independently of each other (camera RAW through a pipelined decoder,
+    /// intra-only codecs): leaving a frame out saves its whole cost. Off (the default) for GOP
+    /// codecs, whose decoder decodes every picture on its way to a later one, so skipping saves
+    /// nothing and playback must not try.
+    pub independent: bool,
+    /// Frames per second the source has been delivering lately, when it measures that itself (a
+    /// decoder process answering several requests at once knows its own throughput). `None`:
+    /// unknown; playback measures what it gets.
+    pub rate: Option<f64>,
+    /// `rate` was measured within the last couple of seconds. A source that measures itself at
+    /// saturation keeps its last reading through a lull, and a sparse playback plan is a lull:
+    /// playback may then try for more than a stale reading allows.
+    pub fresh: bool,
+}
+
 pub trait MediaSource: Send + Sync {
     fn info(&self) -> &MediaInfo;
     /// The frame displayed at media time `req.time`.
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>>;
+    /// How this source delivers frames (see [`FrameDelivery`]); the default says nothing, which
+    /// playback treats as a GOP decoder. Wrappers forward it to the source that decodes.
+    fn frame_delivery(&self) -> FrameDelivery {
+        FrameDelivery::default()
+    }
+    /// Develop the RAW picture with `develop` from now on (Clip ▸ Source Settings…): the next
+    /// frames come out in that output. Only camera RAW decoders implement it; every other source
+    /// (and a proxy, whose pictures were developed when it was made) answers
+    /// [`MediaError::Unsupported`], which callers treat as "no such setting", not a failure.
+    /// Wrappers forward it to the source that decodes.
+    fn set_develop(&self, develop: &RawDevelop) -> Result<()> {
+        let _ = develop;
+        Err(MediaError::Unsupported("this media has no RAW development settings".into()))
+    }
+    /// The development values recorded in a RAW clip (what [`set_develop`](Self::set_develop)'s
+    /// None fields mean): only camera RAW decoders report them. Wrappers forward it.
+    fn raw_as_shot(&self) -> Option<RawAsShot> {
+        None
+    }
+    /// What a RAW clip records beyond its as-shot values (recorded output choices, LUT, CDL,
+    /// curves, HDRx, RMD sidecar): only camera RAW decoders report it. Wrappers forward it.
+    fn raw_clip_info(&self) -> Option<RawClipInfo> {
+        None
+    }
+    /// Write `develop` into the clip's RAW sidecar (an RMD file beside an R3D), creating it or
+    /// updating it, and decode with what it now says as the clip's recorded settings. Returns the
+    /// sidecar's path. Only on a person's explicit action (Source Settings ▸ Update RMD): it
+    /// changes a file beside the media. Other sources answer [`MediaError::Unsupported`].
+    fn write_raw_sidecar(&self, develop: &RawDevelop) -> Result<String> {
+        let _ = develop;
+        Err(MediaError::Unsupported("this media has no RAW sidecar".into()))
+    }
     /// `frames` audio frames starting at sample index `start` (at `sample_rate`, media time).
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer>;
     /// Like [`audio`](Self::audio) for audio stream `stream` (an index into
@@ -175,7 +261,8 @@ pub type SharedSource = Arc<dyn MediaSource>;
 pub const STILL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "tga", "dpx", "exr", "hdr", "dng"];
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "bwf", "aif", "aiff", "mp3", "mp2", "m4a", "aac", "flac", "ogg", "opus"];
 pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "m2t", "ts", "mpg", "mpeg", "vob", "mod", "tod", "m2v", "m1v", "mpv", "3gp", "y4m", "apv",
+    "r3d", "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "m2t", "ts", "mpg", "mpeg", "vob", "mod", "tod", "m2v", "m1v", "mpv", "3gp", "y4m",
+    "apv",
 ];
 
 pub fn is_importable(path: &Path) -> bool {
@@ -252,7 +339,7 @@ mod importable_tests {
 
     #[test]
     fn camera_extensions_match_regardless_of_case() {
-        for name in ["clip.mov", "clip.MOV", "clip.Mov", "shot.MP4", "IMG_0001.JPG", "sound.WAV", "take.M2TS"] {
+        for name in ["clip.mov", "clip.MOV", "clip.Mov", "shot.MP4", "IMG_0001.JPG", "sound.WAV", "take.M2TS", "DSC_0001.R3D", "DSC_0002.r3d"] {
             assert!(is_importable(Path::new(name)), "{name}");
         }
         assert!(!is_importable(Path::new("notes.txt")));

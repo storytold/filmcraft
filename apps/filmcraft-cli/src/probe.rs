@@ -153,6 +153,14 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
         });
         return Ok(v);
     }
+    // Native SDK sources need the local reader, and camera RAW files must not be read whole.
+    if filmcraft_codecs::r3d::is_r3d(path) {
+        let reader: filmcraft_media::SharedReader =
+            Arc::new(filmcraft_media::reader::FileReader::open(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?);
+        let src = filmcraft_media::reader::open_reader(path, reader, &filmcraft_codecs::reader_openers(), &filmcraft_codecs::openers())
+            .map_err(|e| format!("{path}: {e}"))?;
+        return serde_json::to_value(src.info()).map_err(|e| e.to_string());
+    }
     let bytes: Arc<[u8]> = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?.into();
     let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
     let head = &bytes[..bytes.len().min(70_000)];

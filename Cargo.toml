@@ -150,6 +150,11 @@ opt-level = 3
 [profile.dev.package.filmcraft-vp9]
 opt-level = 3
 
+# OS media bindings and the RED helper's client: a 6K camera RAW frame is converted on the
+# playback path (20 ms a frame at opt-level 1, a few at 3).
+[profile.dev.package.filmcraft-platform]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

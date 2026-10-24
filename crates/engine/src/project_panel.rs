@@ -402,7 +402,7 @@ pub fn cell(p: &Project, it: &ProjectItem, column: &str) -> (String, SortKey) {
         ),
         "Audio Codec" => text(media.and_then(|m| m.info.audio()).map(|a| a.codec.clone()).unwrap_or_default()),
         "Color Space" => text(match (media.and_then(|m| m.info.video.as_ref().map(|v| (m, v))), &it.kind) {
-            (Some((m, v)), _) => m.interpret.color_space.unwrap_or_else(|| filmcraft_color::ColorSpace::from_info(&v.color)).label().to_string(),
+            (Some((m, v)), _) => p.color_space_override(m).unwrap_or_else(|| filmcraft_color::ColorSpace::from_info(&v.color)).label().to_string(),
             (None, ItemKind::Sequence(q)) => q.settings.color.working.label().to_string(),
             _ => String::new(),
         }),

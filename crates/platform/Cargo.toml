@@ -21,6 +21,7 @@ type_complexity = "allow"
 undocumented_unsafe_blocks = "deny"
 
 [dependencies]
+filmcraft-media = { workspace = true }
 filmcraft-bitstream = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-color = { workspace = true }
@@ -31,6 +32,13 @@ filmcraft-hevc = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
+
+[features]
+default = []
+red-sdk = ["dep:cc", "dep:libc"]
+
+[build-dependencies]
+cc = { version = "1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = "0.3.2"
@@ -50,6 +58,8 @@ windows = { version = "0.62", features = [
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_Security",
+    "Win32_System_Memory",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -57,6 +67,9 @@ windows = { version = "0.62", features = [
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8"
+# The red-sdk helper's shared frame memory (`red::shm`): shm_open / mmap through libc (MIT OR
+# Apache-2.0; already in the lockfile).
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

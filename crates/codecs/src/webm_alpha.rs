@@ -233,7 +233,7 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
                 p[3] = rescale(v, 8) as u8;
             }
         }
-        PixelData::RgbaF32(_) => {}
+        PixelData::RgbaF32(_) | PixelData::RgbaF16(_) => {}
     }
 }
 

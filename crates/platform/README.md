@@ -3,6 +3,17 @@
 OS media integration for FilmCraft (layer L5): hardware video decoding through the operating
 system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 and H.265 (HEVC)
 encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
+
+The optional `red-sdk` feature (Windows x64 and Linux x64, off by default; proposed in
+[ADR 0002](../../docs/adr/0002-optional-vendor-sdk-helpers.md)) adds Nikon ZR R3D NE sources
+through RED's R3D SDK, which the user supplies (`RED_R3D_SDK_DIR`). `build.rs` compiles the
+original C++ helper `src/red/helper.cpp` against it; the SDK runs only in that helper process, two
+of which serve every clip. `red` speaks the helper's FCRD9 protocol over pipes and reads decoded
+frames in place from shared memory: `red::shm` is the backend's one `#[allow(unsafe_code)]`
+module (a read-only view of a named section on Windows, of a POSIX shared memory object on
+Linux), under the rules of ADR 0001. Without the feature none of it is compiled and nothing of
+RED's is needed. Setup, behaviour, the protocol contract, tests and measurements:
+[docs/r3d-ne.md](../../docs/r3d-ne.md).
 It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
 [ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
 

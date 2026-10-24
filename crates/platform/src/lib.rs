@@ -44,6 +44,8 @@ pub mod media_foundation;
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 pub mod nvenc;
+#[cfg(all(feature = "red-sdk", any(target_os = "windows", target_os = "linux"), target_arch = "x86_64"))]
+pub mod red;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod vaapi;
 #[cfg(target_os = "macos")]
@@ -68,6 +70,8 @@ pub enum Availability {
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    #[cfg(all(feature = "red-sdk", any(target_os = "windows", target_os = "linux"), target_arch = "x86_64"))]
+    filmcraft_codecs::register_reader_opener(red::reader_opener);
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]
