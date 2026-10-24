@@ -414,10 +414,19 @@ pub fn font_families() -> Vec<FontFamily> {
     vec![FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("semibold".into()), FontFamily::Name("medium".into())]
 }
 
+/// Install the fonts for the English interface. Call [`install_for`] when the interface language
+/// decides the Korean/Chinese fallback order.
+pub fn install(ctx: &egui::Context, t: &Tokens) {
+    install_for(ctx, t, crate::i18n::Language::En);
+}
+
 /// Install the Latin UI fonts, Chinese fallback (craft-fonts or an installed face), Japanese
 /// craft-fonts, Arabic and Hebrew fallbacks (craft-fonts or installed faces, [`crate::rtl`]) and
 /// egui visuals. Document names keep their glyphs in every interface language.
-pub fn install(ctx: &egui::Context, t: &Tokens) {
+///
+/// The Korean face comes before the Chinese face only for the Korean interface; every other
+/// language keeps Chinese first so shared Hanzi keep their Chinese glyph forms.
+pub fn install_for(ctx: &egui::Context, t: &Tokens, language: crate::i18n::Language) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_REGULAR)));
     fonts.font_data.insert("inter-medium".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_MEDIUM)));
@@ -427,10 +436,11 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jbmono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["inter-semibold".into(), "inter".into()]);
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["inter-medium".into(), "inter".into()]);
-    // Japanese before Chinese: the two share code points, and Japanese text must keep Japanese
-    // glyph forms; Chinese faces still cover the hanzi Japanese fonts lack
+    // Japanese stays ahead of Chinese because they share code points. Hangul is not in the
+    // Japanese faces. In the Korean interface the Korean face has to precede Noto Sans CJK or that
+    // pan-CJK face draws Hangul; other languages keep Chinese first for shared Hanzi.
     add_craft_fonts(&mut fonts);
-    crate::cjk::install(&mut fonts);
+    crate::cjk::install(&mut fonts, language == crate::i18n::Language::Ko);
     crate::rtl::install(&mut fonts);
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
@@ -521,9 +531,15 @@ mod tests {
 
     const JAPANESE: &str = "日本語の文字";
 
+    /// A context with the theme fonts installed for the English interface.
     fn installed() -> egui::Context {
+        installed_for(crate::i18n::Language::En)
+    }
+
+    /// A context with the theme fonts installed for `language`.
+    fn installed_for(language: crate::i18n::Language) -> egui::Context {
         let ctx = egui::Context::default();
-        install(&ctx, &Tokens::for_kind(ThemeKind::default()));
+        install_for(&ctx, &Tokens::for_kind(ThemeKind::default()), language);
         let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
         out.textures_delta.clear();
         ctx
@@ -648,7 +664,7 @@ mod tests {
             return;
         }
         let ctx = egui::Context::default();
-        install(&ctx, &Tokens::for_kind(ThemeKind::Dark));
+        install_for(&ctx, &Tokens::for_kind(ThemeKind::Dark), crate::i18n::Language::Ko);
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         ctx.fonts_mut(|fonts| {
             for family in font_families() {
@@ -664,6 +680,56 @@ mod tests {
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
     }
 
+    /// In the Korean interface Hangul must come from the Korean face (Malgun Gothic,
+    /// Apple SD Gothic Neo, Noto Sans KR), not from Noto Sans CJK, which also covers Hangul and
+    /// used to be earlier in the stack.
+    #[test]
+    fn korean_face_precedes_pan_cjk() {
+        filmcraft_text::fonts::scan_system();
+        let ctx = installed_for(crate::i18n::Language::Ko);
+        ctx.fonts_mut(|fonts| {
+            let defs = fonts.definitions().clone();
+            let stack = defs.families.get(&FontFamily::Proportional);
+            let korean = stack.and_then(|s| s.iter().position(|n| n == "system-korean"));
+            if let (Some(stack), Some(korean)) = (stack, korean) {
+                assert!(korean > 0, "Latin UI face stays first");
+                if let Some(japanese) = stack.iter().position(|n| n.starts_with("craft:BIZ UDPGothic")) {
+                    assert!(korean > japanese, "kana stays on the Japanese face: {stack:?}");
+                }
+                let pan = stack.iter().position(|n| n == "system-chinese" || n.contains("Noto Sans CJK") || n.contains("Source Han"));
+                if let Some(pan) = pan {
+                    assert!(korean < pan, "Hangul must not fall through to a pan-CJK face: {stack:?}");
+                }
+            } else {
+                eprintln!("SKIPPED: no installed Korean font");
+            }
+        });
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    }
+
+    /// Outside the Korean interface the Chinese face must stay ahead of the Korean face, so a
+    /// Korean face that also covers Hanzi (Malgun Gothic, Noto Sans CJK KR) cannot draw shared
+    /// Hanzi in Chinese labels or media names.
+    #[test]
+    fn chinese_face_precedes_korean_outside_korean_ui() {
+        filmcraft_text::fonts::scan_system();
+        for language in [crate::i18n::Language::En, crate::i18n::Language::ZhCn] {
+            let ctx = installed_for(language);
+            ctx.fonts_mut(|fonts| {
+                let defs = fonts.definitions().clone();
+                let stack = defs.families.get(&FontFamily::Proportional);
+                let korean = stack.and_then(|s| s.iter().position(|n| n == "system-korean"));
+                let chinese =
+                    stack.and_then(|s| s.iter().position(|n| n == "system-chinese" || n.starts_with("craft:Noto Sans CJK") || n.contains("Source Han")));
+                if let (Some(stack), Some(korean), Some(chinese)) = (stack, korean, chinese) {
+                    assert!(chinese < korean, "{language:?}: shared Hanzi must stay on the Chinese face: {stack:?}");
+                } else {
+                    eprintln!("SKIPPED: no installed Korean and Chinese font pair");
+                }
+            });
+        }
+    }
+
     /// Built with craft-fonts: every font family ends with the Japanese faces (BIZ UDPGothic
     /// first), and Japanese text gets real glyphs, not the replacement box.
     #[test]
@@ -676,8 +742,10 @@ mod tests {
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             for (family, stack) in &defs.families {
-                // installed right-to-left faces (Hebrew is not in craft-fonts) come after the craft run
-                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n)).collect();
+                // Korean and the optional Chinese and right-to-left system faces can sit outside
+                // the craft run. Set those aside so this still checks the craft faces themselves:
+                // Japanese first, then Chinese.
+                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n) && *n != "system-korean" && *n != "system-chinese").collect();
                 let first = stack.iter().position(|n| n.starts_with("craft:")).unwrap_or(stack.len());
                 assert!(first > 0 && stack[first..].iter().all(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 let first_japanese = stack.iter().find(|n| n.starts_with("craft:BIZ") || n.starts_with("craft:Shippori"));
