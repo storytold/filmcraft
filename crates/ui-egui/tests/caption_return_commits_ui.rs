@@ -95,3 +95,33 @@ fn return_commits_caption_text_and_shift_return_breaks_the_line() {
     d.frames(3);
     assert_eq!(d.captions()[0].2, "Pizza party\ntime", "Shift+Return broke the line, Return committed");
 }
+
+/// Typing and Return in the same frame (a fast typist, or a slow frame): the field reads the text
+/// before Return commits it, so the last keystrokes are not lost.
+#[test]
+fn return_in_the_same_frame_as_typing_commits_the_typed_text() {
+    let mut d = Driver::demo();
+    let id = d.exec("captions.add", json!({"seconds": 1.0, "durationSeconds": 1.0, "text": "Pizza"}))["caption"].as_u64().expect("id");
+    d.ok("ui.panel.show", json!({"panel": "Text"}));
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    d.type_and_return(&format!("text.captions.{id}.text"), " party");
+    assert_eq!(d.captions()[0].2, "Pizza party", "Text panel: the text typed with Return was committed");
+
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.exec("captions.select", json!({"captions": [id]}));
+    d.type_and_return("properties.caption.text", "!");
+    assert_eq!(d.captions()[0].2, "Pizza party!", "Properties: the text typed with Return was committed");
+}
+
+impl Driver {
+    /// Clicks `field`, goes to the end and types `text` and Return in one frame.
+    fn type_and_return(&mut self, field: &str, text: &str) {
+        self.ok("ui.click", json!({"id": field}));
+        self.ok("ui.key", json!({"key": "End"}));
+        let events = &mut self.harness.input_mut().events;
+        events.push(egui::Event::Text(text.into()));
+        events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        self.frames(3);
+        assert!(self.harness.ctx.memory(|m| m.focused().is_none()), "{field}: Return let go of focus");
+    }
+}

@@ -239,7 +239,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                         let key = egui::Id::new(("cap-text", c.id.0));
                         let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
-                        return_commits(ui, key.with("te"));
+                        let commit = take_return(ui, key.with("te"));
                         let resp = if crate::rtl::has_rtl(&buf) && !ui.memory(|m| m.has_focus(key.with("te"))) {
                             reading_order(ui, &buf, key.with("te"))
                         } else {
@@ -253,6 +253,9 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                     .frame(egui::Frame::NONE),
                             )
                         };
+                        if commit {
+                            resp.surrender_focus();
+                        }
                         app.auto.add(&format!("text.captions.{}.text", c.id.0), resp.rect, "Caption text");
                         if resp.has_focus() {
                             ui.data_mut(|d| d.insert_temp(key, buf.clone()));
@@ -477,10 +480,13 @@ pub fn caption_properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect)
     bui.label(egui::RichText::new(tl!("Text")).size(12.0).color(t.text_dim));
     let key = egui::Id::new(("props-cap-text", c.id.0));
     let mut buf = bui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
-    return_commits(&bui, key.with("te"));
+    let commit = take_return(&bui, key.with("te"));
     let resp = bui.add(
         egui::TextEdit::multiline(&mut buf).id(key.with("te")).return_key(NEWLINE).desired_rows(3).desired_width(bui.available_width()).font(Tokens::ui(12.5)),
     );
+    if commit {
+        resp.surrender_focus();
+    }
     app.auto.add("properties.caption.text", resp.rect, &c.text);
     if resp.has_focus() {
         bui.data_mut(|d| d.insert_temp(key, buf.clone()));
@@ -516,21 +522,23 @@ pub fn caption_properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect)
     run(app, ui, actions);
 }
 
-/// What starts a new line in a caption's text: Shift+Return. Return alone commits ([`return_commits`]).
+/// What starts a new line in a caption's text: Shift+Return. Return alone commits ([`take_return`]).
 const NEWLINE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
 
 /// Return commits a caption's text and Shift+Return starts a new line, so a caption never picks
-/// up a stray line break. Call before adding the field: the field lets go of focus, so it reports
-/// `lost_focus` this frame and the edit is written as when clicking elsewhere.
-fn return_commits(ui: &egui::Ui, id: egui::Id) {
-    let plain_return = |i: &egui::InputState| {
-        i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift))
-    };
-    if ui.memory(|m| m.has_focus(id)) && ui.input(plain_return) {
-        // taken here, so nothing else in this frame acts on it once the field has let go
-        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        ui.memory_mut(|m| m.surrender_focus(id));
+/// up a stray line break. Call before adding the field (`id`): when it has focus, this takes plain
+/// Return out of the frame's input and returns `true`. The caller then adds the field, which still
+/// has focus and reads the rest of the frame's input (text typed in the same frame as Return), and
+/// surrenders its focus after, so it reports `lost_focus` and the edit is written as when clicking
+/// elsewhere.
+fn take_return(ui: &egui::Ui, id: egui::Id) -> bool {
+    let plain_return = |e: &egui::Event| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift);
+    if !ui.memory(|m| m.has_focus(id)) || !ui.input(|i| i.events.iter().any(plain_return)) {
+        return false;
     }
+    // taken here, so neither the field nor anything after it in this frame acts on it
+    ui.input_mut(|i| i.events.retain(|e| !plain_return(e)));
+    true
 }
 
 /// A caption's text in reading order ([`crate::rtl::Lines`]) in place of its `TextEdit`, which
