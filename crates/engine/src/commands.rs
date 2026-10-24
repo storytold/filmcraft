@@ -487,7 +487,8 @@ pub(crate) fn slip_together(q: &mut filmcraft_project::Sequence, ctx: &mut edit:
             Err(e) => return Err(e.into()),
             Ok(x) => {
                 any = true;
-                scale = scale.min(x.0.abs() as f64 / d.0.abs() as f64);
+                // unsigned: `abs` of i64::MIN (a hostile `delta`) overflows
+                scale = scale.min(x.0.unsigned_abs() as f64 / d.0.unsigned_abs() as f64);
             }
         }
     }
