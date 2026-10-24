@@ -79,11 +79,11 @@ pub fn parse(text: &str) -> Result<Document> {
     let mut seen_cue = false;
     for b in blocks {
         let first = b[0].trim();
-        if !first.contains("-->") && (first == "NOTE" || first.starts_with("NOTE ") || first.starts_with("NOTE\t")) {
+        if !b.iter().any(|l| l.contains("-->")) && (first == "NOTE" || first.starts_with("NOTE ") || first.starts_with("NOTE\t")) {
             doc.blocks.push(b.join("\n"));
             continue;
         }
-        if !seen_cue && !first.contains("-->") && (first == "STYLE" || first == "REGION") {
+        if !seen_cue && !b.iter().any(|l| l.contains("-->")) && (first == "STYLE" || first == "REGION") {
             doc.blocks.push(b.join("\n"));
             continue;
         }
@@ -153,6 +153,15 @@ mod tests {
     const SAMPLE: &str = "WEBVTT - with header\nKind: captions\n\nSTYLE\n::cue { color: yellow }\n\nNOTE a comment\nspanning lines\n\nintro\n00:01.000 --> 00:00:03.500 line:90% align:start\n<v.loud Ann Smith>Hello there\nsecond line\n\n00:00:04.000 --> 00:00:05.000\n<i>plain</i> &amp; tags\n";
 
     #[test]
+    fn style_region_identifier_cue_is_kept() {
+        for id in ["STYLE", "REGION"] {
+            let d = parse(&format!("WEBVTT\n\n{id}\n00:00:01.000 --> 00:00:02.000\nHi\n")).unwrap();
+            assert_eq!(d.cues.len(), 1, "{id}");
+            assert!(d.blocks.is_empty(), "{id}");
+        }
+    }
+
+    #[test]
     fn parse_sample() {
         let d = parse(SAMPLE).unwrap();
         assert_eq!(d.blocks, vec!["STYLE\n::cue { color: yellow }".to_string(), "NOTE a comment\nspanning lines".to_string()]);
@@ -188,6 +197,14 @@ mod tests {
         assert_eq!(parse(&write(&doc)).unwrap().cues, doc.cues);
         let closed = "<v Ann>Hi <v\tBob>x</v>";
         assert_eq!(split_voice(closed), (None, closed.to_string()));
+    }
+
+    #[test]
+    fn note_prefixed_cue_id_is_a_cue() {
+        let d = parse("WEBVTT\n\nNOTE 1\n00:00:01.000 --> 00:00:02.000\nhello\n").unwrap();
+        assert_eq!(d.cues.len(), 1);
+        assert_eq!(d.cues[0].id.as_deref(), Some("NOTE 1"));
+        assert!(d.blocks.is_empty());
     }
 
     #[test]

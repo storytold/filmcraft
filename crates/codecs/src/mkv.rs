@@ -231,7 +231,7 @@ fn vp9_config(private: &[u8], v: Option<&filmcraft_matroska::VideoInfo>) -> VpcC
         }
         p += 2 + len;
     }
-    if let Some(col) = v.and_then(|v| v.colour.as_ref()) {
+    if let Some(col) = v.and_then(|v| v.color.as_ref()) {
         if let Some(t) = col.transfer_characteristics {
             c.transfer_characteristics = t as u8;
         }
@@ -265,7 +265,7 @@ fn sample_entry(c: &Codec, private: &[u8], v: Option<&filmcraft_matroska::VideoI
 }
 
 /// HDR static metadata from the Matroska `Colour` element.
-fn hdr_metadata(c: &filmcraft_matroska::Colour) -> Option<filmcraft_color::HdrMetadata> {
+fn hdr_metadata(c: &filmcraft_matroska::Color) -> Option<filmcraft_color::HdrMetadata> {
     if c.mastering.is_none() && c.max_cll.is_none() && c.max_fall.is_none() {
         return None;
     }
@@ -285,7 +285,7 @@ fn hdr_metadata(c: &filmcraft_matroska::Colour) -> Option<filmcraft_color::HdrMe
 fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<ColorCodes>) -> (ColorInfo, bool) {
     // H.273 code points; `Range`: 1 broadcast (limited), 2 full, 0 / 3 not signalled here
     let code = |c: Option<u64>| c.unwrap_or(2);
-    let container = v.colour.as_ref().map(|col| {
+    let container = v.color.as_ref().map(|col| {
         let range = match col.range {
             Some(1) => Some(false),
             Some(2) => Some(true),
@@ -404,7 +404,7 @@ impl MkvSource {
                 color,
                 has_alpha: v.alpha_mode != 0,
                 bitrate,
-                hdr: v.colour.as_ref().and_then(hdr_metadata),
+                hdr: v.color.as_ref().and_then(hdr_metadata),
             }
         });
         let audio_streams: Vec<AudioStreamInfo> = atracks

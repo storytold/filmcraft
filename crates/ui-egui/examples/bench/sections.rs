@@ -454,8 +454,7 @@ pub fn export(o: &Opts) -> Vec<Value> {
         return Vec::new();
     };
     let secs = if o.quick { 3.0 } else { 8.0 };
-    let dir = std::env::temp_dir().join(format!("filmcraft-bench-export-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("tmp dir");
+    let dir = tempfile::Builder::new().prefix("filmcraft-bench-export-").tempdir().expect("tmp dir");
     let mut rows = Vec::new();
     // Scenes: (id, format, label, extension, effects-heavy). `--only` matches the id exactly here,
     // so `--only h264` runs the plain scene and `--only h264_fx` only the layered one.
@@ -497,7 +496,7 @@ pub fn export(o: &Opts) -> Vec<Value> {
             })
             .expect("audio");
             frames = s.project.sequence(seq).map(|q| q.settings.frame_rate.frame_at(q.duration())).unwrap_or(0);
-            let out = dir.join(format!("out.{ext}"));
+            let out = dir.path().join(format!("out.{ext}"));
             filmcraft_export::reset_export_lock_wait();
             filmcraft_gpu::export_renderer::timing::reset();
             let (t0, c0) = (Instant::now(), cpu_now());
@@ -549,7 +548,6 @@ pub fn export(o: &Opts) -> Vec<Value> {
             "gpu_fallbacks": filmcraft_engine::export::gpu_render_stats().fallbacks.saturating_sub(gpu0.fallbacks),
         }));
     }
-    let _ = std::fs::remove_dir_all(&dir);
     rows
 }
 
@@ -567,9 +565,8 @@ pub fn project(o: &Opts) -> Vec<Value> {
     for k in 0..5 {
         clips += big_sequence(&mut s, item, &format!("Sequence {}", k + 1), 11 + k as u64).1;
     }
-    let dir = std::env::temp_dir().join(format!("filmcraft-bench-project-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("tmp dir");
-    let file = dir.join("big.fcproj");
+    let dir = tempfile::Builder::new().prefix("filmcraft-bench-project-").tempdir().expect("tmp dir");
+    let file = dir.path().join("big.fcproj");
     let n = o.repeat.max(3);
     let (mut save, mut open) = (Vec::new(), Vec::new());
     for _ in 0..n {
@@ -583,7 +580,6 @@ pub fn project(o: &Opts) -> Vec<Value> {
         assert_eq!(s2.project.items.len(), s.project.items.len());
     }
     let mbytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) as f64 / 1e6;
-    let _ = std::fs::remove_dir_all(&dir);
     eprintln!("project: save {:.0} ms, open {:.0} ms ({clips} clips, {mbytes:.1} MB)", median(&save), median(&open));
     let row = |what: &str, v: &[f64]| json!({"what": what, "clips": clips, "mbytes": mbytes, "p50_ms": median(v), "min_ms": v.iter().cloned().fold(f64::MAX, f64::min), "runs_ms": v, "load": load_avg()});
     vec![row("save (file.saveAs)", &save), row("open (file.open)", &open)]

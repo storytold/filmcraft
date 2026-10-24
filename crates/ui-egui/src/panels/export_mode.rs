@@ -336,6 +336,22 @@ fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options
     chosen
 }
 
+/// Why a format cannot be exported on this machine, or None when it can. H.265 and AV1 have no
+/// software encoder: without a hardware one (NVENC on NVIDIA, VideoToolbox on macOS) they are
+/// greyed out with the reason, instead of failing at export time.
+fn unavailable_why(format: Format) -> Option<&'static str> {
+    if filmcraft_engine::export::available(format) {
+        return None;
+    }
+    Some(match format {
+        Format::Hevc => tl!(
+            "H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead."
+        ),
+        Format::Av1 => tl!("AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet."),
+        _ => tl!("Not supported by FilmCraft's encoders yet"),
+    })
+}
+
 fn opts(labels: &[&str]) -> Vec<(String, bool)> {
     labels.iter().map(|l| (l.to_string(), true)).collect()
 }
@@ -401,6 +417,23 @@ fn draft_text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, stored: &str, hint: &s
     (r.changed() && !v.trim().is_empty()).then_some(v)
 }
 
+/// Longest folder tail the link lays out or shows on hover.
+const MAX_LOCATION_DISPLAY_BYTES: usize = 4096;
+
+/// Keep the tail of a UTF-8 folder name without copying or splitting a codepoint. Project item
+/// names can enter the generated export path, so UI display work must not scale with an arbitrary
+/// imported name.
+fn location_tail(s: &str) -> (&str, bool) {
+    if s.len() <= MAX_LOCATION_DISPLAY_BYTES {
+        return (s, false);
+    }
+    let mut start = s.len() - MAX_LOCATION_DISPLAY_BYTES;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    (&s[start..], true)
+}
+
 /// The output folder as a link (folder icon, accent colour, underlined); the caller opens the save
 /// dialog on a click. A path too long for the row loses its start, so the folder's name stays.
 fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui::Response {
@@ -408,18 +441,34 @@ fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui::Response 
     let col = if resp.hovered() { t.accent_hover } else { t.accent };
     crate::icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 8.0, r.center().y), vec2(14.0, 14.0)), crate::icons::Icon::Folder, col);
     let room = (r.width() - 22.0).max(0.0);
+    let (folder, truncated) = location_tail(folder);
     let mut galley = ui.painter().layout_no_wrap(folder.to_string(), Tokens::ui(12.5), col);
-    for (i, _) in folder.char_indices().skip(1) {
-        if galley.size().x <= room {
-            break;
-        }
-        galley = ui.painter().layout_no_wrap(format!("…{}", folder.get(i..).unwrap_or("")), Tokens::ui(12.5), col);
+    if galley.size().x > room {
+        let starts: Vec<usize> = folder.char_indices().map(|(i, _)| i).collect();
+        let suffix = if starts.len() > 1 {
+            let mut lo = 1usize;
+            let mut hi = starts.len() - 1;
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                let candidate = format!("…{}", &folder[starts[mid]..]);
+                if ui.painter().layout_no_wrap(candidate, Tokens::ui(12.5), col).size().x <= room {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            format!("…{}", &folder[starts[lo]..])
+        } else {
+            "…".into()
+        };
+        galley = ui.painter().layout_no_wrap(suffix, Tokens::ui(12.5), col);
     }
     let at = pos2(r.min.x + 20.0, r.center().y - galley.size().y / 2.0);
     let underline = at.y + galley.size().y;
     ui.painter().hline(at.x..=at.x + galley.size().x, underline, egui::Stroke::new(1.0, col));
     ui.painter().galley(at, galley, col);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(folder)
+    let hover = if truncated { format!("…{folder}") } else { folder.to_string() };
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover)
 }
 
 const RATES: [(&str, FrameRate); 11] = [
@@ -519,8 +568,9 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         });
         row(ui, &t, tl!("Format"), |ui| {
-            let labels: Vec<(String, bool)> = Format::ALL.iter().map(|f| (f.label().to_string(), filmcraft_engine::export::available(*f))).collect();
-            if let Some(i) = combo(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
+            // a format without an encoder here says why: H.265 and AV1 have hardware encoders only
+            let labels: Vec<(String, Option<&str>)> = Format::ALL.iter().map(|f| (f.label().to_string(), unavailable_why(*f))).collect();
+            if let Some(i) = combo_why(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
                 let f = Format::ALL[i];
                 if f != ex.settings.format {
                     // a format switch starts from that format's defaults (keeping size / rate / range)
@@ -536,6 +586,12 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
         });
+        // a preset can name a format this machine cannot encode (an H.265 preset without a hardware
+        // encoder): say so where the format is chosen, before the export fails
+        if let Some(why) = unavailable_why(ex.settings.format) {
+            let r = ui.label(egui::RichText::new(why).color(t.danger).small());
+            reg.add("export.format.unavailable", r.rect, why);
+        }
         ui.add_space(8.0);
         let s = &mut ex.settings;
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
@@ -1381,7 +1437,9 @@ fn quick_file(app: &FilmcraftApp, path: &str, seq_name: &str, ext: &str) -> Opti
         return None;
     }
     let file = match name {
-        None => format!("{seq_name}.{ext}"),
+        // Sequence names come from the project, not from this Quick Export interaction. Keep
+        // metadata in one filename component before joining it to the selected/default folder.
+        None => format!("{}.{}", filmcraft_engine::export_tools::file_safe(seq_name), ext),
         Some(n) if cur.eq_ignore_ascii_case(ext) => n.to_string(),
         Some(n) if !cur.is_empty() && app.session.export_presets.all().iter().any(|x| x.settings.extension().eq_ignore_ascii_case(cur)) => {
             std::path::Path::new(n).with_extension(ext).to_string_lossy().to_string()
@@ -1503,4 +1561,19 @@ fn list_row(ui: &mut egui::Ui, t: &Tokens, selected: bool, text: &str, width: f3
     ui.painter().rect_filled(r, 3.0, bg);
     ui.painter().text(pos2(r.min.x + 6.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.5), if selected { Color32::WHITE } else { t.text });
     resp
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::*;
+
+    #[test]
+    fn location_tail_is_bounded_and_keeps_utf8_intact() {
+        let input = format!("/{}終", "é".repeat(MAX_LOCATION_DISPLAY_BYTES));
+        let (tail, truncated) = location_tail(&input);
+        assert!(truncated);
+        assert!(tail.len() <= MAX_LOCATION_DISPLAY_BYTES);
+        assert!(tail.ends_with('終'));
+        assert!(std::str::from_utf8(tail.as_bytes()).is_ok());
+    }
 }

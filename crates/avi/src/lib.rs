@@ -21,6 +21,8 @@ mod tests;
 
 pub use source::ByteSource;
 
+use std::collections::HashSet;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Not an AVI file (no `RIFF` … `AVI ` header).
@@ -175,6 +177,9 @@ pub struct OpenOptions {
 
 /// Headers larger than this are refused (a real `hdrl` is a few kilobytes).
 const MAX_HEADER: u64 = 16 << 20;
+/// Total OpenDML standard-index bytes accepted while opening one file. This bounds hostile
+/// repeated index references without constraining practical large-file indexes.
+const MAX_ODML_INDEX_BYTES: u64 = 64 << 20;
 /// Streams beyond this are ignored.
 const MAX_STREAMS: usize = 64;
 /// `LIST rec ` inside `movi` nests once; deeper is refused.
@@ -443,34 +448,52 @@ fn super_index(b: &[u8]) -> Vec<u64> {
 /// Fill the chunk tables from the OpenDML standard indexes; false (tables cleared) when a stream
 /// that has data lacks one or none could be read.
 fn read_odml<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream]) -> bool {
-    let limit = src.len() / 8;
-    let mut total = 0u64;
+    let entry_limit = src.len() / 8;
+    let mut entries = 0u64;
+    let mut index_bytes = 0u64;
+    let mut seen = HashSet::new();
     for s in streams.iter_mut() {
         s.chunks.clear();
         s.keyframes_known = true;
         for &at in &s.super_index {
+            // A super index can repeat an offset (even across streams). Read and process a
+            // standard index once, rather than multiplying its work and allocations.
+            if !seen.insert(at) {
+                continue;
+            }
             let Ok((id, size, data)) = header_at(src, at) else { continue };
             if &id[..2] != b"ix" {
                 continue;
             }
-            let Ok(b) = read(src, data, size.min(MAX_HEADER * 8)) else { continue };
-            let (longs, subtype, itype) = (usize::from(le16(&b, 0)), b.get(2).copied().unwrap_or(0), b.get(3).copied().unwrap_or(0));
+            // Validate the fixed header before allocating the variable entry body.
+            if size < 24 || index_bytes.checked_add(24).is_none_or(|n| n > MAX_ODML_INDEX_BYTES) {
+                return false;
+            }
+            let Ok(header) = read(src, data, 24) else { continue };
+            index_bytes += 24;
+            let (longs, subtype, itype) = (usize::from(le16(&header, 0)), header.get(2).copied().unwrap_or(0), header.get(3).copied().unwrap_or(0));
             // AVI_INDEX_OF_CHUNKS; 2 longs per entry, or 3 for the field index (AVI_INDEX_2FIELD)
             if itype != 1 || !(longs == 2 && subtype == 0 || longs == 3 && subtype == 1) {
                 continue;
             }
-            let base = le64(&b, 12);
             let step = longs * 4;
-            let n = (le32(&b, 4) as usize).min(b.len().saturating_sub(24) / step);
+            let n = u64::from(le32(&header, 4)).min(size.saturating_sub(24) / step as u64);
+            let body = n.saturating_mul(step as u64);
+            let Some(next_bytes) = index_bytes.checked_add(body) else { return false };
+            let Some(next_entries) = entries.checked_add(n) else { return false };
+            if next_bytes > MAX_ODML_INDEX_BYTES || next_entries > entry_limit {
+                return false;
+            }
+            let Ok(b) = read(src, data, 24 + body) else { continue };
+            index_bytes = next_bytes;
+            entries = next_entries;
+            let base = le64(&b, 12);
+            let n = usize::try_from(n).unwrap_or(0);
             for k in 0..n {
                 let e = 24 + k * step;
                 let (off, raw) = (u64::from(le32(&b, e)), le32(&b, e + 4));
                 let size = raw & 0x7FFF_FFFF;
                 let Some(offset) = base.checked_add(off).filter(|o| o.checked_add(u64::from(size)).is_some_and(|end| end <= src.len())) else { continue };
-                total += 1;
-                if total > limit {
-                    return false;
-                }
                 s.chunks.push(Chunk { offset, size, key: raw & 0x8000_0000 == 0 });
             }
         }

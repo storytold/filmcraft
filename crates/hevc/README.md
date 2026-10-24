@@ -1,7 +1,7 @@
 # filmcraft-hevc
 
 Clean-room, pure-Rust (no `unsafe`) H.265 / HEVC decoder, implemented from the public ITU-T
-Rec. H.265 (ISO/IEC 23008-2) specification. It is an L0 crate: it depends only on
+Rec. H.265 (08/2021, ISO/IEC 23008-2) specification. It is an L0 crate: it depends only on
 `filmcraft-bitstream`, `thiserror`, and optionally `rayon` (default feature `threads`), and builds
 for `wasm32-unknown-unknown`.
 
@@ -69,6 +69,11 @@ the memory traffic in prediction reads, in-loop filters and output) and as `u16`
 slice decoder and the filters are generic over the sample type (`picture::Sample`), monomorphised
 once per type.
 
+Unavailable references keep distinct frame IDs and POCs while sharing one immutable gray backing
+for the active picture format. This backing is created only when a reference is missing, replaced
+on geometry or plane-depth changes, and released on flush. Jobs still reading an older format keep
+its rows alive. Each backing retains the full coded picture dimensions.
+
 Draft mode (`Decoder::set_draft(true)`; FilmCraft enables it with Settings ▸ Playback ▸ Draft
 decoding while the Program monitor plays at 1/2 or 1/4): sub-layer non-reference pictures
 (TRAIL_N, RASL_N, ...) of the highest temporal sub-layer — no later picture predicts from them,
@@ -96,7 +101,7 @@ with ffmpeg; tests print a message and skip when ffmpeg is absent).
   ffmpeg.
 - Robustness: hvcC input with pts round trip; randomly corrupted, truncated and garbage input never
   panics or deadlocks (single- and multi-threaded).
-- Conformance (`tests/conformance.rs`): every fixture is decoded with 1 thread, 3 threads and every
+- Conformance (`tests/it/conformance.rs`): every fixture is decoded with 1 thread, 3 threads and every
   core and compared sample-exactly with `ffmpeg -f rawvideo -pix_fmt yuv420p / yuv420p10le`; on mismatch
   the first differing frame, plane, sample, CTB and 8x8 block are reported. Output pts/POC order is
   checked too, and that no picture is flagged draft without draft mode. `compare_detects_mismatch`
@@ -135,12 +140,12 @@ libx265 unless noted (x265 enables WPP by default, so most streams carry entry p
 | vt_main / vt_main10 | 640x360 | Apple VideoToolbox (hevc_videotoolbox), macOS only |
 | synthetic (7 streams) | 96x64 | tiles, PCM, slices, dependent segments, LTR, list modification |
 
-`cargo test -p filmcraft-hevc --test conformance coverage_report -- --ignored --nocapture` prints the
+`cargo test -p filmcraft-hevc --test it conformance::coverage_report -- --ignored --nocapture` prints the
 decoder statistics per fixture.
 
 ## Performance
 
-`cargo test --release -p filmcraft-hevc --test perf -- --ignored --nocapture` (bit-exactness is
+`cargo test --release -p filmcraft-hevc --test it perf:: -- --ignored --nocapture` (bit-exactness is
 verified first). Apple M4 Pro (14 cores), measured while the machine was heavily shared (load
 average 50-100), so these are lower bounds:
 

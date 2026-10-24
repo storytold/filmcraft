@@ -8,7 +8,7 @@ use filmcraft_render::SourceProvider;
 use filmcraft_time::Tick;
 use serde_json::json;
 
-use crate::{AUDIO_STALL_S, FilmcraftApp, Playback};
+use crate::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Playback};
 
 #[derive(Default)]
 pub struct SourcePlayback {
@@ -96,7 +96,7 @@ impl FilmcraftApp {
         self.source_playback.shown = time;
         self.source_playback.clock = Playback { playing: true, speed, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, ..Default::default() };
         self.source_playback.clock.meter.start(speed);
-        self.start_source_audio();
+        self.start_source_audio(0.0);
         Ok(())
     }
 
@@ -113,18 +113,20 @@ impl FilmcraftApp {
         }
     }
 
-    fn start_source_audio(&mut self) {
+    fn start_source_audio(&mut self, now: f64) {
         self.source_playback.clock.audio_clock = false;
         if (self.source_playback.clock.speed - 1.0).abs() > 1e-9 {
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
+            self.source_playback.clock.audio_retry_at = 0.0;
             return;
         }
         let Some(item) = self.source_playback.item else { return };
         let Some(view) = source_view(&self.session, item) else { return };
         let Some(media) = self.session.project.item(view.media).and_then(|i| i.as_media()) else { return };
         if !media.info.has_audio() {
+            self.source_playback.clock.audio_retry_at = 0.0;
             return;
         }
         let project = self.session.project.clone();
@@ -185,8 +187,14 @@ impl FilmcraftApp {
             })
         };
         match audio.start(fill) {
-            Ok(_) => self.source_playback.clock.audio_clock = true,
-            Err(e) => self.ui.status = format!("Source audio output failed: {e}"),
+            Ok(_) => {
+                self.source_playback.clock.audio_clock = true;
+                self.source_playback.clock.audio_retry_at = 0.0;
+            }
+            Err(e) => {
+                self.ui.status = format!("Source audio output failed: {e}");
+                self.source_playback.clock.audio_retry_at = now + AUDIO_RETRY_S;
+            }
         }
     }
 
@@ -211,7 +219,16 @@ impl FilmcraftApp {
             self.source_playback.clock.anchor_tick = time;
             self.source_playback.clock.anchor_time = now;
             self.source_playback.clock.audio_seen = (0, now);
-            self.start_source_audio();
+            self.start_source_audio(now);
+        }
+        if !self.source_playback.clock.audio_clock && self.source_playback.clock.audio_retry_at > 0.0 && now >= self.source_playback.clock.audio_retry_at {
+            // The output failed mid-play: open it again where the wall clock got to, so a
+            // recovering device brings the sound back without a pause/play.
+            self.source_playback.clock.audio_retry_at = now + AUDIO_RETRY_S;
+            self.source_playback.clock.anchor_tick = time;
+            self.source_playback.clock.anchor_time = now;
+            self.source_playback.clock.audio_seen = (0, now);
+            self.start_source_audio(now);
         }
         if self.source_playback.clock.audio_clock
             && let Some(audio) = self.audio.as_mut()
@@ -233,6 +250,10 @@ impl FilmcraftApp {
             clock.anchor_tick = time;
             clock.anchor_time = now;
             clock.audio_clock = false;
+            // A dead stream is reopened on a timer; a stalled one keeps the wall clock (#136).
+            if reading.is_none() {
+                clock.audio_retry_at = now + AUDIO_RETRY_S;
+            }
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
@@ -275,7 +296,7 @@ impl FilmcraftApp {
             self.source_playback.clock.anchor_tick = time;
             self.source_playback.clock.anchor_time = now;
             self.source_playback.clock.audio_seen = (0, now);
-            self.start_source_audio();
+            self.start_source_audio(now);
             ctx.request_repaint();
             return;
         }
