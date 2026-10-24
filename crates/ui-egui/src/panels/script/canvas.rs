@@ -136,7 +136,7 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
     app.auto.add("script.emptyCanvas", empty_canvas.rect, "Clear script selection");
     let mut scroll_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
     let project_drag = crate::panels::dragged_project_item(ui).is_some();
-    let mut drop_line = None;
+    let mut canvas_drop = None;
     let mut clicked_mark = None;
     let mut clicked_candle = None;
     let mut foreground_click = false;
@@ -157,17 +157,24 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
         let project_drop_row = pointer
             .filter(|_| project_drag && ui.rect_contains_pointer(body) && !doc.lines.is_empty())
             .map(|pointer| first_visible(&tops, (pointer.y - base_y).max(0.0)).min(doc.lines.len() - 1));
-        let project_drop_range = project_drop_row.map(|index| range.filter(|(a, b)| (*a..=*b).contains(&index)).unwrap_or((index, index)));
+        let project_drop_range = project_drop_row.map(|index| range.unwrap_or((index, index)));
         if let Some((a, b)) = project_drop_range
             && let Some((&y0, &y1)) = tops.get(a).zip(tops.get(b + 1))
         {
             let preview = Rect::from_min_max(pos2(body.left(), base_y + y0), pos2(body.right(), base_y + y1)).intersect(body);
-            ui.painter().rect_filled(preview, 0.0, t.accent.gamma_multiply(0.18));
-            ui.painter().rect_stroke(preview, 0.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
-            app.auto.add("script.dropPreview", preview, "Drop clip on these script lines");
+            if preview.is_positive() {
+                ui.painter().rect_filled(preview, 0.0, t.accent.gamma_multiply(0.18));
+                ui.painter().rect_stroke(preview, 0.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+                app.auto.add("script.dropPreview", preview, "Drop clip on these script lines");
+            }
             ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
-            if released {
-                drop_line = project_drop_row.and_then(|index| doc.lines.get(index)).map(|line| line.id.0);
+            if released && let Some(source) = crate::panels::dragged_project_item(ui) {
+                canvas_drop = Some((source, a, b));
+                // Selected rows anchor the new setup even when the pointer is over
+                // another row, a candle, or a floating thumbnail.
+                if range.is_some() {
+                    crate::panels::clear_drag(ui);
+                }
             }
         }
         let drag_hover_row =
@@ -380,21 +387,12 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
         app.ui.script.drag_mark = None;
         app.ui.script.drag_mark_target = None;
     }
-    if let Some(line_id) = drop_line
-        && let Some(source) = crate::panels::dragged_project_item(ui)
+    if let Some((source, start, end)) = canvas_drop
+        && (range.is_some() || crate::panels::dragged_project_item(ui) == Some(source))
     {
-        let (start, end) = selected_range(doc, app.ui.script.selected_lines)
-            .and_then(|(a, b)| {
-                let i = doc.lines.iter().position(|line| line.id.0 == line_id)?;
-                (a..=b).contains(&i).then_some((a, b))
-            })
-            .unwrap_or_else(|| {
-                let i = doc.lines.iter().position(|line| line.id.0 == line_id).unwrap_or(0);
-                (i, i)
-            });
         if let (Some(a), Some(b)) = (doc.lines.get(start), doc.lines.get(end)) {
-            // A row drop creates a new setup even when the same source is already in the
-            // script. Dropping directly on a thumbnail is the explicit add-to-setup path.
+            // Without a row selection, explicit thumbnail and candle targets may
+            // consume the payload first. Otherwise commit the exact preview range.
             actions.push(Action::Command("script.addTake", json!({"item": app.ui.script.item, "source": source.0, "startLine": a.id.0, "endLine": b.id.0})));
         }
         crate::panels::clear_drag(ui);
@@ -527,7 +525,7 @@ fn row_view(
     let t = app.tokens;
     let left = Rect::from_min_size(row.min, vec2(left_w, row.height()));
     let right = row;
-    let interaction = ui.interact(left, egui::Id::new(("script.line", line.id.0)), Sense::click_and_drag());
+    let interaction = ui.interact(row, egui::Id::new(("script.line", line.id.0)), Sense::click_and_drag());
     app.auto.add(&format!("script.line.{}", line.id.0), interaction.rect, &line.text);
     if interaction.clicked() {
         *foreground_click = true;

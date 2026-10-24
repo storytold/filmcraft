@@ -172,8 +172,9 @@ fn wrapped_line_and_candle_share_height_and_find_chooses_a_take() {
     driver.ok("ui.click", json!({"id":"script.offscreen.toggle"}));
     let cleared = driver.exec("script.inspect", json!({"item":script}));
     assert!(cleared["document"]["slates"][0]["takes"][0]["offscreen_lines"].as_array().is_none_or(Vec::is_empty));
-    driver.ok("ui.click", json!({"id":"script.emptyCanvas"}));
-    assert_eq!(driver.harness.state_mut().ui.script.selected_lines, None, "clicking empty script canvas clears the text selection");
+    driver.ok("ui.click", json!({"id":format!("script.line.{second}"),"fx":0.95}));
+    assert_eq!(driver.harness.state().ui.script.selected_lines, Some((second, second)), "clicking past the text margin selects that row");
+    assert_eq!(driver.harness.state().ui.script.selected_take, None);
     driver.snapshot("wrapped-dark");
     driver.ok("ui.set", json!({"theme": "light"}));
     driver.snapshot("wrapped-light");
@@ -562,6 +563,43 @@ fn clicking_script_text_and_empty_canvas_clears_active_candle_and_thumbnail() {
 }
 
 #[test]
+fn rows_select_and_extend_past_both_margins_and_a_drop_uses_that_full_range() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Full-width selection","text":"One\nTwo\nThree\nFour"}))["item"].as_u64().unwrap();
+    let original = driver.exec("script.inspect", json!({"item":script}));
+    let lines: Vec<_> = original["document"]["lines"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+    let added = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[0],"endLine":lines[3]}));
+    let take = added["take"].as_u64().unwrap();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    driver.frames(4);
+    driver.ok("ui.click", json!({"id":format!("script.take.{take}.line.{}",lines[0])}));
+    let [x, _, width, _] = driver.rect("script.emptyCanvas");
+    for fraction in [0.01, 0.95] {
+        let [_, y, _, height] = driver.rect(&format!("script.line.{}", lines[1]));
+        driver.ok("ui.click", json!({"x":x+width*fraction,"y":y+height*0.5}));
+        let state = &driver.harness.state().ui.script;
+        assert_eq!(state.selected_lines, Some((lines[1], lines[1])), "row selection must span the canvas");
+        assert_eq!(state.selected_take, None);
+        assert_eq!(state.selected_thumbnail, None);
+    }
+    let [_, y, _, height] = driver.rect(&format!("script.line.{}", lines[3]));
+    driver.ok("ui.click", json!({"x":x+width*0.95,"y":y+height*0.5,"shift":true}));
+    assert_eq!(driver.harness.state().ui.script.selected_lines, Some((lines[1], lines[3])));
+    driver.snapshot("full-width-row-selection");
+    driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":{"x":x+width*0.95,"y":y+height*0.5},"steps":16}));
+    let result = driver.exec("script.inspect", json!({"item":script}));
+    let new_take = &result["document"]["slates"][1]["takes"][0];
+    assert_eq!(new_take["start_line"], lines[1]);
+    assert_eq!(new_take["end_line"], lines[3]);
+}
+
+#[test]
 fn repeated_source_uses_one_setup_thumbnail_and_multiple_candles() {
     let mut driver = Driver::new();
     let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).expect("demo media").id.0;
@@ -779,6 +817,48 @@ fn script_drop_preview_spans_the_canvas_without_editing_and_escape_cancels() {
     let result = driver.exec("script.inspect", json!({"item":script}));
     assert_eq!(result["document"]["slates"][0]["takes"][0]["start_line"], last);
     assert_eq!(result["document"]["slates"][0]["takes"][0]["end_line"], last);
+}
+
+#[test]
+fn selected_rows_anchor_project_drops_over_other_rows_and_floating_objects() {
+    let mut driver = Driver::new();
+    let source = driver.harness.state_mut().session.project.items.values().find(|item| matches!(item.kind, ItemKind::Media(_))).unwrap().id.0;
+    let script = driver.exec("script.importText", json!({"name":"Selection anchors drops", "text":"First\nSecond\nThird\nFourth"}))["item"].as_u64().unwrap();
+    let doc = driver.exec("script.inspect", json!({"item":script}));
+    let lines: Vec<_> = doc["document"]["lines"].as_array().unwrap().iter().map(|line| line["id"].as_u64().unwrap()).collect();
+    let existing = driver.exec("script.addTake", json!({"item":script,"source":source,"startLine":lines[3],"endLine":lines[3]}));
+    let take = existing["take"].as_u64().unwrap();
+    let slate = existing["slate"].as_u64().unwrap();
+    driver.exec("script.addMark", json!({"item":script,"take":take,"line":lines[3],"sourceTime":0}));
+    let baseline = driver.exec("script.inspect", json!({"item":script}))["document"].clone();
+    driver.ok("ui.menu.invoke", json!({"id":"window.workspace.script"}));
+    driver.ok("ui.menu.invoke", json!({"id":"script.openPanel","params":{"item":script}}));
+    if let Some(bin) = driver.harness.state_mut().session.project.root.parent_of(filmcraft_project::ItemId(source)) {
+        driver.harness.state_mut().ui.project_panel.bin = Some(bin.0);
+    }
+    driver.exec("project.view.set", json!({"view":"icon"}));
+    driver.frames(4);
+    for end in [lines[1], lines[2]] {
+        for target in [
+            json!({"id":format!("script.line.{}",lines[0]),"fx":0.95}),
+            json!({"id":"script.emptyCanvas","fx":0.95,"fy":0.95}),
+            json!({"id":format!("script.take.{take}.line.{}",lines[3])}),
+            json!({"id":format!("script.slate.{slate}.thumbnail")}),
+        ] {
+            driver.ok("ui.click", json!({"id":format!("script.line.{}",lines[1]),"fx":0.95}));
+            driver.ok("ui.click", json!({"id":format!("script.line.{end}"),"fx":0.95,"shift":true}));
+            driver.ok("ui.drag", json!({"from":{"id":format!("project.item.{source}")},"to":target,"steps":16}));
+            let result = driver.exec("script.inspect", json!({"item":script}));
+            let slates = result["document"]["slates"].as_array().unwrap();
+            assert_eq!(slates.len(), 2, "selected rows must create a new setup even over floating objects");
+            assert_eq!(slates[0], baseline["slates"][0]);
+            let added = &slates[1]["takes"][0];
+            assert_eq!(added["start_line"], lines[1], "the pointer must not override the selected start");
+            assert_eq!(added["end_line"], end, "the pointer must not override the selected end");
+            driver.ok("ui.menu.invoke", json!({"id":"edit.undo"}));
+            assert_eq!(driver.exec("script.inspect", json!({"item":script}))["document"], baseline);
+        }
+    }
 }
 
 #[test]

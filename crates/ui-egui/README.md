@@ -9,15 +9,17 @@ Trimming a take candle hides annotations outside its coverage while preserving t
 mark IDs and source times. Expanding coverage restores marks, row colors and off-screen passages.
 Hidden marks cannot be selected or used to cue Source and do not choose the default thumbnail.
 Scene and Page menus retain repeated labels as separate navigation points in script order.
-Clicking text or empty script canvas clears the active candle, thumbnail and mark; text clicks
-still select the clicked line, while empty canvas clears the line selection too.
+Clicking a script row anywhere across the canvas clears the active candle, thumbnail and mark
+and selects that line; Shift-click extends the line range. Clicking below the rows clears the
+line selection too. Floating thumbnails, candles and marks retain their own click targets.
 Backspace/Delete removes the selected mark, candle, or thumbnail's entire setup.
 Deleting the final candle removes the empty setup. These commands retain script text and source
 media, support Undo, and leave text-field editing alone. Selection clears after deletion to avoid
 deleting another object on a repeated key press. Layout and search caches retain the document Arc,
 so unrelated project edits do not rescan the script and document changes invalidate them safely.
-Project clips can be dropped across the full canvas width. A shared row hit-test previews the
-covered line range, with explicit thumbnail and candle targets taking precedence on release.
+Project clips can be dropped across the full canvas width. Selected rows anchor both the preview
+and the new candle regardless of the pointer location. Without selected rows, explicit thumbnail
+and candle targets take precedence over creating a setup on the hovered line.
 The `script_ui` integration tests cover endpoint drags, hidden-mark targets and repeated labels;
 engine tests cover saved data, undo/redo, section copies and deleting hidden lines.
 
