@@ -28,8 +28,8 @@ use roxmltree::Node;
 
 use crate::common::{
     Builder, MAX_IMPORTED_TRACKS, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, frames_round, gain_to_db, item_media, item_path, kind_from_ext,
-    label_from, on_frame, param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, set_param, settings_for, standard_effects, timebase,
-    transition_effect, transition_name, unscaled,
+    label_from, on_frame, param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, resolve_url, set_param, settings_for, standard_effects,
+    timebase, transition_effect, transition_name, unscaled,
 };
 use crate::xml::{XmlWriter, bool_str, child, child_bool, child_f64, child_i64, child_text, children, elements, num, path_text};
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
@@ -286,7 +286,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let id = match path {
             Some(url) => {
-                let p = resolve_path(url, self.opts.base_dir.as_deref());
+                let p = resolve_url(url, self.opts.base_dir.as_deref());
                 self.b.file_media(&format!("file:{p}"), &name, &p, &spec, bin)
             }
             None => {

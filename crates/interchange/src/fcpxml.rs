@@ -27,7 +27,7 @@ use roxmltree::Node;
 
 use crate::common::{
     Builder, MAX_IMPORTED_TRACKS, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, gain_to_db, generator_of, item_media, item_path, kind_from_ext,
-    param, param_modified, path_to_file_url, resolve_path, scaled, set_param, settings_for, standard_effects, transition_effect, transition_name,
+    param, param_modified, path_to_file_url, resolve_path, resolve_url, scaled, set_param, settings_for, standard_effects, transition_effect, transition_name,
 };
 use crate::xml::{child, children, elements, num};
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
@@ -259,7 +259,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         };
         let item = match src {
             Some(url) => {
-                let p = resolve_path(url, self.opts.base_dir.as_deref());
+                let p = resolve_url(url, self.opts.base_dir.as_deref());
                 self.b.file_media(&format!("file:{p}"), &name, &p, &spec, bin)
             }
             None => {

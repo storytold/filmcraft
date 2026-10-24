@@ -373,3 +373,13 @@ proptest! {
         prop_assert_eq!(links(&imp.project, si), links(&p, s));
     }
 }
+
+/// #2195: a relative `src` is a URL like an absolute one: `boats%20b.mov` is the file `boats b.mov`.
+#[test]
+fn relative_media_urls_are_percent_decoded() {
+    let d = doc().replace(r#"src="boats.mov""#, r#"src="media/boats%20b.mov""#);
+    let (imp, _) = import(d.as_bytes(), Format::Fcpxml, Some("/proj")).unwrap();
+    let p = &imp.project;
+    let boats = &p.sequence(only_seq(&imp)).unwrap().video_tracks[0].items[1];
+    assert_eq!(media_key(p, boats.item), "/proj/media/boats b.mov");
+}

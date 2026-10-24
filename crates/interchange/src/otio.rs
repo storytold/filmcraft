@@ -22,8 +22,8 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use serde_json::{Value, json};
 
 use crate::common::{
-    Builder, MediaSpec, base_item, empty_sequence, file_name, generator_of, item_media, path_to_file_url, rate_from_f64, relative_path, resolve_path,
-    settings_for, transition_effect, transition_name,
+    Builder, MediaSpec, base_item, empty_sequence, file_name, generator_of, item_media, path_to_file_url, rate_from_f64, relative_path, relative_url,
+    resolve_path, resolve_url, settings_for, transition_effect, transition_name,
 };
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
 
@@ -238,7 +238,7 @@ impl Exp<'_, '_> {
             }),
             MediaRef::File { path } => {
                 let url = match &self.opts.relative_to {
-                    Some(base) => relative_path(path, base).unwrap_or_else(|| abs_url(path)),
+                    Some(base) => relative_path(path, base).map(|r| relative_url(&r)).unwrap_or_else(|| abs_url(path)),
                     None => abs_url(path),
                 };
                 json!({"OTIO_SCHEMA": "ExternalReference.1", "name": name, "target_url": url, "available_range": avail, "available_image_bounds": null, "metadata": meta})
@@ -691,7 +691,7 @@ impl Imp<'_, '_> {
         let id = match schema_name(r) {
             "ExternalReference" | "ImageSequenceReference" => {
                 let url = r.get("target_url").and_then(Value::as_str).or_else(|| r.get("target_url_base").and_then(Value::as_str)).unwrap_or("");
-                let path = resolve_path(url, self.opts.base_dir.as_deref());
+                let path = resolve_url(url, self.opts.base_dir.as_deref());
                 let display = if name.is_empty() { file_name(&path).to_string() } else { name.clone() };
                 let key = format!("file:{path}");
                 let existed = self.b.find_media(&key);

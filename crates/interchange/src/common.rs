@@ -127,6 +127,20 @@ fn join(base: &str, rel: &str) -> String {
     parts.join(&sep.to_string())
 }
 
+/// Resolve a media URL from a document (FCPXML `src`, FCP7 `pathurl`, OTIO `target_url`): like
+/// [`resolve_path`], with a relative URL percent-decoded as a `file://` URL is (`Clip%20A.mov` is
+/// `Clip A.mov`, #2195). Plain file names (EDL, AAF) go through [`resolve_path`] untouched.
+pub fn resolve_url(reference: &str, base_dir: Option<&str>) -> String {
+    let r = reference.trim();
+    let is_file_url = r.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("file:"));
+    if is_file_url || is_absolute(r) { resolve_path(r, base_dir) } else { resolve_path(&percent_decode(r), base_dir) }
+}
+
+/// A relative path written as a URL (the inverse of [`resolve_url`]'s decoding).
+pub(crate) fn relative_url(path: &str) -> String {
+    percent_encode_path(path)
+}
+
 /// Resolve a media reference from a document: file URLs become paths, relative paths are joined to
 /// `base_dir` (when given).
 pub fn resolve_path(reference: &str, base_dir: Option<&str>) -> String {
@@ -720,6 +734,11 @@ mod tests {
         assert_eq!(resolve_path("media/a.mov", Some("/proj")), "/proj/media/a.mov");
         assert_eq!(resolve_path("../a.mov", Some("/proj/x/")), "/proj/a.mov");
         assert_eq!(resolve_path("/abs/a.mov", Some("/proj")), "/abs/a.mov");
+        // #2195: relative URLs are percent-decoded, plain names are not
+        assert_eq!(resolve_url("media/Clip%20A.mov", Some("/proj")), "/proj/media/Clip A.mov");
+        assert_eq!(resolve_url("file:///m/Clip%20A.mov", Some("/proj")), "/m/Clip A.mov");
+        assert_eq!(resolve_path("Clip%20A.mov", Some("/proj")), "/proj/Clip%20A.mov");
+        assert_eq!(resolve_url(&relative_url("a b/100%.mov"), Some("/p")), "/p/a b/100%.mov");
         assert_eq!(relative_path("/proj/media/a.mov", "/proj").as_deref(), Some("media/a.mov"));
         assert_eq!(relative_path("/proj/a.mov", "/proj/edl").as_deref(), Some("../a.mov"));
         assert_eq!(file_stem("/x/y/Clip 01.final.mov"), "Clip 01.final");
