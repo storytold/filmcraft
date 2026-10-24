@@ -14,9 +14,11 @@
 //! RGBA (the export pipeline) ──► ABGR input buffer ──NVENC (BT.709 limited 4:2:0 on the GPU)──►
 //!    Annex B ──► length-prefixed samples + avcC / hvcC
 //!
+//! a decoded picture nothing was drawn on (the export's untouched frames), in the same stream:
+//! 8-bit 4:2:0 planes ──► the slot's NV12 input buffer ──NVENC──► …
+//!
 //! where the driver refuses RGB input (`Nvenc::with_rgba_input` fails), as before:
 //! RGBA ──► BT.709 limited 4:2:0 (the software encoder's conversion) ──► NV12 input buffer ──NVENC──► …
-//!
 //! HDR (PQ / HLG) HEVC Main 10:
 //! encoded BT.2020 R'G'B' floats ──► 10-bit limited 4:2:0 (`filmcraft_export::rgbf_to_yuv420_10`)
 //!    ──► P010 input buffer ──NVENC──► same path; VUI BT.2020 + transfer, HDR10 SEI on every IDR (PQ)
@@ -365,7 +367,8 @@ impl Nvenc {
         self.ten_bit
     }
 
-    /// Whether this encoder takes packed RGBA pictures ([`Nvenc::encode_rgba`]) instead of planar ones.
+    /// Whether this encoder takes packed RGBA pictures ([`Nvenc::encode_rgba`]). It takes planar
+    /// 8-bit ones ([`Nvenc::encode`]) too, unless it is a Main 10 encoder.
     pub fn takes_rgba(&self) -> bool {
         self.rgba_input
     }
@@ -381,25 +384,23 @@ impl Nvenc {
         if rgba.len() < w.saturating_mul(h).saturating_mul(4) {
             return Err("the picture is smaller than the encoder's size".into());
         }
-        self.submit_picture(index, |l| fill_rgba(l, rgba, w, h))
+        self.submit_picture(index, false, |l| fill_rgba(l, rgba, w, h))
     }
 
-    /// Encode picture `index` from planar 8-bit 4:2:0 (`u`, `v` at half size, rows `w` and `w / 2` bytes).
+    /// Encode picture `index` from planar 8-bit 4:2:0 (`u`, `v` at half size, rows `w` and `w / 2` bytes),
+    /// also on an encoder that takes RGBA (the two kinds can alternate in one stream).
     /// Returns the pictures that came out (usually the oldest; none while the ring fills). An error
     /// for a Main 10 encoder.
     pub fn encode(&mut self, y: &[u8], u: &[u8], v: &[u8], index: u64) -> Result<Vec<Packet>, String> {
         if self.ten_bit {
             return Err("an 8-bit picture for a Main 10 encoder".into());
         }
-        if self.rgba_input {
-            return Err("a planar picture for an RGBA-input encoder".into());
-        }
         let (w, h) = (self.size.0 as usize, self.size.1 as usize);
         let (luma, chroma) = (w.saturating_mul(h), (w / 2).saturating_mul(h / 2));
         if y.len() < luma || u.len() < chroma || v.len() < chroma {
             return Err("the picture is smaller than the encoder's size".into());
         }
-        self.submit_picture(index, |l| fill_nv12(l, y, u, v, w, h))
+        self.submit_picture(index, true, |l| fill_nv12(l, y, u, v, w, h))
     }
 
     /// Encode picture `index` from planar 10-bit 4:2:0 (code values 0..=1023 in `u16`, `u`, `v` at
@@ -413,10 +414,13 @@ impl Nvenc {
         if y.len() < luma || u.len() < chroma || v.len() < chroma {
             return Err("the picture is smaller than the encoder's size".into());
         }
-        self.submit_picture(index, |l| fill_p010(l, y, u, v, w, h))
+        self.submit_picture(index, true, |l| fill_p010(l, y, u, v, w, h))
     }
 
-    fn submit_picture(&mut self, index: u64, fill: impl FnOnce(Locked<'_>)) -> Result<Vec<Packet>, String> {
+    /// Submits picture `index` to a free slot (reading out the oldest picture first when the ring is
+    /// full), filling its planar (NV12 / P010) or RGBA input buffer with `fill`. The pictures that
+    /// came out to free the slot.
+    fn submit_picture(&mut self, index: u64, planar: bool, fill: impl FnOnce(Locked<'_>)) -> Result<Vec<Packet>, String> {
         let mut out = Vec::new();
         let slot = match self.free.pop() {
             Some(s) => s,
@@ -429,7 +433,7 @@ impl Nvenc {
                 self.free.pop().ok_or("no free encoder buffer")?
             }
         };
-        let st = self.session.submit(slot, index, fill);
+        let st = self.session.submit(slot, index, planar, fill);
         let st = match st {
             Ok(s) => s,
             Err(e) => {

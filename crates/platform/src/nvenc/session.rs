@@ -188,6 +188,9 @@ pub enum Submitted {
 
 struct Slot {
     input: *mut c_void,
+    /// An NV12 input buffer next to the packed RGBA (ABGR) one of a session that takes RGBA, so
+    /// that it also takes planar pictures (the format is given per picture); null otherwise.
+    planar: *mut c_void,
     output: *mut c_void,
 }
 
@@ -200,7 +203,8 @@ pub struct Session {
     slots: Vec<Slot>,
     size: (u32, u32),
     out_size: u32,
-    /// `NV_ENC_BUFFER_FORMAT_*` of the input buffers and pictures, and its bytes per sample.
+    /// `NV_ENC_BUFFER_FORMAT_*` of the input buffers and pictures, and its bytes per sample (the
+    /// slots' NV12 buffers of an ABGR session are 8-bit planar).
     fmt: u32,
     bytes_per_sample: usize,
     /// The SEI messages of every IDR picture. The payload bytes and the array of descriptors live on
@@ -452,36 +456,62 @@ impl Session {
         Ok(())
     }
 
+    /// Creates one ring slot: an input buffer in the session's format, an NV12 buffer next to it
+    /// for an RGBA session, and a bitstream buffer.
     fn add_slot(&mut self) -> Result<(), String> {
         let (create_in, create_out) = (
             self.api.list.nvEncCreateInputBuffer.ok_or("no nvEncCreateInputBuffer")?,
             self.api.list.nvEncCreateBitstreamBuffer.ok_or("no nvEncCreateBitstreamBuffer")?,
         );
-        // SAFETY: zeroed parameter blocks with their versions; the driver fills in the buffer
-        // handles, which `Drop` destroys.
-        unsafe {
+        let destroy_in = self.api.list.nvEncDestroyInputBuffer;
+        let (enc, size) = (self.enc, self.size);
+        // SAFETY: a zeroed parameter block with its version; the driver fills in the buffer handle,
+        // which the caller destroys (here on a later failure, else in `Drop`).
+        let input = |fmt: u32| unsafe {
             let mut i: NV_ENC_CREATE_INPUT_BUFFER = std::mem::zeroed();
             i.version = NV_ENC_CREATE_INPUT_BUFFER_VER;
-            i.width = self.size.0;
-            i.height = self.size.1;
+            i.width = size.0;
+            i.height = size.1;
             i.memoryHeap = NV_ENC_MEMORY_HEAP_SYSMEM_CACHED;
-            i.bufferFmt = self.fmt;
-            let s = create_in(self.enc, &mut i);
-            if s != NV_ENC_SUCCESS {
-                return Err(status("creating an input buffer", s, self.enc, self.api));
+            i.bufferFmt = fmt;
+            (create_in(enc, &mut i), i.inputBuffer)
+        };
+        // SAFETY: a buffer this session created and nothing else holds.
+        let drop_in = |b: *mut c_void| unsafe {
+            if let Some(d) = destroy_in
+                && !b.is_null()
+            {
+                d(enc, b);
             }
+        };
+        let (s, main) = input(self.fmt);
+        if s != NV_ENC_SUCCESS {
+            return Err(status("creating an input buffer", s, self.enc, self.api));
+        }
+        let planar = if self.fmt == NV_ENC_BUFFER_FORMAT_ABGR {
+            let (s, planar) = input(NV_ENC_BUFFER_FORMAT_NV12);
+            if s != NV_ENC_SUCCESS {
+                drop_in(main);
+                return Err(status("creating a planar input buffer", s, self.enc, self.api));
+            }
+            planar
+        } else {
+            std::ptr::null_mut()
+        };
+        // SAFETY: a zeroed parameter block with its version; the driver fills in the buffer handle,
+        // which `Drop` destroys.
+        unsafe {
             let mut o: NV_ENC_CREATE_BITSTREAM_BUFFER = std::mem::zeroed();
             o.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
             o.size = self.out_size;
             o.memoryHeap = NV_ENC_MEMORY_HEAP_SYSMEM_CACHED;
             let s = create_out(self.enc, &mut o);
             if s != NV_ENC_SUCCESS {
-                if let Some(d) = self.api.list.nvEncDestroyInputBuffer {
-                    d(self.enc, i.inputBuffer);
-                }
+                drop_in(main);
+                drop_in(planar);
                 return Err(status("creating an output buffer", s, self.enc, self.api));
             }
-            self.slots.push(Slot { input: i.inputBuffer, output: o.bitstreamBuffer });
+            self.slots.push(Slot { input: main, planar, output: o.bitstreamBuffer });
         }
         Ok(())
     }
@@ -514,10 +544,18 @@ impl Session {
     }
 
     /// Write a picture into slot `slot`'s input buffer through `fill` (which gets the locked
-    /// buffer), then submit it with timestamp `pts`; `output_slot` receives the bitstream.
-    pub fn submit(&mut self, slot: usize, pts: u64, fill: impl FnOnce(Locked<'_>)) -> Result<Submitted, String> {
+    /// buffer), then submit it with timestamp `pts`; `output_slot` receives the bitstream. `planar`:
+    /// the picture is 4:2:0 (NV12, or P010 for a 10-bit session), else packed RGBA (ABGR); a session
+    /// that takes RGBA takes planar pictures too, in its slots' NV12 buffers.
+    pub fn submit(&mut self, slot: usize, pts: u64, planar: bool, fill: impl FnOnce(Locked<'_>)) -> Result<Submitted, String> {
         let s = self.slots.get(slot).ok_or("no such buffer slot")?;
-        let (input, output) = (s.input, s.output);
+        let (input, fmt, bytes_per_sample) = match (planar, self.fmt == NV_ENC_BUFFER_FORMAT_ABGR) {
+            (true, true) if !s.planar.is_null() => (s.planar, NV_ENC_BUFFER_FORMAT_NV12, 1),
+            (true, false) | (false, true) => (s.input, self.fmt, self.bytes_per_sample),
+            (true, true) => return Err("this encoder has no planar input buffers".into()),
+            (false, false) => return Err("an RGBA picture for a planar-input encoder".into()),
+        };
+        let output = s.output;
         let (lock, unlock, encode) = (
             self.api.list.nvEncLockInputBuffer.ok_or("no nvEncLockInputBuffer")?,
             self.api.list.nvEncUnlockInputBuffer.ok_or("no nvEncUnlockInputBuffer")?,
@@ -537,13 +575,13 @@ impl Session {
                 return Err(status("locking an input buffer", st, self.enc, self.api));
             }
             // a driver pitch narrower than a row (in bytes: P010 samples are two) would make `fill` write past each row
-            if (l.pitch as usize) < (w as usize).saturating_mul(self.bytes_per_sample) {
+            if (l.pitch as usize) < (w as usize).saturating_mul(bytes_per_sample) {
                 // the lock succeeded, so release it before giving up (its status no longer matters)
                 let _ = unlock(self.enc, input);
-                return Err(format!("the driver returned an input pitch of {} bytes for {w}-pixel rows of {}-byte samples", l.pitch, self.bytes_per_sample));
+                return Err(format!("the driver returned an input pitch of {} bytes for {w}-pixel rows of {bytes_per_sample}-byte samples", l.pitch));
             }
             let rows = (l.pitch as usize).saturating_mul(h as usize);
-            let len = if self.fmt == NV_ENC_BUFFER_FORMAT_ABGR { rows } else { rows.saturating_mul(3) / 2 };
+            let len = if fmt == NV_ENC_BUFFER_FORMAT_ABGR { rows } else { rows.saturating_mul(3) / 2 };
             fill(Locked { data: std::slice::from_raw_parts_mut(l.bufferDataPtr.cast::<u8>(), len), pitch: l.pitch as usize });
             let st = unlock(self.enc, input);
             if st != NV_ENC_SUCCESS {
@@ -571,7 +609,7 @@ impl Session {
             e.inputPitch = pitch;
             e.inputBuffer = input;
             e.outputBitstream = output;
-            e.bufferFmt = self.fmt;
+            e.bufferFmt = fmt;
             e.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
             e.inputTimeStamp = pts;
             e.inputDuration = 1;
@@ -630,12 +668,16 @@ impl Session {
 }
 
 impl Drop for Session {
+    /// Destroys every slot's buffers, then the encoder.
     fn drop(&mut self) {
         // SAFETY: every handle was created by this session and is destroyed once, buffers first.
         unsafe {
             for s in self.slots.drain(..) {
                 if let Some(d) = self.api.list.nvEncDestroyInputBuffer {
                     d(self.enc, s.input);
+                    if !s.planar.is_null() {
+                        d(self.enc, s.planar);
+                    }
                 }
                 if let Some(d) = self.api.list.nvEncDestroyBitstreamBuffer {
                     d(self.enc, s.output);
