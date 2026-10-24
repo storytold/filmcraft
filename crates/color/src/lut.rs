@@ -226,7 +226,14 @@ impl Lut {
                     return Err(err("keyword after table data"));
                 }
                 match key {
-                    "TITLE" => title = line[5..].trim().trim_matches('"').to_string(),
+                    "TITLE" => {
+                        // a '#' inside a quoted title is part of the title, not a comment
+                        let rest = raw.trim_start()[5..].trim_start();
+                        title = match rest.strip_prefix('"').and_then(|q| q.split_once('"')) {
+                            Some((t, _)) => t.to_string(),
+                            None => line[5..].trim().trim_matches('"').to_string(),
+                        };
+                    }
                     "LUT_1D_SIZE" => {
                         size1 = it.next().and_then(|v| v.parse().ok()).ok_or_else(|| err("bad LUT_1D_SIZE"))?;
                         if !(2..=65536).contains(&size1) {
@@ -557,6 +564,15 @@ mod tests {
             let (a, t, want) = (w.apply(c), w.apply_trilinear(c), w.at(r, g, b));
             assert!((0..3).all(|k| (a[k] - want[k]).abs() < 1e-6 && (t[k] - want[k]).abs() < 1e-6));
         }
+    }
+
+    #[test]
+    fn cube_title_with_hash_roundtrips() {
+        let mut c = Lut3d::identity(2);
+        c.title = "Look #2".into();
+        assert_eq!(Lut3d::parse_cube(&c.to_cube()).unwrap().title, "Look #2");
+        let text = c.to_cube().replace("TITLE \"Look #2\"", "TITLE \"Look\" # note");
+        assert_eq!(Lut::parse_cube(&text).unwrap().title, "Look");
     }
 
     #[test]
