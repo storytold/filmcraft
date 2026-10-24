@@ -17,6 +17,17 @@ use rayon::prelude::*;
 use super::*;
 use crate::track::{Gray, Prepared, track_step};
 
+#[allow(dead_code)] // wired into clip analysis by the stacked Warp Stabilizer PRs
+mod epipolar;
+#[allow(dead_code)] // `solve` is consumed by the stacked subspace/mesh PRs
+mod numerics;
+#[allow(dead_code)] // wired into clip analysis by the stacked Warp Stabilizer PRs
+mod trajectories;
+#[allow(dead_code)] // `segment_starts`/`saliency`/`PointConstraint` are consumed by the stacked subspace/planning PRs
+mod trajectory_data;
+#[allow(dead_code)] // `frames` accessors are consumed by the stacked subspace PR
+mod trajectory_index;
+
 /// Posterize Time: the clip shows a new frame only at the effect's frame rate.
 pub fn posterize_time(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let Some(env) = cx.env else { return };
