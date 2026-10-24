@@ -1,4 +1,4 @@
-//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, Targa, DPX, OpenEXR, Radiance HDR, DNG camera raw) as media
+//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, Targa, DPX, OpenEXR, Radiance HDR, DNG camera raw, PSD) as media
 //! sources. Animated PNG and GIF files open as movies instead ([`crate::animated`]); here they would
 //! show their first frame.
 
@@ -12,6 +12,7 @@ use crate::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result,
 pub mod dng;
 pub mod exr;
 pub mod hdr;
+pub mod psd;
 mod ycbcr_tiff;
 
 /// Default still duration (Premiere's preference default is 5 seconds).
@@ -21,6 +22,7 @@ pub const DEFAULT_STILL_DURATION: Tick = Tick(5 * TICKS_PER_SECOND);
 pub fn sniff(name: &str, b: &[u8]) -> bool {
     crate::dpx::sniff(b)
         || hdr::sniff(b)
+        || psd::sniff(b)
         || crate::tga::sniff(name, b)
         || b.starts_with(b"\x89PNG")
         || b.starts_with(&[0xFF, 0xD8, 0xFF])
@@ -48,6 +50,9 @@ pub fn decode_raster(name: &str, bytes: &[u8]) -> Result<Raster> {
     }
     if crate::tga::sniff(name, bytes) {
         return crate::tga::decode(name, bytes);
+    }
+    if psd::sniff(bytes) {
+        return psd::decode(name, bytes);
     }
     if ycbcr_tiff::sniff(bytes) {
         return ycbcr_tiff::decode(name, bytes);
