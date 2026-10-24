@@ -959,6 +959,34 @@ fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
     })
 }
 
+impl Session {
+    /// How many video and audio tracks placing `item` (its `range`) fills, counted from the
+    /// destination tracks: video lanes go up from the video destination, audio lanes down from the
+    /// audio destination. It follows [`place_item`]: one lane per stream the item carries, one
+    /// audio lane per Modify ▸ Audio Channels clip and further container stream, and with the nest
+    /// toggle off one lane per source-sequence track that has clips in `range`. `video` / `audio`
+    /// off leave that kind out. Used by the Timeline's drop preview (#1887).
+    pub fn placement_lanes(&self, item: ItemId, range: TimeRange, video: bool, audio: bool) -> (usize, usize) {
+        let Some(pi) = self.project.item(item) else { return (0, 0) };
+        if self.state.sequences_as_clips
+            && let Some(q) = pi.as_sequence().filter(|q| q.multicam.is_none())
+        {
+            let lanes = |tracks: &[Track]| tracks.iter().filter(|t| t.items.iter().any(|it| edit::through::clip_item_to(it, range).is_some())).count();
+            return (if video { lanes(&q.video_tracks) } else { 0 }, if audio { lanes(&q.audio_tracks) } else { 0 });
+        }
+        let (has_video, has_audio) = self.project.source_streams(item);
+        let audio_lanes = if audio && has_audio {
+            let media = self.project.resolve_media(item);
+            let clips = media.and_then(|(_, m, _)| m.interpret.audio_channels.as_ref()).map(|m| m.clips.clone()).unwrap_or_default();
+            let streams = media.map_or(1, |(_, m, _)| m.info.audio_streams.len());
+            audio_placement_specs(&clips, streams).len()
+        } else {
+            0
+        };
+        (usize::from(video && has_video), audio_lanes)
+    }
+}
+
 /// Place a project item on the timeline (drag from Project, or Insert/Overwrite from source).
 pub(crate) fn place_item(
     s: &mut Session,
