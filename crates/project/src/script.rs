@@ -174,7 +174,7 @@ pub struct ScriptSlate {
     /// Optional independent row for the setup thumbnail; defaults to its first candle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail_line: Option<ScriptLineId>,
-    /// Thumbnail and candle-group center as a fraction of the Script canvas width.
+    /// Thumbnail and candle-group center in viewport-width units, including scrolled positions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail_x: Option<f32>,
     pub takes: Vec<ScriptTake>,
@@ -193,6 +193,8 @@ impl ScriptDocument {
     pub const MAX_LINES: usize = 50_000;
     pub const MAX_LINE_BYTES: usize = 16_384;
     pub const MAX_SLATES: usize = 10_000;
+    /// Bound stored horizontal geometry to 10,000 viewport widths.
+    pub const MAX_THUMBNAIL_X: f32 = 10_000.0;
     pub const MAX_TAKES: usize = 50_000;
     pub const MAX_ANNOTATIONS: usize = 200_000;
 
@@ -283,8 +285,8 @@ impl ScriptDocument {
             if slate.thumbnail_line.is_some_and(|line| !positions.contains_key(&line)) {
                 return Err("script setup thumbnail refers to a missing line".into());
             }
-            if slate.thumbnail_x.is_some_and(|x| !x.is_finite() || !(0.0..=1.0).contains(&x)) {
-                return Err("script setup thumbnail position must be between 0 and 1".into());
+            if slate.thumbnail_x.is_some_and(|x| !x.is_finite() || !(0.0..=Self::MAX_THUMBNAIL_X).contains(&x)) {
+                return Err("script setup thumbnail position exceeds the horizontal canvas bounds".into());
             }
             if slate.name.len() > 4096 {
                 return Err("script slate name exceeds its size limit".into());

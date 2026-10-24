@@ -24,7 +24,6 @@ const MAX_THUMB_W: f32 = 192.0;
 const THUMB_CHIN_H: f32 = 16.0;
 const TAKE_NUMBER_H: f32 = 15.0;
 const TAKE_HEADER_H: f32 = TAKE_NUMBER_H + 2.0;
-const CANDLE_EDGE_INSET: f32 = 2.0;
 const CANDLE_CAP_H: f32 = 4.0;
 const SLATE_GAP: f32 = 14.0;
 const IMPORT_LEADING_LINES: &str = "\n\n\n\n\n";
@@ -33,7 +32,13 @@ const REBIND_WARNING: &str = "replacement is not identity-confirmed as the same 
 const REBIND_SPAN_WARNING: &str = "replacement source span excludes existing marks;";
 
 mod canvas;
+mod layout;
+mod recovery;
+mod selection;
 mod toolbar;
+
+use layout::{candle_row_bounds, coverage_rows, first_visible, row_layout, thumbnail_height, thumbnail_width};
+use selection::{current_line, select_line, selected_range, take_by_id};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -143,8 +148,9 @@ enum Action {
     Import,
     FindInProject(ItemId),
     Rebind { take: u64, source: u64 },
-    CueMark { take: u64, mark: u64 },
+    CueMark { take: u64, mark: u64, focus_source: bool },
     CueLine { take: u64, line: u64 },
+    CueThumbnail { source: ItemId, time: Option<Tick> },
     SplitLine { line: u64, text: String, at: usize },
     MergeWithPrevious { line: u64, text: String },
     AddMarkAtSelection,
@@ -191,11 +197,7 @@ pub(crate) fn delete_selection(app: &mut FilmcraftApp) -> Result<Value, String> 
         return Ok(Value::Null);
     };
     let result = app.session.execute(command, params).map_err(|error| error.to_string())?;
-    app.ui.script.selected_mark = None;
-    app.ui.script.selected_take = None;
-    app.ui.script.selected_slate = None;
-    app.ui.script.selected_thumbnail = None;
-    app.ui.script.selected_section_slates.clear();
+    app.ui.script.clear_object_selection();
     Ok(result)
 }
 
@@ -303,11 +305,7 @@ fn run_actions(app: &mut FilmcraftApp, actions: Vec<Action>) {
             }
             Action::Create => {
                 if let Some(value) = command(app, "script.create", json!({"name": tl!("Untitled Script")})) {
-                    app.ui.script.item = value["item"].as_u64();
-                    app.ui.script.selected_slate = None;
-                    app.ui.script.selected_thumbnail = None;
-                    app.ui.script.selected_take = None;
-                    app.ui.script.selected_lines = None;
+                    app.ui.script.open_document(value["item"].as_u64());
                     if let Some(line) = app
                         .ui
                         .script
@@ -346,25 +344,38 @@ fn run_actions(app: &mut FilmcraftApp, actions: Vec<Action>) {
                 }
             }
             Action::Rebind { take, source } => {
-                let params = json!({"item": app.ui.script.item, "take": take, "source": source});
+                let params = json!({"item": app.ui.script.item, "take": take, "source": source, "allMatching": true});
                 match app.session.execute("script.rebindTake", params) {
-                    Ok(_) => app.ui.script.pending_rebind = None,
+                    Ok(value) => {
+                        app.ui.script.pending_rebind = None;
+                        if let Some(count) = value["rebound"].as_u64() {
+                            app.ui.status = tlf!("Reconnected {count} Script candle(s)", count);
+                        }
+                    }
                     Err(error) if error.to_string().contains(REBIND_WARNING) || error.to_string().contains(REBIND_SPAN_WARNING) => {
                         app.ui.script.pending_rebind = Some((take, source));
                     }
                     Err(error) => app.ui.status = error.to_string(),
                 }
             }
-            Action::CueMark { take, mark } => {
+            Action::CueMark { take, mark, focus_source } => {
                 if command(app, "script.cueMark", json!({"item": app.ui.script.item, "take": take, "mark": mark})).is_some() {
                     app.show_panel(PanelKind::Source);
-                    app.ui.focused = PanelKind::Script;
+                    if !focus_source {
+                        app.ui.focused = PanelKind::Script;
+                    }
                 }
             }
             Action::CueLine { take, line } => {
                 if command(app, "script.cueLine", json!({"item": app.ui.script.item, "take": take, "line": line})).is_some() {
                     app.show_panel(PanelKind::Source);
-                    app.ui.focused = PanelKind::Script;
+                }
+            }
+            Action::CueThumbnail { source, time } => {
+                if command(app, "source.open", json!({"item": source.0})).is_some()
+                    && time.is_none_or(|time| command(app, "source.setPlayhead", json!({"time": time.0})).is_some())
+                {
+                    app.show_panel(PanelKind::Source);
                 }
             }
             Action::SplitLine { line, text, at } => {
@@ -444,44 +455,9 @@ fn import_text(app: &mut FilmcraftApp) {
         }
         let padded_text = format!("{IMPORT_LEADING_LINES}{body}");
         if let Some(value) = command(app, "script.importText", json!({"name": name, "text": padded_text})) {
-            app.ui.script.item = value["item"].as_u64();
-            app.ui.script.selected_lines = None;
-            app.ui.script.selected_slate = None;
-            app.ui.script.selected_thumbnail = None;
-            app.ui.script.selected_take = None;
+            app.ui.script.open_document(value["item"].as_u64());
         }
     });
-}
-
-fn selected_range(doc: &ScriptDocument, pair: Option<(u64, u64)>) -> Option<(usize, usize)> {
-    let (a, b) = pair?;
-    let a = doc.lines.iter().position(|line| line.id.0 == a)?;
-    let b = doc.lines.iter().position(|line| line.id.0 == b)?;
-    Some((a.min(b), a.max(b)))
-}
-
-fn take_by_id(doc: &ScriptDocument, id: Option<u64>) -> Option<&ScriptTake> {
-    let id = id?;
-    doc.slates.iter().flat_map(|slate| &slate.takes).find(|take| take.id.0 == id)
-}
-
-fn current_line<'a>(doc: &'a ScriptDocument, state: &ScriptUi) -> Option<&'a ScriptLine> {
-    let id = state.selected_lines?.1;
-    doc.lines.iter().find(|line| line.id.0 == id)
-}
-
-fn select_line(state: &mut ScriptUi, line: &ScriptLine, extend: bool) {
-    state.selected_mark = None;
-    if state.selected_lines.is_none_or(|pair| pair.1 != line.id.0) {
-        state.edit_scene = None;
-        state.edit_page = None;
-    }
-    state.selected_lines = Some(if extend { (state.selected_lines.map_or(line.id.0, |pair| pair.0), line.id.0) } else { (line.id.0, line.id.0) });
-    if state.label_line != Some(line.id.0) {
-        state.label_line = Some(line.id.0);
-        state.scene_text = line.scene.clone().unwrap_or_default();
-        state.page_text = line.page.clone().unwrap_or_default();
-    }
 }
 
 fn shift_click(ui: &egui::Ui) -> bool {
@@ -491,95 +467,93 @@ fn shift_click(ui: &egui::Ui) -> bool {
     })
 }
 
-fn thumbnail_width(state: &ScriptUi) -> f32 {
-    state.thumbnail_width.unwrap_or(DEFAULT_THUMB_W).clamp(MIN_THUMB_W, MAX_THUMB_W)
-}
-
-fn thumbnail_height(width: f32) -> f32 {
-    width * 9.0 / 16.0 + THUMB_CHIN_H
-}
-
-/// Measured once per document revision and width; a 4 MiB script may have 50,000 rows, so only
-/// visible rows are painted while their cached prefix heights keep the candles in exact alignment.
-fn row_layout(app: &mut FilmcraftApp, ui: &egui::Ui, doc: &Arc<ScriptDocument>, left_w: f32, text_inset: f32) {
-    let width = left_w.round().max(1.0) as u32;
-    let inset = text_inset.round().max(1.0) as u32;
-    let script_font_size = app.ui.script.font_size.unwrap_or(SCRIPT_FONT_SIZE).clamp(10.0, 24.0);
-    let font_size = script_font_size.to_bits();
-    let thumb_w = thumbnail_width(&app.ui.script);
-    let thumb_width = thumb_w.round() as u32;
-    if app.ui.script.layout_item == app.ui.script.item
-        && app.ui.script.layout_doc.as_ref().is_some_and(|cached| Arc::ptr_eq(cached, doc))
-        && app.ui.script.layout_width == width
-        && app.ui.script.layout_inset == inset
-        && app.ui.script.layout_font_size == font_size
-        && app.ui.script.layout_thumbnail_width == thumb_width
-        && app.ui.script.row_tops.len() == doc.lines.len().saturating_add(1)
-    {
-        return;
-    }
-    let mut tops = Vec::with_capacity(doc.lines.len().saturating_add(1));
-    let leading_blank = doc.lines.iter().take(5).take_while(|line| line.text.is_empty()).count();
-    let clearance = thumbnail_height(thumb_w) + TAKE_HEADER_H + 10.0;
-    let top_space = if leading_blank >= 3 { (clearance - leading_blank as f32 * MIN_ROW_H).max(8.0) } else { clearance };
-    tops.push(top_space);
-    let mut total = top_space;
-    let font = Tokens::ui(script_font_size);
-    let visual_line_height = ui.painter().layout_no_wrap("Mg".to_owned(), font.clone(), app.tokens.text).size().y;
-    let max_height = (visual_line_height * MAX_VISUAL_LINES + 4.0).max(MIN_ROW_H);
-    for line in &doc.lines {
-        let text_w = (left_w - text_inset).max(48.0);
-        // Measure the rendered font instead of assigning a fixed row height.
-        // The cap also scales with the font, preserving up to 12 visible lines.
-        let galley = ui.painter().layout(line.text.clone(), font.clone(), app.tokens.text, text_w);
-        let height = (galley.size().y + 4.0).clamp(MIN_ROW_H, max_height);
-        total += height;
-        tops.push(total);
-    }
-    app.ui.script.row_tops = tops;
-    app.ui.script.layout_item = app.ui.script.item;
-    app.ui.script.layout_doc = Some(Arc::clone(doc));
-    app.ui.script.layout_width = width;
-    app.ui.script.layout_inset = inset;
-    app.ui.script.layout_font_size = font_size;
-    app.ui.script.layout_thumbnail_width = thumb_width;
-}
-
-fn first_visible(tops: &[f32], y: f32) -> usize {
-    tops.partition_point(|top| *top <= y).saturating_sub(1)
-}
-
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().rect_filled(rect, 0.0, t.panel_bg);
     let scripts: Vec<(ItemId, String)> =
         app.session.project.items.values().filter(|item| item.as_script().is_some()).map(|item| (item.id, item.name.clone())).collect();
     if app.ui.script.item.is_none_or(|id| !scripts.iter().any(|entry| entry.0.0 == id)) {
-        app.ui.script.item = scripts.first().map(|entry| entry.0.0);
+        app.ui.script.open_document(scripts.first().map(|entry| entry.0.0));
     }
-    let doc = app.ui.script.item.and_then(|id| app.session.project.item(ItemId(id))).and_then(|item| match &item.kind {
-        ItemKind::Script(doc) => Some(std::sync::Arc::clone(doc)),
-        _ => None,
-    });
+    let document = |app: &FilmcraftApp| {
+        app.ui.script.item.and_then(|id| app.session.project.item(ItemId(id))).and_then(|item| match &item.kind {
+            ItemKind::Script(doc) => Some(std::sync::Arc::clone(doc)),
+            _ => None,
+        })
+    };
+    let mut doc = document(app);
+    let item_before_header = app.ui.script.item;
     let mut actions = Vec::new();
     let header_rect = Rect::from_min_size(rect.min, vec2(rect.width(), 72.0));
     toolbar::header(app, ui, header_rect, &scripts, doc.as_ref(), &mut actions);
+    // The document chooser can change the active script during this frame.
+    if app.ui.script.item != item_before_header {
+        doc = document(app);
+    }
     if let Some(doc) = doc.as_ref() {
         toolbar::coverage_hotkeys(app, ui, doc, &mut actions);
         let body = Rect::from_min_max(pos2(rect.min.x, header_rect.max.y), rect.max);
         canvas::content(app, ui, body, doc, &mut actions);
     } else {
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, tl!("Create a script or import a plain-text script."), Tokens::ui(14.0), t.text_dim);
+        getting_started(app, ui, Rect::from_min_max(pos2(rect.min.x, header_rect.max.y), rect.max));
     }
     run_actions(app, actions);
     rebind_confirmation(app, ui.ctx());
+}
+
+fn getting_started(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let available = rect.shrink2(vec2(20.0, 12.0));
+    if !available.is_positive() {
+        return;
+    }
+    let width = available.width().min(640.0);
+    let top = available.top() + (available.height() - 320.0).max(0.0) * 0.4;
+    let guide = Rect::from_min_max(pos2(available.center().x - width * 0.5, top), pos2(available.center().x + width * 0.5, available.bottom()));
+    let mut guide_ui = ui.new_child(egui::UiBuilder::new().max_rect(guide).layout(egui::Layout::top_down(egui::Align::LEFT)));
+    egui::ScrollArea::vertical().id_salt("script.getStarted").auto_shrink([false, false]).show(&mut guide_ui, |ui| {
+        guide_contents(app, ui, "script.getStarted");
+    });
+}
+
+fn guide_contents(app: &mut FilmcraftApp, ui: &mut egui::Ui, prefix: &str) {
+    let t = app.tokens;
+    let title = ui.label(egui::RichText::new(tl!("Get started with Script")).size(19.0).strong().color(t.text));
+    app.auto.add(prefix, title.rect, "Get started with Script");
+    ui.add_space(12.0);
+    for (key, heading, description) in [
+        (
+            "export",
+            tl!("0. Export Script text"),
+            tl!(
+                "Final Draft export:\n    • macOS: File → Export → Script → Avid Script-Based Editing (.txt).\n    • Windows: File → Export → Document → Save as Type → Avid Script-Based Editing (.txt)."
+            ),
+        ),
+        ("import", tl!("1. Import Text"), tl!("Save your .txt file as UTF-8 plain text, then choose Import Text… above. Or choose New to write a script.")),
+        ("clips", tl!("2. Add clips"), tl!("Select rows, then drag a clip from the Project panel onto the selection.")),
+        (
+            "candles",
+            tl!("3. Follow candles"),
+            tl!("A candle shows a take's row coverage. Double-click a candle or thumbnail to open Source; press Space to play."),
+        ),
+        (
+            "marks",
+            tl!("4. Add marks"),
+            tl!("Select a candle row, find the matching frame in Source, then click the diamond Mark button in Script. Click a mark to return to that frame."),
+        ),
+    ] {
+        ui.label(egui::RichText::new(heading).strong().color(t.text));
+        let text = ui.add(egui::Label::new(egui::RichText::new(description).color(t.text_dim)).wrap());
+        app.auto.add(&format!("{prefix}.{key}"), text.rect, description);
+        ui.add_space(12.0);
+    }
 }
 
 fn rebind_confirmation(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some((take, source)) = app.ui.script.pending_rebind else { return };
     egui::Window::new(tl!("Replace take?")).collapsible(false).resizable(false).show(ctx, |ui| {
         ui.label(tl!("This replacement could be different footage. Old script marks would point to the wrong frames."));
-        ui.label(tl!("Replace the take and clear its marks?"));
+        ui.label(tl!("This updates every matching candle in all scripts."));
+        ui.label(tl!("Replace matching candles and clear their marks?"));
         ui.horizontal(|ui| {
             let cancel = ui.button(tl!("Cancel"));
             app.auto.add("script.rebind.cancel", cancel.rect, "Cancel take replacement");
@@ -590,7 +564,8 @@ fn rebind_confirmation(app: &mut FilmcraftApp, ctx: &egui::Context) {
             app.auto.add("script.rebind.confirm", replace.rect, "Replace take and clear marks");
             if replace.clicked() {
                 let item = app.ui.script.item;
-                if command(app, "script.rebindTake", json!({"item": item, "take": take, "source": source, "discardMarks": true})).is_some() {
+                if command(app, "script.rebindTake", json!({"item": item, "take": take, "source": source, "discardMarks": true, "allMatching": true})).is_some()
+                {
                     app.ui.script.pending_rebind = None;
                 }
             }
@@ -644,7 +619,7 @@ fn source_matches(app: &FilmcraftApp, source: ItemId) -> Vec<SourceMatch> {
 }
 
 fn select_source_match(state: &mut ScriptUi, entry: &SourceMatch) {
-    state.item = Some(entry.item.0);
+    state.open_document(Some(entry.item.0));
     state.selected_take = Some(entry.take);
     state.selected_thumbnail = None;
     state.selected_mark = None;

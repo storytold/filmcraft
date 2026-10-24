@@ -305,12 +305,7 @@ fn shift_slate(s: &mut Session, p: &Value) -> Result<Value> {
     let slate = ScriptSlateId(id(p, "slate", cmd)?);
     let delta =
         p.get("delta").and_then(Value::as_i64).and_then(|value| isize::try_from(value).ok()).ok_or_else(|| bad(cmd, "need signed row offset `delta`"))?;
-    let x = p
-        .get("x")
-        .map(|value| {
-            value.as_f64().filter(|x| x.is_finite() && (0.0..=1.0).contains(x)).map(|x| x as f32).ok_or_else(|| bad(cmd, "x must be a number between 0 and 1"))
-        })
-        .transpose()?;
+    let x = thumbnail_x(p, cmd)?;
     s.edit("Move Script Setup", |project, _| {
         let doc = script_mut(project, item, cmd)?;
         let ids: Vec<_> = doc.lines.iter().map(|line| line.id).collect();
@@ -394,12 +389,7 @@ fn move_thumbnail(s: &mut Session, p: &Value) -> Result<Value> {
     let item = item(p, cmd)?;
     let slate = ScriptSlateId(id(p, "slate", cmd)?);
     let line = ScriptLineId(id(p, "line", cmd)?);
-    let x = p
-        .get("x")
-        .map(|value| {
-            value.as_f64().filter(|x| x.is_finite() && (0.0..=1.0).contains(x)).map(|x| x as f32).ok_or_else(|| bad(cmd, "x must be a number between 0 and 1"))
-        })
-        .transpose()?;
+    let x = thumbnail_x(p, cmd)?;
     s.edit("Move Script Thumbnail", |project, _| {
         let doc = script_mut(project, item, cmd)?;
         if doc.line_index(line).is_none() {
@@ -535,6 +525,18 @@ fn add_slate(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"slate":slate.0}))
 }
 
+fn thumbnail_x(p: &Value, cmd: &str) -> Result<Option<f32>> {
+    p.get("x")
+        .map(|value| {
+            value
+                .as_f64()
+                .filter(|x| x.is_finite() && (0.0..=f64::from(ScriptDocument::MAX_THUMBNAIL_X)).contains(x))
+                .map(|x| x as f32)
+                .ok_or_else(|| bad(cmd, "x must be a finite number within the horizontal canvas bounds"))
+        })
+        .transpose()
+}
+
 fn add_take(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "script.addTake";
     let item = item(p, cmd)?;
@@ -542,6 +544,10 @@ fn add_take(s: &mut Session, p: &Value) -> Result<Value> {
     let start = ScriptLineId(id(p, "startLine", cmd)?);
     let end = ScriptLineId(id(p, "endLine", cmd)?);
     let existing_slate = p.get("slate").filter(|v| !v.is_null()).map(|_| id(p, "slate", cmd).map(ScriptSlateId)).transpose()?;
+    let x = thumbnail_x(p, cmd)?;
+    if existing_slate.is_some() && x.is_some() {
+        return Err(bad(cmd, "x places a new setup; omit it when adding a take to an existing setup"));
+    }
     let (source_name, identity) = allowed_source(&s.project, source)?;
     let (slate, take) = s.edit("Add Script Take", |project, _| {
         let doc = script_mut(project, item, cmd)?;
@@ -560,7 +566,7 @@ fn add_take(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad(cmd, "script already has the maximum number of slates"));
             }
             let slate = ScriptSlateId(doc.alloc_id().map_err(|e| bad(cmd, e))?);
-            doc.slates.push(ScriptSlate { id: slate, name: source_name.clone(), thumbnail_line: None, thumbnail_x: None, takes: Vec::new() });
+            doc.slates.push(ScriptSlate { id: slate, name: source_name.clone(), thumbnail_line: None, thumbnail_x: x, takes: Vec::new() });
             slate
         };
         let take = ScriptTakeId(doc.alloc_id().map_err(|e| bad(cmd, e))?);
@@ -597,11 +603,37 @@ fn rebind_take(s: &mut Session, p: &Value) -> Result<Value> {
         _ => false,
     };
     let source_view = crate::clip_ops::source_view(s, source).ok_or_else(|| bad(cmd, "source cannot open in the Source monitor"))?;
-    s.edit("Rebind Script Take", |project, _| {
-        let take = script_mut(project, item, cmd)?.take_mut(take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
-        let same_footage = take.source_identity.is_some_and(|old| Some(old) == identity)
-            || (take.source == Some(source) && take.source_identity.is_none() && identity.is_none() && stable_without_fingerprint);
-        if !same_footage && !take.marks.is_empty() && !discard {
+    let all_matching = p.get("allMatching").and_then(Value::as_bool).unwrap_or(false);
+    let original = script(&s.project, item, cmd)?.take(take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
+    let (old_source, old_identity) = (original.source, original.source_identity);
+    // A deleted source has no Project ID left. Its retained fingerprint still groups
+    // matching candles safely; absent identity never falls back to a filename match.
+    let targets: Vec<_> = s
+        .project
+        .items
+        .values()
+        .filter_map(|entry| entry.as_script().map(|doc| (entry.id, doc)))
+        .flat_map(|(id, doc)| doc.slates.iter().flat_map(|slate| &slate.takes).map(move |take| (id, take)))
+        .filter(|(id, take)| {
+            (*id == item && take.id == take_id)
+                || (all_matching
+                    && (old_source.is_some_and(|source| take.source == Some(source))
+                        || old_identity.is_some_and(|identity| take.source_identity == Some(identity))))
+        })
+        .map(|(item, take)| (item, take.id))
+        .take(ScriptDocument::MAX_TAKES.saturating_add(1))
+        .collect();
+    if targets.len() > ScriptDocument::MAX_TAKES {
+        return Err(bad(cmd, "too many matching candles to reconnect at once"));
+    }
+    let same_footage = |take: &ScriptTake| {
+        take.source_identity.is_some_and(|old| Some(old) == identity)
+            || (take.source == Some(source) && take.source_identity.is_none() && identity.is_none() && stable_without_fingerprint)
+    };
+    // Validate the whole recovery before changing any candle, including hidden marks.
+    for (item, take_id) in &targets {
+        let take = script(&s.project, *item, cmd)?.take(*take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
+        if !same_footage(take) && !take.marks.is_empty() && !discard {
             return Err(bad(
                 cmd,
                 "replacement is not identity-confirmed as the same footage; review it, then retry with `discardMarks:true` to clear old marks",
@@ -610,20 +642,26 @@ fn rebind_take(s: &mut Session, p: &Value) -> Result<Value> {
         if !discard && take.marks.iter().any(|mark| mark.source_time < source_view.start || mark.source_time >= source_view.end) {
             return Err(bad(cmd, "replacement source span excludes existing marks; review it, then retry with `discardMarks:true` to clear old marks"));
         }
-        if discard {
-            take.marks.clear();
+    }
+    s.edit("Rebind Script Take", |project, _| {
+        for (item, take_id) in &targets {
+            let take = script_mut(project, *item, cmd)?.take_mut(*take_id).ok_or_else(|| bad(cmd, "take does not exist"))?;
+            let same_footage = same_footage(take);
+            if discard {
+                take.marks.clear();
+            }
+            if discard || !same_footage {
+                take.thumbnail_time = None;
+            } else if take.thumbnail_time.is_some_and(|time| time < source_view.start || time >= source_view.end) {
+                take.thumbnail_time = Some(source_view.start);
+            }
+            take.source = Some(source);
+            take.source_name = source_name.clone();
+            take.source_identity = identity;
         }
-        if discard || !same_footage {
-            take.thumbnail_time = None;
-        } else if take.thumbnail_time.is_some_and(|time| time < source_view.start || time >= source_view.end) {
-            take.thumbnail_time = Some(source_view.start);
-        }
-        take.source = Some(source);
-        take.source_name = source_name;
-        take.source_identity = identity;
         Ok(())
     })?;
-    Ok(Value::Null)
+    Ok(if all_matching { json!({"rebound":targets.len()}) } else { Value::Null })
 }
 
 fn set_coverage(s: &mut Session, p: &Value) -> Result<Value> {
@@ -923,11 +961,11 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("script.setLabel", "Set Script Scene/Page", r#"{"item":id,"line":id,"scene":str|null?,"page":str|null?}"#, set_label, true),
         spec("script.addSlate", "Add Script Slate", r#"{"item":id,"name":str}"#, add_slate, true),
         spec("script.deleteSlate", "Delete Script Setup", r#"{"item":id,"slate":id}"#, delete_slate, true),
-        spec("script.addTake", "Add Script Take", r#"{"item":id,"slate":id?,"source":id,"startLine":id,"endLine":id}"#, add_take, true),
+        spec("script.addTake", "Add Script Take", r#"{"item":id,"slate":id?,"source":id,"startLine":id,"endLine":id,"x":number?}"#, add_take, true),
         spec("script.deleteTake", "Delete Script Take", r#"{"item":id,"take":id}"#, delete_take, true),
         spec("script.moveTake", "Reorder Script Take", r#"{"item":id,"take":id,"direction":-1|1}"#, move_take, true),
         spec("script.setThumbnailTime", "Set Script Thumbnail Frame", r#"{"item":id,"take":id,"time":ticks}"#, set_thumbnail_time, true),
-        spec("script.rebindTake", "Rebind Script Take", r#"{"item":id,"take":id,"source":id,"discardMarks":bool?}"#, rebind_take, true),
+        spec("script.rebindTake", "Rebind Script Take", r#"{"item":id,"take":id,"source":id,"discardMarks":bool?,"allMatching":bool?}"#, rebind_take, true),
         spec("script.setCoverage", "Set Script Take Coverage", r#"{"item":id,"take":id,"startLine":id,"endLine":id}"#, set_coverage, true),
         spec(
             "script.setTakeStyle",
@@ -972,6 +1010,41 @@ mod tests {
             }),
             None,
         )
+    }
+
+    #[test]
+    fn positioned_setup_creation_is_atomic_undoable_and_survives_reopen() {
+        let mut s = Session::default();
+        let media = source(&mut s, "clip", 10);
+        let script = s.execute("script.importText", json!({"name":"Positioned","text":"A\nB"})).unwrap()["item"].as_u64().unwrap();
+        let rows: Vec<_> = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines.iter().map(|line| line.id.0).collect();
+        let before = s.project.item(ItemId(script)).unwrap().as_script().unwrap().clone();
+        for x in [json!(-1), json!(10001), json!("left"), Value::Null] {
+            assert!(s.execute("script.addTake", json!({"item":script,"source":media.0,"startLine":rows[0],"endLine":rows[1],"x":x})).is_err());
+            assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap(), &before);
+        }
+        let added = s.execute("script.addTake", json!({"item":script,"source":media.0,"startLine":rows[0],"endLine":rows[1],"x":1.75})).unwrap();
+        let positioned = s.project.item(ItemId(script)).unwrap().as_script().unwrap().clone();
+        assert_eq!(positioned.slates[0].thumbnail_x, Some(1.75));
+        assert!(positioned.validate().is_ok());
+        let reopened = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap();
+        assert_eq!(reopened.project.item(ItemId(script)).unwrap().as_script().unwrap(), &positioned);
+        assert!(
+            s.execute("script.addTake", json!({"item":script,"slate":added["slate"],"source":media.0,"startLine":rows[0],"endLine":rows[1],"x":0.5})).is_err()
+        );
+        assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap(), &positioned);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap(), &before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap(), &positioned);
+        for x in [f32::NAN, f32::INFINITY, -1.0, ScriptDocument::MAX_THUMBNAIL_X + 1.0] {
+            let mut damaged = positioned.clone();
+            damaged.slates[0].thumbnail_x = Some(x);
+            assert!(damaged.validate().is_err());
+        }
+        s.execute("script.moveThumbnail", json!({"item":script,"slate":added["slate"],"line":rows[0],"x":2.5})).unwrap();
+        s.execute("script.shiftSlate", json!({"item":script,"slate":added["slate"],"delta":0,"x":3.25})).unwrap();
+        assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().slates[0].thumbnail_x, Some(3.25));
     }
 
     #[test]
@@ -1376,6 +1449,72 @@ mod tests {
         let take = s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(ScriptTakeId(take)).unwrap();
         assert_eq!(take.source, Some(same_file));
         assert_eq!(take.marks[0].source_time, Tick(100));
+    }
+
+    #[test]
+    fn recovery_rebinds_all_matching_candles_across_scripts_as_one_atomic_edit() {
+        let mut s = Session::default();
+        let original = source(&mut s, "original", 10);
+        let replacement = source(&mut s, "moved", 10);
+        let different = source(&mut s, "different", 20);
+        let mut candles = Vec::new();
+        for name in ["First", "Second"] {
+            let item = s.execute("script.importText", json!({"name":name,"text":"A\nB"})).unwrap()["item"].as_u64().unwrap();
+            let rows: Vec<_> = s.project.item(ItemId(item)).unwrap().as_script().unwrap().lines.iter().map(|line| line.id.0).collect();
+            let take =
+                s.execute("script.addTake", json!({"item":item,"source":original.0,"startLine":rows[0],"endLine":rows[1]})).unwrap()["take"].as_u64().unwrap();
+            s.execute("script.addMark", json!({"item":item,"take":take,"line":rows[0],"sourceTime":100})).unwrap();
+            s.execute("script.setTakeStyle", json!({"item":item,"take":take,"color":"Blue","offscreenLines":[rows[1]]})).unwrap();
+            s.execute("script.setCoverage", json!({"item":item,"take":take,"startLine":rows[1],"endLine":rows[1]})).unwrap();
+            candles.push((item, take));
+        }
+        let (item, take) = candles[0];
+        let doc = s.project.item(ItemId(item)).unwrap().as_script().unwrap();
+        let row = doc.lines[0].id.0;
+        s.execute("script.addTake", json!({"item":item,"source":different.0,"startLine":row,"endLine":row})).unwrap();
+        s.execute("project.delete", json!({"items":[original.0]})).unwrap();
+        let before = s.project.clone();
+        assert!(s.execute("script.rebindTake", json!({"item":item,"take":take,"source":different.0,"allMatching":true})).is_err());
+        assert_eq!(s.project.as_ref(), before.as_ref(), "review must precede the whole edit");
+        let result = s.execute("script.rebindTake", json!({"item":item,"take":take,"source":replacement.0,"allMatching":true})).unwrap();
+        assert_eq!(result["rebound"], 2);
+        for (item, take) in &candles {
+            let mut expected = before.item(ItemId(*item)).unwrap().as_script().unwrap().clone();
+            let candle = expected.take_mut(ScriptTakeId(*take)).unwrap();
+            candle.source = Some(replacement);
+            candle.source_name = "moved".into();
+            assert_eq!(s.project.item(ItemId(*item)).unwrap().as_script().unwrap(), &expected);
+        }
+        let after = s.project.clone();
+        let reopened = filmcraft_format::decode(&filmcraft_format::encode(&s.project, false)).unwrap();
+        assert_eq!(&reopened.project, s.project.as_ref());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project.as_ref(), before.as_ref());
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(s.project.as_ref(), after.as_ref());
+    }
+
+    #[test]
+    fn recovery_without_fingerprints_does_not_group_deleted_clips_by_name() {
+        let mut s = Session::default();
+        let original = source(&mut s, "clip", 10);
+        let unrelated = source(&mut s, "clip", 20);
+        let replacement = source(&mut s, "moved", 10);
+        for item in [original, unrelated] {
+            Arc::make_mut(&mut s.project).item_mut(item).unwrap().as_media_mut().unwrap().identity = None;
+        }
+        let item = s.execute("script.importText", json!({"name":"Unknown identities","text":"Line"})).unwrap()["item"].as_u64().unwrap();
+        let row = s.project.item(ItemId(item)).unwrap().as_script().unwrap().lines[0].id.0;
+        let mut takes = Vec::new();
+        for source in [original, unrelated] {
+            takes.push(s.execute("script.addTake", json!({"item":item,"source":source.0,"startLine":row,"endLine":row})).unwrap()["take"].as_u64().unwrap());
+        }
+        s.execute("project.delete", json!({"items":[original.0,unrelated.0]})).unwrap();
+        let result = s.execute("script.rebindTake", json!({"item":item,"take":takes[0],"source":replacement.0,"allMatching":true})).unwrap();
+        assert_eq!(result["rebound"], 1);
+        let doc = s.project.item(ItemId(item)).unwrap().as_script().unwrap();
+        assert_eq!(doc.take(ScriptTakeId(takes[0])).unwrap().source, Some(replacement));
+        assert_eq!(doc.take(ScriptTakeId(takes[1])).unwrap().source, None);
     }
 
     #[test]

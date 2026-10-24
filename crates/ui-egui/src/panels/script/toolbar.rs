@@ -11,25 +11,33 @@ pub(super) fn header(
     actions: &mut Vec<Action>,
 ) {
     let t = app.tokens;
-    let mut top = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2((rect.width() - 16.0).max(1.0), 30.0))));
+    let help_rect = Rect::from_min_size(pos2((rect.right() - 37.0).max(rect.left()), rect.top() + 4.0), vec2(29.0, 30.0));
+    let mut help_ui = ui.new_child(egui::UiBuilder::new().max_rect(help_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    let help = help_ui.add(egui::Button::new("?").min_size(vec2(29.0, 23.0))).on_hover_text(tl!("Script help"));
+    app.auto.add("script.help", help.rect, "Script help");
+    let help_width = (ui.ctx().content_rect().width() - 32.0).clamp(1.0, 640.0);
+    let help_height = (ui.ctx().content_rect().height() - 120.0).max(1.0);
+    egui::Popup::menu(&help).width(help_width).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_width(help_width);
+        egui::ScrollArea::vertical().id_salt("script.help.scroll").max_height(help_height).show(ui, |ui| {
+            guide_contents(app, ui, "script.help.guide");
+        });
+    });
+    let mut top = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2((rect.width() - 53.0).max(1.0), 30.0))));
     egui::ScrollArea::horizontal().id_salt("script.toolbar").auto_shrink([false, true]).show(&mut top, |ui| {
         ui.horizontal(|ui| {
             let name =
                 app.ui.script.item.and_then(|id| scripts.iter().find(|entry| entry.0.0 == id).map(|entry| entry.1.as_str())).unwrap_or(tl!("Choose a script"));
-            egui::ComboBox::from_id_salt("script.document").selected_text(name).width(180.0).show_ui(ui, |ui| {
+            let document = egui::ComboBox::from_id_salt("script.document").selected_text(name).width(180.0).show_ui(ui, |ui| {
                 for (id, name) in scripts {
                     let response = ui.selectable_label(app.ui.script.item == Some(id.0), name);
                     app.auto.add(&format!("script.document.{}", id.0), response.rect, name);
                     if response.clicked() {
-                        app.ui.script.item = Some(id.0);
-                        app.ui.script.selected_lines = None;
-                        app.ui.script.selected_slate = None;
-                        app.ui.script.selected_thumbnail = None;
-                        app.ui.script.selected_take = None;
-                        app.ui.script.selected_section_slates.clear();
+                        app.ui.script.open_document(Some(id.0));
                     }
                 }
             });
+            app.auto.add("script.document", document.response.rect, "Choose a script");
             let settings = ui.menu_button("⚙", |ui| {
                 ui.label(tl!("Script settings"));
                 let mut font_size = app.ui.script.font_size.unwrap_or(SCRIPT_FONT_SIZE);

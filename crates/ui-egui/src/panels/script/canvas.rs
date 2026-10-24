@@ -11,6 +11,12 @@ struct SlateHeader<'a> {
     source_time: Option<Tick>,
     source_name: &'a str,
     last_take: &'a ScriptTake,
+    display_take: &'a ScriptTake,
+}
+
+enum ProjectDropTarget {
+    Rebind(u64),
+    Thumbnail { slate: u64, start: u64, end: u64 },
 }
 
 pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc: &Arc<ScriptDocument>, actions: &mut Vec<Action>) {
@@ -62,6 +68,7 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
     let take_origin = default_left + 70.0;
     let mut first_column = 0;
     let mut next_group_x = 0.0;
+    let mut take_right = 0.0_f32;
     let mut column_centers = Vec::with_capacity(columns.len());
     let mut slate_headers = Vec::new();
     for slate in &doc.slates {
@@ -69,6 +76,7 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
         let group_width = (count as f32 * TAKE_W).max(thumb_w + 8.0);
         let preview_x = if app.ui.script.drag_slate == Some(slate.id.0) { app.ui.script.drag_slate_delta.x } else { 0.0 };
         let center_x = slate.thumbnail_x.map_or(take_origin + next_group_x + group_width * 0.5, |x| x * canvas.width()) + preview_x;
+        take_right = take_right.max(center_x + group_width * 0.5 + SLATE_GAP);
         let candle_left = center_x - count as f32 * TAKE_W * 0.5;
         for column in 0..count {
             column_centers.push(candle_left + (column as f32 + 0.5) * TAKE_W);
@@ -99,20 +107,20 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
                 source_time: display_take.and_then(|take| take.thumbnail_time.or_else(|| doc.first_visible_mark_time(take))),
                 source_name: display_take.map_or("", |take| take.source_name.as_str()),
                 last_take,
+                display_take: display_take.unwrap_or(last_take),
             });
         }
         first_column += count;
         next_group_x += group_width + SLATE_GAP;
     }
-    let take_total = (take_origin + next_group_x - SLATE_GAP).max(0.0);
+    let take_total = take_right.max(canvas.width());
     let max_scroll = (take_total - canvas.width()).max(0.0);
-    app.ui.script.take_scroll = app.ui.script.take_scroll.clamp(0.0, max_scroll);
+    app.ui.script.take_scroll = if app.ui.script.take_scroll.is_finite() { app.ui.script.take_scroll.clamp(0.0, max_scroll) } else { 0.0 };
     let canvas = Rect::from_min_max(pos2(rect.min.x, rect.min.y + 16.0), rect.max);
-    let body = if max_scroll > 0.0 { Rect::from_min_max(canvas.min, pos2(canvas.max.x, canvas.max.y - 22.0)) } else { canvas };
-    let slider_r = Rect::from_min_max(pos2(canvas.min.x + 8.0, body.max.y + 2.0), pos2(canvas.max.x - 8.0, canvas.max.y - 2.0));
+    let body = if max_scroll > 0.0 { Rect::from_min_max(canvas.min, pos2(canvas.max.x, canvas.max.y - 18.0)) } else { canvas };
+    let slider_r = Rect::from_min_max(pos2(canvas.min.x, body.max.y + 2.0), pos2(canvas.max.x, canvas.max.y - 2.0));
     if slider_r.width() > 48.0 && max_scroll > 0.0 {
-        let response = ui.put(slider_r, egui::Slider::new(&mut app.ui.script.take_scroll, 0.0..=max_scroll).show_value(false));
-        app.auto.add("script.takeScroll", response.rect, "Scroll take columns");
+        take_scrollbar(app, ui, slider_r, canvas.width(), take_total, max_scroll);
     }
     margin_ruler(app, ui, Rect::from_min_max(rect.min, pos2(rect.max.x, canvas.min.y)), left_w, text_inset, min_left, max_left, min_inset, max_inset);
     if body.height() < MIN_ROW_H {
@@ -157,7 +165,31 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
         let project_drop_row = pointer
             .filter(|_| project_drag && ui.rect_contains_pointer(body) && !doc.lines.is_empty())
             .map(|pointer| first_visible(&tops, (pointer.y - base_y).max(0.0)).min(doc.lines.len() - 1));
-        let project_drop_range = project_drop_row.map(|index| range.unwrap_or((index, index)));
+        let object_drop = pointer.filter(|_| project_drop_row.is_some()).and_then(|pointer| {
+            project_object_drop_target(app, pointer, body, base_y, &slate_headers, &columns, &column_centers, &line_indices, &tops, thumb_w)
+        });
+        if let Some((object, target)) = &object_drop {
+            ui.painter().rect_stroke(target.intersect(body), 3.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
+            match object {
+                ProjectDropTarget::Rebind(_) => app.auto.add("script.rebindPreview", target.intersect(body), "Reconnect matching candles"),
+                ProjectDropTarget::Thumbnail { .. } => app.auto.add("script.addCandlePreview", target.intersect(body), "Add candle to this setup"),
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+            if released && let Some(source) = crate::panels::dragged_project_item(ui) {
+                match object {
+                    ProjectDropTarget::Rebind(take) => actions.push(Action::Rebind { take: *take, source: source.0 }),
+                    ProjectDropTarget::Thumbnail { slate, start, end } => {
+                        let (start, end) = range.and_then(|(a, b)| doc.lines.get(a).zip(doc.lines.get(b))).map_or((*start, *end), |(a, b)| (a.id.0, b.id.0));
+                        actions.push(Action::Command(
+                            "script.addTake",
+                            json!({"item": app.ui.script.item, "slate": slate, "source": source.0, "startLine": start, "endLine": end}),
+                        ));
+                    }
+                }
+                crate::panels::clear_drag(ui);
+            }
+        }
+        let project_drop_range = project_drop_row.filter(|_| object_drop.is_none()).map(|index| range.unwrap_or((index, index)));
         if let Some((a, b)) = project_drop_range
             && let Some((&y0, &y1)) = tops.get(a).zip(tops.get(b + 1))
         {
@@ -169,9 +201,12 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
             }
             ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
             if released && let Some(source) = crate::panels::dragged_project_item(ui) {
-                canvas_drop = Some((source, a, b));
+                let x = pointer.map_or(0.0, |pointer| {
+                    ((pointer.x - body.left() + app.ui.script.take_scroll) / body.width().max(1.0)).clamp(0.0, ScriptDocument::MAX_THUMBNAIL_X)
+                });
+                canvas_drop = Some((source, a, b, x));
                 // Selected rows anchor the new setup even when the pointer is over
-                // another row, a candle, or a floating thumbnail.
+                // another row or a candle. Thumbnails own explicit setup drops.
                 if range.is_some() {
                     crate::panels::clear_drag(ui);
                 }
@@ -216,16 +251,14 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
             let preview_y = if app.ui.script.drag_slate == Some(header.id) && app.ui.script.drag_slate_group { app.ui.script.drag_slate_delta.y } else { 0.0 };
             for (ordinal, take) in slate.takes.iter().enumerate() {
                 let Some(&center) = column_centers.get(header.first_column + ordinal) else { continue };
-                let Some(&stored_start) = line_indices.get(&take.start_line.0) else { continue };
-                let take_start =
-                    if app.ui.script.drag_endpoint == Some((take.id.0, true)) { app.ui.script.drag_target.unwrap_or(stored_start) } else { stored_start };
+                let Some((take_start, _)) = coverage_rows(&app.ui.script, take, &line_indices) else { continue };
                 let Some(&row_top) = tops.get(take_start) else { continue };
                 let cx = body.min.x + center - app.ui.script.take_scroll;
                 if cx < body.left() || cx > body.right() {
                     continue;
                 }
                 let box_bottom = take_metadata_rect(cx, box_top - TAKE_HEADER_H).bottom();
-                let candle_top = base_y + row_top + preview_y + CANDLE_EDGE_INSET;
+                let candle_top = base_y + row_top + preview_y;
                 if (box_bottom - candle_top).abs() > 1.0 {
                     ui.painter().with_clip_rect(body).line_segment([pos2(cx, box_bottom), pos2(cx, candle_top)], Stroke::new(1.0, t.text_dim));
                 }
@@ -364,14 +397,10 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
         app.ui.script.selected_lines = None;
     }
     if (empty_canvas.clicked() || foreground_click) && !take_click && !selecting_section {
-        app.ui.script.selected_take = None;
-        app.ui.script.selected_slate = None;
-        app.ui.script.selected_thumbnail = None;
-        app.ui.script.selected_mark = None;
-        app.ui.script.selected_section_slates.clear();
+        app.ui.script.clear_object_selection();
     }
-    if let Some((take, mark)) = clicked_mark {
-        actions.push(Action::CueMark { take, mark });
+    if let Some((take, mark, focus_source)) = clicked_mark {
+        actions.push(Action::CueMark { take, mark, focus_source });
     } else if let Some((take, line)) = clicked_candle {
         actions.push(Action::CueLine { take, line });
     }
@@ -387,16 +416,99 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
         app.ui.script.drag_mark = None;
         app.ui.script.drag_mark_target = None;
     }
-    if let Some((source, start, end)) = canvas_drop
+    if let Some((source, start, end, x)) = canvas_drop
         && (range.is_some() || crate::panels::dragged_project_item(ui) == Some(source))
     {
         if let (Some(a), Some(b)) = (doc.lines.get(start), doc.lines.get(end)) {
             // Without a row selection, explicit thumbnail and candle targets may
             // consume the payload first. Otherwise commit the exact preview range.
-            actions.push(Action::Command("script.addTake", json!({"item": app.ui.script.item, "source": source.0, "startLine": a.id.0, "endLine": b.id.0})));
+            actions.push(Action::Command(
+                "script.addTake",
+                json!({"item": app.ui.script.item, "source": source.0, "startLine": a.id.0, "endLine": b.id.0, "x": x}),
+            ));
         }
         crate::panels::clear_drag(ui);
     }
+}
+
+/// Explicit thumbnail targets and missing sources precede row-range setup creation.
+/// Topmost thumbnails own their rectangle, including when they overlap a candle.
+#[allow(clippy::too_many_arguments)]
+fn project_object_drop_target(
+    app: &FilmcraftApp,
+    pointer: egui::Pos2,
+    body: Rect,
+    base_y: f32,
+    headers: &[SlateHeader<'_>],
+    columns: &[(u64, Option<&ScriptTake>, &str)],
+    centers: &[f32],
+    indices: &HashMap<u64, usize>,
+    tops: &[f32],
+    thumb_w: f32,
+) -> Option<(ProjectDropTarget, Rect)> {
+    for header in headers.iter().rev() {
+        let Some(&row_y) = tops.get(header.start_index) else { continue };
+        let rect = thumbnail_rect(body.left(), base_y + row_y, header, app.ui.script.take_scroll, thumb_w);
+        if rect.contains(pointer) {
+            let target = if recovery::needs_rebind(app, header.display_take) {
+                ProjectDropTarget::Rebind(header.display_take.id.0)
+            } else {
+                ProjectDropTarget::Thumbnail { slate: header.id, start: header.last_take.start_line.0, end: header.last_take.end_line.0 }
+            };
+            return Some((target, rect));
+        }
+    }
+    for (column, (_, take, _)) in columns.iter().enumerate().rev() {
+        let Some(take) = take else { continue };
+        let Some((start, end)) = coverage_rows(&app.ui.script, take, indices) else { continue };
+        let Some((&top, &bottom)) = tops.get(start).zip(tops.get(end.saturating_add(1))) else { continue };
+        let Some(&center) = centers.get(column) else { continue };
+        let x = body.left() + center - app.ui.script.take_scroll;
+        let rect = Rect::from_min_max(pos2(x - TAKE_W * 0.5, base_y + top), pos2(x + TAKE_W * 0.5, base_y + bottom));
+        if rect.contains(pointer) {
+            return recovery::needs_rebind(app, take).then_some((ProjectDropTarget::Rebind(take.id.0), rect));
+        }
+    }
+    None
+}
+
+fn take_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, visible: f32, total: f32, max_scroll: f32) {
+    // Match the Timeline's rounded track and thumb, with standard egui scrolling
+    // and no zoom handles. Only take columns move; script text stays fixed.
+    let mut scroll_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar));
+    scroll_ui.set_clip_rect(bar);
+    let style = egui::style::ScrollStyle { bar_width: 9.0, handle_min_length: 34.0, ..egui::style::ScrollStyle::solid() };
+    scroll_ui.spacing_mut().scroll = style;
+    let t = app.tokens;
+    let visuals = scroll_ui.visuals_mut();
+    visuals.extreme_bg_color = t.separator;
+    for (widget, fill) in [
+        (&mut visuals.widgets.inactive, t.scroll_thumb),
+        (&mut visuals.widgets.hovered, t.scroll_thumb_hover),
+        (&mut visuals.widgets.active, t.scroll_thumb_hover),
+    ] {
+        widget.bg_fill = fill;
+        widget.corner_radius = egui::CornerRadius::same(5);
+    }
+    let output = egui::ScrollArea::horizontal()
+        .id_salt("script.takeScroll")
+        .auto_shrink([false, false])
+        .min_scrolled_height(0.0)
+        .max_height(bar.height())
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .scroll_source(egui::scroll_area::ScrollSource::SCROLL_BAR)
+        .horizontal_scroll_offset(app.ui.script.take_scroll)
+        .animated(false)
+        .show(&mut scroll_ui, |ui| {
+            ui.allocate_space(vec2(total, 1.0));
+        });
+    app.ui.script.take_scroll = output.state.offset.x.clamp(0.0, max_scroll);
+    let track = Rect::from_min_max(pos2(bar.left(), output.inner_rect.bottom() + style.bar_inner_margin), bar.max);
+    let width = (track.width() * visible / total.max(1.0)).max(style.handle_min_length).min(track.width());
+    let thumb =
+        Rect::from_min_size(pos2(track.left() + (track.width() - width) * app.ui.script.take_scroll / max_scroll, track.top()), vec2(width, track.height()));
+    app.auto.add("script.takeScroll", track, "Scroll take columns");
+    app.auto.add("script.takeScroll.thumb", thumb, "Visible take columns");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -470,12 +582,7 @@ fn paint_offscreen_paths(
     let paint = ui.painter().with_clip_rect(clip);
     for (column, (slate, maybe_take, _)) in columns.iter().enumerate() {
         let Some(take) = maybe_take else { continue };
-        let (Some(&stored_start), Some(&stored_end)) = (line_indices.get(&take.start_line.0), line_indices.get(&take.end_line.0)) else { continue };
-        let (start, end) = match (app.ui.script.drag_endpoint, app.ui.script.drag_target) {
-            (Some((id, true)), Some(target)) if id == take.id.0 => (target.min(stored_end), stored_end),
-            (Some((id, false)), Some(target)) if id == take.id.0 => (stored_start, target.max(stored_start)),
-            _ => (stored_start, stored_end),
-        };
+        let Some((start, end)) = coverage_rows(&app.ui.script, take, line_indices) else { continue };
         let cx = clip.left() + column_centers[column] - app.ui.script.take_scroll;
         if cx + TAKE_W * 0.5 < clip.left() || cx - TAKE_W * 0.5 > clip.right() {
             continue;
@@ -493,8 +600,8 @@ fn paint_offscreen_paths(
                 flush(&mut overlay);
                 continue;
             }
-            let y0 = base_y + tops[index] + preview_y + if index == start { CANDLE_EDGE_INSET } else { 0.0 };
-            let y1 = base_y + tops[index + 1] + preview_y - if index == end { CANDLE_EDGE_INSET } else { 0.0 };
+            let row = Rect::from_min_max(pos2(cx, base_y + tops[index] + preview_y), pos2(cx, base_y + tops[index + 1] + preview_y));
+            let (y0, y1) = candle_row_bounds(row);
             let delta = (y1 - y0).max(0.0);
             let points = [pos2(cx, y0), pos2(cx - 5.0, y0 + delta / 3.0), pos2(cx + 5.0, y0 + delta * 2.0 / 3.0), pos2(cx, y1)];
             overlay.extend(points.iter().copied().skip(usize::from(!overlay.is_empty())));
@@ -516,7 +623,7 @@ fn row_view(
     column_centers: &[f32],
     line_indices: &HashMap<u64, usize>,
     tops: &[f32],
-    clicked_mark: &mut Option<(u64, u64)>,
+    clicked_mark: &mut Option<(u64, u64, bool)>,
     clicked_candle: &mut Option<(u64, u64)>,
     foreground_click: &mut bool,
     take_click: &mut bool,
@@ -678,12 +785,7 @@ fn row_view(
         if cx + TAKE_W * 0.5 < right.min.x || cx - TAKE_W * 0.5 > right.max.x {
             continue;
         }
-        let (Some(&stored_start), Some(&stored_end)) = (line_indices.get(&take.start_line.0), line_indices.get(&take.end_line.0)) else { continue };
-        let (start, end) = match (app.ui.script.drag_endpoint, app.ui.script.drag_target) {
-            (Some((id, true)), Some(target)) if id == take.id.0 => (target.min(stored_end), stored_end),
-            (Some((id, false)), Some(target)) if id == take.id.0 => (stored_start, target.max(stored_start)),
-            _ => (stored_start, stored_end),
-        };
+        let Some((start, end)) = coverage_rows(&app.ui.script, take, line_indices) else { continue };
         if !(start..=end).contains(&index) {
             continue;
         }
@@ -698,20 +800,16 @@ fn row_view(
         // outline equally on both sides of the colored candle.
         let halo = Stroke::new(if selected_take { 9.0 } else { 7.0 }, t.text_dim);
         let paint = ui.painter().with_clip_rect(draw_clip);
-        let candle_top = if index == start { draw_row.min.y + CANDLE_EDGE_INSET } else { draw_row.min.y };
-        let candle_bottom = if index == end { draw_row.max.y - CANDLE_EDGE_INSET } else { draw_row.max.y };
+        let (candle_top, candle_bottom) = candle_row_bounds(draw_row);
         paint.line_segment([pos2(cx, candle_top), pos2(cx, candle_bottom)], halo);
         paint.line_segment([pos2(cx, candle_top), pos2(cx, candle_bottom)], stroke);
-        // Keep the short exposed tips at either endpoint the same color as
-        // the outline. A row's fill can begin just below the take number (or
-        // continue past the final row), so a tiny cap lets the take's base
-        // color peek through even when the adjacent range is recolored.
+        // Keep short equal caps in the outline color at the coverage boundaries.
         let segment_height = (candle_bottom - candle_top).max(0.0);
         let cap_height = if start == end {
             CANDLE_CAP_H.min(segment_height * 0.5)
         } else {
-            let first_span = tops.get(start).zip(tops.get(start + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top - CANDLE_EDGE_INSET).max(0.0));
-            let last_span = tops.get(end).zip(tops.get(end + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top - CANDLE_EDGE_INSET).max(0.0));
+            let first_span = tops.get(start).zip(tops.get(start + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top).max(0.0));
+            let last_span = tops.get(end).zip(tops.get(end + 1)).map_or(0.0, |(&top, &bottom)| (bottom - top).max(0.0));
             CANDLE_CAP_H.min(first_span).min(last_span)
         };
         if index == start {
@@ -792,7 +890,7 @@ fn row_view(
                 app.ui.script.selected_take = Some(take.id.0);
                 select_line(&mut app.ui.script, line, false);
                 app.ui.script.selected_mark = Some(mark.id.0);
-                *clicked_mark = Some((take.id.0, mark.id.0));
+                *clicked_mark = Some((take.id.0, mark.id.0, response.double_clicked()));
             }
             response.context_menu(|ui| {
                 if ui.button(tl!("Delete Mark")).clicked() {
@@ -822,8 +920,8 @@ fn endpoint_interaction(
     take_click: &mut bool,
     actions: &mut Vec<Action>,
 ) {
-    let candle_top = if index == start { row.min.y + CANDLE_EDGE_INSET } else { row.min.y };
-    for (top, y) in [(true, candle_top), (false, row.max.y - CANDLE_EDGE_INSET)] {
+    let (candle_top, candle_bottom) = candle_row_bounds(row);
+    for (top, y) in [(true, candle_top), (false, candle_bottom)] {
         if (top && index != start) || (!top && index != end) {
             continue;
         }
@@ -932,7 +1030,7 @@ fn thumbnail_interaction(
             if let Some(target) = app.ui.script.drag_slate_target {
                 let x = ((app.ui.script.drag_slate_origin_x + app.ui.script.drag_slate_delta.x - clip.left() + app.ui.script.take_scroll)
                     / clip.width().max(1.0))
-                .clamp(0.0, 1.0);
+                .clamp(0.0, ScriptDocument::MAX_THUMBNAIL_X);
                 if app.ui.script.drag_slate_group {
                     let delta = target as i64 - header.start_index as i64;
                     actions.push(Action::Command("script.shiftSlate", json!({"item": app.ui.script.item, "slate": header.id, "delta": delta, "x": x})));
@@ -956,7 +1054,15 @@ fn thumbnail_interaction(
         }
         app.ui.script.thumbnail_shuttle_count = 0;
     }
+    if response.double_clicked() && !shift_click(ui) {
+        if let Some(source) = header.source {
+            actions.push(Action::CueThumbnail { source, time: header.source_time });
+        } else {
+            app.ui.status = tl!("Reattach this candle's source first.").into();
+        }
+    }
     response.clone().context_menu(|ui| {
+        recovery::source_menu(app, ui, header.display_take, actions);
         if let Some(source) = header.last_take.source
             && ui.button(tl!("Add Another Candle")).clicked()
         {
@@ -968,17 +1074,6 @@ fn thumbnail_interaction(
             ui.close();
         }
     });
-    if response.contains_pointer()
-        && ui.input(|input| input.pointer.any_released())
-        && let Some(source) = crate::panels::dragged_project_item(ui)
-    {
-        actions.push(Action::Command(
-            "script.addTake",
-            json!({"item": app.ui.script.item, "slate": header.id,
-                "source": source.0, "startLine": header.last_take.start_line.0, "endLine": header.last_take.end_line.0}),
-        ));
-        crate::panels::clear_drag(ui);
-    }
 }
 
 fn thumbnail_paint(app: &mut FilmcraftApp, ui: &egui::Ui, header: &SlateHeader<'_>, thumbnail: Rect, clip: Rect) {
@@ -1056,12 +1151,7 @@ fn take_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, take: &ScriptTake, actio
         }
         ui.separator();
     }
-    if let Some(source) = take.source
-        && ui.button(tl!("Find in Project")).clicked()
-    {
-        actions.push(Action::FindInProject(source));
-        ui.close();
-    }
+    recovery::source_menu(app, ui, take, actions);
     ui.menu_button(tl!("Candle Color"), |ui| {
         for color in ScriptColor::ALL {
             if ui.selectable_label(take.color == color, crate::i18n::t(color.name())).clicked() {

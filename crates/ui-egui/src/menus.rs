@@ -271,25 +271,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         if app.session.project.item(filmcraft_project::ItemId(item)).and_then(|item| item.as_script()).is_none() {
             return Err("that project item is not a script".into());
         }
-        if app.ui.script.item != Some(item) {
-            app.ui.script.selected_lines = None;
-            app.ui.script.selected_slate = None;
-            app.ui.script.selected_thumbnail = None;
-            app.ui.script.selected_take = None;
-            app.ui.script.selected_mark = None;
-            app.ui.script.selected_section_slates.clear();
-            app.ui.script.pending_rebind = None;
-            app.ui.script.edit_line = None;
-            app.ui.script.edit_text.clear();
-            app.ui.script.edit_caret = None;
-            app.ui.script.label_line = None;
-            app.ui.script.scene_text.clear();
-            app.ui.script.page_text.clear();
-            app.ui.script.label_focus = None;
-            app.ui.script.edit_scene = None;
-            app.ui.script.edit_page = None;
-        }
-        app.ui.script.item = Some(item);
+        app.ui.script.open_document(Some(item));
         app.show_panel(PanelKind::Script);
         return Ok(json!({"item": item}));
     }
