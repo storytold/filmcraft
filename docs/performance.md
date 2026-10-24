@@ -646,9 +646,19 @@ software either way and show the run-to-run spread. The decoded pictures are ide
 
 What is left on the CPU per H.264 frame is the host side of stateless decoding (parsing, DPB,
 filling the VA buffers) and the read-back: `vaGetImage` into an NV12 image and the copy into
-planar Y'CbCr. One picture is decoded at a time and read back as soon as the DPB outputs it, so
+planar Y'CbCr (since then `vaDeriveImage`, below). One picture is decoded at a time and read back as soon as the DPB outputs it, so
 4K throughput (56 fps) is bound by that round trip, not by the video engine; overlapping decode
 and read-back, or zero-copy into wgpu, would raise it.
+
+### VA-API read-back through `vaDeriveImage`
+
+The read-back maps the decoded surface's own NV12 / P010 memory (`vaDeriveImage`) instead of
+copying it into a second image with `vaGetImage` first; a driver that cannot derive a surface
+switches the session back to `vaGetImage` (logged once). Sequential decode of a 4K50 HEVC Main 10
+file on an AMD Radeon RX 9070 XT (Mesa 26.2.5, radeonsi), before and after the change: 35 →
+66–68 fps, pictures bit-identical to the software decoder. *Measured during development; the load
+average was not recorded and it was not run through `cargo xtask bench`*, so treat it as an
+indication until the bench table is re-measured.
 
 ### HEVC through VA-API (HW5 follow-up)
 
