@@ -621,6 +621,22 @@ fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32
     o.map(|q| q * m)
 }
 
+/// The luma (encoded, 0..1) down to which the Lumetri highlight / shadow lift scales a pixel by
+/// `new luma / luma`, preserving its hue exactly as it always has; below it the scale is held at
+/// this luma's and the rest of the lift is added equally to the channels, so a trace of chroma in
+/// a near-black pixel is not multiplied into a speck (#2094). About 5/255 in sRGB. Mirrored in
+/// `fx.wgsl` (`lumetri_op`).
+pub(crate) const LIFT_LUMA_FLOOR: f32 = 0.02;
+
+/// The lift's per-channel scale and equal addition for a pixel of luma `l` lifted to `nl`: the
+/// luma lands on `nl` either way (`l * k + add == nl`); at or above [`LIFT_LUMA_FLOOR`] the
+/// addition is zero and the scale is the hue-preserving `nl / l`.
+#[inline]
+pub(crate) fn lift_scale(l: f32, nl: f32) -> (f32, f32) {
+    let k = if l > 1e-5 { (nl / l).min(1.0 + (nl - l).max(0.0) / LIFT_LUMA_FLOOR) } else { 1.0 };
+    (k, nl - l.max(0.0) * k)
+}
+
 fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
@@ -667,10 +683,11 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
         let whl = l.clamp(0.0, 1.0).powi(3);
         let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
-        if l > 1e-5 {
-            let k = nl / l;
-            v = v.map(|q| q * k);
-        }
+        // #2094: scaling by nl / l alone multiplies a near-black pixel's chroma by the whole lift
+        // (tens of times), so a trace of blue bleed beside a bright colour came out as a saturated
+        // speck; below LIFT_LUMA_FLOOR the scale is held and the rest is added equally
+        let (k, add) = lift_scale(l, nl);
+        v = v.map(|q| q * k + add);
         // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
         // keep their distance from white)
         if contrast.abs() > 1e-4 {
@@ -999,6 +1016,57 @@ mod tests {
         for (a, b) in img.px.iter().zip(&before.px) {
             assert!((a - b).abs() < 2e-3, "{a} {b}");
         }
+    }
+
+    /// #2094: at and above the luma floor (0.02 encoded, about 5/255) the lift is exactly what it
+    /// always was, the hue-preserving scale `new luma / luma`: a lit shadow pixel at Shadows 50
+    /// keeps its channel ratios and lands on the same values as the plain scale; a pixel just
+    /// below the floor is continuous with one just above.
+    #[test]
+    fn lumetri_shadow_lift_is_unchanged_at_and_above_the_luma_floor() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("shadows").unwrap().value = ParamValue::Float(50.0);
+        // a warm shadow pixel: sRGB about (0.12, 0.09, 0.055), luma 0.097 encoded, well above the floor
+        let lit = dec([0.12, 0.09, 0.055]);
+        let mut img = Image::new(1, 1);
+        img.px[0..4].copy_from_slice(&[lit[0], lit[1], lit[2], 1.0]);
+        apply(&mut img, &e, &cx());
+        let out = img.get(0, 0);
+        // the lift as it always was: the encoded pixel scaled by new luma / luma, nothing added
+        let v = enc(lit);
+        let l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+        let nl = l + 0.5 * 0.35 * (1.0 - l).powi(3);
+        let (k, add) = lift_scale(l, nl);
+        assert!((k - nl / l).abs() < 1e-6 && add.abs() < 1e-6, "above the floor the lift is the plain scale: k {k} add {add}");
+        let expected = dec([v[0] * k, v[1] * k, v[2] * k]);
+        for c in 0..3 {
+            assert!((out[c] - expected[c]).abs() < 2e-3, "channel {c}: {out:?} vs {expected:?}");
+        }
+        // continuity at the floor: the two sides of it give the same scale and addition
+        let (k_at, add_at) = lift_scale(LIFT_LUMA_FLOOR, LIFT_LUMA_FLOOR + 0.1);
+        let (k_under, add_under) = lift_scale(LIFT_LUMA_FLOOR - 1e-4, LIFT_LUMA_FLOOR - 1e-4 + 0.1);
+        assert!((k_at - k_under).abs() < 0.05 && (add_at - add_under).abs() < 1e-3, "{k_at} {k_under} {add_at} {add_under}");
+    }
+
+    /// #2094: a Shadows lift on a near-black pixel carrying a trace of blue (4:2:0 chroma bleed
+    /// beside a bright orange) lifts it towards grey instead of scaling the trace into a saturated
+    /// blue speck, and black lifts by the same amount as near-black (no step between them).
+    #[test]
+    fn lumetri_shadow_lift_does_not_amplify_near_black_chroma() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("shadows").unwrap().value = ParamValue::Float(8.0);
+        // linear light: about (0, 2, 6) of 255 in sRGB with the red driven slightly negative by a
+        // 4:2:0 chroma sample shared with the bright neighbour
+        let mut img = Image::new(3, 1);
+        img.px[0..4].copy_from_slice(&[-0.001, 0.0006, 0.0018, 1.0]);
+        img.px[4..8].copy_from_slice(&[0.0, 0.0, 0.0, 1.0]);
+        img.px[8..12].copy_from_slice(&[0.001, 0.001, 0.001, 1.0]);
+        apply(&mut img, &e, &cx());
+        let (bleed, black, near) = (img.get(0, 0), img.get(1, 0), img.get(2, 0));
+        // it used to come out at about (0, 5, 44) of 255; now near (0, 10, 20): a lifted near-black
+        assert!(bleed[2] - bleed[0].max(bleed[1]) < 0.01, "blue speck: {bleed:?}");
+        assert!(black[0] > 0.001 && (black[0] - black[1]).abs() < 1e-5, "black not lifted neutrally: {black:?}");
+        assert!((near[0] - black[0]).abs() < 0.002, "step between black {black:?} and near-black {near:?}");
     }
 }
 
