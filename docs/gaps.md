@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-12 · **Change:** minor (G14 heading, summary row and counts re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -233,16 +233,19 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G14. Localization: 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese)
 
-- **Have:** Spanish, Japanese, Simplified Chinese, French (#498) and Portuguese (Brazil) (#859)
-  catalogs cover ~99.6–100% of the ~3,500 cataloged strings; Ukrainian ~10% (menus).
+- **Have:** Spanish, Japanese, Simplified Chinese, French (#498, #804), Portuguese (Brazil) (#859,
+  #866), Indonesian (#867, #878), Korean (#508), Italian and German (#630) catalogs cover
+  98.9–100% of the 3,597 cataloged strings (measured 2026-10-12 on the merged tree from
+  `crates/ui-egui/src/i18n/*.tsv`: distinct context + source pairs with a translation);
+  Russian (#610, 355 strings) and Ukrainian (355) are menus only (~10% each).
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
-  Korean (#508; needs Hangul fonts in craft-fonts),
-  Vietnamese; Premiere also ships Russian. Engine errors,
+  Vietnamese (no catalog on main). These three are the languages with no catalog at all, which
+  is what the heading counts. Russian and Ukrainian are menus only (#610). Engine errors,
   CLI and MCP stay English. Apart from the German menus (#630), no language has a recorded
   native-speaker review.
-- **Done:** Indonesian (#867): `id.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸
+- **Done:** Indonesian (#867): `id.tsv` covers 3,559 of 3,597 strings (98.9%), in Edit ▸
   Language, Settings ▸ General and the native macOS menu; System Language picks it for `id-*` (and
   legacy `in-*`) locales. Native-speaker review welcome.
 - **Done:** Italian: `it.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸ Language,
@@ -317,6 +320,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | G14: heading and summary row now say 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese have no catalog; Korean, Italian and German are full; Russian and Ukrainian menus only); catalog counts re-measured on the merged tree (union 3,597 strings); other entries untouched (see #1412) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
