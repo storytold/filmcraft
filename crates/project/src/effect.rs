@@ -619,7 +619,9 @@ fn build_effects() -> Vec<EffectDef> {
                 ang("skew_axis", "Skew Axis", 0.0),
                 ang("rotation", "Rotation", 0.0),
                 f("opacity", "Opacity", 100.0, 0.0, 100.0, ""),
-                b("shutter_override", "Use Effect Shutter Angle", false),
+                // on by default: an animated Transform motion-blurs across the shutter angle the
+                // moment it is applied, as in the reference app; unchecking disables the blur
+                b("shutter_override", "Use Effect Shutter Angle", true),
                 f("shutter_angle", "Shutter Angle", 180.0, 0.0, 360.0, ""),
             ],
         ),

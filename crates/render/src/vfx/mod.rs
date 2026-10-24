@@ -202,6 +202,13 @@ pub(crate) fn tv(e: &EffectInstance, id: &str) -> String {
         _ => String::new(),
     }
 }
+/// Whether any of the Transform effect's animatable parameters has keyframes (the shutter
+/// parameters themselves excluded: keyframing the shutter angle is not motion to blur). A static
+/// transform renders identically with or without the shutter, so it stays on the cheaper
+/// single-sample path.
+pub(crate) fn transform_animated(e: &EffectInstance) -> bool {
+    e.params.iter().any(|(id, p)| p.is_animated() && id != "shutter_angle" && id != "shutter_override")
+}
 /// A point parameter in working pixels. Auto (NaN) components use the effect's auto position
 /// (`filmcraft_project::effect::auto_point`) or the layer centre.
 pub(crate) fn pv(e: &EffectInstance, id: &str, cx: &FxCtx, img: &Image) -> Vec2 {
@@ -485,7 +492,9 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "spin" => distort::spin(img, e, cx),
         "wiggle" => distort::wiggle(img, e, cx),
         "camera_shake" => distort::camera_shake(img, e, cx),
-        "transform" if bv(e, "shutter_override") && fv(e, "shutter_angle", cx) > 0.5 => distort::transform_fx(img, e, cx),
+        // Shutter-angle motion blur only means anything while the transform animates; a static
+        // one falls through to the GPU path (gpufx), single-sample and identical in output.
+        "transform" if bv(e, "shutter_override") && fv(e, "shutter_angle", cx) > 0.5 && transform_animated(e) => distort::transform_fx(img, e, cx),
         "spacer" => distort::spacer(img, e, cx),
         "clone" => distort::clone_fx(img, e, cx),
         "auto_align" => distort::auto_align(img, e, cx),

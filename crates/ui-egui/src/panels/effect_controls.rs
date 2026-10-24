@@ -1076,6 +1076,40 @@ fn graph_components(v: &ParamValue) -> Vec<f64> {
     }
 }
 
+/// Rebuild a graphable value from per-component numbers (the graph only edits scalars and points).
+fn graph_from_components(template: &ParamValue, c: &[f64]) -> ParamValue {
+    match template {
+        ParamValue::Float(_) => ParamValue::Float(c.first().copied().unwrap_or(0.0)),
+        ParamValue::Vec2(_) => ParamValue::Vec2(filmcraft_geom::Vec2::new(c.first().copied().unwrap_or(0.0), c.get(1).copied().unwrap_or(0.0))),
+        other => other.clone(),
+    }
+}
+
+/// An influence handle is drawn at least this far from its keyframe, so a low-influence handle
+/// stays grabbable beside the keyframe's own hit target.
+const HANDLE_MIN_PX: f32 = 7.0;
+/// …and never comes closer than this to the neighbouring keyframe, so the two never sit on each
+/// other's hit targets.
+const HANDLE_MAX_GAP_PX: f32 = 3.0;
+
+/// The pixel bounds of an influence handle's distance from its keyframe over a `seg`-pixel
+/// segment. `None` when the segment is degenerate (under a pixel: duplicate keyframe times, or
+/// zoomed out past sub-pixel spacing), where an influence edit is meaningless.
+fn handle_bounds(seg: f32) -> Option<(f32, f32)> {
+    if !seg.is_finite() || seg < 1.0 {
+        return None;
+    }
+    let hi = (seg - HANDLE_MAX_GAP_PX).max(seg * 0.75);
+    Some((HANDLE_MIN_PX.min(hi), hi))
+}
+
+/// A dragged influence handle's distance from its keyframe, in pixels: the stored influence plus
+/// the drag offset, clamped to [`handle_bounds`] — what you see is what a release writes back.
+fn handle_distance(infl: f32, seg: f32, drag: f32, side: f32) -> Option<f32> {
+    let (lo, hi) = handle_bounds(seg)?;
+    Some((infl * seg + drag * side).clamp(lo, hi))
+}
+
 /// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
 /// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
 /// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
@@ -1110,36 +1144,108 @@ pub(crate) fn graph_rows(
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = (lane.width() / 2.0).max(8.0) as usize;
-    let vals: Vec<Vec<f64>> = (0..=n).map(|i| graph_components(&param.value_at(to_media(i as f64 / n as f64)))).collect();
+    let frame = ui.ctx().cumulative_frame_nr();
+    // In-progress drags, read once so the curve can be sampled from a preview of the parameter
+    // with the edit applied: the value graph and its handles give live feedback instead of
+    // snapping into place on release. Value drags keep a per-component pixel offset; influence
+    // handles keep the horizontal offset of the handle from its keyframe. Each offset carries
+    // the frame it was last written: one from a drag that never finished (the panel went away
+    // mid-drag) goes inert instead of bending the preview curve forever.
+    struct GraphDrag {
+        dy: [Option<f32>; 2],
+        out: Option<f32>,
+        in_: Option<f32>,
+    }
+    let drags: Vec<GraphDrag> = param
+        .keyframes
+        .iter()
+        .map(|k| {
+            let base = egui::Id::new(("kfg", clip.0, idx, mask, pd.id, k.time.0));
+            let d = |id: egui::Id| ui.data(|d| d.get_temp::<(f32, u64)>(id)).filter(|(_, seen)| frame.saturating_sub(*seen) <= 1).map(|(v, _)| v);
+            GraphDrag { dy: [d(base), d(base.with(1_usize))], out: d(base.with("out")), in_: d(base.with("in")) }
+        })
+        .collect();
+    let value_dragging = drags.iter().any(|d| d.dy[0].is_some() || d.dy[1].is_some());
+    // the preview the curve is sampled from: stored keyframes with any dragged influence applied
+    let kf_x = |t: Tick| x_of(to_f(t));
+    let mut preview = param.clone();
+    for (i, ((k, d), pk)) in param.keyframes.iter().zip(&drags).zip(&mut preview.keyframes).enumerate() {
+        let eases_out =
+            !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseIn);
+        let eases_in =
+            !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseOut);
+        let seg_to = |t: Tick| (kf_x(t) - kf_x(k.time)).abs();
+        if let Some(drag) = d.out
+            && let Some(next) = param.keyframes.get(i + 1)
+            && eases_out
+            && let Some(dist) = handle_distance(k.out_influence as f32, seg_to(next.time), drag, 1.0)
+        {
+            pk.out_influence = (dist / seg_to(next.time)) as f64;
+        }
+        if let Some(drag) = d.in_
+            && let Some(prev) = (i > 0).then(|| param.keyframes.get(i - 1)).flatten()
+            && eases_in
+            && let Some(dist) = handle_distance(k.in_influence as f32, seg_to(prev.time), drag, -1.0)
+        {
+            pk.in_influence = (dist / seg_to(prev.time)) as f64;
+        }
+    }
+    let sample = |p: &filmcraft_project::Param| -> Vec<Vec<f64>> { (0..=n).map(|i| graph_components(&p.value_at(to_media(i as f64 / n as f64)))).collect() };
+    let vals = sample(&preview);
     let curves = graph_components(&param.value).len();
     let at_keys: Vec<Vec<f64>> = param.keyframes.iter().map(|k| graph_components(&k.value)).collect();
-    let (mut lo, mut hi) = vals.iter().chain(&at_keys).flatten().filter(|v| v.is_finite()).fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
-    if lo > hi {
-        (lo, hi) = (0.0, 0.0);
-    }
-    if hi - lo < 1e-6 {
-        lo -= 1.0;
-        hi += 1.0;
-    }
-    let pad = (hi - lo) * 0.12;
-    let (mut lo, mut hi) = (lo - pad, hi + pad);
-    if let ParamKind::Float { min, max, .. } = pd.kind {
-        lo = lo.max(min);
-        hi = hi.min(max);
-    }
+    let fit = |vals: &[Vec<f64>]| -> (f64, f64) {
+        let (mut lo, mut hi) = vals.iter().chain(&at_keys).flatten().filter(|v| v.is_finite()).fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+        if lo > hi {
+            (lo, hi) = (0.0, 0.0);
+        }
+        if hi - lo < 1e-6 {
+            lo -= 1.0;
+            hi += 1.0;
+        }
+        let pad = (hi - lo) * 0.12;
+        let (lo, hi) = (lo - pad, hi + pad);
+        if let ParamKind::Float { min, max, .. } = pd.kind { (lo.max(min), hi.min(max)) } else { (lo, hi) }
+    };
     // While the graph stays open its range only widens: refitted to the keyframes, a keyframe
-    // dragged off the top or bottom edge was drawn back on that edge, the curve unchanged (#1918)
+    // dragged off the top or bottom edge was drawn back on that edge, the curve unchanged (#1918).
+    // While a value is being dragged the range is frozen instead: a refit mid-drag would move the
+    // pixels the drag maps through and the dragged dot would jump under a still pointer.
     let range_id = egui::Id::new(("kfg-range", clip.0, idx, mask, pd.id));
-    let frame = ui.ctx().cumulative_frame_nr();
-    if let Some((a, b, seen)) = ui.data(|d| d.get_temp::<(f64, f64, u64)>(range_id))
-        && frame.saturating_sub(seen) <= 1
-    {
-        (lo, hi) = (lo.min(a), hi.max(b));
-    }
+    let mem = ui.data(|d| d.get_temp::<(f64, f64, u64)>(range_id));
+    let fresh = mem.is_some_and(|(_, _, seen)| frame.saturating_sub(seen) <= 1);
+    let (lo, hi) = if value_dragging && fresh {
+        // frozen for the drag: the pixel the pointer moved through keeps its value
+        mem.map_or_else(|| fit(&vals), |(a, b, _)| (a, b))
+    } else if let Some((a, b, _)) = mem.filter(|_| fresh) {
+        let (lo, hi) = fit(&vals);
+        (lo.min(a), hi.max(b))
+    } else {
+        fit(&vals)
+    };
     ui.data_mut(|d| d.insert_temp(range_id, (lo, hi, frame)));
     let area = Rect::from_min_max(pos2(lane.min.x, vr.min.y + 4.0), pos2(lane.max.x, vr.max.y - 4.0));
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
+    // apply in-progress value drags to the preview now that the range is fixed, so the mapping
+    // from pixels to values is stable, and re-sample: the curve follows the dot while it is held
+    for ((k, d), pk) in param.keyframes.iter().zip(&drags).zip(&mut preview.keyframes) {
+        for (ci, dy) in d.dy.iter().enumerate() {
+            let Some(dy) = dy else { continue };
+            let comps = graph_components(&k.value);
+            let Some(&v) = comps.get(ci).filter(|v| v.is_finite()) else { continue };
+            let mut nv = v_of(y_of(v) + *dy);
+            if let ParamKind::Float { min, max, .. } = pd.kind {
+                nv = nv.clamp(min, max);
+            }
+            let mut moved = graph_components(&pk.value);
+            if let Some(slot) = moved.get_mut(ci) {
+                *slot = nv;
+            }
+            pk.value = graph_from_components(&pk.value, &moved);
+        }
+    }
+    let vals = if value_dragging { sample(&preview) } else { vals };
     let p = ui.painter();
     p.rect_filled(area, 0.0, t.keyframe_plot_bg);
     for g in 1..4 {
@@ -1156,10 +1262,13 @@ pub(crate) fn graph_rows(
         p.text(pos2(vr.min.x + 44.0, area.center().y + 14.0), Align2::LEFT_CENTER, "X", Tokens::ui(10.5), curve_color(0));
         p.text(pos2(vr.min.x + 58.0, area.center().y + 14.0), Align2::LEFT_CENTER, "Y", Tokens::ui(10.5), curve_color(1));
     }
+    // the curve clips to the plot: a dot dragged past the top or bottom edge rides outside it
+    // (following the pointer), but the curve it pulls stays inside the graph
+    let cp = ui.painter().with_clip_rect(area);
     for c in 0..curves {
         let line: Vec<Pos2> =
             vals.iter().enumerate().filter_map(|(i, v)| v.get(c).filter(|v| v.is_finite()).map(|v| pos2(x_of(i as f32 / n as f32), y_of(*v)))).collect();
-        p.add(egui::Shape::line(line, Stroke::new(1.5, curve_color(c))));
+        cp.add(egui::Shape::line(line, Stroke::new(1.5, curve_color(c))));
     }
     // velocity (units per second, derivative of the sampled value; a point's speed along its path)
     let secs = (dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
@@ -1184,27 +1293,82 @@ pub(crate) fn graph_rows(
     p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, tl!("Velocity"), Tokens::ui(11.0), t.text_dim);
     p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
     let p = p.clone();
-    // keyframes + handles
+    // keyframes + handles, drawn from the preview so an in-progress drag shows on the curve
     let ks = &param.keyframes;
-    for (i, k) in ks.iter().enumerate() {
+    for (i, ((k, d), pk)) in ks.iter().zip(&drags).zip(&preview.keyframes).enumerate() {
         let f = to_f(k.time);
         if !(-0.01..=1.01).contains(&f) {
             continue;
         }
-        let eases_out =
-            !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseIn);
-        let eases_in =
-            !matches!(k.interp, filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseOut);
         let comps = graph_components(&k.value);
+        let pcomps = graph_components(&pk.value);
         for (ci, &v) in comps.iter().enumerate() {
             if !v.is_finite() {
                 continue;
             }
+            // the dragged value is the preview's: the dot, its tooltip and a release all agree
+            let pv = pcomps.get(ci).copied().unwrap_or(v);
             let id = egui::Id::new(("kfg", clip.0, idx, mask, pd.id, k.time.0));
             let id = if ci == 0 { id } else { id.with(ci) };
-            let dy: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
-            let c = pos2(x_of(f), y_of(v) + dy);
+            let c = pos2(x_of(f), y_of(pv));
             let r = Rect::from_center_size(c, vec2(10.0, 10.0));
+            // influence handles: flat (ease) tangents with length ∝ influence × neighbouring
+            // segment; a point's sit on its X curve only, as both coordinates share the influence.
+            // They interact before the keyframe's own hit target, so a low-influence handle drawn
+            // beside the dot never steals the dot's clicks (the later interaction wins).
+            let (out_on, in_on) = (
+                ci == 0
+                    && !matches!(
+                        k.interp,
+                        filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseIn
+                    ),
+                ci == 0
+                    && !matches!(
+                        k.interp,
+                        filmcraft_project::Interpolation::Linear | filmcraft_project::Interpolation::Hold | filmcraft_project::Interpolation::EaseOut
+                    ),
+            );
+            for (side, on, nb) in [(1.0f32, out_on, ks.get(i + 1)), (-1.0f32, in_on && i > 0, if i > 0 { ks.get(i - 1) } else { None })] {
+                let (true, Some(nb)) = (on, nb) else { continue };
+                let seg = (x_of(to_f(nb.time)) - c.x).abs();
+                let Some((hlo, hhi)) = handle_bounds(seg) else { continue };
+                // the preview carries the dragged influence, clamped to what the handle can show
+                let pinfl = if side > 0.0 { pk.out_influence } else { pk.in_influence } as f32;
+                let infl = if side > 0.0 { k.out_influence } else { k.in_influence } as f32;
+                let dist = (pinfl * seg).clamp(hlo, hhi);
+                let hid = id.with(if side > 0.0 { "out" } else { "in" });
+                let dragging = if side > 0.0 { d.out.is_some() } else { d.in_.is_some() };
+                let hp = pos2(c.x + side * dist, c.y);
+                p.line_segment([c, hp], Stroke::new(1.0, if dragging { t.plot_handle } else { t.plot_handle_dim }));
+                p.circle_filled(hp, if dragging { 4.5 } else { 3.5 }, t.keyframe_handle);
+                let hr = ui.interact(Rect::from_center_size(hp, vec2(14.0, 14.0)), hid.with("h"), Sense::drag());
+                if hr.dragged_by(egui::PointerButton::Primary) {
+                    // feed the clamped offset back: a handle held against a bound responds the
+                    // moment the drag reverses, instead of first burning through accumulated excess
+                    let prev = (dist - infl * seg) * side;
+                    let nx = graph_drag_offset(ui, &hr, vec2(prev, 0.0)).x;
+                    ui.data_mut(|d| d.insert_temp(hid, (nx, frame)));
+                    p.text(
+                        hp + vec2(8.0, -10.0),
+                        Align2::LEFT_BOTTOM,
+                        tlf!("Influence {pct}%", pct = (dist / seg * 100.0).round() as i64),
+                        Tokens::ui(10.5),
+                        t.hot_text,
+                    );
+                }
+                if hr.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    ui.data_mut(|d| d.remove::<(f32, u64)>(hid));
+                } else if hr.drag_stopped_by(egui::PointerButton::Primary) {
+                    ui.data_mut(|d| d.remove::<(f32, u64)>(hid));
+                    // the influence the handle showed: dist already carries the clamped drag
+                    let ni = (dist / seg) as f64;
+                    let key = if side > 0.0 { "outInfluence" } else { "inInfluence" };
+                    actions.push((
+                        "effects.setKeyframe".into(),
+                        with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni})),
+                    ));
+                }
+            }
             let resp = ui.interact(r.expand(2.0), id, Sense::click_and_drag());
             resp.context_menu(|ui| {
                 keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, actions);
@@ -1215,47 +1379,18 @@ pub(crate) fn graph_rows(
                 _ => format!("effectControls.{}.graph.keyframe.{}.y", pd.id, k.time.0),
             };
             app.auto.add(&auto_id, r, "keyframe value");
-            // influence handles: flat (ease) tangents with length ∝ influence × neighbouring segment;
-            // a point's sit on its X curve only, as both coordinates share the influence
-            let (eases_out, eases_in) = (ci == 0 && eases_out, ci == 0 && eases_in);
-            for (side, on, nb) in [(1.0f32, eases_out, ks.get(i + 1)), (-1.0f32, eases_in && i > 0, if i > 0 { ks.get(i - 1) } else { None })] {
-                let (true, Some(nb)) = (on, nb) else { continue };
-                let seg = (x_of(to_f(nb.time)) - c.x).abs();
-                let infl = if side > 0.0 { k.out_influence } else { k.in_influence } as f32;
-                let hid = id.with(if side > 0.0 { "out" } else { "in" });
-                let hdx: f32 = ui.data(|d| d.get_temp(hid)).unwrap_or(0.0);
-                let hx = c.x + side * (infl * seg + hdx * side).clamp(seg * 0.01, seg);
-                let hp = pos2(hx, c.y);
-                p.line_segment([c, hp], Stroke::new(1.0, t.plot_handle_dim));
-                p.circle_filled(hp, 3.5, t.keyframe_handle);
-                let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
-                if hr.dragged_by(egui::PointerButton::Primary) {
-                    let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
-                    ui.data_mut(|d| d.insert_temp(hid, nx));
-                }
-                if hr.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    ui.data_mut(|d| d.remove::<f32>(hid));
-                } else if hr.drag_stopped_by(egui::PointerButton::Primary) {
-                    ui.data_mut(|d| d.remove::<f32>(hid));
-                    let ni = ((infl * seg + hdx * side) / seg.max(1.0)).clamp(0.01, 1.0);
-                    let key = if side > 0.0 { "outInfluence" } else { "inInfluence" };
-                    actions.push((
-                        "effects.setKeyframe".into(),
-                        with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "mediaTime": k.time.0, key: ni})),
-                    ));
-                }
-            }
             p.circle_filled(c, 4.5, if resp.dragged_by(egui::PointerButton::Primary) { t.hot_text } else { t.plot_handle });
             if resp.dragged_by(egui::PointerButton::Primary) {
-                let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
-                ui.data_mut(|d| d.insert_temp(id, ny));
-                p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
+                let prev = d.dy.get(ci).copied().flatten().unwrap_or(0.0);
+                let ny = graph_drag_offset(ui, &resp, vec2(0.0, prev)).y;
+                ui.data_mut(|d| d.insert_temp(id, (ny, frame)));
+                p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", pv), Tokens::ui(10.5), t.hot_text);
             }
             // egui ends a drag on Escape: that stop abandons it (#580)
             if resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                ui.data_mut(|d| d.remove::<f32>(id));
+                ui.data_mut(|d| d.remove::<(f32, u64)>(id));
             } else if resp.drag_stopped_by(egui::PointerButton::Primary) {
-                ui.data_mut(|d| d.remove::<f32>(id));
+                ui.data_mut(|d| d.remove::<(f32, u64)>(id));
                 let nv = v_of(c.y);
                 let nv = if let ParamKind::Float { min, max, .. } = pd.kind { nv.clamp(min, max) } else { nv };
                 let value = if comps.len() == 1 {

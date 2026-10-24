@@ -389,6 +389,12 @@ impl FxOp {
                 FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt)
             }
             "transform" => {
+                // Shutter-angle motion blur (vfx's `transform_fx`) has no GPU implementation:
+                // decline the op while it is active, so the layer takes the CPU path and the
+                // preview blurs exactly like an export does.
+                if crate::vfx::transform_animated(e) && crate::vfx::bv(e, "shutter_override") && crate::vfx::fv(e, "shutter_angle", cx) > 0.5 {
+                    return None;
+                }
                 let img = Image { w, h, px: Vec::new() };
                 let anchor = point(e, "anchor", cx, &img);
                 let pos = point(e, "position", cx, &img);
