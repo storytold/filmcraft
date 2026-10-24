@@ -338,3 +338,49 @@ fn shift_alt_click_toggles_only_the_clicked_linked_side() {
         assert_eq!(*d.app().session.project, *before, "selection does not edit the document");
     }
 }
+
+/// A key assigned to an effect preset applies it to the selected clips (#1356): presets are
+/// commands in Keyboard Shortcuts, `presets.apply.<name>`.
+#[test]
+fn a_preset_shortcut_applies_the_preset() {
+    let mut d = Driver::new();
+    let items = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"].as_array().unwrap().clone();
+    let first = items(&mut d)[0]["clip"].as_u64().unwrap();
+    let target = items(&mut d)[2]["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [first]}));
+    d.exec("effects.apply", json!({"effect": "gaussian_blur"}));
+    let blur = |d: &mut Driver, c: u64| {
+        d.app()
+            .session
+            .active_sequence()
+            .unwrap()
+            .find_item(filmcraft_project::ClipId(c))
+            .unwrap()
+            .1
+            .effects
+            .iter()
+            .filter(|e| e.effect == "gaussian_blur")
+            .count()
+    };
+    let bi = d
+        .app()
+        .session
+        .active_sequence()
+        .unwrap()
+        .find_item(filmcraft_project::ClipId(first))
+        .unwrap()
+        .1
+        .effects
+        .iter()
+        .position(|e| e.effect == "gaussian_blur")
+        .unwrap();
+    d.exec("presets.save", json!({"clip": first, "name": "Dream", "effects": [bi]}));
+    let listed = d.exec("shortcuts.list", json!({"query": "Dream"}));
+    assert!(listed.to_string().contains("presets.apply.dream"), "{listed}");
+    d.exec("shortcuts.set", json!({"command": "presets.apply.dream", "keys": "Alt+Shift+F9"}));
+    d.exec("timeline.select", json!({"clips": [target]}));
+    d.focus("Timeline");
+    let before = blur(&mut d, target);
+    d.key("Alt+Shift+F9");
+    assert_eq!(blur(&mut d, target), before + 1, "the key applied the preset to the selected clip");
+}

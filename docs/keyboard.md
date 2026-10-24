@@ -45,6 +45,21 @@ Paste Insert in the Timeline, the Audio Track Mixer Loop).
 FilmCraft Default keeps its own keys where they differ (Shift+E is Clip ▸ Enable there, so Export
 Frame has no default key; the Premiere preset moves Shift+E to Export Frame and Enable to ⇧⌘E).
 
+## Effect preset commands
+
+Every effect preset, built-in or saved, is a command in Keyboard Shortcuts under **Presets**,
+listed by its name: `presets.apply.<name>`, the name lower-cased with other characters as `-`
+(`Blur In (Short)` → `presets.apply.blur-in-short`). A key bound to it applies the preset to the
+selected clips, like dragging it onto them (#1356). Saving, renaming, deleting or importing presets
+updates the list; a key bound to a deleted preset comes back to life with a preset of that name.
+Each preset has an id of its own: a name needs a letter or a digit, and a name whose id another
+preset has (`Fade-In` or `fade in` next to `Fade In`) is refused when saving or renaming, so a key
+can never apply a different preset than the one it was bound to. An imported preset named either
+way is skipped and listed under `skipped` in `presets.import`'s answer. A saved preset with exactly
+the name of a built-in one takes its place, and its id. The id follows the name, so renaming a
+preset leaves its key on the old id: it does nothing until it is bound again, or a preset gets the
+old name back.
+
 ## Skipped Premiere default shortcuts
 
 | Premiere command (key, scope) | Reason |

@@ -195,6 +195,72 @@ fn preset(name: &str, description: &str, keyframes: KeyframeMode, secs: f64, eff
 }
 
 /// Presets that ship with FilmCraft (original work: parameter values chosen by us).
+/// Command ids for applying a preset from a shortcut: `presets.apply.<name>`, the name lower-cased
+/// with every run of other characters as one `-` (`Blur In (Short)` → `presets.apply.blur-in-short`).
+pub const APPLY_PREFIX: &str = "presets.apply.";
+
+/// The key of a preset name in its command id.
+pub fn command_key(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// A preset name must give a command id of its own (#1356): one with no letter or digit (`???`)
+/// could never be listed or bound in Keyboard Shortcuts, and one whose id another preset has
+/// (`Fade-In` next to `Fade In`) would share its command, and a key bound to it would apply the
+/// other one. `presets` are the presets as they are (or will be) next to it.
+fn check_command_name(cmd: &str, name: &str, presets: &[EffectPreset]) -> Result<()> {
+    let key = command_key(name);
+    if key.is_empty() {
+        return Err(bad(cmd, "a preset name needs a letter or a digit"));
+    }
+    if let Some(other) = presets.iter().find(|p| p.name != name && command_key(&p.name) == key) {
+        return Err(bad(
+            cmd,
+            format!(
+                "the preset `{}` already has this shortcut id (`presets.apply.{key}`): choose a name that differs in more than case or punctuation",
+                other.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// One bindable command per preset (#1356), listed in Keyboard Shortcuts under "Presets" by the
+/// preset's name (the built-in names are translated like every label there),
+/// so a key or a hardware controller can apply a preset to the selected clips. Two presets whose
+/// names give the same key share it; the first (built-in presets first) is the one it applies.
+pub fn shortcut_commands(lib: &PresetLibrary) -> Vec<crate::shortcuts::CommandInfo> {
+    let mut out: Vec<crate::shortcuts::CommandInfo> = Vec::new();
+    for p in lib.all() {
+        let key = command_key(&p.name);
+        if key.is_empty() {
+            continue;
+        }
+        let id = format!("{APPLY_PREFIX}{key}");
+        if out.iter().any(|c| c.id == id) {
+            continue;
+        }
+        let mut c = crate::shortcuts::CommandInfo::new(&id, &p.name, &[], None);
+        c.category = "Presets".into();
+        out.push(c);
+    }
+    out
+}
+
+/// The preset a `presets.apply.<name>` command applies.
+pub fn preset_for_command(lib: &PresetLibrary, id: &str) -> Option<String> {
+    let key = id.strip_prefix(APPLY_PREFIX)?;
+    lib.all().into_iter().find(|p| command_key(&p.name) == key).map(|p| p.name)
+}
+
 pub fn builtin_presets() -> Vec<EffectPreset> {
     let f = ParamValue::Float;
     let mut blur_in = effect("gaussian_blur", &[]);
@@ -448,6 +514,7 @@ fn clip_size(s: &Session, it: &TrackItem) -> (u32, u32) {
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad("presets.save", "need a `name`"))?.to_string();
+    check_command_name("presets.save", &name, &s.presets.all())?;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let clip = clip_p(p, "clip")
         .or_else(|| s.state.selection.iter().copied().find(|c| seq.find_item(*c).and_then(|(t, _)| seq.track(t)).is_some_and(|t| t.kind == TrackKind::Video)))
@@ -536,6 +603,12 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").ok_or_else(|| bad("presets.rename", "need `name`"))?;
     let to = str_p(p, "to").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("presets.rename", "need `to`"))?.to_string();
+    // against the presets as they are after the rename: a built-in the renamed preset hid by
+    // having its name comes back, with its id (#2377 review)
+    let user_after: Vec<&str> = s.presets.user.iter().map(|x| if x.name == name { to.as_str() } else { x.name.as_str() }).collect();
+    let mut after: Vec<EffectPreset> = builtin_presets().into_iter().filter(|b| !user_after.contains(&b.name.as_str())).collect();
+    after.extend(s.presets.user.iter().filter(|x| x.name != name).cloned());
+    check_command_name("presets.rename", &to, &after)?;
     if s.presets.user.iter().any(|x| x.name == to) {
         return Err(bad("presets.rename", format!("a preset named `{to}` exists")));
     }
@@ -571,11 +644,23 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("presets.import", "need `path`"))?;
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let presets = parse_file(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let names: Vec<String> = presets.iter().map(|x| x.name.clone()).collect();
+    // a preset whose name gives no command id of its own (none, or another preset's, already
+    // there or earlier in the file) is left out and reported, not the whole file
+    let mut names = Vec::new();
+    let mut skipped = Vec::new();
+    // ids taken by earlier presets of this file: a later one with the same id is skipped too
+    let mut taken: Vec<String> = Vec::new();
     for pr in presets {
+        let key = command_key(&pr.name);
+        if taken.contains(&key) || check_command_name("presets.import", &pr.name, &s.presets.all()).is_err() {
+            skipped.push(pr.name);
+            continue;
+        }
+        taken.push(key);
+        names.push(pr.name.clone());
         s.presets.user.retain(|x| x.name != pr.name);
         s.presets.user.push(pr);
     }
     s.presets.persist().map_err(EngineError::Other)?;
-    Ok(json!({"imported": names}))
+    Ok(json!({"imported": names, "skipped": skipped}))
 }
