@@ -748,9 +748,14 @@ fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef,
         let response = ui.button(label);
         app.auto.add(&format!("effectControls.keyframeMenu.{key}"), response.rect, label);
         if response.clicked() {
-            let mut params = params.clone();
-            params["interpolation"] = json!(key);
-            actions.push(("effects.setInterpolation".into(), params));
+            // a keyframe of a selection of several: the whole selection takes it, as in Premiere
+            if app.ui.keyframe_selection.len() > 1 && app.ui.keyframe_selection.contains(&target) {
+                actions.push(("effects.setInterpolations".into(), json!({"keyframes": app.ui.keyframe_selection, "interpolation": key})));
+            } else {
+                let mut params = params.clone();
+                params["interpolation"] = json!(key);
+                actions.push(("effects.setInterpolation".into(), params));
+            }
             ui.close();
         }
     }

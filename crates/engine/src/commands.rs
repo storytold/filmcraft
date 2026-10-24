@@ -3308,6 +3308,15 @@ fn build() -> Vec<CommandSpec> {
             |s, p| keyframe_op(s, p, "interp")
         ),
         cmd!(
+            "effects.setInterpolations",
+            "Keyframe Interpolation",
+            [],
+            None,
+            r#"{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}],"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}"#,
+            has_seq,
+            crate::keyframe_move::set_interpolations
+        ),
+        cmd!(
             "effects.setKeyframe",
             "Edit Keyframe",
             [],

@@ -3584,3 +3584,12 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+	Keyframe Interpolation: Linear	Interpolation des images clés : Linéaire
+	Keyframe Interpolation: Bezier	Interpolation des images clés : Bézier
+	Keyframe Interpolation: Auto Bezier	Interpolation des images clés : Bézier automatique
+	Keyframe Interpolation: Continuous Bezier	Interpolation des images clés : Bézier continu
+	Keyframe Interpolation: Hold	Interpolation des images clés : Maintien
+	Keyframe Interpolation: Ease In	Interpolation des images clés : Lissage à l'arrivée
+	Keyframe Interpolation: Ease Out	Interpolation des images clés : Lissage au départ
+	Select keyframes in Effect Controls first	Sélectionnez d'abord des images clés dans Options d'effet
+	Keyframes	Images clés

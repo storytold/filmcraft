@@ -3623,5 +3623,14 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Keyframe Interpolation: Linear	キーフレーム補間：リニア
+	Keyframe Interpolation: Bezier	キーフレーム補間：ベジェ
+	Keyframe Interpolation: Auto Bezier	キーフレーム補間：自動ベジェ
+	Keyframe Interpolation: Continuous Bezier	キーフレーム補間：連続ベジェ
+	Keyframe Interpolation: Hold	キーフレーム補間：停止
+	Keyframe Interpolation: Ease In	キーフレーム補間：イーズイン
+	Keyframe Interpolation: Ease Out	キーフレーム補間：イーズアウト
+	Select keyframes in Effect Controls first	先にエフェクトコントロールでキーフレームを選択してください
+	Keyframes	キーフレーム
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。
