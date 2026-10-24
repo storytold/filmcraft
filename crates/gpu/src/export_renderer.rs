@@ -133,15 +133,20 @@ impl ExportRenderer {
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
         let plan = plan_frame(project, seq, t, opts, sources);
-        match &plan {
+        self.render_prepared(&plan)
+    }
+
+    /// Render a previously prepared frame plan without invoking the planner.
+    pub fn render_prepared(&mut self, plan: &FramePlan) -> Option<Image> {
+        match plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } => {
                 if device_failed() {
                     return None;
                 }
-                let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                let prep = prepare(plan);
+                let (w, h, px) = self.compositor.render_export_prepared(plan, Some(&prep))?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
                     return None;
@@ -207,6 +212,7 @@ mod tests {
         let r = filmcraft_time::FrameRate::FPS_24;
         let _v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
         let a = p.make_track_item(t, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(_v);
         if transform {
             // Motion + opacity as fixed effects (the way the golden transform scene does it).
             if let Some(clip) = p.sequence_mut(seq).unwrap().video_tracks[0].items.last_mut() {
@@ -302,6 +308,30 @@ mod tests {
         let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).expect("rendered");
         let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
         assert_parity(&cpu, &gpu, "frame renderer");
+    }
+
+    #[test]
+    fn prepared_render_matches_standard_render() {
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (prepared render parity): no GPU adapter");
+            return;
+        };
+
+        for transform in [false, true] {
+            let (project, seq, sources) = project(transform);
+            let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
+            let opts = RenderOptions::default();
+
+            let standard = renderer.render(&project, seq, t, opts, &sources).expect("standard GPU render");
+
+            let plan = plan_frame(&project, seq, t, opts, &sources);
+            assert!(matches!(plan, FramePlan::Layers { .. }), "expected a nonempty GPU layer plan");
+
+            let prepared = renderer.render_prepared(&plan).expect("prepared GPU render");
+
+            assert_eq!((standard.w, standard.h), (prepared.w, prepared.h));
+            assert_eq!(standard.px, prepared.px, "standard and prepared GPU pixels differ (transform={transform})");
+        }
     }
 
     #[test]
