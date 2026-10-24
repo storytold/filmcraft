@@ -1322,6 +1322,8 @@ mod roll_linked_tests;
 #[cfg(test)]
 mod scopes_tests;
 #[cfg(test)]
+mod selection_isolation_tests;
+#[cfg(test)]
 mod sequence_inspect_tests;
 #[cfg(test)]
 mod sequence_tabs_tests;
