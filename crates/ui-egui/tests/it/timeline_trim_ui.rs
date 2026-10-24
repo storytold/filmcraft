@@ -214,6 +214,49 @@ fn a_wobbly_click_on_an_edge_selects_the_edit_point() {
     assert!(!st.selection.contains(&ClipId(city)), "the clip is not selected");
 }
 
+/// Click a real rolling edge, then the Trim Monitor's +1 button: linked sound follows exactly once.
+fn linked_trim_monitor() -> Driver {
+    let mut d = Driver::demo();
+    let rate = d.app().session.sequence_rate();
+    let video = ClipId(d.v1_clip(CITY));
+    let q = d.app().session.active_sequence().unwrap();
+    let picture = q.find_item(video).unwrap().1;
+    let audio = q.audio_tracks[0].items.iter().find(|i| i.link.is_some() && i.link == picture.link).unwrap().id;
+    let cut = picture.end();
+    d.exec("tool.rolling", json!({}));
+    d.frames(4);
+    let (_, x, y) = d.edges(video.0);
+    d.drag(pos2(x - 2.0, y), pos2(x - 2.0, y), 1);
+    let points = &d.app().session.state.edit_points;
+    assert_eq!(points.len(), 2, "both linked edges selected: {points:?}");
+    assert!(points.iter().any(|e| e.clip == audio));
+    let before = d.app().session.project.clone();
+    d.ok("ui.click", json!({"id": "trimMonitor.forward"}));
+    d.frames(4);
+    for clip in [video, audio] {
+        assert_eq!(d.span(clip.0).1, (cut + rate.frame_duration()).0);
+    }
+    let after = d.app().session.project.clone();
+    d.exec("edit.undo", json!({}));
+    assert_eq!(*d.app().session.project, *before);
+    d.exec("edit.redo", json!({}));
+    assert_eq!(*d.app().session.project, *after);
+    d
+}
+
+/// #3085: the timeline gesture and Trim Monitor button keep picture and sound synchronized.
+#[test]
+fn trim_monitor_button_rolls_linked_audio_once() {
+    linked_trim_monitor();
+}
+
+/// Visual check of the linked edit brackets and Trim Monitor after one frame of rolling.
+#[test]
+#[ignore = "renders a screenshot; requires a GPU"]
+fn screenshot_linked_trim_monitor() {
+    linked_trim_monitor().screenshot("linked-trim-monitor");
+}
+
 /// A moved clip stays under the point it was grabbed by. It used to lag behind the pointer by the
 /// distance egui waits before it calls a press a drag.
 #[test]

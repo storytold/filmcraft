@@ -150,7 +150,12 @@ the new clips as `copied`, they are selected, and copies of linked clips are lin
 
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
-it shows. Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle
+it shows. With Linked Selection on, selecting an edge includes its unlocked linked partners, even
+on untargeted tracks; `add: true` (Shift-click) toggles the group. Regular/ripple trims select the
+corresponding In/Out edges. Rolls include only matching linked cuts at the same time, leaving split
+audio cuts separate. Each linked group moves once and shares its tightest trim limit; turning
+Linked Selection off allows individual edges to be selected and edited.
+Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 

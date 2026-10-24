@@ -3,7 +3,10 @@
 //! An edit point is one edge of a clip plus a trim kind. Trim and Ripple act on that edge; Roll acts
 //! on the edge shared with the adjacent clip on the same track. Trimming delegates to the
 //! `timeline.trim` / `timeline.roll` commands so linked partners and sync locks behave the same as
-//! with the mouse.
+//! with the mouse. Linked Selection adds unlocked partner edges to both explicit and nearest-edge
+//! selections. Shift-click toggles the linked group. A roll follows only linked cuts at the same
+//! time, preserving split edits; regular/ripple trims follow the corresponding In or Out edges.
+//! Each linked group is clamped and applied once, including when both partners were selected.
 //!
 //! **Trim Monitor** ([`monitor_info`]): while edit points are selected the Program monitor shows the
 //! outgoing clip's last frame and the incoming clip's first frame, with the Out/In shift counters
@@ -87,6 +90,29 @@ fn kind_p(p: &Value) -> Option<TrimKind> {
     serde_json::from_value(p.get("kind")?.clone()).ok()
 }
 
+/// The edges that the timeline command will edit together. Rolls follow only matching linked
+/// cuts; regular/ripple trims follow the same edge of linked clips, including split edits.
+fn linked_points(s: &Session, ep: EditPoint) -> Vec<EditPoint> {
+    let Some(seq) = s.active_sequence() else { return vec![ep] };
+    let clips = if ep.kind == TrimKind::Roll {
+        let Some((left, right)) = roll_pair(seq, &ep) else { return vec![ep] };
+        crate::commands::linked_roll_pairs(seq, left, right, s.state.linked_selection).into_iter().map(|(l, r)| if ep.out { l } else { r }).collect()
+    } else {
+        crate::commands::with_links(s, &[ep.clip])
+    };
+    clips
+        .into_iter()
+        .filter(|c| *c == ep.clip || seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|tr| !tr.locked)))
+        .map(|clip| EditPoint { clip, ..ep })
+        .collect()
+}
+
+/// Either side of a rolling cut denotes the same edit, even when selected separately.
+fn same_edge(seq: &Sequence, a: &EditPoint, b: &EditPoint) -> bool {
+    (a.clip == b.clip && a.out == b.out)
+        || (a.kind == TrimKind::Roll && b.kind == TrimKind::Roll && roll_pair(seq, a).is_some_and(|p| Some(p) == roll_pair(seq, b)))
+}
+
 /// `trim.selectEditPoint {clip, edge: "in"|"out", kind, add?}`
 pub fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let clip = p.get("clip").and_then(Value::as_u64).map(ClipId).ok_or_else(|| EngineError::Other("need `clip`".into()))?;
@@ -94,14 +120,17 @@ pub fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let kind = kind_p(p).unwrap_or(TrimKind::Trim);
     s.active_sequence().and_then(|q| q.find_item(clip)).ok_or_else(|| EngineError::Other(format!("no clip {}", clip.0)))?;
     let ep = EditPoint { clip, out, kind };
+    let points = linked_points(s, ep);
     if p.get("add").and_then(Value::as_bool).unwrap_or(false) {
-        if let Some(i) = s.state.edit_points.iter().position(|e| e.clip == clip && e.out == out) {
-            s.state.edit_points.remove(i);
-        } else {
-            s.state.edit_points.push(ep);
+        let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        let remove = s.state.edit_points.iter().any(|e| same_edge(seq, e, &ep));
+        let mut selected: Vec<_> = s.state.edit_points.iter().copied().filter(|e| !points.iter().any(|p| same_edge(seq, e, p))).collect();
+        if !remove {
+            selected.extend(points);
         }
+        s.state.edit_points = selected;
     } else {
-        s.state.edit_points = vec![ep];
+        s.state.edit_points = points;
     }
     s.state.selection.clear();
     s.state.gap_selection = None;
@@ -125,7 +154,7 @@ pub fn select_nearest(s: &mut Session, p: &Value) -> Result<Value> {
     let targeted = s.state.active_sequence.and_then(|id| s.state.targeting.get(&id)).map(|t| t.targeted.clone()).unwrap_or_default();
     let mut points = Vec::new();
     for tr in seq.video_tracks.iter().chain(seq.audio_tracks.iter()) {
-        if !targeted.is_empty() && !targeted.contains(&tr.id) {
+        if tr.locked || (!targeted.is_empty() && !targeted.contains(&tr.id)) {
             continue;
         }
         // nearest edge on this track
@@ -147,11 +176,11 @@ pub fn select_nearest(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         if let Some((_, ep)) = best {
-            // one roll point per edge: skip the partner's mirror of an edge already chosen
-            if kind == TrimKind::Roll && points.iter().any(|e: &EditPoint| roll_pair(seq, e) == roll_pair(seq, &ep)) {
-                continue;
+            for point in linked_points(s, ep) {
+                if !points.iter().any(|e| same_edge(seq, e, &point)) {
+                    points.push(point);
+                }
             }
-            points.push(ep);
         }
     }
     s.state.edit_points = points;
@@ -204,19 +233,27 @@ fn trim_all_raw(s: &mut Session, delta_for: &dyn Fn(&Sequence, &EditPoint) -> Op
     }
     let pts = s.state.edit_points.clone();
     let mut applied = Vec::new();
+    let mut edited = Vec::new();
     for ep in &pts {
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        if edited.iter().any(|e| same_edge(seq, e, ep)) {
+            continue;
+        }
         let Some(delta) = delta_for(seq, ep) else { continue };
+        // Each timeline command clamps and edits its linked group together. Do not dispatch it
+        // again for the group's other selected edges (which would also ripple later clips twice).
+        let group = linked_points(s, *ep);
         let r = match ep.kind {
             TrimKind::Roll => {
                 let Some((l, r)) = roll_pair(seq, ep) else { continue };
-                s.execute("timeline.roll", json!({"left": l.0, "right": r.0, "delta": delta.0, "followLinks": false}))?
+                s.execute("timeline.roll", json!({"left": l.0, "right": r.0, "delta": delta.0}))?
             }
             k => s.execute(
                 "timeline.trim",
                 json!({"clip": ep.clip.0, "edge": if ep.out { "out" } else { "in" }, "mode": if k == TrimKind::Ripple { "ripple" } else { "regular" }, "delta": delta.0}),
             )?,
         };
+        edited.extend(group);
         applied.push(r.get("delta").cloned().unwrap_or(Value::Null));
     }
     Ok(applied)
