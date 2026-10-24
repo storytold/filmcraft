@@ -334,3 +334,9 @@ ROADMAP.md and [target-app-parity.md](target-app-parity.md) keep two numbers: **
   what works;
 - benchmarks state the machine, the load average and before/after on the same build;
 - don't raise a percentage without evidence a reviewer can rerun.
+
+## Detailed history
+
+`history.list {"detail":true,"limit":10}` adds bounded snapshot-based item and clip changes
+to the existing label stacks. See [history-details.md](history-details.md) for ordering, exact-tick
+values, effect summaries, omission counts and limitations. The default response is unchanged.

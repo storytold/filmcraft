@@ -22,6 +22,7 @@ pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
 pub mod graphics;
+mod history_details;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
