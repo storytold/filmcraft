@@ -24,6 +24,7 @@
 pub mod apv;
 pub mod audio;
 pub mod avi;
+pub mod capabilities;
 pub mod gop;
 pub mod hw;
 mod hw_frame;
@@ -76,23 +77,58 @@ impl From<CodecError> for filmcraft_media::MediaError {
     }
 }
 
-/// Our own (pure-Rust) decoders, in the order they are tried.
-const BUILTIN_FACTORIES: [VideoDecoderFactory; 10] = [
-    video::h264_factory,
-    video::hevc_factory,
-    video::vp8_factory,
-    video::vp9_factory,
-    video::av1_factory,
-    video::apv_factory,
-    video::prores_factory,
-    video::dnx_factory,
-    video::mjpeg_factory,
-    video::mpeg2_factory,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BuiltinVideoDecoder {
+    H264,
+    Hevc,
+    Vp8,
+    Vp9,
+    Av1,
+    Apv,
+    Prores,
+    Dnx,
+    Mjpeg,
+    Mpeg2,
+}
+
+impl BuiltinVideoDecoder {
+    fn factory(self) -> VideoDecoderFactory {
+        match self {
+            Self::H264 => video::h264_factory,
+            Self::Hevc => video::hevc_factory,
+            Self::Vp8 => video::vp8_factory,
+            Self::Vp9 => video::vp9_factory,
+            Self::Av1 => video::av1_factory,
+            Self::Apv => video::apv_factory,
+            Self::Prores => video::prores_factory,
+            Self::Dnx => video::dnx_factory,
+            Self::Mjpeg => video::mjpeg_factory,
+            Self::Mpeg2 => video::mpeg2_factory,
+        }
+    }
+}
+
+/// Our own decoders, with stable identities and the existing dispatch order.
+const BUILTIN_DECODERS: [BuiltinVideoDecoder; 10] = [
+    BuiltinVideoDecoder::H264,
+    BuiltinVideoDecoder::Hevc,
+    BuiltinVideoDecoder::Vp8,
+    BuiltinVideoDecoder::Vp9,
+    BuiltinVideoDecoder::Av1,
+    BuiltinVideoDecoder::Apv,
+    BuiltinVideoDecoder::Prores,
+    BuiltinVideoDecoder::Dnx,
+    BuiltinVideoDecoder::Mjpeg,
+    BuiltinVideoDecoder::Mpeg2,
 ];
+
+pub(crate) fn builtin_video_decoder_registered(decoder: BuiltinVideoDecoder) -> bool {
+    BUILTIN_DECODERS.contains(&decoder)
+}
 
 fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {
     static F: std::sync::OnceLock<RwLock<Vec<VideoDecoderFactory>>> = std::sync::OnceLock::new();
-    F.get_or_init(|| RwLock::new(BUILTIN_FACTORIES.to_vec()))
+    F.get_or_init(|| RwLock::new(BUILTIN_DECODERS.iter().map(|d| d.factory()).collect()))
 }
 
 /// Register a video decoder factory (tried before previously registered ones).
@@ -122,9 +158,9 @@ pub fn make_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<
 /// Create one of our own (software) decoders for a sample entry, skipping registered factories:
 /// what a hardware decoder falls back to when it fails mid-stream.
 pub fn software_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
-    for f in BUILTIN_FACTORIES {
-        if let Some(r) = f(entry) {
-            return r;
+    for decoder in BUILTIN_DECODERS {
+        if let Some(result) = (decoder.factory())(entry) {
+            return result;
         }
     }
     Err(CodecError::Unsupported(format!("no decoder for {} video", entry.codec.name())))
@@ -213,3 +249,60 @@ mod rounded_pts_tests;
 mod stream_color_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod builtin_registration_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_identities_keep_existing_order_and_v1_membership() {
+        assert_eq!(
+            BUILTIN_DECODERS,
+            [
+                BuiltinVideoDecoder::H264,
+                BuiltinVideoDecoder::Hevc,
+                BuiltinVideoDecoder::Vp8,
+                BuiltinVideoDecoder::Vp9,
+                BuiltinVideoDecoder::Av1,
+                BuiltinVideoDecoder::Apv,
+                BuiltinVideoDecoder::Prores,
+                BuiltinVideoDecoder::Dnx,
+                BuiltinVideoDecoder::Mjpeg,
+                BuiltinVideoDecoder::Mpeg2,
+            ]
+        );
+        for decoder in [BuiltinVideoDecoder::H264, BuiltinVideoDecoder::Hevc, BuiltinVideoDecoder::Av1] {
+            assert!(builtin_video_decoder_registered(decoder));
+        }
+        assert!(!BUILTIN_DECODERS[1..].contains(&BuiltinVideoDecoder::H264));
+        assert_eq!(BUILTIN_DECODERS.len(), 10);
+        // Each V1 identity recognizes its actual codec configuration; unrelated
+        // factories decline it. Recognition does not claim stream conformance.
+        use filmcraft_isobmff::{Av1Config, AvcConfig, CodecConfig, FourCc, HevcConfig, SampleEntry};
+        let cases = [
+            (BuiltinVideoDecoder::H264, SampleEntry::avc(AvcConfig { length_size: 4, ..Default::default() }, 16, 16)),
+            (
+                BuiltinVideoDecoder::Hevc,
+                SampleEntry::hevc(
+                    HevcConfig { general_profile_idc: 1, chroma_format_idc: 1, bit_depth_luma: 8, bit_depth_chroma: 8, length_size: 4, ..Default::default() },
+                    16,
+                    16,
+                ),
+            ),
+            (
+                BuiltinVideoDecoder::Av1,
+                SampleEntry::video(
+                    FourCc(*b"av01"),
+                    CodecConfig::Av1(Av1Config { chroma_subsampling_x: true, chroma_subsampling_y: true, ..Default::default() }),
+                    16,
+                    16,
+                ),
+            ),
+        ];
+        for (expected, entry) in cases {
+            for decoder in BUILTIN_DECODERS {
+                assert_eq!((decoder.factory())(&entry).is_some(), decoder == expected);
+            }
+        }
+    }
+}
