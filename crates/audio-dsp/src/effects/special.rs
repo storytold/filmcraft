@@ -6,7 +6,7 @@ use super::time::Reverb;
 use super::util::{DcBlock, DelayLine, OnePole, coef, lin_db};
 use crate::biquad::{Biquad, Coeffs, FilterType};
 use crate::loudness::LoudnessMeter;
-use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
+use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, flush32, param_plumbing};
 use std::f32::consts::{FRAC_PI_2, PI};
 
 const SM: f32 = 20.0;
@@ -304,7 +304,7 @@ impl AudioEffect for GuitarSuite {
             let target = if comp > 0.0 && l > thr { (thr + (l - thr) / ratio) - l } else { 0.0 };
             let c = if target < self.env { att } else { rel };
             self.env = c * self.env + (1.0 - c) * target;
-            if self.env.abs() < 1e-7 {
+            if !(1e-7..=f32::MAX).contains(&self.env.abs()) {
                 self.env = 0.0;
             }
             let g = db_to_gain(self.env);
@@ -491,7 +491,8 @@ impl AudioEffect for Mastering {
                     let peak = y[..nch.min(2)].iter().fold(0.0f32, |a, v| a.max(v.abs()));
                     let target = (lin_db(ceiling) - lin_db(peak)).min(0.0);
                     if target < self.lim_env {
-                        self.lim_env = target;
+                        // An inf input sample gives -inf, which the release would never leave.
+                        self.lim_env = if target.is_finite() { target } else { 0.0 };
                     } else {
                         self.lim_env = rel * self.lim_env + (1.0 - rel) * target;
                     }
@@ -578,7 +579,7 @@ impl AudioEffect for VocalEnhancer {
                 let target = if l > -18.0 { (-18.0 + (l + 18.0) / 2.0) - l } else { 0.0 };
                 let c = if target < self.env { att } else { rel };
                 self.env = c * self.env + (1.0 - c) * target;
-                if self.env.abs() < 1e-7 {
+                if !(1e-7..=f32::MAX).contains(&self.env.abs()) {
                     self.env = 0.0;
                 }
                 let g = db_to_gain(self.env);
@@ -676,7 +677,7 @@ impl Shadow {
     fn tick(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.b1 * self.x1 - self.a1 * self.y1;
         self.x1 = x;
-        self.y1 = if y.abs() < 1e-25 { 0.0 } else { y };
+        self.y1 = flush32(y);
         y
     }
     fn set_coeffs(&mut self, o: &Shadow) {

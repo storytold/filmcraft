@@ -184,7 +184,7 @@ impl Envelope {
     pub(crate) fn tick(&mut self, att: f32, rel: f32, x: f32) -> f32 {
         let c = if x > self.env { att } else { rel };
         self.env = c * self.env + (1.0 - c) * x;
-        if self.env < 1e-20 {
+        if !(1e-20..=f32::MAX).contains(&self.env) {
             self.env = 0.0;
         }
         self.env

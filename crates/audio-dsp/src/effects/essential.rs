@@ -11,7 +11,7 @@
 //! * enhance speech: high-pass, de-mud cut, presence and air boosts (RBJ biquads), then one gain
 //!   computer combining a downward expander (noise between words) and a soft-knee compressor.
 
-use super::stft::{Spectral, StftChannel, fft_size};
+use super::stft::{Spectral, StftChannel, fft_size, stream};
 use crate::biquad::{Biquad, Coeffs, FilterType};
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, flush, param_plumbing};
 
@@ -267,50 +267,41 @@ impl AudioEffect for DeReverb {
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         let len = block_len(channels);
-        let nch = channels.len().min(self.stft.len());
         let (n, hop, delay) = (self.n, self.hop, self.delay);
         let (decay, beta, floor, alpha) = (self.decay, self.beta, self.floor, self.alpha);
         let scale = 1.0 / (n as f32 * 2.0);
         let bins = n / 2 + 1;
-        for ch in 0..nch {
-            let st = &mut self.state[ch];
-            let spec = &mut self.spec;
-            let sg = &mut self.smoothed_gains;
-            let mut frame = |input: &[f32], out: &mut [f32]| {
-                spec.analyse(input);
-                let warm = st.frames >= delay;
-                let base = st.pos * bins;
-                for k in 0..bins {
-                    let p = spec.re[k] * spec.re[k] + spec.im[k] * spec.im[k];
-                    let psd = alpha * st.psd[k] + (1.0 - alpha) * p;
-                    st.psd[k] = if psd < 1e-30 { 0.0 } else { psd };
-                    // Late reverb predicted from the PSD `delay` frames ago (the ring slot we are
-                    // about to overwrite holds exactly that frame).
-                    let late = if warm { decay * st.hist[base + k] } else { 0.0 };
-                    st.hist[base + k] = st.psd[k];
-                    let target = if st.psd[k] > 0.0 { (1.0 - beta * late / st.psd[k]).max(floor) } else { 1.0 };
-                    let g = &mut st.gains[k];
-                    // fast recovery on onsets, slower suppression (less musical noise)
-                    let c = if target > *g { 0.8 } else { 0.5 };
-                    *g += (target - *g) * c;
-                }
-                st.pos = (st.pos + 1) % delay;
-                st.frames = st.frames.saturating_add(1);
-                for k in 0..bins {
-                    let a = st.gains[k.saturating_sub(1)];
-                    let c = st.gains[(k + 1).min(bins - 1)];
-                    sg[k] = 0.25 * a + 0.5 * st.gains[k] + 0.25 * c;
-                }
-                for k in 0..bins {
-                    spec.re[k] *= sg[k];
-                    spec.im[k] *= sg[k];
-                }
-                spec.synthesise_add(out, scale);
-            };
-            for v in channels[ch][..len].iter_mut() {
-                *v = self.stft[ch].tick(*v, hop, &mut frame);
+        let (states, sg) = (&mut self.state, &mut self.smoothed_gains);
+        stream(&mut self.stft, &mut self.spec, channels, len, hop, scale, &mut |ch, _, re, im| {
+            let st = &mut states[ch];
+            let warm = st.frames >= delay;
+            let base = st.pos * bins;
+            for k in 0..bins {
+                let p = re[k] * re[k] + im[k] * im[k];
+                let psd = alpha * st.psd[k] + (1.0 - alpha) * p;
+                st.psd[k] = if psd < 1e-30 { 0.0 } else { psd };
+                // Late reverb predicted from the PSD `delay` frames ago (the ring slot we are
+                // about to overwrite holds exactly that frame).
+                let late = if warm { decay * st.hist[base + k] } else { 0.0 };
+                st.hist[base + k] = st.psd[k];
+                let target = if st.psd[k] > 0.0 { (1.0 - beta * late / st.psd[k]).max(floor) } else { 1.0 };
+                let g = &mut st.gains[k];
+                // fast recovery on onsets, slower suppression (less musical noise)
+                let c = if target > *g { 0.8 } else { 0.5 };
+                *g += (target - *g) * c;
             }
-        }
+            st.pos = (st.pos + 1) % delay;
+            st.frames = st.frames.saturating_add(1);
+            for k in 0..bins {
+                let a = st.gains[k.saturating_sub(1)];
+                let c = st.gains[(k + 1).min(bins - 1)];
+                sg[k] = 0.25 * a + 0.5 * st.gains[k] + 0.25 * c;
+            }
+            for k in 0..bins {
+                re[k] *= sg[k];
+                im[k] *= sg[k];
+            }
+        });
     }
 }
 

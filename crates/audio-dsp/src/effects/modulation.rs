@@ -327,7 +327,7 @@ impl AudioEffect for Phaser {
                 for st in self.ap[ch].iter_mut().take(stages) {
                     y = st.tick(a, y);
                 }
-                self.fbs[ch] = y;
+                self.fbs[ch] = if y.is_finite() { y } else { 0.0 };
                 let wet = x + inten * (y as f32 - x);
                 channels[ch][i] = (x + mix * (wet - x)) * out;
             }
