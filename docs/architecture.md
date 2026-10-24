@@ -101,6 +101,18 @@ are exempt):
 egui UI and the web app, so everything up to the engine stays web-portable and the web app builds
 ([web.md](web.md)). `unsafe_code = "forbid"` applies workspace-wide, except in `platform`
 (`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md)).
+Two layers make a physical keyboard and mouse usable on the Android build. winit 0.30.13 (the last 0.30 release,
+pinned by eframe 0.36) reports no modifier state on Android — it ignores the meta state the OS
+carries on every key event and never emits the `ModifiersChanged` egui-winit learns `Ctrl`/`Shift`/
+`Alt` from — and drops every motion action that is not a touch, so a mouse has no hover, no wheel
+and no right or middle button. The workspace therefore vends winit with that mouse path filled in
+([third_party/winit](../third_party/winit/README.md): one Android-only file, pinned by
+`[patch.crates-io]`; every other target compiles the published crate byte-for-byte) and stamps the
+modifier keys onto each frame's key events itself (`stamp_android_modifiers` in `ui-egui`, driven
+from `raw_input_hook` before egui builds its input state). The stamping also keeps a chord from
+degrading into its plain-key binding: without it a chord's letter arrives unmodified and fires
+whatever that plain key is bound to — Markers' Mark Clip for `X`, the Zoom tool for `Z` — so the
+chord itself never runs. Touch and touch-dragged stylus input is untouched in both layers.
 
 ## 2. Time base
 
@@ -770,4 +782,5 @@ native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone st
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | Android input: vendored winit (`third_party/winit`) with the mouse/trackpad path filled in — wheel, right/middle button, hover — and in-app keyboard-modifier stamping (`stamp_android_modifiers`), since winit's Android backend emits neither `ModifiersChanged` nor any mouse event |
 | 2026-10-10 | trivial | Status line and revision history added (craftrules progress-docs standard); milestone link points at docs/roadmap.md |
