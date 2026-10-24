@@ -7,6 +7,8 @@
 //!   sits on the same-numbered audio track with identical timing is written as one clip carrying
 //!   both (`srcEnable="all"`), otherwise `srcEnable="video"`/`"audio"`.
 //! - Rational times (`1001/24000s`) map exactly onto ticks.
+//! - Standalone `video` elements reference the picture of an asset (including still images),
+//!   without importing that asset's audio. Effect-backed generators are reported as unsupported.
 //! - `adjust-transform` (position in percent of frame height, FCP y-up, counter-clockwise
 //!   rotation), `adjust-blend` (opacity), `adjust-volume` (dB) and their keyframes are mapped;
 //!   constant speed, reverse and freeze frames use a two-point `timeMap`.
@@ -390,6 +392,20 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         // Media and source in.
         let media: Option<(ItemId, Tick, bool, bool)> = match tag {
             "asset-clip" => el.attribute("ref").and_then(|r| self.asset(r, None)).map(|a| (a.item, a.start, a.has_video, a.has_audio)),
+            "video" => {
+                // FCPXML 1.10 DTD: video selects an asset's picture, or references a generator.
+                // Our media model does not select additional video sources within an asset.
+                let asset = el
+                    .attribute("srcID")
+                    .is_none_or(|id| id == "1")
+                    .then(|| el.attribute("ref").and_then(|r| self.asset(r, None)))
+                    .flatten()
+                    .filter(|a| a.has_video);
+                if asset.is_none() {
+                    self.report.warn(format!("FCPXML <video> \"{name}\" has no supported video asset/source; clip was skipped"));
+                }
+                asset.map(|a| (a.item, a.start, true, false))
+            }
             "clip" => {
                 // A clip wraps video/audio/asset-clip children that reference the asset.
                 let inner = elements(el).find(|c| matches!(c.tag_name().name(), "video" | "audio" | "asset-clip") && c.attribute("ref").is_some());
@@ -408,7 +424,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 Some((item, tc, true, self.b.p.sequence(item).is_some_and(|s| s.audio_tracks.iter().any(|t| !t.items.is_empty()))))
             }),
             "gap" => None,
-            "title" | "video" | "audio" | "sync-clip" | "mc-clip" | "live-drawing" => {
+            "title" | "audio" | "sync-clip" | "mc-clip" | "live-drawing" => {
                 self.report.warn(format!("FCPXML <{tag}> elements are not supported and were skipped"));
                 None
             }

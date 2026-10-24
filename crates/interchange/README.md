@@ -21,6 +21,7 @@ read off files it exports, never from the application itself.
 | OMF | Avid *OMF Interchange Specification* | Version 2.0 (1997) | classes (`HEAD`, `CMOB`, `MMOB`, `SMOB`, `MSLT`, `TRKD`, `SEQU`, `SCLP`, `FILL`, `TRAN`, `EFFE`, `ESLT`, `CVAL`, `VVAL`, `TCCP`, `WAVD`, `AIFD`, `WAVE`, `AIFC`, locators), property and type names |
 | OMF | Apple *Bento Specification* | revision 1.0d5 | container label, TOC encoding, objects / properties / types, references |
 | WAVE / AIFF | Microsoft RIFF WAVE; Apple AIFF 1.3 | — | embedded and separate audio files |
+| FCPXML | Apple [FCPXML Document Type Definition](https://developer.apple.com/documentation/professional-video-applications/document-type-definition) | 1.10 (2021) | standalone `video` asset references, source selection and clip timing |
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
 
@@ -44,6 +45,15 @@ passes `AudioEssence` (embedded PCM or a written file) back in `MediaOptions`.
 Not represented: speed changes and frame holds (exported at 100 % with a report entry),
 graphics and synthetic media (gaps), video effects other than transitions, clip
 markers (written to the master mob, so they come back as media markers), OMF video and markers.
+
+## FCPXML standalone video
+
+Asset-backed `video` elements import as picture-only clips, including Final Cut slideshows whose
+still-image assets have zero duration. Clip durations, source times, media paths, connected lanes,
+adjustments, markers and transitions use the existing timeline import mapping. The engine links
+available images and exposes missing paths through Link Media; saving and reopening preserves them.
+Effect-backed generators and video sources other than the default `srcID="1"` are skipped with a
+warning.
 
 ## Nested sequences
 
@@ -85,6 +95,11 @@ OMF carries no video at all.
 
 ## Tests
 
+- `tests/it/fcpxml.rs`: standalone still-image clips retain timing, media paths, markers and
+  transitions; AV assets import picture only, including connected clips and adjustments;
+  unsupported references and source selections report warnings without panicking. The engine's
+  `interchange_auto_points_tests` also covers missing-image import, save/reopen, relink, undo/redo
+  and rendered pixels throughout the clip, plus automatic linking when the image exists.
 - `tests/it/aaf_omf.rs`: AAF round trips at 25, 29.97 DF, 23.976 and 59.94 DF (clips, gaps,
   two-sided and one-sided transitions, links, markers, start timecodes, constant and keyframed
   gain, media markers and timecode); 512-byte sectors; breakout to mono; embedded trimmed audio
