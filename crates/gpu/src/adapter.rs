@@ -341,6 +341,7 @@ mod tests {
     /// exposing more features.
     #[test]
     fn on_this_host_the_choice_is_wgpus_unless_its_driver_is_listed_twice() {
+        crate::tests::hold_gpu_lock();
         if wgpu::Instance::enabled_backend_features().is_empty() {
             return;
         }
