@@ -6,10 +6,12 @@
 //! drives libva (loaded at run time; no libva means no hardware decoder, never a failure to start),
 //! and [`VaDecoder`] puts them together as a [`VideoDecoder`]. H.264 8-bit 4:2:0 progressive
 //! (Constrained Baseline / Main / High) and HEVC 4:2:0 (Main, Main 10, Main Still Picture), the
-//! latter through [`hevc`] the same way; everything else stays in software.
+//! latter through [`hevc`] the same way, and AV1 Main 4:2:0 (8 and 10-bit) through [`av1`];
+//! everything else stays in software.
 //!
 //! The FFI is in [`ffi`] (declarations) and `va` (calls); the rest of this module is safe code.
 
+pub mod av1;
 pub mod ffi;
 pub mod h264;
 pub mod hevc;
@@ -50,6 +52,13 @@ pub trait Accel: Send {
         iq: Option<&ffi::VAIQMatrixBufferHEVC>,
         slices: &[(ffi::VASliceParameterBufferHEVC, Vec<u8>)],
     ) -> std::result::Result<(), String>;
+    /// Decode one AV1 frame (one parameter + data buffer per tile) into surface `target`.
+    fn decode_av1(
+        &mut self,
+        target: usize,
+        pic: &ffi::VADecPictureParameterBufferAV1,
+        tiles: &[(ffi::VASliceParameterBufferAV1, Vec<u8>)],
+    ) -> std::result::Result<(), String>;
     /// The picture in surface `index`, once decoded.
     fn read(&mut self, index: usize) -> std::result::Result<VideoFrame, String>;
     /// Make surface `index` a copy of surface `from`, or mid-gray (every sample half the range)
@@ -61,11 +70,11 @@ pub trait Accel: Send {
 #[cfg(target_os = "linux")]
 mod linux {
     use filmcraft_bitstream::unescape_rbsp;
-    use filmcraft_codecs::hw::{NalCodec, NalStreamInfo};
+    use filmcraft_codecs::hw::{FrameCodec, FrameStreamInfo, NalCodec, NalStreamInfo, StreamInfo};
     use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
 
     use super::va::Session;
-    use super::{ffi, h264, hevc};
+    use super::{av1, ffi, h264, hevc};
     use crate::biplanar::Geometry;
 
     /// The VA-API profiles that decode an H.264 stream of `profile_idc`, best fit first (a Main or
@@ -93,12 +102,13 @@ mod linux {
     enum Front {
         H264(Box<h264::Front<Session>>),
         Hevc(Box<hevc::Front<Session>>),
+        Av1(Box<av1::Front<Session>>),
     }
 
-    /// A VA-API decoder for one H.264 or HEVC stream.
+    /// A VA-API decoder for one H.264, HEVC or AV1 stream.
     pub struct VaDecoder {
         front: Front,
-        info: NalStreamInfo,
+        info: StreamInfo,
         name: String,
         fed: u64,
         fail_after: Option<u64>,
@@ -160,7 +170,35 @@ mod linux {
                 }
             };
             let name = format!("VA-API {codec} ({vendor})");
-            Ok(Self { front, info, name, fed: 0, fail_after: None })
+            Ok(Self { front, info: info.into(), name, fed: 0, fail_after: None })
+        }
+
+        /// A decoder for the AV1 stream `info` describes (Main profile, 8 or 10-bit 4:2:0), or why
+        /// VA-API does not take it on this system. VP9 is not taken.
+        pub fn new_frame(info: FrameStreamInfo) -> std::result::Result<Self, String> {
+            if info.codec != FrameCodec::Av1 {
+                return Err(format!("{:?} is not taken", info.codec));
+            }
+            let bits = info.bit_depth;
+            if info.profile != 0 || info.mono || info.subsampling != (1, 1) || !matches!(bits, 8 | 10) {
+                return Err(format!(
+                    "AV1 profile {} {}-bit {} is not taken",
+                    info.profile,
+                    bits,
+                    if info.mono { "monochrome".to_string() } else { format!("subsampling {:?}", info.subsampling) }
+                ));
+            }
+            let (w, h) = info.size;
+            if w == 0 || h == 0 {
+                return Err("AV1 stream without a picture size".into());
+            }
+            let geometry = Geometry { crop: (0, 0, w, h), bits, color: info.color.unwrap_or_default(), par: (1, 1) };
+            // the eight reference slots, the frame being decoded, and one spare
+            let session = Session::new(&[ffi::VAProfileAV1Profile0], (w, h), 10, geometry)?;
+            let vendor = session.vendor().to_string();
+            let front = av1::Front::new(session, info.config_obus.clone(), (w, h), bits).map_err(|e| e.to_string())?;
+            let name = format!("VA-API AV1 ({vendor})");
+            Ok(Self { front: Front::Av1(Box::new(front)), info: info.into(), name, fed: 0, fail_after: None })
         }
 
         /// Test hook: fail every decode call after the first `n` (a GPU lost mid-stream).
@@ -178,6 +216,7 @@ mod linux {
             match &mut self.front {
                 Front::H264(f) => f.decode(sample, pts),
                 Front::Hevc(f) => f.decode(sample, pts),
+                Front::Av1(f) => f.decode(sample, pts),
             }
         }
 
@@ -185,6 +224,7 @@ mod linux {
             let flushed = match &mut self.front {
                 Front::H264(f) => f.flush(),
                 Front::Hevc(f) => f.flush(),
+                Front::Av1(f) => f.flush(),
             };
             match flushed {
                 Ok(out) => out,
@@ -199,6 +239,7 @@ mod linux {
             match &mut self.front {
                 Front::H264(f) => f.reset(),
                 Front::Hevc(f) => f.reset(),
+                Front::Av1(f) => f.reset(),
             }
         }
 

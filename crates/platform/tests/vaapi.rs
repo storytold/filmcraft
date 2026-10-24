@@ -3,10 +3,11 @@
 //! several references, weighted prediction, temporal direct, custom scaling matrices, several
 //! slices per picture; HEVC Main and Main 10: open GOP with RASL pictures, scaling lists, several
 //! slices with wavefront parallel processing, weighted prediction, transform skip and AMP; 1080p /
-//! 2160p) must be identical (bit-exact planes, colour, pixel aspect, pts and presentation
+//! 2160p; AV1 8 / 10-bit: hidden frames shown with show_existing_frame, 2x2 tiles, CDEF, loop
+//! restoration, super-resolution, 1440p60 10-bit) must be identical (bit-exact planes, colour, pixel aspect, pts and presentation
 //! order), also after `reset` + reseek and a mid-stream `flush`; a forced mid-stream failure must
 //! continue in software with the software decoder's exact output; what the hardware path does not
-//! take (interlaced and 10-bit H.264, 4:2:2 HEVC) is declined; damaged samples and parameter sets give
+//! take (interlaced and 10-bit H.264, 4:2:2 HEVC) is declined, AV1 film grain continues in software; damaged samples and parameter sets give
 //! errors or fall back, never crash or hang. Skips without ffmpeg (fixture generator) or without a
 //! VA-API driver. Its own test binary: one test turns the process-wide Hardware decoding switch off
 //! and on.
@@ -115,7 +116,7 @@ fn parity(name: &str, s: &Stream) {
     // both decoders conceal them (the software decoder from mid-gray stand-ins, the hardware also
     // from motion data those stand-ins do not have), so only the pictures from the seek point on
     // must match, as they must.
-    let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    let h264 = NalStreamInfo::from_entry(&s.entry).and_then(|r| r.ok()).filter(|i| i.codec == filmcraft_codecs::hw::NalCodec::H264);
     let syncs: Vec<usize> = (1..s.samples.len()).filter(|&i| s.sync[i]).collect();
     assert!(!syncs.is_empty(), "{name}: more than one GOP");
     for &k in syncs.iter().rev() {
@@ -126,7 +127,9 @@ fn parity(name: &str, s: &Stream) {
         let mut a = decode_all(hw.as_mut(), &s.samples[k..end]);
         let mut b = decode_all(sw.as_mut(), &s.samples[k..end]);
         assert_eq!(a.len(), b.len(), "{name} from sample {k}: pictures");
-        if info.codec == filmcraft_codecs::hw::NalCodec::H264 && !info.nal_types(&s.samples[k].0).contains(&5) {
+        if let Some(info) = &h264
+            && !info.nal_types(&s.samples[k].0).contains(&5)
+        {
             let start = s.samples[k].1;
             a.retain(|f| f.pts >= start);
             b.retain(|f| f.pts >= start);
@@ -136,7 +139,7 @@ fn parity(name: &str, s: &Stream) {
     }
     // a flush in the middle of a GOP, then carrying on: H.264 only, where references survive a
     // flush (an HEVC flush ends the stream; the GOP cache always seeks after one)
-    if info.codec == filmcraft_codecs::hw::NalCodec::H264 {
+    if h264.is_some() {
         for d in [&mut hw, &mut sw] {
             d.reset();
         }
@@ -490,4 +493,154 @@ fn decoder_moves_between_threads() {
     let samples = s.samples.clone();
     let out = std::thread::spawn(move || decode_all(hw.as_mut(), &samples[..30])).join().unwrap();
     assert_same("second thread", &out, &reference);
+}
+
+/// AV1 fixtures for the stream features the hardware path takes: (file, encoder arguments).
+/// 640x360 (1280x720 with tiles), three seconds at 24 fps, a key frame every second.
+const AV1: &[(&str, &[&str])] = &[
+    ("va_av1_svt_8bit.mp4", &["-c:v", "libsvtav1", "-preset", "8", "-crf", "40", "-g", "24", "-pix_fmt", "yuv420p"]),
+    ("va_av1_svt_10bit.mp4", &["-c:v", "libsvtav1", "-preset", "8", "-crf", "40", "-g", "24", "-pix_fmt", "yuv420p10le"]),
+    // 2x2 tiles, CDEF, loop restoration, hidden alt-ref frames shown with show_existing_frame
+    (
+        "va_av1_aom_tiles.mp4",
+        &[
+            "-c:v",
+            "libaom-av1",
+            "-cpu-used",
+            "8",
+            "-crf",
+            "40",
+            "-g",
+            "24",
+            "-lag-in-frames",
+            "16",
+            "-tile-columns",
+            "1",
+            "-tile-rows",
+            "1",
+            "-row-mt",
+            "1",
+            "-aom-params",
+            "enable-restoration=1:enable-cdef=1",
+            "-pix_fmt",
+            "yuv420p",
+            "-s",
+            "1280x720",
+        ],
+    ),
+    // super-resolution: frames coded narrower and upscaled
+    (
+        "va_av1_svt_superres.mp4",
+        &[
+            "-c:v",
+            "libsvtav1",
+            "-preset",
+            "8",
+            "-crf",
+            "40",
+            "-g",
+            "24",
+            "-svtav1-params",
+            "superres-mode=1:superres-denom=12:superres-kf-denom=12",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+    ),
+];
+
+fn av1_fixture(ff: &std::path::Path, name: &str, enc: &[&str]) -> Option<std::path::PathBuf> {
+    let mut args = vec!["-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=3,noise=alls=12:allf=t"];
+    args.extend_from_slice(enc);
+    fixture(ff, name, &args)
+}
+
+#[test]
+fn av1_is_bit_exact_with_the_software_decoder() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let mut made = 0;
+    for (name, enc) in AV1 {
+        let Some(path) = av1_fixture(&ff, name, enc) else {
+            eprintln!("SKIPPED: {name} (encoder unavailable)");
+            continue;
+        };
+        made += 1;
+        parity(name, &read_stream(&path));
+    }
+    assert!(made > 0, "AV1 fixtures");
+}
+
+/// A screen recording's format: 2560x1440 at 60 fps, 10-bit, a key frame every two seconds.
+#[test]
+fn av1_1440p60_10bit_is_bit_exact() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let args = [
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=s=2560x1440:r=60:d=3,noise=alls=8:allf=t",
+        "-c:v",
+        "libsvtav1",
+        "-preset",
+        "12",
+        "-crf",
+        "35",
+        "-g",
+        "120",
+        "-pix_fmt",
+        "yuv420p10le",
+    ];
+    let Some(path) = fixture(&ff, "va_av1_1440p60_10bit.mp4", &args) else { return };
+    parity_streaming("av1 1440p60 10-bit", &read_stream(&path));
+}
+
+/// Film grain is synthesised by the software decoder: the hybrid decoder hands the stream over at
+/// the first grain frame, and the output is the software decoder's.
+#[test]
+fn av1_film_grain_continues_in_software() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let enc = ["-c:v", "libsvtav1", "-preset", "8", "-crf", "40", "-g", "24", "-svtav1-params", "film-grain=8", "-pix_fmt", "yuv420p"];
+    let Some(path) = av1_fixture(&ff, "va_av1_film_grain.mp4", &enc) else { return };
+    let s = read_stream(&path);
+    let Some(mut hw) = hardware(&s) else { return };
+    let reference = decode_all(software(&s).as_mut(), &s.samples);
+    let out = decode_all(hw.as_mut(), &s.samples);
+    assert_same("av1 film grain", &out, &reference);
+    assert!(!hw.name().starts_with("VA-API"), "continued in software ({})", hw.name());
+}
+
+/// AV1 failing mid-stream (a GPU lost) continues in software with the software decoder's output.
+#[test]
+fn av1_mid_stream_failure_continues_in_software() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some((name, enc)) = AV1.first() else { return };
+    let Some(path) = av1_fixture(&ff, name, enc) else { return };
+    let s = read_stream(&path);
+    let info = filmcraft_codecs::hw::FrameStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    let Ok(_) = VaDecoder::new_frame(info.clone()) else {
+        eprintln!("SKIPPED: no VA-API AV1 decoder");
+        return;
+    };
+    let reference = decode_all(software(&s).as_mut(), &s.samples);
+    let k = (1..s.samples.len()).find(|&i| s.sync[i]).unwrap();
+    for fail_at in [0, 5, k, k + 1] {
+        let mut va = VaDecoder::new_frame(info.clone()).unwrap();
+        va.fail_after(fail_at as u64);
+        let mut d = HybridDecoder::new(Box::new(va), s.entry.clone(), info.clone());
+        let out = decode_all(&mut d, &s.samples);
+        assert!(!d.is_hardware(), "{name}: switched to software");
+        assert_same(&format!("{name} failing at sample {fail_at}"), &out, &reference);
+    }
+}
+
+/// Any MP4 against the software decoder (`FILMCRAFT_VA_FILE=<path>`, first
+/// `FILMCRAFT_VA_SAMPLES` samples, default 600): a real recording's stream features.
+#[test]
+#[ignore]
+fn file_is_bit_exact() {
+    let Some(path) = std::env::var_os("FILMCRAFT_VA_FILE") else { return };
+    let n = std::env::var("FILMCRAFT_VA_SAMPLES").ok().and_then(|v| v.parse().ok()).unwrap_or(600);
+    let mut s = read_stream(std::path::Path::new(&path));
+    s.samples.truncate(n);
+    s.sync.truncate(n);
+    parity_streaming(&path.to_string_lossy(), &s);
 }

@@ -4,7 +4,7 @@
 //! [`register`] puts the platform's hardware decoder factory in front of FilmCraft's own decoders
 //! (`filmcraft_codecs::register_video_decoder`). Today that is VideoToolbox on macOS for H.264
 //! (`avcC`) and HEVC (`hvcC`) streams, 8- and 10-bit, 4:2:0 and 4:2:2; Media Foundation / DXVA on
-//! Windows; NVDEC ([`nvdec`], NVIDIA's driver) and VA-API ([`vaapi`]) on Linux for H.264 and HEVC; on other systems (and on
+//! Windows; NVDEC ([`nvdec`], NVIDIA's driver) and VA-API ([`vaapi`]) on Linux for H.264 and HEVC, VA-API also for AV1; on other systems (and on
 //! Linux with neither) registration does nothing and reports [`Availability::Unavailable`]. It also registers a
 //! hardware H.264 encoder factory (`filmcraft_export::register_encoder`) that only acts when an
 //! export asks for it (`ExportSettings::hardware_encoding` = `Auto`), see [`hardware_encode`]; on
@@ -175,13 +175,14 @@ pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        filmcraft_codecs::hw::NalStreamInfo::from_entry(entry).and_then(|r| r.ok()).is_some_and(|info| {
+        let nal = filmcraft_codecs::hw::NalStreamInfo::from_entry(entry).and_then(|r| r.ok()).is_some_and(|info| {
             #[cfg(target_pointer_width = "64")]
             if nvdec::NvDecoder::new(info.clone()).is_ok() {
                 return true;
             }
             vaapi::VaDecoder::new(info).is_ok()
-        })
+        });
+        nal || filmcraft_codecs::hw::FrameStreamInfo::from_entry(entry).and_then(|r| r.ok()).is_some_and(|info| vaapi::VaDecoder::new_frame(info).is_ok())
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
@@ -227,7 +228,7 @@ pub fn media_foundation_factory(entry: &filmcraft_isobmff::SampleEntry) -> Optio
     }
 }
 
-/// The VA-API factory: a [`HybridDecoder`] around [`vaapi::VaDecoder`] for H.264 and HEVC
+/// The VA-API factory: a [`HybridDecoder`] around [`vaapi::VaDecoder`] for H.264, HEVC and AV1
 /// streams this system's VA-API driver decodes, `None` otherwise (other codecs keep the software
 /// decoders).
 #[cfg(target_os = "linux")]
@@ -235,9 +236,21 @@ pub fn vaapi_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft
     if !filmcraft_codecs::hw::hardware_decoding() {
         return None;
     }
-    let info = filmcraft_codecs::hw::NalStreamInfo::from_entry(entry)?.ok()?;
-    match vaapi::VaDecoder::new(info.clone()) {
-        Ok(va) => Some(Ok(Box::new(HybridDecoder::new(Box::new(va), entry.clone(), info)))),
+    let made = match filmcraft_codecs::hw::NalStreamInfo::from_entry(entry) {
+        Some(info) => {
+            let info = info.ok()?;
+            vaapi::VaDecoder::new(info.clone()).map(|va| (va, filmcraft_codecs::hw::StreamInfo::from(info)))
+        }
+        None => {
+            let info = filmcraft_codecs::hw::FrameStreamInfo::from_entry(entry)?.ok()?;
+            if info.codec != filmcraft_codecs::hw::FrameCodec::Av1 {
+                return None;
+            }
+            vaapi::VaDecoder::new_frame(info.clone()).map(|va| (va, filmcraft_codecs::hw::StreamInfo::from(info)))
+        }
+    };
+    match made {
+        Ok((va, info)) => Some(Ok(Box::new(HybridDecoder::new(Box::new(va), entry.clone(), info)))),
         Err(why) => {
             log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
             filmcraft_codecs::hw::note_hw_declined();

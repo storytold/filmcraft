@@ -1828,7 +1828,7 @@
 	Hard Limiter	Limitatore duro
 	Hard Mix	Miscela dura
 	Hardware decoding	Decodifica hardware
-	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Decodifica hardware: Auto usa il decodificatore video del sistema (VideoToolbox su macOS, Media Foundation su Windows, VA-API o NVDEC per H.264 e HEVC su Linux) per i flussi che supporta, e il decodificatore di FilmCraft per tutto il resto o se l'hardware non riesce. I media già aperti mantengono il loro decodificatore finché non vengono riaperti.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC, and VA-API for AV1, on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Decodifica hardware: Auto usa il decodificatore video del sistema (VideoToolbox su macOS, Media Foundation su Windows, VA-API o NVDEC per H.264 e HEVC, e VA-API per AV1, su Linux) per i flussi che supporta, e il decodificatore di FilmCraft per tutto il resto o se l'hardware non riesce. I media già aperti mantengono il loro decodificatore finché non vengono riaperti.
 	Head Size	Dimensione testa
 	Heart	Cuore
 	Height	Altezza

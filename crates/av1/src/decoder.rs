@@ -12,36 +12,16 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
-use crate::bits::{BitReader, leb128};
 use crate::cdf::Cdfs;
 use crate::frame::FrameBuf;
-use crate::header::{FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params};
+use crate::header::{FilmGrainParams, FrameHeader, RefInfo, SequenceHeader};
 use crate::par::Pool;
+use crate::parser::{Event, Parser};
 use crate::spec_tables::*;
 use crate::state::{FrameShared, FrameState, TileState};
 use crate::stats::{DecodeStats, Stage, Timer};
 use crate::tile::TileDecoder;
 use crate::{Error, Picture, Result};
-
-/// Largest accepted frame: the AV1 level 6.x limits (Annex A: MaxHSize 16384, MaxVSize 8704, MaxPicSize
-/// 35 651 584 luma samples; level 6.3 is the highest defined). The sequence header allows 65536 x 65536
-/// (gigabytes of buffers), so nothing larger than a level 6.3 frame is decoded.
-const MAX_FRAME_WIDTH: u32 = 16384;
-const MAX_FRAME_HEIGHT: u32 = 8704;
-const MAX_FRAME_AREA: u64 = 35_651_584;
-
-/// Whether a frame of `width` x `height` luma samples is within the decoder's resource limits.
-fn frame_size_allowed(width: u32, height: u32) -> bool {
-    width <= MAX_FRAME_WIDTH && height <= MAX_FRAME_HEIGHT && u64::from(width) * u64::from(height) <= MAX_FRAME_AREA
-}
-const OBU_SEQUENCE_HEADER_T: u32 = 1;
-const OBU_TEMPORAL_DELIMITER_T: u32 = 2;
-const OBU_FRAME_HEADER_T: u32 = 3;
-const OBU_TILE_GROUP_T: u32 = 4;
-const OBU_METADATA_T: u32 = 5;
-const OBU_FRAME_T: u32 = 6;
-const OBU_REDUNDANT_FRAME_HEADER_T: u32 = 7;
-const OBU_TILE_LIST_T: u32 = 8;
 
 /// A stored reference frame (FrameStore plus the saved per-frame state).
 pub(crate) struct RefFrame {
@@ -103,8 +83,6 @@ struct FrameJob {
     ref_info: [RefInfo; NUM_REF_FRAMES],
     /// Tile payloads (tile number, data).
     tiles: Vec<(usize, Vec<u8>)>,
-    /// Each tile may be supplied by exactly one tile group.
-    tile_covered: Vec<bool>,
     slot: Arc<FrameSlot>,
     /// The output picture, when the frame is shown.
     picture: Option<Arc<Slot<Arc<Picture>>>>,
@@ -198,16 +176,9 @@ impl Drop for Workers {
 /// An AV1 decoder. Feed it temporal units (one MP4 / Matroska sample each, or any run of
 /// OBUs in the low-overhead format) and collect the shown frames.
 pub struct Decoder {
-    seq: Option<SequenceHeader>,
-    refs: [RefInfo; NUM_REF_FRAMES],
+    /// OBUs, headers and the header-level reference state.
+    parser: Parser,
     ref_frames: [Option<Arc<FrameSlot>>; NUM_REF_FRAMES],
-    lf_deltas: LoopFilterDeltas,
-    seg_features: SegmentationFeatures,
-    prev_gm_params: [[i32; 6]; 8],
-    current_frame_id: u32,
-    /// Frame being collected (between its header and its last tile group).
-    pending: Option<Box<FrameJob>>,
-    seen_frame_header: bool,
     /// Apply film grain synthesis to output frames (default true).
     pub apply_film_grain: bool,
     draft: bool,
@@ -263,15 +234,8 @@ impl Decoder {
         #[cfg(all(feature = "threads", not(target_arch = "wasm32")))]
         let workers = if fthreads > 1 { Workers::new(fthreads, &pool, &stats) } else { None };
         Decoder {
-            seq: None,
-            refs: Default::default(),
+            parser: Parser::new(),
             ref_frames: Default::default(),
-            lf_deltas: LoopFilterDeltas::defaults(),
-            seg_features: SegmentationFeatures::default(),
-            prev_gm_params: default_gm_params(),
-            current_frame_id: 0,
-            pending: None,
-            seen_frame_header: false,
             apply_film_grain: true,
             draft: false,
             stats,
@@ -301,7 +265,7 @@ impl Decoder {
 
     /// The active sequence header, once one has been decoded.
     pub fn sequence_header(&self) -> Option<&SequenceHeader> {
-        self.seq.as_ref()
+        self.parser.sequence_header()
     }
 
     /// Decode a chunk of OBUs; returns the frames that are ready for output, in order (with
@@ -358,12 +322,24 @@ impl Decoder {
     }
 
     fn parse(&mut self, data: &[u8]) -> Result<()> {
+        let mut events = Vec::new();
+        let parsed = self.parser.parse(data, &mut events);
         // (output, temporal unit, spatial_id)
         let mut out: Vec<(Output, usize, u32)> = Vec::new();
-        let r = self.parse_obus(data, &mut out);
+        let mut r = parsed;
+        for e in events {
+            match self.event(e) {
+                Ok(Some(o)) => out.push(o),
+                Ok(None) => {}
+                Err(e) => {
+                    r = Err(e);
+                    break;
+                }
+            }
+        }
         // Output policy (7.18.1 note): with scalability, show one frame per temporal unit, the
         // highest spatial layer present.
-        let scalable = self.seq.as_ref().is_some_and(|s| s.op_idc != 0);
+        let scalable = self.parser.sequence_header().is_some_and(|s| s.op_idc != 0);
         if !scalable {
             self.out.extend(out.into_iter().map(|(o, _, _)| o));
         } else {
@@ -390,241 +366,63 @@ impl Decoder {
         r
     }
 
-    fn parse_obus(&mut self, data: &[u8], out: &mut Vec<(Output, usize, u32)>) -> Result<()> {
-        let mut tu = 0usize;
-        let mut pos = 0;
-        while pos < data.len() {
-            let h = data[pos];
-            if h & 0x80 != 0 {
-                return Err(Error::Invalid("obu_forbidden_bit"));
-            }
-            let obu_type = ((h >> 3) & 0xf) as u32;
-            let ext = h & 4 != 0;
-            let has_size = h & 2 != 0;
-            let mut p = pos + 1;
-            let (mut temporal_id, mut spatial_id) = (0, 0);
-            if ext {
-                let e = *data.get(p).ok_or(Error::Truncated)?;
-                temporal_id = (e >> 5) as u32;
-                spatial_id = ((e >> 3) & 3) as u32;
-                p += 1;
-            }
-            let size = if has_size {
-                let (v, n) = leb128(data.get(p..).ok_or(Error::Truncated)?)?;
-                p += n;
-                v as usize
-            } else {
-                data.len().checked_sub(p).ok_or(Error::Truncated)?
-            };
-            let end = p.checked_add(size).filter(|&e| e <= data.len()).ok_or(Error::Truncated)?;
-            let payload = &data[p..end];
-            pos = end;
-            if obu_type != OBU_SEQUENCE_HEADER_T
-                && obu_type != OBU_TEMPORAL_DELIMITER_T
-                && ext
-                && let Some(seq) = &self.seq
-                && seq.op_idc != 0
-            {
-                let idc = seq.op_idc;
-                let in_t = (idc >> temporal_id) & 1;
-                let in_s = (idc >> (spatial_id + 8)) & 1;
-                if in_t == 0 || in_s == 0 {
-                    continue;
-                }
-            }
-            match obu_type {
-                OBU_SEQUENCE_HEADER_T => {
-                    let s = SequenceHeader::parse(payload)?;
-                    self.seq = Some(s);
-                }
-                OBU_TEMPORAL_DELIMITER_T => {
-                    self.seen_frame_header = false;
-                    tu += 1;
-                }
-                OBU_FRAME_HEADER_T | OBU_REDUNDANT_FRAME_HEADER_T | OBU_FRAME_T => {
-                    if self.seen_frame_header {
-                        // frame_header_copy(): identical to the active header
-                        if obu_type != OBU_FRAME_T {
-                            continue;
-                        }
-                    }
-                    let mut r = BitReader::new(payload);
-                    let shown = self.frame_header(&mut r, temporal_id, spatial_id)?;
-                    if let Some(o) = shown {
-                        out.push((o, tu, spatial_id));
-                        continue;
-                    }
-                    if obu_type == OBU_FRAME_T {
-                        r.byte_align();
-                        let rest = payload.get(r.byte_pos()..).ok_or(Error::Truncated)?;
-                        if let Some(o) = self.tile_group(rest)? {
-                            out.push((o, tu, spatial_id));
-                        }
+    /// A parsed frame becomes a decoding job, a show_existing_frame an output of its slot.
+    fn event(&mut self, e: Event) -> Result<Option<(Output, usize, u32)>> {
+        match e {
+            Event::ShowExisting { seq, header, info, temporal_unit, spatial_id } => {
+                let slot =
+                    self.ref_frames.get(header.frame_to_show_map_idx).cloned().flatten().ok_or(Error::Invalid("show_existing_frame of an empty slot"))?;
+                let o = Output::Existing {
+                    slot: slot.clone(),
+                    seq: *seq,
+                    width: info.upscaled_width as usize,
+                    height: info.frame_height as usize,
+                    grain: header.film_grain.clone(),
+                    apply_film_grain: self.apply_film_grain,
+                    pts: self.pts,
+                };
+                if header.frame_type == KEY_FRAME as u8 {
+                    // every slot refreshed from the shown one (7.21, 7.20)
+                    for r in self.ref_frames.iter_mut() {
+                        *r = Some(slot.clone());
                     }
                 }
-                OBU_TILE_GROUP_T => {
-                    if let Some(o) = self.tile_group(payload)? {
-                        out.push((o, tu, spatial_id));
-                    }
-                }
-                OBU_METADATA_T | OBU_TILE_LIST_T => {}
-                _ => {}
+                Ok(Some((o, temporal_unit, spatial_id)))
             }
-        }
-        Ok(())
-    }
-
-    /// frame_header_obu( ): returns the output for show_existing_frame.
-    fn frame_header(&mut self, r: &mut BitReader, temporal_id: u32, spatial_id: u32) -> Result<Option<Output>> {
-        let seq = self.seq.clone().ok_or(Error::Invalid("frame before sequence header"))?;
-        self.seen_frame_header = true;
-        let mut st = HeaderState {
-            seq: &seq,
-            refs: &mut self.refs,
-            lf_deltas: self.lf_deltas,
-            seg_features: self.seg_features,
-            prev_gm_params: self.prev_gm_params,
-            current_frame_id: self.current_frame_id,
-        };
-        let fh = FrameHeader::parse(r, &mut st, temporal_id, spatial_id)?;
-        self.lf_deltas = st.lf_deltas;
-        self.seg_features = st.seg_features;
-        self.prev_gm_params = st.prev_gm_params;
-        self.current_frame_id = st.current_frame_id;
-        if fh.show_existing_frame {
-            self.seen_frame_header = false;
-            let idx = fh.frame_to_show_map_idx;
-            let slot = self.ref_frames[idx].clone().ok_or(Error::Invalid("show_existing_frame of an empty slot"))?;
-            let info = self.refs[idx].clone();
-            let o = Output::Existing {
-                slot: slot.clone(),
-                seq: seq.clone(),
-                width: info.upscaled_width as usize,
-                height: info.frame_height as usize,
-                grain: fh.film_grain.clone(),
-                apply_film_grain: self.apply_film_grain,
-                pts: self.pts,
-            };
-            if fh.frame_type == KEY_FRAME as u8 {
-                // reference frame loading process (7.21) then refresh every slot (7.20)
-                self.lf_deltas = info.lf_deltas;
-                self.seg_features = info.seg_features;
-                for i in 0..NUM_REF_FRAMES {
-                    self.refs[i] = info.clone();
-                    self.ref_frames[i] = Some(slot.clone());
-                }
-            }
-            return Ok(Some(o));
-        }
-        // Encoders exist that code frames slightly larger than the sequence maximum (e.g. a
-        // 270-line stream coded as 272 lines); like other decoders we accept them.
-        if !frame_size_allowed(fh.upscaled_width, fh.frame_height) {
-            return Err(Error::Invalid("frame size"));
-        }
-        if !fh.frame_is_intra {
-            for i in 0..REFS_PER_FRAME {
-                if self.ref_frames[fh.ref_frame_idx[i]].is_none() {
+            Event::Frame { frame, temporal_unit, spatial_id } => {
+                let crate::parser::Frame { seq, header: fh, refs: ref_info, tiles } = *frame;
+                let missing = |i: usize| self.ref_frames.get(i).is_none_or(|r| r.is_none());
+                if !fh.frame_is_intra && fh.ref_frame_idx.iter().any(|&i| missing(i)) {
                     return Err(Error::Invalid("missing reference frame"));
                 }
-            }
-        }
-        if fh.primary_ref_frame != PRIMARY_REF_NONE && self.ref_frames[fh.ref_frame_idx[fh.primary_ref_frame]].is_none() {
-            return Err(Error::Invalid("primary reference frame missing"));
-        }
-        let picture = fh.show_frame.then(Slot::new);
-        let draft = self.draft && fh.show_frame && fh.refresh_frame_flags == 0;
-        let tile_count = fh.tile_info.cols.checked_mul(fh.tile_info.rows).ok_or(Error::Invalid("tile count overflows"))?;
-        self.pending = Some(Box::new(FrameJob {
-            seq,
-            fh,
-            refs: self.ref_frames.clone(),
-            ref_info: self.refs.clone(),
-            tiles: Vec::new(),
-            tile_covered: vec![false; tile_count],
-            slot: Slot::new(),
-            picture,
-            pts: self.pts,
-            apply_film_grain: self.apply_film_grain,
-            draft,
-        }));
-        Ok(None)
-    }
-
-    /// tile_group_obu( sz ): returns the output when the frame is complete and shown.
-    fn tile_group(&mut self, data: &[u8]) -> Result<Option<Output>> {
-        let mut job = self.pending.take().ok_or(Error::Invalid("tile group without a frame header"))?;
-        let (cols, rows, cols_log2, rows_log2, tsb) = {
-            let t = &job.fh.tile_info;
-            (t.cols, t.rows, t.cols_log2, t.rows_log2, t.tile_size_bytes)
-        };
-        let num_tiles = cols * rows;
-        let mut r = BitReader::new(data);
-        let mut tg_start = 0;
-        let mut tg_end = num_tiles - 1;
-        if num_tiles > 1 && r.flag()? {
-            let bits = cols_log2 + rows_log2;
-            tg_start = r.f(bits)? as usize;
-            tg_end = r.f(bits)? as usize;
-        }
-        r.byte_align();
-        if tg_end >= num_tiles || tg_start > tg_end {
-            return Err(Error::Invalid("tile group range"));
-        }
-        let mut pos = r.byte_pos();
-        for tile_num in tg_start..=tg_end {
-            let size = if tile_num == tg_end {
-                data.len().checked_sub(pos).ok_or(Error::Truncated)?
-            } else {
-                let mut v = 0usize;
-                for i in 0..tsb as usize {
-                    v |= (*data.get(pos + i).ok_or(Error::Truncated)? as usize) << (8 * i);
+                if fh.primary_ref_frame != PRIMARY_REF_NONE && fh.ref_frame_idx.get(fh.primary_ref_frame).is_none_or(|&i| missing(i)) {
+                    return Err(Error::Invalid("primary reference frame missing"));
                 }
-                pos += tsb as usize;
-                v + 1
-            };
-            let end = pos.checked_add(size).filter(|&e| e <= data.len()).ok_or(Error::Truncated)?;
-            if job.tile_covered.get(tile_num).copied() != Some(false) {
-                return Err(Error::Invalid("tile is covered by multiple tile groups"));
+                let picture = fh.show_frame.then(Slot::new);
+                let draft = self.draft && fh.show_frame && fh.refresh_frame_flags == 0;
+                let job = Box::new(FrameJob {
+                    seq,
+                    fh,
+                    refs: self.ref_frames.clone(),
+                    ref_info,
+                    tiles,
+                    slot: Slot::new(),
+                    picture,
+                    pts: self.pts,
+                    apply_film_grain: self.apply_film_grain,
+                    draft,
+                });
+                Ok(self.submit(job).map(|o| (o, temporal_unit, spatial_id)))
             }
-            job.tiles.push((tile_num, data[pos..end].to_vec()));
-            job.tile_covered[tile_num] = true;
-            pos = end;
         }
-        if tg_end != num_tiles - 1 {
-            self.pending = Some(job);
-            return Ok(None);
-        }
-        if job.tile_covered.iter().any(|&covered| !covered) {
-            return Err(Error::Invalid("frame is missing tile coverage"));
-        }
-        self.seen_frame_header = false;
-        Ok(self.submit(job))
     }
 
-    /// The frame's data is complete: update the reference state (7.20) and decode it (on a
-    /// frame worker when there are any).
+    /// The frame's data is complete: update the reference slots (7.20; the header-level state
+    /// was updated by the parser) and decode it (on a frame worker when there are any).
     fn submit(&mut self, job: Box<FrameJob>) -> Option<Output> {
-        let fh = &job.fh;
-        for i in 0..NUM_REF_FRAMES {
-            if (fh.refresh_frame_flags >> i) & 1 == 1 {
-                let ri = &mut self.refs[i];
-                ri.valid = true;
-                ri.frame_id = fh.current_frame_id;
-                ri.upscaled_width = fh.upscaled_width;
-                ri.frame_width = fh.frame_width;
-                ri.frame_height = fh.frame_height;
-                ri.render_width = fh.render_width;
-                ri.render_height = fh.render_height;
-                ri.mi_cols = fh.mi_cols;
-                ri.mi_rows = fh.mi_rows;
-                ri.frame_type = fh.frame_type;
-                ri.order_hint = fh.order_hint;
-                ri.saved_order_hints = fh.order_hints;
-                ri.gm_params = fh.gm_params;
-                ri.lf_deltas = fh.lf.deltas;
-                ri.seg_features = fh.seg.features;
-                ri.grain = fh.film_grain.clone();
-                self.ref_frames[i] = Some(job.slot.clone());
+        for (i, r) in self.ref_frames.iter_mut().enumerate() {
+            if (job.fh.refresh_frame_flags >> i) & 1 == 1 {
+                *r = Some(job.slot.clone());
             }
         }
         let output = job.picture.clone().map(Output::Decoded);
@@ -968,27 +766,4 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
         }
     }
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::frame_size_allowed;
-
-    #[test]
-    fn frames_up_to_the_level_6_3_limits_are_allowed() {
-        assert!(frame_size_allowed(16384, 2176)); // exactly MaxPicSize
-        assert!(frame_size_allowed(4096, 8704)); // exactly MaxVSize
-        assert!(frame_size_allowed(8192, 4352)); // exactly MaxPicSize
-        assert!(frame_size_allowed(7680, 4320)); // 8K UHD
-        assert!(frame_size_allowed(1, 1));
-    }
-
-    #[test]
-    fn frames_beyond_the_limits_are_refused() {
-        assert!(!frame_size_allowed(16384, 2177)); // one row over MaxPicSize
-        assert!(!frame_size_allowed(16384, 8704)); // within both sides, four times MaxPicSize
-        assert!(!frame_size_allowed(4096, 8705)); // one row over MaxVSize
-        assert!(!frame_size_allowed(16385, 1)); // one column over MaxHSize
-        assert!(!frame_size_allowed(65536, 65536));
-    }
 }
