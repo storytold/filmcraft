@@ -166,6 +166,8 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("edit.editOriginal", "Edit Original", &["Edit"], Some("Cmd+E"), r#"{"items":[id]?}"#, has_original, edit_original),
         // Project panel context menu (not in the File menu): reveal the clip's media file.
         query("file.reveal", "Reveal in Finder", &[], None, r#"{"items":[id]?}"#, has_file_selection, edit_original),
+        // ... and its attached proxy's (Project panel ▸ Proxy, #2689)
+        query("file.revealProxy", "Reveal Proxy in Finder", &[], None, r#"{"items":[id]?}"#, has_proxy_selection, reveal_proxy),
         // ---------------- Clip ----------------
         spec(
             "clip.editOffline",
@@ -386,6 +388,21 @@ fn file_path(m: &filmcraft_project::MediaClip) -> Option<&str> {
 fn has_media_selection(s: &Session) -> std::result::Result<(), String> {
     if targets(s, &Value::Null).iter().any(|i| media_of(&s.project, *i).is_some()) { Ok(()) } else { Err("select a clip".into()) }
 }
+fn proxy_path(m: &filmcraft_project::MediaClip) -> Option<&str> {
+    match &m.proxy {
+        Some(MediaRef::File { path }) => Some(path),
+        _ => None,
+    }
+}
+
+fn has_proxy_selection(s: &Session) -> std::result::Result<(), String> {
+    if targets(s, &Value::Null).iter().any(|i| media_of(&s.project, *i).is_some_and(|(_, m)| proxy_path(m).is_some())) {
+        Ok(())
+    } else {
+        Err("select a clip with an attached proxy".into())
+    }
+}
+
 fn has_file_selection(s: &Session) -> std::result::Result<(), String> {
     if targets(s, &Value::Null).iter().any(|i| media_of(&s.project, *i).is_some_and(|(_, m)| file_path(m).is_some())) {
         Ok(())
@@ -1117,19 +1134,30 @@ pub(crate) fn openable_original(path: &str) -> std::result::Result<(), String> {
 }
 
 fn edit_original(s: &mut Session, p: &Value) -> Result<Value> {
-    let mut paths = Vec::new();
+    files_of(s, p, file_path, "select a clip with a media file", "edit.editOriginal")
+}
+
+fn reveal_proxy(s: &mut Session, p: &Value) -> Result<Value> {
+    files_of(s, p, proxy_path, "select a clip with an attached proxy", "file.revealProxy")
+}
+
+/// The files (`pick`: the media or the proxy) of the targeted items, each as the file to open: a
+/// path stored in the project relative to it resolves against the project's folder, as the media
+/// pool opens it (#2689: Reveal got the stored relative path and the file manager showed Documents).
+fn files_of(s: &Session, p: &Value, pick: fn(&filmcraft_project::MediaClip) -> Option<&str>, none: &str, cmd: &str) -> Result<Value> {
+    let mut paths: Vec<String> = Vec::new();
     for id in targets(s, p) {
-        if let Some(path) = media_of(&s.project, id).and_then(|(_, m)| file_path(m))
-            && !paths.iter().any(|x: &String| x == path)
-        {
-            paths.push(path.to_string());
+        let Some(stored) = media_of(&s.project, id).and_then(|(_, m)| pick(m)) else { continue };
+        let path = s.media.follow(stored).map_err(|why| bad(cmd, format!("can't open {stored}: {why}")))?;
+        if !paths.contains(&path) {
+            paths.push(path);
         }
     }
     if paths.is_empty() {
-        return Err(EngineError::Other("select a clip with a media file".into()));
+        return Err(EngineError::Other(none.into()));
     }
     for path in &paths {
-        openable_original(path).map_err(|e| bad("edit.editOriginal", e))?;
+        openable_original(path).map_err(|e| bad(cmd, e))?;
     }
     Ok(json!({"paths": paths}))
 }

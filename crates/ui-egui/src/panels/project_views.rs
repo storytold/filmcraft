@@ -298,6 +298,14 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         actions.push(("file.reveal".into(), json!({"items": [id.0]})));
         ui.close();
     }
+    // the attached proxy's file, next to it (#2689); a subclip's is its media's
+    let has_proxy = app.session.project.resolve_media(id).is_some_and(|(_, m, _)| matches!(m.proxy, Some(filmcraft_project::MediaRef::File { .. })));
+    let b = ui.add_enabled(has_proxy, egui::Button::new(tl!("Reveal Proxy in Finder")));
+    app.auto.add("project.itemMenu.file.revealProxy", b.rect, "Reveal Proxy in Finder");
+    if b.clicked() {
+        actions.push(("file.revealProxy".into(), json!({"items": [id.0]})));
+        ui.close();
+    }
     if matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_project::MediaRef::File { .. })) {
         ui.separator();
         for (label, cmd) in [(tl!("Link Media…"), "media.linkMedia"), (tl!("Make Offline…"), "media.makeOffline")] {

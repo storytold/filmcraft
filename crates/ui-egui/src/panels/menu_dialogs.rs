@@ -187,8 +187,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             app.ui.extras.dialog = Some(ClipDialogDraft { command: id.into(), params: json!({}), info: report.clone(), error: String::new() });
             return Some(Ok(json!({"dialog": "systemReport", "report": report})));
         }
-        "edit.editOriginal" | "file.reveal" => {
-            let reveal = id == "file.reveal";
+        "edit.editOriginal" | "file.reveal" | "file.revealProxy" => {
+            let reveal = id != "edit.editOriginal";
             let r = app.session.execute(id, params.clone()).map_err(|e| e.to_string());
             return Some(r.and_then(|v| {
                 for p in v["paths"].as_array().cloned().unwrap_or_default() {
