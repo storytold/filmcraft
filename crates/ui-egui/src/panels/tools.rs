@@ -1,5 +1,8 @@
-//! The vertical Tools panel. Grouped tools show a small flyout triangle; right-click, a long
-//! press or pressing and dragging opens the group to pick another tool.
+//! The Tools panel: a column of tools that scrolls when the panel is too short for it, so every
+//! tool stays reachable (#1983). Widened, it lays the tools out in as many columns as fit; it
+//! never widens itself or pushes the panels beside it. Grouped tools show a small flyout
+//! triangle; right-click, a long press or pressing and dragging opens the group to pick another
+//! tool.
 
 use egui::{Rect, Sense, pos2, vec2};
 
@@ -7,17 +10,55 @@ use crate::FilmcraftApp;
 use crate::icons;
 use crate::state::Tool;
 
+/// A tool button.
+const BUTTON: f32 = 32.0;
+/// A button and the space before the next one.
+const CELL: f32 = BUTTON + 4.0;
+/// Room left under the last row before the tools take another column.
+const BOTTOM: f32 = 8.0;
+
+/// The columns the tools need in `height`, each filled top to bottom.
+pub fn columns(height: f32) -> usize {
+    let rows = ((height - BOTTOM) / CELL).floor();
+    let rows = if rows >= 1.0 { rows as usize } else { 1 };
+    Tool::groups().len().div_ceil(rows)
+}
+
+/// The narrowest the panel gets: one column, a button with 8 points either side.
+pub fn min_width() -> f32 {
+    BUTTON + 16.0
+}
+
+/// Draw the Tools panel in `rect`: its tools in as many columns as fit, scrolling the rest.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    // the columns the height needs when the width has room for them, else the ones that fit
+    let fit = ((rect.width() - min_width()) / CELL).floor().max(0.0) as usize + 1;
+    let cols = columns(rect.height()).min(fit).max(1);
+    let rows = Tool::groups().len().div_ceil(cols);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    // egui keeps a scroll area at least 64 points tall unless told otherwise; in a shorter panel
+    // the bottom of it would be clipped and the last tool could not be scrolled into view
+    let height = rect.height().max(0.0);
+    egui::ScrollArea::vertical().id_salt("tools-panel").max_height(height).min_scrolled_height(height).auto_shrink([false, false]).show(&mut child, |ui| {
+        let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), rows as f32 * CELL + 4.0), Sense::hover());
+        grid(app, ui, area, cols, rows);
+    });
+}
+
+/// The tools in `cols` columns of `rows`, filled top to bottom, centred across `area`.
+fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, cols: usize, rows: usize) {
     let t = app.tokens;
-    let mut y = rect.min.y + 4.0;
-    let size = 32.0;
+    let size = BUTTON;
+    let groups = Tool::groups();
+    let left = area.center().x - (cols as f32 * CELL - 4.0) / 2.0;
     let held_id = egui::Id::new("tools-held");
     if ui.input(|i| i.pointer.any_pressed()) {
         ui.data_mut(|d| d.remove::<egui::Id>(held_id));
     }
-    for group in Tool::groups() {
+    for (index, group) in groups.into_iter().enumerate() {
         let current = if group.contains(&app.ui.tool) { app.ui.tool } else { group[0] };
-        let r = Rect::from_min_size(pos2(rect.center().x - size / 2.0, y), vec2(size, size));
+        let (col, row) = (index / rows, index % rows);
+        let r = Rect::from_min_size(pos2(left + col as f32 * CELL, area.min.y + 4.0 + row as f32 * CELL), vec2(size, size));
         let tip = if current.shortcut().is_empty() {
             app.ui.language.tr(current.label()).to_owned()
         } else {
@@ -85,10 +126,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             });
         }
-        y += size + 4.0;
-        if y > rect.max.y - size {
-            break;
-        }
     }
 }
 
@@ -96,20 +133,33 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 mod tests {
     use super::*;
 
-    fn frame(app: &mut FilmcraftApp, ctx: &egui::Context, time: f64, events: Vec<egui::Event>) {
+    /// The width that shows every tool without scrolling in a panel `height` tall.
+    fn width_for(height: f32) -> f32 {
+        min_width() + (columns(height) - 1) as f32 * CELL
+    }
+
+    /// One frame of the panel, 42 points wide and `height` tall, with `events`.
+    fn frame_at_height(app: &mut FilmcraftApp, ctx: &egui::Context, time: f64, events: Vec<egui::Event>, height: f32) {
         app.auto.begin_frame();
         let mut out = ctx.run_ui(
             egui::RawInput { time: Some(time), events, screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0))), ..Default::default() },
-            |ui| show(app, ui, Rect::from_min_size(egui::Pos2::ZERO, vec2(42.0, 700.0))),
+            |ui| show(app, ui, Rect::from_min_size(egui::Pos2::ZERO, vec2(42.0, height))),
         );
         out.textures_delta.clear();
     }
 
+    /// One frame of a panel tall enough for every tool.
+    fn frame(app: &mut FilmcraftApp, ctx: &egui::Context, time: f64, events: Vec<egui::Event>) {
+        frame_at_height(app, ctx, time, events, 700.0);
+    }
+
+    /// The centre of the automation element `id`, if it was registered this frame.
     fn center_of(app: &FilmcraftApp, id: &str) -> Option<egui::Pos2> {
         let [x, y, w, h] = app.auto.elements.iter().find(|w| w.id == id)?.rect;
         Some(egui::pos2(x + w / 2.0, y + h / 2.0))
     }
 
+    /// A primary button press or release at `pos`.
     fn primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
         egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
     }
@@ -127,6 +177,81 @@ mod tests {
         frame(&mut app, &ctx, 1.05, vec![egui::Event::PointerMoved(at + by)]);
         frame(&mut app, &ctx, 1.1, vec![]);
         (app, ctx)
+    }
+
+    #[test]
+    fn short_tools_panel_scrolls_to_the_tools_below_the_viewport() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+
+        frame_at_height(&mut app, &ctx, 0.0, vec![], 160.0);
+        let before = center_of(&app, "tools.Type").expect("the Type tool is registered before scrolling");
+        assert!(before.y > 160.0, "the last tool starts below a short panel: {before:?}");
+
+        frame_at_height(
+            &mut app,
+            &ctx,
+            0.1,
+            vec![
+                egui::Event::PointerMoved(pos2(21.0, 80.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, -500.0),
+                    modifiers: Default::default(),
+                    phase: egui::TouchPhase::Move,
+                },
+            ],
+            160.0,
+        );
+        frame_at_height(&mut app, &ctx, 0.3, vec![], 160.0);
+        let after = center_of(&app, "tools.Type");
+        assert!(after.is_some_and(|p| (0.0..160.0).contains(&p.y)), "mouse wheel must bring the last tool into view: {after:?}");
+    }
+
+    #[test]
+    fn the_last_tool_scrolls_into_a_panel_shorter_than_a_scroll_area() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        // the dock lets Tools shrink to 40 points: 32 for the buttons under its grip
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -2000.0),
+            modifiers: Default::default(),
+            phase: egui::TouchPhase::Move,
+        };
+        frame_at_height(&mut app, &ctx, 0.0, vec![], 32.0);
+        frame_at_height(&mut app, &ctx, 0.1, vec![egui::Event::PointerMoved(pos2(21.0, 16.0)), wheel], 32.0);
+        frame_at_height(&mut app, &ctx, 0.5, vec![], 32.0);
+        let [_, y, _, h] = app.auto.elements.iter().find(|e| e.id == "tools.Type").expect("the Type tool is registered").rect;
+        // its bottom reaches the panel (only the top margin is left above a 32 point panel)
+        assert!(y + h <= 32.0 && y + h > 24.0, "scrolled to the end, the last tool is in view: {y}..{}", y + h);
+    }
+
+    #[test]
+    fn a_short_panel_shows_every_tool_in_more_columns() {
+        assert_eq!((columns(700.0), columns(160.0), columns(44.0), columns(0.0), columns(f32::NAN)), (1, 2, 8, 8, 8));
+        assert_eq!((width_for(700.0), width_for(160.0)), (48.0, 84.0));
+        assert_eq!(min_width(), 48.0);
+        // three columns need three rows and the room under them: 124 points with the grip
+        assert_eq!((columns(116.0), columns(115.0)), (3, 4));
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        for height in [700.0, 150.0, 80.0, 40.0] {
+            let rect = Rect::from_min_size(pos2(10.0, 20.0), vec2(width_for(height), height));
+            app.auto.begin_frame();
+            let mut out = ctx
+                .run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0))), ..Default::default() }, |ui| {
+                    show(&mut app, ui, rect)
+                });
+            out.textures_delta.clear();
+            for group in Tool::groups() {
+                let [x, y, w, h] = app.auto.elements.iter().find(|e| e.id == format!("tools.{:?}", group[0])).expect("every tool is shown").rect;
+                assert!(rect.contains_rect(Rect::from_min_size(pos2(x, y), vec2(w, h))), "{:?} outside a panel {height} tall", group[0]);
+            }
+        }
     }
 
     #[test]
