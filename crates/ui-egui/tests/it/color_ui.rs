@@ -364,3 +364,46 @@ fn lumetri_rows_keep_their_width_when_the_clip_name_is_long() {
     let long = d.element("lumetri.param.hdr_white").expect("hdr_white row");
     assert_eq!(short, long, "a long clip name must not move or widen the control rows");
 }
+
+/// #2682: a curve point dragged in Lumetri Color is one undo step: Cmd+Z puts the curve back, and
+/// Cmd+Shift+Z brings the edit back.
+#[test]
+fn a_dragged_lumetri_curve_point_undoes_and_redoes() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    d.click("lumetri.section.Curves");
+    d.frames(2);
+    let curve = |d: &mut Driver| {
+        let q = d.app().session.active_sequence().unwrap().clone();
+        let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+        let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
+        e.param("curve_luma").and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default()
+    };
+    let before = curve(&mut d);
+    let r = d.element("lumetri.curve.curve_luma").expect("the luma curve has an automation element");
+    // from the middle of the curve up a quarter of its height: a new point, dragged
+    let (x, y) = (r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x, "y": y - r[3] * 0.25}, "steps": 6}));
+    d.frames(3);
+    let edited = curve(&mut d);
+    assert_ne!(edited, before, "the drag changed the curve");
+    d.ok("ui.key", json!({"key": "Cmd+Z"}));
+    d.frames(3);
+    assert_eq!(curve(&mut d), before, "Cmd+Z puts the curve back: {}", d.app().ui.status);
+    d.ok("ui.key", json!({"key": "Cmd+Shift+Z"}));
+    d.frames(3);
+    assert_eq!(curve(&mut d), edited, "Cmd+Shift+Z brings the edit back");
+    // a second drag is a step of its own: one Cmd+Z takes back that one only
+    let (x2, y2) = (r[0] + r[2] * 0.25, r[1] + r[3] * 0.75);
+    d.ok("ui.drag", json!({"from": {"x": x2, "y": y2}, "to": {"x": x2, "y": y2 + r[3] * 0.1}, "steps": 6}));
+    d.frames(3);
+    let twice = curve(&mut d);
+    assert_ne!(twice, edited);
+    d.ok("ui.key", json!({"key": "Cmd+Z"}));
+    d.frames(3);
+    assert_eq!(curve(&mut d), edited, "one Cmd+Z undoes the second drag only");
+}
