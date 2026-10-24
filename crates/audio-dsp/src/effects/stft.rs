@@ -73,7 +73,8 @@ impl StftChannel {
 /// Stream `len` samples of every channel through its `StftChannel`, sample-major. At a frame
 /// boundary `bins(ch, first, re, im)` edits that channel's half spectrum (bins 0..=n/2);
 /// `first` is set for the first channel that frames on this sample. Neighbouring channels that
-/// frame on the same samples share one complex FFT (`a + i·b`).
+/// frame on the same samples share one complex FFT (`a + i·b`), except for frames with a
+/// non-finite sample, which run per channel so the bad channel cannot contaminate its neighbour.
 pub(crate) fn stream(
     stft: &mut [StftChannel],
     spec: &mut Spectral,
@@ -93,10 +94,27 @@ pub(crate) fn stream(
                 let (lo, hi) = stft.split_at_mut(ch + 1);
                 let x = (channels[ch][i], channels[ch + 1][i]);
                 let (ya, yb) = StftChannel::tick_pair(&mut lo[ch], &mut hi[0], x, hop, &mut |a, b, out_a, out_b| {
-                    spec.analyse_pair(a, b);
-                    bins(ch, first, &mut spec.re[..half], &mut spec.im[..half]);
-                    bins(ch + 1, false, &mut spec.re2, &mut spec.im2);
-                    spec.synthesise_add_pair(out_a, out_b, scale);
+                    if all_finite(a) && all_finite(b) {
+                        spec.analyse_pair(a, b);
+                        bins(ch, first, &mut spec.re[..half], &mut spec.im[..half]);
+                        bins(ch + 1, false, &mut spec.re2, &mut spec.im2);
+                        if spec.pair_finite(half) {
+                            spec.synthesise_add_pair(out_a, out_b, scale);
+                        } else {
+                            // Poisoned per-channel state can leave one edited spectrum
+                            // non-finite: synthesise separately so it cannot leak either.
+                            spec.synthesise_add_split(out_a, out_b, scale);
+                        }
+                    } else {
+                        // A non-finite sample would leak into the other channel through the
+                        // packed FFT: keep the channels isolated for this frame.
+                        spec.analyse(a);
+                        bins(ch, first, &mut spec.re[..half], &mut spec.im[..half]);
+                        spec.synthesise_add(out_a, scale);
+                        spec.analyse(b);
+                        bins(ch + 1, false, &mut spec.re[..half], &mut spec.im[..half]);
+                        spec.synthesise_add(out_b, scale);
+                    }
                     first = false;
                 });
                 channels[ch][i] = ya;
@@ -113,6 +131,12 @@ pub(crate) fn stream(
             }
         }
     }
+}
+
+/// Branch-free scan (vectorises, unlike a short-circuiting `all`).
+#[inline]
+fn all_finite(x: &[f32]) -> bool {
+    x.iter().fold(true, |ok, v| ok & v.is_finite())
 }
 
 /// Periodic Hann window.
@@ -195,6 +219,18 @@ impl Spectral {
             self.im2[k] = 0.5 * (wr - zr);
         }
     }
+    /// Whether both half spectra of `analyse_pair` (bins 0..half) are finite.
+    pub(crate) fn pair_finite(&self, half: usize) -> bool {
+        [&self.re[..half], &self.im[..half], &self.re2[..half], &self.im2[..half]].iter().all(|s| s.iter().fold(true, |ok, v| ok & v.is_finite()))
+    }
+    /// `synthesise_add_pair` without sharing the inverse FFT: the two spectra stay isolated.
+    pub(crate) fn synthesise_add_split(&mut self, out_a: &mut [f32], out_b: &mut [f32], scale: f32) {
+        self.synthesise_add(out_a, scale);
+        let half = self.re2.len();
+        self.re[..half].copy_from_slice(&self.re2);
+        self.im[..half].copy_from_slice(&self.im2);
+        self.synthesise_add(out_b, scale);
+    }
     /// `synthesise_add` for both spectra of `analyse_pair`: one inverse FFT of
     /// Z = Y_a + i·Y_b, whose real part goes to `out_a` and imaginary part to `out_b`.
     pub(crate) fn synthesise_add_pair(&mut self, out_a: &mut [f32], out_b: &mut [f32], scale: f32) {
@@ -257,6 +293,70 @@ mod tests {
             assert!(peak > 0.1 && dev < 1e-5 * peak, "channel {ch}: deviation {dev}");
             if ch == 2 {
                 assert!(y.iter().zip(&joint[ch]).all(|(p, q)| p.to_bits() == q.to_bits()));
+            }
+        }
+    }
+
+    /// A non-finite sample in one channel must not reach its partner through the packed FFT: the
+    /// clean channel stays finite and equals what it would be as a mono signal.
+    #[test]
+    fn non_finite_sample_stays_in_its_channel() {
+        use crate::AudioEffect;
+        use crate::effects::{DeNoise, DeReverb, FftFilter, PitchShifter};
+        const SR: f32 = 48_000.0;
+        let len = 24_000;
+        let mut rng = Rng::new(5);
+        let clean_a: Vec<f32> = crate::testutil::sine(440.0, 0.4, SR as f64, len, 0.0).iter().map(|v| v + 0.05 * rng.uniform()).collect();
+        let clean_b: Vec<f32> = crate::testutil::sine(1250.0, 0.4, SR as f64, len, 0.3).iter().map(|v| v + 0.05 * rng.uniform()).collect();
+        let make: [(&str, fn() -> Box<dyn AudioEffect>, usize); 4] = [
+            ("DeReverb", || Box::new(DeReverb::new(SR, 2)), 1),
+            ("FftFilter", || Box::new(FftFilter::new(SR, 2)), 1),
+            ("DeNoise", || Box::new(DeNoise::new(SR, 2)), 1),
+            ("PitchShifter", || Box::new(PitchShifter::new(SR, 2)), 1),
+        ];
+        let mono = |name: &str, src: &[f32]| -> Vec<f32> {
+            let mut fx: Box<dyn AudioEffect> = match name {
+                "DeReverb" => Box::new(DeReverb::new(SR, 1)),
+                "FftFilter" => Box::new(FftFilter::new(SR, 1)),
+                "DeNoise" => Box::new(DeNoise::new(SR, 1)),
+                _ => Box::new(PitchShifter::new(SR, 1)),
+            };
+            if name == "PitchShifter" {
+                fx.set_param("semitones", 3.0);
+            }
+            let mut y = src.to_vec();
+            for blk in y.chunks_mut(512) {
+                fx.process(&mut [blk]);
+            }
+            y
+        };
+        for (name, ctor, _) in make {
+            for bad_left in [true, false] {
+                let (mut l, mut r) = (clean_a.clone(), clean_b.clone());
+                for (k, bad) in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY].into_iter().enumerate() {
+                    if bad_left {
+                        l[4000 + 977 * k] = bad;
+                    } else {
+                        r[4000 + 977 * k] = bad;
+                    }
+                }
+                let mut fx = ctor();
+                if name == "PitchShifter" {
+                    fx.set_param("semitones", 3.0);
+                }
+                for (bl, br) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+                    fx.process(&mut [bl, br]);
+                }
+                let (good, src) = if bad_left { (&r, &clean_b) } else { (&l, &clean_a) };
+                let want = mono(name, src);
+                let peak = want.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+                assert!(
+                    good.iter().all(|v| v.is_finite()),
+                    "{name} bad_left={bad_left}: clean channel not finite at {:?}",
+                    good.iter().position(|v| !v.is_finite())
+                );
+                let dev = good.iter().zip(&want).fold(0.0f32, |a, (p, q)| a.max((p - q).abs()));
+                assert!(peak > 0.05 && dev < 1e-5 * peak, "{name} bad_left={bad_left}: deviation {dev} (peak {peak})");
             }
         }
     }
