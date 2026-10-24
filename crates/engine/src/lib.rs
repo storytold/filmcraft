@@ -1256,6 +1256,8 @@ mod explicit_targets_tests;
 #[cfg(test)]
 mod export_tests;
 #[cfg(test)]
+mod file_import_tests;
+#[cfg(test)]
 mod file_tests;
 #[cfg(test)]
 mod gap_selection_tests;
