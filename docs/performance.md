@@ -344,6 +344,47 @@ the encoder's hand-off). Only NVENC, whose encode is light on the CPU, comes clo
 encoder waits for the renderer), as expected. 1080p exports use 70-160 MB more (the second batch of 16
 frames); 4K exports use less than before because the batch is smaller (8 for SDR, 2 for HDR instead of 16).
 
+## Export: the H.264 colour conversion while rendering
+
+The built-in H.264 encoder takes 8-bit 4:2:0. The exporter rendered straight RGBA8 and the encoder
+converted each picture on the encoding thread (`export.stages.convertMs`), while the shared rayon pool
+that runs the conversion's rows was busy rendering the next batch, so the encoder waited for it: 450 ms
+of a 5.7 s export below, 0.8-1.0 s of 9-10 s on a busier machine. Now:
+
+- **The conversion runs where the picture is rendered.** `VideoEncoder::yuv420_input` tells the
+  exporter which conversion an encoder runs (the built-in H.264 encoder: BT.709, or the HDR matrix);
+  the render task converts its frame with that same function and `encode_yuv420` takes the planes.
+  The conversion leaves the serial encode side, and a frame waiting to be encoded holds 1.5 bytes per
+  pixel instead of 4 (12 for HDR). Encoders that take other pictures (NVENC's RGBA input, ProRes,
+  DNxHR …) are unchanged; the hardware encoders that convert with `rgba_to_yuv420_8` on their own
+  thread get the faster function below.
+- **The conversion costs about 40 % less CPU.** `rgba_to_yuv420_8` / `rgbf_to_yuv420_8` work 64
+  pixels at a time with the chroma terms on the stack (no allocation per row pair), and round with
+  `+ 0.5` and a truncating cast instead of `f32::round`, which is a call into libm on the baseline
+  x86-64 target. That rounding gives the same code as `round().clamp(1.0, 254.0)` for every one of
+  the 2^32 `f32` values, and the new functions give the same codes as the old ones for every 8-bit RGB
+  colour. One 1080p picture on one thread, best of 15, three alternating runs: 16.5-21.3 ms before,
+  11.0-11.8 ms after.
+- **The file is the same.** The determinism tests export SDR, two-pass and PQ H.264 with the
+  conversion on either side, rendering ahead or not; every export below has the MD5 of the old build.
+
+Measured on a 24-core laptop CPU (8 performance + 16 efficiency cores), Linux, release CLI,
+`filmcraft-cli export out.mp4 --format h264 --start 0 --end 8` on the bench's `a1080.mp4` (192 frames
+of 1080p23.976 with AAC, default settings, hardware decoding Auto). Other work was running, so the
+two builds ran alternately:
+
+| | before | after |
+|---|---|---|
+| export, median of 8 (range) | 5.70 s (5.5-6.2) | **5.50 s** (5.2-6.1), faster in all 8 pairs |
+| CPU time, median of 8 | 71.0 s | 69.4 s |
+| `convertMs` / `encodeMs` / `renderMs`, median of 4 | 452 / 4868 / 1877 | 0 / 4713 / 2012 |
+| peak RSS, median of 3 | 1904 MB | 1748 MB |
+
+The encode side gives back part of the 450 ms because the conversion now competes with the encoder
+for the cores on the render side; on a machine with idle cores more of it is saved. At a load
+average of 30-40 from other work the wall-time difference was inside the noise, and CPU time fell by
+2-5 %.
+
 ## Results (HW3: VideoToolbox hardware H.265 (HEVC) encoding, against hardware H.264)
 
 Apple M1 (8 cores, 16 GB), 2026-10-07, single runs on an otherwise idle machine, release build. Both
