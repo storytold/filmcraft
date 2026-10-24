@@ -82,10 +82,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** a graphics start-up fallback (#820): after two starts in a row that died within 15 s
   of launch without painting (a driver crash in wgpu instance / device creation; hangs, later
   crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
-  (Windows), then a software adapter (WARP, lavapipe, llvmpipe) with CPU compositing, and keeps
-  the mode that works; a start-up error wgpu reports moves on in the same process. A fallback mode
-  shows a notice with Use Default Graphics; `--graphics default|dx12|software` picks a mode by
-  hand. An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
+  (Windows) or the integrated GPU (Linux, #2553), then a software adapter (WARP, lavapipe,
+  llvmpipe) with CPU compositing, and keeps the mode that works; a start-up error wgpu reports, or
+  a wgpu panic before the app exists, moves on in the same process, and a start where every mode
+  failed goes back to the default next time. A fallback mode shows a notice with Use Default
+  Graphics; `--graphics default|dx12|low-power|software` picks a mode by hand. An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
   installed versions of one driver (GPUs on different driver packages) draws with the newer one
   instead of dying inside the stale one (`filmcraft_gpu::adapter`).
 - **Missing:** a launch that never fails, and CI that runs the gates.

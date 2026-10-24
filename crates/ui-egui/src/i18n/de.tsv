@@ -3600,6 +3600,7 @@
 	The default graphics are used from the next start.	Die Standardgrafik wird ab dem nächsten Start verwendet.
 	DirectX 12 only	Nur DirectX 12
 	software rendering	Software-Rendering
+	integrated GPU	integrierte GPU
 	Label Color Presets	Vorgaben für Markierungsfarben
 	{name} (Modified)	{name} (geändert)
 	Revert to the preset's colors and names	Auf die Farben und Namen der Vorgabe zurücksetzen

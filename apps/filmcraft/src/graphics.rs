@@ -24,7 +24,9 @@
 //! [`FAILURES_TO_MOVE_ON`] such failures in a row in the same mode, the launch moves on to the next
 //! [`Mode`] of the platform's [`LADDER`] and keeps it; a start that paints resets the count. A
 //! start-up error that wgpu does report (no adapter, device creation failed) moves on at once,
-//! within the same process.
+//! within the same process. A panic out of wgpu before the app exists (a surface the chosen GPU
+//! claimed and then could not configure, #2553) saves the next mode and starts FilmCraft again in
+//! it, once: the event loop does not run again in a process it unwound out of.
 //!
 //! # Getting back
 //! A fallback mode shows a notice with a reset button in the window (`graphics.notice.reset`,
@@ -70,6 +72,9 @@ pub enum Mode {
     Default,
     /// DirectX 12 only (Windows), for Vulkan drivers that crash at start-up.
     Dx12,
+    /// The low-power (integrated) GPU (Linux): on a laptop with two GPUs the high-performance one
+    /// can claim the window's surface and still fail to draw to it (NVIDIA 470 on Wayland, #2553).
+    LowPower,
     /// A software adapter (WARP on Windows, lavapipe / llvmpipe elsewhere); the preview then
     /// composites on the CPU (`FilmcraftApp::set_wgpu`).
     Software,
@@ -81,6 +86,7 @@ impl Mode {
         match self {
             Mode::Default => "default",
             Mode::Dx12 => "dx12",
+            Mode::LowPower => "low-power",
             Mode::Software => "software",
         }
     }
@@ -90,12 +96,13 @@ impl Mode {
         match self {
             Mode::Default => "default graphics",
             Mode::Dx12 => "DirectX 12 only",
+            Mode::LowPower => "integrated GPU",
             Mode::Software => "software rendering",
         }
     }
 
     pub fn parse(name: &str) -> Option<Mode> {
-        [Mode::Default, Mode::Dx12, Mode::Software].into_iter().find(|m| m.name() == name)
+        [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software].into_iter().find(|m| m.name() == name)
     }
 }
 
@@ -105,7 +112,7 @@ pub const LADDER: &[Mode] = if cfg!(target_os = "windows") {
 } else if cfg!(target_os = "macos") {
     &[Mode::Default]
 } else {
-    &[Mode::Default, Mode::Software]
+    &[Mode::Default, Mode::LowPower, Mode::Software]
 };
 
 /// The mode after `mode` in `ladder`, if any.
@@ -460,6 +467,8 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
         Mode::Default => {}
         // Without Vulkan, whose driver is what crashes; GPU effects may fall back to the CPU.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
+        // What `WGPU_POWER_PREF=low` does: the integrated GPU, which drives the display.
+        Mode::LowPower => create.power_preference = wgpu::PowerPreference::LowPower,
         Mode::Software => {
             create.instance_descriptor.backends = software_backends(windows);
             create.native_adapter_selector = Some(Arc::new(pick_software));
@@ -493,7 +502,7 @@ mod tests {
     use super::*;
 
     const WINDOWS: &[Mode] = &[Mode::Default, Mode::Dx12, Mode::Software];
-    const LINUX: &[Mode] = &[Mode::Default, Mode::Software];
+    const LINUX: &[Mode] = &[Mode::Default, Mode::LowPower, Mode::Software];
     const MACOS: &[Mode] = &[Mode::Default];
 
     fn configured(mode: Mode, backend_override: Option<Backends>, windows: bool) -> (Backends, bool) {
@@ -510,7 +519,7 @@ mod tests {
         if std::env::var_os("WGPU_VALIDATION_INDIRECT_CALL").is_some() {
             return;
         }
-        for mode in [Mode::Default, Mode::Dx12, Mode::Software] {
+        for mode in [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software] {
             let mut options = NativeOptions::default();
             apply_for(&mut options, mode, None, false);
             let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
@@ -561,6 +570,14 @@ mod tests {
         // Software on Windows is WARP (DX12), never GL (atio6axx.dll, #477).
         assert_eq!(configured(Mode::Software, None, true), (Backends::DX12, true));
         assert_eq!(configured(Mode::Software, None, false), (Backends::VULKAN | Backends::GL, true));
+        // The integrated GPU: every backend, wgpu's choice of adapter, low power (#2553).
+        let mut options = NativeOptions::default();
+        apply_for(&mut options, Mode::LowPower, None, false);
+        let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
+            panic!("default native options must create a wgpu instance");
+        };
+        assert_eq!(create.power_preference, wgpu::PowerPreference::LowPower);
+        assert!(create.native_adapter_selector.is_none());
         // Off Windows the default is eframe's own.
         let WgpuSetup::CreateNew(eframe_default) = NativeOptions::default().wgpu_options.wgpu_setup else {
             panic!("default native options must create a wgpu instance");
@@ -594,7 +611,9 @@ mod tests {
         // the second in a row moves on: DX12, then software
         assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], WINDOWS), (Mode::Dx12, 0, true));
         assert_eq!(mode_after(saved(Mode::Dx12, 1), &[dead(Mode::Dx12)], WINDOWS), (Mode::Software, 0, true));
-        assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], LINUX), (Mode::Software, 0, true));
+        // on Linux the integrated GPU comes before software
+        assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], LINUX), (Mode::LowPower, 0, true));
+        assert_eq!(mode_after(saved(Mode::LowPower, 1), &[dead(Mode::LowPower)], LINUX), (Mode::Software, 0, true));
         // two dead instances found at once count as two
         assert_eq!(mode_after(None, &[dead(Mode::Default), dead(Mode::Default)], WINDOWS), (Mode::Dx12, 0, true));
         // a saved mode is kept
