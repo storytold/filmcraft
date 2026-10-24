@@ -136,6 +136,11 @@ fn luma709(c: vec3<f32>) -> f32 {
     return 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
 }
 
+// Rec.601 luma of an encoded triple (Premiere's Tint and Black & White).
+fn luma601(c: vec3<f32>) -> f32 {
+    return 0.299 * c.x + 0.587 * c.y + 0.114 * c.z;
+}
+
 // `f32::powf` for x >= 0 (WGSL leaves pow(0, y) undefined).
 fn powf(x: f32, y: f32) -> f32 {
     if x == 0.0 {
@@ -322,13 +327,13 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
         }
         case OP_TINT: {
             let bl = u.p0.xyz; let wh = u.p1.xyz; let amt = u.p0.w;
-            let l = linear_to_srgb1(max(luma709(c), 0.0));
-            let t = bl + (wh - bl) * l;
             let e = enc(c);
+            let l = luma601(e);
+            let t = bl + (wh - bl) * l;
             return dec(e + (t - e) * amt);
         }
         case OP_BLACK_WHITE: {
-            return vec3(luma709(c));
+            return dec(vec3(luma601(enc(c))));
         }
         case OP_COLOR_BALANCE: {
             let e = enc(c);
@@ -402,9 +407,9 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
             return dec(o + (e - o) * blend);
         }
         case OP_POSTERIZE: {
+            // Same as the CPU path: level = min(floor(v * L), L - 1), out = level / (L - 1).
             let n = u.p0.x;
-            let e = enc(c) * n;
-            return dec(vec3(round_away(e.x), round_away(e.y), round_away(e.z)) / n);
+            return dec(min(floor(enc(c) * (n + 1.0)), vec3(n)) / n);
         }
         case OP_ASC_CDL: {
             let e = enc(c);

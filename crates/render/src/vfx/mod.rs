@@ -472,7 +472,14 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "compound_blur" => blur::compound(img, e, cx),
         "focus_blur" => blur::focus(img, e, cx),
         "reduce_interlace_flicker" => blur::interlace_flicker(img, e, cx),
-        "gaussian_blur_legacy" => alias(img, "gaussian_blur"),
+        "gaussian_blur_legacy" => {
+            // The legacy effect has no Repeat Edge Pixels control; Premiere renders it with the
+            // edge pixels repeated (no fade to transparent at the frame border).
+            let mut a = e.clone();
+            a.effect = "gaussian_blur".to_string();
+            a.params.insert("repeat_edge".to_string(), filmcraft_project::Param::new(filmcraft_project::ParamValue::Bool(true)));
+            crate::effects::apply(img, &a, cx);
+        }
         "directional_blur_legacy" => alias(img, "directional_blur"),
         // Distort / Transform / Utility geometry
         "corner_pin" => distort::corner_pin(img, e, cx),

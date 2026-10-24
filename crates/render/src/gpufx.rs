@@ -9,7 +9,7 @@
 //! op to the GPU when [`FxOp::gpu_ok`] says the shader covers it (finite numbers, no minifying
 //! resample), otherwise the clip is rendered on the CPU as before.
 
-use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
+use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma601, luma709, rgb_to_hsl};
 use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
@@ -237,6 +237,14 @@ pub const GPU_EFFECTS: &[&str] = &[
     "lumetri",
 ];
 
+/// Brightness & Contrast slope about mid-grey (encoded space). Measured against Premiere 26.5.2:
+/// a negative Contrast c gives 1 + c/100 (slope 0.60 at -40, exact match), a positive one gives
+/// 1 / (1 - c/100) (fitted slopes 1.25, 1.667 and 5.00 at +20, +40 and +80; the old 1 + c/100
+/// gave 54, 42 and 31 dB). The denominator is floored so +100 stays finite.
+fn contrast_slope(c: f32) -> f32 {
+    if c < 0.0 { 1.0 + c / 100.0 } else { 1.0 / (1.0 - c / 100.0).max(0.01) }
+}
+
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
 fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
     let Some(inv) = m.inverse() else { return Resample { inv: None, rect: [0; 4], opacity } };
@@ -266,7 +274,7 @@ impl FxOp {
             return None;
         }
         Some(match e.effect.as_str() {
-            "brightness_contrast" => FxOp::BrightnessContrast { br: f(e, "brightness", cx) / 100.0 * 0.4, co: 1.0 + f(e, "contrast", cx) / 100.0 },
+            "brightness_contrast" => FxOp::BrightnessContrast { br: f(e, "brightness", cx) / 100.0 * 0.4, co: contrast_slope(f(e, "contrast", cx)) },
             "proc_amp" => FxOp::ProcAmp {
                 br: f(e, "brightness", cx) / 100.0 * 0.4,
                 co: f(e, "contrast", cx) / 100.0,
@@ -334,7 +342,9 @@ impl FxOp {
             "invert" => FxOp::Invert { channel: choice(e, "channel"), blend: f(e, "blend", cx) / 100.0 },
             "posterize" => FxOp::Posterize { n: f(e, "levels", cx).max(2.0) - 1.0 },
             "gaussian_blur" | "gaussian_blur_legacy" => {
-                let r = f(e, "blurriness", cx) * cx.px_scale * 0.5;
+                // Premiere 26.5.2's Gaussian Blur (Legacy) spreads an edge with sigma = 0.28 x
+                // Blurriness pixels (measured from Blurriness 2 to 80 on rendered edges).
+                let r = f(e, "blurriness", cx) * cx.px_scale * 0.28;
                 let dims = choice(e, "dimensions");
                 let (rx, ry) = gaussian_boxes(w, h, if dims == 2 { 0.0 } else { r }, if dims == 1 { 0.0 } else { r });
                 FxOp::Gaussian { rx, ry, repeat: b(e, "repeat_edge") }
@@ -658,15 +668,16 @@ impl FxOp {
             FxOp::Tint { black: bl, white: wh, amount } => {
                 let amt = *amount;
                 img.map_rgb(|c, _, _| {
-                    let l = linear_to_srgb(luma709(c[0], c[1], c[2]).max(0.0));
-                    let t = [bl[0] + (wh[0] - bl[0]) * l, bl[1] + (wh[1] - bl[1]) * l, bl[2] + (wh[2] - bl[2]) * l];
                     let e = enc(c);
+                    let l = luma601(e[0], e[1], e[2]);
+                    let t = [bl[0] + (wh[0] - bl[0]) * l, bl[1] + (wh[1] - bl[1]) * l, bl[2] + (wh[2] - bl[2]) * l];
                     dec([e[0] + (t[0] - e[0]) * amt, e[1] + (t[1] - e[1]) * amt, e[2] + (t[2] - e[2]) * amt])
                 });
             }
             FxOp::BlackWhite => img.map_rgb(|c, _, _| {
-                let l = luma709(c[0], c[1], c[2]);
-                [l, l, l]
+                let e = enc(c);
+                let l = luma601(e[0], e[1], e[2]);
+                dec([l, l, l])
             }),
             FxOp::ColorBalance { sh, md, hi, preserve } => {
                 let preserve = *preserve;
@@ -774,7 +785,9 @@ impl FxOp {
             }
             FxOp::Posterize { n } => {
                 let n = *n;
-                img.map_rgb(|c, _, _| dec(enc(c).map(|v| (v * n).round() / n)));
+                // Premiere 26.5.2 Posterize: level k = min(floor(v * L), L - 1), out = k / (L - 1), with
+                // n = L - 1. Exact on every pixel at L = 4, 6 and 16 (round() gave 31-45 dB).
+                img.map_rgb(|c, _, _| dec(enc(c).map(|v| (v * (n + 1.0)).floor().min(n) / n)));
             }
             FxOp::Gaussian { rx, ry, repeat } => crate::effects::box_blur(img, rx, ry, *repeat),
             FxOp::DirectionalBlur { dx, dy, steps } => crate::effects::directional_taps(img, *dx, *dy, *steps as usize),
