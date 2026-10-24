@@ -114,11 +114,9 @@ impl PesAsm {
         }
         let before = self.hdr.len();
         self.hdr.extend_from_slice(payload);
-        if let Some(h) = pes::parse(&self.hdr)
-            && self.hdr.len() >= h.header_len
-        {
+        if let Some(h) = pes::parse(&self.hdr) {
             self.waiting = false;
-            let skip = (h.header_len - before).min(payload.len());
+            let skip = h.header_len.saturating_sub(before).min(payload.len());
             return (Some(h), &payload[skip..]);
         }
         if self.hdr.len() > 1024 || (self.hdr.len() >= 6 && !(self.hdr[0] == 0 && self.hdr[1] == 0 && self.hdr[2] == 1)) {
