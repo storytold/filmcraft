@@ -1346,6 +1346,9 @@ impl ProjectView {
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
+/// Largest embedded LUT source accepted from a project or import (8 MiB).
+pub const MAX_LUT_TEXT_BYTES: usize = 8 << 20;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectLut {
     pub id: String,

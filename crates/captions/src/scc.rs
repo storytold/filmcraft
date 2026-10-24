@@ -304,7 +304,12 @@ pub fn wrap_rows(text: &str) -> Vec<String> {
     for line in text.lines() {
         let mut cur = String::new();
         for word in line.split_whitespace() {
-            let mut word = word.to_string();
+            if rows.len() == 15 {
+                return rows;
+            }
+            // SCC can emit at most 15 32-column rows.  Do not repeatedly copy an unbounded word
+            // only to discard all but that small prefix below.
+            let mut word: String = word.chars().take(COLS * (15 - rows.len())).collect();
             loop {
                 let need = if cur.is_empty() { word.chars().count() } else { cur.chars().count() + 1 + word.chars().count() };
                 if need <= COLS {
@@ -316,11 +321,17 @@ pub fn wrap_rows(text: &str) -> Vec<String> {
                 }
                 if !cur.is_empty() {
                     rows.push(std::mem::take(&mut cur));
+                    if rows.len() == 15 {
+                        return rows;
+                    }
                     continue;
                 }
                 let head: String = word.chars().take(COLS).collect();
                 word = word.chars().skip(COLS).collect();
                 rows.push(head);
+                if rows.len() == 15 {
+                    return rows;
+                }
                 if word.is_empty() {
                     break;
                 }
@@ -539,6 +550,13 @@ mod tests {
         let rows = wrap_rows("the quick brown fox jumps over the lazy dog and keeps running far away");
         assert!(rows.iter().all(|r| r.chars().count() <= 32));
         assert_eq!(rows.join(" "), "the quick brown fox jumps over the lazy dog and keeps running far away");
+    }
+
+    #[test]
+    fn wrapping_discards_an_unrepresentable_word_without_quadratic_copying() {
+        let rows = wrap_rows(&"x".repeat(100_000));
+        assert_eq!(rows.len(), 15);
+        assert!(rows.iter().all(|row| row.len() == COLS));
     }
 
     #[test]

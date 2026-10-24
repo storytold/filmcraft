@@ -81,6 +81,11 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         }
         _ => filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?,
     };
+    for item in fragment.project.items.values() {
+        if let ItemKind::Sequence(sequence) = &item.kind {
+            sequence.settings.validate().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence settings: {e}")))?;
+        }
+    }
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
     let seqs = s.edit(&format!("Import {name}"), |proj, _| {

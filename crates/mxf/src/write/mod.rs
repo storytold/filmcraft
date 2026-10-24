@@ -541,6 +541,16 @@ impl<W: Write + Seek> MxfWriter<W> {
         if !cfg.edit_rate.is_valid() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "MXF edit rate must be positive"));
         }
+        // OP1a pads every sound track to a whole edit unit on flush. Bound that unit before a
+        // low but technically positive edit rate can turn padding into a multi-gigabyte Vec.
+        const MAX_PCM_EDIT_UNIT_BYTES: u128 = 64 << 20;
+        for sound in &cfg.sound {
+            let samples = (u128::from(sound.sample_rate) * cfg.edit_rate.den as u128).div_ceil(cfg.edit_rate.num as u128);
+            let bytes = samples.saturating_mul(u128::from(sound.block_align()));
+            if bytes > MAX_PCM_EDIT_UNIT_BYTES {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "MXF PCM edit unit exceeds the allocation budget"));
+            }
+        }
         let n_essence = cfg.picture.is_some() as usize + cfg.sound.len();
         if n_essence == 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "MXF file without essence tracks"));
