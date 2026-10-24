@@ -1,6 +1,9 @@
 //! The raw image data of a DNG: finding the main raw IFD, and reading its strips or tiles
 //! (uncompressed or lossless JPEG) into one array of 16-bit samples.
 
+#[cfg(feature = "threads")]
+use rayon::prelude::*;
+
 use crate::tiff::{Ifd, Tiff, tags};
 use crate::{Error, Result, ljpeg};
 
