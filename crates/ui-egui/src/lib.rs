@@ -2130,6 +2130,11 @@ impl eframe::App for FilmcraftApp {
         }
     }
 
+    /// eframe persists window geometry separately; keep transient egui memory session-only.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
