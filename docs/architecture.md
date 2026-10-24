@@ -281,9 +281,9 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   decoder.
 - **Hardware encoding.** On Windows and 64-bit Linux, `platform::nvenc::export::factory` is registered with
   `filmcraft_export::register_encoder` (`register()` does this once), in front of the software H.264
-  encoder. It takes an export only when Export ▸ Hardware encoding (`ExportSettings.hardwareEncoding`,
-  `HardwareEncoding::Auto`) is Auto, which is off by default: hardware streams differ from ours, and
-  exports are otherwise byte-identical from run to run. NVENC (`platform::nvenc`, the driver's
+  encoder. It takes an export when Export ▸ Hardware encoding (`ExportSettings.hardwareEncoding`,
+  `HardwareEncoding::Auto`) is Auto, the default; Off keeps the software encoder, whose exports are
+  byte-identical from run to run and machine to machine (hardware streams differ). NVENC (`platform::nvenc`, the driver's
   `nvEncodeAPI64.dll` / `libnvidia-encode.so.1` loaded at run time) then takes RGBA frames, converted to 4:2:0 by the software
   encoder's own conversion, and produces the H.264 samples and `avcC` of an MP4 / MOV. It declines
   (the software encoder runs, counted in `export.hardware.declined`) two-pass VBR, HDR, MXF,
@@ -677,8 +677,11 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 - **Reproducible.** The same project and settings give the same file on every machine. Frames render
   in batches of one per core, but the muxer gets them in fixed groups of 16 output frames
   (`INTERLEAVE` in `crates/export/src/job.rs`), each followed by its audio, and H.264 uses one slice
-  per four macroblock rows instead of one per core. MXF files are the exception: their UMIDs and
-  modification date come from the clock, as SMPTE ST 330 / ST 377 expect.
+  per four macroblock rows instead of one per core. The exceptions: MXF files, whose UMIDs and
+  modification date come from the clock, as SMPTE ST 330 / ST 377 expect, and exports that a
+  hardware encoder takes (H.264 with Hardware encoding Auto, the default, on a machine that has
+  one; H.265), whose streams depend on the GPU and driver. Hardware encoding Off keeps H.264 on the
+  built-in encoder and its byte-identical files.
 - **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
   Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
   only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,

@@ -440,6 +440,8 @@ fn queue(s: &mut Session) -> Vec<Value> {
     s.execute("export.queue.list", json!({})).unwrap()["items"].as_array().unwrap().clone()
 }
 
+/// The export queue runs its items in the order they were moved to, skips one cancelled before
+/// it starts, retries it on request and clears the finished ones.
 #[test]
 fn queue_orders_cancels_and_retries() {
     let mut s = demo();
@@ -482,6 +484,8 @@ fn queue_orders_cancels_and_retries() {
     assert!(queue(&mut s).is_empty());
 }
 
+/// Moving a queue item by `i64::MAX` or `i64::MIN` places it last or first instead of
+/// overflowing.
 #[test]
 fn queue_move_by_extreme_offsets_clamps_instead_of_overflowing() {
     let mut s = demo();
@@ -498,6 +502,8 @@ fn queue_move_by_extreme_offsets_clamps_instead_of_overflowing() {
     assert_eq!(order(&mut s), [ids[1], ids[0], ids[2]]);
 }
 
+/// A queue item cancelled while it encodes ends as cancelled; one that fails (its directory
+/// cannot be created) shows the I/O error, is ready again after a retry and can be removed.
 #[test]
 fn queue_cancels_a_running_export_and_retries_a_failed_one() {
     let mut s = demo();
@@ -530,6 +536,8 @@ fn queue_cancels_a_running_export_and_retries_a_failed_one() {
     assert!(queue(&mut s).iter().all(|i| i["id"] != bad));
 }
 
+/// A running job and the queue item encoding it report the seconds left from their speed so far;
+/// a waiting item reports none, and `jobs.list` carries the estimate too.
 #[test]
 fn jobs_and_queue_items_report_the_time_they_have_left() {
     use std::sync::atomic::Ordering;
@@ -571,12 +579,15 @@ fn jobs_and_queue_items_report_the_time_they_have_left() {
     assert!(listed["etaSeconds"].as_f64().is_some(), "{listed}");
 }
 
+/// Hardware encoding is Auto unless the parameters or the settings turn it off (`off`, `false`),
+/// an older settings document without the field reads as Auto, and anything else is an error that
+/// names the choices.
 #[test]
-fn hardware_encoding_is_off_unless_asked_for() {
+fn hardware_encoding_is_auto_unless_turned_off() {
     use filmcraft_export::HardwareEncoding::{Auto, Off};
     let s = demo();
     let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st.hardware_encoding);
-    assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), Off);
+    assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), Auto);
     assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "auto"})).unwrap(), Auto);
     assert_eq!(setting(json!({"path": "x.mp4", "hardwareEncoding": "off"})).unwrap(), Off);
     // a boolean is understood too: true is auto
@@ -586,9 +597,9 @@ fn hardware_encoding_is_off_unless_asked_for() {
     let e = setting(json!({"path": "x.mp4", "hardwareEncoding": "gpu"})).unwrap_err().to_string();
     assert!(e.contains("off | auto"), "{e}");
     // and it travels in the settings object, with the default filling in when it is missing
-    assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), Auto);
+    assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "off"}})).unwrap(), Off);
     let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
-    assert_eq!(old.hardware_encoding, Off);
+    assert_eq!(old.hardware_encoding, Auto);
 }
 
 #[test]

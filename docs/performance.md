@@ -220,7 +220,8 @@ next step (issue #30).
 ## Results (HW2: VideoToolbox hardware H.264 encoding, built-in → hardware)
 
 Apple M1 (8 cores, 16 GB), 2026-10-06, single runs on an otherwise idle machine, release build.
-Hardware encoding is opt-in per export (`hardware_encoding: auto`); the built-in encoder is unchanged.
+The hardware rows set `hardware_encoding: auto` explicitly (hardware encoding was opt-in then; it is
+the default now); the built-in encoder is unchanged.
 
 ### The encoder alone (100 frames of 1920×1080 25 fps camera footage, High, one-pass VBR, keyframe every 50)
 
@@ -447,6 +448,15 @@ of 8 s of a 1080p23.976 H.264 clip (191 frames) to H.264 with the default preset
   matched, so these rows are not a quality comparison.
 
 Quality at equal bitrate: see the PR description.
+
+### On by default
+
+Export ▸ Hardware encoding is Auto by default, as Premiere Pro and Media Encoder ship it ("Hardware
+Encoding is the default", falling back to software where the settings are not supported). Where the
+machine has no hardware H.264 encoder, or the encoder declines the settings, the built-in encoder
+runs exactly as before; Off keeps the built-in encoder everywhere, and its byte-identical output.
+On a 24-core laptop with an NVIDIA RTX 50 series GPU (Linux), 8 s of 1080p23.976 H.264 + AAC with the
+default preset: 5.0–6.1 s with the built-in encoder, 1.7–1.8 s with NVENC.
 
 ## Results (HW2 follow-up: Windows VP9 and AV1 hardware decoding, Off → Auto)
 

@@ -62,16 +62,19 @@ impl H264Profile {
 }
 
 /// Export ▸ Hardware encoding: whether H.264 may be encoded by the system's hardware video encoder
-/// (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows) instead of FilmCraft's own encoder. Off
-/// by default: hardware encoders make different streams, and exports are otherwise byte-identical
-/// from run to run and machine to machine.
+/// (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows and Linux) instead of FilmCraft's own
+/// encoder. Auto by default, as in other editors: where the machine has a hardware encoder that
+/// takes the settings it is used, and everywhere else the built-in encoder runs. A hardware
+/// encoder's stream depends on the machine; Off gives the built-in encoder's, byte-identical from
+/// run to run and machine to machine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HardwareEncoding {
-    #[default]
+    /// The built-in encoder only.
     Off,
     /// Use the hardware encoder when the system has one and it takes the settings; otherwise the
     /// software encoder.
+    #[default]
     Auto,
 }
 
