@@ -167,6 +167,23 @@ fn lumetri_lut_menus_and_section_switches() {
 }
 
 #[test]
+fn lumetri_curves_grow_with_the_panel() {
+    // #1658: the RGB curve kept 260 px in a wide panel
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.ok("ui.set", json!({"focused": "LumetriColor"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(3);
+    d.click("lumetri.section.Curves");
+    d.frames(3);
+    let r = d.element("lumetri.curve.curve_luma").expect("the luma curve is shown");
+    assert!(r[2] > 400.0, "curve width {r:?}");
+}
+
+#[test]
 fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     let mut d = Driver::demo();
     d.ok("ui.set", json!({"workspace": "Color"}));

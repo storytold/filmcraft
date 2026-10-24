@@ -150,7 +150,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("curve_green", Color32::from_rgb(80, 200, 90)),
                 ("curve_blue", Color32::from_rgb(80, 130, 250)),
             ][ch];
-            curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
+            let r = curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
+            auto_rows.push((format!("lumetri.curve.{id}"), r, id));
             if hdr {
                 let r = slider(ui, &e, mt, "curves_hdr_range", tl!("HDR Range"), None, &t, &mut actions, clip, idx);
                 auto_rows.push(("lumetri.param.curves_hdr_range".into(), r, "HDR Range"));
@@ -164,7 +165,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("sat_vs_sat", tl!("Sat vs Sat")),
             ] {
                 ui.label(egui::RichText::new(label).color(t.text_dim));
-                curve_editor(ui, &e, id, true, Color32::WHITE, &t, &mut actions, clip, idx);
+                let r = curve_editor(ui, &e, id, true, Color32::WHITE, &t, &mut actions, clip, idx);
+                auto_rows.push((format!("lumetri.curve.{id}"), r, id));
             }
         }
         if open_section(ui, app, &e, "Color Wheels & Match", "wheels_on", "wheels", &mut sections) {
@@ -458,10 +460,11 @@ fn lerp_col(a: Color32, b: Color32, f: f32) -> Color32 {
 
 /// Curve editor: drag points, click the curve to add, double-click a point to remove.
 #[allow(clippy::too_many_arguments)]
-fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col: Color32, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) {
+fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col: Color32, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) -> Rect {
     let pts: Vec<[f32; 2]> = e.param(id).and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default();
-    let w = ui.available_width().min(260.0);
-    let h = if hue { w * 0.45 } else { w };
+    // as wide as the panel (it stayed 260 px wide in a wide panel, #1658), not taller than 420 px
+    let w = ui.available_width().max(1.0);
+    let h = if hue { w * 0.45 } else { w }.min(420.0);
     let (area, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
     let p = ui.painter();
     p.rect_filled(area, 2.0, Color32::from_rgb(0x16, 0x16, 0x16));
@@ -510,6 +513,10 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     };
     let line: Vec<Pos2> = lut.iter().enumerate().map(|(i, y)| to_screen([i as f32 / 127.0, y.clamp(0.0, 1.0)])).collect();
     p.add(egui::Shape::line(line, Stroke::new(1.5, col)));
+    // the point nearest `pos` within reach (drag and double-click pick the same one)
+    let nearest = |pos: Pos2| {
+        pts.iter().enumerate().map(|(i, q)| (i, to_screen(*q).distance(pos))).filter(|(_, d)| *d < 9.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0)
+    };
     let drag_key = egui::Id::new(("curve-drag", clip.0, id));
     let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_key));
     let mut new_pts = pts.clone();
@@ -521,8 +528,7 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     if resp.drag_started()
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        let near =
-            pts.iter().enumerate().map(|(i, q)| (i, to_screen(*q).distance(pos))).filter(|(_, d)| *d < 9.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0);
+        let near = nearest(pos);
         dragging = near.or_else(|| {
             new_pts.push(from_screen(pos));
             changed = true;
@@ -541,11 +547,10 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     }
     if resp.double_clicked()
         && let Some(pos) = resp.interact_pointer_pos()
-        && let Some(i) = pts.iter().position(|q| to_screen(*q).distance(pos) < 9.0)
+        && let Some(i) = nearest(pos)
     {
-        let endpoint = !hue && (i == 0 || i == pts.len() - 1);
-        if !endpoint {
-            new_pts.remove(i);
+        if let Some(rest) = without_point(&pts, i, hue) {
+            new_pts = rest;
             changed = true;
         }
     } else if resp.double_clicked() && !hue {
@@ -564,6 +569,21 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
         actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": v}));
     }
     ui.add_space(6.0);
+    area
+}
+
+/// `pts` without point `i` (double-click), or `None` for a point that stays: the leftmost and
+/// rightmost points of an RGB curve. Points are stored in the order they were added, not by x, so
+/// list position says nothing (the newest point could never be removed, #1658).
+fn without_point(pts: &[[f32; 2]], i: usize, hue: bool) -> Option<Vec<[f32; 2]>> {
+    let q = pts.get(i)?;
+    let (lo, hi) = pts.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p[0]), hi.max(p[0])));
+    if !hue && (q[0] <= lo || q[0] >= hi) {
+        return None;
+    }
+    let mut rest = pts.to_vec();
+    rest.remove(i);
+    Some(rest)
 }
 
 /// Colour wheel: hue ring, draggable puck (offset), lightness slider on the left.
@@ -663,4 +683,21 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
         d.insert_temp(key, tc);
         d.insert_temp(fd_key, face);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_point;
+
+    #[test]
+    fn a_curve_point_is_removed_by_position_not_by_list_order() {
+        // #1658: added points are appended, so the newest one is last in the list
+        let pts = [[0.0, 0.0], [1.0, 1.0], [0.5, 0.7]];
+        assert_eq!(without_point(&pts, 2, false), Some(vec![[0.0, 0.0], [1.0, 1.0]]), "the newest point can go");
+        assert_eq!(without_point(&pts, 1, false), None, "the right end stays");
+        assert_eq!(without_point(&pts, 0, false), None, "the left end stays");
+        // hue curves wrap around: any point can go
+        assert_eq!(without_point(&pts, 0, true), Some(vec![[1.0, 1.0], [0.5, 0.7]]));
+        assert_eq!(without_point(&pts, 7, false), None);
+    }
 }
