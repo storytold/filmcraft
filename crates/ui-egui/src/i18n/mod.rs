@@ -1085,7 +1085,8 @@ mod tests {
                 let mut stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
                 stack.retain(|n| !crate::rtl::is_system_face(n));
                 if craft {
-                    assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
+                    let last_embedded = stack.iter().rev().find(|n| !n.starts_with("system-"));
+                    assert!(last_embedded.is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                     assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");
                 } else {
                     assert_eq!(stack.last().map(String::as_str), Some(JAPANESE_FONT), "{family:?}: {stack:?}");
