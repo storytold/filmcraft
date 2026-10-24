@@ -341,7 +341,27 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         }
         "sequence.transcribe" => {
             let tracks: Vec<String> = s.active_sequence().map(|q| (1..=q.audio_tracks.len()).map(|i| format!("A{i}")).collect()).unwrap_or_default();
-            (json!({"language": "auto", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
+            let ma = &s.prefs.media_analysis;
+            let prompt = if ma.ai_prompt.is_empty() || ma.ai_prompt.contains("Abravidro") {
+                filmcraft_engine::settings::DEFAULT_AI_RULES.to_string()
+            } else {
+                ma.ai_prompt.clone()
+            };
+            (
+                json!({
+                    "language": "auto",
+                    "track": "mix",
+                    "diarize": true,
+                    "async": true,
+                    "aiRefine": ma.ai_refine,
+                    "aiProvider": ma.ai_provider,
+                    "aiApiKey": ma.ai_api_key,
+                    "aiPrompt": prompt,
+                    "aiAutoCaptions": ma.ai_auto_captions,
+                    "showToken": false,
+                }),
+                json!({"tracks": tracks}),
+            )
         }
         "file.saveAsTemplate" => (json!({"name": s.project.name}), Value::Null),
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
@@ -748,7 +768,20 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 );
             }
             "sequence.transcribe" => {
-                let langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
+                let langs: Vec<(String, String)> = vec![
+                    ("auto".into(), tl!("Auto-detect").into()),
+                    ("pt".into(), "Português".into()),
+                    ("en".into(), "English".into()),
+                    ("es".into(), "Español".into()),
+                    ("fr".into(), "Français".into()),
+                    ("de".into(), "Deutsch".into()),
+                    ("it".into(), "Italiano".into()),
+                    ("ja".into(), "日本語".into()),
+                    ("ko".into(), "한국어".into()),
+                    ("zh".into(), "中文".into()),
+                    ("nl".into(), "Nederlands".into()),
+                    ("ru".into(), "Русский".into()),
+                ];
                 combo(ui, &mut elems, "transcribe.language", tl!("Language:"), &mut p["language"], &langs);
                 let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
                 tracks.extend(
@@ -762,6 +795,64 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 );
                 combo(ui, &mut elems, "transcribe.track", tl!("Audio analysis:"), &mut p["track"], &tracks);
                 check(ui, &mut elems, pre, p, "diarize", tl!("Recognize when different speakers are talking"));
+                ui.separator();
+                ui.label(RichText::new("Lapidação e Separação com IA (Etapa Final)").strong());
+                check(ui, &mut elems, pre, p, "aiRefine", "Enviar texto gerado para IA lapidar e separar os blocos");
+                if p["aiRefine"].as_bool() == Some(true) {
+                    let providers: Vec<(String, String)> = vec![
+                        ("auto".into(), "Auto-detectar pelo Token (Gemini / OpenAI / Claude)".into()),
+                        ("gemini".into(), "Google Gemini (gemini-2.5-flash)".into()),
+                        ("openai".into(), "OpenAI (gpt-4o-mini)".into()),
+                        ("anthropic".into(), "Anthropic Claude (claude-sonnet-4-6)".into()),
+                        ("openrouter".into(), "OpenRouter".into()),
+                    ];
+                    combo(ui, &mut elems, "transcribe.aiProvider", "Provedor de IA:", &mut p["aiProvider"], &providers);
+                    let show_tok = p["showToken"].as_bool().unwrap_or(false);
+                    let mut key_str = p["aiApiKey"].as_str().unwrap_or_default().to_string();
+                    ui.horizontal(|ui| {
+                        ui.label("API Token / Key:");
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut key_str)
+                                .password(!show_tok)
+                                .hint_text("Cole seu token aqui (AQ... / AIza... / sk-...)")
+                                .desired_width(210.0),
+                        );
+                        push(&mut elems, "transcribe.aiApiKey", &r, "API Token");
+                        let mut st = show_tok;
+                        if ui.checkbox(&mut st, "Ver").changed() {
+                            p["showToken"] = json!(st);
+                        }
+                    });
+                    p["aiApiKey"] = json!(key_str.trim());
+                    if key_str.trim().is_empty() {
+                        ui.label(RichText::new("⚠ Sem token: usará apenas as regras locais sem chamar a IA.").weak());
+                    } else {
+                        let prov = p["aiProvider"].as_str().unwrap_or("auto");
+                        let detected = if prov == "auto" {
+                            let k = key_str.trim();
+                            if k.starts_with("AIza") || k.starts_with("AQ") {
+                                "Google Gemini"
+                            } else if k.starts_with("sk-ant-") {
+                                "Anthropic Claude"
+                            } else if k.starts_with("sk-or-") {
+                                "OpenRouter"
+                            } else if k.starts_with("gsk_") {
+                                "Groq"
+                            } else {
+                                "OpenAI"
+                            }
+                        } else {
+                            prov
+                        };
+                        ui.label(RichText::new(format!("✔ Token salvo nas preferências (Provedor ativo: {detected})")).weak());
+                    }
+                    ui.label("Regras e Glossário para a IA:");
+                    let mut prompt_str = p["aiPrompt"].as_str().unwrap_or_default().to_string();
+                    let r = ui.add(egui::TextEdit::multiline(&mut prompt_str).desired_rows(3).desired_width(390.0));
+                    push(&mut elems, "transcribe.aiPrompt", &r, "AI Prompt");
+                    p["aiPrompt"] = json!(prompt_str);
+                    check(ui, &mut elems, pre, p, "aiAutoCaptions", "Já criar faixa de legendas (Captions) pronta ao finalizar");
+                }
             }
             "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", tl!("Template Name:"), 240.0),
             "file.newColorMatte" => {
@@ -908,8 +999,33 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             if cmd == "markers.addFlashCue" && q["name"].as_str().is_some_and(str::is_empty) {
                 q.as_object_mut().map(|m| m.remove("name"));
             }
-            if cmd == "sequence.transcribe" && q["language"] == "auto" {
-                q.as_object_mut().map(|m| m.remove("language"));
+            if cmd == "sequence.transcribe" {
+                let mut next = s.prefs.clone();
+                if let Some(v) = q["aiRefine"].as_bool() {
+                    next.media_analysis.ai_refine = v;
+                }
+                if let Some(v) = q["aiProvider"].as_str() {
+                    next.media_analysis.ai_provider = v.to_string();
+                }
+                if let Some(v) = q["aiApiKey"].as_str() {
+                    next.media_analysis.ai_api_key = v.trim().to_string();
+                }
+                if let Some(v) = q["aiPrompt"].as_str() {
+                    next.media_analysis.ai_prompt = v.to_string();
+                }
+                if let Some(v) = q["aiAutoCaptions"].as_bool() {
+                    next.media_analysis.ai_auto_captions = v;
+                }
+                let _ = s.set_prefs(next);
+                if q["language"] == "auto" {
+                    q.as_object_mut().map(|m| m.remove("language"));
+                }
+                q["async"] = json!(true);
+                s.execute(cmd, q).map_err(|e| e.to_string())?;
+                app.ui.status = "Transcribing sequence in the background — please wait…".into();
+                app.ui.text_tab = "Transcript".into();
+                app.show_panel(crate::dock::PanelKind::Text);
+                return Ok(None);
             }
             s.execute(cmd, q).map_err(|e| e.to_string())?;
             Ok(None)

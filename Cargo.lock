@@ -2275,6 +2275,7 @@ dependencies = [
  "candle-nn",
  "filmcraft-project",
  "filmcraft-time",
+ "log",
  "rayon",
  "rustls",
  "rustls-rustcrypto",
