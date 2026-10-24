@@ -308,6 +308,30 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     assert_eq!(scale(&s), (2, 50.0));
     s.redo();
     assert_eq!(scale(&s), (1, 100.0));
+    // A value graph double-click sends the sampled value with the timeline time (#1277).
+    let at = filmcraft_time::Tick::from_seconds_f64(1.0);
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": at.0, "value": 40.0})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    let p = &it.effect("motion").unwrap().params["scale"];
+    let kf = p.keyframes.iter().find(|k| k.time == it.source_time_at(at)).expect("keyframe at 1s");
+    assert_eq!(kf.value, filmcraft_project::ParamValue::Float(40.0));
+    // The diamond still removes a keyframe that is already there, and ignores a value on that click.
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": at.0, "value": 10.0})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    let p = &it.effect("motion").unwrap().params["scale"];
+    assert!(p.keyframes.iter().all(|k| k.time != it.source_time_at(at)));
+    // Position is a point: the graph sends [x, y]. A single number is the wrong type and adds nothing.
+    let at = filmcraft_time::Tick::from_seconds_f64(1.5);
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "position", "time": at.0, "value": [120.0, 80.0]})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    let p = &it.effect("motion").unwrap().params["position"];
+    let kf = p.keyframes.iter().find(|k| k.time == it.source_time_at(at)).expect("position keyframe");
+    assert_eq!(kf.value, filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(120.0, 80.0)));
+    let bad = filmcraft_time::Tick::from_seconds_f64(2.0);
+    assert!(s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "position", "time": bad.0, "value": 40.0})).is_err());
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1;
+    let p = &it.effect("motion").unwrap().params["position"];
+    assert!(p.keyframes.iter().all(|k| k.time != it.source_time_at(bad)));
     // parameters that name nothing are errors and change nothing
     for bad in [
         json!({}),
