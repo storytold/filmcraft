@@ -1314,6 +1314,12 @@ pub struct ProjectView {
     /// written before it existed have none, and every playhead starts at zero as it did then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub playheads: BTreeMap<ItemId, Tick>,
+    /// The panel layout of the frontend that saved the file (#2258): its workspace name and dock
+    /// tree as that frontend writes them. Kept raw, because only the frontend knows its panels;
+    /// a frontend that opens it with Window ▸ Workspaces ▸ Import Workspace from Projects on
+    /// shows it, after checking it like any saved layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<serde_json::Value>,
 }
 
 impl ProjectView {

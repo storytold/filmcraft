@@ -1161,3 +1161,20 @@ fn negative_place_and_marker_times_are_refused() {
     s.execute("markers.add", json!({"frame": 0, "name": "start"})).unwrap();
     assert!(s.active_sequence().unwrap().markers.iter().any(|m| m.start == Tick::ZERO && m.name == "start"));
 }
+
+/// #2456 review: a project opened and saved again without a frontend (CLI, MCP, a script) used to
+/// lose the panel layout it was saved with.
+#[test]
+fn a_headless_open_then_save_keeps_the_saved_layout() {
+    let dir = crate::media_test_util::tmp_dir("headless-layout");
+    let (a, b) = (dir.join("a.fcproj").to_string_lossy().to_string(), dir.join("b.fcproj").to_string_lossy().to_string());
+    let layout = json!({"root": {"panel": "Timeline"}, "floating": []});
+    let mut s = demo();
+    s.state.workspace_layout = Some(layout.clone());
+    s.execute("file.saveAs", json!({"path": a})).unwrap();
+    let mut headless = Session::default();
+    headless.execute("file.open", json!({"path": a})).unwrap();
+    headless.execute("file.saveAs", json!({"path": b})).unwrap();
+    let saved = filmcraft_format::decode(&std::fs::read(&b).unwrap()).unwrap();
+    assert_eq!(saved.view.and_then(|v| v.workspace), Some(layout));
+}

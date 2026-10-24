@@ -4517,6 +4517,11 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     install_project(s, loaded.project, Some(path.to_string()), true);
+    // the frontend decides whether to show the layout the file was saved with (#2258)
+    s.state.opened_workspace_layout = loaded.view.as_ref().and_then(|v| v.workspace.clone());
+    // and the engine carries it until a frontend replaces it with the live layout: a headless
+    // open-then-save (CLI, MCP, a script) keeps it (#2456 review)
+    s.state.workspace_layout = s.state.opened_workspace_layout.clone();
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
     }

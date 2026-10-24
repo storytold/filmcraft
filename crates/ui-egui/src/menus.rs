@@ -119,6 +119,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
     uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
     uic!("window.workspace.edit", "Edit Workspaces…", ["Window", "Workspaces"], None),
+    uic!("window.workspace.importFromProjects", "Import Workspace from Projects", ["Window", "Workspaces"], None),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.trackSelectForward", "Track Select Forward Tool", [], Some("A")),
     uic!("tool.trackSelectBackward", "Track Select Backward Tool", [], Some("Shift+A")),

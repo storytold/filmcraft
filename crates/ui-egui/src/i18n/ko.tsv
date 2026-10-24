@@ -1005,6 +1005,8 @@
 	Edit Subclip…	하위 클립 편집…
 	Edit Workspaces	작업 영역 편집
 	Edit Workspaces…	작업 영역 편집…
+	Import Workspace from Projects	프로젝트에서 작업 영역 가져오기
+	The project's saved workspace can't be shown; the current layout stays.	프로젝트에 저장된 작업 영역을 표시할 수 없어 현재 레이아웃을 유지합니다.
 	Editable properties:	편집 가능 속성:
 	Editing	편집
 	Editing Mode:	편집 모드:

@@ -189,6 +189,10 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
     pub current: String,
+    /// Window ▸ Workspaces ▸ Import Workspace from Projects (#2258): a project opens in the panel
+    /// layout it was saved with. Off by default, as in Premiere.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub import_from_projects: bool,
 }
 
 /// A named layout. `layout` is a [`DockNode`] kept as JSON, so one unreadable entry (a panel a
@@ -260,17 +264,21 @@ pub fn saved_layout(prefs: &WorkspacePrefs, name: &str) -> DockNode {
 }
 
 pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
-    let saved = prefs.saved.iter().find(|saved| saved.name == name).and_then(|saved| {
-        let mut layout = Layout {
-            root: serde_json::from_value(saved.layout.clone()).ok()?,
-            floating: if saved.floating.is_null() { vec![] } else { serde_json::from_value(saved.floating.clone()).ok()? },
-        };
-        if layout.floating.is_empty() {
-            migrate_legacy_effects(&mut layout.root);
-        }
-        layout.validate().ok().map(|()| layout)
-    });
+    let saved = prefs.saved.iter().find(|saved| saved.name == name).and_then(read_saved);
     saved.unwrap_or_else(|| Layout { root: workspace(name), floating: vec![] })
+}
+
+/// A saved layout read and checked (a workspace file or a project file's, #2258): `None` when it
+/// can't be read or doesn't validate.
+pub fn read_saved(saved: &SavedWorkspace) -> Option<Layout> {
+    let mut layout = Layout {
+        root: serde_json::from_value(saved.layout.clone()).ok()?,
+        floating: if saved.floating.is_null() { vec![] } else { serde_json::from_value(saved.floating.clone()).ok()? },
+    };
+    if layout.floating.is_empty() {
+        migrate_legacy_effects(&mut layout.root);
+    }
+    layout.validate().ok().map(|()| layout)
 }
 
 /// Older Effects workspaces stored the same Effect Controls panel twice: selected beside

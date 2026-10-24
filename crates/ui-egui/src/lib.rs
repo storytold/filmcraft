@@ -307,6 +307,8 @@ pub struct FilmcraftApp {
     control_rx: Option<Receiver<ControlRequest>>,
     /// One explicit panel reveal; consumed by the custom renderer, never repeated per frame.
     pub(crate) pending_panel_raise: Option<PanelKind>,
+    /// The workspace name and layout last handed to the engine for the project file (#2258).
+    pub(crate) project_layout_seen: Option<(String, dock::Layout)>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
     pub(crate) control_input_only: bool,
     /// Backend focus before synthetic input changes egui's effective focus for this frame.
@@ -571,6 +573,7 @@ impl FilmcraftApp {
             thumb_used: HashMap::new(),
             control_rx: None,
             pending_panel_raise: None,
+            project_layout_seen: None,
             control_input_only: false,
             native_window_focused: None,
             synthetic_modifiers: egui::Modifiers::NONE,
@@ -1841,6 +1844,9 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
+        // after opening the project's sequence (which activates the Timeline tab), so the layout
+        // the project saved, active tabs included, is the one shown
+        panels::workspaces::sync_project_layout(self);
         self.sync_timeline_view();
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
