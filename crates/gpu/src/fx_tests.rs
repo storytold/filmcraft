@@ -313,7 +313,35 @@ fn gpu_effects_match_cpu_exactly() {
         eprintln!("no GPU adapter; skipping");
         return;
     };
-    let mut c = GpuCompositor::new(&dev, &q);
+    effects_match_cpu_exactly(&dev, &q);
+}
+
+/// The same on DX12 with FXC, wgpu's shader compiler when `dxcompiler.dll` is not shipped (as in
+/// FilmCraft's builds). FXC aborted on the effect stage ("internal error: compilation aborted
+/// unexpectedly"), so every Windows device on DX12 rendered effects, previews and exports on the
+/// CPU. WARP stands in when there is no GPU.
+#[cfg(windows)]
+#[test]
+fn gpu_effects_match_cpu_exactly_with_fxc() {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::DX12;
+    desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    let instance = wgpu::Instance::new(desc);
+    let adapter = [false, true].into_iter().find_map(|force_fallback_adapter| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter, ..Default::default() })).ok()
+    });
+    let Some(adapter) = adapter else {
+        eprintln!("no DX12 adapter; skipping");
+        return;
+    };
+    eprintln!("DX12 + FXC on {}", adapter.get_info().name);
+    let (dev, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("DX12 device");
+    effects_match_cpu_exactly(&dev, &q);
+}
+
+fn effects_match_cpu_exactly(dev: &wgpu::Device, q: &wgpu::Queue) {
+    let mut c = GpuCompositor::new(dev, q);
+    assert!(c.fx.is_some(), "the effect stage did not build on this device (see the log for the pipeline error)");
     let (w, h) = (67u32, 41u32);
     let px = picture(w, h);
     let frame = VideoFrame::rgba_f32(w, h, px.clone());
