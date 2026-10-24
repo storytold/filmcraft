@@ -180,7 +180,13 @@ impl Pipeline {
         filmcraft_project::validate_frame_size(w, h).map_err(ExportError::Unsupported)?;
         let pipe = q.settings.color;
         let out_tf = hdr_out.then(|| filmcraft_color::OutputTransform::new(&pipe, pipe.working.output_space()));
-        let opts = RenderOptions { scale: geom.render_scale, captions: settings.burn_captions, working_output: hdr_out, ..Default::default() };
+        let opts = RenderOptions {
+            scale: geom.render_scale,
+            captions: settings.burn_captions,
+            working_output: hdr_out,
+            frame_step: Some(r.rate.frame_duration()),
+            ..Default::default()
+        };
         let effects = settings.effects.clone();
         let overlay = if effects.image_overlay.enabled && !effects.image_overlay.path.is_empty() {
             Some(load_overlay(&effects.image_overlay.path, r.width as f32 * effects.image_overlay.size_percent.clamp(0.5, 100.0) / 100.0)?)

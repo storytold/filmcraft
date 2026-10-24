@@ -14,7 +14,7 @@ use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, Medi
 use filmcraft_time::{FrameRate, Tick};
 
 use crate::audio::{PacketDecoder, decode_pcm};
-use crate::gop::{GopCache, VideoSamples};
+use crate::gop::{FrameGrid, GopCache, VideoSamples};
 use crate::video::VideoDecoder;
 use crate::{CodecError, make_video_decoder};
 
@@ -381,7 +381,10 @@ impl Mp4Source {
         // Nearest, not floor: with a coarse timescale (1000) sample times are rounded, and a
         // floored lookup lands one unit short of every frame whose time was rounded up.
         let late = filmcraft_media::cancel::catch_up().map(|m| (t - m).to_rational_round(1, ts));
-        self.video.frame_late(&Mp4Video { src: self, track: ti }, t.to_rational_round(1, ts), late)
+        // a sample's pts is in media time; requests and `sample_at` are in presentation time
+        let edit = self.file.tracks[ti].edit_offset;
+        let grid = filmcraft_media::cancel::frame_grid().map(|step| move |p: i64| grid_instant(t, step, ts, p.checked_add(edit)?));
+        self.video.frame_on_grid(&Mp4Video { src: self, track: ti }, t.to_rational_round(1, ts), late, grid.as_ref().map(|g| g as FrameGrid<'_>))
     }
 
     /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).
@@ -822,6 +825,30 @@ fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
     }
 }
 
+/// The first instant at or after `p` (track units of timescale `ts`) of the frame grid through
+/// media time `t` with `step` ([`filmcraft_media::cancel::with_frame_grid`]), rounded as
+/// [`Mp4Source::video_at`] rounds a request. None when it cannot be worked out.
+fn grid_instant(t: Tick, step: Tick, ts: i64, p: i64) -> Option<i64> {
+    if step.0 <= 0 || ts <= 0 {
+        return None;
+    }
+    let at = |m: i64| Some(Tick(m.checked_mul(step.0)?.checked_add(t.0)?).to_rational_round(1, ts));
+    // From an instant two steps before `p` (rounding moves an instant by half a unit at most),
+    // step forward to the first one at or after it.
+    let mut m = Tick::from_rational(p, 1, ts).0.checked_sub(t.0)?.div_euclid(step.0).checked_sub(2)?;
+    if at(m)? >= p {
+        return None;
+    }
+    for _ in 0..8 {
+        m = m.checked_add(1)?;
+        let v = at(m)?;
+        if v >= p {
+            return Some(v);
+        }
+    }
+    None
+}
+
 /// [`filmcraft_media::ReaderOpener`] for MP4/MOV.
 pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedReader) -> Option<Result<SharedSource, MediaError>> {
     if !sniff(head) {
@@ -1255,6 +1282,25 @@ mod tests {
         };
         assert_eq!(df30(1, 0, 0), None);
         assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
+    }
+
+    #[test]
+    fn grid_instants_are_the_requests_of_the_grid_rounded_as_a_request() {
+        // 30 and 29.97 fps exports of 59.94 fps media (timescale 60000), and coarser and finer
+        // timescales, from anchors on and off the media's frames.
+        let (fps30, ntsc30) = (Tick(filmcraft_time::TICKS_PER_SECOND / 30), Tick(filmcraft_time::TICKS_PER_SECOND / 30_000 * 1001));
+        for (step, ts) in [(fps30, 60_000), (ntsc30, 60_000), (fps30, 1000), (ntsc30, 90_000), (ntsc30, 30_000)] {
+            for t in [Tick::ZERO, Tick::from_rational(1001 * 7, 1, 60_000), Tick(12_345_678_901)] {
+                // every instant of the grid around the samples looked at, rounded as a request is
+                let requests: Vec<i64> = (-20..400).map(|m| Tick(t.0 + m * step.0).to_rational_round(1, ts)).collect();
+                for p in (0..ts * 4).step_by(7) {
+                    let first = requests.iter().copied().find(|&r| r >= p);
+                    assert_eq!(grid_instant(t, step, ts, p), first, "step {step:?}, ts {ts}, anchor {t:?}, p {p}");
+                }
+            }
+        }
+        assert_eq!(grid_instant(Tick::ZERO, Tick::ZERO, 60_000, 5), None);
+        assert_eq!(grid_instant(Tick(i64::MAX), fps30, 60_000, i64::MIN), None);
     }
 }
 

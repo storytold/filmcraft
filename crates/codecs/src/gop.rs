@@ -32,7 +32,8 @@ pub struct GopStats {
     pub evicted: u64,
     /// Wall time spent inside decoders (`decode` / `flush`), nanoseconds.
     pub decode_ns: u64,
-    /// Non-reference samples left out while catching up (frames already late).
+    /// Non-reference samples left out while catching up (frames already late) or because no
+    /// instant of a frame grid shows them ([`GopCache::frame_on_grid`]).
     pub skipped: u64,
     /// Frames decoded in draft mode (reduced-resolution playback, [`VideoDecoder::set_draft`]).
     pub draft: u64,
@@ -123,6 +124,26 @@ pub trait VideoSamples: Sync {
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
 }
 
+/// The instants a job asks a source for frames at, from a frame grid
+/// ([`filmcraft_media::cancel::with_frame_grid`]): for a sample's [`VideoSamples::pts`], the first
+/// one at or after the sample is presented, in the time [`VideoSamples::sample_at`] takes and
+/// rounded as the container rounds a request; None when it cannot be worked out.
+pub(crate) type FrameGrid<'a> = &'a (dyn Fn(i64) -> Option<i64> + Sync);
+
+/// The sample a request for `t` (track units) decodes: the one presented at `t`, clamped to the
+/// stream.
+fn sample_for(s: &dyn VideoSamples, t: i64) -> Option<usize> {
+    let n = s.count();
+    s.sample_at(t.max(0)).or_else(|| (n > 0).then(|| n - 1))
+}
+
+/// Whether a request for an instant of `grid` decodes sample `k` (whose pts is `pts`): the first
+/// instant at or after the sample is presented does exactly when one does. An instant that
+/// cannot be worked out counts as one.
+fn shown_on_grid(s: &dyn VideoSamples, grid: FrameGrid<'_>, k: usize, pts: i64) -> bool {
+    grid(pts).is_none_or(|t| sample_for(s, t) == Some(k))
+}
+
 /// A container's sync sample for `i` when leading pictures need the GOP before: `sync` is the
 /// index's own sync sample, `leads(i, key)` says `i` is shown before `key`. One step per GOP, so a
 /// loop: a crafted index can chain tens of thousands of GOPs (#2803). A `sync` past `i` stops the
@@ -175,6 +196,14 @@ struct State {
     /// used the decoder since it was made: it is given up as soon as another background request
     /// is done, whatever the caches' recency.
     background: bool,
+    /// Presentation pts of the samples left out since the decoder last restarted (at most
+    /// [`MAX_SKIPPED`], the latest), and whether a frame grid rather than lateness left each out.
+    /// The decoder has gone past them without making their pictures: a request for one restarts it.
+    skipped: BTreeMap<i64, bool>,
+    /// A request asked for a sample a frame grid had left out: this source's requests do not
+    /// follow one grid (the same media in two clips at different phases), and grids are ignored
+    /// from then on. A wrong grid costs one restart, not one per frame.
+    grid_off: bool,
 }
 
 impl State {
@@ -452,6 +481,10 @@ pub struct GopCache {
 /// a re-decode from the keyframe.
 const MIN_FRAMES: usize = 64;
 
+/// Skipped samples a cache remembers ([`State::skipped`]). The ones that matter are the few left
+/// out after the latest frame the decoder output: a request for an older one restarts anyway.
+const MAX_SKIPPED: usize = 256;
+
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
 /// rather than restarting at the sync sample.
 const CONTINUE_THROUGH: usize = 48;
@@ -529,6 +562,8 @@ impl GopCache {
                 last_used: Instant::now(),
                 pin: i64::MIN,
                 background: false,
+                skipped: BTreeMap::new(),
+                grid_off: false,
             }),
             pool: pool.clone(),
         });
@@ -642,7 +677,23 @@ impl GopCache {
     /// ([`VideoDecoder::set_draft`]); its draft frames are cached for draft requests only, and an
     /// exact request for one re-decodes it.
     pub fn frame_late(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
-        let r = self.frame_late_locked(s, target, late_before);
+        self.frame_on_grid(s, target, late_before, None)
+    }
+
+    /// [`Self::frame_late`] for a job that asks for frames only at the instants of `grid` (an
+    /// export at its output frame rate): non-reference samples no instant of it shows are left out
+    /// too, before or after the wanted frame (60 fps media in a 30 fps export: every other
+    /// picture, when the encoder made those non-reference). The frames asked for decode exactly as
+    /// they would otherwise; a request with the grid for a sample it left out restarts the decoder
+    /// once and turns grids off for this cache.
+    pub(crate) fn frame_on_grid(
+        &self,
+        s: &dyn VideoSamples,
+        target: i64,
+        late_before: Option<i64>,
+        grid: Option<FrameGrid<'_>>,
+    ) -> crate::Result<Arc<VideoFrame>> {
+        let r = self.frame_late_locked(s, target, late_before, grid);
         if filmcraft_media::cancel::background() {
             // Outside the cache's lock (see `release_background`). A thumbnail leaves the decoders
             // of earlier thumbnails no reason to stay: each costs hundreds of MB at 4K.
@@ -651,9 +702,9 @@ impl GopCache {
         r
     }
 
-    fn frame_late_locked(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
+    fn frame_late_locked(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>, grid: Option<FrameGrid<'_>>) -> crate::Result<Arc<VideoFrame>> {
         let n = s.count();
-        let i = s.sample_at(target.max(0)).or_else(|| (n > 0).then(|| n - 1)).ok_or_else(|| CodecError::Decode("empty track".into()))?;
+        let i = sample_for(s, target).ok_or_else(|| CodecError::Decode("empty track".into()))?;
         let want_pts = s.pts(i);
         let me = self as *const Self as usize;
         if DecodingGuard::active(me) {
@@ -703,10 +754,11 @@ impl GopCache {
         }
         // with the lock held: see `isolated`
         let st = &mut *st;
-        isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft))
+        isolated(|| self.decode_until(st, s, i, want_pts, late_before, grid, draft))
     }
 
     /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
+    #[allow(clippy::too_many_arguments)]
     fn decode_until(
         &self,
         st: &mut State,
@@ -714,10 +766,16 @@ impl GopCache {
         i: usize,
         want_pts: i64,
         late_before: Option<i64>,
+        grid: Option<FrameGrid<'_>>,
         draft: bool,
     ) -> crate::Result<Arc<VideoFrame>> {
         let n = s.count();
         let mut key = decode_start(s, i);
+        let skipped = st.skipped.get(&want_pts).copied();
+        // a monitor or thumbnail asking for a frame an export left out does not make the grid wrong
+        if skipped == Some(true) && grid.is_some() {
+            st.grid_off = true;
+        }
         // Continue the running decoder when it has passed the wanted sample's sync sample and
         // either has not reached the sample yet or has been fed it without outputting it yet
         // (a frame-threaded decoder holds many pictures in flight). Otherwise the frame was
@@ -727,7 +785,7 @@ impl GopCache {
         // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
         // playback wants those frames anyway.
         let near = st.next <= key && key - st.next <= CONTINUE_THROUGH;
-        let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
+        let continuing = running && skipped.is_none() && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
             // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
@@ -745,9 +803,11 @@ impl GopCache {
             st.next = key;
             st.start = key;
             st.out_max = i64::MIN;
+            st.skipped.clear();
         }
         let limit = (i.max(st.next) + 64).min(n);
         let late = late_before.unwrap_or(i64::MIN).min(want_pts);
+        let grid = grid.filter(|_| !st.grid_off);
         let Some(decoder) = st.decoder.as_mut() else {
             return Err(CodecError::Decode("no video decoder".into()));
         };
@@ -759,9 +819,19 @@ impl GopCache {
             }
             let k = st.next;
             let data = s.read(k)?;
-            if k != i && s.pts(k) < late && st.decoder.as_ref().is_some_and(|d| d.is_disposable(&data)) {
+            let pts = s.pts(k);
+            let is_late = pts < late;
+            if k != i
+                && (is_late || grid.is_some())
+                && st.decoder.as_ref().is_some_and(|d| d.is_disposable(&data))
+                && (is_late || grid.is_some_and(|g| !shown_on_grid(s, g, k, pts)))
+            {
                 st.next += 1;
                 SKIPPED.fetch_add(1, Ordering::Relaxed);
+                st.skipped.insert(pts, !is_late);
+                if st.skipped.len() > MAX_SKIPPED {
+                    st.skipped.pop_first();
+                }
                 continue;
             }
             let Some(decoder) = st.decoder.as_mut() else {
@@ -1129,6 +1199,69 @@ mod tests {
             assert_eq!(s.decodes.load(Ordering::Relaxed), 64, "cold frames decode once; warm requests hit the cache");
         }
         assert_eq!(s.resets.load(Ordering::Relaxed), 0);
+    }
+
+    /// The instants of a grid of every `step` samples of [`Samples`] (1000 track units each),
+    /// through frame 0: the first at or after `t`.
+    fn every(step: i64) -> impl Fn(i64) -> Option<i64> + Sync {
+        move |t| Some(t.div_euclid(step * 1000) * step * 1000 + if t.rem_euclid(step * 1000) == 0 { 0 } else { step * 1000 })
+    }
+
+    #[test]
+    fn a_frame_grid_leaves_out_only_non_reference_samples_no_request_asks_for() {
+        // An export asks for every third frame, a batch of four at a time, the latest of a batch
+        // first. Odd samples are non-reference: 3, 9, 15… are asked for, 1, 5, 7, 11… are not.
+        let s = samples(300, 250, 4, false);
+        let c = GopCache::new(None);
+        let grid = every(3);
+        let wanted: Vec<usize> = (0..=96).step_by(3).collect();
+        for batch in wanted.chunks(4) {
+            for &f in batch.iter().rev() {
+                let got = c.frame_on_grid(&s, f as i64 * 1000, None, Some(&grid)).expect("frame");
+                assert_eq!(index_of(&got), f, "every frame asked for is the frame decoded");
+            }
+        }
+        assert_eq!(s.resets.load(Ordering::Relaxed), 1, "one run from the keyframe, no restart");
+        // The run fed samples 0..=102 (96 comes out 4 decoded samples later); the 34 odd ones off
+        // the grid among them (1, 5, 7, 11, 13… 101) were left out.
+        assert_eq!(s.decodes.load(Ordering::Relaxed), 103 - 34);
+    }
+
+    #[test]
+    fn a_request_off_the_frame_grid_restarts_once_and_turns_grids_off() {
+        let s = samples(300, 250, 4, false);
+        let c = GopCache::new(None);
+        let even = every(2);
+        assert_eq!(index_of(&c.frame_on_grid(&s, 20_000, None, Some(&even)).expect("frame")), 20);
+        // The grid was wrong: frame 21 is asked for after all. The decoder went past it (odd
+        // samples up to 27 left out, frame 20 out last): it restarts and decodes it.
+        assert_eq!(index_of(&c.frame_on_grid(&s, 21_000, None, Some(&even)).expect("frame")), 21);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 2);
+        // The same grid no longer leaves anything out for this source: the odd frames that
+        // follow come from the running decoder.
+        for f in (23..60).step_by(2) {
+            assert_eq!(index_of(&c.frame_on_grid(&s, f * 1000, None, Some(&even)).expect("frame")), f as usize);
+        }
+        assert_eq!(s.resets.load(Ordering::Relaxed), 2, "one restart for the wrong grid, not one per frame");
+    }
+
+    #[test]
+    fn a_request_without_a_grid_for_a_sample_a_grid_left_out_keeps_the_grid() {
+        let s = samples(300, 250, 4, false);
+        let c = GopCache::new(None);
+        let even = every(2);
+        assert_eq!(index_of(&c.frame_on_grid(&s, 20_000, None, Some(&even)).expect("frame")), 20);
+        // The Program monitor asks for a frame the export left out: it is decoded after a restart.
+        assert_eq!(index_of(&c.frame_on_grid(&s, 21_000, None, None).expect("frame")), 21);
+        assert_eq!(s.resets.load(Ordering::Relaxed), 2);
+        // The export's grid still leaves the odd samples out: 22..=62 are fed (58 comes out 4
+        // later), 20 of them odd.
+        let before = s.decodes.load(Ordering::Relaxed);
+        for f in (22..=58).step_by(2) {
+            assert_eq!(index_of(&c.frame_on_grid(&s, f * 1000, None, Some(&even)).expect("frame")), f as usize);
+        }
+        assert_eq!(s.resets.load(Ordering::Relaxed), 2);
+        assert_eq!(s.decodes.load(Ordering::Relaxed) - before, 41 - 20);
     }
 
     #[test]

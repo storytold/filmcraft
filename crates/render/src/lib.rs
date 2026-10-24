@@ -75,11 +75,15 @@ pub struct RenderOptions {
     /// Return the image in the sequence's working space (HDR exports, scopes) instead of
     /// converting it for an SDR monitor. Only matters for HDR / wide-gamut sequences.
     pub working_output: bool,
+    /// Time between the frames of the render this frame belongs to (an export: its output frame
+    /// duration); None for a frame on its own. Media decoders may leave out pictures none of
+    /// those frames shows.
+    pub frame_step: Option<Tick>,
 }
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { scale: 1.0, effects: true, depth: 0, captions: false, working_output: false }
+        Self { scale: 1.0, effects: true, depth: 0, captions: false, working_output: false, frame_step: None }
     }
 }
 
@@ -486,7 +490,7 @@ pub(crate) fn item_layer_ex(
         && !item.effect("opacity").is_some_and(|e| e.enabled && !e.masks.is_empty());
     let mut fetched = None;
     if allow_region && plain_media {
-        let (src, frame, n) = media_frame(item, t, sources, want, src_size)?;
+        let (src, frame, n) = media_frame(item, t, opts, sources, want, src_size)?;
         let (lw, lh) = frame.decimated_size(n);
         let px_scale = lw as f32 / src_size.0.max(1) as f32;
         let m =
@@ -550,11 +554,32 @@ fn plain_layer(frame: &VideoFrame, n: usize, opacity: f32, blend: Blend) -> Laye
     }
 }
 
+/// The frame grid to decode a clip's media on ([`filmcraft_media::cancel::with_frame_grid`]): the
+/// render's frame step, when every frame the clip asks of its media lies on that grid. That is a
+/// clip of the rendered sequence itself playing its media forward at 100 %, with no effect that
+/// reads other frames (nested sequences and those effects ask at times of their own).
+pub(crate) fn media_grid(item: &TrackItem, opts: RenderOptions) -> Option<Tick> {
+    let plain = opts.depth == 0
+        && item.speed == 1.0
+        && !item.reverse
+        && item.frame_hold.is_none()
+        && !item.effects.iter().any(|e| e.enabled && vfx::is_temporal(&e.effect));
+    opts.frame_step.filter(|s| plain && s.0 > 0)
+}
+
 /// The source frame of a media clip at timeline `t` (at `want` of its size), and the decimation to
 /// convert it with.
-fn media_frame(item: &TrackItem, t: Tick, sources: &dyn SourceProvider, want: f32, src_size: (u32, u32)) -> Option<(SharedSource, Arc<VideoFrame>, usize)> {
+fn media_frame(
+    item: &TrackItem,
+    t: Tick,
+    opts: RenderOptions,
+    sources: &dyn SourceProvider,
+    want: f32,
+    src_size: (u32, u32),
+) -> Option<(SharedSource, Arc<VideoFrame>, usize)> {
     let src = sources.source(item.item)?;
-    let frame = src.video_frame(FrameRequest { time: video_source_time(item, t, src.info().frame_rate()), scale: want }).ok()?;
+    let time = video_source_time(item, t, src.info().frame_rate());
+    let frame = filmcraft_media::cancel::with_frame_grid(media_grid(item, opts), || src.video_frame(FrameRequest { time, scale: want })).ok()?;
     let n = decimation(frame.width as f32, src_size.0 as f32 * want);
     Some((src, frame, n))
 }
@@ -607,11 +632,11 @@ pub(crate) fn base_layer(
     let pi = project.item(item.item)?;
     Some(match &pi.kind {
         ItemKind::Media(_) | ItemKind::Subclip { .. } => {
-            let (src, frame, n) = media_frame(item, t, sources, want, src_size)?;
+            let (src, frame, n) = media_frame(item, t, opts, sources, want, src_size)?;
             media_image(project, seq, item, t, &src, &frame, n, want)
         }
         ItemKind::Sequence(nested) => {
-            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
+            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true, frame_step: None };
             match item.multicam_angle(nested) {
                 // a multi-camera clip shows its angle's track only (nothing for an audio-only angle)
                 Some(angle) => match nested.angle_video_track_index(angle) {
