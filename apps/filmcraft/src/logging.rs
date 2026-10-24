@@ -17,10 +17,11 @@
 //! once the file is attached. Writing never panics: a file that can't be created or written leaves
 //! standard error as the only sink.
 //!
-//! Realtime audio: the cpal callbacks (`audio.rs`, `audio_in.rs`, the play-ahead reader) do not
-//! log; they report through flags and a one-time `eprintln!`. A record takes the sink lock only for
-//! one `write_all` of an already formatted line (standard error is written outside the lock), so a
-//! logging thread such as the audio mixer never waits on more than one other line being written.
+//! Realtime audio: the cpal callbacks (`audio.rs`, `audio_in.rs`, the play-ahead reader) report
+//! through flags and log one record the first time they fail, never `eprintln!` (which panics when
+//! stderr's reader is gone). A record takes the sink lock only for one `write_all` of an already
+//! formatted line (standard error is written outside the lock), so a logging thread such as the
+//! audio mixer never waits on more than one other line being written.
 
 use std::fs::File;
 use std::io::Write;

@@ -187,7 +187,7 @@ impl CpalOut {
                 if buf.len() > 1_048_576 || scratch.try_reserve(buf.len().saturating_sub(scratch.len())).is_err() {
                     buf.fill(T::EQUILIBRIUM);
                     if !health.failed.swap(true, Ordering::SeqCst) {
-                        eprintln!("filmcraft: unable to allocate the audio conversion buffer");
+                        health.pending.store(FAILED_BUFFER, Ordering::SeqCst);
                     }
                     return;
                 }
@@ -278,6 +278,30 @@ struct Health {
     failed: AtomicBool,
     /// The first error of a stream has been printed.
     reported: AtomicBool,
+    /// A failure the audio callback noticed and left for [`Health::log_pending`] to log: the
+    /// callback must not wait on the logger's stderr and file writes. One of the `FAILED_*` codes.
+    pending: std::sync::atomic::AtomicU8,
+    /// The first stream error, left for [`Health::log_pending`] like `pending` (cpal calls the error
+    /// callback on the stream's worker, which the logger must not hold up).
+    stream_error: Mutex<Option<String>>,
+}
+
+const FAILED_BUFFER: u8 = 1;
+const FAILED_MIXER: u8 = 2;
+
+impl Health {
+    /// Log the failure the audio callback left, once (off the audio thread).
+    fn log_pending(&self) {
+        match self.pending.swap(0, Ordering::SeqCst) {
+            FAILED_BUFFER => log::error!("unable to allocate the audio conversion buffer"),
+            FAILED_MIXER => log::error!("the audio mixer failed; playing without sound"),
+            _ => {}
+        }
+        // the logger writes stderr without panicking when its reader is gone (`eprintln!` would)
+        if let Some(e) = self.stream_error.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            log::warn!("audio stream error: {e}");
+        }
+    }
 }
 
 impl Health {
@@ -356,7 +380,7 @@ fn render(fill: &Mutex<Fill>, buf: &mut [f32], channels: usize, played: &AtomicU
     if health.failed.load(Ordering::SeqCst) || catch_unwind(AssertUnwindSafe(|| (*guard)(buf, channels))).is_err() {
         buf.fill(0.0);
         if !health.failed.swap(true, Ordering::SeqCst) {
-            eprintln!("filmcraft: the audio mixer failed; playing without sound");
+            health.pending.store(FAILED_MIXER, Ordering::SeqCst);
         }
         return;
     }
@@ -369,7 +393,15 @@ fn stream_error(health: &Health, e: cpal::StreamError) {
         cpal::StreamError::BackendSpecific { .. } => health.errored.store(true, Ordering::SeqCst),
     }
     if !health.reported.swap(true, Ordering::SeqCst) {
-        eprintln!("filmcraft: audio stream error: {e}");
+        // never wait here: a slot the UI thread is reading loses this message, not the stream
+        let slot = match health.stream_error.try_lock() {
+            Ok(slot) => Some(slot),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        if let Some(mut slot) = slot {
+            *slot = Some(e.to_string());
+        }
     }
 }
 
@@ -378,6 +410,13 @@ fn convert_samples<T: cpal::Sample + cpal::FromSample<f32>>(input: &[f32], outpu
     let upper = f32::from_bits(1.0_f32.to_bits() - 1);
     for (sample, converted) in input.iter().zip(output) {
         *converted = T::from_sample(if sample.is_finite() { sample.clamp(-1.0, upper) } else { 0.0 });
+    }
+}
+
+impl Drop for CpalOut {
+    /// The app can exit without stopping the output: log what the audio threads left.
+    fn drop(&mut self) {
+        self.health.log_pending();
     }
 }
 
@@ -395,8 +434,10 @@ impl AudioOut for CpalOut {
     fn stop(&mut self) {
         self.stream = None;
         self.fill = None;
+        self.health.log_pending();
     }
     fn recover(&mut self) {
+        self.health.log_pending();
         if self.stream.is_none() || self.health.failed.load(Ordering::SeqCst) {
             return;
         }
@@ -495,9 +536,17 @@ mod tests {
         assert!(health.errored.load(Ordering::SeqCst) && !health.lost.load(Ordering::SeqCst));
         stream_error(&health, cpal::StreamError::DeviceNotAvailable);
         assert!(health.lost.load(Ordering::SeqCst));
+        // the first error is left for the UI thread to log, once
+        assert!(lock_slot(&health).as_deref().is_some_and(|e| e.contains("POLLERR")));
+        health.log_pending();
+        assert!(lock_slot(&health).is_none());
         assert!(!health.failed.load(Ordering::SeqCst), "a stream error alone must not silence playback");
         let output = CpalOut::new();
         assert_eq!(output.played_frames(), None, "no stream, no clock");
+    }
+
+    fn lock_slot(health: &Health) -> std::sync::MutexGuard<'_, Option<String>> {
+        health.stream_error.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn ms(n: u64) -> Duration {
@@ -572,9 +621,14 @@ mod tests {
         assert_eq!(buf, [0.0; 4]);
         assert_eq!(played.load(Ordering::SeqCst), 0);
         assert!(health.failed.load(Ordering::SeqCst));
+        // the callback leaves the failure for the UI thread to log, once
+        assert_eq!(health.pending.load(Ordering::SeqCst), FAILED_MIXER);
+        health.log_pending();
+        assert_eq!(health.pending.load(Ordering::SeqCst), 0);
         // later callbacks stay silent instead of re-entering the broken mixer
         buf = [1.0; 4];
         render(&fill, &mut buf, 2, &played, &health);
         assert_eq!(buf, [0.0; 4]);
+        assert_eq!(health.pending.load(Ordering::SeqCst), 0, "reported once");
     }
 }

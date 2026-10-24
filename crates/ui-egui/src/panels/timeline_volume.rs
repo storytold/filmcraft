@@ -168,8 +168,10 @@ pub fn drag(app: &mut FilmcraftApp, ui: &egui::Ui, seq: &Sequence, layout: &Layo
         let p = json!({"clip": d.clip.0, "effect": "volume", "param": "level", "mediaTime": m.0, "value": v, "merge": true, "begin": begin && n == 0});
         acts.push(("effects.setKeyframe", p));
     }
-    run(app, acts);
-    d.last = Some(db);
+    // Only a drag whose first command ran owns an undo step, which Escape then takes back.
+    if run(app, acts) {
+        d.last = Some(db);
+    }
     d
 }
 
@@ -180,12 +182,21 @@ pub fn add_keyframe(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, cli
     run(app, vec![("effects.addKeyframe", json!({"clip": clip.0, "effect": "volume", "param": "level", "time": t.0}))]);
 }
 
-fn run(app: &mut FilmcraftApp, acts: Vec<(&str, Value)>) {
-    for (id, p) in acts {
-        if let Err(e) = app.session.execute(id, p) {
-            app.ui.status = e.to_string();
+/// Runs `acts` in order, errors to the status line. Returns whether the first one ran: it carries
+/// `begin`, so when it fails the rest would merge into some earlier undo step and are skipped.
+fn run(app: &mut FilmcraftApp, acts: Vec<(&str, Value)>) -> bool {
+    let mut ran = false;
+    for (n, (id, p)) in acts.into_iter().enumerate() {
+        match app.session.execute(id, p) {
+            Ok(_) => ran |= n == 0,
+            Err(e) if n == 0 => {
+                app.ui.status = e.to_string();
+                return false;
+            }
+            Err(e) => app.ui.status = e.to_string(),
         }
     }
+    ran
 }
 
 /// The level next to the pointer while dragging: one line, always as wide, so it does not jump.
@@ -406,5 +417,47 @@ mod tests {
         // damaged geometry draws nothing silly rather than looping or panicking
         assert_eq!(line(&it, body, 0.0, f32::NAN).len(), 2);
         assert!(line(&it, body, 0.0, f32::INFINITY).len() <= 4097);
+    }
+
+    /// A clip without a Volume effect still shows its line at 0 dB, but `effects.setParam` fails on
+    /// it. That drag used to count as changed anyway, so Escape undid whatever edit came before it.
+    #[test]
+    fn a_drag_whose_command_fails_leaves_nothing_for_escape_to_undo() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let seq_id = session.state.active_sequence.unwrap();
+        let seq = session.active_sequence().unwrap();
+        let (track, clip) = seq.audio_tracks.iter().find_map(|t| Some((t.id, t.items.first()?.id))).expect("demo has an audio clip");
+        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(4000.0, 80.0));
+        let layout = Layout {
+            content: rect,
+            ruler: Rect::NOTHING,
+            rows: vec![Row { track, kind: TrackKind::Audio, index: 0, rect, lane: false }],
+            pps: 10.0,
+            scroll: 0.0,
+            split_y: 0.0,
+        };
+        let mut app = FilmcraftApp::new(session);
+        let ctx = egui::Context::default();
+        let drag_once = |app: &mut FilmcraftApp| {
+            let seq = app.session.active_sequence().unwrap().clone();
+            let mut out = None;
+            let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let d = start(&seq, &layout, clip, pos2(50.0, 40.0)).unwrap();
+                out = Some(drag(app, ui, &seq, &layout, d, 20.0));
+            });
+            frame.textures_delta.clear();
+            out.unwrap()
+        };
+
+        assert!(drag_once(&mut app).changed(), "with a Volume effect the drag edits the clip");
+
+        let project = std::sync::Arc::make_mut(&mut app.session.project);
+        project.sequence_mut(seq_id).and_then(|s| s.find_item_mut(clip)).unwrap().1.effects.retain(|e| e.effect != "volume");
+        let undo = app.session.history.undo.len();
+        let d = drag_once(&mut app);
+        assert!(!d.changed(), "a drag that edited nothing must not be undone on Escape");
+        assert_eq!(app.session.history.undo.len(), undo);
+        assert!(!app.ui.status.is_empty(), "the failure is reported");
     }
 }

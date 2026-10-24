@@ -64,11 +64,19 @@ fn app_icon() -> egui::IconData {
 /// Print `text` (stdout, or stderr for an error). A Windows release build has no console
 /// (`windows_subsystem = "windows"`), so there it is also shown in a message box: otherwise `--help`
 /// would print nothing and a bad option would quit without a word.
+///
+/// Written through `io::Write`, never `print!`: `print!` panics when stdout cannot be written, and
+/// `filmcraft --version` with its output captured from PowerShell did exactly that ("failed printing
+/// to stdout: The pipe is being closed. (os error 232)"; on Unix "Broken pipe (os error 32)"). A
+/// reader that has gone away loses the text, nothing else: the exit status stays what it was.
 fn tell(text: &str, error: bool) {
+    use std::io::Write as _;
     if error {
-        eprint!("{text}");
+        let mut err = std::io::stderr().lock();
+        let _ = err.write_all(text.as_bytes()).and_then(|()| err.flush());
     } else {
-        print!("{text}");
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
     }
     #[cfg(all(target_os = "windows", not(debug_assertions)))]
     {
