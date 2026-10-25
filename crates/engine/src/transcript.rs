@@ -134,14 +134,49 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
     }
     // Settings ▸ Media Analysis & Transcription ▸ Speech model
     let model = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model);
-    if filmcraft_speech::models::find(model).is_none() {
-        return Err(speech_err(SpeechError::UnknownModel(model.into())));
-    }
+    let m = filmcraft_speech::models::find(model).ok_or_else(|| speech_err(SpeechError::UnknownModel(model.into())))?;
+    #[cfg(not(feature = "speech-download"))]
+    let _ = m;
     if !filmcraft_speech::available() {
         return Err(EngineError::Other(NO_SPEECH.into()));
     }
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
+    #[cfg(feature = "speech-download")]
+    {
+        if !filmcraft_speech::models::installed(&dir, m) {
+            log::info!("Auto-downloading speech model {}...", m.id);
+            filmcraft_speech::models::download(&dir, m, &mut |_, _, _| true).map_err(speech_err)?;
+        }
+    }
     filmcraft_speech::load(&dir, model).map_err(speech_err)
+}
+
+/// Completed clip transcript plus optional AI-segmented caption blocks.
+pub struct ClipTranscriptDone {
+    pub item: ItemId,
+    pub transcript: Transcript,
+    pub ai_captions: Vec<(usize, usize, Vec<String>)>,
+    pub ai_corrected_words: usize,
+    pub ai_provider: Option<String>,
+    pub ai_warning: Option<String>,
+}
+
+/// A running background transcription job; applied by [`poll`] when it finishes.
+pub struct PendingTranscript {
+    pub job: u64,
+    pub results: Arc<std::sync::Mutex<Option<Vec<ClipTranscriptDone>>>>,
+    pub auto_create_captions: bool,
+}
+
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+struct AudioWork {
+    item: ItemId,
+    name: String,
+    dur: Tick,
+    src: filmcraft_media::SharedSource,
 }
 
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -149,7 +184,6 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     if items.is_empty() {
         return Err(bad("transcript.generate", "nothing to transcribe (pass `items`, select clips, or open a sequence with audio)"));
     }
-    let t = transcriber(s, p)?;
     // Settings ▸ Media Analysis & Transcription: language (or auto-detect) and speaker labelling
     let ma = &s.prefs.media_analysis;
     let default_language = if ma.language_auto_detect { None } else { Some(ma.default_language.clone()) };
@@ -161,8 +195,194 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
         max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
     };
+    let ai_refine = bool_p(p, "aiRefine").unwrap_or(ma.ai_refine);
+    let ai_provider = str_p(p, "aiProvider").unwrap_or(&ma.ai_provider).to_string();
+    let ai_api_key = str_p(p, "aiApiKey").unwrap_or(&ma.ai_api_key).to_string();
+    let ai_prompt = str_p(p, "aiPrompt").unwrap_or(&ma.ai_prompt).to_string();
+    let ai_auto_captions = bool_p(p, "aiAutoCaptions").unwrap_or(ma.ai_auto_captions);
+
+    let run_async = bool_p(p, "async").unwrap_or(false) && !cfg!(target_arch = "wasm32");
+    if run_async {
+        if !s.transcript_jobs.is_empty() {
+            return Err(EngineError::Other("Transcription is already running in the background".into()));
+        }
+        let installed_transcriber = s.transcriber.clone();
+        let model_id = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model).to_string();
+        let model_info = if installed_transcriber.is_none() {
+            let m = filmcraft_speech::models::find(&model_id).ok_or_else(|| speech_err(SpeechError::UnknownModel(model_id.clone())))?;
+            if !filmcraft_speech::available() {
+                return Err(EngineError::Other(NO_SPEECH.into()));
+            }
+            let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
+            Some((m, dir))
+        } else {
+            None
+        };
+
+        let mut work = Vec::new();
+        let mut skipped = Vec::new();
+        for item in items {
+            let Some(proj_item) = s.project.item(item) else {
+                skipped.push(item.0);
+                continue;
+            };
+            let ItemKind::Media(m) = &proj_item.kind else {
+                skipped.push(item.0);
+                continue;
+            };
+            let dur = m.duration();
+            let Some(src) = s.source(item) else {
+                skipped.push(item.0);
+                continue;
+            };
+            if !src.info().has_audio() {
+                skipped.push(item.0);
+                continue;
+            }
+            work.push(AudioWork { item, name: proj_item.name.clone(), dur, src });
+        }
+        if work.is_empty() {
+            return Err(EngineError::Other("none of the clips has audio to transcribe".into()));
+        }
+
+        let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+        let n_clips = work.len();
+        let label = format!("Transcribing ({} clip{})", n_clips, if n_clips == 1 { "" } else { "s" });
+        let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
+        let total_steps = (n_clips as u64).max(1) * 1000;
+        job.progress.total.store(total_steps, std::sync::atomic::Ordering::Relaxed);
+        *lock(&job.progress.status) = "Preparing transcription…".into();
+        let results: Arc<std::sync::Mutex<Option<Vec<ClipTranscriptDone>>>> = Arc::default();
+        let (prog, res, out) = (job.progress.clone(), job.result.clone(), results.clone());
+
+        let auto_create_captions = ai_auto_captions && ai_refine && !ai_api_key.trim().is_empty();
+        let run = move || {
+            use std::sync::atomic::Ordering;
+            let t0 = web_time::Instant::now();
+            let step_res: std::result::Result<Vec<ClipTranscriptDone>, String> = (|| {
+                let t: Arc<dyn Transcriber> = if let Some(inst) = installed_transcriber {
+                    inst
+                } else if let Some((m, dir)) = model_info {
+                    #[cfg(not(feature = "speech-download"))]
+                    let _ = m;
+                    #[cfg(feature = "speech-download")]
+                    {
+                        if !filmcraft_speech::models::installed(&dir, m) {
+                            *lock(&prog.status) = format!("Downloading speech model {}…", m.id);
+                            let dl_res = filmcraft_speech::models::download(&dir, m, &mut |done_b, total_b, file| {
+                                let pct = if total_b > 0 { (done_b as f64 / total_b as f64 * 100.0) as u64 } else { 0 };
+                                let step_done = (done_b as f64 / total_b.max(1) as f64 * (total_steps as f64 * 0.15)) as u64;
+                                prog.done.store(step_done, Ordering::Relaxed);
+                                *lock(&prog.status) = format!("Downloading {} ({file}) — {pct}%", m.id);
+                                !prog.cancel.load(Ordering::Relaxed)
+                            });
+                            dl_res.map_err(|e| e.to_string())?;
+                        }
+                    }
+                    if prog.cancel.load(Ordering::Relaxed) {
+                        return Err("stopped".into());
+                    }
+                    *lock(&prog.status) = format!("Loading model {}…", model_id);
+                    filmcraft_speech::load(&dir, &model_id).map_err(|e| e.to_string())?
+                } else {
+                    return Err("no speech model".into());
+                };
+
+                let mut done: Vec<ClipTranscriptDone> = Vec::new();
+                let sr = filmcraft_speech::SAMPLE_RATE;
+                let use_ai = ai_refine && !ai_api_key.trim().is_empty();
+                let whisper_weight = if use_ai { 0.85_f32 } else { 1.0_f32 };
+                for (idx, w) in work.iter().enumerate() {
+                    if prog.cancel.load(Ordering::Relaxed) {
+                        return Err("stopped".into());
+                    }
+                    let base_frac = idx as f32 / n_clips as f32;
+                    let clip_span = 1.0 / n_clips as f32;
+                    prog.done.store((base_frac * total_steps as f32) as u64, Ordering::Relaxed);
+                    *lock(&prog.status) = format!("Extracting audio: {} ({}/{})…", w.name, idx + 1, n_clips);
+                    let len = w.dur.to_units_floor(sr as i64).max(0) as usize;
+                    let Ok(buf) = w.src.audio(0, len, sr) else {
+                        continue;
+                    };
+                    let audio = filmcraft_speech::downmix(&buf.channels);
+                    let clip_name = &w.name;
+                    let mut tr = t
+                        .transcribe(&audio, &opts, &mut |frac, msg| {
+                            let overall = (base_frac + frac.clamp(0.0, 1.0) * whisper_weight * clip_span).clamp(0.0, 1.0);
+                            prog.done.store((overall * total_steps as f32) as u64, Ordering::Relaxed);
+                            *lock(&prog.status) = format!("{clip_name} ({}/{}): {msg}", idx + 1, n_clips);
+                            !prog.cancel.load(Ordering::Relaxed)
+                        })
+                        .map_err(|e| e.to_string())?;
+                    tr.normalize();
+                    tx::apply_glossary(&mut tr);
+
+                    let mut ai_captions = Vec::new();
+                    let mut ai_corrected_words = 0usize;
+                    let mut ai_provider_used = None;
+                    let mut ai_warning = None;
+
+                    if use_ai && !tr.words.is_empty() {
+                        if prog.cancel.load(Ordering::Relaxed) {
+                            return Err("stopped".into());
+                        }
+                        let ai_frac = (base_frac + 0.88 * clip_span).clamp(0.0, 0.99);
+                        prog.done.store((ai_frac * total_steps as f32) as u64, Ordering::Relaxed);
+                        let prov_name = filmcraft_speech::llm::resolve_provider(&ai_provider, &ai_api_key);
+                        *lock(&prog.status) = format!("{clip_name}: Refining text & separating captions with AI ({prov_name})…");
+                        match filmcraft_speech::llm::refine_transcript(&mut tr, &ai_provider, &ai_api_key, &ai_prompt, 30, 2) {
+                            Ok(ai_res) => {
+                                ai_corrected_words = ai_res.corrected_words;
+                                ai_provider_used = Some(ai_res.provider_used);
+                                ai_captions = ai_res.captions.into_iter().map(|c| (c.start_word, c.end_word, c.lines)).collect();
+                            }
+                            Err(e) => {
+                                ai_warning = Some(e.to_string());
+                            }
+                        }
+                    }
+
+                    done.push(ClipTranscriptDone { item: w.item, transcript: tr, ai_captions, ai_corrected_words, ai_provider: ai_provider_used, ai_warning });
+                }
+                Ok(done)
+            })();
+
+            let secs = t0.elapsed().as_secs_f64();
+            match step_res {
+                Ok(done) => {
+                    let n_words: usize = done.iter().map(|d| d.transcript.words.len()).sum();
+                    prog.done.store(total_steps, Ordering::Relaxed);
+                    *lock(&prog.status) = format!("Transcribed {n_words} word(s) in {:.1}s", secs);
+                    *lock(&out) = Some(done);
+                    *lock(&res) = Some(Ok(filmcraft_export::Report {
+                        path: String::new(),
+                        frames: n_words as u64,
+                        seconds: secs,
+                        bytes: 0,
+                        render_fps: 0.0,
+                        extra_files: Vec::new(),
+                    }));
+                }
+                Err(e) => {
+                    *lock(&prog.status) = if e == "stopped" { "Cancelled".into() } else { e.clone() };
+                    *lock(&prog.error) = Some(e.clone());
+                    *lock(&res) = Some(Err(e));
+                }
+            }
+            prog.finished.store(true, Ordering::Relaxed);
+        };
+
+        let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
+        s.jobs.push(job);
+        s.transcript_jobs.push(PendingTranscript { job: id, results, auto_create_captions });
+        std::thread::Builder::new().name("filmcraft-transcribe".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        return Ok(json!({"job": id, "clips": n_clips, "skipped": skipped}));
+    }
+
+    let t = transcriber(s, p)?;
     let mut done: Vec<(ItemId, Transcript)> = Vec::new();
     let mut skipped = Vec::new();
+    let use_ai = ai_refine && !ai_api_key.trim().is_empty();
     for item in items {
         let Some(audio) = item_audio(s, item) else {
             skipped.push(item.0);
@@ -170,6 +390,10 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let mut tr = t.transcribe(&audio, &opts, &mut |_, _| true).map_err(speech_err)?;
         tr.normalize();
+        tx::apply_glossary(&mut tr);
+        if use_ai && !tr.words.is_empty() {
+            let _ = filmcraft_speech::llm::refine_transcript(&mut tr, &ai_provider, &ai_api_key, &ai_prompt, 30, 2);
+        }
         done.push((item, tr));
     }
     if done.is_empty() {
@@ -188,6 +412,128 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"items": report, "skipped": skipped}))
 }
 
+/// Apply finished background transcription jobs to the project. Called once per UI frame from
+/// [`Session::poll_persistence`].
+pub fn poll(s: &mut Session) {
+    use std::sync::atomic::Ordering;
+    let mut i = 0;
+    while i < s.transcript_jobs.len() {
+        let job_id = s.transcript_jobs[i].job;
+        let job = s.jobs.iter().find(|j| j.id == job_id);
+        let finished = job.is_none_or(|j| j.progress.finished.load(Ordering::Relaxed));
+        let cancelled = job.is_some_and(|j| j.progress.cancel.load(Ordering::Relaxed));
+        let err = job.and_then(|j| lock(&j.result).clone()).and_then(std::result::Result::err);
+        if !finished {
+            i += 1;
+            continue;
+        }
+        let pj = s.transcript_jobs.remove(i);
+        if cancelled {
+            s.toast("Transcription cancelled");
+            continue;
+        }
+        if let Some(e) = err {
+            if e != "stopped" {
+                s.error_toast("transcript.generate", format!("Transcribe: {e}"));
+            }
+            continue;
+        }
+        let Some(done) = lock(&pj.results).take() else { continue };
+        let n_words: usize = done.iter().map(|d| d.transcript.words.len()).sum();
+        let n_clips = done.len();
+        let total_ai_corrected: usize = done.iter().map(|d| d.ai_corrected_words).sum();
+        let ai_provider: Option<String> = done.iter().find_map(|d| d.ai_provider.clone());
+        let ai_warn: Option<String> = done.iter().find_map(|d| d.ai_warning.clone());
+        let ai_by_item: std::collections::BTreeMap<ItemId, Vec<(usize, usize, Vec<String>)>> =
+            done.iter().filter(|d| !d.ai_captions.is_empty()).map(|d| (d.item, d.ai_captions.clone())).collect();
+        let transcripts_to_insert: Vec<(ItemId, Transcript)> = done.into_iter().map(|d| (d.item, d.transcript)).collect();
+        if let Err(e) = s.edit("Transcribe", move |pr, _| {
+            for (item, tr) in transcripts_to_insert {
+                pr.transcripts.insert(item, Arc::new(tr));
+            }
+            Ok(())
+        }) {
+            s.error_toast("transcript.generate", format!("Transcribe: {e}"));
+            continue;
+        }
+
+        if n_words == 0 {
+            s.toast("Transcription finished: no speech detected in the audio clips");
+            continue;
+        }
+
+        if pj.auto_create_captions && s.active_sequence().is_some() {
+            let seq_words = sequence_words(s);
+            if !seq_words.is_empty() {
+                let d = CaptionRules::default();
+                let rules = CaptionRules { max_chars: 30, lines: 2, smart_balance: true, ..d };
+                let rate = s.sequence_rate();
+                let mut mapped_ai_caps: Vec<(usize, usize, Vec<String>)> = Vec::new();
+                if !ai_by_item.is_empty() {
+                    let mut run_start = 0usize;
+                    while run_start < seq_words.len() {
+                        let clip_id = seq_words[run_start].clip;
+                        let item_id = seq_words[run_start].item;
+                        let mut run_end = run_start + 1;
+                        while run_end < seq_words.len() && seq_words[run_end].clip == clip_id {
+                            run_end += 1;
+                        }
+                        if let Some(clip_caps) = ai_by_item.get(&item_id) {
+                            for (c_start, c_end, lines) in clip_caps {
+                                let mut first_seq = None;
+                                let mut last_seq = None;
+                                for (seq_idx, sw) in seq_words[run_start..run_end].iter().enumerate() {
+                                    if sw.index >= *c_start && sw.index <= *c_end {
+                                        let global_seq = run_start + seq_idx;
+                                        if first_seq.is_none() {
+                                            first_seq = Some(global_seq);
+                                        }
+                                        last_seq = Some(global_seq);
+                                    }
+                                }
+                                if let (Some(a), Some(b)) = (first_seq, last_seq) {
+                                    mapped_ai_caps.push((a, b, lines.clone()));
+                                }
+                            }
+                        }
+                        run_start = run_end;
+                    }
+                }
+                let blocks = if !mapped_ai_caps.is_empty() {
+                    tx::caption_blocks_from_ai_groups(&seq_words, &mapped_ai_caps, &rules, rate)
+                } else {
+                    tx::caption_blocks(&seq_words, &rules, rate)
+                };
+                let n_blocks = blocks.len();
+                let _ = s.edit_sequence("Create AI Captions", |q, ctx, st| {
+                    let tid = TrackId(ctx.alloc());
+                    let mut t = CaptionTrack::new(tid, "Captions (AI)".into(), CaptionFormat::default());
+                    t.captions = tx::blocks_to_captions(&blocks, ctx);
+                    q.caption_tracks.insert(0, t);
+                    st.caption_selection.clear();
+                    Ok(tid)
+                });
+                if let Some(w) = ai_warn {
+                    s.error_toast("transcript.ai", format!("Transcrição concluída ({n_words} palavras, {n_blocks} legendas), mas houve erro na IA: {w}"));
+                } else if let Some(prov) = ai_provider {
+                    s.toast(format!("Transcrição + IA ({prov}): {n_words} palavras ({total_ai_corrected} ajustadas) e {n_blocks} legendas criadas!"));
+                } else {
+                    s.toast(format!("Transcription finished: {n_words} word(s), {n_blocks} captions created"));
+                }
+                continue;
+            }
+        }
+
+        if let Some(w) = ai_warn {
+            s.error_toast("transcript.ai", format!("Transcrição concluída ({n_words} palavras), mas houve erro na IA: {w}"));
+        } else if let Some(prov) = ai_provider {
+            s.toast(format!("Transcrição + IA ({prov}) concluída: {n_words} palavras ({total_ai_corrected} ajustadas pela IA)"));
+        } else {
+            s.toast(format!("Transcription finished: {n_words} word(s) across {n_clips} clip(s)"));
+        }
+    }
+}
+
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let item = u64_p(p, "item").map(ItemId).ok_or_else(|| bad("transcript.set", "`item` is required"))?;
     let item = media_item(s, item).ok_or_else(|| bad("transcript.set", "no such media item"))?;
@@ -197,6 +543,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         t.source = "imported".into();
     }
     t.normalize();
+    tx::apply_glossary(&mut t);
     t.check().map_err(|e| bad("transcript.set", e))?;
     let n = t.words.len();
     s.edit("Set Transcript", move |pr, _| {
@@ -376,17 +723,70 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
-    let words = sequence_words(s);
+    let mut words = sequence_words(s);
     let d = CaptionRules::default();
+    let max_chars = u64_p(p, "maxChars").map(|n| n as usize).unwrap_or(d.max_chars);
+    let lines = u64_p(p, "lines").map(|n| n as usize).unwrap_or(d.lines);
     let rules = CaptionRules {
-        max_chars: u64_p(p, "maxChars").map(|n| n as usize).unwrap_or(d.max_chars),
-        lines: u64_p(p, "lines").map(|n| n as usize).unwrap_or(d.lines),
+        max_chars,
+        lines,
         min_duration: f64_p(p, "minSeconds").map(Tick::from_seconds_f64).unwrap_or(d.min_duration),
         max_duration: f64_p(p, "maxSeconds").map(Tick::from_seconds_f64).unwrap_or(d.max_duration),
         gap_frames: p.get("gapFrames").and_then(Value::as_i64).unwrap_or(d.gap_frames),
         break_pause: d.break_pause,
+        smart_balance: bool_p(p, "smartBalance").unwrap_or(max_chars <= 35),
     };
-    let blocks = tx::caption_blocks(&words, &rules, s.sequence_rate());
+    let ma = s.prefs.media_analysis.clone();
+    let use_ai = bool_p(p, "useAi").unwrap_or(ma.ai_refine) && !ma.ai_api_key.trim().is_empty() && !words.is_empty();
+    let mut ai_status: Option<std::result::Result<(String, usize), String>> = None;
+    let blocks = if use_ai {
+        let mut temp_tr = Transcript {
+            language: String::new(),
+            speakers: Vec::new(),
+            words: words
+                .iter()
+                .map(|w| filmcraft_project::Word { text: w.text.clone(), start: w.start, end: w.end, speaker: None, confidence: w.confidence })
+                .collect(),
+            source: "sequence".into(),
+        };
+        match filmcraft_speech::llm::refine_transcript(&mut temp_tr, &ma.ai_provider, &ma.ai_api_key, &ma.ai_prompt, max_chars, lines) {
+            Ok(ai_res) if !ai_res.captions.is_empty() => {
+                let mut next_transcripts = s.project.transcripts.clone();
+                let mut changed_any = false;
+                for (w, tw) in words.iter_mut().zip(temp_tr.words.iter()) {
+                    if w.text != tw.text {
+                        w.text = tw.text.clone();
+                        if let Some(tr_arc) = next_transcripts.get_mut(&w.item) {
+                            let tr_mut = Arc::make_mut(tr_arc);
+                            if let Some(orig_w) = tr_mut.words.get_mut(w.index) {
+                                orig_w.text = tw.text.clone();
+                                changed_any = true;
+                            }
+                        }
+                    }
+                }
+                if changed_any {
+                    let _ = s.edit("AI Refine Transcript", move |pr, _| {
+                        pr.transcripts = next_transcripts;
+                        Ok(())
+                    });
+                }
+                ai_status = Some(Ok((ai_res.provider_used, ai_res.corrected_words)));
+                let groups: Vec<(usize, usize, Vec<String>)> = ai_res.captions.into_iter().map(|c| (c.start_word, c.end_word, c.lines)).collect();
+                tx::caption_blocks_from_ai_groups(&words, &groups, &rules, s.sequence_rate())
+            }
+            Ok(ai_res) => {
+                ai_status = Some(Ok((ai_res.provider_used, ai_res.corrected_words)));
+                tx::caption_blocks(&words, &rules, s.sequence_rate())
+            }
+            Err(e) => {
+                ai_status = Some(Err(e.to_string()));
+                tx::caption_blocks(&words, &rules, s.sequence_rate())
+            }
+        }
+    } else {
+        tx::caption_blocks(&words, &rules, s.sequence_rate())
+    };
     let format = str_p(p, "format").and_then(CaptionFormat::from_name).unwrap_or_default();
     let name = str_p(p, "name").unwrap_or("Transcript").to_string();
     let n = blocks.len();
@@ -398,6 +798,15 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
         st.caption_selection.clear();
         Ok(tid)
     })?;
+    match ai_status {
+        Some(Ok((prov, corr))) => {
+            s.toast(format!("Legendas + IA ({prov}): {corr} palavras ajustadas e {n} legendas criadas!"));
+        }
+        Some(Err(err)) => {
+            s.error_toast("transcript.ai", format!("Legendas criadas ({n}), mas houve erro na IA: {err}"));
+        }
+        None => {}
+    }
     Ok(json!({"track": tid.0, "captions": n}))
 }
 
