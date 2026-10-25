@@ -209,7 +209,9 @@ switches, a slider drag as one undo step, section bypass, Auto-Match, ducking, B
 `crates/ui-egui/tests/it/clip_audio_ui.rs` covers the audio of video clips (#223): the linked audio's
 Volume, Channel Volume and Panner in Effect Controls and Properties, and the Volume line on audio
 clips in the Timeline (a drag is one undo step, Pen-tool keyframes, keyframe drags, a click or
-right-click on the line still reaches the clip; `FILMCRAFT_UI_SHOTS=<dir>` writes `volume-*.png`).
+right-click on the line still reaches the clip), and Show Clip Keyframes (#2213: a video clip's
+Opacity line, picked from the clip menu, drags and keyframes the same way; an audio clip can show
+Panner instead of Volume; `FILMCRAFT_UI_SHOTS=<dir>` writes `volume-*.png` and `clip-keyframes-*.png`).
 
 Essential Sound engine tests (`crates/engine/src/essential_sound_tests.rs`) build projects from
 generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target (measured: 0.000 LU,
