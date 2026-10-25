@@ -209,3 +209,16 @@ fn strict_phrase_matching_leaves_an_unsuitable_target_unchanged() {
         s.execute("clip.remix.revert", json!({"clip":c.0})).unwrap();
     }
 }
+
+#[test]
+fn strict_phrase_invalid_sample_target_is_an_error_without_edits() {
+    let (m, _) = music();
+    let (mut s, c) = session(&m, None);
+    let before = s.project.to_json();
+    let undo = s.history.undo.len();
+    // Positive ticks can still round down to zero audio samples in the planner.
+    let error = s.execute("clip.remix", json!({"clip":c.0,"duration":1,"matchMelody":true})).unwrap_err();
+    assert_eq!(error.to_string(), "cannot remix: invalid remix analysis or parameters");
+    assert_eq!(s.project.to_json(), before);
+    assert_eq!(s.history.undo.len(), undo);
+}

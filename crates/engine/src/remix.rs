@@ -214,6 +214,15 @@ fn enable(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(report(s, c, Some(&a)))
 }
 
+/// Only a duration/phrase mismatch is a successful strict-search refusal.
+fn strict_plan_result(result: std::result::Result<dsp::Plan, dsp::RemixError>) -> Result<Option<dsp::Plan>> {
+    match result {
+        Ok(plan) => Ok(Some(plan)),
+        Err(dsp::RemixError::TargetTooShort) => Ok(None),
+        Err(error) => Err(EngineError::Other(format!("cannot remix: {error}"))),
+    }
+}
+
 fn remix(s: &mut Session, p: &Value, cmd: &str, label: &str) -> Result<Value> {
     let c = target_clip(s, p, cmd)?;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -239,9 +248,9 @@ fn remix(s: &mut Session, p: &Value, cmd: &str, label: &str) -> Result<Value> {
         let analysis = analysis(s, it.item, it.source_in, original, it.audio_stream)?;
         let sr = i64::from(analysis.sample_rate);
         let params = Params { segments: segments.clamp(0.0, 100.0), variations: variations.clamp(0.0, 100.0) };
-        match dsp::plan_with_melody_floor(&analysis, target.to_units_floor(sr), params, 0.50) {
-            Ok(plan) => Some(plan),
-            Err(_) => {
+        match strict_plan_result(dsp::plan_with_melody_floor(&analysis, target.to_units_floor(sr), params, 0.50))? {
+            Some(plan) => Some(plan),
+            None => {
                 let alternatives: Vec<_> = dsp::melodic_alternatives(&analysis, target.to_units_floor(sr))
                     .iter()
                     .map(|plan| json!({"seconds":Tick::from_units(plan.len(),sr).seconds()}))
@@ -328,4 +337,40 @@ pub fn commands() -> Vec<CommandSpec> {
             journal: true,
         },
     ]
+}
+
+#[cfg(test)]
+mod strict_plan_tests {
+    use super::*;
+
+    // Exercise the result boundary even for errors currently raised during analysis,
+    // so future planner validation cannot disguise source failures as phrase mismatches.
+    #[test]
+    fn strict_invalid_input_keeps_its_cause() {
+        let error = strict_plan_result(Err(dsp::RemixError::InvalidInput)).unwrap_err();
+        assert_eq!(error.to_string(), "cannot remix: invalid remix analysis or parameters");
+    }
+
+    #[test]
+    fn strict_no_beat_keeps_its_cause() {
+        let error = strict_plan_result(Err(dsp::RemixError::NoBeat)).unwrap_err();
+        assert_eq!(error.to_string(), "cannot remix: no beat found in the audio");
+    }
+
+    #[test]
+    fn strict_short_source_keeps_its_cause() {
+        let error = strict_plan_result(Err(dsp::RemixError::TooShort)).unwrap_err();
+        assert_eq!(error.to_string(), "cannot remix: the music is too short to remix");
+    }
+
+    #[test]
+    fn strict_short_target_is_a_phrase_refusal() {
+        assert_eq!(strict_plan_result(Err(dsp::RemixError::TargetTooShort)).unwrap(), None);
+    }
+
+    #[test]
+    fn strict_success_keeps_the_plan() {
+        let plan = dsp::Plan { pieces: vec![dsp::Piece { src: 100, len: 1000 }], xfade: 64 };
+        assert_eq!(strict_plan_result(Ok(plan.clone())).unwrap(), Some(plan));
+    }
 }

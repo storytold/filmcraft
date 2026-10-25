@@ -149,4 +149,6 @@ sub-sample estimate, and two trust figures (`confidence` = peak / RMS of the cor
 Remix analysis retains beat RMS and ordered pitch-register similarities. A bounded beam search
 compares melodic phrases, local context and four-beat phase while preserving source tempo.
 A protected closing phrase is used only by the final piece. Strict matching can suggest
-other lengths without modifying the clip. These are heuristics; listening remains necessary.
+other lengths without modifying the clip when a duration/phrase search has no suitable result.
+The engine preserves invalid-input, missing-beat and insufficient-source errors instead of
+reporting them as a duration mismatch. These are heuristics; listening remains necessary.
