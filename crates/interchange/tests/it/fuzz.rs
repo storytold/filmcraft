@@ -7,16 +7,14 @@
 //! Unicode file URLs are included: their former char-boundary panic is fixed alongside the
 //! time-arithmetic fixes, so no known panic is excluded.
 
-mod support;
-
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, PanicHookInfo, catch_unwind};
 use std::sync::Once;
 
+use super::support::*;
 use filmcraft_interchange::{ExportOptions, Format, detect, export, import};
 use filmcraft_project::{ItemId, Project, TrackKind, TransitionAlign};
 use filmcraft_time::FrameRate;
-use support::*;
 
 struct Rng(u64);
 impl Rng {
