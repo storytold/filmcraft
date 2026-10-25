@@ -72,7 +72,7 @@ use filmcraft_engine::{Services, Session};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
-pub use control::ControlRequest;
+pub use control::{ControlRequest, ControlTicket};
 use dock::PanelKind;
 use frames::{FrameKey, FrameServer, Target};
 use native_dialogs::FileDialog;
@@ -1694,8 +1694,15 @@ impl FilmcraftApp {
             reqs.push((req, now + 3.0));
         }
         for (req, deadline) in reqs {
+            // A request its transport has given up on (it timed out while the window was hidden,
+            // #1584) is dropped unrun: the caller was told it failed and may already have retried.
+            if !req.begin() {
+                continue;
+            }
             let reply = req.reply.clone();
-            match control::handle(self, ctx, &req) {
+            let outcome = control::handle(self, ctx, &req);
+            req.finish(!matches!(outcome, control::Outcome::Retry(_)));
+            match outcome {
                 control::Outcome::Done(v) => {
                     let _ = reply.send(v);
                 }
