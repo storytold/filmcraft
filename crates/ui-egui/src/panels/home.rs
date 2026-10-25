@@ -36,10 +36,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     egui::ScrollArea::vertical().id_salt("home-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         let avail = ui.available_width();
         let w = (avail - 48.0).clamp(1.0, COLUMN_W);
-        // Only projects still on disk, so one beyond the first rows shows when newer ones are gone
-        // (At Startup ▸ Show Home chooses Home when any recent project exists).
-        let recent: Vec<String> =
-            app.session.prefs.general.recent_projects.iter().filter(|p| std::path::Path::new(p).exists()).take(RECENT_ROWS).cloned().collect();
+        let recent = existing_recent(app);
         let columns = (((w + CARD_GAP) / (CARD.x + CARD_GAP)).floor() as usize).max(1);
         let card_rows = SIZES.len().div_ceil(columns);
         // Section tops, from the top of the content.
@@ -55,6 +52,35 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         sizes(app, ui, origin + vec2(0.0, sizes_y), columns);
         crate::panels::import_mode::community(app, ui, origin + vec2(0.0, community_y), "home");
     });
+}
+
+/// The recent projects still on disk, at most `RECENT_ROWS`, so one beyond the first rows shows
+/// when newer ones are gone (At Startup ▸ Show Home chooses Home when any recent project exists).
+/// The disk is checked when Home is shown and when the list changes, not every frame: a missing
+/// network volume can take seconds to answer.
+fn existing_recent(app: &mut FilmcraftApp) -> Vec<String> {
+    let all = &app.session.prefs.general.recent_projects;
+    if let Some((checked, existing)) = &app.home_recent
+        && checked == all
+    {
+        return existing.clone();
+    }
+    let existing: Vec<String> = all.iter().filter(|p| std::path::Path::new(p).exists()).take(RECENT_ROWS).cloned().collect();
+    app.home_recent = Some((all.clone(), existing.clone()));
+    existing
+}
+
+/// Runs a Home action that replaces the open project (`file.open`, `file.newProject`). With
+/// unsaved changes it asks Save / Don't Save / Cancel first, as File ▸ Close Project does, and runs
+/// the action after Save or Don't Save. The editor replaces Home once the new project is open
+/// (`Event::ProjectOpened`).
+fn replace_project(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, params: serde_json::Value) {
+    if crate::panels::clip_dialogs::ask_to_save_before(app, cmd, &params) {
+        return;
+    }
+    if let Err(e) = crate::menus::invoke(app, ctx, cmd, params) {
+        app.ui.status = e;
+    }
 }
 
 /// Registers an automation id for the part of `r` that is on screen (Home scrolls), so `ui.click`
@@ -90,10 +116,8 @@ fn welcome(app: &mut FilmcraftApp, ui: &mut egui::Ui, origin: egui::Pos2) {
         }
         ui.painter().galley(r.center() - g.size() / 2.0, g, fg);
         if resp.clicked() {
-            // Open shows the file dialog; the editor replaces Home once the project opens.
-            if crate::menus::invoke(app, &ctx, cmd, json!({})).is_ok() && cmd == "file.newProject" {
-                app.ui.mode = Mode::Edit;
-            }
+            // Open shows the file dialog
+            replace_project(app, &ctx, cmd, json!({}));
         }
         x = r.max.x + 10.0;
     }
@@ -126,9 +150,7 @@ fn recent_projects(app: &mut FilmcraftApp, ui: &mut egui::Ui, origin: egui::Pos2
     }
     if let Some(path) = open {
         let ctx = ui.ctx().clone();
-        if crate::menus::invoke(app, &ctx, "file.open", json!({"path": path})).is_ok() {
-            app.ui.mode = Mode::Edit;
-        }
+        replace_project(app, &ctx, "file.open", json!({"path": path}));
     }
 }
 

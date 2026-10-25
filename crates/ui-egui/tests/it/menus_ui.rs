@@ -401,7 +401,10 @@ fn home_starts_sequences_at_common_sizes_and_new_projects() {
     d.exec("file.newBin", json!({"name": "Stays on Home"}));
     d.frames(2);
     assert_eq!(d.app().ui.mode, Mode::Home);
+    // with unsaved changes it asks first (home_asks_to_save_changes_before_replacing_the_project)
     d.click("home.new");
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    d.click("closeProject.dontSave");
     assert_eq!(d.app().ui.mode, Mode::Edit);
     assert!(d.app().session.active_sequence().is_none(), "a new, empty project");
 }
@@ -472,4 +475,98 @@ fn home_registers_only_visible_community_links() {
         assert!(bottom <= 420.0, "{} is registered below the window: {e}", e["id"]);
     }
     assert!(!d.has("home.link.discord"), "the Discord link is scrolled out of view");
+}
+
+/// Home's recent projects and New Project replace the open project, so with unsaved changes they
+/// ask Save / Don't Save / Cancel first: Cancel keeps everything, Don't Save then opens the
+/// chosen project, Save saves and then starts the new one.
+#[test]
+fn home_asks_to_save_changes_before_replacing_the_project() {
+    use filmcraft_ui_egui::state::Mode;
+    let dir = std::env::temp_dir().join(format!("fc-ui-home-dirty-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("a.fcproj").to_string_lossy().to_string();
+    let b = dir.join("b.fcproj").to_string_lossy().to_string();
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": a}));
+    d.exec("file.newProject", json!({"name": "B"}));
+    d.exec("file.saveAs", json!({"path": b}));
+    d.exec("file.newBin", json!({"name": "Unsaved"}));
+    assert!(d.app().session.is_dirty());
+    d.click("header.home");
+    let rows = d.ok("ui.elements", json!({"prefix": "home.recent."}));
+    let row_a = rows.as_array().unwrap().iter().find(|e| e["label"] == "a.fcproj").unwrap()["id"].as_str().unwrap().to_string();
+    // Cancel: nothing happens
+    d.click(&row_a);
+    assert!(d.has("closeProject.cancel"), "Save / Don't Save / Cancel is asked");
+    assert_eq!(d.app().session.path.as_deref(), Some(b.as_str()));
+    d.click("closeProject.cancel");
+    assert_eq!(d.app().session.path.as_deref(), Some(b.as_str()));
+    assert!(d.app().session.is_dirty(), "the changes are still there");
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    // Don't Save: the chosen project opens, in Edit
+    d.click(&row_a);
+    d.click("closeProject.dontSave");
+    assert_eq!(d.app().session.path.as_deref(), Some(a.as_str()));
+    assert!(!d.app().session.is_dirty());
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    // Save: New Project saves the changes first
+    d.exec("file.newSequence", json!({"name": "Kept", "width": 1920, "height": 1080}));
+    d.frames(30); // the timeline fits the new sequence
+    d.click("header.home");
+    d.click("home.new");
+    assert!(d.has("closeProject.save"));
+    assert_eq!(d.app().session.path.as_deref(), Some(a.as_str()), "nothing replaced before the answer");
+    d.click("closeProject.save");
+    assert_eq!(d.app().session.path, None, "a new project");
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    let mut o = filmcraft_engine::Session::default();
+    o.execute("file.open", json!({"path": a})).unwrap();
+    assert!(o.project.items.values().any(|i| i.name == "Kept"), "the changes were saved");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Toggling proxies refreshes the project (ProjectChanged) without opening one, so Home stays up.
+#[test]
+fn toggling_proxies_on_home_stays_on_home() {
+    use filmcraft_ui_egui::state::Mode;
+    let mut d = Driver::new();
+    d.click("header.home");
+    d.exec("media.toggleProxies", json!({"enabled": true}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Home);
+    d.exec("media.toggleProxies", json!({"enabled": false}));
+    d.frames(2);
+    assert_eq!(d.app().ui.mode, Mode::Home);
+}
+
+/// Home checks which recent projects exist when it is shown or the list changes, not every frame:
+/// a file removed while Home is up stays listed until Home is shown again.
+#[test]
+fn home_checks_recent_projects_when_shown_not_every_frame() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-home-cache-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("a.fcproj").to_string_lossy().to_string();
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": a}));
+    let rows = |d: &mut Driver| -> Vec<String> {
+        let v = d.ok("ui.elements", json!({"prefix": "home.recent."}));
+        v.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap().to_string()).collect()
+    };
+    d.click("header.home");
+    assert_eq!(rows(&mut d), ["a.fcproj"]);
+    std::fs::remove_file(&a).unwrap();
+    d.frames(3);
+    assert_eq!(rows(&mut d), ["a.fcproj"], "not checked again while Home is up");
+    // leaving and coming back checks again
+    d.ok("ui.set", json!({"mode": "edit"}));
+    d.frames(2);
+    d.click("header.home");
+    assert!(rows(&mut d).is_empty());
+    // so does a change of the list
+    let b = dir.join("b.fcproj").to_string_lossy().to_string();
+    d.exec("file.saveAs", json!({"path": b}));
+    d.frames(2);
+    assert_eq!(rows(&mut d), ["b.fcproj"]);
+    let _ = std::fs::remove_dir_all(&dir);
 }

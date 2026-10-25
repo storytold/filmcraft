@@ -108,6 +108,22 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     Some(Ok(json!({"dialog": meta(id).map(|m| m.1)})))
 }
 
+/// Before `command` (with `params`) replaces a project that has unsaved changes, asks Save /
+/// Don't Save / Cancel (the Close Project prompt) and returns true; the command runs after Save or
+/// Don't Save, and Cancel drops it. Returns false, asking nothing, when there is nothing to save.
+pub fn ask_to_save_before(app: &mut FilmcraftApp, command: &str, params: &Value) -> bool {
+    if !app.session.is_dirty() {
+        return false;
+    }
+    app.ui.clip_dialog = Some(ClipDialogDraft {
+        command: "file.closeProject".into(),
+        params: json!({"then": {"command": command, "params": params}}),
+        info: Value::Null,
+        error: String::new(),
+    });
+    true
+}
+
 /// A request to close the window (Quit, the title bar's close button, the OS): with unsaved
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
@@ -623,6 +639,19 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     app.ui.clip_dialog = Some(d);
                     return;
                 }
+            }
+            // Asked before another project replaces this one (Home's Open, Recent Projects and New
+            // Project): that command closes it instead
+            let then = d.params.get("then").filter(|_| d.command == "file.closeProject");
+            if let Some(then) = then {
+                let command = then["command"].as_str().unwrap_or_default().to_string();
+                if let Err(e) = crate::menus::invoke(app, ctx, &command, then["params"].clone()) {
+                    app.ui.status = e;
+                }
+                if app.ui.clip_dialog.as_ref().is_some_and(|c| c.command == "file.closeProject") {
+                    app.ui.clip_dialog = None;
+                }
+                return;
             }
             // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
             // snapshot, so the next launch doesn't offer them back

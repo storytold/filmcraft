@@ -427,6 +427,10 @@ pub struct FilmcraftApp {
     /// The next close request quits without asking to save (Save / Don't Save was chosen in the
     /// quit prompt, or the control channel's `app.quit`).
     pub quit_confirmed: bool,
+    /// Home's recent projects: General ▸ `recentProjects` as last checked, and those of them that
+    /// exist. Checked when Home is shown and when the list changes, never every frame (a missing
+    /// network volume can take seconds to answer); `None` while Home is not shown.
+    pub(crate) home_recent: Option<(Vec<String>, Vec<String>)>,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,
@@ -693,6 +697,7 @@ impl FilmcraftApp {
             ui_error: None,
             panic_next_frame: false,
             quit_confirmed: false,
+            home_recent: None,
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
@@ -2204,6 +2209,10 @@ impl FilmcraftApp {
         }
         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
+        if self.ui.mode != state::Mode::Home {
+            // checked again the next time Home is shown
+            self.home_recent = None;
+        }
         match self.ui.mode {
             state::Mode::Edit => self.dock_area(ui, body),
             state::Mode::Home => panels::home::show(self, ui, body),
@@ -2561,10 +2570,11 @@ impl FilmcraftApp {
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
-                filmcraft_engine::Event::ProjectChanged { .. } => {
-                    // A project opened, created or recovered (nothing to undo or redo yet) replaces
-                    // Home with the editor; edits made while Home is up leave it there.
-                    if self.ui.mode == state::Mode::Home && !self.session.history.can_undo() && !self.session.history.can_redo() {
+                filmcraft_engine::Event::ProjectChanged { .. } => {}
+                // A project opened, created or recovered replaces Home with the editor; edits and
+                // refreshes (ProjectChanged) made while Home is up leave it there.
+                filmcraft_engine::Event::ProjectOpened => {
+                    if self.ui.mode == state::Mode::Home {
                         self.ui.mode = state::Mode::Edit;
                     }
                 }

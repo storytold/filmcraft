@@ -1211,6 +1211,7 @@ fn build() -> Vec<CommandSpec> {
             s.revision += 1;
             s.saved_revision = s.revision;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+            s.events.push(crate::Event::ProjectOpened);
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
             Ok(json!({"name": name, "revision": s.revision}))
         }),
@@ -1230,6 +1231,7 @@ fn build() -> Vec<CommandSpec> {
             s.revision += 1;
             s.saved_revision = s.revision;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+            s.events.push(crate::Event::ProjectOpened);
             s.events.push(crate::Event::OpenSequence(seq));
             Ok(json!({"sequence": seq.0}))
         }),
@@ -4680,6 +4682,7 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     s.saved_revision = if clean { s.revision } else { 0 };
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    s.events.push(crate::Event::ProjectOpened);
     crate::project_tools::warn_untrusted_scratch(s);
 }
 
