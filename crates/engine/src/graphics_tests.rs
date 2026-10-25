@@ -416,6 +416,121 @@ fn distribute_centres_and_spaces() {
     assert!((quad_box(&mut s, clip, 3)[0] - x0).abs() < 1e-6);
 }
 
+/// Copy, paste and duplicate graphic layers (#2264 shapes, #2265 text): copies keep every
+/// property, are independent of the original, land in front (paste) or just in front of their
+/// original (duplicate), are selected, and each edit is one undo step.
+#[test]
+fn copy_paste_and_duplicate_graphic_layers() {
+    let mut s = demo();
+    let clip = three_shapes(&mut s);
+    let kinds = |s: &mut Session, c: u64| -> Vec<String> {
+        s.execute("graphics.list", json!({"clip": c})).unwrap()["layers"].as_array().unwrap().iter().map(|l| l["kind"].as_str().unwrap().to_string()).collect()
+    };
+    assert!(s.execute("graphics.pasteLayer", json!({"clip": clip})).is_err(), "nothing copied yet");
+    // copy the rectangle (styled) and the polygon
+    s.execute("graphics.set", json!({"clip": clip, "layer": 0, "props": {"rotation": 30, "opacity": 40}})).unwrap();
+    let r = s.execute("graphics.copyLayer", json!({"clip": clip, "layers": [2, 0]})).unwrap();
+    assert_eq!(r["copied"], 2);
+    assert!(s.execute("graphics.copyLayer", json!({"clip": clip, "layers": [7]})).is_err(), "a layer that does not exist");
+    // paste into the same graphic: in front, in their own order, selected
+    let before = s.project.clone();
+    let r = s.execute("graphics.pasteLayer", json!({"clip": clip})).unwrap();
+    assert_eq!(r["layers"], json!([3, 4]));
+    assert_eq!(kinds(&mut s, clip), ["Rectangle", "Ellipse", "Polygon", "Rectangle", "Polygon"]);
+    assert_eq!(s.state.graphic_layers, vec![3, 4]);
+    let l = &layers(&s, ClipId(clip));
+    assert_eq!((l[3].transform.rotation, l[3].transform.opacity), (30.0, 0.4), "the copy keeps its styling");
+    assert_eq!(l[3].transform.position, l[0].transform.position);
+    // independent: editing the copy leaves the original alone
+    s.execute("graphics.set", json!({"clip": clip, "layer": 3, "props": {"rotation": 90}})).unwrap();
+    assert_eq!(layers(&s, ClipId(clip))[0].transform.rotation, 30.0);
+    // one undo step per paste
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before);
+    // paste into another graphic clip (a text graphic): the clipboard is still there
+    let other = s.execute("graphics.newText", json!({"text": "Title", "time": Tick::from_seconds_f64(600.0).0})).unwrap()["clip"].as_u64().unwrap();
+    s.execute("graphics.pasteLayer", json!({"clip": other})).unwrap();
+    assert_eq!(kinds(&mut s, other), ["text", "Rectangle", "Polygon"]);
+    // duplicate a text layer in place: the copy sits just in front of it, with its text
+    s.execute("graphics.selectLayer", json!({"clip": other, "layers": [0]})).unwrap();
+    let r = s.execute("graphics.duplicateLayer", json!({})).unwrap();
+    assert_eq!(r["layers"], json!([1]));
+    assert_eq!(kinds(&mut s, other), ["text", "text", "Rectangle", "Polygon"]);
+    assert_eq!(text_of(&layers(&s, ClipId(other))[1]), "Title");
+    assert_eq!(s.state.graphic_layers, vec![1]);
+    // duplicating two layers puts each copy in front of its own original
+    let r = s.execute("graphics.duplicateLayer", json!({"clip": other, "layers": [3, 0]})).unwrap();
+    assert_eq!(r["layers"], json!([1, 5]));
+    assert_eq!(kinds(&mut s, other), ["text", "text", "text", "Rectangle", "Polygon", "Polygon"]);
+    // duplicate leaves the clipboard as it was
+    assert_eq!(s.state.layer_clipboard.len(), 2);
+}
+
+/// Copied layers are new layers: each gets its own uid (pins and template controls find layers
+/// by uid), a pin between two copied layers follows to the copies, and a pin to a layer the
+/// destination does not have is dropped.
+#[test]
+fn copied_layers_get_their_own_uids_and_pins() {
+    use filmcraft_project::PinTarget;
+    let mut s = demo();
+    let clip = three_shapes(&mut s);
+    s.execute("graphics.pin", json!({"clip": clip, "layer": 0, "to": 1, "edges": ["left"]})).unwrap();
+    let raw = |s: &Session, c: u64| -> Vec<(u64, Option<PinTarget>)> {
+        let seq = s.active_sequence().unwrap();
+        let (_, it) = seq.find_item(ClipId(c)).unwrap();
+        layer_indices(&it.effects)
+            .into_iter()
+            .map(|e| {
+                let x = it.effects[e].layer.as_deref();
+                (x.map_or(0, |x| x.uid), x.and_then(|x| x.pin.as_ref()).map(|p| p.to))
+            })
+            .collect()
+    };
+    let start = raw(&s, clip);
+    let (rect, ellipse) = (start[0].0, start[1].0);
+    assert!(rect != 0 && ellipse != 0, "pinning gives both layers a uid: {start:?}");
+    assert_eq!(start[0].1, Some(PinTarget::Layer(ellipse)));
+    let unique = |l: &[(u64, Option<PinTarget>)]| {
+        let mut u: Vec<u64> = l.iter().map(|x| x.0).filter(|&u| u != 0).collect();
+        let n = u.len();
+        u.sort_unstable();
+        u.dedup();
+        u.len() == n
+    };
+    // copy both, paste into the same graphic: the copied rectangle follows the copied ellipse
+    s.execute("graphics.copyLayer", json!({"clip": clip, "layers": [0, 1]})).unwrap();
+    s.execute("graphics.pasteLayer", json!({"clip": clip})).unwrap();
+    let l = raw(&s, clip);
+    assert!(unique(&l), "{l:?}");
+    assert_eq!(l[3].1, Some(PinTarget::Layer(l[4].0)), "{l:?}");
+    assert_eq!(l[0].1, Some(PinTarget::Layer(ellipse)), "the original keeps its pin");
+    // duplicate the rectangle alone: the copy still follows the (original) ellipse
+    s.execute("graphics.duplicateLayer", json!({"clip": clip, "layers": [0]})).unwrap();
+    let l = raw(&s, clip);
+    assert!(unique(&l), "{l:?}");
+    assert_eq!(l[1].1, Some(PinTarget::Layer(ellipse)), "{l:?}");
+    // the rectangle alone into another graphic: there is no ellipse there to follow
+    s.execute("graphics.copyLayer", json!({"clip": clip, "layers": [0]})).unwrap();
+    let other = s.execute("graphics.newText", json!({"text": "Other", "time": Tick::from_seconds_f64(600.0).0})).unwrap()["clip"].as_u64().unwrap();
+    s.execute("graphics.pasteLayer", json!({"clip": other})).unwrap();
+    let l = raw(&s, other);
+    assert!(unique(&l), "{l:?}");
+    assert_eq!(l[1].1, None, "a pin to a layer that is not there is dropped: {l:?}");
+    // #2460 review: into a graphic whose own layers carry the same uids, the pin is dropped too,
+    // instead of following whichever of its layers has the ellipse's number
+    s.execute("playhead.set", json!({"seconds": 700.0})).unwrap();
+    let busy = three_shapes(&mut s);
+    s.execute("graphics.pin", json!({"clip": busy, "layer": 2, "to": 1, "edges": ["left"]})).unwrap();
+    let uids: Vec<u64> = raw(&s, busy).iter().map(|x| x.0).collect();
+    assert!(uids.contains(&ellipse), "the other graphic has a layer numbered like the ellipse: {uids:?}");
+    s.execute("graphics.copyLayer", json!({"clip": clip, "layers": [0]})).unwrap();
+    s.execute("graphics.pasteLayer", json!({"clip": busy})).unwrap();
+    let l = raw(&s, busy);
+    assert!(unique(&l), "{l:?}");
+    assert_eq!(l[3].1, None, "the pasted rectangle follows none of this graphic's layers: {l:?}");
+}
+
 #[test]
 fn arrange_select_and_reset() {
     let mut s = demo();

@@ -550,6 +550,18 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.dialog = Some(crate::Dialog::RevertConfirm);
             return Ok(json!({"dialog": "revert"}));
         }
+        // In the graphic editor (Properties / Essential Graphics) with a graphic clip selected,
+        // Copy and Duplicate act on its selected layers, and Paste puts copied layers into it, as in
+        // Premiere's graphics tools (#2264, #2265). Without a selected layer (Copy, Duplicate) or
+        // copied layers (Paste) they do what they always did.
+        "edit.copy" | "edit.paste" | "edit.duplicate" if params.as_object().is_none_or(|m| m.is_empty()) && graphic_layer_edit(app, id) => {
+            let cmd = match id {
+                "edit.copy" => "graphics.copyLayer",
+                "edit.paste" => "graphics.pasteLayer",
+                _ => "graphics.duplicateLayer",
+            };
+            return invoke(app, ctx, cmd, json!({}));
+        }
         // Files or an image on the system clipboard paste into the Timeline, or import into the
         // Project panel (#611). Copying clips puts their names there as text, so media copied
         // *after* them still wins; media that was already there when Copy/Cut ran is ignored so
@@ -655,6 +667,16 @@ fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
     }
     let text = names.join("\n");
     ctx.copy_text(if text.trim().is_empty() { format!("{} clips", names.len()) } else { text });
+}
+
+/// Whether Edit ▸ Copy / Paste / Duplicate (`id`) acts on graphic layers: the graphic editor has
+/// focus with a graphic clip selected, and a layer is selected (Copy, Duplicate) or layers were
+/// copied (Paste).
+fn graphic_layer_edit(app: &FilmcraftApp, id: &str) -> bool {
+    if !matches!(app.ui.focused, PanelKind::Properties | PanelKind::EssentialGraphics) || !crate::panels::graphics::graphic_selected(app) {
+        return false;
+    }
+    if id == "edit.paste" { !app.session.state.layer_clipboard.is_empty() } else { !app.session.state.graphic_layers.is_empty() }
 }
 
 /// Paste the files or the image on the system clipboard: placed on the Timeline when it has focus,
@@ -764,6 +786,10 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
             _ => {}
+        }
+        // Paste in the graphic editor pastes copied layers (`invoke`), whatever the clip clipboard holds
+        if it.id == "edit.paste" && graphic_layer_edit(app, "edit.paste") {
+            it.enabled = true;
         }
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));

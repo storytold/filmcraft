@@ -790,6 +790,49 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     assert_eq!(d.label("info.item"), name, "closing a tab must not select its stale item; focused={focused:?}, source={source:?}");
 }
 
+/// #2264, #2265: with the graphic editor focused and a layer selected, Edit ▸ Copy / Paste /
+/// Duplicate act on graphic layers; with the Timeline focused they stay clip edits.
+#[test]
+fn edit_copy_paste_duplicate_act_on_graphic_layers_in_the_graphic_editor() {
+    let mut d = Driver::demo();
+    let clip = d.exec("graphics.newRectangle", json!({"position": [300, 200], "size": [100, 60]}))["clip"].as_u64().unwrap();
+    d.exec("graphics.newEllipse", json!({"clip": clip, "position": [500, 400], "size": [40, 40]}));
+    let count = |d: &mut Driver| d.exec("graphics.list", json!({"clip": clip}))["layers"].as_array().unwrap().len();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    // the Timeline has focus: Copy copies the clip, not a layer
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.frames(2);
+    d.ok("ui.menu.invoke", json!({"id": "edit.copy"}));
+    assert!(d.app().session.state.layer_clipboard.is_empty());
+    // the graphic editor has focus: Copy / Paste / Duplicate act on the selected layer
+    d.ok("ui.set", json!({"focused": "Properties"}));
+    d.frames(2);
+    d.ok("ui.menu.invoke", json!({"id": "edit.copy"}));
+    assert_eq!(d.app().session.state.layer_clipboard.len(), 1);
+    d.ok("ui.menu.invoke", json!({"id": "edit.paste"}));
+    assert_eq!(count(&mut d), 3);
+    assert_eq!(d.app().session.state.graphic_layers, vec![2], "the pasted layer is selected");
+    d.ok("ui.menu.invoke", json!({"id": "edit.duplicate"}));
+    assert_eq!(count(&mut d), 4);
+    assert_eq!(d.app().session.state.graphic_layers, vec![3]);
+    // Edit ▸ Paste is enabled for copied layers, whatever the clip clipboard holds (#2460 review)
+    d.app().session.state.clipboard.clear();
+    let paste = |d: &mut Driver| filmcraft_ui_egui::menus::menu_items(d.app()).into_iter().find(|m| m.id == "edit.paste").unwrap().enabled;
+    assert!(paste(&mut d), "Paste is enabled for the copied layer");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.frames(2);
+    assert!(!paste(&mut d), "the Timeline has no clips to paste");
+    // Cmd+D duplicates the layer in the graphic editor, not a transition (#2460 review)
+    for panel in ["Properties", "Essential Graphics"] {
+        d.ok("ui.set", json!({"focused": panel}));
+        d.frames(2);
+        let n = count(&mut d);
+        d.ok("ui.key", json!({"key": "Cmd+D"}));
+        d.frames(2);
+        assert_eq!(count(&mut d), n + 1, "Cmd+D in {panel}");
+    }
+}
+
 /// #2329: in the Effects panel what a folder holds is indented under it: an effect's label starts
 /// right of its sub-folder's, a sub-folder's right of its top folder's, and the same for presets
 /// and Lumetri presets.
