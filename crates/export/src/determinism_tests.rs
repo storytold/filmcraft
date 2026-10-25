@@ -46,22 +46,29 @@ fn same_file_whatever_the_core_count() {
     }
 }
 
+/// An export adds time to the counter of every stage it goes through; H.264 converts to 4:2:0 while
+/// rendering and ProRes in its encoder (convert stage).
 #[test]
 fn an_export_adds_up_the_wall_time_of_its_stages() {
-    let before: Vec<(Stage, u64)> = stage_times();
-    let s = ExportSettings { format: Format::H264, path: tmp("stages.mp4"), ..Default::default() };
-    let (p, seq, m) = project();
-    export(&p, seq, &s, &m, &Progress::default()).unwrap();
-    let after = stage_times();
-    let grew = |stage: Stage| {
-        let at = |v: &[(Stage, u64)]| v.iter().find(|(s, _)| *s == stage).map_or(0, |(_, ns)| *ns);
-        at(&after) > at(&before)
+    let export_stages = |format: Format, ext: &str, stages: &[Stage]| {
+        let before: Vec<(Stage, u64)> = stage_times();
+        let s = ExportSettings { format, path: tmp(&format!("stages.{ext}")), ..Default::default() };
+        let (p, seq, m) = project();
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let after = stage_times();
+        let grew = |stage: Stage| {
+            let at = |v: &[(Stage, u64)]| v.iter().find(|(s, _)| *s == stage).map_or(0, |(_, ns)| *ns);
+            at(&after) > at(&before)
+        };
+        // other tests export in parallel, so the counters can only be checked for growth
+        for stage in stages {
+            assert!(grew(*stage), "{}: {} did not grow", format.label(), stage.name());
+        }
+        assert_eq!(Stage::ALL.len(), after.len(), "one counter per stage");
     };
-    // other tests export in parallel, so the counters can only be checked for growth
-    for stage in [Stage::Setup, Stage::Render, Stage::Encode, Stage::Convert, Stage::Audio, Stage::Mux, Stage::Finish] {
-        assert!(grew(stage), "{} did not grow", stage.name());
-    }
-    assert_eq!(Stage::ALL.len(), after.len(), "one counter per stage");
+    // H.264 pictures are converted to 4:2:0 while rendering; ProRes converts them in its encoder
+    export_stages(Format::H264, "mp4", &[Stage::Setup, Stage::Render, Stage::Encode, Stage::Audio, Stage::Mux, Stage::Finish]);
+    export_stages(Format::ProRes, "mov", &[Stage::Render, Stage::Encode, Stage::Convert]);
 }
 
 /// Slice NAL units (types 1 and 5) in a length-prefixed (4-byte) H.264 sample.
@@ -204,6 +211,41 @@ fn hdr_with_audio_is_the_same_file_when_the_memory_budget_caps_the_batch() {
         let (full, ahead) = run(&format!("hdrcap-{}-16", format.id()), 16, true, None);
         assert_eq!(ahead, 8, "{}: 24 frames in batches of 16 leave 8 ahead", format.label());
         assert!(reference == full, "{}: an uncapped HDR batch gives a different file", format.label());
+    }
+}
+
+/// SDR, two-pass and PQ H.264 exports are the same file whether the pictures are converted to 4:2:0
+/// on the render threads or by the encoder, rendered ahead or not.
+#[test]
+fn converting_while_rendering_does_not_change_the_file() {
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    // SDR with audio, two-pass, and HDR (PQ): the built-in H.264 encoder's pictures converted to
+    // 4:2:0 on the render threads, or by the encoder itself, rendered ahead or not
+    let cases: [(&str, BitrateMode, Option<WorkingSpace>); 3] =
+        [("sdr", BitrateMode::Vbr1Pass, None), ("2pass", BitrateMode::Vbr2Pass, None), ("pq", BitrateMode::Vbr1Pass, Some(WorkingSpace::Rec2100Pq))];
+    for (name, bitrate_mode, working) in cases {
+        let run = |convert_ahead: bool, overlap: bool| {
+            let (p, seq, m) = project();
+            let mut p = (*p).clone();
+            if let Some(working) = working {
+                p.sequence_mut(seq).unwrap().settings.color = ColorPipeline { working, ..ColorPipeline::REC709 };
+            }
+            let path = tmp(&format!("yuv-{name}-{convert_ahead}-{overlap}.mp4"));
+            let s = ExportSettings { format: Format::H264, path: path.clone(), bitrate_mode, bitrate_kbps: 2000, ..Default::default() };
+            pool(3).install(|| {
+                let prog = Progress::default();
+                let mut ex = Exporter::new(Arc::new(p), seq, &s, &prog).unwrap();
+                ex.set_batch(5);
+                ex.set_overlap(overlap);
+                ex.set_convert_ahead(convert_ahead);
+                while !matches!(ex.step(&m, &prog).unwrap(), Step::Done(_)) {}
+            });
+            std::fs::read(&path).unwrap()
+        };
+        let reference = run(false, false);
+        for (convert_ahead, overlap) in [(true, false), (true, true), (false, true)] {
+            assert!(reference == run(convert_ahead, overlap), "{name}: converting ahead {convert_ahead}, rendering ahead {overlap} gives a different file");
+        }
     }
 }
 

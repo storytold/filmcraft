@@ -13,7 +13,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, Yuv420, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -155,6 +155,10 @@ pub(crate) struct Pipeline {
     out_tf: Option<filmcraft_color::OutputTransform>,
     effects: ExportEffects,
     overlay: Option<Image>,
+    /// The export draws nothing on the rendered picture (SDR, no alpha, limiter or overlay, the
+    /// sequence's own size): an untouched frame can go to the encoder as decoded
+    /// ([`Pipeline::untouched_yuv420`]).
+    passthrough: bool,
     start_tc: i64,
     drop_frame: bool,
     /// Free the pool's float images when the export ends: a standalone export, not one part of a
@@ -186,6 +190,9 @@ impl Pipeline {
         self.renderer.as_ref().map_or(requested, |pool| requested.min(i64::try_from(pool.capacity).unwrap_or(i64::MAX)))
     }
 
+    /// Set up the frame pipeline of an export: checks the sequence and settings, and works out the
+    /// output size and placement, render options, colour transform, overlays, frame renderers and
+    /// whether untouched frames can bypass the renderer.
     pub fn new(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, hdr_out: bool) -> Result<Self> {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         q.settings.validate().map_err(ExportError::Unsupported)?;
@@ -227,6 +234,16 @@ impl Pipeline {
             }
             RendererPool::new(list)
         };
+        let passthrough = !hdr_out
+            && !settings.keeps_alpha()
+            && !effects.video_limiter.enabled
+            && overlay.is_none()
+            && !effects.name_overlay.enabled
+            && !effects.timecode_overlay.enabled
+            && geom.render_scale == 1.0
+            && geom.content.is_none_or(|c| c == (w as usize, h as usize))
+            && geom.offset == (0, 0)
+            && (w, h) == (r.width, r.height);
         Ok(Pipeline {
             renderer,
             seq_rate: q.settings.frame_rate,
@@ -245,6 +262,7 @@ impl Pipeline {
             out_tf,
             effects,
             overlay,
+            passthrough,
         })
     }
 
@@ -305,6 +323,26 @@ impl Pipeline {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }
         (rgba, Vec::new())
+    }
+
+    /// Output frame `f` as the 8-bit 4:2:0 BT.709 planes it was decoded with, when nothing is drawn
+    /// on it ([`filmcraft_render::plan::untouched_frame`]) and this export changes nothing about it:
+    /// [`Pipeline::frame`] and the encoder's conversion would only turn it into linear light and
+    /// back to (nearly, give or take a code) the same samples. None for every other frame. A source
+    /// that declares frames this cannot take ([`declares_yuv420`]: alpha, another matrix, range,
+    /// transfer or size) is not decoded here at all, so the renderer is the only one to plan and
+    /// decode its frames. That depends on the source alone, never on the frames before.
+    pub fn untouched_yuv420(&self, f: i64, sources: &dyn SourceProvider) -> Option<Yuv420> {
+        if !self.passthrough {
+            return None;
+        }
+        let t = self.rate.tick_of(f);
+        let item = filmcraft_render::plan::untouched_source(&self.project, self.seq, t, self.opts)?;
+        if !sources.source(item)?.info().video.as_ref().is_some_and(|v| declares_yuv420(v, self.w, self.h)) {
+            return None;
+        }
+        let frame = filmcraft_render::plan::untouched_frame(&self.project, self.seq, t, self.opts, sources)?;
+        yuv420_of(&frame, self.w, self.h)
     }
 
     /// Fit the rendered picture into the output frame.
@@ -374,6 +412,43 @@ impl Pipeline {
         filmcraft_render::graphics::burn_text(&mut layer, text, family, centre, px, 0.6);
         composite(img, &layer, 0, 0, op);
     }
+}
+
+/// The planes of a `w` x `h` decoded frame that are already what an SDR export encodes: 8-bit
+/// 4:2:0 without alpha, BT.709 matrix, limited range, and a transfer the renderer decodes and
+/// encodes with the same curve (BT.709 or sRGB). None for any other frame, and for planes shorter
+/// than the frame's size.
+pub(crate) fn yuv420_of(frame: &filmcraft_frame::VideoFrame, w: u32, h: u32) -> Option<Yuv420> {
+    use filmcraft_color::{Matrix, Range, Transfer};
+    let filmcraft_frame::PixelData::Yuv8 { planes, chroma: filmcraft_frame::Chroma::C420, alpha: None } = &frame.data else {
+        return None;
+    };
+    let c = frame.color;
+    if (frame.width, frame.height) != (w, h)
+        || c.matrix != Matrix::Bt709
+        || c.range != Range::Limited
+        || !matches!(c.transfer, Transfer::Bt709 | Transfer::Srgb)
+    {
+        return None;
+    }
+    let (w, h) = (w as usize, h as usize);
+    let chroma = w.div_ceil(2).checked_mul(h.div_ceil(2))?;
+    let [y, u, v] = planes;
+    Some(Yuv420 { y: y.get(..w.checked_mul(h)?)?.to_vec(), u: u.get(..chroma)?.to_vec(), v: v.get(..chroma)?.to_vec() })
+}
+
+/// Whether a source whose video stream is `v` may decode to frames [`yuv420_of`] takes for a
+/// `w` x `h` export: no alpha, BT.709 matrix, limited range, a BT.709 or sRGB transfer, and the
+/// export's size. The sampling and bit depth are not declared in a form to check: the frame itself
+/// decides those.
+fn declares_yuv420(v: &filmcraft_media::VideoStreamInfo, w: u32, h: u32) -> bool {
+    use filmcraft_color::{Matrix, Range, Transfer};
+    let c = v.color;
+    !v.has_alpha
+        && (v.width, v.height) == (w, h)
+        && c.matrix == Matrix::Bt709
+        && c.range == Range::Limited
+        && matches!(c.transfer, Transfer::Bt709 | Transfer::Srgb)
 }
 
 /// Top-left of a `bw`×`bh` box placed in a `w`×`h` frame (3 % margin) plus `offset`.
