@@ -98,7 +98,7 @@ fn cache_key(n: &Narration) -> String {
 
 fn tts_err(cmd: &str, e: tts::TtsError) -> EngineError {
     match e {
-        tts::TtsError::NotInstalled => bad(cmd, "the natural voices are not downloaded yet: Text to Speech ▸ Download natural voices (tts.downloadVoices)"),
+        tts::TtsError::NotInstalled => bad(cmd, "the natural voices are not downloaded yet: Text to Speech > Download natural voices (tts.downloadVoices)"),
         e => bad(cmd, e.to_string()),
     }
 }

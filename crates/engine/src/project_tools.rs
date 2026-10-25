@@ -678,6 +678,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     proj.name = name.clone();
     proj.root.name = name;
     s.project = std::sync::Arc::new(proj);
+    s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();
     s.history.limit = 200;
     s.state = Session::default().state;
@@ -1062,7 +1063,7 @@ pub(crate) fn warn_untrusted_scratch(s: &mut Session) {
     let list = ignored.join(", ");
     log::warn!("project scratch disks outside the project folder not used: {list}");
     s.toast(format!(
-        "Scratch Disks: not using {list} (outside the project folder and not chosen on this computer). Auto-saves, previews and captured media go to the default location; choose the folder in Project Settings ▸ Scratch Disks to use it."
+        "Scratch Disks: not using {list} (outside the project folder and not chosen on this computer). Auto-saves, previews and captured media go to the default location; choose the folder in Project Settings > Scratch Disks to use it."
     ));
 }
 

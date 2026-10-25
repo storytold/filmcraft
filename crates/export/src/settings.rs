@@ -624,7 +624,7 @@ impl ExportSettings {
                 px * fps * bpp
             }
             Format::Mjpeg | Format::JpegSequence => px * 8.0 * (0.4 + self.quality as f64 / 100.0 * 2.0) * fps / 8.0,
-            Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
+            Format::PngSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 0.45 * 8.0 * fps,
             Format::BmpSequence => px * 3.0 * 8.0 * fps,
             Format::TiffSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 8.0 * fps,
             Format::TgaSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 8.0 * fps,

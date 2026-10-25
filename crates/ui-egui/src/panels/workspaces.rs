@@ -181,7 +181,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         WorkspaceDialog::Edit { .. } => ("Edit Workspaces", tl!("Edit Workspaces")),
     };
     egui::Window::new(shown)
-        .id(egui::Id::new(title))
+        .id(egui::Id::unique(title))
         .collapsible(false)
         .resizable(false)
         .pivot(Align2::CENTER_CENTER)
@@ -218,7 +218,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let own = sel.as_deref().is_some_and(|s| !is_builtin(s));
                 ui.horizontal(|ui| {
                     ui.label(tl!("Name:"));
-                    let r = ui.add_enabled(own, egui::TextEdit::singleline(name));
+                    let r = crate::widgets::accessible_name(ui.add_enabled(own, egui::TextEdit::singleline(name)), "Name");
                     push("workspaces.edit.name", &r, "Name");
                     let r = ui.add_enabled(own && sel.as_deref() != Some(name.trim()), egui::Button::new(tl!("Rename")));
                     push("workspaces.edit.rename", &r, "Rename");

@@ -192,6 +192,132 @@ fn view_menu_resolutions_and_display_modes() {
     assert_eq!((s["display"].as_str(), s["show_rulers"].as_bool()), (Some("Composite"), Some(true)));
 }
 
+/// The filled rectangles and the mesh vertex colors painted this frame inside `area`.
+fn fills_in(d: &Driver, area: egui::Rect) -> (Vec<(egui::Rect, egui::Color32)>, Vec<egui::Color32>) {
+    fn walk(s: &egui::Shape, area: egui::Rect, rects: &mut Vec<(egui::Rect, egui::Color32)>, verts: &mut Vec<egui::Color32>) {
+        match s {
+            egui::Shape::Rect(r) if area.expand(0.5).contains_rect(r.rect) => rects.push((r.rect, r.fill)),
+            egui::Shape::Mesh(m) => verts.extend(m.vertices.iter().filter(|v| area.expand(0.5).contains(v.pos)).map(|v| v.color)),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, area, rects, verts)),
+            _ => {}
+        }
+    }
+    let (mut rects, mut verts) = (Vec::new(), Vec::new());
+    d.harness.output().shapes.iter().for_each(|c| walk(&c.shape, area, &mut rects, &mut verts));
+    (rects, verts)
+}
+
+/// The wrench menu's Transparency Grid paints a gray and white checkerboard behind
+/// the picture instead of the monitor background; each monitor keeps its own setting.
+#[test]
+fn transparency_grid_paints_a_checkerboard_behind_the_picture() {
+    use filmcraft_ui_egui::frames::Target;
+    use filmcraft_ui_egui::panels::monitor_view::{GRID_DARK, GRID_LIGHT};
+    let mut d = Driver::demo();
+    // the check mark of the wrench menu item
+    let checked = |d: &mut Driver| filmcraft_ui_egui::panels::monitor_view::checked(d.harness.state(), "view.transparencyGrid");
+    let menu = d.ok("ui.menu.list", json!({}));
+    assert!(menu.as_array().unwrap().iter().all(|m| m["id"] != "view.transparencyGrid"), "not in the View menu");
+    assert_eq!(d.program()["transparency_grid"], false, "off by default");
+    assert_eq!(checked(&mut d), Some(false));
+    let r = d.rect("program.picture");
+    let pic = egui::Rect::from_min_size(egui::pos2(r[0] as f32, r[1] as f32), egui::vec2(r[2] as f32, r[3] as f32));
+    let covers = |rects: &[(egui::Rect, egui::Color32)]| {
+        rects.iter().any(|(r, c)| *c == GRID_LIGHT && (r.min - pic.min).length() < 1.0 && (r.max - pic.max).length() < 1.0)
+    };
+    let (rects, verts) = fills_in(&d, pic);
+    assert!(!covers(&rects) && !verts.contains(&GRID_DARK), "no grid while it is off");
+
+    d.click("program.settings");
+    assert!(d.try_rect("program.settings.transparencyGrid").is_some(), "the wrench menu lists Transparency Grid");
+    d.click("program.settings.transparencyGrid");
+    d.frames(2);
+    assert_eq!(d.program()["transparency_grid"], true);
+    assert_eq!(checked(&mut d), Some(true));
+    let (rects, verts) = fills_in(&d, pic);
+    assert!(covers(&rects), "the light squares fill the picture");
+    let dark = verts.iter().filter(|c| **c == GRID_DARK).count();
+    assert!(dark >= 4 * 100, "the dark squares are drawn: {dark} vertices");
+    // the Program picture is rendered live (render previews are flattened over black)
+    let live = |d: &Driver| matches!(d.harness.state().program_picture().map(|k| k.target), Some(Target::SequenceLive(_)));
+    for _ in 0..600 {
+        if live(&d) {
+            break;
+        }
+        d.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(live(&d), "the Program monitor shows a live render: {:?}", d.harness.state().program_picture());
+    assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["source"]["transparency_grid"], false, "the Source monitor keeps its own setting");
+
+    // Comparison View: the reference frame has the grid behind it too
+    d.menu("view.display.comparison");
+    d.frames(3);
+    let r = d.rect("program.compare.reference");
+    let reference = egui::Rect::from_min_size(egui::pos2(r[0] as f32, r[1] as f32), egui::vec2(r[2] as f32, r[3] as f32));
+    let (rects, _) = fills_in(&d, reference);
+    assert!(
+        rects.iter().any(|(r, c)| *c == GRID_LIGHT && (r.min - reference.min).length() < 1.0 && (r.max - reference.max).length() < 1.0),
+        "the light squares fill the reference frame"
+    );
+    d.menu("view.display.composite");
+    d.frames(2);
+
+    d.ok("ui.menu.invoke", json!({"id": "view.transparencyGrid", "params": {"monitor": "source", "enabled": true}}));
+    assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["source"]["transparency_grid"], true);
+    assert_eq!(d.program()["transparency_grid"], true);
+
+    // a Transparent Video in the Source monitor: the frame keeps its alpha and goes up as the
+    // grid's texture, so the grid shows through it
+    let item = d.exec("file.newTransparentVideo", json!({}))["item"].as_u64().expect("new item");
+    d.exec("source.open", json!({"item": item}));
+    let mut key = None;
+    for _ in 0..600 {
+        d.frames(1);
+        key = d.harness.state().texture_key("monitor-source-grid");
+        if key.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let key = key.expect("the Source monitor shows its frame through the grid");
+    let frame = d.harness.state().frames.get(&key).expect("the shown frame is cached");
+    assert!(!frame.px.is_empty() && frame.px.as_chunks::<4>().0.iter().all(|p| p[3] == 0), "the frame keeps its alpha");
+
+    d.ok("ui.menu.invoke", json!({"id": "view.transparencyGrid", "params": {"monitor": "program"}}));
+    d.frames(2);
+    assert_eq!(d.program()["transparency_grid"], false);
+    let (rects, verts) = fills_in(&d, pic);
+    assert!(!covers(&rects) && !verts.contains(&GRID_DARK), "the grid goes when it is turned off");
+}
+
+/// Display Mode ▸ Alpha shows a live render of the sequence (render previews are opaque); Red
+/// keeps the usual frames.
+#[test]
+fn alpha_display_mode_shows_a_live_render() {
+    use filmcraft_ui_egui::frames::Target;
+    let shown_live = |d: &mut Driver, live: bool| {
+        let is = |d: &Driver| match d.harness.state().program_picture().map(|k| k.target) {
+            Some(Target::SequenceLive(_)) => live,
+            Some(Target::Sequence(_)) => !live,
+            _ => false,
+        };
+        for _ in 0..600 {
+            if is(d) {
+                break;
+            }
+            d.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(is(d), "live render {live}: {:?}", d.harness.state().program_picture());
+    };
+    let mut d = Driver::demo();
+    d.menu("view.display.alpha");
+    shown_live(&mut d, true);
+    d.menu("view.display.red");
+    shown_live(&mut d, false);
+}
+
 fn num(v: &Value) -> f64 {
     v.as_f64().unwrap_or_else(|| panic!("not a number: {v}"))
 }

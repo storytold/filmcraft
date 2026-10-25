@@ -56,7 +56,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
     }
     let running = draft.job.is_some() && draft.report.is_none();
-    let response = egui::Modal::new(egui::Id::new("avid-import")).show(ctx, |ui| {
+    let response = egui::Modal::new(egui::Id::unique("avid-import")).show(ctx, |ui| {
         ui.set_width(620.0);
         ui.heading(tl!("Import Avid Bin"));
         ui.label(tl!("Transfer the bin contents into a new FilmCraft bin."));

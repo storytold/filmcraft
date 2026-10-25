@@ -76,7 +76,7 @@ none of the exports brings one back. Each such clip is named in the export `Repo
 | Format | Written as | On import into FilmCraft |
 |---|---|---|
 | FCP7 XML | a clip item without media (its layers as FilmCraft filter ids) | not read back; the import report names the skipped clip item |
-| FCPXML | a clip without media | not read back |
+| FCPXML | a gap on V1; left out on other tracks (a gap exists only in the primary storyline) | not read back |
 | OTIO | a clip with a `MissingReference` (effects in the `filmcraft` metadata) | offline media |
 | EDL | an ordinary event with the reel the reel mode gives | an ordinary clip |
 | AAF | a gap | nothing |
@@ -85,6 +85,10 @@ OMF carries no video at all.
 
 ## Tests
 
+- `src/otio.rs` (unit tests): OTIO repeats a nested sequence for every use, so compound clips that each hold
+  several uses of the next are exponential (a 3 KB FCPXML nested 12 deep made the export run for minutes and grow to
+  gigabytes). After 25 000 clips written inside nested sequences the rest are gaps, with one warning; an ordinary
+  project is far below that and unchanged.
 - `tests/it/aaf_omf.rs`: AAF round trips at 25, 29.97 DF, 23.976 and 59.94 DF (clips, gaps,
   two-sided and one-sided transitions, links, markers, start timecodes, constant and keyframed
   gain, media markers and timecode); 512-byte sectors; breakout to mono; embedded trimmed audio

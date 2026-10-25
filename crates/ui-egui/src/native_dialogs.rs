@@ -5,7 +5,7 @@
 //! the desktop app on Linux, where XDG portal blocks the UI thread, and on macOS, where a modal
 //! picker inside a winit event callback can cause event-handler reentry) gets the
 //! dialog and answers on a channel; the frame loop keeps running, and the continuation runs on the
-//! frame the answer arrives ([`FilmcraftApp::poll_native_dialog`]). Without it the host's
+//! frame the answer arrives (`FilmcraftApp::poll_native_dialog`). Without it the host's
 //! synchronous pickers (`pick_files`, `pick_save_as`, …) are called and the continuation runs at
 //! once, as before: headless tests, the control channel's stand-ins and other hosts are unchanged.
 //!
