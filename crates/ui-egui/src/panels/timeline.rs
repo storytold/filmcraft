@@ -281,7 +281,7 @@ pub(crate) fn tool_draws_pointer(tool: Tool) -> bool {
 
 /// The tool's icon centred on the pointer, outlined so it reads over clips of any colour.
 pub(crate) fn paint_tool_pointer(ctx: &egui::Context, tool: Tool, at: Pos2) {
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tool-pointer")));
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("tool-pointer")));
     let r = Rect::from_center_size(at, vec2(22.0, 22.0));
     for d in [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0)] {
         icons::paint(&painter, r.translate(d), tool.icon(), Color32::BLACK);
