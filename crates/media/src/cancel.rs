@@ -10,6 +10,10 @@
 //! (playback has passed them): a decoder that has to decode forward to the frame may skip
 //! pictures that only produce late frames and that nothing else references.
 //!
+//! [`with_frame_grid`] tells sources the job asks for frames on a regular grid of media time (an
+//! export at its output frame rate): a decoder may skip non-reference pictures shown at none of
+//! the grid's instants, such as every other picture of 60 fps media in a 30 fps export.
+//!
 //! [`with_draft`] marks reduced-resolution playback (opt-in): decoders may take spec-safe
 //! shortcuts that only change pictures nothing references (H.264: no deblocking of non-reference
 //! pictures). Never set for exports, renders or a frame shown while paused.
@@ -27,6 +31,7 @@ use filmcraft_time::Tick;
 thread_local! {
     static CURRENT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
+    static FRAME_GRID: Cell<Option<Tick>> = const { Cell::new(None) };
     static DRAFT: Cell<bool> = const { Cell::new(false) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
 }
@@ -83,6 +88,27 @@ pub fn catch_up() -> Option<Tick> {
     CATCH_UP.with(Cell::get)
 }
 
+/// Run `f` with the frame grid hint `step` (restoring the previous one after): the job asks for
+/// frames only at the requested media time plus whole multiples of `step`, before or after it.
+/// A wrong grid only costs a later re-seek, never a wrong frame.
+pub fn with_frame_grid<R>(step: Option<Tick>, f: impl FnOnce() -> R) -> R {
+    /// Restores the previous hint however `f` ends (a panic caught further up must not leave a
+    /// grid on the worker thread for the requests it runs next).
+    struct Restore(Option<Tick>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FRAME_GRID.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(FRAME_GRID.with(|c| c.replace(step)));
+    f()
+}
+
+/// The frame grid step of the work running on this thread (None: frames may be asked anywhere).
+pub fn frame_grid() -> Option<Tick> {
+    FRAME_GRID.with(Cell::get)
+}
+
 /// Run `f` with `flag` as this thread's cancellation flag (restoring the previous one after).
 pub fn with_cancel<R>(flag: &Arc<AtomicBool>, f: impl FnOnce() -> R) -> R {
     let prev = CURRENT.with(|c| c.replace(Some(flag.clone())));
@@ -97,11 +123,13 @@ pub fn cancelled() -> bool {
 }
 
 /// The hints of the work running on this thread ([`with_cancel`], [`with_catch_up`],
-/// [`with_draft`], [`with_background`]), to carry them to another thread doing part of that work.
+/// [`with_frame_grid`], [`with_draft`], [`with_background`]), to carry them to another thread
+/// doing part of that work.
 #[derive(Clone, Default)]
 pub struct Context {
     cancel: Option<Arc<AtomicBool>>,
     catch_up: Option<Tick>,
+    frame_grid: Option<Tick>,
     draft: bool,
     background: bool,
 }
@@ -109,7 +137,7 @@ pub struct Context {
 impl Context {
     /// This thread's hints.
     pub fn current() -> Self {
-        Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft(), background: background() }
+        Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), frame_grid: frame_grid(), draft: draft(), background: background() }
     }
 
     /// Run `f` with these hints, restoring this thread's however `f` ends (a pool thread must
@@ -121,6 +149,7 @@ impl Context {
                 let prev = std::mem::take(&mut self.0);
                 CURRENT.with(|c| *c.borrow_mut() = prev.cancel);
                 CATCH_UP.with(|c| c.set(prev.catch_up));
+                FRAME_GRID.with(|c| c.set(prev.frame_grid));
                 DRAFT.with(|c| c.set(prev.draft));
                 BACKGROUND.with(|c| c.set(prev.background));
             }
@@ -128,6 +157,7 @@ impl Context {
         let _restore = Restore(Context::current());
         CURRENT.with(|c| *c.borrow_mut() = self.cancel);
         CATCH_UP.with(|c| c.set(self.catch_up));
+        FRAME_GRID.with(|c| c.set(self.frame_grid));
         DRAFT.with(|c| c.set(self.draft));
         BACKGROUND.with(|c| c.set(self.background));
         f()
@@ -141,15 +171,17 @@ mod tests {
     #[test]
     fn context_carries_the_hints_to_another_thread_and_restores_its_own() {
         let flag = Arc::new(AtomicBool::new(true));
-        let ctx = with_cancel(&flag, || with_draft(true, || with_background(true, || with_catch_up(Some(Tick(5)), Context::current))));
+        let ctx = with_cancel(&flag, || {
+            with_draft(true, || with_background(true, || with_catch_up(Some(Tick(5)), || with_frame_grid(Some(Tick(7)), Context::current))))
+        });
         std::thread::scope(|s| {
             s.spawn(|| {
-                let seen = with_draft(false, || ctx.clone().run(|| (cancelled(), draft(), background(), catch_up())));
-                assert_eq!(seen, (true, true, true, Some(Tick(5))));
+                let seen = with_draft(false, || ctx.clone().run(|| (cancelled(), draft(), background(), catch_up(), frame_grid())));
+                assert_eq!(seen, (true, true, true, Some(Tick(5)), Some(Tick(7))));
                 // a panic inside leaves this thread's own hints in place
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.clone().run(|| panic!("job"))));
                 assert!(r.is_err());
-                assert_eq!((cancelled(), draft(), background(), catch_up()), (false, false, false, None));
+                assert_eq!((cancelled(), draft(), background(), catch_up(), frame_grid()), (false, false, false, None, None));
             });
         });
     }
@@ -193,6 +225,13 @@ mod tests {
         let r = std::panic::catch_unwind(|| with_background(true, || panic!("boom")));
         assert!(r.is_err());
         assert!(!background());
+    }
+
+    #[test]
+    fn a_panic_inside_frame_grid_work_does_not_leave_the_grid_on_the_thread() {
+        let r = std::panic::catch_unwind(|| with_frame_grid(Some(Tick(7)), || panic!("boom")));
+        assert!(r.is_err());
+        assert_eq!(frame_grid(), None);
     }
 
     #[test]

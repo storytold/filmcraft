@@ -789,6 +789,76 @@ Not done: CABAC residual decoding (now 41 % of the work, ~19 cycles per bin) is 
 the remaining deblocking cost is mostly the vertical-edge transposes; motion compensation and the
 per-row / per-picture copies (4 %) are unchanged.
 
+## Results (export: non-reference pictures between the exported frames left out, before → after)
+
+A 30 fps export of 59.94 fps media uses every other source picture, but the GOP cache decoded all of
+them: a sample is decoded or skipped as the decoder reaches it, and until now only playback's
+catch-up hint (M4.8) let it skip one. That hint is a time threshold ("frames before this one are
+late"), which an export cannot use: its frames are rendered in parallel batches, so requests reach a
+cache out of order, and a sample below one request's threshold can be the next request's frame.
+
+Now an export tells the media which instants it asks for: `RenderOptions::frame_step` (the output
+frame duration, set by `export::Pipeline`) becomes the thread's frame grid
+(`filmcraft_media::cancel::with_frame_grid`) around the frame request of each clip that maps output
+frames to media time one to one: a clip of the rendered sequence (not inside a nested sequence) at
+100 % speed, forward, with no frame hold and no enabled effect that reads other frames (Echo,
+Posterize Time, Warp Stabilizer, Auto Reframe). The MP4 / MOV source turns the grid into "the first
+instant at or after a sample is presented, rounded as a request is rounded" (`mp4::grid_instant`; a
+sample is presented at its pts plus the edit list offset, which delays every picture of an x264 file
+with B-frames), and the GOP cache leaves out a non-reference sample (`VideoDecoder::is_disposable`,
+as in M4.8) when that instant is not one the sample is shown at. While the grid is on, which samples
+are left out does not depend on the order of the requests. A non-reference picture is used by no
+other picture, so the frames decoded are bit-for-bit those decoded before.
+
+If a request does land on a sample the cache left out (by the grid or by catch-up), the cache
+restarts at the sync sample and decodes it: continuing would hand back the frame before it. Such a
+request made with the grid also turns the grid off for that cache (two clips of one media item
+playing at different phases in a dissolve, a guess that is wrong for some file), so a wrong grid
+costs one restart per cache, never a wrong frame. Other containers (Matroska / WebM, AVI, MPEG-PS /
+TS, MXF) take no grid yet and decode as before.
+
+Tests: `engine/tests/frame_grid.rs` (a binary of its own, as it reads the process-wide decode
+counters) exports 45 frames of 60 and 59.94 fps H.264 (one B-frame, three in a pyramid, four) at 30
+fps and compares each exported frame with the Program monitor's, with one decoder start per export
+and at least 30-40 samples left out; `gop.rs` checks the samples a grid leaves out against requests
+in reversed batches, the restart and grid-off on a request off the grid, and a request without the
+grid (the monitor) restarting without turning it off; `mp4.rs` checks `grid_instant` against the
+rounded requests by brute force. Bugs planted to check them: skipping every non-reference sample, an
+off-by-one in the grid lookup, no restart for a skipped sample (frame 20 returned for 21), no
+grid-off (21 restarts instead of 2), grid-off on any request (37 samples decoded instead of 21),
+floor instead of round in `grid_instant`, the edit list offset left out (two decoder starts at 59.94
+fps), no frame step in the export (nothing skipped), and the cancel `Context` dropping the grid on
+another thread; each turned its test red.
+
+Measured (Xeon E5-2680 v4 14C/28T, RTX 5060, driver 617.14, Windows 11, release CLI of this change
+against `main` at the same base, 20 s of a synthetic 1920 x 1080 59.94 fps H.264 + AAC source (x264,
+GOP 120, four non-reference B-frames per P-frame (`bframes=4:b-pyramid=none`) or x264's default
+three B-frames in a pyramid), one clip in a 30 or 29.97 fps sequence, exported to 1080p H.264 + AAC
+with `gpuRendering` and `hardwareEncoding` auto, Media Foundation hardware decoding unless noted,
+alternated rounds; `perf.stats decode` after the export; export = the export's own `seconds`,
+process CPU = CPU time of the CLI process):
+
+| Case | Build | export (rounds) | process CPU | samples decoded / skipped | `decodeMs` |
+|---|---|---|---|---|---|
+| 4 B-frames → 30 fps | before | 8.11, 7.72, 7.17, 7.39 s | 36.3 s | 1198 / 0 | 2952 |
+| 4 B-frames → 30 fps | after | 7.15, 6.69, 6.76, 7.22 s | 35.9 s | 721 / 477 | 1871 |
+| 4 B-frames → 29.97 fps | before | 7.63, 7.43, 7.46, 7.74 s | 35.3 s | 1198 / 0 | 2918 |
+| 4 B-frames → 29.97 fps | after | 7.09, 8.02, 6.86, 7.04 s | 36.6 s | 729 / 469 | 1927 |
+| 4 B-frames → 30 fps, software decoding | before | 9.65, 9.00 s | 64.0 s | 1198 / 0 | 3664 |
+| 4 B-frames → 30 fps, software decoding | after | 7.90, 7.75 s | 50.5 s | 721 / 477 | 2085 |
+| pyramid → 29.97 fps | before | 7.52, 7.45 s | 36.5 s | 1198 / 0 | 2884 |
+| pyramid → 29.97 fps | after | 6.58, 6.55 s | 35.4 s | 719 / 479 | 1762 |
+
+Every export wrote the same file before and after (SHA-256 of the MP4, all rounds), with one decoder
+start each. The cache decodes 39-40 % fewer samples and spends 34-43 % less time decoding; the
+export is 4-16 % shorter (means: 7.60 → 6.96 s, 7.56 → 7.25 s, 9.32 → 7.82 s, 7.48 → 6.57 s). The
+decoding runs beside the renderers, so the export gains less than the decode; least at 29.97 fps,
+where one round of four was slower than before (8.02 s) and the other three 6.86-7.09 s against
+7.43-7.74 s. With software decoding the decode is CPU work the renderers wait for: process CPU −21 %
+and the largest gain. In a pyramid only every other sample is non-reference, so the gain depends on
+which half the exported frames use; at 59.94 → 29.97 fps the phase stays the same for the whole clip
+(here the favourable one), at 59.94 → 30 fps it changes every ~16.7 s.
+
 ## Results (M4.8, before → after)
 
 Baseline = commit `457aca1` (the harness on unchanged code); after = M4.8. Runs alternated base /

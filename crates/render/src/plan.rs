@@ -415,7 +415,7 @@ fn push_item(
         // Inside the nested sequence the angle's clip is composited onto an empty canvas, where
         // every mode but Dissolve is Normal; the multicam clip's own mode then applies to it.
         if let Some(inner) = tr.item_at(ft).filter(|i| i.enabled) {
-            push_item(project, nested, inner, ft, opts, sources, extra_opacity * op, Some(bl), nest + 1, out);
+            push_item(project, nested, inner, ft, RenderOptions { frame_step: None, ..opts }, sources, extra_opacity * op, Some(bl), nest + 1, out);
         }
         return;
     }
@@ -432,7 +432,7 @@ fn push_item(
         && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && nest_is_plain(project, seq, nested, ft)
     {
-        push_tracks(project, nested, ft, opts, sources, nest + 1, out);
+        push_tracks(project, nested, ft, RenderOptions { frame_step: None, ..opts }, sources, nest + 1, out);
         if out.exhausted {
             return;
         }
@@ -467,7 +467,8 @@ fn push_item(
         let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
         let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
         let time = crate::video_source_time(item, t, src.info().frame_rate());
-        let Ok(frame) = src.video_frame(FrameRequest { time, scale: want }) else { return };
+        let grid = crate::media_grid(item, opts);
+        let Ok(frame) = filmcraft_media::cancel::with_frame_grid(grid, || src.video_frame(FrameRequest { time, scale: want })) else { return };
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
         // media and other pipelines are converted on the CPU (below), and so are blended
