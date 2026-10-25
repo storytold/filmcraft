@@ -47,7 +47,8 @@ fn a_click_on_the_status_bar_dismisses_an_error() {
     h.step();
     h.step();
     let e = h.state().auto.elements.iter().find(|e| e.id == "status.error").expect("the error is shown").rect;
-    let at = egui::pos2(e[0] + e[2] / 2.0, e[1] + e[3] / 2.0);
+    // beside the text: a click on the text selects it
+    let at = egui::pos2(e[0] + e[2] + 200.0, e[1] + e[3] / 2.0);
     h.event(egui::Event::PointerMoved(at));
     h.step();
     for pressed in [true, false] {
