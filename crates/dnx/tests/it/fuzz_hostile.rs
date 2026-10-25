@@ -4,7 +4,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use filmcraft_dnx::{ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Profile, decode_frame_with, probe};
+use filmcraft_dnx::{ChromaFormat, DecodeOptions, Encoder, EncoderConfig, Frame, Profile, check_frame, decode_frame_with, probe};
 
 struct Rng(u64);
 impl Rng {
@@ -44,15 +44,31 @@ fn seeds() -> Vec<Vec<u8>> {
     v
 }
 
+/// Probes, checks and decodes `d` (both decode paths), failing the test if any of them panics.
 fn run(d: &[u8], label: &str) {
     filmcraft_testkit::set_progress(label);
     let res = catch_unwind(AssertUnwindSafe(|| {
         let _ = probe(d);
+        let _ = check_frame(d);
         for opts in [DecodeOptions::default(), DecodeOptions { threads: true, spec_dequant: true }] {
             let _ = decode_frame_with(d, &opts);
         }
     }));
     assert!(res.is_ok(), "panic: {label}");
+}
+
+/// `check_frame` accepts every seed frame, with the header `probe` reads, and refuses it one byte
+/// short or one byte longer.
+#[test]
+fn check_frame_takes_whole_frames_only() {
+    for (si, seed) in seeds().iter().enumerate() {
+        let h = check_frame(seed).unwrap_or_else(|e| panic!("seed {si}: {e}"));
+        assert_eq!(h, probe(seed).unwrap());
+        assert!(check_frame(&seed[..seed.len() - 1]).is_err(), "seed {si}: one byte short");
+        let mut longer = seed.clone();
+        longer.push(0);
+        assert!(check_frame(&longer).is_err(), "seed {si}: one byte appended");
+    }
 }
 
 /// Seconds the whole sweep may take before it counts as a hang (override: FILMCRAFT_HOSTILE_TIMEOUT_SECS).

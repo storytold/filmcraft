@@ -48,16 +48,23 @@ pub fn decode_json() -> Value {
     })
 }
 
-/// Export counters: pictures encoded by hardware encoders, sessions, declined requests; and the wall
+/// Export counters: pictures encoded by hardware encoders, sessions, declined requests; frames
+/// smart rendering wrote as the source's compressed sample (`smartRender.copied`) and frames of
+/// such exports rendered and encoded instead (`smartRender.rendered`); and the wall
 /// time of each export stage in milliseconds (`stages`: setup, loudness, render, encode with its
 /// `convert` part, audio, mux, finish, wait), summed over the exports of this process (diff two readings).
 /// Render and encode overlap (the next batch renders while this one is encoded), so their sum can exceed
 /// the export's wall time; `waitMs` is the encoding side's idle wait for the render.
 pub fn export_json() -> Value {
     let hw = filmcraft_export::hw_encode_stats();
+    let smart = filmcraft_export::smart_render_stats();
     let stages: serde_json::Map<String, Value> =
         filmcraft_export::stage_times().into_iter().map(|(s, ns)| (format!("{}Ms", s.name()), json!(ns as f64 / 1e6))).collect();
-    json!({"hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined}, "stages": stages})
+    json!({
+        "hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined},
+        "smartRender": {"copied": smart.copied, "rendered": smart.rendered},
+        "stages": stages,
+    })
 }
 
 /// The engine's `perf.stats`.
@@ -77,6 +84,8 @@ mod tests {
 
     use crate::Session;
 
+    /// `perf.stats` answers without a project and reports every decode, hardware, smart rendering
+    /// and export stage counter, without adding an undo step.
     #[test]
     fn perf_stats_query_reports_decode_counters() {
         let mut s = Session::default();
@@ -110,6 +119,9 @@ mod tests {
         assert!(v["decode"]["hardware"]["backend"].is_null() || v["decode"]["hardware"]["backend"].is_string());
         for k in ["frames", "sessions", "declined"] {
             assert!(v["export"]["hardware"][k].is_number(), "export.hardware.{k} in {v}");
+        }
+        for k in ["copied", "rendered"] {
+            assert!(v["export"]["smartRender"][k].is_number(), "export.smartRender.{k} in {v}");
         }
         for k in ["setupMs", "loudnessMs", "renderMs", "encodeMs", "convertMs", "audioMs", "muxMs", "finishMs", "waitMs"] {
             assert!(v["export"]["stages"][k].is_number(), "export.stages.{k} in {v}");

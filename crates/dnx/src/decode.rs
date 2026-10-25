@@ -27,6 +27,48 @@ pub fn probe(data: &[u8]) -> Result<FrameHeader> {
     header::parse(data)
 }
 
+/// Check, without decoding it, that `data` is one whole compressed frame: one coding unit (two for
+/// a field-coded interlaced frame) whose header parses, whose macroblock scan line indices point
+/// inside it, and, for a constant-bitrate compression ID, whose size is exactly the size the
+/// compression ID and raster give (no bytes missing, none appended). Returns the (first) header. A
+/// frame that passes can still hold damaged macroblock data: this is the check of an intra-only
+/// sample copied unchanged (smart rendering), not a decode.
+pub fn check_frame(data: &[u8]) -> Result<FrameHeader> {
+    let h1 = header::parse(data)?;
+    if !(h1.interlaced && !h1.frame_encoding) {
+        check_unit(&h1, data, data.len())?;
+        return Ok(h1);
+    }
+    let off = second_unit_offset(&h1, data)?;
+    let second = data.get(off..).ok_or(Error::Truncated)?;
+    let h2 = header::parse(second)?;
+    if h2.cid != h1.cid || h2.width != h1.width || h2.lines != h1.lines || h2.chroma != h1.chroma || h2.alpha != h1.alpha {
+        return Err(Error::Invalid("field coding units differ"));
+    }
+    check_unit(&h1, data.get(..off).ok_or(Error::Truncated)?, off)?;
+    check_unit(&h2, second, second.len())?;
+    Ok(h1)
+}
+
+/// The checks of [`check_frame`] on one coding unit of `len` bytes at the start of `data`.
+fn check_unit(h: &FrameHeader, data: &[u8], len: usize) -> Result<()> {
+    if let Some(size) = h.coding_unit_size()
+        && usize::try_from(size).ok() != Some(len)
+    {
+        return Err(Error::Invalid("coding unit size does not match the compression ID"));
+    }
+    let hs = h.header_size as usize;
+    for s in 0..h.mb_rows as usize {
+        let o = SCAN_INDEX_OFFSET + 4 * s;
+        let idx = data.get(o..o + 4).ok_or(Error::Truncated)?;
+        let idx = u32::from_be_bytes([idx[0], idx[1], idx[2], idx[3]]) as usize;
+        if hs.checked_add(idx).is_none_or(|v| v >= len) {
+            return Err(Error::Truncated);
+        }
+    }
+    Ok(())
+}
+
 /// Decode one compressed frame (one or two coding units).
 pub fn decode_frame(data: &[u8]) -> Result<Frame> {
     decode_frame_with(data, &DecodeOptions::default())

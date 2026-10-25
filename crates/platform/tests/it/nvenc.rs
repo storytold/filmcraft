@@ -1,10 +1,10 @@
 //! NVENC H.264 encoding (Windows, NVIDIA GPU): the stream decodes with our own decoder to pictures
-//! close to the source, keyframes and timestamps are right, and Export takes it only when asked.
-//! Skips without an NVIDIA GPU / driver with NVENC.
+//! close to the source, keyframes and timestamps are right, an RGBA-input encoder also takes planar
+//! pictures, and Export takes it only when asked. Skips without an NVIDIA GPU / driver with NVENC.
 #![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use filmcraft_isobmff::{AvcConfig, SampleEntry};
-use filmcraft_platform::nvenc::{Config, NvencH264, Packet, Profile};
+use filmcraft_platform::nvenc::{Config, Nvenc, NvencH264, Packet, Profile, Signal};
 
 /// A moving test picture: gradient background, a moving box, a little texture.
 fn rgba(w: usize, h: usize, i: usize) -> Vec<u8> {
@@ -103,4 +103,51 @@ fn the_stream_decodes_to_the_source() {
     }
     assert!(worst > 34.0, "luma PSNR {worst:.1} dB");
     eprintln!("worst luma PSNR {worst:.1} dB, {} bytes", packets.iter().map(|p| p.data.len()).sum::<usize>());
+}
+
+/// An RGBA-input session takes planar pictures between RGBA ones, B-frames included, and both
+/// decode back to their source.
+#[test]
+fn an_rgba_input_encoder_also_takes_planar_pictures() {
+    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (w, h) = (1280usize, 720usize);
+    let mut enc = match Nvenc::with_rgba_input(&config(w as u32, h as u32), &Signal::default()) {
+        Ok(e) => e,
+        Err(why) => {
+            eprintln!("SKIPPED: {why}");
+            return;
+        }
+    };
+    assert!(enc.takes_rgba());
+    // runs of three of each kind, so each follows the other, B-frames included: the export hands
+    // untouched frames over as their decoded planes and the pictures it drew as RGBA
+    let planar = |i: usize| (i / 3) % 2 == 1;
+    let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut packets, mut sources) = (Vec::new(), Vec::new());
+    for i in 0..48 {
+        let px = rgba(w, h, i);
+        filmcraft_export::rgba_to_yuv420_8(&px, w, h, &mut y, &mut u, &mut v);
+        sources.push((y.clone(), u.clone(), v.clone()));
+        let out = if planar(i) { enc.encode(&y, &u, &v, i as u64) } else { enc.encode_rgba(&px, i as u64) };
+        packets.extend(out.unwrap());
+    }
+    packets.extend(enc.flush().unwrap());
+    assert_eq!(packets.len(), 48, "one packet per picture");
+
+    let (sps, pps) = enc.parameter_sets();
+    let entry = SampleEntry::avc(AvcConfig::new(vec![sps.to_vec()], vec![pps.to_vec()], 4), w as u16, h as u16);
+    let mut dec = filmcraft_codecs::software_video_decoder(&entry).unwrap();
+    let mut out = Vec::new();
+    for p in &packets {
+        out.extend(dec.decode(&p.data, p.pts).unwrap());
+    }
+    out.extend(dec.flush());
+    assert_eq!(out.len(), 48);
+    for f in &out {
+        let src = &sources[f.pts as usize];
+        let filmcraft_frame::PixelData::Yuv8 { planes, .. } = &f.frame.data else { panic!("8-bit planes") };
+        let kind = if planar(f.pts as usize) { "planar" } else { "RGBA" };
+        let (luma, cb, cr) = (psnr(&planes[0], &src.0), psnr(&planes[1], &src.1), psnr(&planes[2], &src.2));
+        assert!(luma > 34.0 && cb > 33.0 && cr > 33.0, "{kind} picture {}: PSNR Y {luma:.1}, Cb {cb:.1}, Cr {cr:.1} dB", f.pts);
+    }
 }

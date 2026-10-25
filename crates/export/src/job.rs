@@ -55,6 +55,26 @@
 //!   dropped as soon as they are encoded.
 //! * **Two-pass** exports overlap in the analysis pass (encode only) and in the real pass; the
 //!   prefetch never runs past the end of a pass.
+//! * **Colour conversion while rendering.** An encoder that converts its pictures to 8-bit 4:2:0
+//!   on the CPU ([`VideoEncoder::yuv420_input`], the built-in H.264 encoder) gets them converted
+//!   by the render task that drew them, with the same function it would run, so the conversion is
+//!   off the serial encode side and a frame in flight holds 1.5 bytes per pixel instead of 4 (12
+//!   for HDR). The file is the same either way (`determinism_tests`).
+//! * **Untouched frames.** A frame the renderer would only turn into linear light and back (one
+//!   decoded 8-bit 4:2:0 BT.709 clip at the output size with nothing drawn on it:
+//!   [`filmcraft_render::plan::untouched_frame`], `Pipeline::untouched_yuv420`) goes to an encoder
+//!   that [`VideoEncoder::takes_yuv420`] as it was decoded, without being rendered. It skips the
+//!   round trip through RGB, which clipped colours outside the RGB cube and moved the others by a
+//!   code or two (`untouched_tests`).
+//! * **Copied samples (smart rendering).** An intra-only encoder that takes copies
+//!   ([`VideoEncoder::sample_copy`]: ProRes, DNxHR) gets the source's compressed sample, unchanged,
+//!   for a frame that shows one source frame untouched in its own flavour (`Pipeline::copied_sample`,
+//!   [`crate::smart`]): nothing is decoded, rendered or encoded for it. The render task makes the
+//!   decision, from the frame alone, so the file does not depend on the batch or core count either.
+//!   Copied and encoded frames are counted ([`crate::smart_render_stats`], [`Exporter::copied_frames`]).
+//!   A copied sample is never larger than a rendered frame ([`frame_bytes`], what the batch is
+//!   budgeted for): a larger one is not read from the file but rendered, and a ProRes sample must
+//!   be exactly what its frame codes (`filmcraft_prores::check_frame`), so the memory model holds.
 //! * **Timers.** `Render` and `Encode` are wall times of work that now runs at the same time, so
 //!   their sum may exceed the export's wall time; `Wait` is the time the encoding side then spent
 //!   waiting for the render (large: render-bound; near zero: encode-bound).
@@ -74,8 +94,8 @@ use crate::mxf_out::{MxfMux, MxfSetup};
 use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode};
 use crate::{
-    AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, Progress, Report, Result, Stage, VideoEncoder,
-    audio_factories, export_range, frame_span, note_stage, timed, video_factories,
+    AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, Progress, Report, Result, SampleCopy, Stage,
+    VideoEncoder, Yuv420, Yuv420Input, audio_factories, export_range, frame_span, note_stage, timed, video_factories,
 };
 
 /// Output frames per interleaved group: the video packets of these frames, then the audio up to
@@ -87,10 +107,19 @@ pub const INTERLEAVE: i64 = 16;
 /// the one being rendered), see [`overlap_batch`].
 pub const IN_FLIGHT_BUDGET: u64 = 1 << 29;
 
-/// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats.
-type Frame = (Vec<u8>, Vec<f32>);
+/// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats. For an
+/// encoder that takes 4:2:0 ([`VideoEncoder::takes_yuv420`]), those planes instead: an untouched
+/// frame as it was decoded, or the picture converted while rendering, so the encoder does not wait
+/// for the conversion. For an encoder that takes copies ([`VideoEncoder::sample_copy`]), a source
+/// sample to write unchanged.
+enum Frame {
+    Picture(Vec<u8>, Vec<f32>),
+    Yuv420(Yuv420),
+    Copied(Vec<u8>),
+}
 
-/// Bytes of one [`Frame`] of a `w` x `h` export (RGBA8, or three f32 per pixel for HDR).
+/// Bytes of one rendered picture of a `w` x `h` export (RGBA8, or three f32 per pixel for HDR):
+/// what a [`Frame`] holds at most (a 4:2:0 frame holds 1.5 bytes per pixel).
 pub(crate) fn frame_bytes(w: u32, h: u32, hdr: bool) -> u64 {
     u64::from(w).saturating_mul(u64::from(h)).saturating_mul(if hdr { 12 } else { 4 })
 }
@@ -110,15 +139,48 @@ struct Ahead {
     frames: Vec<Frame>,
 }
 
-/// Render frames `f..end` in parallel. `None` when a source was not ready for one of them (the
-/// pending flag, taken after every frame because it is per thread): the batch is incomplete and
-/// must be rendered again.
-fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Option<Vec<Frame>> {
+/// What the encoder takes besides RGBA pictures.
+#[derive(Clone, Copy)]
+struct EncoderInput {
+    /// Untouched frames as they were decoded ([`VideoEncoder::takes_yuv420`]).
+    untouched: bool,
+    /// The conversion to 4:2:0 to run while rendering ([`VideoEncoder::yuv420_input`]).
+    convert: Option<Yuv420Input>,
+    /// Source samples it takes unchanged ([`VideoEncoder::sample_copy`]).
+    copy: Option<SampleCopy>,
+}
+
+impl EncoderInput {
+    /// What `venc` takes: untouched frames as decoded, and the 4:2:0 conversion to run ahead.
+    fn of(venc: &dyn VideoEncoder) -> Self {
+        EncoderInput { untouched: venc.takes_yuv420(), convert: venc.yuv420_input(), copy: venc.sample_copy() }
+    }
+}
+
+/// Render frames `f..end` in parallel, as the encoder takes them (`input`). `None` when a source
+/// was not ready for one of them (the pending flag, taken after every frame because it is per
+/// thread): the batch is incomplete and must be rendered again.
+fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider, input: EncoderInput) -> Option<Vec<Frame>> {
     let pending = AtomicBool::new(false);
     let frames: Vec<Frame> = (f..end)
         .into_par_iter()
         .map(|fi| {
-            let frame = pipe.frame(fi, sources);
+            let copied = input.copy.as_ref().and_then(|copy| pipe.copied_sample(fi, sources, copy));
+            let untouched = if input.untouched && copied.is_none() { pipe.untouched_yuv420(fi, sources) } else { None };
+            let frame = match (copied, untouched, input.convert) {
+                (Some(sample), _, _) => Frame::Copied(sample),
+                (None, Some(picture), _) => Frame::Yuv420(picture),
+                (None, None, Some(convert)) => {
+                    let (rgba, hdr) = pipe.frame(fi, sources);
+                    let mut picture = Yuv420::default();
+                    convert.convert(&rgba, pipe.hdr_out.then_some(hdr.as_slice()), pipe.w, pipe.h, &mut picture);
+                    Frame::Yuv420(picture)
+                }
+                (None, None, None) => {
+                    let (rgba, hdr) = pipe.frame(fi, sources);
+                    Frame::Picture(rgba, hdr)
+                }
+            };
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
             }
@@ -165,6 +227,11 @@ pub struct Exporter {
     overlapped_steps: u64,
     brand: Brand,
     venc: Box<dyn VideoEncoder>,
+    /// What the encoder takes besides RGBA pictures (untouched frames, the conversion to run while
+    /// rendering).
+    input: EncoderInput,
+    /// Frames written as the source's compressed sample ([`Exporter::copied_frames`]).
+    copied: u64,
     aenc: Option<Box<dyn AudioEncoder>>,
     audio: Option<AudioOut>,
     /// The loudness pass ran (or is not needed).
@@ -219,6 +286,8 @@ impl Exporter {
         timed(Stage::Setup, || Self::set_up(project, seq, settings, progress))
     }
 
+    /// [`Exporter::new`]'s work: checks the settings, derives the output colour, bitrate and frame
+    /// range, and opens the video and audio encoders.
     fn set_up(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, progress: &Progress) -> Result<Self> {
         if !stepped(settings.format) {
             return Err(ExportError::Unsupported(format!("{} is not a stepped export", settings.format.label())));
@@ -275,6 +344,8 @@ impl Exporter {
             ahead: None,
             overlapped_steps: 0,
             brand,
+            input: EncoderInput::of(venc.as_ref()),
+            copied: 0,
             venc,
             aenc,
             audio,
@@ -318,6 +389,30 @@ impl Exporter {
         self.budget = bytes;
     }
 
+    /// Hand the encoder RGBA pictures to convert itself instead of converting while rendering
+    /// (tests check that the file is the same).
+    #[cfg(test)]
+    pub(crate) fn set_convert_ahead(&mut self, on: bool) {
+        self.input.convert = if on { self.venc.yuv420_input() } else { None };
+        self.ahead = None;
+    }
+
+    /// Hand untouched frames to the encoder as they were decoded, or render them like the others
+    /// (tests compare the two).
+    #[cfg(test)]
+    pub(crate) fn set_untouched(&mut self, on: bool) {
+        self.input.untouched = on && self.venc.takes_yuv420();
+        self.ahead = None;
+    }
+
+    /// Write the source's samples for the frames that qualify, or render every frame (tests
+    /// compare the two).
+    #[cfg(test)]
+    pub(crate) fn set_copies(&mut self, on: bool) {
+        self.input.copy = if on { self.venc.sample_copy() } else { None };
+        self.ahead = None;
+    }
+
     /// Whether steps overlap rendering with encoding now: switched on, a pool with more than one
     /// thread, and not on wasm.
     pub fn overlapping(&self) -> bool {
@@ -327,6 +422,11 @@ impl Exporter {
     /// Steps so far that rendered the next batch alongside the encoding of the current one.
     pub fn overlapped_steps(&self) -> u64 {
         self.overlapped_steps
+    }
+
+    /// Frames written so far as the source's compressed sample, unchanged (smart rendering).
+    pub fn copied_frames(&self) -> u64 {
+        self.copied
     }
 
     /// Frames rendered ahead of the encoder now (memory held by the overlap).
@@ -471,6 +571,12 @@ impl Exporter {
             let stats = self.venc.pass_stats().ok_or_else(|| ExportError::Encode("two-pass statistics missing".into()))?;
             self.settings.h264_pass = H264Pass::Second(stats);
             self.venc = make_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?;
+            let fresh = EncoderInput::of(self.venc.as_ref());
+            self.input = EncoderInput {
+                untouched: self.input.untouched && fresh.untouched,
+                convert: self.input.convert.and(fresh.convert),
+                copy: self.input.copy.and(fresh.copy),
+            };
             self.first_pass = false;
             self.next = self.f0;
             return Ok(Step::Progress);
@@ -513,7 +619,8 @@ impl Exporter {
         let nframes = self.frames();
         if !self.settings.part_of_batch {
             progress.finished.store(true, Ordering::Relaxed);
-            progress.set_status(format!("Done in {secs:.1}s"));
+            let copied = if self.copied > 0 { format!(" ({} frames copied from the source)", self.copied) } else { String::new() };
+            progress.set_status(format!("Done in {secs:.1}s{copied}"));
         }
         Ok(Step::Done(Report {
             path: self.settings.path.clone(),
@@ -531,8 +638,8 @@ impl Exporter {
             Some(a) if a.first == self.next => (a.first, a.frames),
             _ => {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
-                let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, f, end, sources)) {
+                let (pipe, input) = (&self.pipe, self.input);
+                match timed(Stage::Render, || render_batch(pipe, f, end, sources, input)) {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -555,12 +662,12 @@ impl Exporter {
                 }
             };
         };
-        let pipe = self.pipe.clone();
+        let (pipe, input) = (self.pipe.clone(), self.input);
         let mut slot: Option<std::thread::Result<Option<Vec<Frame>>>> = None;
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
-                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources)))));
+                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources, input)))));
             });
             let r = self.encode_batch(f, frames, sources);
             encode_done = Some(web_time::Instant::now());
@@ -592,7 +699,7 @@ impl Exporter {
     fn encode_batch(&mut self, f: i64, frames: Vec<Frame>, sources: &dyn SourceProvider) -> Result<Encoded> {
         if self.first_pass {
             for (k, frame) in frames.into_iter().enumerate() {
-                timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), f + k as i64))?;
+                timed(Stage::Encode, || self.encode(frame, f + k as i64))?;
             }
             return Ok(Encoded::Done);
         }
@@ -617,7 +724,7 @@ impl Exporter {
         let mut mixed = mixed.into_iter();
         for (k, frame) in frames.into_iter().enumerate() {
             let fi = f + k as i64;
-            let packets = timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), fi))?;
+            let packets = timed(Stage::Encode, || self.encode(frame, fi))?;
             self.queued.extend(packets);
             if cuts.contains(&(fi + 1)) {
                 timed(Stage::Mux, || -> Result<()> {
@@ -634,19 +741,27 @@ impl Exporter {
         Ok(Encoded::Done)
     }
 
-    fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
-        let mut packets = Vec::new();
-        for (k, (rgba, hdr)) in frames.iter().enumerate() {
-            let fr = EncoderFrame {
-                width: self.pipe.w,
-                height: self.pipe.h,
-                rgba,
-                hdr: self.pipe.hdr_out.then_some(hdr.as_slice()),
-                index: (f - self.f0) as u64 + k as u64,
-            };
-            packets.extend(self.venc.encode(&fr)?);
+    /// Encodes frame `f`: a copied source sample becomes a packet unchanged, 4:2:0 planes go to the
+    /// encoder as they are, an RGBA (or HDR float) picture is converted by the encoder. Frames of
+    /// an export that takes copies are counted as copied or rendered.
+    fn encode(&mut self, frame: Frame, f: i64) -> Result<Vec<EncodedPacket>> {
+        let index = (f - self.f0) as u64;
+        if self.input.copy.is_some() {
+            let copied = matches!(frame, Frame::Copied(_));
+            self.copied += u64::from(copied);
+            crate::smart::note_frames(u64::from(copied), u64::from(!copied));
         }
-        Ok(packets)
+        match frame {
+            Frame::Copied(data) => {
+                let copy = self.input.copy.ok_or_else(|| ExportError::Encode("internal: a copied sample for an encoder that takes none".into()))?;
+                Ok(vec![copy.packet(data)])
+            }
+            Frame::Yuv420(picture) => self.venc.encode_yuv420(&picture, index),
+            Frame::Picture(rgba, hdr) => {
+                let fr = EncoderFrame { width: self.pipe.w, height: self.pipe.h, rgba: &rgba, hdr: self.pipe.hdr_out.then_some(hdr.as_slice()), index };
+                self.venc.encode(&fr)
+            }
+        }
     }
 }
 

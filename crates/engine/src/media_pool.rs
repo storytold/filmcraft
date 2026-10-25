@@ -530,6 +530,10 @@ impl MediaSource for UnsupportedAsSlate {
             r => r,
         }
     }
+    /// The file's own sample: the slate never stands in for a compressed sample.
+    fn compressed_video_sample(&self, time: filmcraft_time::Tick, max_bytes: u64) -> filmcraft_media::Result<Option<filmcraft_media::CompressedSample>> {
+        self.inner.compressed_video_sample(time, max_bytes)
+    }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio(start, frames, sample_rate)
     }

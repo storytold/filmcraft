@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_isobmff::{FourCc, SampleEntry};
-use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
+use filmcraft_media::{
+    AudioStreamInfo, CompressedSample, FrameRequest, IntraCodec, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo,
+};
 use filmcraft_mxf::{Codec, MxfFile, Timecode, TrackKind};
 use filmcraft_time::{FrameRate, Tick};
 
@@ -49,6 +51,8 @@ pub struct MxfSource {
     vfirst: i64,
     vcount: i64,
     video: GopCache,
+    /// The colour the descriptor signals, which wins over the frames' own.
+    explicit_color: Option<filmcraft_color::ColorInfo>,
     /// Why the video cannot be decoded (no decoder for the coding).
     unsupported: Option<String>,
     /// MPEG-2: the first sequence header (primes decoders that start without one).
@@ -376,6 +380,7 @@ impl MxfSource {
             vfirst,
             vcount,
             video: GopCache::new(explicit_color),
+            explicit_color,
             unsupported,
             mpeg2_header,
             atracks: combined,
@@ -455,6 +460,31 @@ impl MediaSource for MxfSource {
         let late = filmcraft_media::cancel::catch_up().map(|m| self.vfirst + rate.frame_at(req.time - m));
         let frame = self.video.frame_late(&MxfVideo { src: self, track: ti }, self.vfirst + f, late)?;
         Ok(frame)
+    }
+
+    /// The ProRes or VC-3 sample `video_frame` decodes for `time` (its display position), with the
+    /// descriptor's size and pixel aspect and the colour the frame decodes with. None for other
+    /// codings and a track without a decoder; an error, before reading, for a sample over
+    /// `max_bytes` in the index.
+    fn compressed_video_sample(&self, time: Tick, max_bytes: u64) -> Result<Option<CompressedSample>, MediaError> {
+        let Some(ti) = self.vtrack.filter(|_| self.unsupported.is_none() && self.vcount > 0) else { return Ok(None) };
+        let Some(track) = self.file.tracks.get(ti) else { return Ok(None) };
+        let (codec, fourcc) = match track.codec {
+            Codec::Vc3 => (IntraCodec::Dnx, *b"AVdh"),
+            Codec::ProRes { profile } => (IntraCodec::ProRes, prores_fourcc(profile).0),
+            _ => return Ok(None),
+        };
+        let Some(v) = self.info.video.as_ref() else { return Ok(None) };
+        // the sample `video_frame` decodes: its display position, then `GopCache::frame`'s lookup
+        // (the stored picture shown there, else the last one)
+        let f = self.info.frame_rate().frame_at(time.max(Tick::ZERO)).clamp(0, self.vcount - 1);
+        let shown = usize::try_from(self.vfirst + f).ok().and_then(|p| self.vorder.get(p).copied());
+        let Some(i) = shown.or_else(|| self.vpts.len().checked_sub(1)) else { return Ok(None) };
+        let Some(sample) = track.samples.get(i) else { return Ok(None) };
+        crate::video::intra_sample_fits(i, u64::from(sample.size), max_bytes)?;
+        let data = self.file.read_sample(&self.bytes, ti, i).map_err(|e| MediaError::Io(e.to_string()))?;
+        let color = self.explicit_color.or_else(|| crate::video::intra_sample_color(codec, &data));
+        Ok(Some(CompressedSample { codec, fourcc, width: v.width, height: v.height, color, par: v.par, index: i, data }))
     }
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {

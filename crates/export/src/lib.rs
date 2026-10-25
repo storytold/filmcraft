@@ -26,6 +26,7 @@ mod pipeline;
 pub mod presets;
 mod raster;
 pub mod settings;
+mod smart;
 pub mod still;
 pub use audio_out::LoudnessReport;
 pub use job::{Exporter, Step, stepped};
@@ -34,6 +35,7 @@ pub use pcm::{image_sequence_path, write_aiff, write_wav};
 pub use pipeline::limit_rgba8;
 pub use presets::{ExportPreset, builtin_presets};
 pub use settings::*;
+pub use smart::{CopyFlavour, SampleCopy, SmartRenderStats, smart_render_stats};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
@@ -749,6 +751,34 @@ pub struct EncoderFrame<'a> {
     pub index: u64,
 }
 
+/// One picture as 8-bit 4:2:0 Y'CbCr planes: `w * h` luma samples and `ceil(w / 2) * ceil(h / 2)`
+/// of each chroma plane (see [`rgba_to_yuv420_8`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Yuv420 {
+    pub y: Vec<u8>,
+    pub u: Vec<u8>,
+    pub v: Vec<u8>,
+}
+
+/// How an encoder of 8-bit 4:2:0 converts the export's pictures ([`VideoEncoder::yuv420_input`]):
+/// SDR pictures with [`rgba_to_yuv420_8`], HDR ones with [`rgbf_to_yuv420_8`] and this matrix.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Yuv420Input {
+    pub kr: f32,
+    pub kb: f32,
+}
+
+impl Yuv420Input {
+    /// Convert a `w` x `h` picture (its HDR floats `hdr` when it has them, else its `rgba`) into `out`.
+    pub fn convert(self, rgba: &[u8], hdr: Option<&[f32]>, w: u32, h: u32, out: &mut Yuv420) {
+        let (w, h) = (w as usize, h as usize);
+        match hdr {
+            Some(rgb) => rgbf_to_yuv420_8(rgb, w, h, self.kr, self.kb, &mut out.y, &mut out.u, &mut out.v),
+            None => rgba_to_yuv420_8(rgba, w, h, &mut out.y, &mut out.u, &mut out.v),
+        }
+    }
+}
+
 pub trait VideoEncoder: Send {
     /// MP4/MOV sample entry (codec config) — may only be complete after the first frame.
     fn sample_entry(&self) -> SampleEntry;
@@ -761,6 +791,32 @@ pub trait VideoEncoder: Send {
     }
     /// First-pass statistics of a two-pass encode (H.264).
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+        None
+    }
+    /// The conversion to 8-bit 4:2:0 this encoder runs on the CPU before encoding a picture, if it
+    /// has one. The exporter then converts each picture while rendering it, in parallel with the
+    /// encoding of the pictures before it, and hands it to [`VideoEncoder::encode_yuv420`] instead
+    /// of [`VideoEncoder::encode`]. None by default.
+    fn yuv420_input(&self) -> Option<Yuv420Input> {
+        None
+    }
+    /// Whether [`VideoEncoder::encode_yuv420`] takes pictures. The exporter then also hands it the
+    /// frames that need no rendering ([`filmcraft_render::plan::untouched_frame`]) as they were
+    /// decoded, in 8-bit 4:2:0 BT.709 limited range. By default, the encoders that have a
+    /// [`VideoEncoder::yuv420_input`].
+    fn takes_yuv420(&self) -> bool {
+        self.yuv420_input().is_some()
+    }
+    /// Encode picture `index` (as [`EncoderFrame::index`]) from 8-bit 4:2:0 planes: converted with
+    /// this encoder's [`VideoEncoder::yuv420_input`], or decoded so (an untouched frame). Only
+    /// called on encoders that [`VideoEncoder::takes_yuv420`].
+    fn encode_yuv420(&mut self, picture: &Yuv420, index: u64) -> Result<Vec<EncodedPacket>> {
+        let _ = (picture, index);
+        Err(ExportError::Encode("internal: this encoder takes no 4:2:0 pictures".into()))
+    }
+    /// The compressed samples this encoder takes as its own packets, unchanged (smart rendering):
+    /// an intra-only encoder whose output flavour a source sample can match. None by default.
+    fn sample_copy(&self) -> Option<SampleCopy> {
         None
     }
 }
@@ -844,11 +900,13 @@ pub enum Stage {
     Setup,
     /// The loudness pass before the first frame (normalised audio only).
     Loudness,
-    /// Rendering a batch of frames (parallel; includes decoding the sources, effects, colour).
+    /// Rendering a batch of frames (parallel; includes decoding the sources, effects, colour, and
+    /// the conversion to 4:2:0 for an encoder that takes it, [`VideoEncoder::yuv420_input`]).
     Render,
     /// Encoding the rendered frames, colour conversion included (serial).
     Encode,
-    /// The part of [`Stage::Encode`] spent converting RGB to the encoder's YUV.
+    /// The part of [`Stage::Encode`] spent converting RGB to the encoder's YUV (not the pictures
+    /// converted while rendering).
     Convert,
     /// Mixing and encoding audio and writing it to the container.
     Audio,
@@ -1207,6 +1265,13 @@ impl VideoEncoder for ProResEncoder {
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
+    /// ProRes of this profile and size, with alpha when the export codes it (4444 profiles), at the
+    /// export's rate and colour.
+    fn sample_copy(&self) -> Option<SampleCopy> {
+        let alpha = self.alpha && self.profile.chroma() == filmcraft_prores::ChromaFormat::Yuv444;
+        let flavour = CopyFlavour::ProRes { profile: self.profile, alpha };
+        Some(SampleCopy { flavour, width: self.w, height: self.h, rate: self.rate, signal: self.signal })
+    }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         let chroma = self.profile.chroma();
         let mut fr = filmcraft_prores::Frame::new(f.width, f.height, chroma, 10, self.alpha);
@@ -1381,6 +1446,12 @@ impl VideoEncoder for DnxEncoder {
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
+    /// DNxHR of this profile and depth and size, at the export's rate and colour.
+    fn sample_copy(&self) -> Option<SampleCopy> {
+        let cfg = self.enc.config();
+        let flavour = CopyFlavour::DnxHr { profile: cfg.profile, bit_depth: cfg.bit_depth };
+        Some(SampleCopy { flavour, width: self.w, height: self.h, rate: self.rate, signal: self.signal })
+    }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         let mut fr = filmcraft_dnx::Frame::new(f.width, f.height, filmcraft_dnx::ChromaFormat::Yuv422, 10, false);
         match f.hdr {
@@ -1510,9 +1581,8 @@ struct H264Encoder {
     w: u32,
     h: u32,
     rate: FrameRate,
-    y: Vec<u8>,
-    u: Vec<u8>,
-    v: Vec<u8>,
+    /// The picture [`VideoEncoder::encode`] converts into (reused).
+    yuv: Yuv420,
     signal: ColorSignal,
 }
 
@@ -1521,6 +1591,12 @@ impl H264Encoder {
         ps.into_iter()
             .map(|p| EncodedPacket { data: p.data, key: p.keyframe, duration: self.rate.den as u32, composition_offset: (p.pts - p.dts) as i32 })
             .collect()
+    }
+
+    /// The encoder's conversion: BT.709, or the HDR matrix of an HDR export.
+    fn input(&self) -> Yuv420Input {
+        let (kr, kb) = self.signal.kr_kb();
+        Yuv420Input { kr, kb }
     }
 }
 
@@ -1537,17 +1613,31 @@ impl VideoEncoder for H264Encoder {
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
+    /// Checks the picture's size against the encoder's, converts it to 4:2:0 and encodes it.
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        timed(Stage::Convert, || match f.hdr {
-            Some(rgb) => {
-                let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, &mut self.y, &mut self.u, &mut self.v)
-            }
-            None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v),
-        });
-        let cw = (f.width as usize).div_ceil(2);
-        let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
-        let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
+        let (w, h) = (f.width as usize, f.height as usize);
+        let (want, got) = match f.hdr {
+            Some(rgb) => (w.saturating_mul(h).saturating_mul(3), rgb.len()),
+            None => (w.saturating_mul(h).saturating_mul(4), f.rgba.len()),
+        };
+        if (f.width, f.height) != (self.w, self.h) || got != want {
+            return Err(ExportError::Encode(format!("a {}x{} H.264 export got a {w}x{h} picture of {got} values ({want} expected)", self.w, self.h)));
+        }
+        let (input, mut yuv) = (self.input(), std::mem::take(&mut self.yuv));
+        timed(Stage::Convert, || input.convert(f.rgba, f.hdr, f.width, f.height, &mut yuv));
+        let packets = self.encode_yuv420(&yuv, f.index);
+        self.yuv = yuv;
+        packets
+    }
+    /// The conversion of [`H264Encoder::input`], run by the exporter while rendering.
+    fn yuv420_input(&self) -> Option<Yuv420Input> {
+        Some(self.input())
+    }
+    /// Encodes 4:2:0 planes at the encoder's size as picture `index`.
+    fn encode_yuv420(&mut self, picture: &Yuv420, index: u64) -> Result<Vec<EncodedPacket>> {
+        let (w, cw) = (self.w as usize, (self.w as usize).div_ceil(2));
+        let frame = filmcraft_h264enc::YuvFrame { y: &picture.y, u: &picture.u, v: &picture.v, y_stride: w, uv_stride: cw };
+        let ps = self.enc.try_encode(&frame, index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(self.packets(ps))
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
@@ -1563,65 +1653,105 @@ impl VideoEncoder for H264Encoder {
     }
 }
 
-/// BT.709 limited-range 8-bit 4:2:0 from straight RGBA8 (2×2 chroma average).
-pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
+/// Pixels per block of [`yuv420_8`]: one block's chroma terms live on the stack.
+const YUV_BLOCK: usize = 64;
+
+/// `x.round().clamp(1.0, 254.0) as u8`, the 8-bit limited-range code of `x`, without the call into
+/// libm that `round` costs on the baseline x86-64 target. Adding 0.5 and truncating gives the same
+/// code for every `f32` (checked over all 2^32 of them): it differs from rounding only below 0.5,
+/// which the clamp lifts to 1 either way. NaN gives 0, as the cast of a NaN does.
+#[inline(always)]
+fn code8(x: f32) -> u8 {
+    if x.is_nan() { 0 } else { ((x + 0.5) as i32).clamp(1, 254) as u8 }
+}
+
+/// Limited-range 8-bit 4:2:0 planes, two picture rows (one chroma row) per parallel task and
+/// [`YUV_BLOCK`] pixels at a time, with no allocation per row. `terms(row, x0, luma, cb, cr)`
+/// writes the luma codes of the `luma.len()` pixels of picture row `row` from column `x0`, and each
+/// pixel's chroma terms (the colour differences already divided by their scale); the chroma code
+/// is the mean of a 2x2 block's terms (one pixel or pair at an odd edge), added up row by row and
+/// left to right, so every code is the same as when the terms were summed per chroma sample over
+/// whole rows.
+fn yuv420_8<F>(w: usize, h: usize, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>, terms: F)
+where
+    F: Fn(usize, usize, &mut [u8], &mut [f32; YUV_BLOCK], &mut [f32; YUV_BLOCK]) + Sync,
+{
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     y.resize(w * h, 0);
     u.resize(cw * ch, 0);
     v.resize(cw * ch, 0);
+    if w == 0 || h == 0 {
+        return;
+    }
     y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
-        let rows = yr.len() / w;
-        let mut us = vec![0f32; cw];
-        let mut vs = vec![0f32; cw];
-        let mut cnt = vec![0f32; cw];
-        for dy in 0..rows {
-            let row = cy * 2 + dy;
-            let src = &rgba[row * w * 4..(row + 1) * w * 4];
-            for x in 0..w {
-                let (r, g, b) = (src[x * 4] as f32 / 255.0, src[x * 4 + 1] as f32 / 255.0, src[x * 4 + 2] as f32 / 255.0);
-                let yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-                yr[dy * w + x] = (16.0 + 219.0 * yy).round().clamp(1.0, 254.0) as u8;
-                us[x / 2] += (b - yy) / 1.8556;
-                vs[x / 2] += (r - yy) / 1.5748;
-                cnt[x / 2] += 1.0;
+        let (y0, y1) = yr.split_at_mut(w.min(yr.len()));
+        let blocks = y0.chunks_mut(YUV_BLOCK).zip(ur.chunks_mut(YUV_BLOCK / 2).zip(vr.chunks_mut(YUV_BLOCK / 2)));
+        for (b, (l0, (uo, vo))) in blocks.enumerate() {
+            let x0 = b * YUV_BLOCK;
+            let n = l0.len();
+            let (mut cb0, mut cr0, mut cb1, mut cr1) = ([0f32; YUV_BLOCK], [0f32; YUV_BLOCK], [0f32; YUV_BLOCK], [0f32; YUV_BLOCK]);
+            terms(cy * 2, x0, l0, &mut cb0, &mut cr0);
+            let second = y1.get_mut(x0..x0 + n);
+            let two = second.is_some();
+            if let Some(l1) = second {
+                terms(cy * 2 + 1, x0, l1, &mut cb1, &mut cr1);
             }
-        }
-        for cx in 0..cw {
-            ur[cx] = (128.0 + 224.0 * us[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
-            vr[cx] = (128.0 + 224.0 * vs[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
+            let rows: &[(&[f32; YUV_BLOCK], &[f32; YUV_BLOCK])] = if two { &[(&cb0, &cr0), (&cb1, &cr1)] } else { &[(&cb0, &cr0)] };
+            for (k, (uo, vo)) in uo.iter_mut().zip(vo.iter_mut()).enumerate() {
+                let (mut su, mut sv, mut count) = (0f32, 0f32, 0f32);
+                for (cb, cr) in rows {
+                    for x in [2 * k, 2 * k + 1].into_iter().filter(|&x| x < n) {
+                        if let (Some(&tb), Some(&tr)) = (cb.get(x), cr.get(x)) {
+                            su += tb;
+                            sv += tr;
+                            count += 1.0;
+                        }
+                    }
+                }
+                *uo = code8(128.0 + 224.0 * su / count);
+                *vo = code8(128.0 + 224.0 * sv / count);
+            }
         }
     });
 }
 
-/// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb).
+/// BT.709 limited-range 8-bit 4:2:0 from straight RGBA8 (2×2 chroma average). The planes are
+/// resized to `w * h` and `ceil(w / 2) * ceil(h / 2)`; pixels missing from a short `rgba` come out
+/// black.
+pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
+    yuv420_8(w, h, y, u, v, |row, x0, luma, cb, cr| {
+        let at = row * w + x0;
+        let Some(src) = rgba.get(at * 4..(at + luma.len()) * 4) else {
+            luma.fill(16);
+            return;
+        };
+        for (((&[r, g, b, _], l), cb), cr) in src.as_chunks::<4>().0.iter().zip(luma.iter_mut()).zip(cb.iter_mut()).zip(cr.iter_mut()) {
+            let (r, g, b) = (f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0);
+            let yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            *l = code8(16.0 + 219.0 * yy);
+            *cb = (b - yy) / 1.8556;
+            *cr = (r - yy) / 1.5748;
+        }
+    });
+}
+
+/// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb). The planes are
+/// resized as by [`rgba_to_yuv420_8`]; pixels missing from a short `rgb` come out black.
 #[allow(clippy::too_many_arguments)]
 pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
-    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let kg = 1.0 - kr - kb;
     let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
-    y.resize(w * h, 0);
-    u.resize(cw * ch, 0);
-    v.resize(cw * ch, 0);
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
-        let rows = yr.len() / w;
-        let mut us = vec![0f32; cw];
-        let mut vs = vec![0f32; cw];
-        let mut cnt = vec![0f32; cw];
-        for dy in 0..rows {
-            let row = cy * 2 + dy;
-            let src = &rgb[row * w * 3..(row + 1) * w * 3];
-            for x in 0..w {
-                let (r, g, b) = (src[x * 3], src[x * 3 + 1], src[x * 3 + 2]);
-                let yy = kr * r + kg * g + kb * b;
-                yr[dy * w + x] = (16.0 + 219.0 * yy).round().clamp(1.0, 254.0) as u8;
-                us[x / 2] += (b - yy) / sb;
-                vs[x / 2] += (r - yy) / sr;
-                cnt[x / 2] += 1.0;
-            }
-        }
-        for cx in 0..cw {
-            ur[cx] = (128.0 + 224.0 * us[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
-            vr[cx] = (128.0 + 224.0 * vs[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
+    yuv420_8(w, h, y, u, v, |row, x0, luma, cb, cr| {
+        let at = row * w + x0;
+        let Some(src) = rgb.get(at * 3..(at + luma.len()) * 3) else {
+            luma.fill(16);
+            return;
+        };
+        for (((&[r, g, b], l), cb), cr) in src.as_chunks::<3>().0.iter().zip(luma.iter_mut()).zip(cb.iter_mut()).zip(cr.iter_mut()) {
+            let yy = kr * r + kg * g + kb * b;
+            *l = code8(16.0 + 219.0 * yy);
+            *cb = (b - yy) / sb;
+            *cr = (r - yy) / sr;
         }
     });
 }
@@ -1686,6 +1816,9 @@ pub(crate) fn h264_slices(height: u32) -> usize {
     (height.div_ceil(16) as usize).div_ceil(4).max(1)
 }
 
+/// The built-in H.264 encoder for an H.264 export (`None` for any other format), configured from the
+/// settings: packet format, keyframe distance, slices, rate control, pass, profile, level, pixel
+/// aspect and HDR signalling.
 fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format != Format::H264 {
         return None;
@@ -1729,7 +1862,7 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     }
     Some(
         filmcraft_h264enc::Encoder::new(cfg)
-            .map(|enc| Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal }) as Box<dyn VideoEncoder>)
+            .map(|enc| Box::new(H264Encoder { enc, w, h, rate, yuv: Yuv420::default(), signal: s.signal }) as Box<dyn VideoEncoder>)
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
 }
@@ -2029,3 +2162,12 @@ mod determinism_tests;
 
 #[cfg(test)]
 mod hdr_tests;
+
+#[cfg(test)]
+mod yuv_tests;
+
+#[cfg(test)]
+mod untouched_tests;
+
+#[cfg(test)]
+mod smart_tests;
