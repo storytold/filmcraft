@@ -36,6 +36,487 @@ fn pair_in_an_empty_sequence(s: &mut Session, seconds: f64) -> (TrackId, TrackIt
     (q.video_tracks[0].id, v, q.audio_tracks[0].id, a)
 }
 
+fn assert_selection_edit_matches_control(s: &mut Session, selection: Vec<ClipId>, command: &str, params: serde_json::Value) {
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let mut control = Session { project: s.project.clone(), state: s.state.clone(), history: s.history.clone(), media: s.media.clone(), ..Session::default() };
+    control.state.selection = selection;
+    let expected = control.execute(command, params.clone()).unwrap();
+    let actual = s.execute(command, params).unwrap();
+    assert_eq!(actual, expected, "{command} returns the unique-selection result");
+    assert_eq!(s.project, control.project, "{command} produces the complete unique-selection project");
+    assert_eq!(s.history.undo.len(), undo + 1, "the edit is one undo step");
+    assert_eq!(s.history.undo, control.history.undo);
+    assert_eq!(s.history.redo, control.history.redo);
+    assert_eq!(s.history.merge_key, control.history.merge_key);
+    let q = s.active_sequence().unwrap();
+    let ids: Vec<ClipId> = q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.id)).collect();
+    assert_eq!(ids.iter().copied().collect::<std::collections::HashSet<_>>().len(), ids.len(), "no identity was duplicated");
+    q.check().unwrap();
+    let after = s.project.clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    control.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before, "undo restores the entire pre-edit project");
+    assert_eq!(s.project, control.project);
+    assert_eq!(s.history.undo, control.history.undo);
+    assert_eq!(s.history.redo, control.history.redo);
+    s.active_sequence().unwrap().check().unwrap();
+    s.execute("edit.redo", json!({})).unwrap();
+    control.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project, after, "redo restores the entire edited project");
+    assert_eq!(s.project, control.project);
+    assert_eq!(s.history.undo, control.history.undo);
+    assert_eq!(s.history.redo, control.history.redo);
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn duplicate_selection_inputs_keep_first_occurrence_and_toggle_once() {
+    for linked in [false, true] {
+        let mut s = demo();
+        let (_, v, _, a) = pair_in_an_empty_sequence(&mut s, 0.0);
+        s.execute("sequence.linkedSelection", json!({"on": linked})).unwrap();
+        let before = s.project.clone();
+        let history = s.history.clone();
+        let ids = json!([a.id.0, a.id.0, v.id.0, a.id.0, v.id.0]);
+        let result = s.execute("timeline.select", json!({"clips": ids})).unwrap();
+        assert_eq!(s.state.selection, vec![a.id, v.id], "explicit order precedes linked expansion");
+        assert_eq!(result["selection"], json!([a.id.0, v.id.0]));
+        s.execute("timeline.select", json!({"clips": [v.id.0, v.id.0], "add": true})).unwrap();
+        assert_eq!(s.state.selection, vec![a.id, v.id], "adding an identity twice does not reorder the selection");
+        s.execute("timeline.select", json!({"clips": ids, "toggle": true})).unwrap();
+        assert!(s.state.selection.is_empty(), "each selected identity toggles off once");
+        s.execute("timeline.select", json!({"clips": ids, "toggle": true})).unwrap();
+        assert_eq!(s.state.selection, vec![a.id, v.id], "each unselected identity toggles on once");
+        s.execute("timeline.select", json!({"clips": []})).unwrap();
+        s.execute("timeline.select", json!({"clips": [v.id.0, v.id.0], "add": true})).unwrap();
+        assert_eq!(s.state.selection, if linked { vec![v.id, a.id] } else { vec![v.id] });
+        assert_eq!(s.project, before, "selection admission does not edit the project");
+        assert_eq!(s.history.undo, history.undo);
+        assert_eq!(s.history.redo, history.redo);
+        s.active_sequence().unwrap().check().unwrap();
+    }
+}
+
+#[test]
+fn duplicate_selection_expansion_is_unique_without_an_active_sequence() {
+    let clips = [ClipId(9), ClipId(3), ClipId(9), ClipId(3), ClipId(5)];
+    for linked in [false, true] {
+        let mut s = Session::default();
+        s.state.linked_selection = linked;
+        for active in [None, Some(filmcraft_project::ItemId(u64::MAX))] {
+            s.state.active_sequence = active;
+            let before = serde_json::to_value(&s.state).unwrap();
+            assert_eq!(crate::commands::with_links(&s, &clips), vec![ClipId(9), ClipId(3), ClipId(5)]);
+            assert_eq!(serde_json::to_value(&s.state).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn duplicate_selection_public_admission_keeps_nudges_equivalent_to_unique_selection() {
+    for (command, linked) in [("timeline.nudgeRight", false), ("timeline.nudgeRight", true), ("timeline.nudgeUp", false)] {
+        let mut s = demo();
+        let (_, v, _, a) = pair_in_an_empty_sequence(&mut s, 60.0);
+        s.execute("sequence.linkedSelection", json!({"on": linked})).unwrap();
+        s.execute("timeline.select", json!({"clips": [v.id.0, v.id.0]})).unwrap();
+        let selection = if linked { vec![v.id, a.id] } else { vec![v.id] };
+        assert_eq!(s.state.selection, selection);
+        assert_selection_edit_matches_control(&mut s, selection.clone(), command, json!({}));
+        assert_eq!(s.state.selection, selection);
+    }
+}
+
+#[test]
+fn duplicate_selection_already_in_session_keeps_nudges_equivalent_to_unique_selection() {
+    for linked in [false, true] {
+        for command in ["timeline.nudgeRight", "timeline.nudgeUp"] {
+            let mut s = demo();
+            let (_, v, a_track, a) = pair_in_an_empty_sequence(&mut s, 60.0);
+            s.execute("sequence.linkedSelection", json!({"on": linked})).unwrap();
+            s.state.selection = vec![v.id, v.id, v.id];
+            assert_selection_edit_matches_control(&mut s, vec![v.id], command, json!({}));
+            let q = s.active_sequence().unwrap();
+            if command == "timeline.nudgeUp" {
+                assert_eq!(state(&s, v.id), (q.video_tracks[1].id, v.start));
+                assert_eq!(state(&s, a.id), (a_track, a.start), "vertical nudges remain selected-only even with linked selection on");
+            } else {
+                assert_eq!(state(&s, v.id).1, v.start + s.sequence_rate().tick_of(1));
+                assert_eq!(state(&s, a.id).1, a.start + if linked { s.sequence_rate().tick_of(1) } else { Tick::ZERO });
+            }
+        }
+    }
+}
+
+#[test]
+fn duplicate_selection_delete_matches_unique_selection_with_and_without_links() {
+    for linked in [false, true] {
+        for command in ["edit.clear", "edit.rippleDelete"] {
+            let mut s = demo();
+            let (_, v, a_track, a) = pair_in_an_empty_sequence(&mut s, 60.0);
+            s.execute("sequence.linkedSelection", json!({"on": linked})).unwrap();
+            s.execute("timeline.setTrack", json!({"track": a_track.0, "syncLock": false})).unwrap();
+            s.state.selection = vec![v.id, v.id];
+            assert_selection_edit_matches_control(&mut s, vec![v.id], command, json!({}));
+            assert!(s.active_sequence().unwrap().find_item(v.id).is_none());
+            assert!(s.active_sequence().unwrap().find_item(a.id).is_some(), "implicit deletion honors the exact session selection");
+            assert!(s.state.selection.is_empty());
+        }
+    }
+}
+
+#[test]
+fn duplicate_move_targets_are_rejected_and_retry_is_undoable() {
+    for insert in [false, true] {
+        let mut s = demo();
+        let (_, v, _, _) = pair_in_an_empty_sequence(&mut s, 0.0);
+        let before = s.project.clone();
+        let undo = s.history.undo.len();
+        let at = s.sequence_rate().tick_of(48).0;
+        let result = s.execute(
+            "timeline.move",
+            json!({"moves": [{"clip": v.id.0, "track": "V1", "time": at}, {"clip": v.id.0, "track": "V2", "time": at}], "insert": insert, "linked": false}),
+        );
+        assert!(result.is_err(), "duplicate move entries were accepted: {result:?}");
+        assert_eq!(s.project, before);
+        assert_eq!(s.history.undo.len(), undo);
+        s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": "V2", "time": at}], "insert": insert, "linked": false})).unwrap();
+        let after = s.project.clone();
+        assert_eq!(state(&s, v.id).1.0, at);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project, before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(s.project, after);
+    }
+}
+
+fn reject_duplicate_new_track_move(s: &mut Session, clip: ClipId, insert: bool, linked: bool, new_first: bool) {
+    s.state.selection = vec![clip];
+    let before = s.project.clone();
+    let selection = s.state.selection.clone();
+    let editor_state = serde_json::to_value(&s.state).unwrap();
+    let history = s.history.clone();
+    let journal = s.journal.clone();
+    let at = s.sequence_rate().tick_of(48).0;
+    let tracks = if new_first { ["new", "V2"] } else { ["V2", "new"] };
+    let result = s.execute(
+        "timeline.move",
+        json!({"moves": [{"clip": clip.0, "track": tracks[0], "time": at}, {"clip": clip.0, "track": tracks[1], "time": at}], "insert": insert, "linked": linked}),
+    );
+    assert!(matches!(result, Err(EngineError::Edit(filmcraft_edit::EditError::Other(_)))), "duplicate move entries must be rejected: {result:?}");
+    assert_eq!(s.project, before, "the project and its id allocator stay unchanged");
+    assert_eq!(s.state.selection, selection);
+    assert_eq!(serde_json::to_value(&s.state).unwrap(), editor_state);
+    assert_eq!(s.history.undo.len(), history.undo.len(), "no oldest undo entry is evicted");
+    assert_eq!(s.history.redo.len(), history.redo.len(), "no existing redo entry is lost");
+    assert_eq!(s.history.undo, history.undo);
+    assert_eq!(s.history.redo, history.redo);
+    assert_eq!(s.history.merge_key, history.merge_key);
+    assert_eq!(s.history.limit, history.limit);
+    assert_eq!(s.journal, journal, "the failed command is not journaled");
+}
+
+#[test]
+fn duplicate_new_track_move_preserves_redo_and_retry_is_undoable() {
+    for insert in [false, true] {
+        for linked in [false, true] {
+            for new_first in [false, true] {
+                let mut s = demo();
+                let (_, v, _, _) = pair_in_an_empty_sequence(&mut s, 0.0);
+                s.execute("timeline.setTrack", json!({"track": "V2", "locked": true})).unwrap();
+                let redo_project = s.project.clone();
+                s.execute("edit.undo", json!({})).unwrap();
+                assert!(!s.history.redo.is_empty());
+                reject_duplicate_new_track_move(&mut s, v.id, insert, linked, new_first);
+                let before = s.project.clone();
+                s.execute("edit.redo", json!({})).unwrap();
+                assert_eq!(s.project, redo_project, "the previously available redo still works");
+                s.execute("edit.undo", json!({})).unwrap();
+                assert_eq!(s.project, before);
+                let at = s.sequence_rate().tick_of(48).0;
+                s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": "new", "time": at}], "insert": insert, "linked": linked})).unwrap();
+                let after = s.project.clone();
+                assert_eq!(state(&s, v.id).1.0, at);
+                assert_eq!(s.active_sequence().unwrap().video_tracks.len(), 3);
+                s.active_sequence().unwrap().check().unwrap();
+                s.execute("edit.undo", json!({})).unwrap();
+                assert_eq!(s.project, before, "one undo removes the new track and restores the move");
+                s.execute("edit.redo", json!({})).unwrap();
+                assert_eq!(s.project, after);
+            }
+        }
+    }
+}
+
+#[test]
+fn duplicate_new_track_move_preserves_full_undo_history() {
+    for insert in [false, true] {
+        for linked in [false, true] {
+            for new_first in [false, true] {
+                let mut s = demo();
+                let (_, v, _, _) = pair_in_an_empty_sequence(&mut s, 0.0);
+                assert_eq!(s.history.limit, 200);
+                while s.history.undo.len() < s.history.limit {
+                    let step = s.history.undo.len();
+                    s.edit_merged("History step", &format!("history-{step}"), |project, _| {
+                        project.root.name = format!("History {step}");
+                        Ok(())
+                    })
+                    .unwrap();
+                }
+                assert_eq!(s.history.undo.len(), s.history.limit);
+                assert!(s.history.merge_key.is_some());
+                reject_duplicate_new_track_move(&mut s, v.id, insert, linked, new_first);
+                let oldest = s.history.undo.first().unwrap().1.clone();
+                for _ in 0..s.history.limit {
+                    s.execute("edit.undo", json!({})).unwrap();
+                }
+                assert_eq!(s.project, oldest, "every retained undo step remains usable");
+            }
+        }
+    }
+}
+
+#[test]
+fn unique_new_track_moves_keep_linked_partner_behavior() {
+    for insert in [false, true] {
+        for linked in [false, true] {
+            let mut s = demo();
+            let (_, v, a_track, a) = pair_in_an_empty_sequence(&mut s, 0.0);
+            let before = s.project.clone();
+            let undo = s.history.undo.len();
+            let to = s.sequence_rate().tick_of(48);
+            let result =
+                s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": "new", "time": to.0}], "insert": insert, "linked": linked})).unwrap();
+            let sequence = s.active_sequence().unwrap();
+            assert_eq!(sequence.video_tracks.len(), 3);
+            assert_eq!(state(&s, v.id), (sequence.video_tracks[2].id, to));
+            assert_eq!(state(&s, a.id), (a_track, if linked { to } else { a.start }));
+            assert_eq!(result["moved"], if linked { json!([v.id.0, a.id.0]) } else { json!([v.id.0]) });
+            assert_eq!(s.history.undo.len(), undo + 1);
+            sequence.check().unwrap();
+            let after = s.project.clone();
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(s.project, before);
+            s.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(s.project, after);
+        }
+    }
+}
+
+#[test]
+fn repeated_new_track_copy_destinations_get_distinct_ids() {
+    for insert in [false, true] {
+        for linked in [false, true] {
+            for new_first in [false, true] {
+                let mut s = demo();
+                let (v_track, v, a_track, a) = pair_in_an_empty_sequence(&mut s, 0.0);
+                let before = s.project.clone();
+                let undo = s.history.undo.len();
+                let to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+                let tracks = if new_first { ["new", "V2"] } else { ["V2", "new"] };
+                let result = s
+                .execute(
+                    "timeline.move",
+                    json!({"moves": [{"clip": v.id.0, "track": tracks[0], "time": to.0}, {"clip": v.id.0, "track": tracks[1], "time": to.0}], "insert": insert, "linked": linked, "copy": true}),
+                )
+                .unwrap();
+                let copies: Vec<ClipId> = result["copied"].as_array().unwrap().iter().map(|c| ClipId(c.as_u64().unwrap())).collect();
+                assert_eq!(copies.len(), if linked { 3 } else { 2 });
+                assert_eq!(copies.iter().copied().collect::<std::collections::HashSet<_>>().len(), copies.len());
+                assert!(!copies.contains(&v.id) && !copies.contains(&a.id));
+                assert_eq!((state(&s, v.id), state(&s, a.id)), ((v_track, v.start), (a_track, a.start)));
+                assert_eq!(s.state.selection, copies);
+                let sequence = s.active_sequence().unwrap();
+                assert_eq!(sequence.video_tracks.len(), 3);
+                assert!(copies.iter().all(|c| sequence.find_item(*c).is_some()), "every reported copy exists");
+                assert!(copies.iter().any(|c| state(&s, *c) == (sequence.video_tracks[2].id, to)));
+                assert!(copies.iter().any(|c| state(&s, *c) == (sequence.video_tracks[1].id, to)));
+                assert_eq!(s.history.undo.len(), undo + 1);
+                sequence.check().unwrap();
+                let after = s.project.clone();
+                s.execute("edit.undo", json!({})).unwrap();
+                assert_eq!(s.project, before);
+                s.execute("edit.redo", json!({})).unwrap();
+                assert_eq!(s.project, after);
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_linked_video_copies_each_keep_sound_at_distinct_times() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let first = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    let second = first + video.duration + s.sequence_rate().tick_of(24);
+    let result = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [
+                {"clip": video.id.0, "track": "V2", "time": first.0},
+                {"clip": video.id.0, "track": "V2", "time": second.0}
+            ], "linked": true, "copy": true}),
+        )
+        .unwrap();
+    let copied: Vec<_> = result["copied"].as_array().unwrap().iter().map(|id| ClipId(id.as_u64().unwrap())).collect();
+    assert_eq!(copied.len(), 4, "each video request needs its own sound partner");
+    let q = s.active_sequence().unwrap();
+    let links_at = |time| {
+        let picture = q.video_tracks[1].items.iter().find(|it| it.start == time).unwrap();
+        let audio = q.audio_tracks[0].items.iter().find(|it| it.start == time).unwrap();
+        assert_ne!(audio.id, sound.id);
+        assert_eq!(picture.link, audio.link);
+        picture.link
+    };
+    assert!(links_at(first).is_some());
+    assert_ne!(links_at(first), links_at(second));
+    assert!(copied.iter().all(|id| q.find_item(*id).is_some()));
+    q.check().unwrap();
+}
+
+#[test]
+fn explicitly_copied_linked_pair_keeps_link_with_different_landings() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let picture_to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    let sound_to = picture_to + s.sequence_rate().tick_of(24);
+    let result = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [
+                {"clip": video.id.0, "track": "V2", "time": picture_to.0},
+                {"clip": sound.id.0, "track": "A2", "time": sound_to.0}
+            ], "linked": false, "copy": true}),
+        )
+        .unwrap();
+    let copied: Vec<_> = result["copied"].as_array().unwrap().iter().map(|id| ClipId(id.as_u64().unwrap())).collect();
+    assert_eq!(copied.len(), 2);
+    let q = s.active_sequence().unwrap();
+    let picture = q.video_tracks[1].items.iter().find(|it| it.start == picture_to).unwrap();
+    let audio = q.audio_tracks[1].items.iter().find(|it| it.start == sound_to).unwrap();
+    assert_eq!(picture.link, audio.link, "explicit copies of a linked pair retain one group even with distinct offsets");
+    assert!(picture.link.is_some());
+    let (picture_id, audio_id) = (picture.id, audio.id);
+    q.check().unwrap();
+
+    let delta = s.sequence_rate().tick_of(48);
+    s.execute("timeline.move", json!({"moves": [{"clip": picture_id.0, "track": "V2", "time": (picture_to + delta).0}], "linked": true})).unwrap();
+    assert_eq!(state(&s, picture_id).1, picture_to + delta);
+    assert_eq!(state(&s, audio_id).1, sound_to + delta, "the explicitly copied sound remains a movable partner");
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn identical_linked_copy_requests_keep_the_surviving_picture_and_sound_linked() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    let result = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [
+                {"clip": video.id.0, "track": "V2", "time": to.0},
+                {"clip": video.id.0, "track": "V2", "time": to.0}
+            ], "linked": true, "copy": true}),
+        )
+        .unwrap();
+    let copied: Vec<_> = result["copied"].as_array().unwrap().iter().map(|id| ClipId(id.as_u64().unwrap())).collect();
+    assert_eq!(copied.len(), 2, "only the surviving picture and sound are reported");
+    let q = s.active_sequence().unwrap();
+    let picture = q.video_tracks[1].items.iter().find(|it| it.start == to).unwrap();
+    let audio = q.audio_tracks[0].items.iter().find(|it| it.start == to).unwrap();
+    assert_ne!(audio.id, sound.id);
+    assert_eq!(picture.link, audio.link);
+    assert!(picture.link.is_some(), "the surviving copy pair retains a usable link");
+    assert!(copied.contains(&picture.id) && copied.contains(&audio.id));
+    let (picture_id, audio_id) = (picture.id, audio.id);
+    q.check().unwrap();
+
+    let later = to + s.sequence_rate().tick_of(48);
+    s.execute("timeline.move", json!({"moves": [{"clip": picture_id.0, "track": "V2", "time": later.0}], "linked": true})).unwrap();
+    assert_eq!(state(&s, picture_id).1, later);
+    assert_eq!(state(&s, audio_id).1, later, "a subsequent linked move follows the surviving sound");
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn reordered_same_time_linked_copies_pair_by_destination_track_shift() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    s.execute("sequence.addTracks", json!({"video": 1, "audio": 1})).unwrap();
+    let to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    s.execute(
+        "timeline.move",
+        json!({"moves": [
+        {"clip": video.id.0, "track": "V2", "time": to.0},
+        {"clip": video.id.0, "track": "V3", "time": to.0},
+        {"clip": sound.id.0, "track": "A3", "time": to.0},
+        {"clip": sound.id.0, "track": "A2", "time": to.0}
+    ], "linked": false, "copy": true}),
+    )
+    .unwrap();
+    let q = s.active_sequence().unwrap();
+    let at = |kind: filmcraft_project::TrackKind, index: usize| q.tracks(kind)[index].items.iter().find(|it| it.start == to).unwrap().clone();
+    let (v2, v3) = (at(filmcraft_project::TrackKind::Video, 1), at(filmcraft_project::TrackKind::Video, 2));
+    let (a2, a3) = (at(filmcraft_project::TrackKind::Audio, 1), at(filmcraft_project::TrackKind::Audio, 2));
+    assert!(v2.link.is_some());
+    assert_eq!(v2.link, a2.link, "V2 must stay linked to A2 even when A3 was listed first");
+    assert_eq!(v3.link, a3.link, "V3 must stay linked to A3");
+    assert_ne!(v2.link, v3.link, "the two copies need independent link groups");
+    q.check().unwrap();
+
+    let later = to + s.sequence_rate().tick_of(48);
+    s.execute("timeline.move", json!({"moves": [{"clip": v2.id.0, "track": "V2", "time": later.0}], "linked": true})).unwrap();
+    assert_eq!(state(&s, v2.id).1, later);
+    assert_eq!(state(&s, a2.id).1, later, "linked move follows the matching sound copy");
+    assert_eq!(state(&s, v3.id).1, to);
+    assert_eq!(state(&s, a3.id).1, to, "the other sound copy stays put");
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn vertical_linked_copy_does_not_overwrite_its_stationary_sound() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let link = video.link;
+    assert!(link.is_some());
+    assert_eq!(link, sound.link);
+    let result =
+        s.execute("timeline.move", json!({"moves": [{"clip": video.id.0, "track": "V2", "time": video.start.0}], "linked": true, "copy": true})).unwrap();
+    let copied = result["copied"].as_array().unwrap();
+    assert_eq!(copied.len(), 1, "the stationary linked partner is not copied onto itself");
+    assert_eq!(result["overwritten"], json!([]));
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.find_item(video.id).unwrap().1.link, link);
+    assert_eq!(q.find_item(sound.id).unwrap().1.link, link);
+    let new_video = ClipId(copied[0].as_u64().unwrap());
+    assert_eq!(q.find_item(new_video).unwrap().1.link, None, "a video-only copy has no sound partner");
+    q.check().unwrap();
+}
+
+#[test]
+fn overlapping_repeated_copy_reports_only_the_surviving_clip() {
+    let mut s = demo();
+    let (_, video, _, _) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let to = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    let result = s
+        .execute(
+            "timeline.move",
+            json!({"moves": [
+                {"clip": video.id.0, "track": "V2", "time": to.0},
+                {"clip": video.id.0, "track": "V2", "time": to.0}
+            ], "linked": false, "copy": true}),
+        )
+        .unwrap();
+    let copies = result["copied"].as_array().unwrap();
+    assert_eq!(copies.len(), 1);
+    let id = ClipId(copies[0].as_u64().unwrap());
+    assert_eq!(s.state.selection, vec![id]);
+    assert!(s.active_sequence().unwrap().find_item(id).is_some());
+    s.active_sequence().unwrap().check().unwrap();
+}
+
 /// `timeline.move` of one clip left its linked sound behind although Linked Selection was on.
 #[test]
 fn move_takes_linked_partners_along() {
