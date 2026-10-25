@@ -154,7 +154,7 @@ pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<L
         }
         let Some(ItemKind::Graphic { width, height, .. }) = app.session.project.item(it.item).map(|p| &p.kind) else { continue };
         let size = (*width, *height);
-        let mt = it.source_time_at(t);
+        let mt = it.effect_time_at(t);
         let base = screen.then_apply(&filmcraft_render::motion_matrix(seq, it, size, None, mt));
         let idx = layer_indices(&it.effects);
         for (li, &ei) in idx.iter().enumerate().rev() {
@@ -177,7 +177,7 @@ fn canvas_target(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> (Option<Cl
         && let Some(seq) = app.session.active_sequence()
         && let Some(ItemKind::Graphic { width, height, .. }) = app.session.project.item(it.item).map(|p| &p.kind)
     {
-        let m = screen.then_apply(&filmcraft_render::motion_matrix(seq, &it, (*width, *height), None, it.source_time_at(t)));
+        let m = screen.then_apply(&filmcraft_render::motion_matrix(seq, &it, (*width, *height), None, it.effect_time_at(t)));
         return (Some(c), m);
     }
     (None, screen)
@@ -1234,7 +1234,7 @@ pub(crate) fn select_all_edited_text(app: &mut FilmcraftApp) -> bool {
     let Some((_, it)) = app.session.active_sequence().and_then(|q| q.find_item(ClipId(clip))) else { return false };
     let Some(ItemKind::Graphic { width, height, .. }) = app.session.project.item(it.item).map(|p| &p.kind) else { return false };
     let Some(effect) = layer_indices(&it.effects).get(layer).and_then(|&i| it.effects.get(i)) else { return false };
-    let Some(len) = eval_layer(effect, it.source_time_at(t), (*width, *height)).as_ref().and_then(text_of).map(|tp| tp.text.len()) else { return false };
+    let Some(len) = eval_layer(effect, it.effect_time_at(t), (*width, *height)).as_ref().and_then(text_of).map(|tp| tp.text.len()) else { return false };
     let Some(ed) = app.ui.gfx_edit.as_mut() else { return false };
     let moved = (ed.anchor, ed.caret) != (0, len);
     (ed.anchor, ed.caret) = (0, len);
@@ -2595,7 +2595,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let ph = app.session.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let idx = layer_indices(&it.effects);
     let sel = app.session.state.graphic_layers.first().copied().filter(|l| *l < idx.len());
     let mut actions: Vec<(String, Value)> = Vec::new();

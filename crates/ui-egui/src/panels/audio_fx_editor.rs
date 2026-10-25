@@ -54,7 +54,7 @@ fn resolve(app: &FilmcraftApp, target: &FxTarget) -> Option<(EffectInstance, Tic
             let (tid, it) = seq.find_item(ClipId(*clip))?;
             let e = it.effects.get(*index)?.clone();
             let track = seq.track(tid).map(|t| t.name.clone()).unwrap_or_default();
-            let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+            let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
             Some((e, mt, format!("{track}, {}", it.name)))
         }
         FxTarget::Insert { strip, slot } => {

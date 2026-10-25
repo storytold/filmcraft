@@ -472,7 +472,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         Some(k) if k.eq_ignore_ascii_case("none") => None,
         Some(k) => Some(KeyframeMode::from_name(k).ok_or_else(|| bad("presets.save", format!("unknown keyframe mode `{k}`")))?),
     };
-    let mt = it.source_time_at(s.playhead().clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(s.playhead().clamp(it.start, it.end() - Tick(1)));
     let size = clip_size(s, it);
     let preset = capture(it, &idx, &name, str_p(p, "description").unwrap_or(""), mode, mt, size);
     let out = preset_json(&preset);
