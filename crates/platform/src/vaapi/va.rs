@@ -530,6 +530,15 @@ impl Accel for Session {
         self.decode_picture(target, pic, iq, slices)
     }
 
+    fn decode_av1(
+        &mut self,
+        target: usize,
+        pic: &ffi::VADecPictureParameterBufferAV1,
+        tiles: &[(ffi::VASliceParameterBufferAV1, Vec<u8>)],
+    ) -> Result<(), String> {
+        self.decode_picture(target, pic, None::<&()>, tiles)
+    }
+
     fn read(&mut self, index: usize) -> Result<VideoFrame, String> {
         let image = self.get_image(index)?;
         self.read_image(&image)

@@ -19,6 +19,7 @@ mod inter_info;
 mod intra;
 mod mvpred;
 mod par;
+pub mod parser;
 mod postfilter;
 mod restoration;
 mod spec_tables;
@@ -30,6 +31,7 @@ mod transform;
 
 pub use decoder::Decoder;
 pub use header::{ColorConfig, FrameHeader, SequenceHeader};
+pub use parser::{Event, Frame, Parser};
 pub use stats::{DecodeStats, Stage};
 
 /// Decoder errors.
@@ -75,6 +77,12 @@ impl Picture {
     pub fn plane_height(&self, plane: usize) -> u32 {
         if plane == 0 { self.height } else { (self.height + self.subsampling_y as u32) >> self.subsampling_y }
     }
+}
+
+/// Whether global motion / warp parameters `params` (`gm_params[ref]`) pass the shear setup
+/// (7.11.3.6), i.e. warping with them is allowed (warpValid).
+pub fn warp_valid(params: &[i32; 6]) -> bool {
+    inter::setup_shear(params).0
 }
 
 /// Whether a temporal unit starts a random access point: its first frame is a shown key frame

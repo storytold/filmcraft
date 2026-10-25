@@ -230,6 +230,8 @@ pub struct TileInfo {
     pub mi_row_starts: Vec<u32>,
     pub context_update_tile_id: u32,
     pub tile_size_bytes: u32,
+    /// uniform_tile_spacing_flag.
+    pub uniform: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -856,7 +858,8 @@ impl FrameHeader {
         let t = &mut self.tile_info;
         t.mi_col_starts.clear();
         t.mi_row_starts.clear();
-        if r.flag()? {
+        t.uniform = r.flag()?;
+        if t.uniform {
             t.cols_log2 = min_log2_tile_cols;
             while t.cols_log2 < max_log2_tile_cols {
                 if r.flag()? {

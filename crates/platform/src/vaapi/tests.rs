@@ -1,4 +1,4 @@
-//! The H.264 and HEVC front ends against a recording stand-in for the hardware, on every system:
+//! The H.264, HEVC and AV1 front ends against a recording stand-in for the hardware, on every system:
 //! for x264 streams with B-pyramids, several references, weighted prediction, several slices and
 //! open GOPs, and x265 streams (Main and Main 10, open GOP with RASL pictures, B-pyramids),
 //! the pictures come out in the software decoder's order with its pts (whole stream, after seeks,
@@ -122,6 +122,36 @@ impl Accel for Recorder {
                 assert!(list[n..].iter().all(|p| !valid(p)), "nothing past the active entries");
                 assert!(list[..n].iter().all(|p| ref_ids.contains(&p.picture_id)), "list entries are reference frames");
             }
+        }
+        self.decoded[target] = true;
+        self.pictures += 1;
+        Ok(())
+    }
+
+    fn decode_av1(
+        &mut self,
+        target: usize,
+        pic: &ffi::VADecPictureParameterBufferAV1,
+        tiles: &[(ffi::VASliceParameterBufferAV1, Vec<u8>)],
+    ) -> Result<(), String> {
+        assert_eq!(pic.current_frame, self.ids[target], "current frame surface");
+        assert!(!pic.ref_frame_map.contains(&pic.current_frame), "the target is not in a reference slot");
+        let intra = matches!((pic.pic_info_fields >> ffi::av1_pic_bits::FRAME_TYPE) & 3, 0 | 2);
+        if !intra {
+            for &i in &pic.ref_frame_idx {
+                let id = pic.ref_frame_map[usize::from(i)];
+                let s = self.ids.iter().position(|&x| x == id).expect("reference slot holds a decoder surface");
+                assert!(self.decoded[s], "reference surface {s} holds a picture");
+            }
+        }
+        assert!(!tiles.is_empty());
+        let n = usize::from(pic.tile_cols) * usize::from(pic.tile_rows);
+        for (t, data) in tiles {
+            assert_eq!(t.slice_data_size as usize, data.len());
+            assert!(
+                usize::from(t.tile_row) < usize::from(pic.tile_rows) && usize::from(t.tile_column) < usize::from(pic.tile_cols),
+                "tile inside the grid of {n}"
+            );
         }
         self.decoded[target] = true;
         self.pictures += 1;
@@ -370,6 +400,121 @@ fn hevc_damaged_samples_are_errors() {
                         }
                     }
                     _ => m.iter_mut().skip(4).take(6).for_each(|b| *b = next() as u8),
+                }
+            }
+            if f.decode(&m, *p).is_err() {
+                f.reset();
+            }
+        }
+        let _ = f.flush();
+    }
+}
+
+/// (file, encoder arguments): SVT-AV1 with hidden alt-ref frames (show_existing_frame), libaom
+/// with 2x2 tiles.
+const AV1_STREAMS: &[(&str, &[&str])] = &[
+    ("va_front_av1_svt.mp4", &["-c:v", "libsvtav1", "-preset", "10", "-crf", "45", "-g", "12", "-pix_fmt", "yuv420p10le"]),
+    (
+        "va_front_av1_aom_tiles.mp4",
+        &[
+            "-c:v",
+            "libaom-av1",
+            "-cpu-used",
+            "8",
+            "-crf",
+            "45",
+            "-g",
+            "12",
+            "-lag-in-frames",
+            "8",
+            "-tile-columns",
+            "1",
+            "-tile-rows",
+            "1",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+    ),
+];
+
+fn av1_fixture(ff: &std::path::Path, name: &str, enc: &[&str]) -> Option<PathBuf> {
+    let out = filmcraft_testkit::fixtures_dir("platform").join(name);
+    filmcraft_testkit::fixtures::generate(&out, |tmp| {
+        Command::new(ff)
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=2"])
+            .args(enc)
+            .arg(tmp)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
+fn av1_front(s: &Stream) -> super::av1::Front<Recorder> {
+    let info = filmcraft_codecs::hw::FrameStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+    super::av1::Front::new(Recorder::new(10), info.config_obus.clone(), info.size, info.bit_depth).unwrap()
+}
+
+fn run_av1(f: &mut super::av1::Front<Recorder>, samples: &[(Vec<u8>, i64)]) -> Vec<i64> {
+    let mut out = Vec::new();
+    for (s, p) in samples {
+        out.extend(pts(&f.decode(s, *p).unwrap()));
+    }
+    out.extend(pts(&f.flush().unwrap()));
+    out
+}
+
+#[test]
+fn av1_output_order_and_buffers_match_the_software_decoder() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let mut made = 0;
+    for (name, enc) in AV1_STREAMS {
+        let Some(path) = av1_fixture(&ff, name, enc) else { continue };
+        made += 1;
+        let s = read_stream(&path);
+        let mut f = av1_front(&s);
+        let mut sw = filmcraft_codecs::software_video_decoder(&s.entry).unwrap();
+        assert_eq!(run_av1(&mut f, &s.samples), run_software(sw.as_mut(), &s.samples), "{name}");
+        for k in (1..s.samples.len()).filter(|&i| s.sync[i]) {
+            f.reset();
+            sw.reset();
+            let end = (k + 13).min(s.samples.len());
+            assert_eq!(run_av1(&mut f, &s.samples[k..end]), run_software(sw.as_mut(), &s.samples[k..end]), "{name} from sample {k}");
+        }
+    }
+    assert!(made > 0, "AV1 fixtures");
+}
+
+/// Damaged AV1 samples give errors, never a panic.
+#[test]
+fn av1_damaged_samples_are_errors() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some((name, enc)) = AV1_STREAMS.first() else { return };
+    let Some(path) = av1_fixture(&ff, name, enc) else { return };
+    let s = read_stream(&path);
+    let mut seed = 0x1234_5678_9ABC_DEF1u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for round in 0..40 {
+        let mut f = av1_front(&s);
+        for (i, (smp, p)) in s.samples.iter().enumerate() {
+            let mut m = smp.clone();
+            if i % 3 == round % 3 {
+                match next() % 3 {
+                    0 => m.truncate(next() as usize % m.len().max(1)),
+                    1 => {
+                        let at = next() as usize % m.len().max(1);
+                        if let Some(b) = m.get_mut(at) {
+                            *b ^= 1 << (next() % 8);
+                        }
+                    }
+                    _ => m.iter_mut().skip(2).take(6).for_each(|b| *b = next() as u8),
                 }
             }
             if f.decode(&m, *p).is_err() {

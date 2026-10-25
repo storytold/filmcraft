@@ -2234,6 +2234,7 @@ dependencies = [
 name = "filmcraft-platform"
 version = "0.13.0"
 dependencies = [
+ "filmcraft-av1",
  "filmcraft-bitstream",
  "filmcraft-codecs",
  "filmcraft-color",
