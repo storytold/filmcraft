@@ -68,9 +68,9 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   Generators write to a per-process/thread temporary name (`testkit::temp_path`) and rename it into
   place, so concurrent tests never see half-written files. Delete the directory to regenerate.
   Never commit media.
-- Every crate's `tests/common/mod.rs` delegates discovery and fixture paths to testkit, except
-  `crates/codecs/src/tests.rs`, which still has its own lookup (the crate was being edited
-  concurrently; migrate it when convenient).
+- Every crate's `tests/common/mod.rs` delegates discovery and fixture paths to testkit. The unit
+  tests in `crates/codecs/src/tests.rs` also use shared oracle discovery, but retain older local
+  fixture-generation and path helpers; migrate those separately when convenient.
 - `cargo xtask fixtures [crate…]` pre-generates the whole fixture matrix up front (useful before a
   parallel test run or on a fresh machine). It runs each crate's ignored `generate_fixtures` test —
   the same generators the oracle tests call — for `h264`, `hevc`, `isobmff`, `matroska`, `dnx`,
