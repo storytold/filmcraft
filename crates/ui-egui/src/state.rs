@@ -535,6 +535,8 @@ pub struct UiState {
     /// Sequence Settings dialog draft.
     #[serde(default)]
     pub sequence_settings: SequenceSettingsDraft,
+    /// File ▸ New ▸ Project….
+    pub new_project: NewProjectDraft,
     /// Set Transition Duration dialog draft (double-click a transition).
     #[serde(default)]
     pub transition_duration: TransitionDurationDraft,
@@ -796,11 +798,28 @@ impl Default for ProjectManagerDraft {
     }
 }
 
+fn pixel_aspect_from_file() -> String {
+    "file".into()
+}
+
 /// Colour dialogs: drafts are applied with one engine command on OK.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ColorDialog {
-    /// `clip.interpretFootage`: the media items and the chosen colour space id ("auto" = metadata).
-    Interpret { items: Vec<u64>, color_space: String },
+    /// `clip.interpretFootage`: the media items, the chosen colour space id ("auto" = metadata) and
+    /// the pixel aspect ratio to conform to ("file" = the file's, else "num:den").
+    Interpret {
+        items: Vec<u64>,
+        color_space: String,
+        #[serde(default = "pixel_aspect_from_file")]
+        pixel_aspect: String,
+        /// The user picked a pixel aspect choice: only then does OK send it, so changing just the
+        /// colour space keeps each selected item's own pixel aspect override.
+        #[serde(default)]
+        pixel_aspect_set: bool,
+        /// The same for the colour space: changing just the pixel aspect keeps each item's own.
+        #[serde(default)]
+        color_space_set: bool,
+    },
     /// `sequence.colorSettings`.
     Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
 }
@@ -870,6 +889,25 @@ pub struct SequenceSettingsDraft {
     pub fps_den: i64,
     pub width: u32,
     pub height: u32,
+    /// The pixel aspect ratio: Sequence Settings starts from the sequence's, New Sequence from the
+    /// chosen preset's; both send it when it changed (`pixelAspect`).
+    pub par: (u32, u32),
+    /// The Pixel Aspect Ratio list is on Custom: the ratio is typed as two numbers.
+    pub par_custom: bool,
+    /// The type of the audio tracks (`Standard`, `Mono`, `5.1`, `Adaptive`): New Sequence makes
+    /// them so, Save Preset keeps it.
+    pub track_type: String,
+    /// Save Preset: the name being typed (`None`: the name row is closed).
+    pub save_name: Option<String>,
+    /// Save Preset found a custom preset of that name: the row asks to replace it.
+    pub save_replace: bool,
+    /// Sequence Presets: the custom preset being renamed and the new name typed for it.
+    pub renaming: Option<(String, String)>,
+    /// Sequence Presets: the custom preset whose Delete asks for confirmation.
+    pub deleting: Option<String>,
+    /// New Sequence: the name of the chosen preset (`sequence.presets`), sent as `preset`; empty
+    /// when none was chosen.
+    pub preset: String,
     pub scale_motion: bool,
     pub drop_frame: bool,
     pub mix: String,
@@ -892,6 +930,14 @@ impl Default for SequenceSettingsDraft {
             fps_den: 1001,
             width: 1920,
             height: 1080,
+            par: (1, 1),
+            par_custom: false,
+            track_type: "Standard".into(),
+            save_name: None,
+            save_replace: false,
+            renaming: None,
+            deleting: None,
+            preset: String::new(),
             scale_motion: true,
             drop_frame: false,
             mix: "Stereo".into(),
@@ -902,6 +948,15 @@ impl Default for SequenceSettingsDraft {
             auto_tone_map: true,
         }
     }
+}
+
+/// The New Project dialog (File ▸ New ▸ Project…): the project's name and the preset of the
+/// sequence it starts with (built-in or custom; empty: none, an empty project).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NewProjectDraft {
+    pub name: String,
+    pub preset: String,
 }
 
 /// The Delete Tracks dialog (Sequence ▸ Delete Tracks…): per kind, whether to delete and which
@@ -1005,6 +1060,7 @@ impl Default for UiState {
             add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
             sequence_settings: SequenceSettingsDraft::default(),
+            new_project: NewProjectDraft::default(),
             transition_duration: TransitionDurationDraft::default(),
             gfx_edit: None,
             pen_points: vec![],

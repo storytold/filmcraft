@@ -47,6 +47,7 @@ pub mod remix;
 pub mod scene_detect;
 pub mod scopes;
 pub mod sequence_extras;
+pub mod sequence_presets;
 pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
@@ -480,6 +481,8 @@ pub struct Session {
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
     pub export_presets: export_tools::ExportPresetLibrary,
+    /// The user's custom sequence presets (persisted in the data directory).
+    pub sequence_presets: sequence_presets::SequencePresetLibrary,
     /// The export queue (session state, not saved with the project).
     pub export_queue: export_tools::ExportQueue,
     /// Exports run a batch at a time by [`Session::pump_jobs`] (hosts without threads: web).
@@ -582,6 +585,7 @@ impl Session {
             scene_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),
+            sequence_presets: Default::default(),
             export_queue: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
@@ -632,6 +636,7 @@ impl Session {
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
+        self.sequence_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
@@ -1352,6 +1357,8 @@ mod roll_linked_tests;
 mod scopes_tests;
 #[cfg(test)]
 mod sequence_inspect_tests;
+#[cfg(test)]
+mod sequence_presets_tests;
 #[cfg(test)]
 mod sequence_tabs_tests;
 #[cfg(test)]

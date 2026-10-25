@@ -87,7 +87,7 @@ fn a_failed_take_can_be_discarded_from_the_settings_dialog() {
     d.frames(4); // Allow the newly anchored window to settle before using its button rectangle.
     d.click("voiceover.discard");
     assert!(!d.harness.state().session.voiceover.recording(), "{}", d.harness.state().ui.status);
-    d.exec("file.newProject", json!({}));
+    d.exec("file.newProject", json!({"name": "Untitled"}));
     std::fs::remove_file(blocker).unwrap();
 }
 

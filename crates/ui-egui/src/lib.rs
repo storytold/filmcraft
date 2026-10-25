@@ -215,6 +215,8 @@ pub enum Dialog {
     AddTracks,
     /// Sequence ▸ Sequence Settings….
     SequenceSettings,
+    /// File ▸ New ▸ Project….
+    NewProject,
     /// Set Transition Duration (double-click a transition in the Timeline).
     TransitionDuration,
 }

@@ -517,6 +517,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             crate::panels::sequence_settings::open(app);
             return Ok(json!({"dialog": "sequenceSettings"}));
         }
+        // File ▸ New ▸ Project… (Cmd+Alt+N) asks for the name and the first sequence's preset;
+        // with a name (an agent) it makes the project directly
+        "file.newProject" if params.get("name").is_none() && params.get("sequencePreset").is_none() => {
+            crate::panels::new_project::open(app);
+            return Ok(json!({"dialog": "newProject"}));
+        }
         // File ▸ New ▸ Sequence… (Cmd+N) opens New Sequence; with params (a clip, an agent) it
         // makes the sequence directly
         "file.newSequence" if params.as_object().is_none_or(|m| m.is_empty()) => {

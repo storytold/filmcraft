@@ -170,8 +170,45 @@ no media outside its range, so there a kept In is moved to the subclip's first o
 the result's `sourceInClamped: [ids]` (present with `keepSourceIn`) names the clips it was moved for.
 
 **Colour** (`crates/engine/src/color.rs`): `sequence.colorSettings {workingSpace: rec709|rec2100-pq|
-rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace?: auto|<id>, pixelAspect?: [num, den]|file}`,
-`color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
+rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace?: auto|<id>, pixelAspect?: [num, den]|file}`
+(the named ratios are `filmcraft_project::STANDARD_PIXEL_ASPECTS`; the dialog's ids are
+`colorDialog.par.file` and `colorDialog.par.<num>x<den>`), `color.spaces`, `media.colorInfo {item}`
+(also `pixelAspect`, `pixelAspectOverride`, `pixelAspectLabel`). Sequences: `file.newSequence {preset?: <name>, …}` takes a named preset and
+`sequence.presets` lists them (`{group, name, width, height, fps, fpsNum, fpsDen, pixelAspect}`;
+the user's custom presets come last with `group: "Custom"`, `custom: true` and `dropFrame`,
+`fields`, `sampleRate`, `mix`, `video`, `audio`, `trackType`). `sequence.preset.save {name,
+replace?, sequence?, width?, height?, fps?, pixelAspect?, dropFrame?, fields?, sampleRate?, mix?,
+video?, audio?, trackType?}` saves a custom preset from a sequence's settings and track layout
+(`sequence`, else the active one, else the defaults) with any of the parameters over them;
+`sequence.preset.rename {name, to}` and `sequence.preset.delete {name}` change them. Custom presets
+are the user's, not the project's: they persist in `<data dir>/sequence-presets.json`, are not
+undoable, and their names are unique among custom and built-in presets (case-insensitively; a
+replaced preset keeps its name). `file.newSequence {preset}` takes a custom preset's tracks and
+audio too, and `file.newProject {name, sequencePreset?}` starts the project with a sequence made
+from any preset (File ▸ New ▸ Project… without a name opens a dialog for both: `newProject.name`,
+`newProject.preset` with `newProject.preset.option.<name>` / `.option.none`, `newProject.ok`,
+`newProject.cancel`). The New Sequence dialog's ids are `sequenceSettings.tab.presets`,
+`sequenceSettings.presetGroup.<group>` and `sequenceSettings.preset.<name>`; Save Preset (New
+Sequence and Sequence Settings) is `sequenceSettings.savePreset`, then `.savePreset.name`,
+`.savePreset.save`, `.savePreset.cancel` and `.savePreset.replace` for a taken name; custom presets
+have `sequenceSettings.presetRename.<name>` (then `.presetRename.text` / `.ok` / `.cancel`) and
+`sequenceSettings.presetDelete.<name>` (then `.presetDelete.confirm` / `.cancel`). `sequence.settings {pixelAspect: [num, den]}` and
+`file.newSequence {pixelAspect}` set the sequence's pixel aspect ratio (stored in lowest terms, at
+most 8:1 either way; one undo step); Sequence Settings' list is `sequenceSettings.par` with
+`sequenceSettings.par.option.<num>x<den>` and `.option.custom`, Custom's numbers
+`sequenceSettings.par.num` / `.par.den`. Anamorphic clips edit squeezed (Sequence From Clip keeps
+the clip's pixels) or desqueezed: `file.newSequenceFromClip {items?, desqueeze: true}` (menu File ▸
+New ▸ Desqueezed Sequence From Clip, `file.newDesqueezedSequenceFromClip`, enabled for a clip with
+non-square pixels) and `file.newSequence {fromItem, desqueeze: true}` (the Project panel's New
+Desqueezed Sequence From Clip) make a square-pixel sequence at the clip's display size, width x
+squeeze rounded to the nearest even width (6048 x 3402 at an exact 1.33 is 8044 x 3402, the
+`6K Anamorphic 1.33x desqueezed 8044x3402 <rate>` presets); both results' `desqueezed` says
+whether there was a squeeze. A subclip makes the sequence of its parent media and edits in with its
+own range. `sequence.settings` renames the sequence's preset after a picture change (size, rate,
+pixels) unless the preset still matches. Export settings' `pixelAspect` is `[num, den]` or
+`"matchSource"` (the default: the sequence's pixels); `null`, which older saved settings and presets
+hold, means square pixels. A clip whose display size misses the frame by less than a pixel is scaled to
+fill it exactly. LUTs: `lut.import {path, name?}`, `lut.list`,
 `lut.remove {id}`, `lut.export {lut, path, format?}`, `lumetri.setInputLut` / `lumetri.setLook
 {clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
 `lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`. Without

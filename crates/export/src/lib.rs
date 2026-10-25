@@ -303,6 +303,37 @@ pub enum H264Pass {
     Second(filmcraft_h264enc::PassStats),
 }
 
+/// [`ExportSettings::pixel_aspect`] on disk and over the wire: `[num, den]`, `"matchSource"`
+/// (None), or `null`, which older settings wrote for square pixels and still means them.
+mod pixel_aspect_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    const MATCH_SOURCE: &str = "matchSource";
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Saved {
+        Ratio((u32, u32)),
+        Name(String),
+    }
+
+    pub fn serialize<S: Serializer>(v: &Option<(u32, u32)>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(p) => p.serialize(s),
+            None => s.serialize_str(MATCH_SOURCE),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<(u32, u32)>, D::Error> {
+        match Option::<Saved>::deserialize(d)? {
+            None => Ok(Some((1, 1))),
+            Some(Saved::Ratio(p)) => Ok(Some(p)),
+            Some(Saved::Name(n)) if n == MATCH_SOURCE => Ok(None),
+            Some(Saved::Name(n)) => Err(serde::de::Error::custom(format!("pixelAspect must be [num, den] or \"{MATCH_SOURCE}\", not `{n}`"))),
+        }
+    }
+}
+
 /// Every Export-mode setting. Serialized in camelCase; every field is optional on input.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -364,7 +395,10 @@ pub struct ExportSettings {
     pub frame_rate: Option<FrameRate>,
     /// How the picture fills a frame of another aspect ratio.
     pub scaling: Scaling,
-    /// Pixel aspect ratio (None = square pixels). Signalled in the H.264 VUI.
+    /// Pixel aspect ratio (None = Match Source: the sequence's pixels). Signalled in the H.264
+    /// VUI. Saved as `[num, den]` or `"matchSource"`; a saved `null` (settings and presets from
+    /// before Match Source, when None meant square pixels) loads as square pixels.
+    #[serde(with = "pixel_aspect_serde")]
     pub pixel_aspect: Option<(u32, u32)>,
     pub field_order: FieldOrder,
     pub h264_profile: H264Profile,
@@ -633,6 +667,14 @@ impl ExportSettings {
         }
         if let Some((width, height)) = self.frame_size {
             filmcraft_project::validate_frame_size(width, height).map_err(ExportError::Unsupported)?;
+        }
+        if let Some((n, d)) = self.pixel_aspect
+            && filmcraft_project::checked_par((n, d)).is_none()
+        {
+            return Err(ExportError::Unsupported(format!(
+                "pixel aspect ratio {n}:{d}: both parts must be positive and the ratio at most {0}:1 either way",
+                filmcraft_project::MAX_PIXEL_ASPECT
+            )));
         }
         if let Some(rate) = self.frame_rate
             && (rate.num <= 0

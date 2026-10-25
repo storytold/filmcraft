@@ -485,8 +485,10 @@ const RATES: [(&str, FrameRate); 11] = [
     ("60", FrameRate::FPS_60),
 ];
 
-pub(crate) const PARS: [(&str, Option<(u32, u32)>); 6] = [
-    ("Square Pixels (1.0)", None),
+/// The Aspect list: Match Source (the sequence's pixels, shown with their ratio) and the named ratios.
+pub(crate) const PARS: [(&str, Option<(u32, u32)>); 7] = [
+    ("Match Source", None),
+    ("Square Pixels (1.0)", Some((1, 1))),
     ("D1/DV NTSC (0.9091)", Some((10, 11))),
     ("D1/DV PAL (1.0940)", Some((59, 54))),
     ("HD Anamorphic 1080 (1.333)", Some((4, 3))),
@@ -507,6 +509,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let has_captions = app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty());
     // an HDR sequence exports HDR (H.265 Main 10 where the hardware encoder has it) unless SDR is asked for
     let seq_hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
+    let seq_par = app.session.active_sequence().map_or((1, 1), |q| filmcraft_project::sane_par(q.settings.par));
     let all_presets = app.session.export_presets.all();
     let favs: Vec<String> = all_presets.iter().filter(|p| app.session.export_presets.is_favorite(&p.name)).map(|p| p.name.clone()).collect();
     let mut pick_folder = false;
@@ -595,7 +598,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.add_space(8.0);
         let s = &mut ex.settings;
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
-            video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
+            video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_par, seq_hdr);
         }
         if (s.has_audio()
             || !s.has_video()
@@ -687,7 +690,8 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
+#[allow(clippy::too_many_arguments)]
+fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_par: (u32, u32), seq_hdr: bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();
     row(ui, t, tl!("Frame Size"), |ui| {
@@ -726,9 +730,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     });
     row(ui, t, tl!("Aspect"), |ui| {
-        let cur = PARS.iter().find(|(_, p)| *p == s.pixel_aspect).map(|(l, _)| l.to_string()).unwrap_or_else(|| tl!("Custom").into());
-        let labels: Vec<(String, bool)> = PARS.iter().map(|(l, _)| (l.to_string(), true)).collect();
-        if let Some(i) = combo(ui, reg, "export.video.aspect", &cur, &labels, 220.0) {
+        // Match Source shows what the sequence's pixels are (4:3 for an anamorphic sequence)
+        let label = |l: &str, p: Option<(u32, u32)>| match p {
+            None => tlf!("Match Source ({par})", par = filmcraft_project::pixel_aspect_label(seq_par)),
+            Some(_) => l.to_string(),
+        };
+        let cur = PARS.iter().find(|(_, p)| *p == s.pixel_aspect).map(|(l, p)| label(l, *p)).unwrap_or_else(|| tl!("Custom").into());
+        let labels: Vec<(String, bool)> = PARS.iter().map(|(l, p)| (label(l, *p), true)).collect();
+        if let Some(i) = combo(ui, reg, "export.video.aspect", &cur, &labels, 260.0) {
             s.pixel_aspect = PARS[i].1;
         }
     });
