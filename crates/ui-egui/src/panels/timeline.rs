@@ -13,8 +13,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use filmcraft_engine::sequence_tools::{DuplicateFrames, duplicate_frames};
 use filmcraft_project::{ClipId, ItemId, MarkerId, Sequence, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, format_time};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, TimeRange, format_time};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -22,7 +23,7 @@ use crate::icons::{self, Icon};
 use crate::state::{ThumbnailMode, TimelineView, Tool};
 use crate::theme::Tokens;
 
-use super::timeline_hit::{EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer};
+use super::timeline_hit::{EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect};
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 
 const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
@@ -32,6 +33,20 @@ const DIVIDER_H: f32 = 5.0;
 const MASTER_H: f32 = 34.0;
 /// The selected gap between two clips (#648, #668).
 const GAP_FILL: Color32 = Color32::from_gray(224);
+/// Duplicate frame marker colors, one per master clip with duplicate frames in the order they
+/// appear in the sequence.
+const DUPLICATE_FRAME_COLORS: [Color32; filmcraft_engine::sequence_tools::DUPLICATE_FRAME_COLORS] = [
+    Color32::from_rgb(0xe8, 0x4a, 0x4a),
+    Color32::from_rgb(0x3d, 0x9b, 0xe9),
+    Color32::from_rgb(0x4c, 0xc2, 0x5a),
+    Color32::from_rgb(0xf2, 0xc2, 0x2e),
+    Color32::from_rgb(0xb0, 0x5c, 0xe0),
+    Color32::from_rgb(0xf0, 0x8a, 0x2c),
+    Color32::from_rgb(0x2c, 0xd4, 0xc8),
+    Color32::from_rgb(0xec, 0x5e, 0xb0),
+    Color32::from_rgb(0x9a, 0xcd, 0x32),
+    Color32::from_rgb(0xf5, 0xf5, 0xf5),
+];
 const SNAP_PX: f32 = 9.0;
 
 /// Waveform peaks are kept per audio stream: (item, index into the media's `audio_streams`).
@@ -62,6 +77,52 @@ pub struct TlState {
     zoom_anchor: Option<(f64, f32)>,
     /// The zoom (points a second) the video thumbnails are laid out at while the view is zooming (#1094).
     thumb_pps: Option<f64>,
+    /// Show Duplicate Frame Markers: the markers of a sequence, with the session revision, the
+    /// sequence and the project they were worked out for.
+    duplicates: Option<(DuplicatesKey, DuplicateMarkers)>,
+    /// The markers being worked out on a background thread, and where the thread leaves them.
+    duplicates_pending: Option<DuplicatesKey>,
+    duplicates_done: Arc<Mutex<Option<(DuplicatesKey, DuplicateMarkers)>>>,
+}
+
+/// (session revision, sequence, project address)
+type DuplicatesKey = (u64, ItemId, usize);
+type DuplicateMarkers = Arc<HashMap<ClipId, DuplicateFrames>>;
+
+/// The duplicate frame markers of sequence `seq_id`, worked out again on a background thread
+/// after the project changes: a long sequence takes too long for a frame. Until the new markers
+/// are ready, the last ones of the same sequence are shown.
+fn duplicate_markers(app: &mut FilmcraftApp, ctx: &egui::Context, seq_id: ItemId, seq: &Sequence) -> DuplicateMarkers {
+    let key = (app.session.revision, seq_id, Arc::as_ptr(&app.session.project) as usize);
+    let done = app.tl.duplicates_done.lock().unwrap_or_else(|e| e.into_inner()).take();
+    // a job that finishes after a newer one leaves the newer markers in place
+    if let Some((k, d)) = done
+        && app.tl.duplicates.as_ref().is_none_or(|(have, _)| *have != key)
+    {
+        app.tl.duplicates = Some((k, d));
+    }
+    match &app.tl.duplicates {
+        Some((k, d)) if *k == key => return d.clone(),
+        _ => {}
+    }
+    if app.tl.duplicates_pending != Some(key) {
+        app.tl.duplicates_pending = Some(key);
+        let (project, seq, slot, ctx) = (app.session.project.clone(), seq.clone(), app.tl.duplicates_done.clone(), ctx.clone());
+        let run = move || {
+            // a panic in the comparison must not take the app down: it leaves no markers
+            let d = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| duplicate_frames(&project, &seq))).unwrap_or_default();
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, Arc::new(d.into_iter().map(|d| (d.clip, d)).collect())));
+            ctx.request_repaint();
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(run);
+        #[cfg(target_arch = "wasm32")]
+        run();
+    }
+    match &app.tl.duplicates {
+        Some(((_, s, _), d)) if *s == seq_id => d.clone(),
+        _ => Arc::default(),
+    }
 }
 
 impl TlState {
@@ -74,6 +135,9 @@ impl TlState {
         self.seq_peak_keys = Default::default();
         self.seq_keys_seen.clear();
         self.peak_max.clear();
+        self.duplicates = None;
+        self.duplicates_pending = None;
+        self.duplicates_done = Default::default();
     }
 }
 
@@ -156,6 +220,15 @@ pub enum Drag {
         from: Tick,
         start: Tick,
         duration: Tick,
+    },
+    /// The work area bar dragged by an end (`edge`: that end moves) or its middle (the bar moves);
+    /// `start` / `end` are where it is shown now, committed on release.
+    WorkArea {
+        edge: Option<filmcraft_edit::Edge>,
+        /// As in [`Drag::Trim`].
+        from: Tick,
+        start: Tick,
+        end: Tick,
     },
     Pan {
         last: Pos2,
@@ -493,6 +566,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if copying {
         ctx.set_cursor_icon(CursorIcon::Copy);
     }
+    let duplicates = if app.session.state.show_duplicate_frame_markers { duplicate_markers(app, &ctx, seq_id, seq) } else { Arc::default() };
     for r in &rows {
         let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -527,6 +601,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             draw_clip(app, &ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate);
             if volume_line {
                 super::timeline_volume::paint(&p, body, it);
+            }
+            // Show Duplicate Frame Markers: a stripe along the bottom under each repeated frame,
+            // in the color of the clip's master clip
+            if let Some(d) = duplicates.get(&it.id) {
+                let col = DUPLICATE_FRAME_COLORS.get(d.color).or(DUPLICATE_FRAME_COLORS.last()).copied().unwrap_or(Color32::WHITE);
+                // kept inside the clip while a trim drag shortens it
+                let inside = p.with_clip_rect(body.intersect(p.clip_rect()));
+                paint_duplicate_stripes(app, &inside, &layout, &d.ranges, start - it.start, (body.max.y - 3.0, body.max.y), visible, col, it.id);
             }
             app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
             // a nest that runs past the end of its sequence's contents: that part is empty
@@ -793,6 +875,52 @@ fn paint_through_edit(p: &egui::Painter, x: f32, row: Rect) -> Rect {
     p.add(egui::Shape::convex_polygon(vec![pos2(x - w, cy - h), pos2(x, cy), pos2(x - w, cy + h)], col, Stroke::new(0.5, Color32::BLACK)));
     p.add(egui::Shape::convex_polygon(vec![pos2(x + w, cy - h), pos2(x + w, cy + h), pos2(x, cy)], col, Stroke::new(0.5, Color32::BLACK)));
     Rect::from_center_size(pos2(x, cy), vec2(2.0 * w + 2.0, 2.0 * h + 2.0))
+}
+
+/// The duplicate frame stripes of one clip, between `ys`: its `ranges` (timeline ranges in order)
+/// drawn `offset` later, as the clip is while it is dragged. Only the ranges in the `visible` time
+/// and inside the painter's clip rect are drawn, and ranges a point or less apart are drawn as
+/// one stripe; each stripe takes the automation id `timeline.duplicateFrames.<clip>.<n>`, `n`
+/// being its first range.
+#[allow(clippy::too_many_arguments)]
+fn paint_duplicate_stripes(
+    app: &mut FilmcraftApp,
+    p: &egui::Painter,
+    layout: &Layout,
+    ranges: &[TimeRange],
+    offset: Tick,
+    ys: (f32, f32),
+    visible: (Tick, Tick),
+    col: Color32,
+    clip: ClipId,
+) {
+    let first = ranges.partition_point(|r| r.end() + offset < visible.0);
+    let mut stripe: Option<(usize, f32, f32)> = None;
+    let flush = |app: &mut FilmcraftApp, s: (usize, f32, f32)| {
+        let r = Rect::from_min_max(pos2(s.1, ys.0), pos2(s.2.max(s.1 + 1.0), ys.1));
+        let shown = r.intersect(p.clip_rect());
+        if shown.width() > 0.0 && shown.height() > 0.0 {
+            p.rect_filled(r, 0.0, col);
+            app.auto.add(&format!("timeline.duplicateFrames.{}.{}", clip.0, s.0), shown, "Duplicate frames");
+        }
+    };
+    for (i, range) in ranges.iter().enumerate().skip(first) {
+        if range.start + offset > visible.1 {
+            break;
+        }
+        let (x0, x1) = (layout.x_of(range.start + offset), layout.x_of(range.end() + offset));
+        stripe = match stripe {
+            Some((n, a, b)) if x0 <= b + 1.0 => Some((n, a, b.max(x1))),
+            Some(s) => {
+                flush(app, s);
+                Some((i, x0, x1))
+            }
+            None => Some((i, x0, x1)),
+        };
+    }
+    if let Some(s) = stripe {
+        flush(app, s);
+    }
 }
 
 fn lighten(c: Color32, f: f32) -> Color32 {
@@ -1538,6 +1666,12 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
                 if c.changed() {
                     let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
                 }
+                let mut df = app.session.state.show_duplicate_frame_markers;
+                let c = ui.checkbox(&mut df, tl!("Show Duplicate Frame Markers"));
+                app.auto.add("timeline.settings.showDuplicateFrameMarkers", c.rect, "Show Duplicate Frame Markers");
+                if c.changed() {
+                    let _ = app.session.execute("sequence.showDuplicateFrameMarkers", json!({"on": df}));
+                }
                 ui.separator();
                 if ui.button(tl!("Expand All Tracks")).clicked() {
                     app.ui.timeline.video_track_h = 64.0;
@@ -1617,6 +1751,27 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         if ui.rect_contains_pointer(hit) {
             egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new(("rb", i)), egui::PopupAnchor::Pointer).show(|ui| {
                 ui.label(what);
+            });
+        }
+    }
+    // work area bar: between the markers row and the time labels, as dragged while a drag of it runs
+    let shown = match app.tl.drag {
+        Some(Drag::WorkArea { start, end, .. }) => Some(TimeRange::from_bounds(start, end)),
+        _ => seq.work_area,
+    };
+    if let Some(area) = shown {
+        let r = work_area_rect(layout, area);
+        clip.rect_filled(r, 1.0, t.text_dim);
+        for x in [r.min.x, r.max.x] {
+            clip.rect_filled(Rect::from_center_size(pos2(x, r.center().y), vec2(3.0, r.height() + 2.0)), 1.0, t.text);
+        }
+        app.auto.add("timeline.workArea", r.intersect(ruler), "Work Area Bar");
+        let fmt = |tick: Tick| format_time(tick, rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
+        if ui.rect_contains_pointer(r.expand2(vec2(EDGE_PX, 1.0)).intersect(ruler)) {
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new("work-area-tip"), egui::PopupAnchor::Pointer).show(|ui| {
+                ui.label(tlf!("Start: {tc}", tc = fmt(area.start)));
+                ui.label(tlf!("End: {tc}", tc = fmt(area.end())));
+                ui.label(tlf!("Duration: {tc}", tc = fmt(area.duration)));
             });
         }
     }
@@ -1835,6 +1990,7 @@ pub fn hit_json(app: &FilmcraftApp, pos: Pos2, mods: egui::Modifiers) -> Value {
     };
     match grab.hit() {
         Hit::Ruler => json!({"hit": "ruler", "time": t.0}),
+        Hit::WorkArea { edge } => json!({"hit": "workArea", "edge": edge.map(|e| format!("{e:?}")), "time": t.0}),
         Hit::Clip { track, clip, edge } => {
             json!({"hit": "clip", "track": track.0, "clip": clip.0, "edge": edge.map(|e| format!("{e:?}")), "kind": kind, "time": t.0})
         }
@@ -2348,6 +2504,8 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 (_, Grab::Edge { .. }) => CursorIcon::ResizeColumn,
                 (Tool::Selection, Grab::Other(Hit::Transition { edge: Some(_), .. })) => CursorIcon::ResizeColumn,
                 (Tool::Selection, Grab::Other(Hit::Transition { edge: None, .. })) => CursorIcon::Grab,
+                (_, Grab::Other(Hit::WorkArea { edge: Some(_) })) => CursorIcon::ResizeColumn,
+                (_, Grab::Other(Hit::WorkArea { edge: None })) => CursorIcon::Grab,
                 (_, Grab::Volume { .. }) if tool == Tool::Pen || mods.command => CursorIcon::Crosshair,
                 (_, Grab::Volume { .. }) => CursorIcon::ResizeVertical,
                 (Tool::Razor, Grab::Other(Hit::Clip { .. })) => CursorIcon::Crosshair,
@@ -2399,6 +2557,9 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 Some(Drag::Pan { last, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll })
             }
             (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
+            (_, Grab::Other(Hit::WorkArea { edge })) => {
+                seq.work_area.filter(|_| resp.drag_started()).map(|w| Drag::WorkArea { edge, from: t, start: w.start, end: w.end() })
+            }
             (Tool::Hand, _) => Some(Drag::Pan { last: p, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll }),
             (Tool::Zoom, _) => {
                 if resp.clicked() {
@@ -2654,7 +2815,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }),
             Drag::Roll { left, right, from, .. } => seq.find_item(left).map(|(_, l)| {
                 let target = snap(app, seq, layout, rate.snap_nearest(l.end() + (t_here - from)), &[left, right]);
-                Drag::Roll { left, right, delta: target - l.end(), from }
+                // stop where the roll on release stops: the media, a frame left in each clip and linked
+                // cuts
+                let delta = filmcraft_engine::commands::roll_delta(&app.session, left, right, target - l.end()).unwrap_or(target - l.end());
+                Drag::Roll { left, right, delta, from }
             }),
             Drag::Slip { clip, .. } => {
                 let start = resp.interact_pointer_pos().map(|_| ()).and(ctx.input(|i| i.pointer.press_origin()));
@@ -2672,6 +2836,21 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 });
                 let (start, duration) = span.unwrap_or((start, duration));
                 Some(Drag::Transition { id, edge, from, start, duration })
+            }
+            Drag::WorkArea { edge, from, start, end } => {
+                // the bar as it was at the press: the sequence keeps it until the release
+                let (s0, e0) = seq.work_area.map(|w| (w.start, w.end())).unwrap_or((start, end));
+                let fd = rate.frame_duration();
+                let delta = rate.snap_nearest(t_here - from);
+                let (start, end) = match edge {
+                    Some(filmcraft_edit::Edge::In) => (snap(app, seq, layout, rate.snap_nearest(s0 + delta), &[]).min(e0 - fd).max(Tick::ZERO), e0),
+                    Some(filmcraft_edit::Edge::Out) => (s0, snap(app, seq, layout, rate.snap_nearest(e0 + delta), &[]).max(s0 + fd)),
+                    None => {
+                        let d = delta.max(Tick::ZERO - s0);
+                        (s0 + d, e0 + d)
+                    }
+                };
+                Some(Drag::WorkArea { edge, from, start, end })
             }
             Drag::Volume(v) => Some(Drag::Volume(super::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
             Drag::Marquee { start, before, add, individual } => {
@@ -2745,6 +2924,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     let moved = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
                     moved.then(|| app.session.execute("sequence.setTransition", json!({"transition": id.0, "start": start.0, "duration": duration.0})))
                 }
+                Drag::WorkArea { start, end, .. } => {
+                    let moved = seq.work_area.is_some_and(|w| (w.start, w.end()) != (start, end));
+                    moved.then(|| app.session.execute("sequence.setWorkArea", json!({"start": start.0, "end": end.0})))
+                }
                 Drag::Marquee { start, before, add, individual } => {
                     app.session.state.selection = before;
                     // egui ends a drag on Escape: that cancels the box, as in the Project panel
@@ -2763,6 +2946,21 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
         } else {
             app.tl.drag = None;
+        }
+    }
+
+    // ---- double-click the work area bar: it spans the part of the sequence the ruler shows
+    if resp.double_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::WorkArea { .. } = hit(seq, layout, p)
+    {
+        let start = rate.snap_nearest(layout.tick_at(layout.content.min.x).max(Tick::ZERO));
+        let end = rate.snap_nearest(layout.tick_at(layout.content.max.x)).min(seq.duration());
+        // a ruler scrolled past the end of the sequence leaves the bar as it is
+        if end > start
+            && let Err(e) = app.session.execute("sequence.setWorkArea", json!({"start": start.0, "end": end.0}))
+        {
+            app.ui.status = e.to_string();
         }
     }
 

@@ -1227,16 +1227,28 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- textures
 
-    /// Upload a rendered frame into a named texture (only when the key changed).
+    /// Upload a rendered frame into a named texture (only when the key changed), opaque: the
+    /// picture over black.
     pub fn texture_for(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba) -> egui::TextureId {
+        self.upload_frame(ctx, name, key, img, false)
+    }
+
+    /// Like [`Self::texture_for`], keeping the frame's alpha, so what is painted under the
+    /// texture (the monitors' Transparency Grid) shows through its transparent areas.
+    pub fn texture_with_alpha(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba) -> egui::TextureId {
+        self.upload_frame(ctx, name, key, img, true)
+    }
+
+    fn upload_frame(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba, alpha: bool) -> egui::TextureId {
+        let image = || img.color_image(alpha);
         if let Some((k, tex)) = self.textures.get_mut(name) {
             if *k != key {
-                tex.set(egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.px), TextureOptions::LINEAR);
+                tex.set(image(), TextureOptions::LINEAR);
                 *k = key;
             }
             return tex.id();
         }
-        let tex = ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.px), TextureOptions::LINEAR);
+        let tex = ctx.load_texture(name, image(), TextureOptions::LINEAR);
         let id = tex.id();
         self.textures.insert(name.to_string(), (key, tex));
         id

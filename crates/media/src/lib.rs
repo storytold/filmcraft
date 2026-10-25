@@ -203,7 +203,7 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>, extra: &[Opener]) -> Result<Shar
     if wav::sniff(&bytes) {
         return Ok(Arc::new(wav::WavSource::parse(name, bytes)?));
     }
-    // APNG and animated GIF play as movies (#402); single-frame files fall through to the stills
+    // APNG, animated GIF, and animated WebP play as movies (#402); single-frame files fall through to the stills
     if let Some(r) = animated::open(name, &bytes) {
         return Ok(Arc::new(r?));
     }

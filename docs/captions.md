@@ -48,6 +48,7 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | `captions.move` | drag a caption in the timeline | `captions`, `delta` or `deltaFrames` |
 | `captions.duplicate` | ⌥-drag a caption in the timeline | `captions`, `delta` or `deltaFrames` — copies on the same tracks, overwriting what is there |
 | `captions.delete` | Edit ▸ Clear / Ripple Delete with captions selected | `captions`, `ripple` |
+| `edit.copy` / `edit.cut` / `edit.paste` / `edit.pasteInsert` | ⌘C / ⌘X / ⌘V / ⇧⌘V with only captions selected | captions paste at the playhead on the tracks they came from, overwriting (Paste Insert pushes later captions on); Paste places whichever of clips or captions was copied last |
 | `captions.select`, `captions.goTo` | click / number button | `captions`, `add` / `caption` |
 | `captions.setTrack` | caption track header (eye, lock) | `track`, `name`, `format`, `language`, `enabled`, `locked`, `syncLock` |
 | `captions.setStyle` | Text panel style strip | `track`, `size`, `color`, `background`, `backgroundColor`, `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |
@@ -71,7 +72,8 @@ also splits captions.
   split / merge / delete / export buttons, the list of segments with editable in/out timecodes
   and text (committed when the field loses focus; Arabic and Hebrew show in reading order and are
   edited in logical order while the field has focus), and the track style strip (size, colour, box,
-  alignment, position). Automation ids: `text.tab.Captions`, `text.captions.add|split|merge|delete|export|search|track`,
+  alignment, position). The list keeps the caption under the playhead in view (centred as the
+  playhead reaches it, not while a field is being edited). Automation ids: `text.tab.Captions`, `text.captions.add|split|merge|delete|export|search|track`,
   `text.captions.<id>.in|out|text|goto|row`, `text.captions.style.*`.
 
 ## Burn-in

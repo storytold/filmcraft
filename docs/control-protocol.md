@@ -56,7 +56,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.drag` | `{from, to, steps, modifiers}` | press–move–release; `steps` is an integer 0–1024 (default 12; 0 or 1 uses 2 steps) |
 | `ui.scroll` | `{id|x,y, dx, dy, modifiers}` | wheel / trackpad |
 | `ui.key` / `ui.type` | `{key}` (`Cmd+K`, `Space`…; off macOS `Ctrl+K` is the same key) / `{text}` | keyboard |
-| `ui.timeline.hit` / `ui.timeline.locate` | `{x,y,modifiers?}` / `{clip, edge?}` | timeline hit-testing. `hit` reports a clip's `edge` (`In`/`Out`) within 7 px of it (a third of a narrow clip); just left of a cut that is the left clip's Out, from the cut rightwards the right clip's In. `kind` is the trim a press of the current tool with `modifiers` starts there (`trim`, `ripple`, `roll`, `rateStretch`, `remix`), `volume` on an audio clip's Volume line (Selection and Pen tools), or null |
+| `ui.timeline.hit` / `ui.timeline.locate` | `{x,y,modifiers?}` / `{clip, edge?}` | timeline hit-testing. `hit` reports a clip's `edge` (`In`/`Out`) within 7 px of it (a third of a narrow clip); just left of a cut that is the left clip's Out, from the cut rightwards the right clip's In. `kind` is the trim a press of the current tool with `modifiers` starts there (`trim`, `ripple`, `roll`, `rateStretch`, `remix`), `volume` on an audio clip's Volume line (Selection and Pen tools), or null. On the ruler it reports `ruler`, or `workArea` with the bar's `edge` on the work area bar |
 | `ui.playback` | `{action: play|stop|toggle, speed?}` | |
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `app.quit` | `{width,height}` / `{}` | resize or close the native window; `app.quit` quits without the save prompt (unsaved changes stay in the recovery journal), while the command `app.quit` asks first |
@@ -150,7 +150,12 @@ the new clips as `copied`, they are selected, and copies of linked clips are lin
 
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
-it shows. Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle
+it shows. With Linked Selection on, selecting an edge includes its unlocked linked partners, even
+on untargeted tracks; `add: true` (Shift-click) toggles the group. Regular/ripple trims select the
+corresponding In/Out edges. Rolls include only matching linked cuts at the same time, leaving split
+audio cuts separate. Each linked group moves once and shares its tightest trim limit; turning
+Linked Selection off allows individual edges to be selected and edited.
+Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 

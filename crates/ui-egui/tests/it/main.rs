@@ -1,5 +1,7 @@
 mod audio51_ui;
 mod audio_fx_editor_ui;
+mod caption_copy_paste_ui;
+mod caption_list_follow_ui;
 mod caption_option_drag_ui;
 mod caption_properties_ui;
 mod caption_razor_ui;
@@ -67,6 +69,7 @@ mod timeline_tabs_ui;
 mod timeline_track_height_ui;
 mod timeline_transition_move_ui;
 mod timeline_trim_ui;
+mod timeline_work_area_ui;
 mod track_color_ui;
 mod track_select_drag_ui;
 mod transcript_ui;

@@ -243,6 +243,22 @@ impl History {
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
+    /// The History panel's Delete Redoable Actions: removes every step that Redo would bring
+    /// back. The project and the undo steps stay as they are. Returns how many steps were removed.
+    pub fn delete_redoable(&mut self) -> usize {
+        let n = self.redo.len();
+        self.redo.clear();
+        n
+    }
+    /// The History panel's Clear History: removes every undo and redo step. The project stays as
+    /// it is. Returns how many steps were removed.
+    pub fn clear(&mut self) -> usize {
+        let n = self.undo.len() + self.redo.len();
+        self.undo.clear();
+        self.redo.clear();
+        self.merge_key = None;
+        n
+    }
 }
 
 /// Source patching / track targeting (the track header "V1/A1" source buttons + target toggles).
@@ -370,6 +386,10 @@ pub struct EditorState {
     /// Sequence ▸ Show Through Edits: the timeline marks cuts between continuous pieces of a clip.
     #[serde(default)]
     pub show_through_edits: bool,
+    /// Timeline Display Settings ▸ Show Duplicate Frame Markers: a stripe along the bottom of a
+    /// clip under the media frames another clip also shows.
+    #[serde(default)]
+    pub show_duplicate_frame_markers: bool,
     /// Markers ▸ Ripple Sequence Markers: ripple edits move (and delete) sequence markers too.
     #[serde(default)]
     pub ripple_sequence_markers: bool,
@@ -382,6 +402,11 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// Captions copied from the Timeline, with their caption track's index (starts relative to the
+    /// copied range). Copying clips empties it and copying captions empties `clipboard`, so Paste
+    /// places whichever was copied last.
+    #[serde(skip)]
+    pub caption_clipboard: Vec<(usize, filmcraft_project::Caption)>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,
@@ -1261,6 +1286,8 @@ mod file_tests;
 #[cfg(test)]
 mod gap_selection_tests;
 #[cfg(test)]
+mod history_tests;
+#[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]
 mod individual_selection_tests;
@@ -1350,6 +1377,8 @@ mod trim_tests;
 mod vfx_tests;
 #[cfg(test)]
 mod voiceover_tests;
+#[cfg(test)]
+mod work_area_tests;
 
 #[cfg(test)]
 mod source_placement_tests;
