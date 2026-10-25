@@ -344,3 +344,81 @@ fn transition_timeline_in_effect_controls() {
     assert!(ph.is_some_and(|p| p > c.cut), "{ph:?}");
     assert!(d.find("effectControls.transition.timeline.playhead").is_some(), "the playhead shows in the transition's timeline");
 }
+
+/// Dragging the cut line over the transition in Effect Controls moves the cut and the transition
+/// together: the clips' In and Out points change, the sequence keeps its length, and the drag is
+/// one undo step.
+#[test]
+fn dragging_the_cut_in_effect_controls_moves_it_with_the_transition() {
+    let mut d = Driver::demo();
+    let c = d.crossing();
+    let frame = frame_ticks(d.rate());
+    d.click(&format!("timeline.transition.{}", c.id));
+    let x = d.transition(c.id).unwrap();
+    let (from, to) = (x["from"].as_u64().unwrap(), x["to"].as_u64().unwrap());
+    // (start, duration, source in) of a clip
+    let clip = |d: &mut Driver, id: u64| {
+        let q = d.exec("sequence.inspect", json!({}));
+        let it = q["video"].as_array().unwrap().iter().flat_map(|t| t["items"].as_array().unwrap().clone()).find(|i| i["clip"] == id).unwrap();
+        (it["start"].as_i64().unwrap(), it["duration"].as_i64().unwrap(), it["sourceIn"].clone())
+    };
+    let (a0, b0) = (clip(&mut d, from), clip(&mut d, to));
+    let (x0, y0, w, h, _) = d.find("effectControls.transition.timeline.cut").expect("the cut line over the transition");
+    let (cx, cy) = (x0 + w / 2.0, y0 + h / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + 20.0, "y": cy}, "steps": 8}));
+    d.frames(3);
+    let (a1, b1) = (clip(&mut d, from), clip(&mut d, to));
+    let moved = b1.0 - b0.0;
+    assert!(moved > 0, "the cut moved right: {b0:?} -> {b1:?}");
+    assert_eq!(moved % frame, 0, "by whole frames");
+    assert_eq!((a1.0, a1.1), (a0.0, a0.1 + moved), "the first clip ends at the new cut");
+    assert_eq!(b1.0 + b1.1, b0.0 + b0.1, "the second clip still ends where it did");
+    assert_ne!(b1.2, b0.2, "the second clip starts later in its media");
+    let x1 = d.transition(c.id).unwrap();
+    assert_eq!((x1["start"].as_i64(), x1["duration"].as_i64()), (Some(c.start + moved), Some(c.duration)), "the transition moved with the cut");
+    assert_eq!(x1["align"], json!("center"), "still centered on its cut");
+    // one undo step
+    d.exec("edit.undo", json!({}));
+    assert_eq!((clip(&mut d, from), clip(&mut d, to)), (a0, b0));
+    let back = d.transition(c.id).unwrap();
+    assert_eq!((back["start"].as_i64(), back["duration"].as_i64()), (Some(c.start), Some(c.duration)));
+}
+
+/// With Start at Cut the cut is at the transition's edge, where a press over the transition grabs
+/// its In end, so the cut line is grabbed where it crosses clip A. A drag past what the clips
+/// allow stops where `timeline.roll` stops.
+#[test]
+fn the_cut_is_grabbed_over_the_clips_and_stops_at_the_rolls_limit() {
+    let mut d = Driver::demo();
+    let c = d.crossing();
+    d.click(&format!("timeline.transition.{}", c.id));
+    let x = d.transition(c.id).unwrap();
+    let (from, to) = (x["from"].as_u64().unwrap(), x["to"].as_u64().unwrap());
+    d.exec("sequence.setTransition", json!({"transition": c.id, "align": "start"}));
+    d.frames(3);
+    let cut_of = |d: &mut Driver| {
+        let q = d.exec("sequence.inspect", json!({}));
+        q["video"].as_array().unwrap().iter().flat_map(|t| t["items"].as_array().unwrap().clone()).find(|i| i["clip"] == to).unwrap()["start"].as_i64().unwrap()
+    };
+    let start_of = |d: &mut Driver| d.transition(c.id).unwrap()["start"].as_i64().unwrap();
+    let drag_cut = |d: &mut Driver, by: f64| {
+        let (x0, y0, w, h, _) = d.find("effectControls.transition.timeline.cut.a").expect("the cut line over clip A");
+        let (cx, cy) = (x0 + w / 2.0, y0 + h / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + by, "y": cy}, "steps": 8}));
+        d.frames(3);
+    };
+    let (cut0, start0) = (cut_of(&mut d), start_of(&mut d));
+    assert_eq!(start0, cut0, "Start at Cut");
+    drag_cut(&mut d, 20.0);
+    let (cut1, start1) = (cut_of(&mut d), start_of(&mut d));
+    let moved = cut1 - cut0;
+    assert!(moved > 0, "the cut moved right: {cut0} -> {cut1}");
+    assert_eq!(start1, cut1, "the transition still starts at the cut");
+    // far to the right: the cut stops at the roll's limit
+    let far = filmcraft_time::Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+    let limit =
+        filmcraft_engine::commands::roll_delta(&d.harness.state().session, filmcraft_project::ClipId(from), filmcraft_project::ClipId(to), far).unwrap();
+    assert!(0 < limit.0 && limit < far, "the roll has a limit: {limit:?}");
+    drag_cut(&mut d, limit.0 as f64 / moved as f64 * 20.0 + 200.0);
+    assert_eq!(cut_of(&mut d), cut1 + limit.0, "stopped at the limit");
+}

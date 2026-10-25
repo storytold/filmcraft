@@ -414,11 +414,14 @@ fn rename_field(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, item: Option
         return false;
     }
     let mut text = rn.text;
-    let id = egui::Id::new(("rename-field", pre, item, bin));
-    let resp = ui.put(r, egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(font(app))).margin(vec2(3.0, 1.0)));
+    let id = egui::Id::unique(("rename-field", pre, item, bin));
+    let resp = crate::widgets::accessible_name(
+        ui.put(r, egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(font(app))).margin(vec2(3.0, 1.0))),
+        "Rename",
+    );
     app.auto.add(&format!("{pre}.rename"), r, "Rename");
     // take keyboard focus the first frame the field is shown
-    let shown = egui::Id::new("project-rename-shown");
+    let shown = egui::Id::unique("project-rename-shown");
     if ui.ctx().data(|d| d.get_temp::<egui::Id>(shown)) != Some(id) {
         ui.ctx().data_mut(|d| d.insert_temp(shown, id));
         resp.request_focus();
@@ -444,7 +447,7 @@ fn rename_field(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, item: Option
 /// A second click on the name of the only selected item starts renaming it (after the
 /// double-click interval, so a double-click still opens it).
 fn slow_click_rename(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, name_rect: Rect, id: ItemId, was_selected: bool) {
-    let key = egui::Id::new("project-rename-pending");
+    let key = egui::Id::unique("project-rename-pending");
     let now = ui.input(|i| i.time);
     if resp.double_clicked() {
         ui.ctx().data_mut(|d| d.remove::<(u64, f64)>(key));
@@ -513,13 +516,13 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
     let hp = ui.painter().with_clip_rect(hr.intersect(ui.clip_rect()));
     hp.rect_filled(hr, 0.0, t.panel_bg);
     hp.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, t.separator));
-    let mut x = rect.min.x + LEAD - out.state.offset.x;
+    let mut x = rect.min.x + LEAD - out.state.clamped_offset().x;
     let sort = app.session.prefs.project_panel.view.sort.clone();
     for (i, c) in lc.cols.iter().enumerate() {
         let cr = Rect::from_min_size(pos2(x, hr.min.y), vec2(c.width, header_h));
         let vis = cr.intersect(hr);
         if vis.width() > 1.0 {
-            let id = egui::Id::new((&v.prefix, "col", &c.name));
+            let id = egui::Id::unique((&v.prefix, "col", &c.name));
             let resp = ui.interact(vis, id, Sense::click()).on_hover_text(crate::i18n::t(&c.name));
             app.auto.add(&format!("{}.list.header.{}", v.prefix, c.name), vis, &c.name);
             if resp.hovered() {
@@ -551,7 +554,7 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
         // resize handle on the column's right edge
         let hr2 = Rect::from_center_size(pos2(cr.max.x, hr.center().y), vec2(8.0, header_h));
         if hr2.intersects(hr) {
-            let id = egui::Id::new((&v.prefix, "colsize", &c.name));
+            let id = egui::Id::unique((&v.prefix, "colsize", &c.name));
             let resp = ui.interact(hr2.intersect(hr), id, Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeColumn);
             app.auto.add(&format!("{}.list.resize.{}", v.prefix, c.name), hr2.intersect(hr), "Resize column");
             hp.line_segment([pos2(cr.max.x, hr.min.y + 4.0), pos2(cr.max.x, hr.max.y - 4.0)], Stroke::new(1.0, t.separator));
@@ -574,7 +577,7 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
 /// sit on top). Starts the frame's [`note_hit`] list.
 fn background(ui: &egui::Ui, v: &View) -> egui::Response {
     ui.data_mut(|d| d.remove::<Vec<(u64, Rect)>>(hits_id(v)));
-    ui.interact(ui.clip_rect(), egui::Id::new((&v.prefix, "background")), Sense::click_and_drag())
+    ui.interact(ui.clip_rect(), egui::Id::unique((&v.prefix, "background")), Sense::click_and_drag())
 }
 
 /// Empty space under the rows / cards, and the gaps between them (`bg`): click deselects,
@@ -598,7 +601,7 @@ fn empty_space(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bg: &egui::R
 }
 
 fn hits_id(v: &View) -> egui::Id {
-    egui::Id::new((&v.prefix, "marquee-hits"))
+    egui::Id::unique((&v.prefix, "marquee-hits"))
 }
 
 /// Remember where an item's row or card was drawn this frame, for [`marquee`].
@@ -612,7 +615,7 @@ fn note_hit(ui: &egui::Ui, v: &View, id: ItemId, r: Rect) {
 fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response, origin: egui::Pos2, actions: &mut Actions) {
     // (press point relative to `origin`, selection when the drag began, adds to it)
     type Drag = (egui::Vec2, Vec<u64>, bool);
-    let key = egui::Id::new((&v.prefix, "marquee"));
+    let key = egui::Id::unique((&v.prefix, "marquee"));
     let hits: Vec<(u64, Rect)> = ui.data_mut(|d| d.remove_temp(hits_id(v))).unwrap_or_default();
     let current: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
     // the left button only: right-click opens the menu, the middle button is not a selection
@@ -824,7 +827,7 @@ fn hover_time(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, r: R
 fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &str, show_name: bool, show_dur: bool, sense: Sense) -> Option<egui::Response> {
     let t = app.tokens;
     let it = app.session.project.item(id).cloned()?;
-    let resp = ui.interact(r.expand(2.0), egui::Id::new((pre, "card", id.0)), sense);
+    let resp = ui.interact(r.expand(2.0), egui::Id::unique((pre, "card", id.0)), sense);
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
     let selected = app.session.state.project_selection.contains(&id);
     let card_bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
@@ -912,7 +915,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
 fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &View, actions: &mut Actions) {
     let t = app.tokens;
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
-    let resp = ui.interact(r.expand(2.0), egui::Id::new((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
+    let resp = ui.interact(r.expand(2.0), egui::Id::unique((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
     let selected = app.ui.project_panel.selected_bin == Some(b.id.0);
     let bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
     ui.painter().rect_filled(bg, 4.0, if selected { t.tl_header_bg } else { t.panel_bg });
@@ -1000,7 +1003,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
     let opts = app.session.prefs.project_panel.freeform.clone();
     let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, rect.width());
     cards.retain(|c| matches_filter(app, ItemId(c.item), filter));
-    let drag_key = egui::Id::new((&v.prefix, "ff-drag"));
+    let drag_key = egui::Id::unique((&v.prefix, "ff-drag"));
     // (dragged item, offset so far)
     let dragging: Option<(u64, egui::Vec2)> = ui.ctx().data(|d| d.get_temp(drag_key));
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();

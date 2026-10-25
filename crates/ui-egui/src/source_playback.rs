@@ -198,6 +198,8 @@ impl FilmcraftApp {
         }
     }
 
+    /// Advance Source audition playback while playing; stop on a missing or unavailable item or a failure, and re-anchor when the Source playhead is moved
+    /// externally.
     pub(crate) fn advance_source_playback(&mut self, ctx: &egui::Context) {
         if !self.source_playback.clock.playing {
             return;
@@ -213,7 +215,7 @@ impl FilmcraftApp {
             self.ui.status = error;
             return;
         }
-        let now = ctx.input(|i| i.time);
+        let now = self.now();
         let time = self.session.state.source_playhead;
         if time != self.source_playback.shown {
             self.source_playback.clock.anchor_tick = time;
@@ -257,7 +259,7 @@ impl FilmcraftApp {
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
-            self.ui.status = "Source audio output stopped responding: playing without sound (check Settings ▸ Audio Hardware)".into();
+            self.ui.status = "Source audio output stopped responding: playing without sound (check Settings > Audio Hardware)".into();
         }
         let elapsed = match reading {
             Some((frames, sr)) if clock.audio_clock && sr > 0 => frames as f64 / f64::from(sr),

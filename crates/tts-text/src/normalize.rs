@@ -458,7 +458,7 @@ fn digit_run(s: &str, start: usize, max: usize) -> Option<usize> {
 fn time_words(h: u32, m: u32) -> Vec<Token> {
     let mut out = vec![Token::Word(english_cardinal(u64::from(h)).join(" "))];
     if m == 0 {
-        out.push(Token::Word("zero".into()));
+        // On the hour: the hour alone ("nine p m"), no minutes spoken.
     } else if m < 10 {
         out.push(Token::Word("oh".into()));
         out.push(Token::Word(english_digit_word(digit_char(m)).into()));
@@ -1367,7 +1367,9 @@ mod tests {
         assert_eq!(words("23:59", Lang::EnUs), "twenty-three fifty-nine");
         assert_eq!(words("3:30pm", Lang::EnUs), "three thirty p m");
         assert_eq!(words("3:30 p.m.", Lang::EnUs), "three thirty p m");
-        assert_eq!(words("9:00 a.m.", Lang::EnUs), "nine zero A m");
+        assert_eq!(words("9:00 a.m.", Lang::EnUs), "nine A m");
+        assert_eq!(words("9:00 PM", Lang::EnUs), "nine p m");
+        assert_eq!(words("12:00", Lang::EnUs), "twelve");
     }
 
     #[test]

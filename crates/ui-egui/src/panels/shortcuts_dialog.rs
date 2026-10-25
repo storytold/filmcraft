@@ -150,8 +150,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut close: Option<bool> = None; // Some(true) = OK, Some(false) = Cancel
     let mut open = true;
     egui::Window::new(tl!("Keyboard Shortcuts"))
-        .id(egui::Id::new("Keyboard Shortcuts"))
-        .id(egui::Id::new("keyboard-shortcuts"))
+        .id(egui::Id::unique("Keyboard Shortcuts"))
+        .id(egui::Id::unique("keyboard-shortcuts"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -262,7 +262,7 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     if let Some(mut name) = app.shortcut_editor.save_name.clone() {
         ui.horizontal(|ui| {
             ui.label(RichText::new(tl!("Save preset as:")).size(13.0).color(t.text_dim));
-            let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0));
+            let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0)), "Preset name");
             app.auto.add("shortcuts.saveAs.name", r.rect, "Preset name");
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if small_button(app, ui, "shortcuts.saveAs.ok", tl!("Save"), !name.trim().is_empty()) || enter {
@@ -483,7 +483,7 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
             (true, true) => format!("shortcuts.mod.{}.right", &name[1..]),
             _ => format!("shortcuts.key.{name}"),
         };
-        let resp = ui.interact(r, egui::Id::new(&id), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(&id), Sense::click());
         let p = ui.painter();
         let base = if is_mod {
             if mod_on { MOD_KEY } else { FREE_KEY.gamma_multiply(0.8) }
@@ -594,7 +594,10 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
     let plat = Platform::current();
     ui.horizontal(|ui| {
         let mut q = app.shortcut_editor.search.clone();
-        let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(tl!("Search commands or keys")).desired_width(320.0));
+        let r = crate::widgets::accessible_name(
+            ui.add(egui::TextEdit::singleline(&mut q).hint_text(tl!("Search commands or keys")).desired_width(320.0)),
+            "Search commands or keys",
+        );
         app.auto.add("shortcuts.search", r.rect, "Search");
         app.shortcut_editor.search = q;
         if let Some(sel) = app.shortcut_editor.selected.clone() {
@@ -664,7 +667,7 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                     .collect::<Vec<_>>()
                     .join(",  ")
             };
-            let cresp = ui.interact(cell, egui::Id::new(("shortcut-cell", &id)), Sense::click());
+            let cresp = ui.interact(cell, egui::Id::unique(("shortcut-cell", &id)), Sense::click());
             if recording {
                 ui.painter().rect(cell, 3.0, t.field_bg, Stroke::new(1.5, t.accent), StrokeKind::Inside);
             } else if cresp.hovered() {
@@ -677,7 +680,7 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                 app.shortcut_editor.recording = Some((id.clone(), false));
             }
             let plus = Rect::from_min_size(pos2(r.max.x - 30.0, r.min.y + 3.0), vec2(20.0, 20.0));
-            let presp = ui.interact(plus, egui::Id::new(("shortcut-add", &id)), Sense::click()).on_hover_text(tl!("Add another shortcut"));
+            let presp = ui.interact(plus, egui::Id::unique(("shortcut-add", &id)), Sense::click()).on_hover_text(tl!("Add another shortcut"));
             ui.painter().text(
                 plus.center(),
                 Align2::CENTER_CENTER,

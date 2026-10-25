@@ -939,13 +939,16 @@ mod tests {
     #[test]
     fn japanese_vertical_titles_with_an_installed_font() {
         // Japanese glyphs come from the craft-fonts (built with CRAFT_FONTS_DIR) or a system font:
-        // skip where neither is present.
+        // skip where neither is present. `covers_text` probes a face without keeping its file:
+        // `has_char` over every installed face would load each font file (a CJK collection once
+        // per face in it) and keep them all, gigabytes on a machine with Noto CJK installed.
         crate::fonts::scan_system();
-        if !crate::fonts::all_faces().iter().any(|f| "日本語縦書き".chars().all(|c| f.has_char(c))) {
+        let Some(face) = crate::fonts::all_faces().into_iter().find(|f| f.covers_text("日本語縦書き")) else {
             eprintln!("SKIPPED: no Japanese font installed");
             return;
-        }
-        let l = layout("日本語\n縦書き", &st(40.0), &ParagraphStyle { vertical: true, ..Default::default() });
+        };
+        let style = TextStyle { family: face.info.family.clone(), style: face.info.style.clone(), ..st(40.0) };
+        let l = layout("日本語\n縦書き", &style, &ParagraphStyle { vertical: true, ..Default::default() });
         assert!(l.vertical);
         assert_eq!(l.glyphs.len(), 6);
         assert!(l.glyphs.iter().all(|g| g.id != 0));

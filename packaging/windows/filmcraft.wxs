@@ -7,6 +7,9 @@
   Per-machine install into Program Files and a Start Menu shortcut. No file associations.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?ifndef HasCraftFontLicences ?>
+  <?define HasCraftFontLicences=0 ?>
+  <?endif ?>
   <Package
       Name="FilmCraft"
       Manufacturer="Learning Machines LLC"
@@ -34,13 +37,22 @@
     <StandardDirectory Id="ProgramMenuFolder" />
 
     <Feature Id="Main" Title="FilmCraft" Level="1">
+      <?if $(var.HasCraftFontLicences) = 1 ?>
+      <ComponentGroupRef Id="CraftFontLicences" />
+      <?endif ?>
       <ComponentGroupRef Id="FilmcraftFiles" />
     </Feature>
   </Package>
 
   <Fragment>
+    <?if $(var.HasCraftFontLicences) = 1 ?>
+    <ComponentGroup Id="CraftFontLicences" Directory="INSTALLFOLDER">
+      <Files Include="$(var.DocsDir)\**" />
+    </ComponentGroup>
+    <?endif ?>
     <ComponentGroup Id="FilmcraftFiles" Directory="INSTALLFOLDER">
       <Component Id="FilmcraftApp" Guid="15933017-925B-4963-8992-52000EB26AAA">
+        <File Id="FilmcraftNotice" Source="$(var.BinDir)\NOTICE" KeyPath="no" />
         <File Id="FilmcraftExe" Source="$(var.BinDir)\filmcraft.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="FilmCraft"
               Description="FilmCraft video editor" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
