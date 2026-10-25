@@ -2956,6 +2956,7 @@
 	Quick Export: {path}	快速导出：{path}
 	Graphics problem: switched to software compositing	图形问题：已切换至软件合成
 	Exporting	正在导出
+	Importing	正在导入
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	单击以选择，或在空白处单击并拖动以框选。使用 Shift、Opt 和 Cmd 进行其他操作。
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	单击以选择所有轨道中右侧的剪辑。Shift-单击选择单个轨道。
 	Click to select all clips to the left in all tracks. Shift-click for a single track.	单击以选择所有轨道中左侧的剪辑。Shift-单击选择单个轨道。

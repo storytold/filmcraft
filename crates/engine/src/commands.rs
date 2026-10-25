@@ -716,6 +716,115 @@ pub fn import_bytes(s: &mut Session, path: &str, bytes: std::sync::Arc<[u8]>, bi
 
 /// Import a media file through the host's random-access reader ([`crate::Services::reader`]):
 /// only the container index is read now (web `Blob`s are never copied whole for containers).
+/// A media file opened ahead of its import: its source and identity, or why either failed.
+pub(crate) type Prefetched = Result<(filmcraft_media::SharedSource, filmcraft_project::MediaIdentity)>;
+
+/// Most media files opened at once by [`open_concurrently`].
+#[cfg(not(target_arch = "wasm32"))]
+const PREFETCH_THREADS: usize = 8;
+
+/// Open `paths` (streamed media files) several at a time, at most [`PREFETCH_THREADS`], handing
+/// each one's source and identity, or its error, to `done` as it finishes. Each open runs under
+/// `catch_unwind`. Once `cancel` is set no further file is opened.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn open_concurrently(
+    media: &crate::media_pool::MediaPool,
+    services: &dyn crate::Services,
+    paths: &[String],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    done: &(dyn Fn(&str, Prefetched) + Sync),
+) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = PREFETCH_THREADS.min(std::thread::available_parallelism().map_or(2, |n| n.get())).min(paths.len()).max(1);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                while !cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(path) = paths.get(i) else { break };
+                    let one = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Prefetched {
+                        let identity = crate::relink::identity_of(services, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+                        let src = media.open_file(path, services)?;
+                        Ok((src, identity))
+                    }))
+                    .unwrap_or_else(|_| Err(EngineError::Other(format!("{path}: internal error while opening (see the crash log)"))));
+                    done(path, one);
+                }
+            });
+        }
+    });
+}
+/// Without threads (the web build) the files open one after another.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn open_concurrently(
+    media: &crate::media_pool::MediaPool,
+    services: &dyn crate::Services,
+    paths: &[String],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    done: &(dyn Fn(&str, Prefetched) + Sync),
+) {
+    for path in paths {
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            break;
+        }
+        let one = crate::relink::identity_of(services, path)
+            .map_err(|e| EngineError::Other(format!("{path}: {e}")))
+            .and_then(|identity| media.open_file(path, services).map(|src| (src, identity)).map_err(EngineError::from));
+        done(path, one);
+    }
+}
+
+/// A media file `file.import` can open through the host's reader (no whole-file read).
+fn streamed_media(s: &Session, path: &str) -> bool {
+    filmcraft_media::is_importable(std::path::Path::new(path)) && s.services.reader(path).is_some()
+}
+
+/// Open the streamed media files among `paths` concurrently, for [`import_prefetched`]. One path,
+/// or a build without threads, opens nothing ahead.
+fn prefetch_sources(s: &Session, paths: &[String]) -> std::collections::HashMap<String, Prefetched> {
+    let todo: Vec<String> = paths.iter().filter(|p| streamed_media(s, p)).cloned().collect();
+    if todo.len() < 2 || cfg!(target_arch = "wasm32") {
+        return std::collections::HashMap::new();
+    }
+    let out = std::sync::Mutex::new(std::collections::HashMap::new());
+    open_concurrently(&s.media, &*s.services, &todo, None, &|path: &str, r: Prefetched| {
+        out.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_string(), r);
+    });
+    out.into_inner().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Ingest and transcription for items an import added, and relinking what came back, as at the
+/// end of `file.import` (a background import runs them once its last file is added); the errors.
+pub(crate) fn after_import(s: &mut Session, items: &[ItemId]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let ma = &s.prefs.media_analysis;
+    if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !items.is_empty() {
+        let audio: Vec<u64> = items.iter().filter(|i| s.project.item(**i).is_some_and(|it| it.has_audio())).map(|i| i.0).collect();
+        if !audio.is_empty() {
+            let r = crate::transcript::can_transcribe(s).map_err(EngineError::Other).and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
+            if let Err(e) = r {
+                errors.push(format!("transcription: {e}"));
+            }
+        }
+    }
+    if let Err(e) = crate::proxies::ingest(s, items) {
+        errors.push(format!("ingest: {e}"));
+    }
+    let was_missing = s.offline.missing.clone();
+    crate::relink::refresh(s);
+    for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
+        s.media.remove(*item);
+    }
+    errors
+}
+
+/// [`import_streamed`] with the file already opened by [`prefetch_sources`].
+pub(crate) fn import_prefetched(s: &mut Session, path: &str, pre: Prefetched, bin: Option<filmcraft_project::BinId>) -> Result<ItemId> {
+    let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
+    let (src, identity) = pre?;
+    import_source(s, path, name, src, identity, bin)
+}
+
 pub fn import_streamed(s: &mut Session, path: &str, bin: Option<filmcraft_project::BinId>) -> Result<ItemId> {
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
     let identity = crate::relink::identity_of(&*s.services, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -872,15 +981,15 @@ pub(crate) fn audio_placement_specs(clips: &[Vec<u16>], streams: usize) -> Vec<A
 /// (channel format, volume, pan, inserts) without its clips, transitions, lock / mute / solo
 /// state or mixer routing. Returns the ids of all the sequence's audio tracks, in order.
 pub(crate) fn ensure_audio_tracks(p: &mut Project, seq_id: ItemId, first: usize, count: usize, label: &str) -> Result<Vec<TrackId>> {
-    let (have, template) = {
-        let q = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
-        (q.audio_tracks.len(), q.audio_tracks.get(first).or(q.audio_tracks.last()).cloned())
-    };
+    let have = p.sequence(seq_id).ok_or(EngineError::NoSequence)?.audio_tracks.len();
     let need = first.saturating_add(count);
     if need > crate::sequence_tools::MAX_TRACKS {
         return Err(bad(label, format!("a sequence has at most {} audio tracks", crate::sequence_tools::MAX_TRACKS)));
     }
     if need > have {
+        // the template is copied only when a track is added: it carries the track's clips, and
+        // copying them for every placement made a 353-clip drop quadratic
+        let template = p.sequence(seq_id).and_then(|q| q.audio_tracks.get(first).or(q.audio_tracks.last()).cloned());
         let ids: Vec<(usize, TrackId)> = (have..need).map(|k| (k, TrackId(p.alloc_id()))).collect();
         let q = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         for (k, id) in ids {
@@ -904,6 +1013,26 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
     if crate::sequence_tools::wants_new_track(p) {
         return crate::sequence_tools::place_on_new_tracks(s, p);
     }
+    let one = plan_one(s, p)?;
+    let at = sequence_time_p(s, p, "", "timeline.place")?.unwrap_or(s.playhead());
+    let (at, dur) = on_frame_grid(s.sequence_rate(), at, one.dur);
+    let ids = place_item(s, one.item, TimeRange::new(one.sin, dur), at, one.v, one.a, one.insert, "Place Clip", None)?;
+    Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
+}
+
+/// One `timeline.place` item as the session resolves it: the item, its source range (`sin`, and
+/// `dur` before it goes on the frame grid), where its picture and its sound go, and whether it
+/// inserts. Reads the session only, so several can be worked out before one edit places them.
+struct OnePlan {
+    item: ItemId,
+    sin: Tick,
+    dur: Tick,
+    v: Option<TrackId>,
+    a: Option<TrackId>,
+    insert: bool,
+}
+
+fn plan_one(s: &Session, p: &Value) -> Result<OnePlan> {
     let stream_flag = |key: &str| match p.get(key) {
         None => Ok(true),
         Some(Value::Bool(v)) => Ok(*v),
@@ -914,7 +1043,6 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("timeline.place", "enable video, audio, or both"));
     }
     let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
-    let at = sequence_time_p(s, p, "", "timeline.place")?.unwrap_or(s.playhead());
     let tg = s.targeting();
     let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
     let (has_video, has_audio) = s.project.source_streams(item);
@@ -951,15 +1079,16 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let sin = p.get("sourceIn").and_then(Value::as_i64).map(Tick).or(mi).unwrap_or_default();
     let dur = p.get("duration").and_then(Value::as_i64).map(Tick).unwrap_or_else(|| mo.unwrap_or(full) - sin);
-    // The clip goes on the frame grid: its start and its end (`time + duration`) each snap to the
-    // nearest frame, so a sub-frame `time` never pushes the end past the one asked for and the
-    // sequence never ends between frames (#1101).
-    let rate = s.sequence_rate();
+    Ok(OnePlan { item, sin, dur, v, a, insert: bool_p(p, "insert").unwrap_or(false) })
+}
+
+/// The clip goes on the frame grid: its start and its end (`at + dur`) each snap to the nearest
+/// frame, so a sub-frame time never pushes the end past the one asked for and the sequence never
+/// ends between frames (#1101). Returns the start and the duration.
+fn on_frame_grid(rate: filmcraft_time::FrameRate, at: Tick, dur: Tick) -> (Tick, Tick) {
     let end = rate.snap_nearest(Tick(at.0.saturating_add(dur.0)));
     let at = rate.snap_nearest(at);
-    let dur = end - at;
-    let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip", None)?;
-    Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
+    (at, end - at)
 }
 
 /// Most items one `timeline.place` with `items` takes: a larger list is refused, not cut.
@@ -982,6 +1111,13 @@ fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
         return Err(bad("timeline.place", format!("`items` needs 1 to {MAX_PLACE_ITEMS} item ids")));
     }
     let mut at = sequence_time_p(s, p, "", "timeline.place")?.unwrap_or(s.playhead());
+    // Every item planned from the session, then all placed in one edit: an edit per item copied
+    // the project and the sequence each time (353 files dropped together took 0.8-1.6 s on the
+    // UI thread in a field report). New tracks and sequences placed as their clips keep the
+    // item-by-item path.
+    if !crate::sequence_tools::wants_new_track(p) && !ids.iter().any(|i| places_as_clips(s, *i)) {
+        return place_items_in_one_edit(s, p, &ids, at);
+    }
     s.edit_group("Place Clips", |s| {
         let mut placed = Vec::new();
         // "new" adds a track for the first item only; the rest follow it on that track
@@ -1019,23 +1155,26 @@ fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
     })
 }
 
-/// Place a project item on the timeline (drag from Project, or Insert/Overwrite from source).
-pub(crate) fn place_item(
-    s: &mut Session,
+/// What placing an item needs from the session, worked out before the edit (see [`apply_item`]).
+struct ItemPlan {
     item: ItemId,
-    range: TimeRange,
-    at: Tick,
     vdest: Option<TrackId>,
     adest: Option<TrackId>,
-    insert: bool,
-    label: &str,
-    audio_split: Option<(TimeRange, Tick)>,
-) -> Result<Vec<ClipId>> {
-    let pi = s.project.item(item).ok_or_else(|| bad(label, "no such item"))?.clone();
-    // the nest toggle off: a sequence edits in as its clips (a multi-camera source stays one clip)
-    if s.state.sequences_as_clips && pi.as_sequence().is_some_and(|q| q.multicam.is_none()) {
-        return crate::sequence_tools::place_sequence_clips(s, item, range, at, vdest, adest, insert, label);
-    }
+    has_v: bool,
+    has_a: bool,
+    src_size: (u32, u32),
+    src_par: Option<(u32, u32)>,
+    is_media: bool,
+}
+
+/// Whether `item` is placed as its clips: a sequence with the nest toggle off (a multi-camera
+/// source stays one clip).
+fn places_as_clips(s: &Session, item: ItemId) -> bool {
+    s.state.sequences_as_clips && s.project.item(item).and_then(|pi| pi.as_sequence()).is_some_and(|q| q.multicam.is_none())
+}
+
+fn plan_item(s: &Session, item: ItemId, vdest: Option<TrackId>, adest: Option<TrackId>, label: &str) -> Result<ItemPlan> {
+    let pi = s.project.item(item).ok_or_else(|| bad(label, "no such item"))?;
     let (video, audio) = s.project.source_streams(item);
     let has_v = video && vdest.is_some();
     let has_a = audio && adest.is_some();
@@ -1049,85 +1188,226 @@ pub(crate) fn place_item(
         _ => None,
     }
     .unwrap_or((1920, 1080));
-    // `None`: drawn in the pixels of the sequence it is placed in
-    let src_par = s.project.source_par(item);
+    Ok(ItemPlan {
+        item,
+        vdest,
+        adest,
+        has_v,
+        has_a,
+        src_size,
+        // `None`: drawn in the pixels of the sequence it is placed in
+        src_par: s.project.source_par(item),
+        is_media: matches!(pi.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }),
+    })
+}
+
+/// Place a project item on the timeline (drag from Project, or Insert/Overwrite from source).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_item(
+    s: &mut Session,
+    item: ItemId,
+    range: TimeRange,
+    at: Tick,
+    vdest: Option<TrackId>,
+    adest: Option<TrackId>,
+    insert: bool,
+    label: &str,
+    audio_split: Option<(TimeRange, Tick)>,
+) -> Result<Vec<ClipId>> {
+    if places_as_clips(s, item) {
+        return crate::sequence_tools::place_sequence_clips(s, item, range, at, vdest, adest, insert, label);
+    }
+    let plan = plan_item(s, item, vdest, adest, label)?;
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let media = s.media.clone();
     let scaling = s.prefs.media.default_media_scaling.clone();
-    let is_media = matches!(pi.kind, ItemKind::Media(_) | ItemKind::Subclip { .. });
+    // media durations as before the edit (placing changes only the sequence): shared, not copied
+    let snapshot = s.project.clone();
     s.edit(label, |p, st| {
-        let seq = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
-        let rate = seq.settings.frame_rate;
-        let frame = (seq.settings.width, seq.settings.height);
-        let seq_par = seq.settings.par;
-        let mut placements = Vec::new();
-        let link = if has_v && has_a { Some(p.alloc_id()) } else { None };
-        if let Some(vdest) = vdest.filter(|_| has_v) {
-            let mut v = p.make_track_item(item, TrackKind::Video, at, range, rate).ok_or_else(|| bad(label, "bad item"))?;
-            v.link = link;
-            for e in &mut v.effects {
-                resolve_auto_points(e, frame, src_size);
-            }
-            // the picture's size at its display aspect, in sequence pixels
-            let shown = filmcraft_project::conformed_size(src_size, src_par.unwrap_or(seq_par), seq_par);
-            if is_media && shown != (f64::from(frame.0), f64::from(frame.1)) {
-                crate::settings::apply_media_scaling(&mut v, &scaling, frame, shown);
-            }
-            placements.push((vdest, v));
-        }
-        if let Some(adest) = adest.filter(|_| has_a) {
-            let (arange, aat) = audio_split.unwrap_or((range, at));
-            let mut a = p.make_track_item(item, TrackKind::Audio, aat, arange, rate).ok_or_else(|| bad(label, "bad item"))?;
-            // Modify ▸ Audio Channels with several audio clips: one per clip, on the tracks below
-            let clips: Vec<Vec<u16>> =
-                p.resolve_media(item).and_then(|(_, m, _)| m.interpret.audio_channels.as_ref()).map(|m| m.clips.clone()).unwrap_or_default();
-            let streams = p.resolve_media(item).map_or(1, |(_, m, _)| m.info.audio_streams.len());
-            let specs = audio_placement_specs(&clips, streams);
-            let first = p.sequence(seq_id).and_then(|q| q.audio_tracks.iter().position(|t| t.id == adest)).unwrap_or(0);
-            // too few audio tracks below the destination: grow the sequence from the destination track
-            let tracks = ensure_audio_tracks(p, seq_id, first, specs.len(), label)?;
-            a.link = if link.is_none() && specs.len() > 1 { Some(p.alloc_id()) } else { link };
-            for spec in specs {
-                let tid = match spec.track_offset {
-                    0 => &adest,
-                    off => match first.checked_add(off).and_then(|i| tracks.get(i)) {
-                        Some(t) => t,
-                        None => continue,
-                    },
-                };
-                let mut b = a.clone();
-                b.audio_stream = spec.audio_stream;
-                if spec.track_offset > 0 {
-                    b.id = ClipId(p.alloc_id());
-                }
-                if spec.audio_stream > 0 {
-                    b.source_channels.clear();
-                }
-                if let Some(chans) = spec.source_channels {
-                    b.source_channels = chans;
-                }
-                placements.push((*tid, b));
-            }
-        }
-        let snapshot = std::sync::Arc::new(p.clone());
-        let snap = snapshot.clone();
-        let durations = move |id: ItemId| crate::media_duration(&snapshot, &media, id);
-        let starts = move |id: ItemId| crate::media_start(&snap, id);
-        let min = rate.frame_duration();
-        let mut next = p.next_id;
-        let seq = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
-        let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: min };
-        let span = placements.iter().map(|x| x.1.start).min().zip(placements.iter().map(|x| x.1.end()).max());
-        let ids = if insert { edit::insert(seq, placements, &mut ctx)? } else { edit::overwrite(seq, placements, &mut ctx)? };
-        if insert
-            && st.ripple_sequence_markers
-            && let Some((a, b)) = span
-        {
-            crate::sequence_tools::ripple_markers(&mut seq.markers, a, b - a);
-        }
-        p.next_id = next;
+        let ids = apply_item(p, st, &plan, Placement { range, at, insert, label, audio_split, seq_id, media: &media, scaling: &scaling, snapshot: &snapshot })?;
         st.selection = ids.clone();
         Ok(ids)
+    })
+}
+
+/// Where and how [`apply_item`] places an item, and what it reads meanwhile.
+struct Placement<'a> {
+    range: TimeRange,
+    at: Tick,
+    insert: bool,
+    label: &'a str,
+    audio_split: Option<(TimeRange, Tick)>,
+    seq_id: ItemId,
+    media: &'a crate::media_pool::MediaPool,
+    scaling: &'a str,
+    /// The project before the edit, for media durations and starts.
+    snapshot: &'a Project,
+}
+
+/// The edit itself: the clips of `plan` made and edited into the sequence. Returns their ids.
+fn apply_item(p: &mut Project, st: &mut crate::EditorState, plan: &ItemPlan, how: Placement<'_>) -> Result<Vec<ClipId>> {
+    let ItemPlan { item, vdest, adest, has_v, has_a, src_size, src_par, is_media } = *plan;
+    let Placement { range, at, insert, label, audio_split, seq_id, media, scaling, snapshot } = how;
+    let seq = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
+    let rate = seq.settings.frame_rate;
+    let frame = (seq.settings.width, seq.settings.height);
+    let seq_par = seq.settings.par;
+    let mut placements = Vec::new();
+    let link = if has_v && has_a { Some(p.alloc_id()) } else { None };
+    if let Some(vdest) = vdest.filter(|_| has_v) {
+        let mut v = p.make_track_item(item, TrackKind::Video, at, range, rate).ok_or_else(|| bad(label, "bad item"))?;
+        v.link = link;
+        for e in &mut v.effects {
+            resolve_auto_points(e, frame, src_size);
+        }
+        // the picture's size at its display aspect, in sequence pixels
+        let shown = filmcraft_project::conformed_size(src_size, src_par.unwrap_or(seq_par), seq_par);
+        if is_media && shown != (f64::from(frame.0), f64::from(frame.1)) {
+            crate::settings::apply_media_scaling(&mut v, scaling, frame, shown);
+        }
+        placements.push((vdest, v));
+    }
+    if let Some(adest) = adest.filter(|_| has_a) {
+        let (arange, aat) = audio_split.unwrap_or((range, at));
+        let mut a = p.make_track_item(item, TrackKind::Audio, aat, arange, rate).ok_or_else(|| bad(label, "bad item"))?;
+        // Modify ▸ Audio Channels with several audio clips: one per clip, on the tracks below
+        let clips: Vec<Vec<u16>> = p.resolve_media(item).and_then(|(_, m, _)| m.interpret.audio_channels.as_ref()).map(|m| m.clips.clone()).unwrap_or_default();
+        let streams = p.resolve_media(item).map_or(1, |(_, m, _)| m.info.audio_streams.len());
+        let specs = audio_placement_specs(&clips, streams);
+        let first = p.sequence(seq_id).and_then(|q| q.audio_tracks.iter().position(|t| t.id == adest)).unwrap_or(0);
+        // too few audio tracks below the destination: grow the sequence from the destination track
+        let tracks = ensure_audio_tracks(p, seq_id, first, specs.len(), label)?;
+        a.link = if link.is_none() && specs.len() > 1 { Some(p.alloc_id()) } else { link };
+        for spec in specs {
+            let tid = match spec.track_offset {
+                0 => &adest,
+                off => match first.checked_add(off).and_then(|i| tracks.get(i)) {
+                    Some(t) => t,
+                    None => continue,
+                },
+            };
+            let mut b = a.clone();
+            b.audio_stream = spec.audio_stream;
+            if spec.track_offset > 0 {
+                b.id = ClipId(p.alloc_id());
+            }
+            if spec.audio_stream > 0 {
+                b.source_channels.clear();
+            }
+            if let Some(chans) = spec.source_channels {
+                b.source_channels = chans;
+            }
+            placements.push((*tid, b));
+        }
+    }
+    let durations = |id: ItemId| crate::media_duration(snapshot, media, id);
+    let starts = |id: ItemId| crate::media_start(snapshot, id);
+    let min = rate.frame_duration();
+    let mut next = p.next_id;
+    let seq = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+    let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: min };
+    let span = placements.iter().map(|x| x.1.start).min().zip(placements.iter().map(|x| x.1.end()).max());
+    let ids = if insert { edit::insert(seq, placements, &mut ctx)? } else { edit::overwrite(seq, placements, &mut ctx)? };
+    if insert
+        && st.ripple_sequence_markers
+        && let Some((a, b)) = span
+    {
+        crate::sequence_tools::ripple_markers(&mut seq.markers, a, b - a);
+    }
+    p.next_id = next;
+    Ok(ids)
+}
+
+/// Place `items`, each with its source range, back to back from `at` on `vdest` / `adest`, in one
+/// edit labelled `label`. `None` when one of them is placed as its clips (a nested sequence with
+/// the nest toggle off): the caller places them one by one then.
+#[allow(clippy::type_complexity)]
+pub(crate) fn place_ranges_in_one_edit(
+    s: &mut Session,
+    items: &[(ItemId, TimeRange)],
+    at: Tick,
+    vdest: Option<TrackId>,
+    adest: Option<TrackId>,
+    label: &str,
+) -> Option<Result<Vec<ClipId>>> {
+    if items.iter().any(|(i, _)| places_as_clips(s, *i)) {
+        return None;
+    }
+    Some((|| {
+        let plans = items.iter().map(|(i, r)| plan_item(s, *i, vdest, adest, label).map(|p| (p, *r))).collect::<Result<Vec<_>>>()?;
+        let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+        let media = s.media.clone();
+        let scaling = s.prefs.media.default_media_scaling.clone();
+        let snapshot = s.project.clone();
+        s.edit(label, |p, st| {
+            let mut at = at;
+            let mut all = Vec::new();
+            for (plan, range) in &plans {
+                let how =
+                    Placement { range: *range, at, insert: false, label, audio_split: None, seq_id, media: &media, scaling: &scaling, snapshot: &snapshot };
+                let clips = apply_item(p, st, plan, how)?;
+                if let Some(end) = p.sequence(seq_id).and_then(|q| clips.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max()) {
+                    at = end;
+                }
+                all.extend(clips);
+            }
+            st.selection = all.clone();
+            Ok(all)
+        })
+    })())
+}
+
+/// `timeline.place` with `items` in one edit: each item where the one before it ends.
+fn place_items_in_one_edit(s: &mut Session, p: &Value, ids: &[ItemId], at: Tick) -> Result<Value> {
+    // the parameters every item shares, without `items`: copied once per item (up to 10 000)
+    let mut base = p.clone();
+    if let Some(o) = base.as_object_mut() {
+        o.remove("items");
+        for k in ["time", "frame", "seconds"] {
+            o.remove(k);
+        }
+    }
+    let mut plans = Vec::with_capacity(ids.len());
+    for item in ids {
+        let mut one = base.clone();
+        if let Some(o) = one.as_object_mut() {
+            o.insert("item".into(), json!(item.0));
+        }
+        let plan = plan_one(s, &one)?;
+        let placing = plan_item(s, plan.item, plan.v, plan.a, "timeline.place")?;
+        plans.push((plan, placing));
+    }
+    let rate = s.sequence_rate();
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let media = s.media.clone();
+    let scaling = s.prefs.media.default_media_scaling.clone();
+    let snapshot = s.project.clone();
+    s.edit("Place Clips", |p, st| {
+        let mut at = at;
+        let mut all = Vec::new();
+        let mut placed = Vec::with_capacity(plans.len());
+        for (one, plan) in &plans {
+            let (start, dur) = on_frame_grid(rate, at, one.dur);
+            let how = Placement {
+                range: TimeRange::new(one.sin, dur),
+                at: start,
+                insert: one.insert,
+                label: "Place Clips",
+                audio_split: None,
+                seq_id,
+                media: &media,
+                scaling: &scaling,
+                snapshot: &snapshot,
+            };
+            let clips = apply_item(p, st, plan, how)?;
+            if let Some(end) = p.sequence(seq_id).and_then(|q| clips.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max()) {
+                at = end;
+            }
+            placed.push(json!(clips.iter().map(|c| c.0).collect::<Vec<_>>()));
+            all.extend(clips);
+        }
+        st.selection = all.clone();
+        Ok(json!({"clips": all.iter().map(|c| c.0).collect::<Vec<_>>(), "placed": placed}))
     })
 }
 
@@ -1200,6 +1480,7 @@ fn build() -> Vec<CommandSpec> {
         // ================= File =================
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
+            s.replacing_project();
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.document_epoch = s.document_epoch.wrapping_add(1);
             s.history = Default::default();
@@ -1216,6 +1497,7 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
+            s.replacing_project();
             s.project = std::sync::Arc::new(p);
             s.document_epoch = s.document_epoch.wrapping_add(1);
             s.history = Default::default();
@@ -1393,119 +1675,150 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?}"#, always, |s, p| {
-            let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
-            let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
-                Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
-                None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
-            };
-            if paths.is_empty() {
-                return Err(bad("file.import", "need `paths`"));
-            }
-            if bool_p(p, "replace").unwrap_or(false) {
-                let name = s.project.name.clone();
-                s.execute("file.newProject", json!({ "name": name }))?;
-            }
-            let mut ids = Vec::new();
-            let mut errors = Vec::new();
-            let mut sequences = Vec::new();
-            let mut reports = Vec::new();
-            let mut image_sequences = Vec::new();
-            // Image Sequence: each path is the first frame of a numbered still sequence. With
-            // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
-            let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
-            let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
-            for path in paths {
-                if as_sequence || (detect && detect_image_sequence(s, &path)) {
-                    match import_image_sequence(s, &path, bin) {
-                        Ok((id, frames, missing)) => {
-                            ids.push(id.0);
-                            image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
-                        }
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    }
-                    continue;
+        cmd!(
+            "file.import",
+            "Import…",
+            ["File"],
+            Some("Cmd+I"),
+            r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?,"async":bool?}"#,
+            always,
+            |s, p| {
+                let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
+                let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
+                    Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                    None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
+                };
+                if paths.is_empty() {
+                    return Err(bad("file.import", "need `paths`"));
                 }
-                // Media files through the host's reader (no whole-file read) when it has one.
-                let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
-                let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
-                match read {
-                    Ok(_) if streamed => match import_streamed(s, &path, bin) {
-                        Ok(id) => ids.push(id.0),
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    },
-                    Ok(b) => {
-                        if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
-                                Ok(r) => reports.push(r),
-                                Err(e) => errors.push(format!("{path}: {e}")),
+                if bool_p(p, "replace").unwrap_or(false) {
+                    let name = s.project.name.clone();
+                    s.execute("file.newProject", json!({ "name": name }))?;
+                }
+                let mut ids = Vec::new();
+                let mut errors = Vec::new();
+                let mut sequences = Vec::new();
+                let mut reports = Vec::new();
+                let mut image_sequences = Vec::new();
+                // Image Sequence: each path is the first frame of a numbered still sequence. With
+                // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
+                let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
+                let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
+                // Media files are opened (probed) several at a time before they are added in order:
+                // opening is the slow part (a slow decoder takes ~0.1 s to open a clip), and this
+                // command runs on the UI thread, so in a field report a card of 109 clips froze the
+                // window for 15 s.
+                // async: the media files open on a background thread and are added as they finish
+                // (`background_import`), so the window keeps responding; the rest imports now
+                let background = bool_p(p, "async").unwrap_or(false) && !as_sequence && !cfg!(target_arch = "wasm32");
+                let (later, paths): (Vec<String>, Vec<String>) = if background {
+                    paths.into_iter().partition(|path| streamed_media(s, path) && !(detect && detect_image_sequence(s, path)))
+                } else {
+                    (Vec::new(), paths)
+                };
+                let mut opened = if as_sequence { std::collections::HashMap::new() } else { prefetch_sources(s, &paths) };
+                for path in paths {
+                    if as_sequence || (detect && detect_image_sequence(s, &path)) {
+                        match import_image_sequence(s, &path, bin) {
+                            Ok((id, frames, missing)) => {
+                                ids.push(id.0);
+                                image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
                             }
-                        } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt) {
-                                Ok(r) => {
-                                    sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
-                                    reports.push(r);
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                        continue;
+                    }
+                    // Media files through the host's reader (no whole-file read) when it has one.
+                    let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
+                    let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
+                    match read {
+                        Ok(_) if streamed => match match opened.remove(&path) {
+                            Some(pre) => import_prefetched(s, &path, pre, bin),
+                            None => import_streamed(s, &path, bin),
+                        } {
+                            Ok(id) => ids.push(id.0),
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        },
+                        Ok(b) => {
+                            if let Some(fmt) = crate::captions::detect(&path, &b) {
+                                match crate::captions::import(s, &path, &b, fmt, None) {
+                                    Ok(r) => reports.push(r),
+                                    Err(e) => errors.push(format!("{path}: {e}")),
                                 }
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else {
-                            match import_bytes(s, &path, b.into(), bin) {
-                                Ok(id) => ids.push(id.0),
-                                Err(e) => errors.push(format!("{path}: {e}")),
+                            } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
+                                match crate::interchange::import(s, &path, &b, fmt) {
+                                    Ok(r) => {
+                                        sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                        reports.push(r);
+                                    }
+                                    Err(e) => errors.push(format!("{path}: {e}")),
+                                }
+                            } else {
+                                match import_bytes(s, &path, b.into(), bin) {
+                                    Ok(id) => ids.push(id.0),
+                                    Err(e) => errors.push(format!("{path}: {e}")),
+                                }
                             }
                         }
-                    }
-                    Err(e) => errors.push(format!("{path}: {e}")),
-                }
-            }
-            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
-                return Err(EngineError::Other(errors.join("; ")));
-            }
-            // Project Settings ▸ Ingest: copy / transcode / create proxies
-            // (image sequences are many files: ingest copies and transcodes single files only)
-            let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
-            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
-            let ma = &s.prefs.media_analysis;
-            if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
-                let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
-                if !audio.is_empty() {
-                    // without speech-to-text the setting can't act: say so instead of importing
-                    // silently untranscribed (#89)
-                    let r = crate::transcript::can_transcribe(s)
-                        .map_err(EngineError::Other)
-                        .and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
-                    if let Err(e) = r {
-                        errors.push(format!("transcription: {e}"));
+                        Err(e) => errors.push(format!("{path}: {e}")),
                     }
                 }
-            }
-            let ingest = match crate::proxies::ingest(s, &item_ids) {
-                Ok(v) => v,
-                Err(e) => {
-                    errors.push(format!("ingest: {e}"));
-                    Value::Null
+                let pending = if later.is_empty() { None } else { Some((later.len(), crate::background_import::start(s, later, bin)?)) };
+                if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() && pending.is_none() {
+                    return Err(EngineError::Other(errors.join("; ")));
                 }
-            };
-            let mut out = if !ingest.is_null() {
-                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
-            } else if reports.is_empty() {
-                json!({"items": ids, "errors": errors})
-            } else {
-                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
-            };
-            if !image_sequences.is_empty() {
-                out["imageSequences"] = json!(image_sequences);
+                // Project Settings ▸ Ingest: copy / transcode / create proxies
+                // (image sequences are many files: ingest copies and transcodes single files only)
+                let item_ids: Vec<ItemId> =
+                    ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
+                // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
+                let ma = &s.prefs.media_analysis;
+                if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
+                    let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
+                    if !audio.is_empty() {
+                        // without speech-to-text the setting can't act: say so instead of importing
+                        // silently untranscribed (#89)
+                        let r = crate::transcript::can_transcribe(s)
+                            .map_err(EngineError::Other)
+                            .and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
+                        if let Err(e) = r {
+                            errors.push(format!("transcription: {e}"));
+                        }
+                    }
+                }
+                let ingest = match crate::proxies::ingest(s, &item_ids) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        errors.push(format!("ingest: {e}"));
+                        Value::Null
+                    }
+                };
+                let mut out = if !ingest.is_null() {
+                    json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
+                } else if reports.is_empty() {
+                    json!({"items": ids, "errors": errors})
+                } else {
+                    json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
+                };
+                if !image_sequences.is_empty() {
+                    out["imageSequences"] = json!(image_sequences);
+                }
+                if let Some((n, job)) = pending
+                    && let (Some(o), Value::Object(extra)) = (out.as_object_mut(), crate::background_import::describe(job, n))
+                {
+                    o.extend(extra);
+                }
+                // Newly imported files may resolve paths the project already listed as offline
+                // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
+                // the cached slate of every item that came back so the monitors show the file again.
+                let was_missing = s.offline.missing.clone();
+                crate::relink::refresh(s);
+                for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
+                    s.media.remove(*item);
+                }
+                Ok(out)
             }
-            // Newly imported files may resolve paths the project already listed as offline
-            // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
-            // the cached slate of every item that came back so the monitors show the file again.
-            let was_missing = s.offline.missing.clone();
-            crate::relink::refresh(s);
-            for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
-                s.media.remove(*item);
-            }
-            Ok(out)
-        }),
+        ),
         cmd!(
             "file.exportInterchange",
             "Export Interchange",
@@ -4656,6 +4969,8 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    // an import still opening files belongs to the project being replaced
+    s.replacing_project();
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);

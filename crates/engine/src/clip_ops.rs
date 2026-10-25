@@ -668,15 +668,28 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(id)
     })?;
-    let mut at = Tick::ZERO;
     let mut placed = Vec::new();
-    for item in items {
-        let still = s.prefs.timeline.still_duration(item_rate(&s.project, item));
-        let Some(range) = item_range(&s.project, item, still) else { continue };
-        let tg = s.targeting();
-        let ids = place_item(s, item, range, at, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
-        at = s.active_sequence().map(|q| q.duration()).unwrap_or(at);
-        placed.extend(ids.iter().map(|c| c.0));
+    // every item in one edit (353 clips took 402 ms one edit each); a sequence
+    // placed as its clips keeps the item-by-item path
+    let ranges: Vec<(ItemId, TimeRange)> = items
+        .iter()
+        .filter_map(|&item| {
+            let still = s.prefs.timeline.still_duration(item_rate(&s.project, item));
+            item_range(&s.project, item, still).map(|r| (item, r))
+        })
+        .collect();
+    let tg = s.targeting();
+    match crate::commands::place_ranges_in_one_edit(s, &ranges, Tick::ZERO, tg.video_dest, tg.audio_dest, "New Sequence From Clip") {
+        Some(ids) => placed.extend(ids?.iter().map(|c| c.0)),
+        None => {
+            let mut at = Tick::ZERO;
+            for (item, range) in ranges {
+                let tg = s.targeting();
+                let ids = place_item(s, item, range, at, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
+                at = s.active_sequence().map(|q| q.duration()).unwrap_or(at);
+                placed.extend(ids.iter().map(|c| c.0));
+            }
+        }
     }
     collapse_history(s, n0, "New Sequence From Clip");
     s.state.selection.clear();
@@ -825,6 +838,7 @@ fn close_project(s: &mut Session, p: &Value) -> Result<Value> {
     if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
     }
+    s.replacing_project();
     s.project = std::sync::Arc::new(Project::new("Untitled"));
     s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();

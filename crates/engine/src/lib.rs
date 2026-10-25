@@ -12,6 +12,7 @@
 
 pub mod aaf_omf;
 pub mod autosave;
+pub mod background_import;
 pub mod captions;
 pub mod clip_ops;
 pub mod color;
@@ -425,6 +426,12 @@ pub enum Event {
     OpenSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),
+    /// A background import (`file.import {async: true}`, its `importJob`) has added its files:
+    /// the items it made, in the order of its paths (the ones that failed are left out).
+    ImportFinished {
+        job: u64,
+        items: Vec<ItemId>,
+    },
 }
 
 pub struct Session {
@@ -476,6 +483,11 @@ pub struct Session {
     pub offline: relink::OfflineState,
     /// Proxy / ingest / project-manager jobs whose results still have to be applied to the project.
     pub media_jobs: Vec<proxies::PendingJob>,
+    /// Imports whose files are still opening in the background (`file.import {async: true}`).
+    pub background_imports: Vec<background_import::Pending>,
+    /// How many times the project was replaced (new, open, revert, recover, close…): a frontend
+    /// holding item ids for later (a drop still to place) drops them when this changes.
+    pub project_generation: u64,
     /// Mask tracking jobs whose keyframes are still being written.
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
@@ -583,6 +595,8 @@ impl Session {
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
             media_jobs: Vec::new(),
+            background_imports: Vec::new(),
+            project_generation: 0,
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
             presets: Default::default(),
@@ -677,6 +691,7 @@ impl Session {
     /// Apply worker notifications (call regularly, e.g. once per UI frame). Also applies the
     /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
+        background_import::poll(self);
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
@@ -1012,8 +1027,10 @@ impl Session {
     ) -> Result<R> {
         let seq_id = self.state.active_sequence.ok_or(EngineError::NoSequence)?;
         let media = self.media.clone();
+        // Media durations and starts as they were before the edit: the project as it stands, shared,
+        // not a deep copy per edit (a drop of 353 clips copied the whole project 353 more times).
+        let project_snapshot = self.project.clone();
         let body = move |p: &mut Project, st: &mut EditorState| {
-            let project_snapshot = std::sync::Arc::new(p.clone());
             let snap = project_snapshot.clone();
             let durations = move |id: ItemId| -> Option<Tick> { media_duration(&project_snapshot, &media, id) };
             let starts = move |id: ItemId| media_start(&snap, id);
@@ -1103,6 +1120,13 @@ impl Session {
         {
             self.state.gap_selection = None;
         }
+    }
+
+    /// The project is about to be replaced: what still belongs to it (background imports, ids a
+    /// frontend holds) is dropped.
+    pub(crate) fn replacing_project(&mut self) {
+        background_import::cancel_all(self);
+        self.project_generation = self.project_generation.wrapping_add(1);
     }
 
     fn bump(&mut self) {
@@ -1293,6 +1317,8 @@ mod gap_selection_tests;
 mod history_tests;
 #[cfg(test)]
 mod image_sequence_tests;
+#[cfg(test)]
+mod import_batch_tests;
 #[cfg(test)]
 mod individual_selection_tests;
 #[cfg(test)]

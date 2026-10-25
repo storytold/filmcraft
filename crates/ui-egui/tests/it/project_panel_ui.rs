@@ -698,7 +698,14 @@ fn file_dialog_import_uses_shown_bin_unless_explicit() {
         app.ui.project_panel.active_tab = tab;
         let result = app.file_dialog("file.import", &params).unwrap();
         assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
-        let item = ItemId(result["items"][0].as_u64().unwrap());
+        // the dialog's import opens its files in the background; the frames add them
+        assert_eq!(result["pending"], 1, "{result}");
+        let started = std::time::Instant::now();
+        while !app.session.background_imports.is_empty() && started.elapsed() < std::time::Duration::from_secs(30) {
+            app.session.poll_persistence();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let item = *app.session.project.items.keys().max().expect("the file was imported");
         let bin = app.session.project.root.find_bin(filmcraft_project::BinId(expected)).unwrap();
         assert!(bin.children.contains(&BinEntry::Item(item)), "shown={shown:?}, tab={tab:?}, params={params}: expected bin {expected}");
     }
@@ -761,6 +768,12 @@ fn media_browser_navigation_import_and_columns() {
     d.ok("ui.scroll", json!({"id": "panel.menu.scroll", "dy": -1200}));
     d.frames(4);
     d.click("mediaBrowser.menu.import");
+    // the panel's import opens its files in the background; the frames add them
+    let started = std::time::Instant::now();
+    while !d.app().session.background_imports.is_empty() && started.elapsed() < std::time::Duration::from_secs(30) {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
     assert_eq!(d.app().session.project.items.len(), 2);
     // Shift+O opens the selection in the Source monitor (already imported: no duplicate)
     d.click("mediaBrowser.entry.b-roll.wav");

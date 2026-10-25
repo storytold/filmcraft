@@ -68,6 +68,8 @@ pub fn stats(s: &Session) -> Value {
         "export": export_json(),
         "media": {"openSources": s.media.open_sources()},
         "jobs": {"total": s.jobs.len(), "running": running},
+        // imports still adding files opened in the background (`file.import {async}`)
+        "imports": {"running": s.background_imports.len()},
     })
 }
 

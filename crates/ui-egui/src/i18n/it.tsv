@@ -2959,6 +2959,7 @@
 	Graphics problem: switched to software compositing	Problema grafico: passato alla composizione software
 	GPU acceleration is unavailable; preview renders on the CPU	L'accelerazione GPU non è disponibile; l'anteprima viene elaborata sulla CPU
 	Exporting	Esportazione
+	Importing	Importazione
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Fai clic per selezionare, oppure fai clic in uno spazio vuoto e trascina per una selezione a riquadro. Usa Shift, Opt e Cmd per altre opzioni.
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	Fai clic per selezionare tutte le clip a destra in tutte le tracce. Shift+clic per una sola traccia.
 	Click to select all clips to the left in all tracks. Shift-click for a single track.	Fai clic per selezionare tutte le clip a sinistra in tutte le tracce. Shift+clic per una sola traccia.

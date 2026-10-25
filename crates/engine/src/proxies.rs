@@ -255,14 +255,17 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     let mut tasks = Vec::new();
     let mut total = 0;
     for (item, output, pr) in work {
-        let (clip, _, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
-        let src = s.media.full_res_source(&s.project, item, &*s.services).ok_or_else(|| EngineError::Other(format!("{name}: no source")))?;
-        if s.media.offline_status(item).is_some() {
+        let (clip, path, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
+        // Checked here, opened in the job: opening a clip can start a slow decoder (one clip at a
+        // time for some formats), and this runs on the UI thread for every clip of the selection.
+        let reachable = s.media.follow(&path).is_ok_and(|file| s.services.file_size(&file).is_ok());
+        if clip.offline || !reachable || s.media.offline_status(item).is_some() {
             return Err(EngineError::Other(format!("{name} is offline; link it first")));
         }
         total += frame_count(&clip, None);
-        tasks.push((item, clip, name, src, output, pr));
+        tasks.push((item, clip, name, output, pr));
     }
+    let (pool, project, services) = (s.media.clone(), s.project.clone(), s.services.clone());
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     job.progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
@@ -273,12 +276,16 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
         let mut bytes = 0;
         let mut err = None;
         let n = tasks.len();
-        for (k, (item, clip, name, src, mut output, pr)) in tasks.into_iter().enumerate() {
+        for (k, (item, clip, name, mut output, pr)) in tasks.into_iter().enumerate() {
             if prog.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 err = Some("cancelled".to_string());
                 break;
             }
             *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("{name} ({} of {n})", k + 1);
+            let Some(src) = pool.full_res_source(&project, item, &*services).filter(|_| pool.offline_status(item).is_none()) else {
+                err = Some(format!("{name}: media offline"));
+                break;
+            };
             let out = output.path().to_string_lossy().into_owned();
             match transcode_with_file(&clip, &name, src, None, &out, output.file(), pr, &prog) {
                 Ok(r) => {
