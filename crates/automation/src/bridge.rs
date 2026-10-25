@@ -116,8 +116,15 @@ impl BridgeClient {
                 }
                 let v: Value = serde_json::from_str(&buf).map_err(|_| AutomationError::Bridge(Self::wrong_server(&self.addr)))?;
                 // A reply the app never sends (another program on the port, e.g. a different
-                // tool's server) used to surface as a bare parse or `ok` error (#3313).
-                if v.get("ok").is_none_or(|ok| !ok.is_boolean()) {
+                // tool's server) used to surface as a bare parse or `ok` error (#3313). The app
+                // echoes the request's `id` on success; its own `ok: false` rejects (bad token,
+                // junk line) carry none.
+                let known = match v.get("ok") {
+                    Some(Value::Bool(true)) => v.get("id") == Some(&json!(id)),
+                    Some(Value::Bool(false)) => true,
+                    _ => false,
+                };
+                if !known {
                     return Err(AutomationError::Bridge(Self::wrong_server(&self.addr)));
                 }
                 Ok(v)
@@ -347,13 +354,29 @@ mod tests {
     /// `app: error`; the port's real owner is named instead (#3313).
     #[tokio::test]
     async fn a_reply_from_another_program_is_named() {
-        for reply in ["{\"status\": \"error\", \"message\": \"unknown command\"}", "{\"jsonrpc\": \"2.0\", \"id\": 1, \"result\": {}}", "not json at all"] {
+        for reply in [
+            "{\"status\": \"error\", \"message\": \"unknown command\"}",
+            "{\"jsonrpc\": \"2.0\", \"id\": 1, \"result\": {}}",
+            "not json at all",
+            "{\"ok\": true}",
+            "{\"ok\": true, \"id\": 9999}",
+        ] {
             let addr = foreign_app(reply).await;
             let b = BridgeClient::new(addr.clone()).unwrap();
             let e = b.call("ui.inspect", json!({})).await.unwrap_err();
             let e = e.to_string();
             assert!(e.contains("not a FilmCraft control server") && e.contains(&addr), "{reply}: {e}");
         }
+    }
+
+    /// The app's own unsolicited rejects (`{"ok": false, "error": …}`) carry no `id` (bad token,
+    /// junk line): they must reach the caller as the app's error, not as a foreign server.
+    #[tokio::test]
+    async fn an_error_reply_without_an_id_is_the_apps_own_error() {
+        let addr = foreign_app("{\"ok\": false, \"error\": \"control authentication failed; closing the connection\"}").await;
+        let b = BridgeClient::new(addr).unwrap();
+        let e = b.call("ui.inspect", json!({})).await.unwrap_err();
+        assert_eq!(e.to_string(), "app: control authentication failed; closing the connection");
     }
 
     /// A peer that hangs up silently is named too, not "EOF while parsing a value". Closing
