@@ -714,3 +714,83 @@ fn align_to_frame_moves_selected_video_clips_by_position_only() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!((pos(&s).0.y - 200.0).abs() < 1e-6, "one undo step per alignment");
 }
+
+/// #2186: several layers move together by one delta, as one undo step, keeping their spacing.
+#[test]
+fn selected_layers_move_together_in_one_undo_step() {
+    let mut s = demo();
+    let clip = three_shapes(&mut s);
+    let before = layers(&s, ClipId(clip));
+    s.execute("graphics.selectLayer", json!({"clip": clip, "layers": [0, 2]})).unwrap();
+    let undo = s.history.undo.len();
+    let r = s.execute("graphics.moveLayers", json!({"clip": clip, "delta": [40, -25]})).unwrap();
+    assert_eq!(r["layers"], json!([0, 2]), "the selected layers by default");
+    let after = layers(&s, ClipId(clip));
+    for i in [0, 2] {
+        assert!((after[i].transform.position.x - before[i].transform.position.x - 40.0).abs() < 1e-9);
+        assert!((after[i].transform.position.y - before[i].transform.position.y + 25.0).abs() < 1e-9);
+    }
+    assert_eq!(after[1].transform.position, before[1].transform.position, "an unselected layer stays");
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(
+        layers(&s, ClipId(clip)).iter().map(|l| l.transform.position).collect::<Vec<_>>(),
+        before.iter().map(|l| l.transform.position).collect::<Vec<_>>()
+    );
+    // explicit layers, duplicates ignored; bad deltas and layers are refused
+    s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [1, 1], "delta": [10, 0]})).unwrap();
+    assert!((layers(&s, ClipId(clip))[1].transform.position.x - before[1].transform.position.x - 10.0).abs() < 1e-9);
+    assert!(s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [0], "delta": [f64::MAX, "x"]})).is_err());
+    assert!(s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [9], "delta": [1, 1]})).is_err());
+    assert!(s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [0]})).is_err());
+}
+
+/// #2363 review: a pinned layer moved together with the layer it is pinned to moves once, with
+/// it, not twice (once with its target, once by its own offsets); undo puts both back.
+#[test]
+fn a_pinned_layer_moved_with_its_target_moves_once() {
+    let mut s = demo();
+    let clip = three_shapes(&mut s);
+    s.execute("graphics.pin", json!({"clip": clip, "layer": 0, "to": 1, "edges": ["left", "top"]})).unwrap();
+    // where each layer is shown, pins resolved (not the position stored in it)
+    let shown = |s: &Session, l: usize| {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(ClipId(clip)).unwrap();
+        let ei = layer_indices(&it.effects)[l];
+        let specs = filmcraft_render::graphic_clip::item_layer_specs(it, Tick::ZERO, (q.settings.width, q.settings.height));
+        specs.iter().find(|(x, _)| *x == ei).unwrap().1.transform.position
+    };
+    let (p0, p1) = (shown(&s, 0), shown(&s, 1));
+    s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [0, 1], "delta": [40, -25]})).unwrap();
+    let (a0, a1) = (shown(&s, 0), shown(&s, 1));
+    assert!((a1.x - p1.x - 40.0).abs() < 1e-6 && (a1.y - p1.y + 25.0).abs() < 1e-6, "the target moved: {p1:?} → {a1:?}");
+    assert!((a0.x - p0.x - 40.0).abs() < 1e-6 && (a0.y - p0.y + 25.0).abs() < 1e-6, "the pinned layer moved once: {p0:?} → {a0:?}");
+    // moved on its own it still moves (its offsets to the target change)
+    s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [0], "delta": [10, 0]})).unwrap();
+    assert!((shown(&s, 0).x - a0.x - 10.0).abs() < 1e-6);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!((shown(&s, 0), shown(&s, 1)), (p0, p1), "undo puts both back");
+}
+
+/// #2363 review: Align moves a pinned layer and its target by different amounts; the pinned
+/// layer ends where Align put it, not where its target's move would drag it.
+#[test]
+fn align_puts_a_pinned_layer_where_it_asks() {
+    let mut s = demo();
+    let clip = three_shapes(&mut s);
+    s.execute("graphics.pin", json!({"clip": clip, "layer": 0, "to": 1, "edges": ["left", "top"]})).unwrap();
+    let shown = |s: &Session, l: usize| {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(ClipId(clip)).unwrap();
+        let ei = layer_indices(&it.effects)[l];
+        let specs = filmcraft_render::graphic_clip::item_layer_specs(it, Tick::ZERO, (q.settings.width, q.settings.height));
+        specs.iter().find(|(x, _)| *x == ei).unwrap().1.transform.position
+    };
+    let (rect, ellipse) = (shown(&s, 0), shown(&s, 1));
+    // left edges to the selection's: the rectangle is already leftmost, so only the ellipse moves
+    s.execute("graphics.align", json!({"clip": clip, "layers": [0, 1], "align": "left", "to": "selection"})).unwrap();
+    let (r1, e1) = (shown(&s, 0), shown(&s, 1));
+    assert!(e1.x < ellipse.x - 100.0, "the ellipse moved left: {ellipse:?} → {e1:?}");
+    assert!((r1.x - rect.x).abs() < 1e-6 && (r1.y - rect.y).abs() < 1e-6, "the pinned rectangle stays where Align put it: {rect:?} → {r1:?}");
+}

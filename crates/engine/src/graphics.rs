@@ -478,14 +478,32 @@ pub(crate) fn move_layers(s: &mut Session, clip: ClipId, moves: Vec<(usize, Vec2
     s.edit_sequence(label, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
+        // the layers moving now, by uid: one pinned to one of them moves with it already
+        // how far each moving layer goes, by uid, before anything changes
+        let deltas: Vec<(u64, f64, f64)> = moves
+            .iter()
+            .filter_map(|(ei, pos)| {
+                let e = it.effects.get(*ei)?;
+                let uid = e.layer.as_ref().map(|x| x.uid).filter(|&u| u != 0)?;
+                let old = e.params.get("position")?.value_at(mt).as_vec2()?;
+                Some((uid, pos.x - old.x, pos.y - old.y))
+            })
+            .collect();
         for (ei, pos) in &moves {
             let Some(e) = it.effects.get_mut(*ei) else { continue };
             let Some(prm) = e.params.get_mut("position") else { continue };
             let old = prm.value_at(mt).as_vec2().unwrap_or(*pos);
             prm.set_at(mt, ParamValue::Vec2(*pos));
-            // a pinned layer keeps following its target from its new place
+            // a pinned layer keeps following its target from its new place: its offsets change
+            // by how much further it moved than its target (#2363 review: when both move, by
+            // the same delta (a drag) nothing changes; by different ones (Align, Distribute),
+            // the difference)
             if let Some(pin) = e.layer.as_mut().and_then(|x| x.pin.as_mut()) {
-                let (dx, dy) = (pos.x - old.x, pos.y - old.y);
+                let (tx, ty) = match pin.to {
+                    filmcraft_project::graphic_design::PinTarget::Layer(u) => deltas.iter().find(|d| d.0 == u).map_or((0.0, 0.0), |d| (d.1, d.2)),
+                    filmcraft_project::graphic_design::PinTarget::Frame => (0.0, 0.0),
+                };
+                let (dx, dy) = (pos.x - old.x - tx, pos.y - old.y - ty);
                 pin.offsets[0] += dx;
                 pin.offsets[2] += dx;
                 pin.offsets[1] += dy;
@@ -1088,6 +1106,29 @@ pub fn commands() -> Vec<CommandSpec> {
             r#"{"clip":id?,"layer":n|name?,"type":"point|paragraph" (point: no box, handles scale the text; paragraph: the text wraps in a box that handles resize)}"#,
             has_graphic,
             set_text_type,
+        ),
+        spec(
+            "graphics.moveLayers",
+            "Move Graphic Layers",
+            &[],
+            None,
+            r#"{"clip":id?,"layers":[n]? (default: the selected layers),"delta":[dx,dy] (graphic pixels)}"#,
+            has_graphic,
+            |s, p| {
+                // #2186: several selected layers dragged together on the Program monitor move as one
+                // undo step, each keeping its place relative to the others (pinned layers keep
+                // following their targets from the new place, as with Align)
+                let clip = target_clip(s, p).ok_or_else(|| bad("graphics.moveLayers", "no graphic clip"))?;
+                let mut layers = layers_p(s, clip, p)?;
+                layers.sort_unstable();
+                layers.dedup();
+                let d =
+                    vec2_p(p, "delta").filter(|d| d.x.is_finite() && d.y.is_finite()).ok_or_else(|| bad("graphics.moveLayers", "need `delta`: [dx, dy]"))?;
+                let (boxes, _) = layer_boxes(s, clip, &layers)?;
+                let moves = boxes.into_iter().map(|(ei, own, _)| (ei, Vec2::new(own.x + d.x, own.y + d.y))).collect();
+                move_layers(s, clip, moves, "Move Graphic Layers")?;
+                Ok(json!({"clip": clip.0, "layers": layers}))
+            },
         ),
         spec("graphics.selectLayer", "Select Graphic Layer", &[], None, r#"{"clip":id?,"layers":[n]}"#, has_graphic, |s, p| {
             let clip = target_clip(s, p).ok_or_else(|| bad("graphics.selectLayer", "no graphic clip"))?;
