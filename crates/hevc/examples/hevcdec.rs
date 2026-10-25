@@ -35,11 +35,11 @@ fn main() {
             for (i, au) in aus.iter().enumerate() {
                 count += dec.decode(au, i as i64).expect("decode").len();
             }
-            count += dec.flush().len();
+            count += flush_checked(&mut dec).len();
             continue;
         }
         pics = dec.decode(&data, 0).expect("decode");
-        pics.extend(dec.flush());
+        pics.extend(flush_checked(&mut dec));
         count = pics.len();
     }
     let secs = t0.elapsed().as_secs_f64();
@@ -53,6 +53,17 @@ fn main() {
         }
         std::fs::write(out, buf).expect("write output");
     }
+}
+
+/// Flush the decoder and fail on an error from work that was still in flight (a picture that
+/// failed after `decode` returned would otherwise count as decoded).
+fn flush_checked(dec: &mut Decoder) -> Vec<filmcraft_hevc::Picture> {
+    let pics = dec.flush();
+    if let Some(e) = dec.take_error() {
+        eprintln!("decode: {e}");
+        std::process::exit(1);
+    }
+    pics
 }
 
 /// Split an Annex-B stream into access units. A new one starts at a slice with

@@ -311,6 +311,11 @@ impl<S: Sample> Job<S> {
                     self.fail(Error::Invalid("slice segment address out of range".into()));
                     continue;
                 };
+                // the window only moves forward: a segment in an earlier row cannot be decoded
+                if ts as usize / (self.layout.width_ctbs as usize).max(1) < hooks.row.get() {
+                    self.fail(Error::Invalid("slice segment address before the rows already decoded".into()));
+                    continue;
+                }
                 let start = Start::At { pos: job.sh.data_offset, ts };
                 let mode = Mode::Unit { end_ts: npic, hooks: Some(&hooks) };
                 if let Err(e) = SliceDecoder::decode_unit(&mut win, job, meta, start, mode) {
