@@ -55,11 +55,15 @@ fn main() {
     }
 }
 
-/// Split an Annex-B stream into access units: one starts at a VPS / SPS / PPS / AUD / prefix SEI
-/// after a slice, or at a slice with first_slice_segment_in_pic_flag set.
+/// Split an Annex-B stream into access units. A new one starts at a slice with
+/// first_slice_segment_in_pic_flag set, or at the VPS / SPS / PPS / AUD / prefix SEI that precedes
+/// it. A parameter set or prefix SEI between two slice segments of one picture does not end it, so
+/// the boundary is decided only when the next slice NAL unit shows whether it starts a picture.
 fn access_units(data: &[u8]) -> Vec<&[u8]> {
     let mut aus = Vec::new();
     let (mut start, mut seen_slice) = (0, false);
+    // first VPS / SPS / PPS / AUD / prefix SEI after the last slice, not yet known to be a boundary
+    let mut pending: Option<usize> = None;
     let mut i = 0;
     while i + 5 < data.len() {
         if data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1 {
@@ -68,15 +72,48 @@ fn access_units(data: &[u8]) -> Vec<&[u8]> {
         }
         let sc = if i > 0 && data[i - 1] == 0 { i - 1 } else { i };
         let t = (data[i + 3] >> 1) & 0x3f;
-        let slice = t < 32;
-        if seen_slice && (matches!(t, 32..=35 | 39) || (slice && data[i + 5] & 0x80 != 0)) {
-            aus.push(&data[start..sc]);
-            start = sc;
-            seen_slice = false;
+        if t < 32 {
+            if seen_slice && data[i + 5] & 0x80 != 0 {
+                let b = pending.unwrap_or(sc);
+                aus.push(&data[start..b]);
+                start = b;
+            }
+            seen_slice = true;
+            pending = None;
+        } else if seen_slice && pending.is_none() && matches!(t, 32..=35 | 39) {
+            pending = Some(sc);
         }
-        seen_slice |= slice;
         i += 3;
     }
     aus.push(&data[start..]);
     aus
+}
+
+#[cfg(test)]
+mod tests {
+    use super::access_units;
+
+    /// A NAL unit with a 4-byte start code; slices get first_slice_segment_in_pic_flag in the payload.
+    fn nal(t: u8, first: bool) -> Vec<u8> {
+        vec![0, 0, 0, 1, t << 1, 1, if first { 0x80 } else { 0 }, 0x11]
+    }
+
+    #[test]
+    fn a_prefix_sei_between_slice_segments_stays_in_the_picture() {
+        let stream: Vec<u8> = [nal(32, false), nal(1, true), nal(39, false), nal(1, false), nal(39, false), nal(1, true), nal(1, true)].concat();
+        let aus = access_units(&stream);
+        assert_eq!(aus.len(), 3);
+        assert_eq!(aus.concat(), stream);
+        // VPS + first slice + SEI + continuation | SEI + new picture | new picture
+        assert_eq!(aus[0].len(), 4 * 8);
+        assert_eq!(aus[1].len(), 2 * 8);
+        assert_eq!(aus[2].len(), 8);
+    }
+
+    #[test]
+    fn parameter_sets_after_a_picture_start_the_next_one() {
+        let stream: Vec<u8> = [nal(1, true), nal(32, false), nal(33, false), nal(34, false), nal(19, true)].concat();
+        let aus = access_units(&stream);
+        assert_eq!(aus.iter().map(|a| a.len()).collect::<Vec<_>>(), vec![8, 4 * 8]);
+    }
 }
