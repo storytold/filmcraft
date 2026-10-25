@@ -9,6 +9,10 @@ fn main() {
         eprintln!("usage: hevcdec <in.hevc> [out.yuv]");
         std::process::exit(2);
     }
+    if args.len() > 2 && std::env::var_os("HEVC_AU").is_some() {
+        eprintln!("HEVC_AU drops the decoded pictures, so it cannot write an output file; remove {} or HEVC_AU", args[2]);
+        std::process::exit(2);
+    }
     let data = std::fs::read(&args[1]).expect("read input");
     let t0 = std::time::Instant::now();
     // HEVC_THREADS=n sets the thread count, HEVC_LOOPS=k decodes the file k times (benchmarking),

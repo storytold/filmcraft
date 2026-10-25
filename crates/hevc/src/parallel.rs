@@ -104,32 +104,58 @@ impl Plan {
             return None;
         }
         let unit_of = |ts: u32| -> Option<usize> { if wpp { Some(ts as usize / w.max(1)) } else { layout.tile_id.get(ts as usize).map(|&t| t as usize) } };
-        // (unit, CTB) of the last substream of the previous segment
-        let mut prev: Option<(usize, u32)> = None;
-        for (i, job) in jobs.iter().enumerate() {
-            let s = *layout.rs_to_ts.get(job.sh.segment_address as usize)?;
-            let u0 = unit_of(s)?;
-            if let Some((pu, pts)) = prev
-                && (u0 < pu || (u0 == pu && s <= pts))
-            {
-                return None;
-            }
-            let starts = job.substream_starts()?;
-            let mut last = (u0, s);
-            for (k, &pos) in starts.iter().enumerate() {
-                let u = u0.checked_add(k)?;
-                let unit = units.get_mut(u)?;
-                let ts = if k == 0 { s } else { unit.ts0 };
-                if !(unit.ts0..unit.ts1).contains(&ts) {
-                    return None;
-                }
-                unit.entries.push(Entry { slice: i, pos, ts });
-                last = (u, ts);
-            }
-            prev = Some(last);
+        let mut segments = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            segments.push((*layout.rs_to_ts.get(job.sh.segment_address as usize)?, job.substream_starts()?));
         }
+        assign_entries(&mut units, unit_of, &segments)?;
         Some(Plan { units, wpp, serial: false })
     }
+}
+
+/// Hands the substreams of the slice segments (first CTB in tile scan, `rbsp` position of every
+/// substream) to the units. None unless the segments cover the picture without a gap: the first
+/// starts at the first CTB of the first unit, every later one continues in the unit where the
+/// previous one ended or starts at the first CTB of the next unit, and the last substream lies in
+/// the last unit. Otherwise the serial path, which does not need entry points, decodes the picture.
+fn assign_entries(units: &mut [Unit], unit_of: impl Fn(u32) -> Option<usize>, segments: &[(u32, Vec<usize>)]) -> Option<()> {
+    // (unit, CTB) of the last substream of the previous segment
+    let mut prev: Option<(usize, u32)> = None;
+    for (i, (s, starts)) in segments.iter().enumerate() {
+        let s = *s;
+        let u0 = unit_of(s)?;
+        match prev {
+            None => {
+                if u0 != 0 || s != units.first()?.ts0 {
+                    return None;
+                }
+            }
+            Some((pu, pts)) => {
+                let continues = u0 == pu && s > pts;
+                let next = u0 == pu.checked_add(1)? && s == units.get(u0)?.ts0;
+                if !(continues || next) {
+                    return None;
+                }
+            }
+        }
+        let mut last = (u0, s);
+        for (k, &pos) in starts.iter().enumerate() {
+            let u = u0.checked_add(k)?;
+            let unit = units.get_mut(u)?;
+            let ts = if k == 0 { s } else { unit.ts0 };
+            if !(unit.ts0..unit.ts1).contains(&ts) {
+                return None;
+            }
+            unit.entries.push(Entry { slice: i, pos, ts });
+            last = (u, ts);
+        }
+        prev = Some(last);
+    }
+    // every unit is reached: no substream is missing at the end of a segment
+    if prev?.0 != units.len() - 1 {
+        return None;
+    }
+    Some(())
 }
 
 /// What the row below reads of a WPP row, published CTB by CTB.
@@ -830,5 +856,47 @@ impl<S: Sample> CtuHooks<S> for PipeHooks<'_, S> {
         if rx + 1 == pic.wctb && ry == self.row.get() {
             self.rotate(pic);
         }
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    /// Four WPP rows of five CTBs.
+    fn rows() -> Vec<Unit> {
+        (0..4).map(|r| Unit { ts0: r * 5, ts1: (r + 1) * 5, rows: (r as usize, r as usize + 1), cols: (0, 5), entries: Vec::new() }).collect()
+    }
+
+    fn assign(segments: &[(u32, Vec<usize>)]) -> Option<Vec<usize>> {
+        let mut units = rows();
+        assign_entries(&mut units, |ts| Some(ts as usize / 5), segments)?;
+        Some(units.iter().map(|u| u.entries.len()).collect())
+    }
+
+    #[test]
+    fn full_entry_points_cover_every_row() {
+        assert_eq!(assign(&[(0, vec![0, 10, 20, 30])]), Some(vec![1; 4]));
+        // two slices, the second starting mid-row, and a third at a row start
+        assert_eq!(assign(&[(0, vec![0, 10]), (7, vec![0, 10]), (15, vec![0])]), Some(vec![1, 2, 1, 1]));
+    }
+
+    #[test]
+    fn a_multirow_slice_with_too_few_entry_points_falls_back_to_serial() {
+        // three rows signalled for a four-row picture, or none at all
+        assert_eq!(assign(&[(0, vec![0, 10, 20])]), None);
+        assert_eq!(assign(&[(0, vec![0])]), None);
+    }
+
+    #[test]
+    fn gaps_between_segments_fall_back_to_serial() {
+        // the first slice ends after row 0, the next one starts in row 2
+        assert_eq!(assign(&[(0, vec![0]), (10, vec![0, 10])]), None);
+        // the picture does not start at its first CTB
+        assert_eq!(assign(&[(5, vec![0, 10, 20])]), None);
+        // the next slice starts mid-row in a row nobody decoded
+        assert_eq!(assign(&[(0, vec![0, 10]), (12, vec![0, 10])]), None);
+        // segments out of order
+        assert_eq!(assign(&[(0, vec![0, 10]), (3, vec![0])]), None);
     }
 }
