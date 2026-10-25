@@ -8,6 +8,10 @@
 //! Lumetri Presets (Effects panel): `lumetri.presets` lists them, `lumetri.applyPreset` adds a
 //! Lumetri Color configured as the preset to clips (one undo step), `lumetri.presetThumbnails`
 //! renders a folder's thumbnail grid (our Lumetri on the procedural preview picture) to a PNG.
+//!
+//! `lumetri.autoBasic` (Lumetri ▸ Basic Correction ▸ Auto, **Cmd+Alt+L**) solves a starting grade
+//! for each selected video clip — or every picture clip of the sequence with `scope: "sequence"`
+//! — from the clip's own picture (see `filmcraft_render::auto_tone`), in one undo step.
 
 use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
@@ -72,6 +76,16 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             has_seq,
             apply_match,
         ),
+        CommandSpec {
+            id: "lumetri.autoBasic",
+            label: "Auto Color Correction",
+            menu: &["Clip"],
+            shortcut: Some("Cmd+Alt+L"),
+            params: r#"{"clips":[id]?,"scope":"selection"|"sequence"?,"whiteBalance":bool=true}"#,
+            enabled: has_seq,
+            run: auto_basic,
+            journal: true,
+        },
         spec(
             "lumetri.setSection",
             "Toggle Lumetri Section",
@@ -436,6 +450,100 @@ fn preset_thumbnails(_: &mut Session, p: &Value) -> Result<Value> {
         out["path"] = json!(path);
     }
     Ok(out)
+}
+
+/// Lumetri ▸ Basic Correction ▸ Auto (see `filmcraft_render::auto_tone`): solve Temperature, Tint,
+/// Exposure, Whites and Blacks for each target clip from its picture at the playhead (or its
+/// middle frame when the playhead is elsewhere), reset Contrast / Highlights / Shadows, and write
+/// them into the clip's Lumetri Color (added when missing) — one undo step for all clips.
+fn auto_basic(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "lumetri.autoBasic";
+    let seq_id = s.state.active_sequence.ok_or_else(|| bad(CMD, "no active sequence"))?;
+    let white_balance = bool_p(p, "whiteBalance").unwrap_or(true);
+    let whole = match str_p(p, "scope") {
+        None | Some("selection") => false,
+        Some("sequence") => true,
+        Some(o) => return Err(bad(CMD, format!("unknown scope `{o}` (selection or sequence)"))),
+    };
+    let wanted = if whole { Vec::new() } else { crate::commands::clips_p(s, p) };
+    let q = s.active_sequence().ok_or_else(|| bad(CMD, "no active sequence"))?;
+    // picture clips only: graphics and adjustment layers have nothing of their own to analyse
+    let pictured = |it: &filmcraft_project::TrackItem| s.project.source_par(it.item).is_some() && s.project.source_size(it.item).is_some();
+    let targets: Vec<ClipId> =
+        q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| (whole || wanted.contains(&it.id)) && pictured(it)).map(|it| it.id).collect();
+    if targets.is_empty() {
+        return Err(bad(CMD, if whole { "the sequence has no video clips" } else { "select video clips first" }));
+    }
+    let working = q.settings.color.working;
+    let ph = s.playhead();
+    // the clips as Lumetri sees them: their Lumetri switched off
+    let mut probe = (*s.project).clone();
+    if let Some(pq) = probe.sequence_mut(seq_id) {
+        for t in pq.video_tracks.iter_mut() {
+            for it in t.items.iter_mut().filter(|i| targets.contains(&i.id)) {
+                for e in it.effects.iter_mut().filter(|e| e.effect == "lumetri") {
+                    e.enabled = false;
+                }
+            }
+        }
+    }
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let opts = filmcraft_render::RenderOptions { scale: 0.25, working_output: true, ..Default::default() };
+    let fresh = || filmcraft_project::find_effect("lumetri").map(|d| d.instance());
+    let mut solved = Vec::new();
+    for &clip in &targets {
+        let Some((_, it)) = q.find_item(clip) else { continue };
+        let t = if it.range().contains(ph) { ph } else { it.start + filmcraft_time::Tick(it.duration.0 / 2) };
+        let Some(base) = it.effects.iter().find(|e| e.effect == "lumetri").cloned().or_else(fresh) else { continue };
+        let Some(img) = filmcraft_render::render_clip(&probe, seq_id, clip, t, opts, &provider) else { continue };
+        // too little picture to judge: that clip is left as it was
+        if let Some(a) = filmcraft_render::auto_tone::solve(&img, &base, working, Some(&s.project), white_balance) {
+            solved.push((clip, a));
+        }
+    }
+    if solved.is_empty() {
+        return Err(bad(CMD, "none of the clips has enough picture to correct"));
+    }
+    // HDR working spaces: Auto leaves Whites alone (the solver can't tell "keep" from "0" there)
+    let hdr = filmcraft_color::GradeSpace::new(working, filmcraft_color::grade::DEFAULT_HDR_WHITE_NITS).is_hdr();
+    let label = if solved.len() == 1 { "Auto Color Correction".to_string() } else { format!("Auto Color Correction ({} clips)", solved.len()) };
+    s.edit_sequence(&label, |q, _, _| {
+        for (clip, a) in &solved {
+            let Some((_, it)) = q.find_item_mut(*clip) else { continue };
+            let idx = match it.effects.iter().position(|e| e.effect == "lumetri") {
+                Some(i) => i,
+                None => {
+                    let Some(inst) = fresh() else { continue };
+                    // standard effects go before the intrinsic ones, like `effects.apply`
+                    let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len());
+                    it.effects.insert(pos, inst);
+                    pos
+                }
+            };
+            let e = &mut it.effects[idx];
+            let mut values = vec![("exposure", a.exposure), ("contrast", 0.0), ("highlights", 0.0), ("shadows", 0.0), ("blacks", a.blacks)];
+            if !hdr {
+                values.push(("whites", a.whites));
+            }
+            if white_balance {
+                values.extend([("temperature", a.temperature), ("tint", a.tint)]);
+            }
+            for (k, v) in values {
+                let v = ParamValue::Float(((v as f64) * 10.0).round() / 10.0);
+                let prm = e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone()));
+                prm.keyframes.clear();
+                prm.value = v;
+            }
+            e.params.entry("basic_on".to_string()).or_insert_with(|| filmcraft_project::Param::new(ParamValue::Bool(true))).value = ParamValue::Bool(true);
+            e.enabled = true;
+        }
+        Ok(())
+    })?;
+    let clips: Vec<Value> = solved
+        .iter()
+        .map(|(c, a)| json!({"clip": c.0, "temperature": a.temperature, "tint": a.tint, "exposure": a.exposure, "whites": a.whites, "blacks": a.blacks}))
+        .collect();
+    Ok(json!({"count": clips.len(), "clips": clips}))
 }
 
 /// Lumetri ▸ Color Wheels & Match ▸ Apply Match (see `filmcraft_render::color_match`): match the
