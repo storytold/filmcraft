@@ -483,6 +483,76 @@ fn queue_orders_cancels_and_retries() {
 }
 
 #[test]
+fn project_changes_isolate_media_pools() {
+    let mut s = demo();
+    for (command, params) in [("file.newProject", json!({"name": "Fresh"})), ("file.closeAllProjects", json!({})), ("file.openDemoProject", json!({}))] {
+        let previous = s.media.clone();
+        let stored = "old/clip.wav";
+        let document = std::env::temp_dir().join("old-project").join("cut.fcproj");
+        let document_text = document.to_string_lossy();
+        let resolved = document.parent().unwrap().join(stored).to_string_lossy().into_owned();
+        previous.add_stored_paths([stored.to_string()], Some(&document_text));
+        assert_eq!(previous.follow(stored).unwrap(), resolved);
+        s.execute(command, params).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&previous, &s.media), "{command} must isolate the new project's media");
+        assert_eq!(s.media.follow(stored).unwrap(), stored, "{command} must not inherit an old project's stored path");
+        assert_eq!(previous.follow(stored).unwrap(), resolved, "an in-flight reader keeps its original path context");
+    }
+}
+
+#[test]
+fn queued_export_keeps_its_media_pool_after_a_project_switch() {
+    use filmcraft_media::DemoScene;
+    use filmcraft_project::MediaRef;
+
+    let dir = Scratch::new("queued-old-project");
+    let old = dir.0.join("old");
+    let new = dir.0.join("new");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::create_dir_all(&new).unwrap();
+    let old_media = old.join("tone.mov");
+    let new_media = new.join("tone.mov");
+    crate::media_test_util::make_movie(&old_media, DemoScene::Aurora, 160, 90, 12);
+    crate::media_test_util::make_movie(&new_media, DemoScene::CityNight, 160, 90, 12);
+    let (mut setup, items, _) = crate::media_test_util::session_with(&[&old_media]);
+    std::sync::Arc::make_mut(&mut setup.project).item_mut(items[0]).unwrap().as_media_mut().unwrap().media = MediaRef::File { path: "tone.mov".into() };
+    let old_project = old.join("cut.fcproj");
+    let new_project = new.join("cut.fcproj");
+    setup.execute("file.saveAs", json!({"path": old_project.to_string_lossy()})).unwrap();
+    std::fs::copy(&old_project, &new_project).unwrap();
+
+    let mut s = Session::default();
+    s.execute("file.open", json!({"path": old_project.to_string_lossy()})).unwrap();
+    let old_control = dir.path("old-control.wav");
+    let new_control = dir.path("new-control.wav");
+    let queued = dir.path("queued.wav");
+    let export = |path: &str| json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": path, "range": "custom", "startSeconds": 0, "endSeconds": 0.25});
+    s.execute("file.exportMedia", {
+        let mut request = export(&old_control);
+        request["wait"] = json!(true);
+        request
+    })
+    .unwrap();
+    let original_media = s.media.clone();
+    let added = s.execute("export.queue.add", export(&queued)).unwrap();
+    let id = added["added"][0].as_u64().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&s.export_queue.items[0].media, &original_media));
+    s.execute("file.open", json!({"path": new_project.to_string_lossy()})).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&s.media, &original_media));
+    assert!(std::sync::Arc::ptr_eq(&s.export_queue.items[0].media, &original_media));
+    s.execute("file.exportMedia", {
+        let mut request = export(&new_control);
+        request["wait"] = json!(true);
+        request
+    })
+    .unwrap();
+    assert_ne!(std::fs::read(&old_control).unwrap(), std::fs::read(&new_control).unwrap(), "the two project-relative media files must produce different audio");
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    assert_eq!(queue(&mut s).iter().find(|item| item["id"] == id).unwrap()["status"], "done");
+    assert_eq!(std::fs::read(queued).unwrap(), std::fs::read(old_control).unwrap(), "the queued export must use the old project's media file");
+}
+
+#[test]
 fn queue_move_by_extreme_offsets_clamps_instead_of_overflowing() {
     let mut s = demo();
     let ids: Vec<u64> = (0..3)
