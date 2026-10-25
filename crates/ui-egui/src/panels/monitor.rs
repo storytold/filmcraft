@@ -344,7 +344,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         monitor_view::rulers(app, ui, which, top, left, video_area, pic, frame_size);
     }
     if which == Which::Source && show_picture && pic_resp.drag_started() && app.ui.tool != crate::state::Tool::Hand {
-        crate::panels::source_drag::begin(app, ui, true, true);
+        // both streams, or only the ones a clicked Drag Video / Audio Only control chose
+        let (video, audio) = app.ui.source_drag_streams.unwrap_or((true, true));
+        crate::panels::source_drag::begin(app, ui, video, audio);
     }
     if pic_resp.double_clicked() && which == Which::Source {
         // (Premiere opens the clip's settings; we show info)
