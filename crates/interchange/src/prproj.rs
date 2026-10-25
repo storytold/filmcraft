@@ -28,14 +28,13 @@ use filmcraft_project::{
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use roxmltree::{Node, NodeId};
 
-use crate::common::{Builder, MediaSpec, empty_sequence, resolve_path, settings_for, transition_effect};
+use crate::common::{Builder, MAX_IMPORTED_TRACKS, MediaSpec, empty_sequence, resolve_path, settings_for, transition_effect};
 use crate::xml::{child, child_bool, child_f64, child_i64, child_text, children, path_node, path_text};
 use crate::{Error, Format, ImportOptions, Imported, Report, Result};
 
 const MAX_XML: usize = 128 << 20;
 const MAX_RATIO: usize = 200;
 const MAX_BIN_DEPTH: usize = 64;
-const MAX_TRACKS: usize = 256;
 const ALIAS: &[(&str, &str, &str)] = &[
     ("motion", "4", "Uniform Scale"),
     ("crop", "5", "Zoom"),
@@ -292,8 +291,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     fn read_track(&mut self, seq: &mut Sequence, seq_id: ItemId, kind: TrackKind, node: Node<'a, 'i>, clips: &mut HashMap<NodeId, ClipId>) {
         let header = path_node(node, &["ClipTrack", "Track"]);
         let index = header.and_then(|t| child_i64(t, "Index")).and_then(|i| usize::try_from(i).ok()).unwrap_or(seq.tracks(kind).len());
-        if index >= MAX_TRACKS {
-            self.report.warn(format!("tracks after the first {MAX_TRACKS} were skipped"));
+        if index >= MAX_IMPORTED_TRACKS {
+            self.report.warn(format!("tracks after the first {MAX_IMPORTED_TRACKS} were skipped"));
             return;
         }
         self.b.ensure_tracks(seq, kind, index + 1);
@@ -321,15 +320,21 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let (mut heads, mut tails) = (HashMap::new(), HashMap::new());
         for item in self.objects.list(node, &["ClipTrack", "ClipItems", "TrackItems"], "TrackItem") {
             let Some(clip) = self.clip(item, kind, seq_id, frame) else { continue };
-            clips.insert(item.id(), clip.id);
+            let (id, head, tail) = (clip.id, (clip.id, clip.start), (clip.id, clip.end()));
+            match self.b.place(seq, kind, index, clip) {
+                None => {
+                    self.report.warn(format!("{kind:?} clips past the {MAX_IMPORTED_TRACKS}-track import limit were skipped"));
+                    continue;
+                }
+                Some(i) if i != index => self.report.warn("overlapping clips on one track; the later one was moved to a new track"),
+                Some(_) => {}
+            }
+            clips.insert(item.id(), id);
             if let Some(t) = self.objects.at(item, &["ClipTrackItem", "HeadTransition"]) {
-                heads.insert(t.id(), (clip.id, clip.start));
+                heads.insert(t.id(), head);
             }
             if let Some(t) = self.objects.at(item, &["ClipTrackItem", "TailTransition"]) {
-                tails.insert(t.id(), (clip.id, clip.end()));
-            }
-            if self.b.place(seq, kind, index, clip) != index {
-                self.report.warn("overlapping clips on one track; the later one was moved to a new track");
+                tails.insert(t.id(), tail);
             }
         }
         for t in self.objects.list(node, &["ClipTrack", "TransitionItems", "TrackItems"], "TrackItem") {
