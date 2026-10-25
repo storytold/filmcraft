@@ -862,3 +862,127 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         assert!(doc.cues.is_empty(), "half-open export excludes cues touching either boundary: {doc:?}");
     }
 }
+
+/// An export job that has not finished, writing `path` (a real one ends too soon to catch).
+fn busy_with(s: &mut Session, path: &str) -> std::sync::Arc<filmcraft_export::Progress> {
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 100;
+    let job = crate::Job { id, label: "Export busy".into(), progress: Default::default(), result: Default::default() };
+    let progress = job.progress.clone();
+    s.jobs.push(job);
+    s.export_targets.insert(id, crate::export_tools::output_identity(path));
+    progress
+}
+
+/// #2721 review: the file is compared, not the path string, and an output not written yet counts.
+#[test]
+fn a_busy_output_is_found_by_any_spelling_of_its_path() {
+    let mut s = demo();
+    let dir = Scratch::new("busy-alias");
+    let path = dir.path("out.wav");
+    assert!(!std::path::Path::new(&path).exists(), "not written yet");
+    let alias = format!("{}/./sub/../out.wav", dir.0.display());
+    std::fs::create_dir_all(dir.0.join("sub")).unwrap();
+    assert_eq!(crate::export_tools::output_identity(&path), crate::export_tools::output_identity(&alias));
+    // through a symlinked folder, `..` goes up from where the link points (#2721 review)
+    #[cfg(unix)]
+    {
+        std::fs::create_dir_all(dir.0.join("real/sub")).unwrap();
+        std::os::unix::fs::symlink(dir.0.join("real/sub"), dir.0.join("alias")).unwrap();
+        let via_link = format!("{}/alias/../out.wav", dir.0.display());
+        assert_eq!(crate::export_tools::output_identity(&via_link), crate::export_tools::output_identity(&dir.path("real/out.wav")));
+        assert_ne!(crate::export_tools::output_identity(&via_link), crate::export_tools::output_identity(&path));
+        // a dangling symlink names the file it will create (#2721 review)
+        std::os::unix::fs::symlink("target.wav", dir.0.join("dangling.wav")).unwrap();
+        assert_eq!(crate::export_tools::output_identity(&dir.path("dangling.wav")), crate::export_tools::output_identity(&dir.path("target.wav")));
+    }
+    // case-insensitive volumes: another spelling of the name is the same file
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
+        assert_eq!(crate::export_tools::output_identity(&dir.path("OUT.wav")), crate::export_tools::output_identity(&path));
+    }
+    let progress = busy_with(&mut s, &path);
+    let e = s
+        .execute("file.exportMedia", json!({"path": alias, "preset": "Waveform Audio 48 kHz 16-bit", "range": "custom", "startSeconds": 0, "endSeconds": 0.1}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("being exported already"), "{e}");
+    // another file in the same folder is not busy
+    s.execute(
+        "file.exportMedia",
+        json!({"path": dir.path("other.wav"), "preset": "Waveform Audio 48 kHz 16-bit", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true}),
+    )
+    .unwrap();
+    progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    s.execute(
+        "file.exportMedia",
+        json!({"path": alias, "preset": "Waveform Audio 48 kHz 16-bit", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true}),
+    )
+    .unwrap();
+}
+
+/// #2721 review: a queue item whose file Export is writing waits, ready, and starts after it.
+#[test]
+fn a_queue_item_waits_for_its_busy_output() {
+    let mut s = demo();
+    let dir = Scratch::new("busy-queue");
+    let path = dir.path("q.wav");
+    let progress = busy_with(&mut s, &path);
+    s.execute("export.queue.add", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": path, "range": "custom", "startSeconds": 0, "endSeconds": 0.1}))
+        .unwrap();
+    s.execute("export.queue.start", json!({})).unwrap();
+    for _ in 0..3 {
+        s.poll_persistence();
+    }
+    assert_eq!(queue(&mut s)[0]["status"], "ready", "waits instead of failing: {:?}", queue(&mut s));
+    progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    assert_eq!(queue(&mut s)[0]["status"], "done", "{:?}", queue(&mut s));
+    assert!(std::path::Path::new(&path).exists());
+}
+
+/// #2721 review: an export whose thread can't start leaves no job and no claim on its file.
+#[test]
+fn an_export_that_cannot_start_leaves_its_file_free() {
+    let mut s = demo();
+    let dir = Scratch::new("busy-spawn");
+    let path = dir.path("s.wav");
+    let jobs = s.jobs.len();
+    crate::export_tools::FAIL_EXPORT_THREAD.with(|f| f.set(true));
+    let e = s
+        .execute("file.exportMedia", json!({"path": path, "preset": "Waveform Audio 48 kHz 16-bit", "range": "custom", "startSeconds": 0, "endSeconds": 0.1}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("can't start the export"), "{e}");
+    assert_eq!(s.jobs.len(), jobs);
+    assert_eq!(crate::export_tools::output_busy(&s, &path), None);
+    s.execute(
+        "file.exportMedia",
+        json!({"path": path, "preset": "Waveform Audio 48 kHz 16-bit", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true}),
+    )
+    .unwrap();
+}
+
+/// #2721 review: a real export (not a stand-in job) keeps its file busy while it runs; once it is
+/// cancelled and has stopped, the same file exports again.
+#[test]
+fn a_running_export_keeps_its_file_until_it_is_cancelled() {
+    let mut s = demo();
+    let dir = Scratch::new("busy-real");
+    let path = dir.path("long.mov");
+    let job = s.execute("file.exportMedia", json!({"path": path, "preset": "Apple ProRes 422 HQ", "range": "entire"})).unwrap()["job"].as_u64().unwrap();
+    assert_eq!(crate::export_tools::output_busy(&s, &path), Some(job));
+    let e = s.execute("file.exportMedia", json!({"path": path, "preset": "Apple ProRes 422 HQ", "range": "entire"})).unwrap_err().to_string();
+    assert!(e.contains("being exported already"), "{e}");
+    s.execute("jobs.cancel", json!({"job": job})).unwrap();
+    let t0 = std::time::Instant::now();
+    while crate::export_tools::output_busy(&s, &path).is_some() {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(60), "the cancelled export stops");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // the retry writes the file
+    s.execute(
+        "file.exportMedia",
+        json!({"path": path, "preset": "Apple ProRes 422 HQ", "range": "custom", "startSeconds": 0, "endSeconds": 0.2, "wait": true}),
+    )
+    .unwrap();
+    assert!(std::path::Path::new(&path).exists());
+}

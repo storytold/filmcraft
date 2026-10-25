@@ -520,3 +520,54 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+/// #2670: while the file is being exported, its settings can't change (a typed file name doesn't
+/// take), Send to Queue is off, and Export turns into Cancel instead of starting the file over.
+#[test]
+fn an_export_in_progress_locks_its_settings_and_export_cancels_it() {
+    let mut d = Driver::new("busy");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"preset": "Match Source – Adaptive Low Bitrate", "location": loc, "fileName": "busy"}}));
+    d.frames(2);
+    // an export of that file that has not finished (a real one ends too soon to catch)
+    let path = filmcraft_ui_egui::panels::export_mode::output_path(&d.app().ui.export);
+    let job = filmcraft_engine::Job { id: 900, label: "Export busy.mp4".into(), progress: Default::default(), result: Default::default() };
+    let progress = job.progress.clone();
+    d.app().session.jobs.push(job);
+    d.app().session.export_targets.insert(900, filmcraft_engine::export_tools::output_identity(&path));
+    d.frames(2);
+    assert_eq!(filmcraft_ui_egui::panels::export_mode::running_export(d.app()), Some(900));
+    let label = |d: &mut Driver| d.app().auto.elements.iter().find(|e| e.id == "export.button").map(|e| e.label.clone());
+    assert_eq!(label(&mut d).as_deref(), Some("Cancel"));
+    // the file name can't be edited meanwhile
+    d.click("export.fileName");
+    d.ok("ui.type", json!({"text": "Other"}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.file_name, "busy", "settings are locked while exporting");
+    // and so are Range and Scaling in the preview column (#2721 review): their menus don't open
+    for combo in ["export.range", "export.scaling"] {
+        d.click(combo);
+        d.frames(2);
+        assert!(!d.has(&format!("{combo}.option.0")), "{combo} opens while exporting");
+        d.ok("ui.key", json!({"key": "Escape"}));
+        d.frames(1);
+    }
+    // the engine refuses a second export of the same file
+    let e = d.app().session.execute("file.exportMedia", json!({"path": path, "preset": "Match Source – Adaptive Low Bitrate"})).unwrap_err().to_string();
+    assert!(e.contains("being exported already"), "{e}");
+    let queued = d.queue().len();
+    d.click("export.sendToQueue");
+    assert_eq!(d.queue().len(), queued, "Send to Queue is off");
+    // Export (now Cancel) cancels the running export
+    d.click("export.button");
+    assert!(progress.cancel.load(std::sync::atomic::Ordering::Relaxed), "the export was cancelled");
+    // once it has finished, everything is back
+    progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    d.frames(2);
+    assert_eq!(label(&mut d).as_deref(), Some("Export"));
+    // once it has finished, Range opens again
+    d.click("export.range");
+    d.frames(2);
+    assert!(d.has("export.range.option.0"), "Range is back");
+}

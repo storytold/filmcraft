@@ -476,8 +476,14 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !s.services.export_in_memory()) {
         let _ = std::fs::create_dir_all(dir);
     }
+    // one export at a time per file: a second one would write it again from the start (#2670)
+    if output_busy(s, &settings.path).is_some() {
+        return Err(EngineError::Other(format!("{} is being exported already; wait for it to finish or cancel it", file_name(&settings.path))));
+    }
     write_sidecar(s, &project, seq, &settings)?;
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    s.export_targets.retain(|job, _| s.jobs.iter().any(|j| j.id == *job));
+    s.export_targets.insert(id, output_identity(&settings.path));
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says.
     let provider = s.media.full_res_provider(project.clone(), s.services.clone()).recording();
@@ -504,10 +510,88 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     s.jobs.push(job);
     if wait || cfg!(target_arch = "wasm32") {
         run();
-    } else {
-        std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+    } else if let Err(e) = spawn_export_thread(run) {
+        // nothing will write the file: the job and its claim on the file go, or the next export of
+        // it would be refused as busy for good (#2721 review)
+        s.jobs.retain(|j| j.id != id);
+        s.export_targets.remove(&id);
+        s.export_offline.remove(&id);
+        return Err(EngineError::Other(format!("can't start the export: {e}")));
     }
     Ok(id)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the next export started on this thread fails to start its thread.
+    pub(crate) static FAIL_EXPORT_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn spawn_export_thread(run: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_EXPORT_THREAD.with(|f| f.replace(false)) {
+        return Err(std::io::Error::other("injected thread start failure"));
+    }
+    std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map(|_| ())
+}
+
+/// The file an output path names, the same for every spelling of it (`/x/out.wav`,
+/// `/x/./out.wav`, a relative path, a path through a symlinked folder): its longest part that
+/// exists, canonicalized (symlinks resolved, so a `..` after a link goes up from where the link
+/// points), then the rest with `.` and `..` resolved. An output not written yet is therefore its
+/// real folder plus its name.
+pub fn output_identity(path: &str) -> String {
+    let p = Path::new(path);
+    let mut abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    // a final symlink that points to a file not written yet: writing it creates that file
+    for _ in 0..8 {
+        let Ok(target) = std::fs::read_link(&abs) else { break };
+        if abs.exists() {
+            break;
+        }
+        abs = match abs.parent() {
+            Some(dir) if target.is_relative() => dir.join(target),
+            _ => target,
+        };
+    }
+    let parts: Vec<std::path::Component> = abs.components().collect();
+    // the longest prefix that exists on disk (at most every component)
+    let mut base = None;
+    for n in (1..=parts.len()).rev() {
+        let prefix: std::path::PathBuf = parts.iter().take(n).collect();
+        if let Ok(real) = std::fs::canonicalize(&prefix) {
+            base = Some((real, n));
+            break;
+        }
+    }
+    let (mut out, rest) = match base {
+        Some((real, n)) => (real, parts.get(n..).unwrap_or_default()),
+        None => (std::path::PathBuf::new(), parts.as_slice()),
+    };
+    for c in rest {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    let id = out.to_string_lossy().into_owned();
+    // the default volumes of macOS and Windows ignore case: `Out.wav` is `out.wav` there (on a
+    // case-sensitive volume this only makes two such names wait for each other)
+    if cfg!(any(target_os = "macos", target_os = "windows")) { id.to_lowercase() } else { id }
+}
+
+/// The export job writing the file `path` names while it runs (#2670): another export of that
+/// file waits (the queue) or is refused (Export, `file.exportMedia`).
+pub fn output_busy(s: &Session, path: &str) -> Option<u64> {
+    let identity = output_identity(path);
+    s.export_targets
+        .iter()
+        .filter(|(_, target)| **target == identity)
+        .map(|(job, _)| *job)
+        .find(|job| s.jobs.iter().any(|j| j.id == *job && !j.progress.finished.load(Ordering::Relaxed)))
 }
 
 /// Last-resort guard for a background job body (export, previews, proxies, …): a panic marks the
@@ -695,6 +779,18 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
             return;
         };
         let it = s.export_queue.items[i].clone();
+        // its file is being exported by Export or an agent: the item waits, still ready, and
+        // starts once that ends (#2721 review), instead of failing
+        if output_busy(s, &it.settings.path).is_some() {
+            // on the web the other export only advances between frames (`pump_jobs`): waiting
+            // here would never see it end
+            if !wait || cfg!(target_arch = "wasm32") {
+                return;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
         let label = format!("Queue: {} → {}", it.sequence_name, file_name(&it.settings.path));
         match spawn_export(s, it.project.clone(), it.sequence, it.settings.clone(), label, wait) {
             Ok(job) => {
