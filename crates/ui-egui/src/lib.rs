@@ -1953,8 +1953,23 @@ impl FilmcraftApp {
             } else {
                 json!({})
             };
-            if let Err(e) = menus::invoke(self, ctx, &id, params) {
-                self.ui.status = e;
+            let keyboard_step = matches!(
+                id.as_str(),
+                "playhead.stepBack"
+                    | "playhead.stepForward"
+                    | "playhead.stepBack5"
+                    | "playhead.stepForward5"
+            );
+            let before = keyboard_step.then(|| self.session.playhead());
+            match menus::invoke(self, ctx, &id, params) {
+                Ok(_) => {
+                    if before.is_some_and(|ph| ph != self.session.playhead()) {
+                        let now = ctx.input(|i| i.time);
+                        self.scrub_keyboard_step(now);
+                        ctx.request_repaint();
+                    }
+                }
+                Err(e) => self.ui.status = e,
             }
         }
         // Only the paste action of this pass may consume the event's image.
