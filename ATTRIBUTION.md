@@ -5,6 +5,16 @@ a `<file>.attribution` sidecar with full details. The rules are in [AGENTS.md](A
 iconography, images or other Adobe assets; open licences only; every asset attributed.
 `cargo xtask assets` checks that this index and the sidecars cover every asset in the repository.
 
+## Vendored code
+
+Code dependencies are governed by [AGENTS.md](AGENTS.md) §2, so they carry no sidecar; each vendored
+tree keeps upstream's license file and a README stating its delta.
+
+| Tree | Source | License | Delta |
+|---|---|---|---|
+| `third_party/winit` | Published `winit` 0.30.13 crate ([crates.io](https://crates.io/crates/winit/0.30.13), [rust-windowing/winit](https://github.com/rust-windowing/winit)); diffed against the `.crate`, `src/` and `tests/` byte-identical | Apache-2.0 (upstream's `LICENSE`, vendored unchanged) | One Android-only file (`src/platform_impl/android/mod.rs`) filled in with the mouse-event path upstream marks `// TODO mouse events` — see the [README](third_party/winit/README.md) |
+
+
 ## Asset files
 
 | Asset | Author | Source | Licence |

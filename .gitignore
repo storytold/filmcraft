@@ -6,3 +6,7 @@ plan/
 .DS_Store
 .claude/worktrees/
 __pycache__/
+
+# cargo build artifacts beside the vendored winit crate (a path dependency drops them there)
+third_party/winit/.cargo-ok
+third_party/winit/.cargo_vcs_info.json
