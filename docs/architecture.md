@@ -604,7 +604,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 clips ──sync (in | out | timecode[±hours] | marker | audio)──► anchors (media time ↔ common instant)
   ├─ clip.synchronize        moves selected timeline clips (link groups together) onto the reference
   ├─ clip.mergeClips         video + ≤16 audio clips → a merged-clip sequence
-  └─ clip.createMulticam     cameras → a multi-camera source sequence (one video track per angle)
+  └─ clip.createMulticam     cameras → a multi-camera source sequence (one video track per angle;
+                             with timecode, `group` puts the takes sharing a Camera Label / Angle
+                             on one camera's tracks, `excludeNoTimecode` leaves untimed clips out)
 multi-camera clip = nested source + TrackItem::multicam {enabled, angle}
   render: only the angle's video track · audio: camera 1 | all | the angle (Switch Audio)
 ```

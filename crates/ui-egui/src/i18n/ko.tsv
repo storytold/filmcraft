@@ -3604,3 +3604,7 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+	Group Clips into Cameras	클립을 카메라별로 묶기
+	Camera Label	카메라 레이블
+	Leave out clips without timecode	타임코드가 없는 클립 제외
+	No timecode: {names}	타임코드 없음: {names}

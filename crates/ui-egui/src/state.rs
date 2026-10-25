@@ -679,6 +679,11 @@ pub struct SyncDraft {
     /// Create Multi-Camera: `clip` | `track` | `metadata`.
     pub camera_names: String,
     pub processed_bin: bool,
+    /// Create Multi-Camera with Timecode: `none` | `cameraLabel` | `cameraAngle` — clips sharing that
+    /// metadata are one camera (#2241).
+    pub group: String,
+    /// Create Multi-Camera with Timecode: leave out clips that have no timecode.
+    pub exclude_no_timecode: bool,
     /// Merge Clips: drop the video clip's own audio.
     pub remove_video_audio: bool,
     pub message: String,
@@ -698,6 +703,8 @@ impl Default for SyncDraft {
             audio: "camera1".into(),
             camera_names: "clip".into(),
             processed_bin: true,
+            group: "none".into(),
+            exclude_no_timecode: false,
             remove_video_audio: false,
             message: String::new(),
         }
