@@ -19,6 +19,8 @@ struct U {
 @group(0) @binding(2) var dst: texture_storage_2d<rgba32float, write>;
 // Unsharp Mask: the image before blurring.
 @group(0) @binding(3) var aux: texture_2d<f32>;
+// LUT pass: the table (the 1D shaper's entries, then the cube's, red fastest; rgb in .xyz).
+@group(0) @binding(4) var<storage, read> lut_data: array<vec4<f32>>;
 
 const OP_BRIGHTNESS_CONTRAST: u32 = 1u;
 const OP_PROC_AMP: u32 = 2u;
@@ -50,6 +52,7 @@ const OP_MIRROR: u32 = 28u;
 const OP_OFFSET: u32 = 29u;
 const OP_VIDEO_LIMITER: u32 = 30u;
 const OP_LUMETRI: u32 = 31u;
+const OP_LUT: u32 = 32u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -617,6 +620,88 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     return grade_dec(v);
 }
 
+// The LUT pass (`LumetriLut::apply`): u.i1.x cube size (0: none), u.i1.y shaper size (0: none),
+// u.i1.z grading mode (as `grade_enc`), u.i1.w mix by u.p0.w (the Look's Intensity); cube domain
+// u.p0.xyz … u.p1.xyz, shaper domain u.p2.xyz … u.p3.xyz. Sizes are at least 2 (`gpu_ok`).
+
+// One channel of `Lut1d::apply`.
+fn lut_shaper1(v: f32, lo: f32, hi: f32, ch: u32) -> f32 {
+    let n = u.i1.y - 1u;
+    let t = clamp((v - lo) / (hi - lo), 0.0, 1.0) * f32(n);
+    let i = min(u32(t), n - 1u);
+    let f = t - f32(i);
+    let a = lut_data[i][ch];
+    let b = lut_data[min(i + 1u, n)][ch];
+    return a + (b - a) * f;
+}
+
+fn lut_at(r: u32, g: u32, b: u32) -> vec3<f32> {
+    let n = u.i1.x;
+    return lut_data[u.i1.y + r + g * n + b * n * n].xyz;
+}
+
+// `Lut3d::apply`: tetrahedral interpolation (the arithmetic of `lut.wgsl`).
+fn lut_cube(c: vec3<f32>) -> vec3<f32> {
+    let n = u.i1.x;
+    let m = f32(n - 1u);
+    let t = clamp((c - u.p0.xyz) / (u.p1.xyz - u.p0.xyz), vec3(0.0), vec3(1.0)) * m;
+    let i = min(vec3<u32>(t), vec3(n - 2u));
+    let f = t - vec3<f32>(i);
+    let fr = f.x;
+    let fg = f.y;
+    let fb = f.z;
+    let c000 = lut_at(i.x, i.y, i.z);
+    let c111 = lut_at(i.x + 1u, i.y + 1u, i.z + 1u);
+    var ca: vec3<f32>;
+    var cb: vec3<f32>;
+    var w: vec4<f32>;
+    if fr > fg {
+        if fg > fb {
+            ca = lut_at(i.x + 1u, i.y, i.z); cb = lut_at(i.x + 1u, i.y + 1u, i.z); w = vec4(1.0 - fr, fr - fg, fg - fb, fb);
+        } else if fr > fb {
+            ca = lut_at(i.x + 1u, i.y, i.z); cb = lut_at(i.x + 1u, i.y, i.z + 1u); w = vec4(1.0 - fr, fr - fb, fb - fg, fg);
+        } else {
+            ca = lut_at(i.x, i.y, i.z + 1u); cb = lut_at(i.x + 1u, i.y, i.z + 1u); w = vec4(1.0 - fb, fb - fr, fr - fg, fg);
+        }
+    } else if fb > fg {
+        ca = lut_at(i.x, i.y, i.z + 1u); cb = lut_at(i.x, i.y + 1u, i.z + 1u); w = vec4(1.0 - fb, fb - fg, fg - fr, fr);
+    } else if fb > fr {
+        ca = lut_at(i.x, i.y + 1u, i.z); cb = lut_at(i.x, i.y + 1u, i.z + 1u); w = vec4(1.0 - fg, fg - fb, fb - fr, fr);
+    } else {
+        ca = lut_at(i.x, i.y + 1u, i.z); cb = lut_at(i.x + 1u, i.y + 1u, i.z); w = vec4(1.0 - fg, fg - fr, fr - fb, fb);
+    }
+    return w.x * c000 + w.y * ca + w.z * cb + w.w * c111;
+}
+
+// `Lut::apply`: the shaper, then the cube.
+fn lut_apply(c: vec3<f32>) -> vec3<f32> {
+    var v = c;
+    if u.i1.y >= 2u {
+        v = vec3(lut_shaper1(v.x, u.p2.x, u.p3.x, 0u), lut_shaper1(v.y, u.p2.y, u.p3.y, 1u), lut_shaper1(v.z, u.p2.z, u.p3.z, 2u));
+    }
+    if u.i1.x >= 2u {
+        v = lut_cube(v);
+    }
+    return v;
+}
+
+fn lut_op(c: vec3<f32>) -> vec3<f32> {
+    let v = grade_enc(c);
+    // `effects::within_unit`: SDR clamps to 0…1; HDR scales a signal above 1 into it and back
+    var lk: vec3<f32>;
+    if u.i1.z == 0u {
+        lk = lut_apply(clamp(v, vec3(0.0), vec3(1.0)));
+    } else {
+        let m = max(max(max(v.x, v.y), v.z), 1.0);
+        lk = lut_apply(max(v / m, vec3(0.0))) * m;
+    }
+    var o = lk;
+    if u.i1.w != 0u {
+        o = v + (lk - v) * u.p0.w;
+    }
+    return grade_dec(o);
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -801,6 +886,14 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let c = o.rgb / a;
             let res = lumetri_op(c, p);
             return vec4(res * a, a);
+        }
+        case OP_LUT: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            return vec4(lut_op(o.rgb / a) * a, a);
         }
         default: {
             let o = ld(p);

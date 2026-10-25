@@ -612,7 +612,7 @@ pub(crate) fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> Gra
 /// into 0…1 first and back afterwards, so operations defined on 0…1 (LUTs, HSL) keep the
 /// highlights instead of clipping them. SDR signals are clamped as before.
 #[inline]
-fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32; 3] {
+pub(crate) fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32; 3] {
     if !hdr {
         return f(v.map(|q| q.clamp(0.0, 1.0)));
     }
@@ -1572,6 +1572,81 @@ mod lumetri_cpu_parity_tests {
                 op.apply(&mut img_copy);
                 for (i, (&orig, &copy)) in img_orig.px.iter().zip(&img_copy.px).enumerate() {
                     assert!((orig - copy).abs() <= 1e-6, "{working:?} {name}: sample {i}: orig={orig}, copy={copy}");
+                }
+            }
+        }
+    }
+
+    /// A project whose LUT library holds `lib:shaped`: a 1D shaper over a non-unit domain in front
+    /// of a 5³ cube that rotates and bends the channels (the paths a built-in 33³ cube leaves out).
+    fn shaped_lut_project() -> filmcraft_project::Project {
+        let shaper = filmcraft_color::Lut1d {
+            domain_min: [-0.1, 0.0, 0.05],
+            domain_max: [1.2, 1.0, 1.1],
+            data: (0..6).map(|i| [(i as f32 / 5.0).powf(0.8), i as f32 / 5.0, (i as f32 / 5.0).powf(1.3)]).collect(),
+        };
+        let cube = filmcraft_color::Lut3d::from_fn(5, |c| [c[1] * 0.9 + 0.05, c[2], c[0].powf(1.2)]);
+        let text = filmcraft_color::Lut { title: "shaped".into(), shaper: Some(shaper), cube: Some(cube) }.to_cube();
+        let mut p = filmcraft_project::Project::new("luts");
+        p.luts.push(filmcraft_project::ProjectLut { id: "shaped".into(), name: "Shaped".into(), source_path: None, format: "cube".into(), text: text.into() });
+        p
+    }
+
+    /// The Lumetri op with an Input LUT and / or a Look LUT (built-in cubes and a library LUT with a
+    /// shaper, Intensity below and above 100) is GPU-capable and grades exactly as `fn lumetri`, in
+    /// SDR and in the HDR working spaces.
+    #[test]
+    fn lumetri_lut_op_matches_fn_lumetri() {
+        let txt = |s: &str| ParamValue::Text(s.into());
+        let cases: Vec<(&str, Vec<(&str, ParamValue)>)> = vec![
+            ("input", vec![("input_lut", txt("builtin:slog3-sgamut3cine-to-rec709"))]),
+            ("look", vec![("look_lut", txt("builtin:look-bleach-bypass")), ("look_intensity", fl(70.0)), ("exposure", fl(-0.5))]),
+            (
+                "both",
+                vec![
+                    ("input_lut", txt("builtin:slog3-sgamut3cine-to-rec709")),
+                    ("look_lut", txt("builtin:look-bleach-bypass")),
+                    ("exposure", fl(-0.5)),
+                    ("contrast", fl(15.0)),
+                    ("highlights", fl(-15.0)),
+                    ("creative_sat", fl(95.0)),
+                    ("highlight_tint", col(0.79, 0.54, 0.35)),
+                    ("vignette_amount", fl(-1.5)),
+                ],
+            ),
+            ("look_150", vec![("look_lut", txt("builtin:look-teal-orange")), ("look_intensity", fl(150.0))]),
+            ("shaped_input", vec![("input_lut", txt("lib:shaped")), ("saturation", fl(120.0))]),
+            ("shaped_look", vec![("look_lut", txt("lib:shaped")), ("look_intensity", fl(100.0)), ("curves_hdr_range", fl(400.0))]),
+        ];
+        let project = shaped_lut_project();
+        let (w, h) = (67usize, 41usize);
+        for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+            let cx = FxCtx {
+                t: Tick::ZERO,
+                px_scale: 1.0,
+                seconds: 0.0,
+                timecode: "",
+                clip_name: "",
+                project: Some(&project),
+                env: None,
+                frame_rate: 24.0,
+                working,
+            };
+            for (name, params) in &cases {
+                let e = effect(params);
+                let mut reference = test_picture(w, h);
+                let mut got = reference.clone();
+                lumetri(&mut reference, &e, &cx);
+                let op = FxOp::eval(&e, &cx, w, h).unwrap_or_else(|| panic!("{name}: eval returned None"));
+                let FxOp::Lumetri { input_lut, look_lut, .. } = &op else { panic!("{name}: {op:?}") };
+                let names = |id: &str| params.iter().any(|(k, _)| *k == id);
+                assert_eq!(input_lut.is_some(), names("input_lut"), "{working:?} {name}: Input LUT");
+                assert_eq!(look_lut.is_some(), names("look_lut"), "{working:?} {name}: Look LUT");
+                assert!(op.gpu_ok(), "{working:?} {name}: expected gpu_ok == true");
+                op.apply(&mut got);
+                assert_ne!(got.px, test_picture(w, h).px, "{working:?} {name}: the grade changed nothing");
+                for (i, (&a, &b)) in reference.px.iter().zip(&got.px).enumerate() {
+                    assert!((a - b).abs() <= 1e-6, "{working:?} {name}: sample {i}: fn lumetri {a}, op {b}");
                 }
             }
         }

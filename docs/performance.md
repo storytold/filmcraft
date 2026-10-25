@@ -80,6 +80,37 @@ What remains per live decoder is unchanged: the H.264 decoder publishes each mac
 picture as its own allocations (`Frame::make_row`, five per row), which is where the 290 MB per
 decoder comes from.
 
+## Results (Lumetri Input LUT and Look LUT on the GPU, before → after)
+
+A Lumetri with an Input LUT or a Look LUT (a built-in Look included) was evaluated on the CPU:
+`gpufx::FxOp::Lumetri` refused LUTs, so the whole layer was pre-rendered by the frame workers (Y'CbCr
+→ working space, the grade, the 3D LUT). The op now carries the resolved LUTs and the effect stage
+runs them as LUT passes (`fx.wgsl` `lut_op`, the tables in a storage buffer kept while frames use
+them).
+
+A real project, measured in the desktop app over the control channel: a 3840×2160 50p Rec. 2100
+HLG sequence with a 20 s HEVC Main 10 S-Log3 clip (150 Mb/s, VA-API decoding) graded by Lumetri
+(exposure, contrast, highlights, creative saturation, highlight tint, vignette and the built-in
+Bleach Bypass Look) plus Crop; for its first 5 s a Color Matte and a graphic (two text and three
+shape layers) with keyframed opacity and scale above it. Program monitor at 1/2, 8 s plays from
+0, 6 and 12 s. AMD Ryzen 7 5800X3D (16 threads), Radeon RX 9070 XT (Mesa 26.2.5, RADV), 31 GB,
+2026-10-25; the before build (the same tree without this change) and the after build alternated
+twice in one session, load average 13 → 7 (1-minute), then a third after run at 4.9 with the
+plays in another order.
+
+| play | shown / dropped before (2 runs) | after (3 runs) | process CPU s per play before → after |
+|---|---|---|---|
+| from 6 s | 14 / 375, 11 / 373 | **395 / 0, 395 / 0, 396 / 0** | 58.6–61 → **25** |
+| from 12 s | 15 / 374, 7 / 375 | **396 / 0, 396 / 0, 395 / 0** | 57–63 → **25** |
+| from 0 s (matte and graphic animating) | 8 / 381, 6 / 367 | 274 / 120, 114 / 274, 121 / 269 and 119 / 273 | 61–63 → 39–49 |
+
+Frame-worker render time per frame (`perf.stats` `frames.renderMs` p50) went from 96–227 ms to 0:
+the grade runs on the GPU when the frame is presented. The first 5 s still drop frames, in any
+order of the plays. Most likely (not measured separately) that is the keyframed graphic above the
+clip, which is rasterised on the CPU for every frame (a graphic's raster is reused only while it
+does not change). A Program monitor frame at 8 s (Full resolution, paused)
+differs from the before build by a mean of 0.05 8-bit levels (99th percentile 1, max 5).
+
 ## Results (CPU compositor: layer rectangles, an opaque bottom layer and recycled images, before → after)
 
 The CPU compositor is what export runs. In a profile of a 9:29 export it took about a third of the
