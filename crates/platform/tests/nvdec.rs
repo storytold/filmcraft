@@ -34,6 +34,8 @@ fn software(s: &Stream) -> Box<dyn VideoDecoder> {
     filmcraft_codecs::software_video_decoder(&s.entry).unwrap()
 }
 
+/// The shared H.264 High, HEVC Main and Main 10 fixtures and two 1080p streams (H.264, HEVC
+/// Main 10) made with ffmpeg: (name, stream).
 fn streams(ff: &std::path::Path) -> Vec<(String, Stream)> {
     let mut out: Vec<_> =
         ["h264_high.mp4", "hevc_main.mp4", "hevc_main10.mp4"].iter().filter_map(|n| Some((n.to_string(), read_stream(&named(ff, n)?)))).collect();
@@ -53,6 +55,8 @@ fn streams(ff: &std::path::Path) -> Vec<(String, Stream)> {
     out
 }
 
+/// Every picture of every fixture is the software decoder's, bit for bit: over the whole stream,
+/// after `reset` + reseek to every later sync sample, and again after the resets.
 #[test]
 fn bit_exact_with_the_software_decoder() {
     let ff = filmcraft_testkit::require_ffmpeg!();
@@ -87,6 +91,27 @@ fn bit_exact_with_the_software_decoder() {
     }
 }
 
+/// Where the driver gives no page-locked memory, pictures are copied into ordinary memory after
+/// the post-processing on the readback stream is done: the same frames as the software decoder.
+#[test]
+fn bit_exact_through_ordinary_memory() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    for (name, s) in streams(&ff) {
+        let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+        let Ok(mut nv) = NvDecoder::new(info) else {
+            eprintln!("SKIPPED: no NVDEC hardware decoder for {name}");
+            continue;
+        };
+        nv.read_back_without_page_locked_memory();
+        let a = decode_all(&mut nv, &s.samples);
+        assert!(a.len() >= 40, "{name}: {} pictures", a.len());
+        assert_same(&format!("{name} through ordinary memory"), &a, &decode_all(software(&s).as_mut(), &s.samples));
+    }
+}
+
+/// A hardware decoder that fails mid-stream (at the first sample, at sample 5, at a sync sample
+/// and right after one) hands over to the software decoder with the same output as decoding in
+/// software throughout.
 #[test]
 fn mid_stream_failure_continues_in_software() {
     let ff = filmcraft_testkit::require_ffmpeg!();

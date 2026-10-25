@@ -518,6 +518,41 @@ hardware path on throughput for H.264 and 10-bit HEVC, at 5–20 % of their CPU 
 (the run above) the hardware path is ahead on both. 10-bit pictures cost more to read back (P010 is
 twice the bytes of NV12 and is shifted down into 16-bit planes).
 
+## Results (Linux NVDEC readback: page-locked memory, a stream of its own, before → after)
+
+NVDEC (`crates/platform/src/nvdec`) copied each decoded picture to the host with `cuMemcpyDtoH`
+into a new, zero-filled `Vec`, and mapped it with the default output stream. Two costs came with
+that:
+
+- **Ordinary memory.** A copy into pageable memory goes through the driver's own staging buffer
+  and pins the destination's pages on the way (the readback was mostly `ioctl` time and a CPU
+  copy). The copy now lands in a page-locked buffer the session keeps (`cuMemAllocHost`, grown when
+  a picture needs more, zeroed once), straight from the GPU.
+- **The default stream.** Work on the legacy default stream waits for the work of every blocking
+  stream of the context, and NVDEC shares the primary context with NVENC: in an export with
+  hardware encoding, each picture's post-processing and copy waited for the pictures being
+  encoded (about 2 ms per 1080p picture). Both now run on a non-blocking stream of the session's
+  own (`cuStreamCreate` with `CU_STREAM_NON_BLOCKING`, `CUVIDPROCPARAMS::output_stream`,
+  `cuMemcpyDtoHAsync` then `cuStreamSynchronize`).
+
+The bytes read back are the same, so are the frames and every file: the NVDEC tests stay
+bit-exact with the software decoder, and the exports below have the same MD5 before and after.
+Where the driver gives no page-locked memory or stream, the old copy runs.
+
+24-core laptop CPU (Core Ultra 9 275HX), RTX 5090 Laptop GPU, Linux, driver 615.78, release CLI,
+`a1080.mp4` (1080p23.976 H.264), the two builds alternating, other work using several cores:
+
+| | before | after |
+|---|---|---|
+| `filmcraft-cli bench-decode a1080.mp4 --frames 479`, median of 5 (range) | 0.98 s (0.92–1.04) | **0.88 s** (0.84–0.90) |
+| NVENC export, 8 s (192 frames), median of 5 | 1.76 s (1.69–1.90) | **1.44 s** (1.40–1.49) |
+| the same with #3051, #3068 and #3046 applied, median of 6 | 0.89 s (0.87–0.91) | **0.65 s** (0.64–0.65) |
+| … its `decodeMs` / process CPU | 764 ms / 1.83 s | **336 ms** / **1.32 s** |
+
+With frames going straight from the decoder to NVENC (#3068), the decode side was the export's
+limit; the plane copy (`biplanar::to_frame`, about 1 ms a picture) is what is left of it on the
+CPU. Copying it in parallel row bands changed nothing measurable here, so it stays one copy.
+
 ## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
 
 Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back

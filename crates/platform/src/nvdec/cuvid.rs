@@ -173,6 +173,7 @@ impl State {
         self.surfaces = surfaces;
         i32::try_from(surfaces).map_err(|_| "NVDEC surface count overflows".into())
     }
+    /// Queue a picture the parser shows (a valid surface of a progressive frame) for readback.
     fn display(&mut self, info: &CUVIDPARSERDISPINFO) -> Result<i32, String> {
         if self.decoder.is_null()
             || info.picture_index < 0
@@ -189,6 +190,8 @@ impl State {
         self.pending.push(*info);
         Ok(1)
     }
+    /// Read back every picture the parser queued for display, before another decode can reuse their
+    /// surfaces.
     fn drain(&mut self) -> Result<(), String> {
         // Copy queued displays before another decode can recycle their picture indices.
         for info in std::mem::take(&mut self.pending) {
@@ -196,11 +199,18 @@ impl State {
         }
         Ok(())
     }
+    /// Map displayed picture `info`, read it back into a planar frame and queue it with its
+    /// timestamp; the mapping is released on every path.
     fn map_picture(&mut self, info: &CUVIDPARSERDISPINFO) -> Result<(), String> {
         // SAFETY: this C struct contains integers and nullable pointers only.
         let mut proc: CUVIDPROCPARAMS = unsafe { std::mem::zeroed() };
         proc.progressive_frame = 1;
         proc.top_field_first = info.top_field_first;
+        // SAFETY: as in `readback`: the boxed device outlives the state and is only shared.
+        let device = unsafe { self.device.as_ref() }.ok_or("NVDEC CUDA device is missing")?;
+        // the picture's post-processing on the stream its readback uses, not the default stream
+        // (which would wait for the pictures NVENC is encoding on the same context)
+        proc.output_stream = device.readback_stream();
         let (mut address, mut pitch) = (0u64, 0u32);
         // SAFETY: the validated picture index belongs to the live decoder. Both output
         // pointers and proc are writable, and Session has pushed the context on this thread.
@@ -208,12 +218,21 @@ impl State {
         self.mapped.set(Some(address));
         let mapped = Mapped { api: self.api, decoder: self.decoder, address, outstanding: &self.mapped, active: true };
         let frame = self.readback(address, pitch);
+        // Whatever failed, the picture goes back to the decoder only once its post-processing and
+        // any copy of it are done. If that can't be established, it stays mapped instead: the error
+        // stops the session, whose teardown waits again before it unmaps (`outstanding`).
+        if frame.is_err() && device.settle_readback().is_err() {
+            mapped.keep();
+            return frame.map(|_| ());
+        }
         mapped.unmap()?;
         let frame = frame?;
         self.ready.try_reserve(1).map_err(|e| format!("NVDEC output allocation failed: {e}"))?;
         self.ready.push((info.timestamp, frame));
         Ok(())
     }
+    /// The mapped picture at `address` (`pitch` bytes per row) as a planar frame, copied through
+    /// the device's readback buffer; errors for a null mapping or a queue over its memory limit.
     fn readback(&self, address: u64, pitch: u32) -> Result<VideoFrame, String> {
         if address == 0 {
             return Err("NVDEC returned a null mapped address".into());
@@ -229,18 +248,20 @@ impl State {
             return Err("NVDEC output queue exceeds its memory limit".into());
         }
         address.checked_add(u64::try_from(total).map_err(|_| "NVDEC mapped size overflows")?).ok_or("NVDEC mapped address overflows")?;
-        let mut host = Vec::new();
-        host.try_reserve_exact(total).map_err(|e| format!("NVDEC readback allocation failed: {e}"))?;
-        host.resize(total, 0);
-        // SAFETY: Session's separately boxed device outlives State and every synchronous callback;
-        // it is immutable, and the CUDA context is current. No mutable Device references exist.
+        // SAFETY: Session's separately boxed device outlives State and every synchronous callback,
+        // and only shared references to it exist (its staging buffer sits behind a `RefCell`). The
+        // CUDA context is current.
         let device = unsafe { self.device.as_ref() }.ok_or("NVDEC CUDA device is missing")?;
-        device.copy_to_host(address, &mut host)?;
-        let luma = host.get(..luma_size).ok_or("NVDEC luma range is invalid")?;
-        let chroma = host.get(luma_size..).ok_or("NVDEC chroma range is invalid")?;
-        to_frame(&Biplanar { luma, chroma, stride: pitch as usize, rows: self.coded.1 as usize }, &self.geometry)
+        let rows = self.coded.1 as usize;
+        device.with_host_copy(address, total, |host| {
+            let luma = host.get(..luma_size).ok_or("NVDEC luma range is invalid")?;
+            let chroma = host.get(luma_size..).ok_or("NVDEC chroma range is invalid")?;
+            to_frame(&Biplanar { luma, chroma, stride: pitch as usize, rows }, &self.geometry)
+        })?
     }
 }
+/// The luma plane's size and the whole mapped picture's (luma then half-height interleaved
+/// chroma) at `pitch` bytes per row, or an error for sizes the decoder cannot have produced.
 fn mapped_layout(coded: (u32, u32), bits: u32, pitch: u32) -> Result<(usize, usize), String> {
     let row_bytes = coded.0.checked_mul(if bits == 10 { 2 } else { 1 }).ok_or("NVDEC row size overflows")?;
     if pitch < row_bytes || pitch == 0 || coded.1 == 0 || !coded.1.is_multiple_of(2) || !matches!(bits, 8 | 10) {
@@ -261,6 +282,7 @@ struct Mapped<'a> {
     active: bool,
 }
 impl Mapped<'_> {
+    /// Release the mapping now.
     fn unmap(mut self) -> Result<(), String> {
         self.active = false;
         // SAFETY: this guard owns one successful mapping on this decoder, and the context is
@@ -268,6 +290,11 @@ impl Mapped<'_> {
         status(unsafe { (self.api.unmap)(self.decoder, self.address) }, "cuvidUnmapVideoFrame64")?;
         self.outstanding.set(None);
         Ok(())
+    }
+    /// Leave the picture mapped: it stays `outstanding`, and the session's teardown unmaps it
+    /// before it destroys the decoder.
+    fn keep(mut self) {
+        self.active = false;
     }
 }
 impl Drop for Mapped<'_> {
@@ -347,9 +374,12 @@ pub struct Session {
     // whose later use would invalidate the pointer the driver holds).
     state: ptr::NonNull<State>,
     parser: *mut c_void,
-    device: Box<Device>,
-    // Dropped after device/context release, and after all cuvid handles have been destroyed.
-    _library: libloading::Library,
+    // Dropped in `Drop`, after the decoder, unless the decoder had to be kept (one of its pictures
+    // may still be in use): then its context stays retained with it.
+    device: std::mem::ManuallyDrop<Box<Device>>,
+    // Unloaded after device/context release and after all cuvid handles have been destroyed; kept
+    // loaded with a decoder that had to be kept.
+    _library: std::mem::ManuallyDrop<libloading::Library>,
 }
 // SAFETY: no callbacks or GPU-memory references outlive an operation. The state allocation and
 // boxed device retain stable addresses across moves; every driver call pushes the context on its
@@ -390,7 +420,7 @@ impl Session {
         })))
         .ok_or("NVDEC state allocation is null")?;
         // From here on `Drop` frees the state, also when creating the parser fails.
-        let mut session = Self { state, parser: ptr::null_mut(), device, _library: library };
+        let mut session = Self { state, parser: ptr::null_mut(), device: std::mem::ManuallyDrop::new(device), _library: std::mem::ManuallyDrop::new(library) };
         session.create_parser()?;
         Ok(session)
     }
@@ -481,26 +511,40 @@ impl Session {
         // run, and they invoke no parser callbacks.
         let state = unsafe { self.state.as_mut() };
         let mut error = None;
+        // A picture left mapped after a failed readback may still be read by the GPU: wait for the
+        // readback stream before unmapping it. If that (or the unmap) fails, the picture stays
+        // mapped and the decoder is kept alive (leaked), so the driver never reuses or frees a
+        // surface still in use.
+        let mut in_use = false;
         if let Some(address) = state.mapped.get() {
-            // SAFETY: retry an outstanding map before releasing its decoder; context is current.
-            match status(unsafe { (state.api.unmap)(state.decoder, address) }, "cuvidUnmapVideoFrame64") {
+            let unmapped = self.device.settle_readback().and_then(|()| {
+                // SAFETY: retry an outstanding map before releasing its decoder; context is current,
+                // and the wait above found no work left on the picture.
+                status(unsafe { (state.api.unmap)(state.decoder, address) }, "cuvidUnmapVideoFrame64")
+            });
+            match unmapped {
                 Ok(()) => state.mapped.set(None),
                 Err(e) => {
+                    in_use = true;
                     error = Some(e);
                 }
             }
         }
         if !keep_decoder && !state.decoder.is_null() {
-            // SAFETY: owned decoder, no host views or callbacks remain; unmapping was attempted
-            // first, and context and library remain live while the driver releases its resources.
-            match status(unsafe { (state.api.destroy_decoder)(state.decoder) }, "cuvidDestroyDecoder") {
-                Ok(()) => {
-                    state.decoder = ptr::null_mut();
-                    state.surfaces = 0;
-                    state.mapped.set(None);
-                }
-                Err(e) => {
-                    error.get_or_insert(e);
+            if in_use {
+                log::warn!("NVDEC decoder kept: one of its pictures may still be in use");
+            } else {
+                // SAFETY: owned decoder, no host views or callbacks remain and no picture of it is
+                // mapped; context and library remain live while the driver releases its resources.
+                match status(unsafe { (state.api.destroy_decoder)(state.decoder) }, "cuvidDestroyDecoder") {
+                    Ok(()) => {
+                        state.decoder = ptr::null_mut();
+                        state.surfaces = 0;
+                        state.mapped.set(None);
+                    }
+                    Err(e) => {
+                        error.get_or_insert(e);
+                    }
                 }
             }
         }
@@ -518,6 +562,8 @@ impl Session {
             None => Ok(()),
         }
     }
+    /// Drop the queued pictures and the latched error and recreate the parser, keeping the decoder;
+    /// a failure is latched as the session's error.
     fn restart(&mut self) -> Result<(), String> {
         let state = self.state();
         state.ready.clear();
@@ -529,17 +575,29 @@ impl Session {
         }
         result
     }
+    /// Start over (a seek): the queued pictures are dropped and the parser recreated; the decoder
+    /// is kept. A failure is logged and left for the next feed to report.
     pub fn reset(&mut self) {
         if let Err(e) = self.restart() {
             log::warn!("NVDEC reset failed: {e}");
         }
     }
+    /// Read pictures back through ordinary memory from now on (see
+    /// [`NvDecoder::read_back_without_page_locked_memory`](super::NvDecoder::read_back_without_page_locked_memory)).
+    pub fn read_back_without_page_locked_memory(&mut self) {
+        self.device.read_back_without_page_locked_memory();
+    }
 }
 impl Drop for Session {
+    /// Destroy the parser and the decoder, free the callback state (leaked instead if the parser
+    /// could not be destroyed, as it would still point at it), then release the CUDA device; a
+    /// decoder that had to be kept keeps its device and context too.
     fn drop(&mut self) {
         if let Err(e) = self.destroy(false) {
             log::warn!("NVDEC cleanup failed: {e}");
         }
+        // SAFETY: as in `state()`; the state is freed only below.
+        let decoder_kept = !unsafe { self.state.as_ref() }.decoder.is_null();
         // A parser that failed to be destroyed is leaked rather than left pointing at freed state.
         if self.parser.is_null() {
             // SAFETY: the pointer came from `Box::into_raw` in `new`, is freed only here, and no parser
@@ -547,6 +605,17 @@ impl Drop for Session {
             drop(unsafe { Box::from_raw(self.state.as_ptr()) });
         } else {
             log::warn!("NVDEC parser could not be destroyed: leaking its state");
+        }
+        if decoder_kept {
+            log::warn!("NVDEC decoder kept: keeping its CUDA device, context and library");
+        } else {
+            // SAFETY: each dropped once, here, as the session's last use of it, the device before
+            // the library; nothing reaches either afterwards (the state pointing at the device is
+            // freed or leaked above).
+            unsafe {
+                std::mem::ManuallyDrop::drop(&mut self.device);
+                std::mem::ManuallyDrop::drop(&mut self._library);
+            }
         }
     }
 }
