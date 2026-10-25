@@ -13,6 +13,7 @@
 //! built-in presets.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+use std::cell::Cell;
 use std::io::Write;
 
 mod aac_out;
@@ -1208,6 +1209,20 @@ impl VideoEncoder for ProResEncoder {
     }
 }
 
+/// Walk planes either in parallel or one chunk at a time. The sequential arm is
+/// the one export uses while a render job already holds the pool. Declared before
+/// the converters: a `macro_rules` item is visible only after its definition.
+macro_rules! for_yuv_planes {
+    ($y:expr, $ys:expr, $u:expr, $us:expr, $v:expr, $vs:expr, $body:expr) => {{
+        if avoid_nested_rayon() {
+            note_sequential_yuv();
+            $y.chunks_mut($ys).zip($u.chunks_mut($us).zip($v.chunks_mut($vs))).enumerate().for_each($body);
+        } else {
+            $y.par_chunks_mut($ys).zip($u.par_chunks_mut($us).zip($v.par_chunks_mut($vs))).enumerate().for_each($body);
+        }
+    }};
+}
+
 /// Limited-range 10-bit 4:4:4 with matrix (Kr, Kb) from straight RGBA8, or from encoded R'G'B'
 /// floats (3 per pixel) when `hdr` is given. `alpha` (full range, 0 = transparent) takes the
 /// RGBA8 alpha; it stays opaque for float input, which carries none.
@@ -1233,7 +1248,7 @@ pub fn to_yuv444_10(
             None => rgba.get(i * 4..i * 4 + 3).map_or([0.0; 3], |p| [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]),
         }
     };
-    y.par_chunks_mut(w).zip(cb.par_chunks_mut(w).zip(cr.par_chunks_mut(w))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+    for_yuv_planes!(y, w, cb, w, cr, w, |(row, (yr, (cbr, crr)))| {
         for (x, (yv, (cbv, crv))) in yr.iter_mut().zip(cbr.iter_mut().zip(crr.iter_mut())).enumerate() {
             let [r, g, b] = rgb_at(row * w + x);
             let yy = kr * r + kg * g + kb * b;
@@ -1253,7 +1268,7 @@ pub fn to_yuv444_10(
 pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
     let cw = w.div_ceil(2);
     debug_assert!(y.len() >= w * h && rgba.len() >= w * h * 4);
-    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+    for_yuv_planes!(y, w, cb, cw, cr, cw, |(row, (yr, (cbr, crr)))| {
         let src = &rgba[row * w * 4..(row + 1) * w * 4];
         let mut us = vec![0f32; w];
         let mut vs = vec![0f32; w];
@@ -1295,7 +1310,7 @@ pub fn rgbf_to_yuv422_10(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &
     debug_assert!(rgb.len() >= w * h * 3 && y.len() >= w * h);
     let kg = 1.0 - kr - kb;
     let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
-    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+    for_yuv_planes!(y, w, cb, cw, cr, cw, |(row, (yr, (cbr, crr)))| {
         let src = &rgb[row * w * 3..(row + 1) * w * 3];
         let mut us = vec![0f32; w];
         let mut vs = vec![0f32; w];
@@ -1541,10 +1556,47 @@ impl VideoEncoder for H264Encoder {
     }
 }
 
+thread_local! {
+    static EXPORT_ENCODE_SCOPE: Cell<u32> = const { Cell::new(0) };
+    #[cfg(test)]
+    static SEQUENTIAL_YUV: Cell<u32> = const { Cell::new(0) };
+}
+
+pub(crate) struct ExportEncodeScope;
+
+impl Drop for ExportEncodeScope {
+    fn drop(&mut self) {
+        EXPORT_ENCODE_SCOPE.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// The export overlap runs `encode` on the calling thread, which is not a Rayon
+/// worker, while a render job occupies the pool. Nested `par_chunks` from that
+/// thread waits for workers that are waiting for this scope (#1329).
+pub(crate) fn export_encode_scope() -> ExportEncodeScope {
+    EXPORT_ENCODE_SCOPE.with(|depth| depth.set(depth.get().saturating_add(1)));
+    ExportEncodeScope
+}
+
+fn avoid_nested_rayon() -> bool {
+    EXPORT_ENCODE_SCOPE.with(|depth| depth.get() > 0) || rayon::current_thread_index().is_some()
+}
+
+fn note_sequential_yuv() {
+    #[cfg(test)]
+    SEQUENTIAL_YUV.with(|hits| hits.set(hits.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+pub(crate) fn sequential_yuv_hits() -> u32 {
+    SEQUENTIAL_YUV.with(|hits| hits.get())
+}
+
 /// Walk 4:2:0 chroma rows. A nested `par_iter` on the global pool deadlocks export: the
 /// overlap scope is already a worker, and its join never runs the render job (#1329, #1283).
 fn for_yuv_rows(y: &mut [u8], u: &mut [u8], v: &mut [u8], w: usize, cw: usize, f: &(impl Fn(usize, &mut [u8], &mut [u8], &mut [u8]) + Sync)) {
-    if rayon::current_thread_index().is_some() {
+    if avoid_nested_rayon() {
+        note_sequential_yuv();
         let (mut y, mut u, mut v) = (y, u, v);
         let mut cy = 0usize;
         while !u.is_empty() && !y.is_empty() {
@@ -1653,7 +1705,7 @@ pub fn rgbf_to_yuv420_10(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &
     v.resize(cw * ch, 0);
     let unit = |x: f32| if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) };
     let code = |x: f32| x.round().clamp(4.0, 1019.0) as u16;
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+    for_yuv_planes!(y, w * 2, u, cw, v, cw, |(cy, (yr, (ur, vr)))| {
         let rows = yr.len() / w;
         let mut us = vec![0f32; cw];
         let mut vs = vec![0f32; cw];
@@ -2033,24 +2085,40 @@ mod hdr_tests;
 
 #[cfg(test)]
 mod yuv_pool_tests {
-    use super::rgba_to_yuv420_8;
+    use super::{export_encode_scope, rgba_to_yuv420_8, sequential_yuv_hits};
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-    /// The overlap scope is already a Rayon worker. Conversion must finish there instead of
-    /// joining the same pool (#1329).
+    /// Encode runs on the export thread, which is not a pool worker, while the
+    /// overlap scope's render job holds the other workers. The conversion must
+    /// take the sequential walk there, and match the parallel result (#1329).
     #[test]
-    fn conversion_inside_the_export_scope_finishes() {
-        let (w, h) = (48usize, 20usize);
-        let rgba = vec![40u8; w * h * 4];
-        let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-        rayon::in_place_scope(|s| {
-            s.spawn(|_| {
-                (0..4).into_par_iter().for_each(|_| std::thread::sleep(std::time::Duration::from_millis(30)));
+    fn conversion_inside_the_export_scope_matches_the_parallel_walk() {
+        for (w, h) in [(48usize, 20usize), (47, 21), (8, 1), (1, 8)] {
+            let rgba: Vec<u8> = (0..w * h * 4).map(|i| (i % 251) as u8).collect();
+            let (mut yp, mut up, mut vp) = (Vec::new(), Vec::new(), Vec::new());
+            let before = sequential_yuv_hits();
+            rgba_to_yuv420_8(&rgba, w, h, &mut yp, &mut up, &mut vp);
+            assert_eq!(sequential_yuv_hits(), before, "the plain call stays on the parallel walk");
+            let (y, u, v) = std::thread::scope(|scope| {
+                let handle = scope.spawn(|| {
+                    assert!(rayon::current_thread_index().is_none(), "the export thread is not a pool worker");
+                    let mut y = Vec::new();
+                    let mut u = Vec::new();
+                    let mut v = Vec::new();
+                    let hits = sequential_yuv_hits();
+                    rayon::in_place_scope(|s| {
+                        s.spawn(|_| {
+                            (0..4).into_par_iter().for_each(|_| std::thread::sleep(std::time::Duration::from_millis(5)));
+                        });
+                        let _guard = export_encode_scope();
+                        rgba_to_yuv420_8(&rgba, w, h, &mut y, &mut u, &mut v);
+                    });
+                    assert!(sequential_yuv_hits() > hits, "{w}x{h} did not take the sequential walk");
+                    (y, u, v)
+                });
+                handle.join().expect("export thread")
             });
-            rgba_to_yuv420_8(&rgba, w, h, &mut y, &mut u, &mut v);
-        });
-        assert_eq!(y.len(), w * h);
-        assert_eq!(u.len(), 24 * 10);
-        assert!(y.iter().any(|&p| p > 16));
+            assert_eq!((y, u, v), (yp, up, vp), "{w}x{h}");
+        }
     }
 }

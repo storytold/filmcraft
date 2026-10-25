@@ -562,6 +562,7 @@ impl Exporter {
             s.spawn(|_| {
                 slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources)))));
             });
+            let _scope = crate::export_encode_scope();
             let r = self.encode_batch(f, frames, sources);
             encode_done = Some(web_time::Instant::now());
             r
