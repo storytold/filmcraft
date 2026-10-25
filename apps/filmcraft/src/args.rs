@@ -204,7 +204,7 @@ mod tests {
     /// A bad `FILMCRAFT_CONTROL_PORT` used to start the app without the control server, silently.
     #[test]
     fn a_bad_port_in_the_environment_is_an_error_like_a_bad_control_flag() {
-        for bad in ["abc", "70000", "-1", "98 76", "9876x", "\u{fffd}"] {
+        for bad in ["abc", "70000", "-1", "98 76", "9886x", "\u{fffd}"] {
             let e = parse_env(Some(bad), &[]).unwrap_err();
             assert!(e.contains("FILMCRAFT_CONTROL_PORT") && e.contains(bad), "{bad}: {e}");
             assert!(parse_env(Some(bad), &["--empty", "a.mp4"]).is_err(), "{bad}");
@@ -238,8 +238,8 @@ mod tests {
                 graphics: None
             }
         );
-        let l = launch(&["--control", "9876", "--empty", "--no-recover", "--data-dir", "/tmp/fc", "cut.fcproj", "a.mp4"]);
-        assert_eq!(l.control_port, Some(9876));
+        let l = launch(&["--control", "9886", "--empty", "--no-recover", "--data-dir", "/tmp/fc", "cut.fcproj", "a.mp4"]);
+        assert_eq!(l.control_port, Some(9886));
         assert_eq!((l.demo, l.startup_flag, l.recover), (false, true, Some(false)));
         assert_eq!(l.data_dir, Some(std::path::PathBuf::from("/tmp/fc")));
         assert_eq!(l.files, ["cut.fcproj", "a.mp4"]);
@@ -297,10 +297,10 @@ mod tests {
 
     #[test]
     fn isolated_input_is_explicit_and_requires_a_control_server() {
-        assert!(!launch(&["--control", "9876"]).control_input_only);
+        assert!(!launch(&["--control", "9886"]).control_input_only);
         assert!(parse_args(&["--control-input-only"]).is_err());
-        assert!(launch(&["--control-input-only", "--control", "9876"]).control_input_only);
-        assert!(matches!(parse_env(Some("9876"), &["--control-input-only"]), Ok(Cli::Run(Launch { control_input_only: true, control_port: Some(9876), .. }))));
+        assert!(launch(&["--control-input-only", "--control", "9886"]).control_input_only);
+        assert!(matches!(parse_env(Some("9886"), &["--control-input-only"]), Ok(Cli::Run(Launch { control_input_only: true, control_port: Some(9886), .. }))));
         assert_eq!(parse_args(&["--control-input-only", "--help"]), Ok(Cli::Help));
         assert!(USAGE.contains("--control-input-only"));
     }

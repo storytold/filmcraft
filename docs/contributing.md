@@ -28,7 +28,7 @@ macOS.
 ```sh
 cargo run --release -p filmcraft                      # desktop app with the demo project
 cargo run --release -p filmcraft -- --empty           # start without the demo project
-cargo run --release -p filmcraft -- --control 9876    # plus the JSON-lines control server
+cargo run --release -p filmcraft -- --control 9886    # plus the JSON-lines control server
 cargo run --release -p filmcraft -- a.mp4 b.wav       # import media (or open a .fcproj)
 cargo run --release -p filmcraft-cli -- commands      # list engine commands
 cargo run --release -p filmcraft-cli -- render --demo --seconds 3 --out frame.png

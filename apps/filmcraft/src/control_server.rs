@@ -32,8 +32,7 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(120);
 pub enum DisabledWhy {
     /// `FILMCRAFT_CONTROL_TOKEN` is missing or is not 64 hex characters.
     Token,
-    /// The port could not be bound. Showing this in the app is left to #3318, which reworks
-    /// port-collision reporting; until then the reason is only logged.
+    /// The port could not be bound — usually another program is already listening on it (#3313).
     Bind { port: u16, error: String },
 }
 
@@ -63,7 +62,7 @@ impl DisabledWhy {
 
 /// Start the server for `--control`. Returns the request queue, a flag the app sets once it can
 /// answer requests (until then they are rejected with a retryable error), and — when the server
-/// is *not* running — why (#3436), for the log and (for a bad token) the status bar.
+/// is *not* running — why (#3436), for the log and the status bar.
 pub fn start(port: u16, ctx: egui::Context) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
     start_with_token(port, ctx, std::env::var("FILMCRAFT_CONTROL_TOKEN").ok())
 }
@@ -90,7 +89,14 @@ fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Re
             (rx, ready, None)
         }
         Err(error) => {
-            let why = DisabledWhy::Bind { port, error: error.to_string() };
+            // A port another program already bound is named in plain words: that is the failure
+            // an agent or a desktop user can act on (#3313).
+            let detail = if error.kind() == std::io::ErrorKind::AddrInUse {
+                "the port is already in use (another program is bound to it; pick a free port)".to_string()
+            } else {
+                error.to_string()
+            };
+            let why = DisabledWhy::Bind { port, error: detail };
             log::warn!("control server disabled: {}", why.reason());
             (rx, Arc::new(AtomicBool::new(true)), Some(why))
         }

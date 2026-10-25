@@ -23,8 +23,8 @@ fn help_and_usage_errors() {
     assert_eq!(cli(&["frobnicate"]).status.code(), Some(2));
     assert_eq!(cli(&["exec", "file.newBin", "notkv"]).status.code(), Some(2));
     // Invalid --bridge is a usage error (exit 2) for both exec and mcp (#921).
-    assert_eq!(cli(&["--bridge", "0.0.0.0:9876", "exec", "inspect.project"]).status.code(), Some(2));
-    assert_eq!(cli(&["mcp", "--bridge", "0.0.0.0:9876"]).status.code(), Some(2));
+    assert_eq!(cli(&["--bridge", "0.0.0.0:9886", "exec", "inspect.project"]).status.code(), Some(2));
+    assert_eq!(cli(&["mcp", "--bridge", "0.0.0.0:9886"]).status.code(), Some(2));
 }
 
 #[test]

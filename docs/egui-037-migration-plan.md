@@ -1226,7 +1226,7 @@ python3 /home/codex/work/maintenance/task.py run \
   --task filmcraft-egui037-migration \
   --source /home/codex/work/CraftApps/egui037-migration-20261022/filmcraft-implementation \
   --evidence /home/codex/work/ssd2/task-evidence/egui037-migration-20261022/filmcraft \
-  -- cargo run --release -p filmcraft -- --control 9876
+  -- cargo run --release -p filmcraft -- --control 9886
 python3 /home/codex/work/maintenance/task.py status filmcraft-egui037-linux-ui-01 --tail-bytes 8192
 # after the UI workflow, evidence capture and review:
 python3 /home/codex/work/maintenance/task.py finish filmcraft-egui037-linux-ui-01 \
