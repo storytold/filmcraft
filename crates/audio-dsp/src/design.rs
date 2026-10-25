@@ -614,8 +614,11 @@ pub fn prototype(family: Family, order: usize, ripple_db: f64, stop_db: f64) -> 
 /// Transform a prototype to `band` at `f1` (and `f2` for band-pass/stop) and digitise it.
 pub fn realize(proto: &Prototype, band: Band, f1: f64, f2: f64, sample_rate: f64) -> Sections {
     let mut f = proto.0;
-    let nyq = sample_rate * 0.5;
-    let warp = |hz: f64| 2.0 * sample_rate * (PI * hz.clamp(1.0, nyq * 0.98) / sample_rate).tan();
+    let sr = sample_rate.max(4.0);
+    let nyq = sr * 0.5;
+    let max_hz = nyq * 0.98;
+    let min_hz = (max_hz * 0.01).min(1.0);
+    let warp = |hz: f64| 2.0 * sr * (PI * hz.clamp(min_hz, max_hz) / sr).tan();
     match band {
         Band::LowPass => lp_to_lp(&mut f, warp(f1)),
         Band::HighPass => lp_to_hp(&mut f, warp(f1)),
@@ -627,7 +630,7 @@ pub fn realize(proto: &Prototype, band: Band, f1: f64, f2: f64, sample_rate: f64
             if band == Band::BandPass { lp_to_bp(&mut f, w0, bw) } else { lp_to_bs(&mut f, w0, bw) }
         }
     }
-    bilinear(&mut f, sample_rate);
+    bilinear(&mut f, sr);
     into_sections(&f)
 }
 
@@ -753,5 +756,22 @@ mod tests {
         assert!((cde(C::real(0.0), 0.7).re - 1.0).abs() < 1e-9);
         let u = asne(C::real(0.5), 0.7);
         assert!((sne(u, 0.7).re - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn low_sample_rates_do_not_panic() {
+        for sr in [0.0, 0.5, 1.0, 1.5, 2.0, 2.04, -10.0] {
+            let s = design(&spec(Family::Butterworth, Band::LowPass, 2, 100.0, 0.0), sr);
+            assert!(s.n > 0);
+            assert!(s.c[0].b0.is_finite());
+            let mut bq = crate::biquad::Biquad::new();
+            bq.tick(&s.c[0], 1.0);
+            let mut tail = 0.0;
+            for _ in 0..100 {
+                tail = bq.tick(&s.c[0], 0.0);
+                assert!(tail.is_finite());
+            }
+            assert!(tail.abs() < 1e-3, "tail must decay, got {tail}");
+        }
     }
 }

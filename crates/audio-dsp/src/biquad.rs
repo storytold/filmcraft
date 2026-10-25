@@ -50,9 +50,12 @@ impl Coeffs {
     /// RBJ cookbook design. `freq` in Hz (clamped below Nyquist), `q` > 0, `gain_db` used by
     /// peaking and shelving types (shelves use `q` as the shelf "Q", S=1 ≙ Q=1/√2).
     pub fn design(kind: FilterType, sample_rate: f64, freq: f64, q: f64, gain_db: f64) -> Coeffs {
-        let f = freq.clamp(1.0, sample_rate * 0.49);
+        let sr = sample_rate.max(4.0);
+        let max_f = sr * 0.49;
+        let min_f = (max_f * 0.01).min(1.0);
+        let f = freq.clamp(min_f, max_f);
         let q = q.max(1e-3);
-        let w0 = 2.0 * PI * f / sample_rate;
+        let w0 = 2.0 * PI * f / sr;
         let (sn, cs) = w0.sin_cos();
         let alpha = sn / (2.0 * q);
         let a = 10f64.powf(gain_db / 40.0);
@@ -227,5 +230,21 @@ mod tests {
             assert!(!(last as f32).is_subnormal());
         }
         assert_eq!(last, 0.0);
+    }
+
+    #[test]
+    fn low_sample_rates_do_not_panic_in_design() {
+        for sr in [0.0, 0.5, 1.0, 1.5, 2.0, 2.04, -10.0] {
+            let c = Coeffs::design(FilterType::LowPass, sr, 100.0, 0.7, 0.0);
+            assert!(c.b0.is_finite());
+            let mut bq = Biquad::new();
+            bq.tick(&c, 1.0);
+            let mut tail = 0.0;
+            for _ in 0..100 {
+                tail = bq.tick(&c, 0.0);
+                assert!(tail.is_finite());
+            }
+            assert!(tail.abs() < 1e-3, "impulse tail must decay, got {tail}");
+        }
     }
 }

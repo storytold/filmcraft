@@ -108,7 +108,10 @@ pub(crate) struct OnePole {
 impl OnePole {
     /// Coefficient for a −3 dB cutoff at `hz` (matched-z).
     pub(crate) fn alpha(hz: f32, sr: f32) -> f64 {
-        1.0 - (-2.0 * PI * (hz.clamp(1.0, sr * 0.49) as f64) / sr as f64).exp()
+        let sr_safe = (sr as f64).max(4.0);
+        let max_hz = sr_safe * 0.49;
+        let min_hz = (max_hz * 0.01).min(1.0);
+        1.0 - (-2.0 * PI * (hz as f64).clamp(min_hz, max_hz) / sr_safe).exp()
     }
     #[inline]
     pub(crate) fn lp(&mut self, a: f64, x: f32) -> f32 {
@@ -134,7 +137,8 @@ pub(crate) struct DcBlock {
 
 impl DcBlock {
     pub(crate) fn r(sr: f32) -> f64 {
-        1.0 - 2.0 * PI * 20.0 / sr as f64
+        let sr_safe = sr.max(1.0) as f64;
+        (1.0 - 2.0 * PI * 20.0 / sr_safe).clamp(0.0, 0.9999)
     }
     #[inline]
     pub(crate) fn tick(&mut self, r: f64, x: f32) -> f32 {
@@ -158,7 +162,10 @@ pub(crate) struct AllPass1 {
 impl AllPass1 {
     /// Coefficient placing the 90° phase point at `hz`.
     pub(crate) fn coef(hz: f32, sr: f32) -> f64 {
-        let t = (PI * (hz.clamp(1.0, sr * 0.49) as f64) / sr as f64).tan();
+        let sr_safe = (sr as f64).max(4.0);
+        let max_hz = sr_safe * 0.49;
+        let min_hz = (max_hz * 0.01).min(1.0);
+        let t = (PI * (hz as f64).clamp(min_hz, max_hz) / sr_safe).tan();
         (t - 1.0) / (t + 1.0)
     }
     #[inline]
@@ -242,5 +249,31 @@ mod tests {
             e_out += y * y;
         }
         assert!((e_out / e_in - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn low_sample_rates_do_not_panic() {
+        for sr in [0.0, 0.5, 1.0, 1.5, 2.0, 2.04, -10.0] {
+            let a = OnePole::alpha(100.0, sr);
+            assert!(a.is_finite());
+            assert!((0.0..=1.0).contains(&a));
+
+            let r = DcBlock::r(sr);
+            assert!(r.is_finite());
+            assert!((0.0..1.0).contains(&r));
+
+            let c = AllPass1::coef(100.0, sr);
+            assert!(c.is_finite());
+            assert!(c.abs() < 1.0, "AllPass1 coefficient must have |c| < 1.0, got {c}");
+
+            let mut ap = AllPass1::default();
+            ap.tick(c, 1.0);
+            let mut tail = 0.0;
+            for _ in 0..100 {
+                tail = ap.tick(c, 0.0);
+                assert!(tail.is_finite());
+            }
+            assert!(tail.abs() < 1e-3, "impulse tail must decay, got {tail}");
+        }
     }
 }
