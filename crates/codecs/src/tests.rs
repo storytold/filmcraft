@@ -236,6 +236,33 @@ fn mp4_flac_audio() {
     assert!(peak > 0.05 && peak < 1.0, "audio peak {peak}");
 }
 
+/// #2340: uncompressed QuickTime video (`raw ` 24-bit RGB, `2vuy`, `v210`) decodes, with fl32
+/// audio, instead of being reported unreadable.
+#[test]
+fn quicktime_uncompressed_video() {
+    let src = ["-f", "lavfi", "-i", "color=c=0x3060C0:s=64x36:r=24:d=0.5", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:d=0.5"];
+    for (name, vcodec) in [
+        ("raw_rgb24.mov", ["-c:v", "rawvideo", "-pix_fmt", "rgb24"]),
+        ("raw_2vuy.mov", ["-c:v", "rawvideo", "-pix_fmt", "uyvy422"]),
+        ("raw_v210.mov", ["-c:v", "v210", "-pix_fmt", "yuv422p10le"]),
+    ] {
+        let args: Vec<&str> = src.iter().copied().chain(vcodec).chain(["-c:a", "pcm_f32be", "-shortest"]).collect();
+        let Some(b) = fixture(name, &args) else { return };
+        let src = crate::open_bytes(name, b).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let f = src.video_frame(FrameRequest { time: Tick(TICKS_PER_SECOND / 4), scale: 1.0 }).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!((f.width, f.height), (64, 36), "{name}");
+        assert!(src.info().video.as_ref().is_some_and(|v| v.codec.starts_with("Uncompressed")), "{name}: {:?}", src.info().video);
+        let rgba = f.to_rgba8();
+        let px = &rgba[(18 * 64 + 32) * 4..][..3];
+        for (got, want) in px.iter().zip([0x30u8, 0x60, 0xc0]) {
+            assert!((*got as i32 - want as i32).abs() <= 6, "{name}: {px:?}");
+        }
+        let a = src.audio(12_000, 4800, 48_000).expect("fl32 audio");
+        let peak = a.channels[0].iter().fold(0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.05 && peak < 1.0, "{name}: audio peak {peak}");
+    }
+}
+
 #[test]
 fn matroska_prores_pcm() {
     check_mkv("blue_prores_pcm.mkv", &["-c:v", "prores_ks", "-profile:v", "2"], &["-c:a", "pcm_s16le"]);

@@ -123,8 +123,9 @@ enum DragPayload {
     Template(String, String),
 }
 
+/// Single egui temp slot holding the active drag payload: a project item or bin, a source, an effect or a graphics template.
 fn payload_id() -> egui::Id {
-    egui::Id::new("filmcraft-drag-payload")
+    egui::Id::unique("filmcraft-drag-payload")
 }
 
 pub fn start_drag_source(ui: &egui::Ui, source: source_drag::SourceDrag) {
@@ -205,8 +206,9 @@ pub fn clear_drag(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp::<Option<DragPayloadBox>>(payload_id(), None));
 }
 
+/// Temp-store key marking a cancelled drag until the button is released, so it cannot restart immediately.
 fn cancelled_id() -> egui::Id {
-    egui::Id::new("filmcraft-drag-cancelled")
+    egui::Id::unique("filmcraft-drag-cancelled")
 }
 
 /// Abandon the drag in progress (Escape, #580): nothing is dropped, and nothing restarts it until
@@ -255,7 +257,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
                 _ => filmcraft_project::find_effect(e).map(|d| d.name.to_string()).unwrap_or_default(),
             },
         };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag-ghost")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("drag-ghost")));
         let r = Rect::from_min_size(p + egui::vec2(12.0, 8.0), egui::vec2(label.len() as f32 * 7.0 + 16.0, 20.0));
         painter.rect_filled(r, 4.0, Color32::from_black_alpha(200));
         painter.text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.5), Color32::WHITE);
@@ -263,7 +265,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     if ctx.input(|i| i.pointer.any_released()) {
         // cleared next frame so drop targets see the release this frame
         let f = ctx.cumulative_frame_nr();
-        let k = egui::Id::new("drag-release-frame");
+        let k = egui::Id::unique("drag-release-frame");
         match ctx.data(|d| d.get_temp::<u64>(k)) {
             Some(prev) if prev < f => {
                 clear_drag(ui);
@@ -284,7 +286,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     drag_ghost(app, ui);
     // bins opened in new windows (Project panel)
     project::floating(app, ui.ctx());
-    let id = egui::Id::new("panel-menu");
+    let id = egui::Id::unique("panel-menu");
     let Some((p, pos)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2)>(id)) else { return };
     let mut close = false;
     let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
@@ -370,7 +372,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     });
     // A click elsewhere or Escape closes the menu. The click that opened it is over the tab, not
     // the menu, and must not close it again in the same frame.
-    let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::new("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
+    let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::unique("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
     if close || (!fresh && area.response.clicked_elsewhere()) || crate::widgets::escape_closes(ui.ctx()) {
         ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
     }

@@ -10,6 +10,8 @@
 //! | `sequence.showThroughEdits` | Sequence ▸ Show Through Edits | |
 //! | `sequence.joinThroughEdits` | (clip and edit point context menus) Join Through Edits | |
 //! | `sequence.throughEdits` | query: the through edits of the active sequence | |
+//! | `sequence.showDuplicateFrameMarkers` | (Timeline Display Settings) Show Duplicate Frame Markers | |
+//! | `sequence.duplicateFrames` | query: the duplicate frame markers of the active sequence | |
 //! | `sequence.makeSubsequence` | Sequence ▸ Make Subsequence | Shift+U |
 //! | `sequence.deleteTracks` | Sequence ▸ Delete Tracks… | |
 //! | `markers.markSplitVideoIn` … `markers.markSplitAudioOut` | Markers ▸ Mark Split ▸ Video In … Audio Out | |
@@ -26,9 +28,12 @@
 //! that side. Insert / Overwrite from the Source monitor honour source split points: each channel
 //! takes its own range and lands offset by the difference of the In points (J- and L-cuts).
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use filmcraft_edit as edit;
-use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, SplitMarks, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{Tick, TimeRange};
+use filmcraft_media::MediaKind;
+use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, Project, Sequence, SplitMarks, TrackId, TrackItem, TrackKind};
+use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde_json::{Value, json};
 
 use crate::commands::{
@@ -104,6 +109,22 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                 spec("sequence.showThroughEdits", "Show Through Edits", &["Sequence"], None, r#"{"on":bool?}"#, always, |s, p| {
                     s.state.show_through_edits = bool_p(p, "on").unwrap_or(!s.state.show_through_edits);
                     Ok(json!({"showThroughEdits": s.state.show_through_edits}))
+                }),
+                spec("sequence.showDuplicateFrameMarkers", "Show Duplicate Frame Markers", &[], None, r#"{"on":bool?}"#, always, |s, p| {
+                    s.state.show_duplicate_frame_markers = bool_p(p, "on").unwrap_or(!s.state.show_duplicate_frame_markers);
+                    Ok(json!({"showDuplicateFrameMarkers": s.state.show_duplicate_frame_markers}))
+                }),
+                query("sequence.duplicateFrames", "List Duplicate Frames", "{}", |s, _| {
+                    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+                    Ok(Value::Array(
+                        duplicate_frames(&s.project, q)
+                            .iter()
+                            .map(|d| {
+                                let ranges: Vec<Value> = d.ranges.iter().map(|r| json!({"start": r.start.0, "end": r.end().0})).collect();
+                                json!({"clip": d.clip.0, "color": d.color, "ranges": ranges})
+                            })
+                            .collect(),
+                    ))
                 }),
                 spec(
                     "sequence.joinThroughEdits",
@@ -374,6 +395,110 @@ fn join_through_edit_at(s: &mut Session, cut: &Value) -> Result<Value> {
         Ok(n)
     })?;
     Ok(json!({"joined": n}))
+}
+
+// ---------- duplicate frames ----------
+
+/// How many colors duplicate frame markers use; master clips past the last one share it.
+pub const DUPLICATE_FRAME_COLORS: usize = 10;
+
+/// One clip's duplicate frame markers: where on the timeline it shows media frames that another
+/// video clip of the same sequence also shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DuplicateFrames {
+    pub clip: ClipId,
+    /// The color of the clip's master clip, 0 to [`DUPLICATE_FRAME_COLORS`] - 1: master clips with
+    /// duplicate frames are numbered in the order they first appear in the sequence.
+    pub color: usize,
+    /// Timeline ranges inside the clip, in order and apart from each other.
+    pub ranges: Vec<TimeRange>,
+}
+
+/// The most timeline frames [`duplicate_frames`] compares in one sequence. A clip whose frames
+/// would pass that count, in timeline order, is not compared and gets no markers, and later clips
+/// that still fit are compared.
+pub const MAX_DUPLICATE_FRAME_CHECKS: i64 = 1_000_000;
+
+/// Timeline Display Settings ▸ Show Duplicate Frame Markers: the video clips of `q` that show a
+/// media frame another video clip of `q` also shows. Each frame of the sequence is compared by the
+/// media frame the clip shows there ([`TrackItem::source_time_at`] at the frame's start, counted in
+/// the media's frame rate). A subclip counts as its master clip. Clips of still images,
+/// generators, nested sequences, graphics and adjustment layers, frame holds and clips whose Time
+/// Remapping speed has keyframes get no markers and are not compared.
+pub fn duplicate_frames(project: &Project, q: &Sequence) -> Vec<DuplicateFrames> {
+    let rate = q.settings.frame_rate;
+    // every clip that can be compared, with its master clip and the media frame rate, in timeline
+    // order (track order for clips that start together)
+    let mut clips: Vec<(u64, FrameRate, &TrackItem)> =
+        q.video_tracks.iter().flat_map(|tr| &tr.items).filter_map(|it| comparable_master(project, it).map(|(m, r)| (m.0, r, it))).collect();
+    clips.sort_by_key(|(_, _, it)| it.start);
+    // the sequence frames each clip covers, while the limit allows
+    let mut budget = MAX_DUPLICATE_FRAME_CHECKS;
+    let spans: Vec<Option<(i64, i64)>> = clips
+        .iter()
+        .map(|(_, _, it)| {
+            let first = rate.frame_at(it.start);
+            let first = if rate.tick_of(first) < it.start { first.saturating_add(1) } else { first };
+            let last = rate.frame_at(it.end() - Tick(1));
+            let n = last.saturating_sub(first).saturating_add(1);
+            (n > 0 && n <= budget).then(|| {
+                budget -= n;
+                (first, last)
+            })
+        })
+        .collect();
+    let shows = |media_rate: FrameRate, it: &TrackItem, f: i64| media_rate.frame_at(it.source_time_at(rate.tick_of(f)));
+    // (master clip, media frame) → the first clip that shows it, and whether another clip does too
+    let mut seen: HashMap<(u64, i64), (ClipId, bool)> = HashMap::new();
+    for ((m, media_rate, it), span) in clips.iter().zip(&spans) {
+        let Some((first, last)) = *span else { continue };
+        for f in first..=last {
+            let e = seen.entry((*m, shows(*media_rate, it, f))).or_insert((it.id, false));
+            e.1 |= e.0 != it.id;
+        }
+    }
+    // colors go to the master clips with a repeated frame, in the order they first appear
+    let repeated: HashSet<u64> = seen.iter().filter(|(_, e)| e.1).map(|((m, _), _)| *m).collect();
+    let mut colors: BTreeMap<u64, usize> = BTreeMap::new();
+    for (m, ..) in clips.iter().filter(|(m, ..)| repeated.contains(m)) {
+        let next = colors.len().min(DUPLICATE_FRAME_COLORS - 1);
+        colors.entry(*m).or_insert(next);
+    }
+    let mut out = Vec::new();
+    for ((m, media_rate, it), span) in clips.iter().zip(&spans) {
+        let Some((first, last)) = *span else { continue };
+        let mut ranges: Vec<TimeRange> = Vec::new();
+        let mut run: Option<i64> = None;
+        for f in first..=last.saturating_add(1) {
+            let repeated = f <= last && seen.get(&(*m, shows(*media_rate, it, f))).is_some_and(|e| e.1);
+            match (repeated, run) {
+                (true, None) => run = Some(f),
+                (false, Some(from)) => {
+                    let (a, b) = (rate.tick_of(from).max(it.start), rate.tick_of(f).min(it.end()));
+                    ranges.push(TimeRange::new(a, b - a));
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+        if !ranges.is_empty() {
+            out.push(DuplicateFrames { clip: it.id, color: colors.get(m).copied().unwrap_or(0), ranges });
+        }
+    }
+    out
+}
+
+/// The master clip `it` shows frames of and the master clip's frame rate, when its frames can be
+/// compared.
+fn comparable_master(project: &Project, it: &TrackItem) -> Option<(ItemId, FrameRate)> {
+    if it.frame_hold.is_some() || !(it.speed.is_finite() && it.speed.abs() > 0.0) || it.duration <= Tick::ZERO {
+        return None;
+    }
+    if it.effect("time_remap").and_then(|e| e.param("speed")).is_some_and(|p| p.is_animated()) {
+        return None;
+    }
+    let (master, media, _) = project.resolve_media(it.item)?;
+    (matches!(media.info.kind, MediaKind::Movie | MediaKind::ImageSequence) && media.info.video.is_some()).then(|| (master, media.frame_rate()))
 }
 
 // ---------- subsequence ----------

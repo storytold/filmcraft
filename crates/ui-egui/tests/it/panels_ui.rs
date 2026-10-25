@@ -94,9 +94,11 @@ impl Driver {
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered (frames render on worker threads).
+    /// Step frames until `id` is registered (frames render on worker threads), for at most two
+    /// minutes of wall-clock time.
     fn wait_for(&mut self, id: &str) {
-        for _ in 0..400 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if self.has(id) {
                 return;
             }
@@ -290,6 +292,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
     for step in 0..5 {
         d.harness.input_mut().events.push(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Wheel,
             delta: egui::vec2(0.0, -10.0),
             modifiers: egui::Modifiers::NONE,
             phase: egui::TouchPhase::Move,

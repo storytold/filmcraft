@@ -124,6 +124,14 @@ See [§0](#0-never-crash). It outranks every other engineering rule.
 
 ### 3.2 The rest
 
+**Invariant — move identity uniqueness:** A move plan lists each clip identity at most once.
+The core move operation rejects repeated ids before mutation or id allocation; placing one identity
+on multiple tracks makes selection and later identity-based editing ambiguous. Copies receive new ids
+and retain each entry's requested destination. Destination track creation and the edit commit together.
+In an idle session, a rejected duplicate move retains the project and its undo and redo history.
+Selection-derived edit plans keep each identity once in first-occurrence order before expanding
+linked partners; explicit move requests with repeated identities are still rejected.
+
 See `CLAUDE.md`: pure Rust, dependency layering (`cargo xtask layers`), exact `Tick` time, everything is
 a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`) before every commit.
 

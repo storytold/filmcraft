@@ -38,6 +38,16 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 { "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
 ```
 
+### Effect parameter replies
+
+`effects.setParam` returns `{"keyframes": n, "param": id, "value": value}` on success.
+The keyframe count is zero for a static parameter: this is a successful static edit,
+not a failure. `param` identifies the edited parameter and `value` reports the accepted
+value; a choice supplied by name is returned as its numeric option index. An animated
+edit reports the value written at the requested time, rather than the static fallback.
+For example, setting opacity `blend` to `"Screen"` returns
+`{"keyframes": 0, "param": "blend", "value": 8}`.
+
 ### From an installed release
 
 The release packages ship `filmcraft-cli` alongside the desktop app, so no build is needed:

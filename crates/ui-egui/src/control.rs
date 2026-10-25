@@ -27,6 +27,8 @@ use serde_json::{Value, json};
 
 const MAX_CLICK_COUNT: u64 = 10;
 const MAX_DRAG_STEPS: u64 = 1_024;
+/// Synthetic input is consumed a step per frame; bound what a client can queue ahead of that.
+const MAX_SYNTHETIC_EVENTS: usize = 16_384;
 
 /// Read a pointer repetition count, using `default` when `key` is absent or null.
 ///
@@ -71,7 +73,8 @@ pub enum Outcome {
     AfterInput,
     Screenshot {
         path: Option<String>,
-        crop: Option<[f32; 4]>,
+        /// Resolved to fresh geometry at issue time, not here.
+        crop: Option<crate::capture::CropTarget>,
     },
 }
 
@@ -114,9 +117,14 @@ fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     Ok(egui::pos2(x as f32, y as f32))
 }
 
+/// Execute one control request. Synthetic input is capped by `MAX_SYNTHETIC_EVENTS` before queueing, screenshot crops stay symbolic until capture, and
+/// `gfxEdit` layer identity is resolved from the document.
 pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
+    if matches!(req.method.as_str(), "ui.click" | "ui.move" | "ui.drag" | "ui.scroll" | "ui.key" | "ui.type") && app.synthetic.len() >= MAX_SYNTHETIC_EVENTS {
+        return err("too many synthetic input events are queued; wait for the current input to be processed");
+    }
     match req.method.as_str() {
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
@@ -300,8 +308,48 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             }
             // the Type tool's text editing state: {"clip", "layer", "caret", "anchor"} (byte offsets) or null
             if let Some(v) = p.get("gfxEdit") {
-                match serde_json::from_value(v.clone()) {
-                    Ok(e) => app.ui.gfx_edit = e,
+                match serde_json::from_value::<Option<crate::state::GfxEdit>>(v.clone()) {
+                    Ok(mut e) => {
+                        // An explicit `ui.set.gfxEdit {clip, layer}` names the layer currently at
+                        // that index. Resolve its identity from the document instead of inheriting
+                        // a stale uid/fingerprint from a previous edit session: after a reorder,
+                        // delete or undo the requested index may now hold a different layer.
+                        if let Some(new) = e.as_mut() {
+                            match crate::panels::graphics::current_layer_identity(&app.session, new.clip, new.layer) {
+                                Some((uid, fingerprint)) => {
+                                    new.uid = uid;
+                                    new.fingerprint = fingerprint;
+                                }
+                                None => {
+                                    new.uid = 0;
+                                    new.fingerprint = 0;
+                                }
+                            }
+                        }
+                        let changed = match (&app.ui.gfx_edit, &e) {
+                            (None, None) => false,
+                            (Some(old), Some(new)) => {
+                                // A stable uid is the owner key. The compact fingerprint only
+                                // decides identity for a uid-less layer, and zero there means
+                                // "the requested index" rather than a different owner.
+                                old.clip != new.clip
+                                    || old.layer != new.layer
+                                    || old.uid != new.uid
+                                    || (new.uid == 0 && old.fingerprint != 0 && old.fingerprint != new.fingerprint)
+                            }
+                            _ => true,
+                        };
+                        if changed {
+                            app.restart_ime_target();
+                        } else if let (Some(old), Some(new)) = (&app.ui.gfx_edit, &e)
+                            && (old.caret, old.anchor) != (new.caret, new.anchor)
+                        {
+                            // Caret is not part of the stable owner. Only a known composition
+                            // becomes stale; commit-only input without one remains eligible.
+                            app.invalidate_ime_composition();
+                        }
+                        app.ui.gfx_edit = e;
+                    }
                     Err(e) => return err(format!("`gfxEdit`: {e}")),
                 }
             }
@@ -398,6 +446,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             app.synthetic.push(egui::Event::PointerMoved(pos));
             app.synthetic.push(egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Point,
+                source: egui::MouseWheelSource::Wheel,
                 delta: egui::vec2(dx, dy),
                 modifiers: modifiers(p),
                 phase: egui::TouchPhase::Move,
@@ -451,8 +500,14 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(json!({"playing": app.playback.playing, "playhead": app.session.playhead().0}))
         }
         "ui.screenshot" => {
-            let crop = s("panel").and_then(PanelKind::from_name).and_then(|pk| app.auto.find(&format!("panel.{}", pk.id())).map(|e| e.rect));
-            let crop = crop.or_else(|| s("id").and_then(|id| app.auto.find(id).map(|e| e.rect)));
+            // Keep the target symbolic: the crop must come from the layout that is actually
+            // captured, not from whatever the registry held when this control request arrived.
+            let crop = if let Some(panel) = s("panel") {
+                let Some(pk) = PanelKind::from_name(panel) else { return err(format!("unknown panel `{panel}`")) };
+                Some(crate::capture::CropTarget::Element(format!("panel.{}", pk.id())))
+            } else {
+                s("id").map(|id| crate::capture::CropTarget::Element(id.to_string()))
+            };
             // Bring the window on screen so a frame is presented, without taking keyboard focus.
             app.raise_for_control(ctx);
             Outcome::Screenshot { path: s("path").map(str::to_string), crop }
@@ -516,10 +571,11 @@ fn merge(v: &mut Value, patch: &Value) {
     }
 }
 
+/// Read-only JSON snapshot; focus and element counts come from the current accepted registry pass.
 pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
     let size = ctx.content_rect().size();
     let keyboard_focus = ctx.memory(|memory| memory.focused()).map(|id| {
-        let elements: Vec<_> = app.auto.previous.iter().filter(|element| element.response_id == Some(id)).collect();
+        let elements: Vec<_> = app.auto.all().iter().filter(|element| element.response_id == Some(id)).collect();
         json!({
             "widgetId": format!("{:016x}", id.value()),
             "elementIds": elements.iter().map(|element| element.id.as_str()).collect::<Vec<_>>(),
@@ -540,24 +596,53 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "playhead": app.session.playhead().0,
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),
         "selection": app.session.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
-        "elements": app.auto.previous.len(),
+        "elements": app.auto.all().len(),
         "dialog": app.dialog.map(|d| format!("{d:?}")),
     })
 }
 
 /// Save a screenshot (optionally cropped to a rect in points) as PNG; returns the reply JSON.
 pub fn save_screenshot(ctx: &egui::Context, image: &egui::ColorImage, path: Option<&str>, crop: Option<[f32; 4]>) -> Value {
-    let ppp = ctx.pixels_per_point();
-    let [w, h] = image.size;
-    let (x0, y0, cw, ch) = match crop {
-        Some([x, y, cw, ch]) => {
-            let x0 = ((x * ppp) as usize).min(w);
-            let y0 = ((y * ppp) as usize).min(h);
-            (x0, y0, ((cw * ppp) as usize).min(w - x0), ((ch * ppp) as usize).min(h - y0))
-        }
-        None => (0, 0, w, h),
+    save_screenshot_with_ppp(image, path, crop, ctx.pixels_per_point())
+}
+
+/// Intersect a crop rectangle in points with the captured image, converting through `ppp`.
+///
+/// Negative origins are clipped to the image rather than saturated while keeping the requested
+/// width, which would shift the captured region. A crop that does not overlap the image (or has a
+/// non-finite or non-positive size) is refused instead of returning a zero-sized or wrong image.
+fn crop_pixels(size: [usize; 2], crop: Option<[f32; 4]>, ppp: f32) -> Result<(usize, usize, usize, usize), String> {
+    let [w, h] = size;
+    let Some([x, y, cw, ch]) = crop else { return Ok((0, 0, w, h)) };
+    if !(x.is_finite() && y.is_finite() && cw.is_finite() && ch.is_finite()) || cw <= 0.0 || ch <= 0.0 {
+        return Err("screenshot crop must be a finite rectangle with positive width and height".into());
+    }
+    let ppp = f64::from(ppp);
+    let clamp = |v: f64, max: usize| v.max(0.0).min(max as f64);
+    let x0 = clamp(f64::from(x) * ppp, w).floor() as usize;
+    let y0 = clamp(f64::from(y) * ppp, h).floor() as usize;
+    let x1 = clamp((f64::from(x) + f64::from(cw)) * ppp, w).ceil() as usize;
+    let y1 = clamp((f64::from(y) + f64::from(ch)) * ppp, h).ceil() as usize;
+    let (cw, ch) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+    if cw == 0 || ch == 0 {
+        return Err("screenshot crop does not intersect the image".into());
+    }
+    Ok((x0, y0, cw, ch))
+}
+
+/// Save a screenshot whose scale was captured with the request. Hidden logic ticks must not read
+/// `Context::pixels_per_point()` for an image produced from a different UI pass.
+pub fn save_screenshot_with_ppp(image: &egui::ColorImage, path: Option<&str>, crop: Option<[f32; 4]>, ppp: f32) -> Value {
+    let ppp = if ppp.is_finite() && ppp > 0.0 { ppp } else { 1.0 };
+    let (x0, y0, cw, ch) = match crop_pixels(image.size, crop, ppp) {
+        Ok(rect) => rect,
+        Err(e) => return json!({"ok": false, "error": e}),
     };
-    let mut rgba = Vec::with_capacity(cw * ch * 4);
+    let [w, _] = image.size;
+    let Some(capacity) = cw.checked_mul(ch).and_then(|pixels| pixels.checked_mul(std::mem::size_of::<egui::Color32>())) else {
+        return json!({"ok": false, "error": "screenshot crop size overflows the image buffer"});
+    };
+    let mut rgba = Vec::with_capacity(capacity);
     for y in y0..y0 + ch {
         for x in x0..x0 + cw {
             let c = image.pixels[y * w + x];
@@ -618,7 +703,12 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
         }
         !c
     }
-    let mut raw = Vec::with_capacity((w as usize * 4 + 1) * h as usize);
+    let row = (w as usize)
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(1))
+        .and_then(|bytes| bytes.checked_mul(h as usize))
+        .ok_or_else(|| "PNG size overflows the image buffer".to_string())?;
+    let mut raw = Vec::with_capacity(row);
     for y in 0..h as usize {
         raw.push(0);
         raw.extend_from_slice(&rgba[y * w as usize * 4..(y + 1) * w as usize * 4]);
@@ -764,6 +854,31 @@ mod base64_tests {
     fn rfc4648_vectors() {
         for (i, o) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
             assert_eq!(super::base64(i.as_bytes()), o);
+        }
+    }
+
+    /// Negative and overhanging panel origins clip to the visible image without shifting the requested region, at any scale.
+    #[test]
+    fn screenshot_crop_clips_negative_panel_origin() {
+        // A panel starting two points left of / one point above the window: only the visible
+        // 2×3 pixels are captured, not the requested 4×4 starting at (0, 0).
+        assert_eq!(super::crop_pixels([8, 8], Some([-2.0, -1.0, 4.0, 4.0]), 1.0).unwrap(), (0, 0, 2, 3));
+        // The same crop at 2× scale clips the same logical region to the pixel grid.
+        assert_eq!(super::crop_pixels([16, 16], Some([-2.0, -1.0, 4.0, 4.0]), 2.0).unwrap(), (0, 0, 4, 6));
+        // Partly outside on the right/bottom uses the visible remainder.
+        assert_eq!(super::crop_pixels([8, 8], Some([6.0, 5.0, 4.0, 4.0]), 1.0).unwrap(), (6, 5, 2, 3));
+    }
+
+    /// Crops with no overlap or a non-finite/non-positive size are refused, never rendered as a zero-sized image.
+    #[test]
+    fn screenshot_crop_outside_the_image_is_refused() {
+        for crop in [[-8.0, -8.0, 4.0, 4.0], [8.0, 0.0, 4.0, 4.0], [0.0, 9.0, 4.0, 4.0]] {
+            let err = super::crop_pixels([8, 8], Some(crop), 1.0).expect_err("a crop outside the image must be refused");
+            assert!(err.contains("does not intersect"), "{err}");
+        }
+        for crop in [[0.0, 0.0, 0.0, 4.0], [0.0, 0.0, -4.0, 4.0], [f32::NAN, 0.0, 4.0, 4.0], [0.0, 0.0, f32::INFINITY, 4.0]] {
+            let err = super::crop_pixels([8, 8], Some(crop), 1.0).expect_err("an invalid crop must be refused");
+            assert!(err.contains("finite rectangle"), "{err}");
         }
     }
 

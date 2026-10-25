@@ -399,3 +399,39 @@ fn path_json_round_trip_keeps_tangents() {
     // the serialized project form still parses
     assert_eq!(crate::masks::path_from_json(&serde_json::to_value(&path).unwrap()), Some(path));
 }
+
+/// `masks.moveVertex` with `vertices` moves several points by the same delta in one edit (the
+/// Program monitor's multi-vertex drag, #3150); a bad index leaves every vertex where it was.
+#[test]
+fn move_vertex_moves_a_list_of_vertices_together() {
+    let (mut s, _) = demo();
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "polygon", "center": [400, 400], "size": [200, 200]})).unwrap();
+    let pts = |s: &mut Session| -> Vec<(f64, f64)> {
+        let l = s.execute("masks.list", json!({})).unwrap();
+        l["masks"][0]["path"]["vertices"].as_array().unwrap().iter().map(|v| (v["p"][0].as_f64().unwrap(), v["p"][1].as_f64().unwrap())).collect()
+    };
+    let before = pts(&mut s);
+    let n = s.history.undo.len();
+    // two frames of one drag, a vertex listed twice moves once
+    for _ in 0..2 {
+        s.execute("masks.moveVertex", json!({"vertices": [0, 2, 2], "delta": [10, -5], "merge": "vertex-1"})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), n + 1, "one undo step for the drag");
+    let after = pts(&mut s);
+    for i in [0, 2] {
+        assert_eq!(after[i], (before[i].0 + 20.0, before[i].1 - 10.0), "vertex {i}");
+    }
+    for i in [1, 3] {
+        assert_eq!(after[i], before[i], "vertex {i} stays");
+    }
+    // an index past the last vertex moves nothing
+    let e = s.execute("masks.moveVertex", json!({"vertices": [1, 9], "delta": [10, 0]})).unwrap_err().to_string();
+    assert!(e.contains("no vertex 9"), "{e}");
+    assert_eq!(pts(&mut s), after);
+    // a list moves points, by a delta
+    assert!(s.execute("masks.moveVertex", json!({"vertices": [1], "to": [0, 0]})).is_err());
+    assert!(s.execute("masks.moveVertex", json!({"vertices": [1], "handle": "in", "delta": [1, 0]})).is_err());
+    assert!(s.execute("masks.moveVertex", json!({"vertices": "1", "delta": [1, 0]})).is_err());
+    s.undo();
+    assert_eq!(pts(&mut s), before);
+}

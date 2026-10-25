@@ -81,14 +81,14 @@ pub fn route_history(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, para
     if !app.session.history.can_redo() {
         return Some(Err("nothing to redo".into()));
     }
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new(CONFIRM_DELETE_REDOABLE), true));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CONFIRM_DELETE_REDOABLE), true));
     Some(Ok(serde_json::json!({"dialog": "deleteRedoable"})))
 }
 
 /// The Delete Redoable Actions confirmation (automation ids `history.deleteRedoable.cancel` and
 /// `history.deleteRedoable.ok`). It closes by itself when nothing is left to redo.
 pub fn history_dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
-    let key = egui::Id::new(CONFIRM_DELETE_REDOABLE);
+    let key = egui::Id::unique(CONFIRM_DELETE_REDOABLE);
     if !ctx.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) {
         return;
     }
