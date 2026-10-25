@@ -3542,6 +3542,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::shortcuts::commands());
     v.extend(crate::relink::commands());
     v.extend(crate::proxies::commands());
+    v.extend(crate::auto_reframe::commands());
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());
     v.extend(crate::presets::commands());
