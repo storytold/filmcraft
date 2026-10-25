@@ -1,8 +1,10 @@
 //! Video frames and audio buffers.
 //!
 //! - [`VideoFrame`]: decoded or rendered pictures. Planar Y'CbCr (8 or 16-bit containers) straight
-//!   from decoders, sRGB-encoded RGBA8 from stills/generators, or linear premultiplied RGBA f32 in the
-//!   compositor. Pixel data is `Arc`-shared so caches, monitors and export share frames for free.
+//!   from decoders, sRGB-encoded RGBA8 from stills/generators, linear premultiplied RGBA f32 in the
+//!   compositor, or the same as IEEE halves from a decoder that produces them (camera RAW), which
+//!   the GPU uploads as they are. Pixel data is `Arc`-shared so caches, monitors and export share
+//!   frames for free.
 //! - [`AudioBuffer`]: planar f32 samples.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
@@ -48,6 +50,10 @@ pub enum PixelData {
     Rgba8(Arc<Vec<u8>>),
     /// Premultiplied, linear-light RGBA f32 (compositor working format).
     RgbaF32(Arc<Vec<f32>>),
+    /// Premultiplied, linear-light RGBA as little-endian IEEE halves, 8 bytes per pixel: what a
+    /// decoder that produces half floats hands over, and the GPU's own texel layout
+    /// (`Rgba16Float`), so a 6K frame is neither widened to f32 nor converted back for upload.
+    RgbaF16(Arc<Vec<u8>>),
     /// 8-bit planar Y'CbCr (optionally with an alpha plane).
     Yuv8 { planes: [Arc<Vec<u8>>; 3], chroma: Chroma, alpha: Option<Arc<Vec<u8>>> },
     /// 9–16-bit planar Y'CbCr stored in u16 (`bits` significant bits).
@@ -107,6 +113,11 @@ impl VideoFrame {
         debug_assert_eq!(data.len(), (width * height * 4) as usize);
         Self { width, height, data: PixelData::RgbaF32(Arc::new(data)), color: ColorInfo::SRGB_FULL, par: (1, 1), pts: Tick::ZERO }
     }
+    /// A frame of little-endian IEEE halves (see [`PixelData::RgbaF16`]).
+    pub fn rgba_f16(width: u32, height: u32, data: Vec<u8>) -> Self {
+        debug_assert_eq!(data.len(), (width * height * 8) as usize);
+        Self { width, height, data: PixelData::RgbaF16(Arc::new(data)), color: ColorInfo::SRGB_FULL, par: (1, 1), pts: Tick::ZERO }
+    }
     pub fn transparent_f32(width: u32, height: u32) -> Self {
         Self::rgba_f32(width, height, vec![0.0; (width * height * 4) as usize])
     }
@@ -119,6 +130,7 @@ impl VideoFrame {
         match &self.data {
             PixelData::Rgba8(_) => "RGBA 8-bit".into(),
             PixelData::RgbaF32(_) => "RGBA 32-bit float".into(),
+            PixelData::RgbaF16(_) => "RGBA 16-bit float".into(),
             PixelData::Yuv8 { chroma, .. } => format!("YUV {} 8-bit", chroma.label()),
             PixelData::Yuv16 { chroma, bits, .. } => format!("YUV {} {bits}-bit", chroma.label()),
         }
@@ -129,6 +141,7 @@ impl VideoFrame {
         match &self.data {
             PixelData::Rgba8(d) => d.len(),
             PixelData::RgbaF32(d) => d.len() * 4,
+            PixelData::RgbaF16(d) => d.len(),
             PixelData::Yuv8 { planes, alpha, .. } => planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len()),
             PixelData::Yuv16 { planes, alpha, .. } => (planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len())) * 2,
         }
@@ -175,7 +188,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(box_plane(a, w, h, ow, oh, n))),
                 }
             }
-            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => return None,
+            PixelData::Rgba8(_) | PixelData::RgbaF32(_) | PixelData::RgbaF16(_) => return None,
         };
         Some(VideoFrame { width: ow as u32, height: oh as u32, data, color: self.color, par: self.par, pts: self.pts })
     }
@@ -188,7 +201,7 @@ impl VideoFrame {
         let (w, h) = (self.width as usize, self.height as usize);
         let (sx, sy) = match &self.data {
             PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } => chroma.shifts(),
-            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => (0, 0),
+            PixelData::Rgba8(_) | PixelData::RgbaF32(_) | PixelData::RgbaF16(_) => (0, 0),
         };
         let (mx, my) = ((1usize << sx) - 1, (1usize << sy) - 1);
         let (x, y) = (region.x.min(w) & !mx, region.y.min(h) & !my);
@@ -202,6 +215,7 @@ impl VideoFrame {
         let data = match &self.data {
             PixelData::Rgba8(d) => PixelData::Rgba8(Arc::new(crop_plane(d, w, h, 4, r))),
             PixelData::RgbaF32(d) => PixelData::RgbaF32(Arc::new(crop_plane(d, w, h, 4, r))),
+            PixelData::RgbaF16(d) => PixelData::RgbaF16(Arc::new(crop_plane(d, w, h, 8, r))),
             PixelData::Yuv8 { planes, chroma, alpha } => {
                 let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
                 let (cx, cy, cr_w, cr_h) = chroma_rect(cw, ch);
@@ -248,6 +262,7 @@ impl VideoFrame {
         let data = match &self.data {
             PixelData::Rgba8(d) => PixelData::Rgba8(Arc::new(rotate_plane(d, w, h, 4, q))),
             PixelData::RgbaF32(d) => PixelData::RgbaF32(Arc::new(rotate_plane(d, w, h, 4, q))),
+            PixelData::RgbaF16(d) => PixelData::RgbaF16(Arc::new(rotate_plane(d, w, h, 8, q))),
             PixelData::Yuv8 { planes, chroma, alpha } => {
                 let (c, chroma) = rotate_chroma(planes, *chroma, w, h, q);
                 PixelData::Yuv8 {
@@ -338,6 +353,22 @@ impl VideoFrame {
             }
             return;
         }
+        if let PixelData::RgbaF16(d) = &self.data
+            && n == 1
+        {
+            out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
+                let start = ((r.y + ry) * w + r.x) * 8;
+                match d.get(start..start + r.w * 8) {
+                    Some(src) => {
+                        for (o, s) in row.iter_mut().zip(src.as_chunks::<2>().0) {
+                            *o = half_to_f32(u16::from_le_bytes(*s));
+                        }
+                    }
+                    None => row.fill(0.0),
+                }
+            });
+            return;
+        }
         // Encoded (0..1, quantised to 12 bits) → linear lookup for this frame's transfer.
         let info = self.color;
         let lin: Vec<f32> = if decode.is_some() { Vec::new() } else { (0..4096).map(|i| to_linear(i as f32 / 4095.0, info.transfer)).collect() };
@@ -347,6 +378,30 @@ impl VideoFrame {
         };
         let inv = 1.0 / (n as f32 * n as f32);
         match &self.data {
+            PixelData::RgbaF16(d) => {
+                // the f32 accumulation below, sample by sample, so the two formats agree bit for bit
+                let sample = |i: usize| d.get(i..i + 2).map_or(0.0, |b| half_to_f32(u16::from_le_bytes([b[0], b[1]])));
+                out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
+                    let oy = r.y + ry;
+                    for rx in 0..r.w {
+                        let ox = r.x + rx;
+                        let mut acc = [0f32; 4];
+                        for dy in 0..n {
+                            let y = (oy * n + dy).min(h - 1);
+                            for dx in 0..n {
+                                let x = (ox * n + dx).min(w - 1);
+                                let i = (y * w + x) * 8;
+                                for k in 0..4 {
+                                    acc[k] += sample(i + k * 2);
+                                }
+                            }
+                        }
+                        for k in 0..4 {
+                            row[rx * 4 + k] = acc[k] * inv;
+                        }
+                    }
+                });
+            }
             PixelData::RgbaF32(d) => {
                 out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
                     let oy = r.y + ry;
@@ -665,6 +720,69 @@ fn box_plane<T: Copy + Into<u32> + TryFrom<u32> + Send + Sync + Default>(src: &[
     out
 }
 
+/// IEEE half → f32: the exact value of every bit pattern (subnormals, infinities and NaNs
+/// included), with a branch-light path for normal numbers and zeros.
+#[inline(always)]
+pub fn half_to_f32(h: u16) -> f32 {
+    let u = u32::from(h);
+    let sign = (u & 0x8000) << 16;
+    let abs = u & 0x7fff;
+    if (0x0400..0x7c00).contains(&abs) {
+        // rebias the exponent (127 - 15 = 112) and widen the mantissa
+        return f32::from_bits(sign | ((abs + (112 << 10)) << 13));
+    }
+    if abs == 0 {
+        return f32::from_bits(sign);
+    }
+    let exp = abs >> 10;
+    let mant = abs & 0x03ff;
+    let bits = if exp == 0 {
+        // subnormal: mant × 2⁻²⁴ = (1 + frac) × 2^(b−24), b the mantissa's highest set bit
+        let b = 31 - mant.leading_zeros();
+        let frac = (mant ^ (1 << b)) << (23 - b);
+        sign | ((103 + b) << 23) | frac
+    } else {
+        sign | 0x7f80_0000 | (mant << 13)
+    };
+    f32::from_bits(bits)
+}
+
+/// f32 → IEEE half, rounded to nearest even; beyond the half range (±65504) an infinity, a NaN
+/// stays a NaN. The inverse of [`half_to_f32`] for every value a half holds.
+pub fn f32_to_half(v: f32) -> u16 {
+    let x = v.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = ((x >> 23) & 0xff) as i32;
+    let mant = x & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if mant != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        // a subnormal: the mantissa with its implicit bit at the half's scale, ties to even
+        let full = mant | 0x80_0000;
+        let shift = (14 - e) as u32; // 14..=24
+        let m = full >> shift;
+        let rest = full & ((1 << shift) - 1);
+        let tie = 1 << (shift - 1);
+        let up = rest > tie || (rest == tie && m & 1 == 1);
+        return sign | (m + u32::from(up)) as u16;
+    }
+    let m = mant >> 13;
+    let round_bits = mant & 0x1fff;
+    let mut h = (sign as u32) | ((e as u32) << 10) | m;
+    if round_bits > 0x1000 || (round_bits == 0x1000 && (m & 1) == 1) {
+        h += 1;
+    }
+    h as u16
+}
+
 /// The `r` part of a `w`×`h` plane of `n`-element pixels (`r` lies inside the plane). A plane too
 /// short for its size gives a blank result, as in [`rotate_plane`].
 fn crop_plane<T: Copy + Default>(src: &[T], w: usize, h: usize, n: usize, r: Region) -> Vec<T> {
@@ -932,10 +1050,23 @@ mod tests {
         let c16: Vec<u16> = (0..w * h).map(|i| (64 + i * 7 % 896) as u16).collect();
         let a16: Vec<u16> = (0..w * h).map(|i| (alpha(i % w, i / w) as u16) * 4).collect();
         let c422: Vec<u16> = (0..cw * h).map(|i| (64 + i * 7 % 896) as u16).collect();
+        // halves: a spread of normal values, zeros and a subnormal, with the alpha of the others
+        let halves: Vec<u16> = (0..w * h)
+            .flat_map(|i| {
+                let a = match alpha(i % w, i / w) {
+                    0 => 0x0000,
+                    77 => 0x34d5,
+                    _ => 0x3c00,
+                };
+                [0x3000 + (i * 7 % 0x0c00) as u16, if i % 13 == 0 { 0x0001 } else { 0x3800 + (i * 5 % 0x0400) as u16 }, (i * 29 % 0x3c00) as u16, a]
+            })
+            .collect();
+        let f16s: Vec<u8> = halves.iter().flat_map(|v| v.to_le_bytes()).collect();
         let mk = |data| VideoFrame { width: w as u32, height: h as u32, data, color: ColorInfo::REC709, par: (1, 1), pts: Tick::ZERO };
         vec![
             ("rgba8", mk(PixelData::Rgba8(Arc::new(rgba8)))),
             ("rgba f32", mk(PixelData::RgbaF32(Arc::new(f32s)))),
+            ("rgba f16", mk(PixelData::RgbaF16(Arc::new(f16s)))),
             (
                 "yuv8 4:2:0 + alpha",
                 mk(PixelData::Yuv8 {
@@ -968,6 +1099,55 @@ mod tests {
                 mk(PixelData::Yuv16 { planes: [Arc::new(y16), Arc::new(c16.clone()), Arc::new(c16)], chroma: Chroma::C444, bits: 12, alpha: None }),
             ),
         ]
+    }
+
+    #[test]
+    fn halves_convert_like_the_same_values_as_f32() {
+        // every bit pattern, against the arithmetic definition
+        for bits in 0..=u16::MAX {
+            let (sign, exp, mant) = (if bits & 0x8000 == 0 { 1.0f32 } else { -1.0 }, (bits >> 10) & 31, bits & 1023);
+            let want = match exp {
+                0 => sign * mant as f32 * 2.0f32.powi(-24),
+                31 if mant == 0 => sign * f32::INFINITY,
+                31 => f32::NAN,
+                _ => sign * (1.0 + mant as f32 / 1024.0) * 2.0f32.powi(exp as i32 - 15),
+            };
+            let got = half_to_f32(bits);
+            assert!(got.to_bits() == want.to_bits() || (got.is_nan() && want.is_nan()), "half {bits:04x}: {got} vs {want}");
+            if !got.is_nan() {
+                assert_eq!(f32_to_half(got), bits, "{got} back to a half");
+            }
+        }
+        // halfway between two halves rounds to the even one, subnormals included
+        let tiny = 2.0f32.powi(-25); // half the smallest subnormal
+        assert_eq!([f32_to_half(tiny), f32_to_half(3.0 * tiny), f32_to_half(5.0 * tiny)], [0, 2, 2]);
+        assert_eq!(f32_to_half(tiny * 1.0001), 1, "above the tie rounds up");
+        assert_eq!([f32_to_half(1.0 + 2.0f32.powi(-11)), f32_to_half(1.0 + 3.0 * 2.0f32.powi(-11))], [0x3c00, 0x3c02]);
+        // an f16 frame converts, crops and rotates exactly like the f32 frame of its values
+        let frames = sample_frames_sized(41, 19);
+        let f16 = frames.iter().find(|(n, _)| *n == "rgba f16").map(|(_, f)| f.clone()).unwrap();
+        let PixelData::RgbaF16(d) = &f16.data else { panic!() };
+        let f32s: Vec<f32> = d.as_chunks::<2>().0.iter().map(|b| half_to_f32(u16::from_le_bytes(*b))).collect();
+        let f32 = VideoFrame { data: PixelData::RgbaF32(Arc::new(f32s)), ..f16.clone() };
+        assert_eq!(f16.byte_size(), 41 * 19 * 8);
+        assert_eq!(f16.format_label(), "RGBA 16-bit float");
+        for n in [1usize, 2, 3] {
+            let (a, b) = (f16.to_linear_f32_decimated(n), f32.to_linear_f32_decimated(n));
+            assert_eq!((a.0, a.1), (b.0, b.1));
+            assert!(a.2.iter().zip(&b.2).all(|(x, y)| x.to_bits() == y.to_bits()), "n={n}");
+        }
+        let r = Region { x: 3, y: 2, w: 20, h: 9 };
+        assert_eq!(f16.cropped(r).to_linear_f32(), f32.cropped(r).to_linear_f32());
+        for q in 1..4 {
+            let (a, b) = (f16.rotated(q), f32.rotated(q));
+            assert_eq!((a.width, a.height, a.par), (b.width, b.height, b.par));
+            assert_eq!(a.to_linear_f32(), b.to_linear_f32(), "quarter turns {q}");
+        }
+        assert!(f16.box_decimated(2).is_none(), "RGBA frames are not box-decimated");
+        // short data converts to transparent, never panics
+        let short = VideoFrame { data: PixelData::RgbaF16(Arc::new(vec![0x3c; 10])), ..f16.clone() };
+        assert!(short.to_linear_f32().iter().all(|v| *v == 0.0));
+        assert_eq!(short.to_linear_f32_decimated(2).2.len(), 20 * 9 * 4);
     }
 
     #[test]

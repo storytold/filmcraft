@@ -56,7 +56,10 @@ fn file_edit_clip_menu_order_and_shortcuts_match_premiere() {
     );
     assert_order(&menu_ids(&["File", "Export"]), &["file.exportEdl", "file.exportSelectionProject", "file.exportAle", "file.exportOtio", "file.exportFcp7Xml"]);
     assert_eq!(menu_ids(&["File", "Get Media File Properties for"]), vec!["file.mediaPropertiesFile", "file.mediaProperties"]);
-    assert_eq!(menu_ids(&["File", "Project Settings"]), vec!["file.projectSettings.general", "file.projectSettings.scratchDisks", "project.ingestSettings"]);
+    assert_eq!(
+        menu_ids(&["File", "Project Settings"]),
+        vec!["file.projectSettings.general", "file.projectSettings.scratchDisks", "project.ingestSettings", "file.projectSettings.cameraRaw"]
+    );
     assert_order(&menu_ids(&["Edit"]), &["edit.deselectAll", "edit.find", "edit.findNext", "edit.consolidateDuplicates", "edit.editOriginal"]);
     let clip: Vec<&str> = crate::commands::command_specs().iter().filter(|c| c.menu.first() == Some(&"Clip")).map(|c| c.id).collect();
     assert_order(
@@ -384,6 +387,8 @@ fn edit_original_update_metadata_and_clip_items() {
     assert!(d.is_enabled("clip.sourceSettings"));
     let ss = d.execute("clip.sourceSettings", json!({})).unwrap();
     assert!(ss["message"].as_str().unwrap().contains("no source settings"));
+    assert!(ss["settings"].as_array().unwrap().is_empty());
+    assert!(d.execute("clip.sourceSettings", json!({"output": "rec709"})).is_err(), "an MP4 has nothing to develop");
     assert!(!d.is_enabled("clip.restoreCaptionsFromSource"));
     let w = d.execute("clip.generateAudioWaveform", json!({})).unwrap();
     assert_eq!(w["items"], json!([ocean.0]));

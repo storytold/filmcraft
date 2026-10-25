@@ -3601,5 +3601,77 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	As Shot	拍摄时
+	As Shot (ISO {v})	拍摄时 (ISO {v})
+	as shot	拍摄时
+	as shot (decoder not open)	拍摄时（解码器未打开）
+	ISO	ISO
+	Applies to a display gamma curve (BT.1886, sRGB, ST 2084, Hybrid Log-Gamma).	适用于显示伽马曲线（BT.1886、sRGB、ST 2084、Hybrid Log-Gamma）。
+	Applies to the ST 2084 (PQ) gamma curve only.	仅适用于 ST 2084（PQ）伽马曲线。
+	Apply CDL	应用 CDL
+	Apply Creative LUT	应用创意 LUT
+	Apply Metadata Curves	应用元数据曲线
+	Apply this clip's settings to every selected clip	将此剪辑的设置应用于所有选定的剪辑
+	As recorded	按记录
+	BT.1886	BT.1886
+	Blend Bias	混合偏向
+	Blend Type	混合类型
+	Camera RAW	相机 RAW
+	Camera RAW clips develop with these settings unless they have settings of their own (Clip > Source Settings > Decode Using > Clip).	相机 RAW 剪辑使用这些设置显影，除非它们有自己的设置（剪辑 > 源设置 > 解码依据 > 剪辑）。
+	Camera RAW…	相机 RAW…
+	Camera Raw	相机 RAW
+	Chroma Noise Reduction	色度降噪
+	Color Science	色彩科学
+	Color Temp	色温
+	Decode Quality	解码质量
+	Decode Using	解码依据
+	Display curves go with Rec. 709, Rec. 2020 and P3 D65, Log3G10 with REDWideGamutRGB, ST 2084 and Hybrid Log-Gamma with Rec. 2020; linear with any.	显示曲线搭配 Rec. 709、Rec. 2020 和 P3 D65，Log3G10 搭配 REDWideGamutRGB，ST 2084 和 Hybrid Log-Gamma 搭配 Rec. 2020；线性可搭配任意色彩空间。
+	Eighth Res. Good	1/8 分辨率 良好
+	Exposure Adjust	曝光调整
+	Flashing Pixel Adjust	闪烁像素调整
+	Full Res. Premium	全分辨率 高级
+	Full and half resolution premium decodes.	全分辨率和 1/2 分辨率的高级解码。
+	Gamma Curve	伽马曲线
+	HDR Peak Nits	HDR 峰值尼特
+	HDRx blending is not available in FilmCraft yet.	FilmCraft 尚不支持 HDRx 混合。
+	Half Res. Good	1/2 分辨率 良好
+	Half Res. Premium	1/2 分辨率 高级
+	Highlight Roll Off	高光滚降
+	Hybrid Log-Gamma	Hybrid Log-Gamma
+	IPP2	IPP2
+	Log3G10	Log3G10
+	Mild	轻度
+	Nikon R3D NE is developed with RED IPP2 only.	Nikon R3D NE 仅使用 RED IPP2 显影。
+	No RMD sidecar: the clip's recorded settings are the camera's.	无 RMD 附属文件：剪辑的记录设置来自相机。
+	Output Tone Map	输出色调映射
+	P3 D65	P3 D65
+	Put this clip back to the settings it records (or its RMD sidecar says)	将此剪辑恢复为其记录的设置（或其 RMD 附属文件中的设置）
+	Quarter Res. Good	1/4 分辨率 良好
+	RED IPP2 development of the RAW picture. ISO, colour temperature, tint and exposure are applied by the SDK before development (as shot unless set); the output tone map and highlight roll-off shape a display gamma curve. Proxies keep the look they were made with.	RAW 画面的 RED IPP2 显影。ISO、色温、色调和曝光在显影前由 SDK 应用（未设置时按拍摄时）；输出色调映射和高光滚降塑造显示伽马曲线。代理保留创建时的外观。
+	REDWideGamutRGB	REDWideGamutRGB
+	RMD sidecar in effect: {path}	正在使用 RMD 附属文件：{path}
+	RMD written: {paths}	已写入 RMD：{paths}
+	Rec. 2020	Rec. 2020
+	ST 2084 (PQ)	ST 2084（PQ）
+	Sixteenth Res. Good	1/16 分辨率 良好
+	Standard (Rec. 709, BT.1886)	标准（Rec. 709、BT.1886）
+	Strong	强
+	The 3D LUT the clip (or its RMD) carries.	剪辑（或其 RMD）附带的 3D LUT。
+	The ASC CDL the clip (or its RMD) records.	剪辑（或其 RMD）记录的 ASC CDL。
+	The largest decode a preview uses; an export and a monitor at 100 % always decode at full resolution, premium.	预览使用的最大解码；导出和 100% 显示的监视器始终以全分辨率高级解码。
+	The linear output carries no look: choose a display or log gamma curve to apply it.	线性输出不带外观：请选择显示或对数伽马曲线以应用它。
+	The luma and RGB curves the clip records.	剪辑记录的亮度和 RGB 曲线。
+	This clip carries no creative LUT.	此剪辑不带创意 LUT。
+	This clip decodes with the project's Camera RAW settings (File > Project Settings > Camera RAW). Choose Decode Using > Clip to give it settings of its own.	此剪辑使用项目的相机 RAW 设置解码（文件 > 项目设置 > 相机 RAW）。选择 解码依据 > 剪辑 可为其指定自己的设置。
+	This clip has no HDRx track (Nikon R3D NE records none): there is nothing to blend.	此剪辑没有 HDRx 轨道（Nikon R3D NE 不记录）：没有可混合的内容。
+	Update RMD	更新 RMD
+	Use Changes	使用更改
+	Use Settings	使用设置
+	Use project setting	使用项目设置
+	Very Soft	非常柔和
+	Write this clip's settings into its RMD sidecar beside the clip	将此剪辑的设置写入剪辑旁的 RMD 附属文件
+	as recorded	按记录
+	sRGB	sRGB
+	{n} camera RAW clips decode using these settings.	{n} 个相机 RAW 剪辑使用这些设置解码。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。

@@ -3625,5 +3625,77 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	As Shot	撮影時
+	As Shot (ISO {v})	撮影時 (ISO {v})
+	as shot	撮影時
+	as shot (decoder not open)	撮影時（デコーダー未起動）
+	ISO	ISO
+	Applies to a display gamma curve (BT.1886, sRGB, ST 2084, Hybrid Log-Gamma).	表示用ガンマカーブ（BT.1886、sRGB、ST 2084、Hybrid Log-Gamma）に適用されます。
+	Applies to the ST 2084 (PQ) gamma curve only.	ST 2084（PQ）ガンマカーブにのみ適用されます。
+	Apply CDL	CDL を適用
+	Apply Creative LUT	クリエイティブ LUT を適用
+	Apply Metadata Curves	メタデータのカーブを適用
+	Apply this clip's settings to every selected clip	このクリップの設定を選択したすべてのクリップに適用
+	As recorded	記録どおり
+	BT.1886	BT.1886
+	Blend Bias	ブレンドバイアス
+	Blend Type	ブレンドの種類
+	Camera RAW	カメラ RAW
+	Camera RAW clips develop with these settings unless they have settings of their own (Clip > Source Settings > Decode Using > Clip).	カメラ RAW クリップは、独自の設定がない限りこの設定で現像されます（クリップ > ソース設定 > デコードに使用 > クリップ）。
+	Camera RAW…	カメラ RAW…
+	Camera Raw	カメラ RAW
+	Chroma Noise Reduction	色ノイズ低減
+	Color Science	カラーサイエンス
+	Color Temp	色温度
+	Decode Quality	デコード品質
+	Decode Using	デコードに使用
+	Display curves go with Rec. 709, Rec. 2020 and P3 D65, Log3G10 with REDWideGamutRGB, ST 2084 and Hybrid Log-Gamma with Rec. 2020; linear with any.	表示用カーブは Rec. 709・Rec. 2020・P3 D65、Log3G10 は REDWideGamutRGB、ST 2084 と Hybrid Log-Gamma は Rec. 2020 と組み合わせます。リニアはどれとでも使えます。
+	Eighth Res. Good	1/8 解像度・良好
+	Exposure Adjust	露出補正
+	Flashing Pixel Adjust	点滅ピクセル補正
+	Full Res. Premium	フル解像度・プレミアム
+	Full and half resolution premium decodes.	フル解像度と 1/2 解像度のプレミアムデコード。
+	Gamma Curve	ガンマカーブ
+	HDR Peak Nits	HDR ピーク（nit）
+	HDRx blending is not available in FilmCraft yet.	HDRx のブレンドは FilmCraft ではまだ使用できません。
+	Half Res. Good	1/2 解像度・良好
+	Half Res. Premium	1/2 解像度・プレミアム
+	Highlight Roll Off	ハイライトのロールオフ
+	Hybrid Log-Gamma	Hybrid Log-Gamma
+	IPP2	IPP2
+	Log3G10	Log3G10
+	Mild	弱
+	Nikon R3D NE is developed with RED IPP2 only.	Nikon R3D NE は RED IPP2 でのみ現像されます。
+	No RMD sidecar: the clip's recorded settings are the camera's.	RMD サイドカーなし：クリップの記録設定はカメラのものです。
+	Output Tone Map	出力トーンマップ
+	P3 D65	P3 D65
+	Put this clip back to the settings it records (or its RMD sidecar says)	このクリップを記録された設定（または RMD サイドカーの設定）に戻す
+	Quarter Res. Good	1/4 解像度・良好
+	RED IPP2 development of the RAW picture. ISO, colour temperature, tint and exposure are applied by the SDK before development (as shot unless set); the output tone map and highlight roll-off shape a display gamma curve. Proxies keep the look they were made with.	RAW 画像の RED IPP2 現像です。ISO・色温度・色合い・露出は現像前に SDK が適用します（設定しない限り撮影時の値）。出力トーンマップとハイライトのロールオフは表示用ガンマカーブを形作ります。プロキシは作成時のルックのままです。
+	REDWideGamutRGB	REDWideGamutRGB
+	RMD sidecar in effect: {path}	RMD サイドカーを使用中: {path}
+	RMD written: {paths}	RMD を書き込みました: {paths}
+	Rec. 2020	Rec. 2020
+	ST 2084 (PQ)	ST 2084（PQ）
+	Sixteenth Res. Good	1/16 解像度・良好
+	Standard (Rec. 709, BT.1886)	標準（Rec. 709、BT.1886）
+	Strong	強
+	The 3D LUT the clip (or its RMD) carries.	クリップ（またはその RMD）が持つ 3D LUT。
+	The ASC CDL the clip (or its RMD) records.	クリップ（またはその RMD）に記録された ASC CDL。
+	The largest decode a preview uses; an export and a monitor at 100 % always decode at full resolution, premium.	プレビューで使う最大のデコードです。書き出しと 100 % 表示のモニターは常にフル解像度・プレミアムでデコードします。
+	The linear output carries no look: choose a display or log gamma curve to apply it.	リニア出力にはルックが含まれません。適用するには表示用またはログのガンマカーブを選んでください。
+	The luma and RGB curves the clip records.	クリップに記録された輝度と RGB のカーブ。
+	This clip carries no creative LUT.	このクリップにはクリエイティブ LUT がありません。
+	This clip decodes with the project's Camera RAW settings (File > Project Settings > Camera RAW). Choose Decode Using > Clip to give it settings of its own.	このクリップはプロジェクトのカメラ RAW 設定でデコードされます（ファイル > プロジェクト設定 > カメラ RAW）。独自の設定にするには、デコードに使用 > クリップを選んでください。
+	This clip has no HDRx track (Nikon R3D NE records none): there is nothing to blend.	このクリップには HDRx トラックがありません（Nikon R3D NE は記録しません）。ブレンドするものはありません。
+	Update RMD	RMD を更新
+	Use Changes	変更を適用
+	Use Settings	設定を使用
+	Use project setting	プロジェクト設定を使用
+	Very Soft	非常にソフト
+	Write this clip's settings into its RMD sidecar beside the clip	このクリップの設定をクリップの横の RMD サイドカーに書き込む
+	as recorded	記録どおり
+	sRGB	sRGB
+	{n} camera RAW clips decode using these settings.	{n} 個のカメラ RAW クリップがこの設定でデコードされます。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。

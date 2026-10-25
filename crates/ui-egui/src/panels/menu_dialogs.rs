@@ -37,11 +37,198 @@ pub struct Extras {
     pub dynamic_waveforms: bool,
     /// Paths handed to the operating system's opener (Edit Original, Reveal Log Files), newest last.
     pub opened: Vec<String>,
+    /// Clip ▸ Source Settings… live preview: the last settings sent to the clip while the dialog is
+    /// open (None = none yet). See [`source_preview`].
+    pub source_preview: Option<SourcePreview>,
 }
 
 impl Default for Extras {
     fn default() -> Self {
-        Extras { dialog: None, dynamic_waveforms: true, opened: Vec::new() }
+        Extras { dialog: None, dynamic_waveforms: true, opened: Vec::new(), source_preview: None }
+    }
+}
+
+/// The live preview of the open Source Settings dialog: what was last sent to `clip.sourceSettings
+/// {preview: true}` (applied, or refused with the error the dialog shows), for which clips, at
+/// which project revision and when (egui time, seconds), so the next change waits for the
+/// Program monitor to show that revision before it is sent (at most one apply outstanding).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourcePreview {
+    pub sent: Value,
+    pub items: Value,
+    pub revision: u64,
+    pub sent_at: f64,
+}
+
+/// Longest a live preview waits for the monitors before the next change is sent anyway (a frame
+/// that never comes: no sequence open, the clip not on the Program monitor).
+const PREVIEW_WAIT_MAX: f64 = 1.0;
+
+/// The Camera Raw panel's values as `clip.sourceSettings` / `file.projectSettings.cameraRaw`
+/// take them: every control but the fixed ones (colour science, HDRx blend), with "as recorded"
+/// as `null`.
+fn panel_params(settings: &Value, p: &Value) -> Value {
+    let mut q = json!({});
+    for st in settings.as_array().into_iter().flatten() {
+        let Some(id) = st["id"].as_str() else { continue };
+        if st["kind"] == "fixed" {
+            continue;
+        }
+        q[id] = match &p[id] {
+            Value::String(v) if v == "asRecorded" => Value::Null,
+            v => v.clone(),
+        };
+    }
+    q
+}
+
+/// The parameters of the Source Settings dialog, as `clip.sourceSettings` takes them. Decode
+/// Using goes only when it changes. A clip that decodes with the project's settings sends no
+/// development settings of its own, unless one was changed (over the control channel: the panel
+/// disables them), which gives the clip settings of its own, as the command does.
+fn source_settings_params(d: &ClipDialogDraft) -> Value {
+    let mut q = panel_params(&d.info["settings"], &d.params);
+    let mode = d.info["develop"]["decodeUsing"].as_str().unwrap_or("clip");
+    let wanted = d.params["decodeUsing"].as_str().unwrap_or(mode);
+    let Some(m) = q.as_object_mut() else { return q };
+    m.remove("decodeUsing");
+    if wanted != mode {
+        m.insert("decodeUsing".into(), json!(wanted));
+        if wanted == "project" {
+            m.retain(|k, _| k == "decodeUsing" || k == "quality");
+        }
+    } else if mode == "project" {
+        // only what differs from the project's settings the panel shows
+        let shown = panel_params(&d.info["settings"], &setting_values(&d.info["settings"]));
+        m.retain(|k, v| k == "quality" || shown.get(k) != Some(v));
+    }
+    q
+}
+
+/// The value of every control the command reported, as the dialog's parameters.
+fn setting_values(settings: &Value) -> Value {
+    let mut p = json!({});
+    for st in settings.as_array().into_iter().flatten() {
+        if let Some(id) = st["id"].as_str() {
+            p[id] = st["value"].clone();
+        }
+    }
+    p
+}
+
+/// The Camera Raw panel's values of develop `d` (the project's panel: no Decode Using).
+fn develop_values(d: &filmcraft_media::RawDevelop) -> Value {
+    json!({
+        "quality": d.quality().id(),
+        "colorScience": "ipp2",
+        "colorSpace": d.color_space.id(),
+        "gamma": d.gamma.id(),
+        "toneMap": d.tone_map.id(),
+        "rolloff": d.rolloff.id(),
+        "hdrPeakNits": d.hdr_peak_nits,
+        "chromaNoiseReduction": d.chroma_noise_reduction,
+        "flashingPixel": d.flashing_pixel.map_or("asRecorded", |f| f.id()),
+        "metadataCurves": d.metadata_curves,
+        "creativeLut": d.creative_lut,
+        "cdl": d.cdl,
+        "iso": d.iso,
+        "kelvin": d.kelvin,
+        "tint": d.tint,
+        "exposure": d.exposure,
+    })
+}
+
+/// Take a `clip.sourceSettings` reply into the open dialog: the controls (values, what is
+/// enabled), the clip's mode and what it records, so the panel shows what the clip now develops
+/// with (Decode Using switched, a colour space that brought its gamma along, Use Settings).
+fn take_reply(d: &mut ClipDialogDraft, r: &Value) {
+    for k in ["settings", "develop", "own", "asShot", "clip", "rmd", "rmdNote", "message"] {
+        if let Some(v) = r.get(k) {
+            d.info[k] = v.clone();
+        }
+    }
+    d.params = setting_values(&d.info["settings"]);
+}
+
+/// Keep the clip in step with the Source Settings dialog: a changed control is
+/// applied through `clip.sourceSettings {preview: true}` so the monitors develop the current
+/// frame with it before OK. Every preview of one dialog is one undo step (the command merges
+/// them); OK commits it ([`run`]) and Cancel takes it back ([`revert_source_preview`]). While a
+/// control is dragged, at most one apply is outstanding: the next waits until the Program monitor
+/// shows the revision of the last one (or [`PREVIEW_WAIT_MAX`] passes), and a drag that ends
+/// meanwhile still sends its final value. A refused value (hostile, over the control channel)
+/// shows its error and is not sent again until it changes.
+fn source_preview(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mut ClipDialogDraft) {
+    let wanted = source_settings_params(d);
+    if d.info["opened"].is_null() {
+        // a dialog opened without them (restored state): what it shows now counts as its opening values
+        d.info["opened"] = wanted;
+        return;
+    }
+    let last = app.ui.extras.source_preview.as_ref().map(|s| s.sent.clone()).unwrap_or_else(|| d.info["opened"].clone());
+    if wanted == last {
+        return;
+    }
+    let now = ctx.input(|i| i.time);
+    if let Some(sp) = &app.ui.extras.source_preview {
+        let dragging = ctx.input(|i| i.pointer.any_down());
+        let shown = app.program_picture().map(|k| k.revision);
+        let behind = shown.is_some_and(|r| r < sp.revision);
+        if dragging && behind && now - sp.sent_at < PREVIEW_WAIT_MAX {
+            // the last apply is still being developed: send this one when its frame is on screen
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            return;
+        }
+    }
+    let items = d.info["items"].clone();
+    let mut q = wanted.clone();
+    q["items"] = items.clone();
+    q["preview"] = json!(true);
+    let sent = match app.session.execute("clip.sourceSettings", q) {
+        Ok(r) => {
+            d.error.clear();
+            take_reply(d, &r);
+            source_settings_params(d)
+        }
+        Err(e) => {
+            d.error = e.to_string();
+            wanted
+        }
+    };
+    app.ui.extras.source_preview = Some(SourcePreview { sent, items, revision: app.session.revision, sent_at: now });
+}
+
+/// The Camera Raw panel's buttons (Update RMD, Use Changes, Use Settings): the dialog's settings
+/// with the action, applied as part of the dialog's live preview (one undo step; Cancel takes it
+/// back, except the RMD file, which is written at once).
+fn camera_raw_action(app: &mut FilmcraftApp, d: &mut ClipDialogDraft, flag: &str, now: f64) {
+    let items = d.info["items"].clone();
+    let mut q = source_settings_params(d);
+    q["items"] = items.clone();
+    q["preview"] = json!(true);
+    q[flag] = json!(true);
+    match app.session.execute("clip.sourceSettings", q) {
+        Ok(r) => {
+            d.error.clear();
+            take_reply(d, &r);
+            if flag == "updateRmd" {
+                let paths: Vec<&str> = r["rmdWritten"].as_array().into_iter().flatten().filter_map(|w| w["path"].as_str()).collect();
+                app.ui.status = tlf!("RMD written: {paths}", paths = paths.join(", "));
+            }
+            let sent = source_settings_params(d);
+            app.ui.extras.source_preview = Some(SourcePreview { sent, items, revision: app.session.revision, sent_at: now });
+        }
+        Err(e) => d.error = e.to_string(),
+    }
+}
+
+/// Take back the live preview of a Source Settings dialog that closes without OK (Cancel, Escape,
+/// or the dialog replaced): the clip returns to the values the dialog opened with, and the
+/// history is as before it opened.
+fn revert_source_preview(app: &mut FilmcraftApp) {
+    let Some(sp) = app.ui.extras.source_preview.take() else { return };
+    if let Err(e) = app.session.execute("clip.sourceSettings", json!({"items": sp.items, "revert": true})) {
+        log::warn!("source settings preview not reverted: {e}");
     }
 }
 
@@ -80,7 +267,9 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
 /// Commands whose menu item opens a dialog (the Project Settings items share one).
 fn dialog_command(id: &str) -> Option<&'static str> {
     Some(match id {
-        "file.projectSettings.general" | "file.projectSettings.scratchDisks" | "project.ingestSettings" => "project.settings",
+        "file.projectSettings.general" | "file.projectSettings.scratchDisks" | "project.ingestSettings" | "file.projectSettings.cameraRaw" => {
+            "project.settings"
+        }
         "edit.find" => "edit.find",
         "file.newSearchBin" => "file.newSearchBin",
         "file.mediaProperties" => "file.mediaProperties",
@@ -289,11 +478,14 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
             let tab = match id {
                 "file.projectSettings.scratchDisks" => "scratchDisks",
                 "project.ingestSettings" => "ingest",
+                "file.projectSettings.cameraRaw" => "cameraRaw",
                 _ => "general",
             };
             let st = s.project.settings.clone();
             let general = s.execute("file.projectSettings.general", json!({})).map_err(|e| e.to_string())?;
             let scratch = filmcraft_engine::project_tools::scratch_paths(s);
+            let camera_raw = s.execute("file.projectSettings.cameraRaw", json!({})).map_err(|e| e.to_string())?;
+            let camera_values = setting_values(&camera_raw["settings"]);
             let ingest = serde_json::to_value(&st.ingest).unwrap_or_default();
             let sc = &st.scratch;
             (
@@ -303,8 +495,9 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
                     "captureFormat": general["captureFormat"], "titleSafe": general["titleSafe"], "actionSafe": general["actionSafe"],
                     "captured": sc.captured, "videoPreviews": sc.video_previews, "audioPreviews": sc.audio_previews, "autoSave": sc.auto_save,
                     "ingest": ingest.clone(),
+                    "cameraRaw": camera_values.clone(),
                 }),
-                json!({"scratch": scratch, "ingest": ingest, "project": s.project.name}),
+                json!({"scratch": scratch, "ingest": ingest, "project": s.project.name, "cameraRaw": camera_raw, "cameraRawOpened": camera_values}),
             )
         }
         "file.mediaProperties" => {
@@ -323,7 +516,14 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
             }
             (p, Value::Null)
         }
-        "clip.sourceSettings" => (json!({}), s.execute("clip.sourceSettings", json!({})).map_err(|e| e.to_string())?),
+        "clip.sourceSettings" => {
+            // the controls and their values come from the command; the dialog edits a copy
+            let info = s.execute("clip.sourceSettings", json!({})).map_err(|e| e.to_string())?;
+            let mut draft = ClipDialogDraft { command: cmd.into(), params: setting_values(&info["settings"]), info, error: String::new() };
+            // the values the dialog opened with: the live preview applies every change from them
+            draft.info["opened"] = source_settings_params(&draft);
+            (draft.params, draft.info)
+        }
         "clip.updateMetadata" => {
             let n = s.state.project_selection.len().max(s.state.selection.len());
             (json!({}), json!({"count": n}))
@@ -448,12 +648,196 @@ fn color(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
     });
 }
 
+/// The value of one setting with a recorded value (`<pre>.<id>`): ISO as a list of the decoder's
+/// values, the others as numbers within the decoder's range, showing the clip's recorded value
+/// until set, with an As Shot button (`<pre>.<id>.asShot`) that unsets it. The parameter is
+/// `null` for as shot, else the number.
+fn raw_value(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, st: &Value) {
+    let id = st["id"].as_str().unwrap_or_default();
+    let label = crate::i18n::t(st["label"].as_str().unwrap_or(id)).to_string();
+    let as_shot = st["asShot"].as_f64().filter(|v| v.is_finite());
+    let fallback = as_shot.or_else(|| st["default"].as_f64()).unwrap_or(0.0);
+    let set = !p[id].is_null();
+    ui.horizontal(|ui| {
+        if st["kind"] == "iso" {
+            let as_shot_label = match as_shot {
+                Some(v) => tlf!("As Shot (ISO {v})", v = v.round().max(0.0) as u64),
+                None => tl!("As Shot").to_string(),
+            };
+            let mut options: Vec<(String, String)> = vec![("asShot".into(), as_shot_label)];
+            options.extend(st["options"].as_array().into_iter().flatten().filter_map(Value::as_u64).map(|v| (v.to_string(), v.to_string())));
+            let mut choice = json!(p[id].as_u64().map_or_else(|| "asShot".to_string(), |v| v.to_string()));
+            combo(ui, elems, &format!("{pre}.{id}"), "", &mut choice, &options);
+            p[id] = match choice.as_str().and_then(|c| c.parse::<u64>().ok()) {
+                Some(v) => json!(v),
+                None => Value::Null,
+            };
+        } else {
+            let mut v = p[id].as_f64().unwrap_or(fallback);
+            let (min, max) = (st["min"].as_f64().unwrap_or(f64::MIN), st["max"].as_f64().unwrap_or(f64::MAX));
+            let decimals = st["decimals"].as_u64().unwrap_or(0).min(6) as usize;
+            let step = st["step"].as_f64().filter(|s| *s > 0.0).unwrap_or(1.0);
+            let suffix = st["suffix"].as_str().unwrap_or_default();
+            let mut drag = crate::widgets::number_drag(&mut v).speed(step).fixed_decimals(decimals).suffix(suffix);
+            if min <= max {
+                drag = drag.range(min..=max);
+            }
+            let r = ui.add(drag);
+            push(elems, format!("{pre}.{id}"), &r, label.as_str());
+            if r.changed() {
+                // whole-number settings (Kelvin, the HDR peak) travel as integers
+                p[id] = if decimals == 0 { json!(v.round().max(0.0) as u64) } else { json!(v) };
+            }
+            if !set {
+                let what = if id == "hdrPeakNits" {
+                    tl!("as recorded")
+                } else if as_shot.is_some() {
+                    tl!("as shot")
+                } else {
+                    tl!("as shot (decoder not open)")
+                };
+                ui.label(RichText::new(what).weak());
+            }
+        }
+        if set {
+            let r = ui.small_button(tl!("As Shot"));
+            push(elems, format!("{pre}.{id}.asShot"), &r, "As Shot");
+            if r.clicked() {
+                p[id] = Value::Null;
+            }
+        }
+    });
+}
+
+/// The Camera Raw panel (Clip ▸ Source Settings…, and Project Settings ▸ Camera RAW with
+/// `clip` false): the controls the command reports, in its three columns as a RED Camera Raw
+/// panel lays them out (decode and colour pipeline; ISO and the output transform; white balance
+/// and exposure), each `<pre>.<id>`. What a control does not apply to is greyed out with the
+/// reason on hover: every development control while the clip decodes with the project's settings,
+/// the tone map and roll-off without a display gamma, the HDR peak without ST 2084, the curves,
+/// LUT and CDL with linear light, the LUT of a clip that has none, colour science and the HDRx
+/// blend always (with the reason under them). A colour space or gamma chosen that does not go
+/// with the other one brings a fitting other one along, as the command does.
+fn camera_raw_panel(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, settings: &Value, clip: bool) {
+    use filmcraft_media::{RawColorSpace, RawDevelop, RawGamma};
+    // the colour space and gamma shown last frame, to tell which of them changed (from the panel
+    // or over the control channel)
+    let shown = p.get("shownPair").cloned().filter(Value::is_array);
+    let follows = clip && p["decodeUsing"] == "project";
+    let gamma = p["gamma"].as_str().unwrap_or("linear").to_string();
+    let display = RawGamma::parse(&gamma).is_some_and(RawGamma::is_display);
+    let enabled = |st: &Value| -> bool {
+        match st["id"].as_str().unwrap_or_default() {
+            _ if st["kind"] == "fixed" => false,
+            "quality" | "decodeUsing" => true,
+            _ if follows => false,
+            "toneMap" | "rolloff" => display,
+            "hdrPeakNits" => gamma == "st2084",
+            "metadataCurves" | "cdl" => gamma != "linear",
+            "creativeLut" => gamma != "linear" && st["available"] != false,
+            _ => true,
+        }
+    };
+    let all: Vec<Value> = settings.as_array().cloned().unwrap_or_default();
+    ui.horizontal_top(|ui| {
+        for column in 1..=3u64 {
+            ui.vertical(|ui| {
+                egui::Grid::new((pre, "camera-raw", column)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    for st in all.iter().filter(|st| st["column"] == column) {
+                        let id = st["id"].as_str().unwrap_or_default().to_string();
+                        let label = crate::i18n::t(st["label"].as_str().unwrap_or(&id)).to_string();
+                        let on = enabled(st);
+                        let note = crate::i18n::t(st["note"].as_str().unwrap_or_default()).to_string();
+                        if st["kind"] == "bool" {
+                            ui.label("");
+                        } else {
+                            ui.add_enabled(on, egui::Label::new(label.as_str()));
+                        }
+                        let r = ui.add_enabled_ui(on, |ui| match st["kind"].as_str().unwrap_or_default() {
+                            "bool" => {
+                                let recorded = st["recorded"].as_bool();
+                                let mut v = p[id.as_str()].as_bool().or(recorded).unwrap_or(false);
+                                ui.horizontal(|ui| {
+                                    let r = ui.checkbox(&mut v, label.as_str());
+                                    push(elems, format!("{pre}.{id}"), &r, label.as_str());
+                                    if r.changed() {
+                                        p[id.as_str()] = json!(v);
+                                    }
+                                    if p[id.as_str()].is_null() {
+                                        ui.label(RichText::new(tl!("as recorded")).weak());
+                                    }
+                                });
+                            }
+                            "fixed" => {
+                                let shown = st["options"][0]["label"]
+                                    .as_str()
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| format!("{:.2}", st["value"].as_f64().unwrap_or(0.0)));
+                                let r = ui.add(egui::Button::new(crate::i18n::t(&shown)).min_size(egui::vec2(140.0, 0.0)));
+                                push(elems, format!("{pre}.{id}"), &r, label.as_str());
+                            }
+                            "iso" | "number" => raw_value(ui, elems, pre, p, st),
+                            _ => {
+                                let options: Vec<(String, String)> = st["options"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|o| Some((o["id"].as_str()?.to_string(), o["label"].as_str().unwrap_or_default().to_string())))
+                                    .collect();
+                                combo(ui, elems, &format!("{pre}.{id}"), "", &mut p[id.as_str()], &options);
+                            }
+                        });
+                        if !note.is_empty() {
+                            r.response.on_hover_text(note);
+                        }
+                        ui.end_row();
+                    }
+                });
+                // why the blend is greyed out, where it shows (the panel's first column)
+                if let Some(blend) = all.iter().find(|st| st["id"] == "blendType" && st["column"] == column) {
+                    ui.scope(|ui| {
+                        ui.set_max_width(320.0);
+                        ui.add(egui::Label::new(RichText::new(crate::i18n::t(blend["note"].as_str().unwrap_or_default())).weak().small()).wrap());
+                    });
+                }
+            });
+            if column < 3 {
+                // space, not a separator: a vertical one in a row takes the whole height left
+                ui.add_space(18.0);
+            }
+        }
+    });
+    // a colour space or gamma that does not go with the other brings a fitting one along
+    let space = p["colorSpace"].as_str().and_then(RawColorSpace::parse);
+    let curve = p["gamma"].as_str().and_then(RawGamma::parse);
+    if let (Some(s), Some(g)) = (space, curve)
+        && !RawDevelop::supports(s, g)
+    {
+        // without a last frame to compare with, a gamma that fits one colour space only wins
+        let gamma_changed = match &shown {
+            Some(pair) => p["gamma"] != pair[1],
+            None => matches!(g, RawGamma::Log3G10 | RawGamma::St2084 | RawGamma::Hlg),
+        };
+        if gamma_changed {
+            p["colorSpace"] = json!(RawDevelop::space_for(g).id());
+        } else {
+            p["gamma"] = json!(RawDevelop::gamma_for(s).id());
+        }
+    }
+    p["shownPair"] = json!([p["colorSpace"].clone(), p["gamma"].clone()]);
+}
+
 fn pairs(v: &[&str]) -> Vec<(String, String)> {
     v.iter().map(|x| (x.to_string(), x.to_string())).collect()
 }
 
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    // a Source Settings dialog that went away without OK (closed from outside, or replaced by
+    // another dialog) leaves its live preview behind: take it back, as Cancel would
+    if app.ui.extras.source_preview.is_some() && app.ui.extras.dialog.as_ref().is_none_or(|d| d.command != "clip.sourceSettings") {
+        revert_source_preview(app);
+    }
     let Some(mut d) = app.ui.extras.dialog.clone() else { return };
     crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("menu-dialog-before-drag"), &mut d);
     let Some((title, pre, ok_text)) = meta(&d.command) else {
@@ -462,8 +846,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     };
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
+    // a Camera Raw panel button (Update RMD, Use Changes, Use Settings), run after the widgets
+    let mut camera_action: Option<&'static str> = None;
     let mut browse: Option<String> = None;
-    let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
+    // Source Settings is read-only for media without development controls
+    let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "help.systemCompatibilityReport")
+        || (d.command == "clip.sourceSettings" && d.info["settings"].as_array().is_none_or(Vec::is_empty));
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("menu-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
@@ -530,7 +918,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             "project.settings" => {
                 ui.label(tlf!("Project: {name}", name = d.info["project"].as_str().unwrap_or_default()));
                 ui.horizontal(|ui| {
-                    for (k, l) in [("general", tl!("General")), ("scratchDisks", tl!("Scratch Disks")), ("ingest", tl!("Ingest Settings"))] {
+                    for (k, l) in [
+                        ("general", tl!("General")),
+                        ("scratchDisks", tl!("Scratch Disks")),
+                        ("ingest", tl!("Ingest Settings")),
+                        ("cameraRaw", tl!("Camera RAW")),
+                    ] {
                         let r = ui.selectable_label(p["tab"].as_str() == Some(k), l);
                         push(&mut elems, format!("projectSettings.tab.{k}"), &r, l);
                         if r.clicked() {
@@ -540,6 +933,21 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
                 ui.separator();
                 match p["tab"].as_str().unwrap_or("general") {
+                    "cameraRaw" => {
+                        // the project's Camera RAW settings: what clips that decode using the project develop with
+                        let settings = d.info["cameraRaw"]["settings"].clone();
+                        camera_raw_panel(ui, &mut elems, "projectSettings.cameraRaw", &mut p["cameraRaw"], &settings, false);
+                        ui.horizontal(|ui| {
+                            let r = ui.button(tl!("Standard (Rec. 709, BT.1886)"));
+                            push(&mut elems, "projectSettings.cameraRaw.standard", &r, "Standard");
+                            if r.clicked() {
+                                p["cameraRaw"] = develop_values(&filmcraft_media::RawDevelop::STANDARD);
+                            }
+                            let n = d.info["cameraRaw"]["clips"].as_u64().unwrap_or(0);
+                            ui.label(RichText::new(tlf!("{n} camera RAW clips decode using these settings.", n)).weak());
+                        });
+                        ui.label(RichText::new(crate::i18n::t(d.info["cameraRaw"]["message"].as_str().unwrap_or_default())).weak());
+                    }
                     "scratchDisks" => {
                         for (k, l) in [
                             ("captured", tl!("Captured and Generated:")),
@@ -686,8 +1094,43 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 text(ui, &mut elems, pre, p, "logNote", tl!("Log Note:"), 220.0);
             }
             "clip.sourceSettings" => {
-                ui.label(tlf!("Codec: {codec}", codec = d.info["codec"].as_str().unwrap_or_default()));
-                ui.label(RichText::new(d.info["message"].as_str().unwrap_or_default()).weak());
+                let settings = d.info["settings"].clone();
+                let developable = settings.as_array().is_some_and(|s| !s.is_empty());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tl!("Camera Raw")).strong());
+                    if developable {
+                        ui.label(RichText::new("RED · IPP2").strong());
+                    }
+                    ui.label(tlf!("Codec: {codec}", codec = d.info["codec"].as_str().unwrap_or_default()));
+                });
+                if developable {
+                    ui.separator();
+                    camera_raw_panel(ui, &mut elems, pre, p, &settings, true);
+                    ui.separator();
+                    // the panel's buttons, in a plain row (a right-to-left layout makes an
+                    // auto-sized window grow to the screen)
+                    ui.horizontal(|ui| {
+                        let many = d.info["items"].as_array().is_some_and(|i| i.len() > 1);
+                        for (flag, label, on, tip) in [
+                            ("updateRmd", tl!("Update RMD"), true, tl!("Write this clip's settings into its RMD sidecar beside the clip")),
+                            ("useChanges", tl!("Use Changes"), many, tl!("Apply this clip's settings to every selected clip")),
+                            ("useSettings", tl!("Use Settings"), true, tl!("Put this clip back to the settings it records (or its RMD sidecar says)")),
+                        ] {
+                            let r = ui.add_enabled(on, egui::Button::new(label)).on_hover_text(tip);
+                            push(&mut elems, format!("{pre}.{flag}"), &r, label);
+                            if r.clicked() {
+                                camera_action = Some(flag);
+                            }
+                        }
+                    });
+                    // what the RAW adjustments start from: as shot, or the clip's RMD sidecar
+                    let rmd = match d.info["rmd"].as_str() {
+                        Some(path) => tlf!("RMD sidecar in effect: {path}", path),
+                        None => tl!("No RMD sidecar: the clip's recorded settings are the camera's.").to_string(),
+                    };
+                    ui.label(RichText::new(rmd).weak().small());
+                }
+                ui.label(RichText::new(crate::i18n::t(d.info["message"].as_str().unwrap_or_default())).weak());
             }
             "clip.updateMetadata" => {
                 ui.label(tlf!("Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?", n = d.info["count"]));
@@ -847,14 +1290,23 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
+    // Source Settings previews live: a changed control reaches the clip (and the monitors) now
+    if d.command == "clip.sourceSettings" && !info_only && action.is_none() {
+        if let Some(flag) = camera_action {
+            camera_raw_action(app, &mut d, flag, ctx.input(|i| i.time));
+        }
+        source_preview(app, ctx, &mut d);
+    }
     match action {
         Some("cancel") => {
+            revert_source_preview(app);
             app.ui.extras.dialog = None;
             return;
         }
         Some("ok") => match run(app, &d) {
             Ok(Some(info)) => d.info["result"] = json!(info),
             Ok(None) => {
+                app.ui.extras.source_preview = None;
                 app.ui.extras.dialog = None;
                 return;
             }
@@ -893,6 +1345,12 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             if p["ingest"] != d.info["ingest"] {
                 s.execute("project.ingestSettings", p["ingest"].clone()).map_err(|e| e.to_string())?;
             }
+            // the panel's state also holds what it shows (`shownPair`): compare the parameters
+            let settings = &d.info["cameraRaw"]["settings"];
+            let wanted = panel_params(settings, &p["cameraRaw"]);
+            if wanted != panel_params(settings, &d.info["cameraRawOpened"]) {
+                s.execute("file.projectSettings.cameraRaw", wanted).map_err(|e| e.to_string())?;
+            }
             Ok(None)
         }
         "file.saveAsTemplate" => {
@@ -903,6 +1361,14 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
         "clip.sceneEditDetection" => {
             s.execute(&d.command, p.clone()).map_err(|e| e.to_string())?;
             app.ui.status = tl!("Scene Edit Detection: analysing in the background (see Progress)").into();
+            Ok(None)
+        }
+        "clip.sourceSettings" => {
+            // OK keeps what the live preview applied, as one undo step with it
+            let mut q = source_settings_params(d);
+            q["items"] = d.info["items"].clone();
+            q["commit"] = json!(true);
+            s.execute("clip.sourceSettings", q).map_err(|e| e.to_string())?;
             Ok(None)
         }
         cmd => {

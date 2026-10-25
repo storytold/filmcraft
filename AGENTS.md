@@ -25,6 +25,10 @@ panic path, and fix a crash before building on top of it. The cross-app standard
    uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]` only on its FFI modules, a
    `// SAFETY:` comment on every `unsafe` block, a safe `Result`-returning public API, and the
    pure-Rust decoder as the tested fallback ([ADR 0001](docs/adr/0001-platform-ffi.md)).
+   *Proposed, not in effect* ([ADR 0002](docs/adr/0002-optional-vendor-sdk-helpers.md), #383): an
+   opt-in vendor SDK feature may add one module that maps its helper process's frames read-only,
+   under the same rules; such a format has no pure-Rust decoder, and without the feature it is
+   reported as unsupported.
 4. **Every input-derived number is hostile.** Media files, project and interchange files, presets, fonts,
    CLI / MCP / control-channel parameters and UI state are untrusted. Index and slice with `get()` (or
    validate bounds once, up front, for a hot loop); slice strings only at char boundaries; use
@@ -122,7 +126,20 @@ reproduce an image (for example, point lists traced from someone else's icon).
 
 See [§0](#0-never-crash). It outranks every other engineering rule.
 
-### 3.2 The rest
+### 3.2 Optional vendor SDK decoders (proposed, not in effect)
+
+*Proposed in [ADR 0002](docs/adr/0002-optional-vendor-sdk-helpers.md) for #383; until the owners
+accept it, the rules above stand unchanged.* A camera format with no public specification may be
+decoded through its vendor's SDK only as an optional Cargo feature that is off by default and never
+enabled by CI or official builds, built only against an SDK the user supplies (nothing of it
+downloaded, committed or bundled), with the vendor's code running in a separate helper process the
+editor talks to over a versioned protocol whose replies it treats as hostile input. Its `unsafe` is
+at most one shared-memory module in `crates/platform` under ADR 0001's rules; the default build,
+its gates and its tests are unchanged, and the format is still recognised there with a message
+naming the feature. The adapter is original code; SDK-enabled builds are not distributed by the
+project.
+
+### 3.3 The rest
 
 **Invariant — move identity uniqueness:** A move plan lists each clip identity at most once.
 The core move operation rejects repeated ids before mutation or id allocation; placing one identity

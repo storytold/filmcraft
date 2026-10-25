@@ -344,7 +344,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     }
     let tex = match app.frames.get(&key) {
         Some(img) => Some(app.texture_for(&ctx, "monitor-multicam", key, &img)),
-        None => match app.frames.nearest(key.target, frame, key.size, key.revision, 6) {
+        None => match app.frames.nearest(key.target, frame, key.size, key.revision, crate::frames::LATE_GRACE) {
             Some(img) => Some(app.texture_for(&ctx, "monitor-multicam", FrameKey { frame: frame - 1, ..key }, &img)),
             None => app.texture_existing("monitor-multicam").map(|(id, _)| id),
         },
@@ -451,7 +451,7 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let has_video = q.angle_video_track_index(a).is_some();
         let key = FrameKey { target: Target::MulticamAngle(src, a as u32), frame, size: (scale * 1000.0) as u32, revision: rev, draft: false };
         let tex = if has_video {
-            app.frames.request(key, rate.tick_of(frame), scale, &project, 2);
+            app.frames.request_while(key, rate.tick_of(frame), scale, &project, 2, app.any_playing());
             app.frames.get(&key).map(|img| app.texture_for(ctx, &format!("edit-cameras-{}-{a}", src.0), key, &img))
         } else {
             None

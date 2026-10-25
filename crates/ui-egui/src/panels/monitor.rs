@@ -229,7 +229,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 .frames
                 .get_plan(&key)
                 .map(|p| (key, p))
-                .or_else(|| app.frames.nearest_plan(key, 6))
+                .or_else(|| app.frames.nearest_plan(key, crate::frames::LATE_GRACE))
                 .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))));
             match found {
                 Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
@@ -266,7 +266,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 t => t,
             };
             let rkey = FrameKey { target: rtarget, frame: rf, size: size_key, revision: rev, draft: false };
-            app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
+            app.frames.request_while(rkey, rate.tick_of(rf), scale, &project, 1, app.any_playing());
             let rpic = fit(ra, display_w, frame_size.1 as f32);
             if mv.transparency_grid {
                 monitor_view::transparency_grid(ui.painter(), rpic, ui.clip_rect());

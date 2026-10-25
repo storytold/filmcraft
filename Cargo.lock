@@ -2221,6 +2221,7 @@ dependencies = [
  "png",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -2276,6 +2277,7 @@ dependencies = [
 name = "filmcraft-platform"
 version = "0.13.0"
 dependencies = [
+ "cc",
  "filmcraft-bitstream",
  "filmcraft-codecs",
  "filmcraft-color",
@@ -2289,6 +2291,7 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-time",
+ "libc",
  "libloading",
  "log",
  "objc2-core-foundation",

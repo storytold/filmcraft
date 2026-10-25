@@ -40,6 +40,7 @@ for limited- and full-range files.
 | DJI D-Log | D-Gamut | DJI, *White Paper on D-Log and D-Gamut of DJI Cinema Color System* (2017) | CV | y ≤ 0.14: x = (y − 0.0929)/6.025; else x = (10^(3.89616y − 2.27752) − 0.0108)/0.9892 |
 | Fujifilm F-Log | F-Gamut (= BT.2020 primaries) | Fujifilm, *GFX ETERNA Technical Guide – White Paper* v1.01 (2026), F-Log conversion formula (same as the F-Log data sheet) | CV | y ≥ cut2: x = 10^((y − d)/c)/a − b/a; else x = (y − f)/e; a 0.555556, b 0.009468, c 0.344676, d 0.790453, e 8.735631, f 0.092864, cut1 0.00089, cut2 0.100537775223865 |
 | Fujifilm F-Log2 / F-Log2 C | F-Gamut / F-Gamut C (R 0.7347, 0.2653; G 0.0263, 0.9737; B 0.1173, −0.0224) | same document, F-Log2 C / F-Log2 conversion formula | CV | same form; a 5.555556, b 0.064829, c 0.245281, d 0.384316, e 8.799461, f 0.092864, cut1 0.000889, cut2 0.100686685370811 |
+| RED Log3G10 | REDWideGamutRGB | RED, *White Paper on REDWideGamutRGB and Log3G10* (Rev B, 2017; shipped with the R3D SDK) | CV (full-scale float) | y < 0: x = y/15.1927 − 0.01; else x = (10^(y/0.224282) − 1)/155.975327 − 0.01 (18 % → 1/3, 184.32 → 1.0) |
 
 The encoders are the exact inverses given in the same documents. DJI **D-Log M** is not
 implemented: DJI has not published its formula (only conversion LUTs), and we do not derive curves
@@ -60,6 +61,7 @@ Gamut primaries (all D65 white, x/y):
 | ARRI Wide Gamut 3 | 0.6840, 0.3130 | 0.2210, 0.8480 | 0.0861, −0.1020 | ARRI Log C document |
 | ARRI Wide Gamut 4 | 0.7347, 0.2653 | 0.1424, 0.8576 | 0.0991, −0.0308 | ARRI LogC4 specification |
 | D-Gamut | 0.71, 0.31 | 0.21, 0.88 | 0.09, −0.08 | DJI white paper |
+| REDWideGamutRGB | 0.780308, 0.304253 | 0.121595, 1.493994 | 0.095612, −0.084589 | RED white paper |
 
 Matrices are derived from the chromaticities (SMPTE RP 177 normalised primary matrix); tests check
 the result against the published BT.709 RGB→XYZ and BT.2087 BT.709→BT.2020 matrices.

@@ -11,12 +11,12 @@
 //! | `file.exportSelectionProject` | File ▸ Export ▸ Selection as FilmCraft Project… |
 //! | `file.exportAle` | File ▸ Export ▸ Avid Log Exchange… |
 //! | `file.mediaPropertiesFile` / `file.mediaProperties` | File ▸ Get Media File Properties for ▸ File… / Selection… (⇧⌘H) |
-//! | `file.projectSettings.general` / `.scratchDisks` | File ▸ Project Settings ▸ General… / Scratch Disks… |
+//! | `file.projectSettings.general` / `.scratchDisks` / `.cameraRaw` | File ▸ Project Settings ▸ General… / Scratch Disks… / Camera RAW… (`camera_raw`) |
 //! | `edit.find` / `edit.findNext` | Edit ▸ Find… (⌘F) / Find Next |
 //! | `edit.editOriginal` | Edit ▸ Edit Original (⌘E): the frontend opens the files (regular files with a media extension only) |
 //! | `file.reveal` | Project panel ▸ Reveal in Finder / Show in Explorer: the frontend reveals the media file |
 //! | `clip.editOffline` | Clip ▸ Edit Offline… |
-//! | `clip.sourceSettings` | Clip ▸ Source Settings… |
+//! | `clip.sourceSettings` | Clip ▸ Source Settings… (the Camera Raw panel, `camera_raw`) |
 //! | `clip.restoreCaptionsFromSource` | Clip ▸ Restore Captions from Source Clip (always disabled: no embedded caption reader) |
 //! | `clip.updateMetadata` | Clip ▸ Update Metadata… (XMP sidecars) |
 //! | `clip.generateAudioWaveform` | Clip ▸ Generate Audio Waveform (the frontend rebuilds its peaks) |
@@ -160,6 +160,15 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             always,
             project_settings_scratch,
         ),
+        spec(
+            "file.projectSettings.cameraRaw",
+            "Camera RAW…",
+            &["File", "Project Settings"],
+            None,
+            r#"{"quality":"fullPremium|halfPremium|halfGood|quarterGood|eighthGood|sixteenthGood"?,"colorSpace":"rec709|rec2020|p3d65|redWideGamutRgb"?,"gamma":"linear|bt1886|srgb|log3g10|st2084|hlg"?,"toneMap":"clip|none|low|medium|high"?,"rolloff":"clip|none|hard|medium|soft|verySoft"?,"hdrPeakNits":n|null?,"chromaNoiseReduction":bool|null?,"flashingPixel":"off|mild|medium|strong"|null?,"metadataCurves":bool?,"creativeLut":bool?,"cdl":bool?,"iso":n|null?,"kelvin":n|null?,"tint":f64|null?,"exposure":f64|null?,"asShot":bool?,"standard":bool?}"#,
+            always,
+            crate::camera_raw::project_settings,
+        ),
         // ---------------- Edit ----------------
         spec("edit.find", "Find…", &["Edit"], Some("Cmd+F"), FIND_PARAMS, always, find),
         spec("edit.findNext", "Find Next", &["Edit"], None, "{}", has_find, find_next),
@@ -176,7 +185,15 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             has_offline_selection,
             edit_offline,
         ),
-        query("clip.sourceSettings", "Source Settings…", &["Clip"], None, r#"{"item":id?}"#, has_media_selection, source_settings),
+        spec(
+            "clip.sourceSettings",
+            "Source Settings…",
+            &["Clip"],
+            None,
+            r#"{"item":id?,"items":[id]?,"decodeUsing":"clip|project"?,"quality":"project|fullPremium|halfPremium|halfGood|quarterGood|eighthGood|sixteenthGood"?,"colorSpace":"rec709|rec2020|p3d65|redWideGamutRgb"?,"gamma":"linear|bt1886|srgb|log3g10|st2084|hlg"?,"output":"linearRec709|rec709|log3g10"?,"toneMap":"clip|none|low|medium|high"?,"rolloff":"clip|none|hard|medium|soft|verySoft"?,"hdrPeakNits":n|null?,"chromaNoiseReduction":bool|null?,"flashingPixel":"off|mild|medium|strong"|null?,"metadataCurves":bool?,"creativeLut":bool?,"cdl":bool?,"iso":n|null?,"kelvin":n|null?,"tint":f64|null?,"exposure":f64|null?,"asShot":bool?,"useChanges":bool?,"useSettings":bool?,"updateRmd":bool?,"preview":bool?,"commit":bool?,"revert":bool?}"#,
+            has_media_selection,
+            crate::camera_raw::source_settings,
+        ),
         spec("clip.restoreCaptionsFromSource", "Restore Captions from Source Clip", &["Clip"], None, "{}", no_embedded_captions, |_, _| {
             Err(EngineError::Other(NO_CAPTIONS.into()))
         }),
@@ -239,6 +256,7 @@ pub(crate) fn apply_layout(v: &mut Vec<CommandSpec>) {
                 "file.projectSettings.general",
                 "file.projectSettings.scratchDisks",
                 "project.ingestSettings",
+                "file.projectSettings.cameraRaw",
             ],
         ),
         (At::After("edit.deselectAll"), vec!["edit.find", "edit.findNext"]),
@@ -348,7 +366,7 @@ fn has_find(s: &Session) -> std::result::Result<(), String> {
 
 /// Project items the command works on: `items`, else the Project panel selection, else the media
 /// of the selected timeline clips.
-fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
+pub(crate) fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
     if let Some(a) = p.get("items").and_then(Value::as_array) {
         return a.iter().filter_map(|v| v.as_u64().map(ItemId)).filter(|i| s.project.items.contains_key(i)).collect();
     }
@@ -372,7 +390,7 @@ fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
 }
 
 /// The media clip behind an item (subclips resolve to their parent).
-fn media_of(p: &Project, id: ItemId) -> Option<(ItemId, &filmcraft_project::MediaClip)> {
+pub(crate) fn media_of(p: &Project, id: ItemId) -> Option<(ItemId, &filmcraft_project::MediaClip)> {
     p.resolve_media(id).map(|(root, media, _)| (root, media))
 }
 
@@ -1159,19 +1177,6 @@ fn edit_offline(s: &mut Session, p: &Value) -> Result<Value> {
     })?;
     let it = s.project.item(id).ok_or_else(|| bad("clip.editOffline", "no such item"))?;
     Ok(json!({"item": id.0, "name": it.name, "metadata": it.metadata}))
-}
-
-fn source_settings(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = targets(s, p).into_iter().find(|i| media_of(&s.project, *i).is_some()).ok_or_else(|| EngineError::Other("select a clip".into()))?;
-    let (_, m) = media_of(&s.project, id).ok_or_else(|| EngineError::Other("select a clip".into()))?;
-    let codec = m.info.video.as_ref().map(|v| v.codec.clone()).or_else(|| m.info.audio().map(|a| a.codec.clone())).unwrap_or_default();
-    Ok(json!({
-        "item": id.0,
-        "codec": codec,
-        "container": m.info.container,
-        "settings": [],
-        "message": format!("{} has no source settings in FilmCraft. Source settings apply to camera raw formats (R3D, ARRIRAW, CinemaDNG, ProRes RAW…), which FilmCraft does not decode.", if codec.is_empty() { "This clip".to_string() } else { codec.to_uppercase() }),
-    }))
 }
 
 fn xml_escape(s: &str) -> String {

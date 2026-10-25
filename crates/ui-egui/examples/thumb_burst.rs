@@ -62,7 +62,7 @@ fn main() {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             if let Some(filmcraft_project::ItemKind::Media(m)) = s.project.item(id).map(|i| &i.kind) {
-                filmcraft_engine::media_pool::media_key(m).hash(&mut h);
+                filmcraft_engine::media_pool::media_key(m, &s.project.settings.camera_raw).hash(&mut h);
                 false.hash(&mut h);
             }
             h.finish()

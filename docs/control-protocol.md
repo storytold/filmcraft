@@ -171,7 +171,38 @@ the result's `sourceInClamped: [ids]` (present with `keepSourceIn`) names the cl
 
 **Colour** (`crates/engine/src/color.rs`): `sequence.colorSettings {workingSpace: rec709|rec2100-pq|
 rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace?: auto|<id>, pixelAspect?: [num, den]|file}`,
-`color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
+`color.spaces`, `media.colorInfo {item}`; camera RAW development (the Camera Raw panel,
+[r3d-ne.md § Source Settings](r3d-ne.md#source-settings-the-camera-raw-panel)):
+`clip.sourceSettings {item?|items?, decodeUsing?: clip|project, quality?: project|fullPremium|halfPremium|halfGood|quarterGood|eighthGood|sixteenthGood,
+colorSpace?: rec709|rec2020|p3d65|redWideGamutRgb, gamma?: linear|bt1886|srgb|log3g10|st2084|hlg, toneMap?: clip|none|low|medium|high,
+rolloff?: clip|none|hard|medium|soft|verySoft, hdrPeakNits?: n|null, chromaNoiseReduction?: bool|null, flashingPixel?: off|mild|medium|strong|null,
+metadataCurves?: bool, creativeLut?: bool, cdl?: bool, iso?: n|null, kelvin?: n|null, tint?: f|null, exposure?: f|null, asShot?: bool,
+useChanges?: bool, useSettings?: bool, updateRmd?: bool, preview?: bool, commit?: bool, revert?: bool}` reports the panel's
+controls (`settings: [{id, kind: choice|iso|number|bool|fixed, label, value, enabled, column: 1–3, note?, asShot?, recorded?,
+options?|min/max/step/decimals/suffix}]`), `develop` (the settings in effect, `decodeUsing` included), `own` (the clip's own),
+`project` (the project's), `asShot` and `clip` (what the clip, or its RMD sidecar, records: recorded output choices, LUT, CDL,
+curves, `hdrx`, `rmd` path when one is in effect) from the open decoder, and with parameters sets them on the selected camera
+RAW clips (one undo step). A development setting given for a clip that decodes using the project's settings gives it settings
+of its own, starting from the project's; `decodeUsing: project` drops them. A colour space or gamma given alone brings a
+fitting other one along; both given must go together (display curves with Rec. 709 / Rec. 2020 / P3 D65, Log3G10 with
+REDWideGamutRGB, ST 2084 and HLG with Rec. 2020, linear with any). ISO is one of `filmcraft_media::RAW_ISO_VALUES`
+(50–25600), `kelvin` 1700–100000, `tint` −100..100, `exposure` −8..8 stops (two decimals kept), `hdrPeakNits` 100–10000;
+`null` puts one back to as recorded, `asShot: true` the four RAW adjustments; anything else is refused and nothing changes.
+`useChanges` copies the first clip's settings to every other clip in `items`, `useSettings` puts the clips back to what they
+record, both in the call's undo step; `updateRmd` writes each clip's settings into its RMD sidecar beside it (not an undo
+step; `rmdWritten: [{item, path}]`, `rmdErrors`). The colour interpretation follows the development (`media.colorInfo`'s
+`effective`; Rec. 709 needs none). `file.projectSettings.cameraRaw {quality?, colorSpace?, gamma?, …, standard?: bool}` sets
+the project's Camera RAW settings (one undo step; `standard: true` = Rec. 709, BT.1886) and reports them with `clips`, the
+number of RAW clips that decode using them. The dialog's ids are `sourceSettings.<id>` for every control (with `.asShot`
+buttons once a value is set), `sourceSettings.updateRmd|useChanges|useSettings`, `sourceSettings.ok|cancel`; Project
+Settings' tab `projectSettings.tab.cameraRaw` has `projectSettings.cameraRaw.<id>` and `projectSettings.cameraRaw.standard`.
+The dialog previews live: every change is applied at once with `preview: true`, which merges all the previews of one dialog
+into one undo step (the result's `preview` says one is open); OK sends the final values with `commit: true` (the step stays
+as one Undo), Cancel and Escape send `revert: true` (the clips return to the values the dialog opened with and the history
+is as before; `reverted` says whether a step was open). The same flow works over the control channel, `items` pinning the
+clips; a hostile value in a preview is refused with an error and applies nothing. Other media report `settings: []`, and
+a build without the `red-sdk` feature reports `.r3d` files as unsupported media whose message names the feature. LUTs:
+`lut.import {path, name?}`, `lut.list`,
 `lut.remove {id}`, `lut.export {lut, path, format?}`, `lumetri.setInputLut` / `lumetri.setLook
 {clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
 `lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`. Without

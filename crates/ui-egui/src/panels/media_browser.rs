@@ -730,7 +730,7 @@ fn draw_preview(app: &mut FilmcraftApp, ui: &egui::Ui, ctx: &egui::Context, e: &
         let tid = app.texture_for(ctx, &name, key, &img);
         Some((tid, vec2(img.w as f32, img.h as f32)))
     } else {
-        app.frames.request(key, rate.tick_of(frame), width as f32 / src_w.max(1) as f32, &proj, 40);
+        app.frames.request_while(key, rate.tick_of(frame), width as f32 / src_w.max(1) as f32, &proj, 40, app.any_playing());
         app.texture_existing(&name)
     };
     match tex {

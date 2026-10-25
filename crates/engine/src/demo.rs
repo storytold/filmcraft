@@ -32,7 +32,7 @@ pub fn add_generator(p: &mut Project, pool: &MediaPool, src: GeneratorSource, na
         proxy: None,
         identity: None,
     };
-    let key = crate::media_pool::media_key(&clip);
+    let key = crate::media_pool::media_key(&clip, &p.settings.camera_raw);
     let id = p.add_item(name, label, ItemKind::Media(clip), bin);
     pool.insert_keyed(id, key, Arc::new(src.with_name(name)));
     id

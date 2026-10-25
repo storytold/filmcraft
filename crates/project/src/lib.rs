@@ -178,6 +178,12 @@ pub struct Interpretation {
     /// is edited into a sequence. None = one stereo clip of the first two channels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_channels: Option<AudioChannelMap>,
+    /// Clip ▸ Source Settings… for camera RAW: how the decoder develops the picture. None = the
+    /// project's Camera RAW settings (Decode Using ▸ Project); before those existed, it meant the
+    /// decoder's default (scene-linear Rec. 709, as shot), which is what a project from before
+    /// them still gets through its project settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub develop: Option<filmcraft_media::RawDevelop>,
 }
 
 /// Modify ▸ Audio Channels: the clip channel format and, per audio clip, the source channels it
@@ -246,6 +252,12 @@ mod hex_u64 {
 }
 
 impl MediaClip {
+    /// Camera RAW with development settings (Clip ▸ Source Settings…): today R3D NE through the
+    /// RED SDK, by the codec its decoder reported or, before it was opened, the file name.
+    pub fn is_camera_raw(&self) -> bool {
+        self.info.video.as_ref().is_some_and(|v| v.codec == "R3D NE")
+            || matches!(&self.media, MediaRef::File { path } if path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("r3d")))
+    }
     pub fn frame_rate(&self) -> FrameRate {
         self.interpret.frame_rate.unwrap_or_else(|| self.info.frame_rate())
     }
@@ -1158,6 +1170,13 @@ pub struct ProjectSettings {
     /// Project Settings ▸ Scratch Disks. Schema v11.
     #[serde(default)]
     pub scratch: ScratchDisks,
+    /// Project Settings ▸ Camera RAW: how camera RAW clips that decode with the project's
+    /// settings (Source Settings ▸ Decode Using ▸ Project) are developed. A new project starts
+    /// from `RawDevelop::STANDARD` (Rec. 709, BT.1886); a project from before this setting reads
+    /// as `RawDevelop::default()` (scene-linear Rec. 709, as shot), what its clips got then.
+    /// Schema v16.
+    #[serde(default)]
+    pub camera_raw: filmcraft_media::RawDevelop,
 }
 
 fn title_safe_default() -> (f64, f64) {
@@ -1225,6 +1244,7 @@ impl Default for ProjectSettings {
             action_safe: action_safe_default(),
             capture_format: capture_format_default(),
             scratch: ScratchDisks::default(),
+            camera_raw: filmcraft_media::RawDevelop::STANDARD,
         }
     }
 }
@@ -1750,6 +1770,20 @@ fn resolve_auto_points_sized(e: &mut EffectInstance, frame: (u32, u32), source: 
 }
 
 impl Project {
+    /// The development settings a camera RAW clip decodes with: its own (Source Settings ▸
+    /// Decode Using ▸ Clip) or the project's Camera RAW settings (Decode Using ▸ Project, or no
+    /// settings of its own). Decode Using is reported as it is. None for other media.
+    pub fn develop_of(&self, m: &MediaClip) -> Option<filmcraft_media::RawDevelop> {
+        m.is_camera_raw().then(|| filmcraft_media::RawDevelop::effective(&self.settings.camera_raw, m.interpret.develop.as_ref()))
+    }
+
+    /// The colour space a clip's frames are interpreted in when not by their own metadata:
+    /// Interpret Footage's override, else for camera RAW the interpretation its development
+    /// needs (the decoder hands over linear light in the developed primaries).
+    pub fn color_space_override(&self, m: &MediaClip) -> Option<filmcraft_color::ColorSpace> {
+        m.interpret.color_space.or_else(|| self.develop_of(m).and_then(|d| d.interpretation()))
+    }
+
     /// Lazy upgrade for graphic layers written before they had stable uids: assign a unique
     /// [`crate::graphic_design::LayerExtra::uid`] to every uid-less or duplicated graphic layer
     /// in sequences and source graphics.
