@@ -5,7 +5,9 @@ use std::sync::{Arc, OnceLock};
 
 use egui::{FontData, FontDefinitions, FontFamily};
 
-const SAMPLE: &str = "中文轨道配乐音效简体汉语繁體漢語车";
+// Simplified-only characters (运 简 单, and 确 in its simplified form) keep a Japanese face, which
+// has the shared hanzi in Japanese forms but not these, from being taken for Chinese (#2022).
+const SAMPLE: &str = "中文轨道配乐音效简体汉语繁體漢語车运确简单";
 const PREFERRED: &[&str] = &[
     "Microsoft YaHei UI",
     "Microsoft YaHei",
@@ -53,23 +55,20 @@ fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
     Some(Arc::new(FontData { font: std::borrow::Cow::Owned(face.data()?), index: face.info.index, tweak: Default::default() }))
 }
 
-/// Whether [`install`] has a Hangul face to add (an installed system face; none is bundled).
+/// Whether [`install_korean`] has a Hangul face to add (an installed system face; none is bundled).
 /// The Korean interface needs one.
 pub(crate) fn korean_available() -> bool {
     korean_font().is_some()
 }
 
-/// Whether [`install`] has a Chinese face to add: craft-fonts Hans/Hant faces, or an installed
+/// Whether [`install_chinese`] has a Chinese face to add: craft-fonts Hans/Hant faces, or an installed
 /// system face (scanned once per process). The Simplified Chinese interface needs one.
 pub(crate) fn available() -> bool {
     craft_fonts().next().is_some() || system_font().is_some()
 }
 
-/// Append Chinese faces after the Latin UI fonts and the Japanese fallbacks. This keeps the
-/// interface's Latin typography and Japanese glyph forms, and covers the simplified and
-/// traditional hanzi in media and track names that Japanese fonts lack.
-pub(crate) fn install(fonts: &mut FontDefinitions) {
-    install_chinese(fonts);
+/// The installed Hangul face, after everything else.
+pub(crate) fn install_korean(fonts: &mut FontDefinitions) {
     if let Some(font) = korean_font() {
         fonts.font_data.insert("system-korean".into(), font);
         for stack in fonts.families.values_mut() {
@@ -78,7 +77,11 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
     }
 }
 
-fn install_chinese(fonts: &mut FontDefinitions) {
+/// Append the Chinese faces (craft-fonts, else an installed face) to every font family:
+/// `theme::font_definitions` puts them after the Japanese ones, or before them in the Chinese
+/// interface. They cover the simplified and traditional hanzi in media and track names that
+/// Japanese fonts lack.
+pub(crate) fn install_chinese(fonts: &mut FontDefinitions) {
     let chinese: Vec<_> = craft_fonts().collect();
     if chinese.is_empty() {
         if let Some(font) = system_font() {
@@ -98,5 +101,17 @@ fn install_chinese(fonts: &mut FontDefinitions) {
         let mut order = chinese.clone();
         order.sort_by_key(|f| (f.family.contains("Serif") && !f.family.contains("Sans"), (f.style == "Bold") != heavy));
         stack.extend(order.iter().map(|f| name(f)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #2022: the Chinese system face must have the simplified-only characters the interface uses
+    /// (运动 "Motion", 确定 "OK", 简体, 单), or a Japanese face that lacks them can be picked.
+    #[test]
+    fn the_chinese_sample_has_simplified_only_characters() {
+        for c in ['运', '确', '简', '单'] {
+            assert!(super::SAMPLE.contains(c), "{c}");
+        }
     }
 }
