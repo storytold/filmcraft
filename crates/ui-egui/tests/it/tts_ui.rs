@@ -77,9 +77,10 @@ impl Driver {
         self.ui()["ui"]["tts"].clone()
     }
 
-    /// Let a background synthesis job finish.
+    /// Let a background synthesis job finish, for at most two minutes of wall-clock time.
     fn settle(&mut self) {
-        for _ in 0..400 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if self.draft()["pending"].is_null() {
                 return;
             }

@@ -1082,6 +1082,8 @@ mod tests {
         use rayon::prelude::*;
         let s = Arc::new(ParSamples(samples(240, 30, 4, false)));
         let (tx, rx) = std::sync::mpsc::channel();
+        let done = Arc::new(AtomicUsize::new(0));
+        let counted = done.clone();
         std::thread::spawn(move || {
             for round in 0..40usize {
                 // export-like: many frame workers, frames of several GOPs of a fresh source at once
@@ -1089,11 +1091,25 @@ mod tests {
                 (0..96usize).into_par_iter().with_max_len(1).for_each(|k| {
                     let i = (k * 37 + round * 53) % 240;
                     assert_eq!(index_of(&c.frame(&*s, i as i64 * 1000).expect("frame")), i);
+                    counted.fetch_add(1, Ordering::Relaxed);
                 });
             }
             let _ = tx.send(());
         });
-        assert!(rx.recv_timeout(Duration::from_secs(120)).is_ok(), "frame requests deadlocked");
+        // A deadlock stops every request of a round for good. On a loaded machine the 3,840
+        // requests can take minutes, so the limit applies to the time between two answered ones.
+        let mut answered = 0;
+        loop {
+            match rx.recv_timeout(Duration::from_secs(120)) {
+                Ok(()) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let now = done.load(Ordering::Relaxed);
+                    assert!(now > answered, "frame requests deadlocked after {now} frames");
+                    answered = now;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("a frame request failed"),
+            }
+        }
     }
 
     #[test]

@@ -64,7 +64,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let shown = if name == "Browse" { tl!("Browse") } else { tl!("Edit") };
         let g = painter.layout_no_wrap(shown.to_string(), Tokens::ui(12.5), t.text);
         let r = Rect::from_min_size(pos2(x, ty - 9.0), vec2(g.size().x, 20.0));
-        let resp = ui.interact(r, egui::Id::new(("es-tab", name)), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(("es-tab", name)), Sense::click());
         let col = if name == tab || resp.hovered() { t.text } else { t.text_dim };
         painter.text(pos2(x, ty), Align2::LEFT_CENTER, shown, Tokens::ui(12.5), col);
         if name == tab {
@@ -210,7 +210,7 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
     let mine: Vec<&es::Preset> = presets.iter().filter(|p| p.kind == kind).collect();
     let current = if st.preset.is_empty() { tl!("(Custom)").to_string() } else { crate::i18n::t(&st.preset).to_string() };
     let mut picked = None;
-    let draft_id = egui::Id::new("es-preset-draft");
+    let draft_id = egui::Id::unique("es-preset-draft");
     let mut draft: Option<String> = ui.data(|d| d.get_temp(draft_id));
     ui.horizontal(|ui| {
         let w = ui.available_width() - 56.0;
@@ -242,7 +242,10 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
     if let Some(mut d) = draft.take() {
         let mut done = false;
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut d).hint_text(tl!("Preset name")).desired_width(ui.available_width() - 70.0));
+            let r = crate::widgets::accessible_name(
+                ui.add(egui::TextEdit::singleline(&mut d).hint_text(tl!("Preset name")).desired_width(ui.available_width() - 70.0)),
+                "Preset name",
+            );
             cx.auto.add("essentialSound.preset.name", r.rect, "Preset name");
             let ok = ui.button(tl!("Save"));
             cx.auto.add("essentialSound.preset.ok", ok.rect, "Save");
@@ -355,7 +358,7 @@ fn ducking(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, on: bool) {
     for kind in AudioType::ALL {
         let br = Rect::from_min_size(pos2(x, r.min.y + 2.0), vec2(30.0, 26.0));
         let sel = st.ducking.against.contains(&kind);
-        let resp = ui.interact(br, egui::Id::new(("es-duck", kind.id())), Sense::click());
+        let resp = ui.interact(br, egui::Id::unique(("es-duck", kind.id())), Sense::click());
         ui.painter().rect_filled(
             br,
             4.0,
@@ -381,7 +384,7 @@ fn ducking(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, on: bool) {
         x += 34.0;
     }
     let br = Rect::from_min_size(pos2(x + 4.0, r.min.y + 2.0), vec2(84.0, 26.0));
-    let resp = ui.interact(br, egui::Id::new("es-duck-untyped"), Sense::click());
+    let resp = ui.interact(br, egui::Id::unique("es-duck-untyped"), Sense::click());
     let sel = st.ducking.against_untyped;
     ui.painter().rect_filled(
         br,
@@ -463,7 +466,7 @@ fn section_header(ui: &mut egui::Ui, cx: &mut Ctx, sec: Section, open: bool, ena
 
 /// A pill switch. Returns clicked.
 fn switch(ui: &mut egui::Ui, cx: &mut Ctx, r: Rect, on: bool, id: &str, label: &str) -> bool {
-    let resp = ui.interact(r.expand(3.0), egui::Id::new(("es-sw", id)), Sense::click());
+    let resp = ui.interact(r.expand(3.0), egui::Id::unique(("es-sw", id)), Sense::click());
     let p = ui.painter();
     let rad = r.height() / 2.0;
     if on {
@@ -520,7 +523,7 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
     let y = track.center().y;
     let f = ((v - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
     let kx = track.min.x + f * track.width();
-    let resp = ui.interact(track.expand2(vec2(6.0, 4.0)), egui::Id::new(("es-slider", key)), Sense::click_and_drag());
+    let resp = ui.interact(track.expand2(vec2(6.0, 4.0)), egui::Id::unique(("es-slider", key)), Sense::click_and_drag());
     let line = if active { cx.t.switch_border } else { cx.t.slider_disabled_track };
     ui.painter().line_segment([pos2(track.min.x, y), pos2(kx - 7.0, y)], Stroke::new(1.5, line));
     ui.painter().line_segment([pos2(kx + 7.0, y), pos2(track.max.x, y)], Stroke::new(1.5, line));
@@ -581,7 +584,7 @@ fn choice_row(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, opts: &[&str], sel: us
     let w = 84.0;
     for (i, o) in opts.iter().enumerate() {
         let br = Rect::from_min_size(pos2(r.min.x + 42.0 + i as f32 * (w + 4.0), r.min.y + 3.0), vec2(w, 22.0));
-        let resp = ui.interact(br, egui::Id::new(("es-choice", key, i)), Sense::click());
+        let resp = ui.interact(br, egui::Id::unique(("es-choice", key, i)), Sense::click());
         let on = i == sel;
         ui.painter().rect_filled(
             br,
@@ -604,7 +607,7 @@ fn choice_row(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, opts: &[&str], sel: us
 
 fn button(ui: &mut egui::Ui, cx: &mut Ctx, r: Rect, text: &str, id: &str) -> bool {
     let t = cx.t;
-    let resp = ui.interact(r, egui::Id::new(("es-btn", id)), Sense::click());
+    let resp = ui.interact(r, egui::Id::unique(("es-btn", id)), Sense::click());
     ui.painter().rect_filled(r, 4.0, if resp.hovered() { cx.t.button_hover } else { t.field_bg });
     ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, cx.t.button_border), StrokeKind::Inside);
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, Tokens::ui(12.0), t.text);

@@ -398,7 +398,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         return;
     }
     let mut actions: Vec<(String, Value)> = Vec::new();
-    let id = egui::Id::new("program-transform");
+    let id = egui::Id::unique("program-transform");
     let drag_id = id.with("drag");
     let double = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
     // the monitor around the picture as well as on it (its clip reaches past the picture area)

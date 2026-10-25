@@ -229,6 +229,33 @@ fn remove_unused_and_consolidate_duplicates() {
 }
 
 #[test]
+fn consolidate_keeps_counting_leaders_with_distinct_source_rates() {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Leader rates"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "24 fps", "fps": 24, "video": 1, "audio": 1})).unwrap();
+    let leader_24 = ItemId(s.execute("file.newCountingLeader", json!({"seconds": 3})).unwrap()["item"].as_u64().unwrap());
+    s.execute("file.newSequence", json!({"name": "60 fps", "fps": 60, "video": 1, "audio": 1})).unwrap();
+    let leader_60 = ItemId(s.execute("file.newCountingLeader", json!({"seconds": 3})).unwrap()["item"].as_u64().unwrap());
+    assert_ne!(leader_24, leader_60);
+    s.execute("timeline.place", json!({"item": leader_60.0, "track": "V1", "audioTrack": "A1", "seconds": 0.0})).unwrap();
+    let before = s.media.full_res_source(&s.project, leader_60, &*s.services).unwrap().audio(0, 2_010, 48_000).unwrap();
+    assert!(before.channels.iter().all(|channel| channel[800..].iter().all(|sample| *sample == 0.0)));
+
+    let result = s.execute("edit.consolidateDuplicates", json!({})).unwrap();
+    assert_eq!(result["removed"], json!([]), "leaders with different source rates are not duplicates");
+    assert!(s.project.item(leader_60).is_some());
+    let sequence = s.active_sequence().unwrap();
+    assert_eq!(sequence.audio_tracks[0].items[0].item, leader_60);
+    let after = s.media.full_res_source(&s.project, leader_60, &*s.services).unwrap().audio(0, 2_010, 48_000).unwrap();
+    assert_eq!(after.channels, before.channels);
+
+    s.execute("project.select", json!({"items": [leader_60.0]})).unwrap();
+    let duplicate = ItemId(s.execute("edit.duplicate", json!({})).unwrap()["items"][0].as_u64().unwrap());
+    let result = s.execute("edit.consolidateDuplicates", json!({})).unwrap();
+    assert_eq!(result["removed"], json!([duplicate.0]), "equal-rate copies should still consolidate");
+}
+
+#[test]
 fn new_sequence_from_clip_bin_from_selection_and_offline_file() {
     let mut s = demo();
     assert!(s.execute("file.newSequenceFromClip", json!({})).is_err(), "nothing selected in the Project panel");
@@ -377,6 +404,24 @@ fn modify_audio_channels_and_breakout_to_mono() {
         p
     });
     assert!(s.execute("clip.breakoutToMono", json!({})).is_err(), "no audio");
+}
+
+/// #1845: with no project item selected, a `channels`-less call (a stray `format` included)
+/// used to fall into the timeline-clip branch anyway and reset `source_channels` to `[]` via
+/// `unwrap_or_default()`, instead of being rejected. The map set by the previous `channels` call
+/// must survive a later `format`-only call under the same (empty) project selection.
+#[test]
+fn audio_channels_rejects_a_channel_less_call_with_no_item_selected() {
+    let mut s = demo();
+    s.state.project_selection.clear();
+    let a1 = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    s.state.selection = vec![a1];
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    assert_eq!(clip(&s, a1.0).source_channels, vec![1]);
+    assert!(s.execute("clip.audioChannels", json!({"format": null})).is_err(), "nothing to do: no item selected and no `channels`");
+    assert_eq!(clip(&s, a1.0).source_channels, vec![1], "the existing map must survive a rejected call");
+    assert!(s.execute("clip.audioChannels", json!({})).is_err(), "same with no params at all");
+    assert_eq!(clip(&s, a1.0).source_channels, vec![1]);
 }
 
 #[test]
@@ -1081,4 +1126,38 @@ fn toggle_animation_creates_a_parameter_missing_from_an_older_instance() {
     let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
     let rot = it.effect("motion").unwrap().param("rotation").unwrap();
     assert!(rot.is_animated(), "the stopwatch is on");
+}
+
+/// Transform's Anchor Point and Position are centred in the clip's own picture (on apply and on reset), so Scale grows it
+/// from its centre (they used to be centred in the sequence frame, off to the side of a smaller picture).
+#[test]
+fn applied_transform_centres_its_points_in_the_clip_picture() {
+    let mut s = demo();
+    let r = s.execute("file.newColorMatte", json!({"width": 960, "height": 1080, "color": "#ff0000"})).unwrap();
+    let matte = r["item"].as_u64().unwrap();
+    let r = s.execute("timeline.place", json!({"item": matte, "track": "V3", "seconds": 0.0})).unwrap();
+    let c = r["clips"][0].as_u64().unwrap();
+    s.execute("effects.apply", json!({"clips": [c], "effect": "transform"})).unwrap();
+    let centre = filmcraft_geom::Vec2::new(480.0, 540.0);
+    let point = |s: &Session, k: &str| clip(s, c).effect("transform").unwrap().param(k).unwrap().value.as_vec2().unwrap();
+    assert_eq!(point(&s, "anchor"), centre);
+    assert_eq!(point(&s, "position"), centre);
+    // Reset Effect and Reset Parameter centre them the same way
+    for k in ["anchor", "position"] {
+        s.execute("effects.setParam", json!({"clip": c, "effect": "transform", "param": k, "value": [10.0, 20.0]})).unwrap();
+    }
+    let idx = clip(&s, c).effects.iter().position(|e| e.effect == "transform").unwrap();
+    s.execute("effects.reset", json!({"clip": c, "index": idx})).unwrap();
+    assert_eq!(point(&s, "anchor"), centre);
+    assert_eq!(point(&s, "position"), centre);
+    s.execute("effects.setParam", json!({"clip": c, "effect": "transform", "param": "anchor", "value": [10.0, 20.0]})).unwrap();
+    s.execute("effects.resetParam", json!({"clip": c, "effect": "transform", "param": "anchor"})).unwrap();
+    assert_eq!(point(&s, "anchor"), centre);
+    // intrinsic effects stay centred in the sequence frame when applied to a smaller clip
+    let q = s.active_sequence().unwrap();
+    let frame_centre = filmcraft_geom::Vec2::new(f64::from(q.settings.width) / 2.0, f64::from(q.settings.height) / 2.0);
+    s.execute("effects.apply", json!({"clips": [c], "effect": "motion"})).unwrap();
+    for m in clip(&s, c).effects.iter().filter(|e| e.effect == "motion") {
+        assert_eq!(m.param("position").unwrap().value.as_vec2().unwrap(), frame_centre);
+    }
 }

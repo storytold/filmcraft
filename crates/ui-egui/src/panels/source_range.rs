@@ -21,8 +21,9 @@ struct Drag {
     pointer_x: f32,
     revision: u64,
 }
+/// Temp-store key for the in/out range drag, per monitor, so Source and Program drags never alias.
 fn key(which: Which) -> egui::Id {
-    egui::Id::new(("monitor-range-edit", which as u8))
+    egui::Id::unique(("monitor-range-edit", which as u8))
 }
 fn self_item(app: &FilmcraftApp, which: Which) -> Option<ItemId> {
     if which == Which::Source { app.session.state.source_item } else { app.session.state.active_sequence }
@@ -103,7 +104,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         }
         app.auto.add(id, rect, label);
         let response =
-            ui.add_enabled_ui(enabled && rect.width() > 0.0, |ui| ui.interact(rect, egui::Id::new(id), Sense::click_and_drag())).inner.on_hover_text(label);
+            ui.add_enabled_ui(enabled && rect.width() > 0.0, |ui| ui.interact(rect, egui::Id::unique(id), Sense::click_and_drag())).inner.on_hover_text(label);
         let cursor = if edge == RangeEdge::Move {
             if cfg!(windows) { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Grab }
         } else {
@@ -197,7 +198,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         let rect = Rect::from_min_max(pos2(x - 7.0, bar.max.y - 12.0), pos2(x + 7.0, bar.max.y));
         let id = if which == Which::Source { "source.playhead" } else { "program.playhead" };
         app.auto.add(id, rect, "Scrub playhead");
-        let playhead = ui.interact(rect, egui::Id::new(id), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        let playhead = ui.interact(rect, egui::Id::unique(id), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         if (playhead.dragged() || playhead.clicked())
             && let Some(pos) = playhead.interact_pointer_pos()
         {

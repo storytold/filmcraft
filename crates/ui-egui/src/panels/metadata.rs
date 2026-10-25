@@ -120,9 +120,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 /// An editable value: a text field whose edit is committed when it loses focus (Enter, Tab or a
 /// click elsewhere). Returns (field, new value) on commit.
 fn text_field(ui: &mut egui::Ui, item: ItemId, f: &Field, elems: &mut Vec<(String, Rect, String)>) -> Option<(String, String)> {
-    let id = egui::Id::new(("md-draft", item.0, f.name.clone()));
+    let id = egui::Id::unique(("md-draft", item.0, f.name.clone()));
     let mut draft: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| f.value.clone());
-    let r = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(ui.available_width()).id_salt(("md-edit", item.0, f.name.clone())));
+    let r = crate::widgets::accessible_name(
+        ui.add(egui::TextEdit::singleline(&mut draft).desired_width(ui.available_width()).id_salt(("md-edit", item.0, f.name.clone()))),
+        f.name.clone(),
+    );
     elems.push((field_id(&f.name), r.rect, f.value.clone()));
     let mut out = None;
     if r.has_focus() {
