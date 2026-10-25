@@ -325,6 +325,13 @@ pub struct ExportSettings {
     /// `progress.total`, `finished` and the final status; this call only adds to `done`.
     #[serde(default)]
     pub part_of_batch: bool,
+    /// Most CPU threads the export may use (0 = all of them, as before). Rendering, the software
+    /// encoders and the rest of the export's parallel work run on a pool of this size; a number
+    /// above what the machine has (or above the pool the export already runs in) changes nothing.
+    /// The output does not depend on it. Hardware encoders and the decoders' own threads are not
+    /// counted.
+    #[serde(default)]
+    pub max_threads: u32,
     /// ProRes flavour: `proxy`, `lt`, `standard`, `hq`, `4444` or `4444xq` (empty = HQ).
     #[serde(default)]
     pub prores_profile: String,
@@ -406,6 +413,10 @@ pub struct ExportSettings {
     /// writing `path` (hosts without a filesystem: the web app offers the file as a download).
     #[serde(skip)]
     pub sink: Option<OutputSink>,
+    /// An already-created primary output file. Internal callers use this to retain an exclusive
+    /// reservation made while choosing an output name, rather than reopening that path later.
+    #[serde(skip)]
+    pub output_file: Option<Arc<std::fs::File>>,
 }
 
 /// Receives in-memory export output: `(path, bytes)` per finished file.
@@ -432,6 +443,10 @@ enum Out {
 
 impl Out {
     fn create(settings: &ExportSettings) -> Result<Out> {
+        if let Some(file) = &settings.output_file {
+            let file = file.try_clone().map_err(|e| ExportError::Io(e.to_string()))?;
+            return Ok(Out::File(std::io::BufWriter::new(file)));
+        }
         Out::create_path(settings, &settings.path)
     }
 
@@ -439,6 +454,12 @@ impl Out {
     fn create_path(settings: &ExportSettings, path: &str) -> Result<Out> {
         if settings.sink.is_some() {
             return Ok(Out::Mem(std::io::Cursor::new(Vec::new())));
+        }
+        if path == settings.path
+            && let Some(file) = &settings.output_file
+        {
+            let file = file.try_clone().map_err(|e| ExportError::Io(e.to_string()))?;
+            return Ok(Out::File(std::io::BufWriter::new(file)));
         }
         let f = std::fs::File::create(path).map_err(|e| ExportError::Io(format!("{path}: {e}")))?;
         Ok(Out::File(std::io::BufWriter::new(f)))
@@ -557,6 +578,7 @@ impl Default for ExportSettings {
             bitrate_kbps: 20_000,
             burn_captions: false,
             part_of_batch: false,
+            max_threads: 0,
             prores_profile: String::new(),
             dnx_profile: String::new(),
             apv_profile: String::new(),
@@ -588,6 +610,7 @@ impl Default for ExportSettings {
             h264_pass: H264Pass::Single,
             signal: ColorSignal::default(),
             sink: None,
+            output_file: None,
         }
     }
 }
@@ -1784,12 +1807,11 @@ impl Write for SharedBuf {
 
 /// Encode straight sRGB RGBA8 pixels as a PNG file (thumbnails, previews).
 pub fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
-    encode_still(Format::PngSequence, rgba, w, h, false)
+    encode_still(Format::PngSequence, rgba, w, h, true)
 }
 
-/// Encode one still of an image sequence (also Export Frame). PNG always carries the alpha
-/// channel it is given; `alpha` keeps it in TIFF, Targa and OpenEXR too, which are otherwise written
-/// as RGB.
+/// Encode one still of an image sequence (also Export Frame). `alpha` keeps the alpha channel in
+/// PNG, TIFF, Targa and OpenEXR, which are otherwise written as RGB.
 /// JPEG uses the default export quality ([`encode_still_with_quality`] picks another).
 pub fn encode_still(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: bool) -> Result<Vec<u8>> {
     encode_still_with_quality(format, rgba, w, h, alpha, ExportSettings::default().quality)
@@ -1819,8 +1841,12 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
         Format::TgaSequence => return raster::tga(&rgba, w, h, alpha),
         Format::DpxSequence => return raster::dpx(&rgba, w, h),
         Format::ExrSequence => return raster::exr(&rgba, w, h, alpha, exr),
-        Format::PngSequence => {
+        Format::PngSequence if alpha => {
             image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut out), &rgba, w, h, image::ExtendedColorType::Rgba8).map_err(enc)?
+        }
+        Format::PngSequence => {
+            let rgb = raster::rgb(&rgba, w, h)?;
+            image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut out), &rgb, w, h, image::ExtendedColorType::Rgb8).map_err(enc)?
         }
         Format::TiffSequence | Format::BmpSequence => {
             let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| ExportError::Encode("frame size".into()))?;
@@ -1836,8 +1862,28 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
     Ok(out.into_inner())
 }
 
-/// Run an export (blocking; call from a worker thread).
+/// A pool of `max_threads` threads to run an export on, or `None` when it should run where it is:
+/// no cap (0), a cap that is not below the pool the caller is in already, or no threads to spare
+/// (the browser).
+fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
+    let cap = max_threads as usize;
+    if cap == 0 || cap >= rayon::current_num_threads() || cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    rayon::ThreadPoolBuilder::new().num_threads(cap).thread_name(|i| format!("filmcraft-export-{i}")).build().ok()
+}
+
+/// Run an export (blocking; call from a worker thread). With `settings.max_threads` set it runs on
+/// a pool of that many threads, so its rendering and software encoding use at most that many cores.
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
+    match capped_pool(settings.max_threads) {
+        Some(pool) => pool.install(|| export_here(project, seq, settings, sources, progress)),
+        None => export_here(project, seq, settings, sources, progress),
+    }
+}
+
+/// [`export`] on the threads it is called from.
+fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
     settings.validate()?;
     if stepped(settings.format) {
         let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;

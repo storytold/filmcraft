@@ -349,11 +349,11 @@ fn set_param_writes_a_keyframe_when_asked_or_animated() {
     let mut first = set(60.0, 0.5);
     first["keyframe"] = json!(true);
     let r = s.execute("effects.setParam", first).unwrap();
-    assert_eq!(r["keyframes"], 1, "{r}");
+    assert_eq!(r, json!({"keyframes": 1, "param": "scale", "value": 60.0}));
     assert_eq!(scale(&s).0, 1);
     // animated now, so a plain set at another time is a second keyframe
     let r = s.execute("effects.setParam", set(120.0, 2.5)).unwrap();
-    assert_eq!(r["keyframes"], 2, "{r}");
+    assert_eq!(r, json!({"keyframes": 2, "param": "scale", "value": 120.0}));
     let (n, _, a, b) = scale(&s);
     assert_eq!((n, a, b), (2, 60.0, 120.0));
     // a keyframe that is already there is replaced, not doubled
@@ -379,6 +379,38 @@ fn set_param_writes_a_keyframe_when_asked_or_animated() {
     let mut odd = set(70.0, 0.5);
     odd["keyframe"] = json!("yes");
     assert_eq!(s.execute("effects.setParam", odd).unwrap()["keyframes"], 2);
+}
+
+/// The response reflects the stored point when extra input coordinates are ignored.
+#[test]
+fn set_param_reports_the_stored_vector_value() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    let result = s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "position", "value": [11.0, 22.0, 33.0]})).unwrap();
+    assert_eq!(result, json!({"keyframes": 0, "param": "position", "value": [11.0, 22.0]}));
+
+    let sequence = s.execute("sequence.inspect", json!({})).unwrap();
+    let effects = sequence["video"][0]["items"][0]["effects"].as_array().unwrap();
+    let motion = effects.iter().find(|e| e["effect"] == "motion").unwrap();
+    assert_eq!(motion["params"]["position"]["value"], "Vec2(Vec2 { x: 11.0, y: 22.0 })");
+}
+
+/// A static edit succeeds without creating keyframes; its response identifies the accepted value.
+#[test]
+fn set_param_reports_static_value_and_parameter() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    for (effect, param, value, stored, inspected) in
+        [("opacity", "blend", json!("Screen"), json!(8), "Choice(8)"), ("motion", "scale", json!(80.0), json!(80.0), "Float(80.0)")]
+    {
+        let result = s.execute("effects.setParam", json!({"clip": c, "effect": effect, "param": param, "value": value})).unwrap();
+        assert_eq!(result, json!({"keyframes": 0, "param": param, "value": stored}));
+        let sequence = s.execute("sequence.inspect", json!({})).unwrap();
+        let effects = sequence["video"][0]["items"][0]["effects"].as_array().unwrap();
+        let effect = effects.iter().find(|e| e["effect"] == effect).unwrap();
+        assert_eq!(effect["params"][param]["value"], inspected);
+        assert_eq!(effect["params"][param]["keyframes"], 0);
+    }
 }
 
 /// A keyframe set with a `time` outside the clip stays at that time (#1055), before the start as
@@ -457,7 +489,7 @@ fn set_param_takes_a_choice_by_name() {
     // a name that is not an option is an error that lists the options and changes nothing
     let e = s.execute("effects.setParam", set(json!("Glow"))).unwrap_err().to_string();
     assert!(e.contains("Screen") && e.contains("Overlay"), "{e}");
-    for bad in [json!(""), json!(null), json!([8]), json!({"name": "Screen"}), json!(-1), json!(1.5)] {
+    for bad in [json!(""), json!(null), json!([8]), json!({"name": "Screen"}), json!(-1), json!(1.5), json!(u64::from(u32::MAX) + 1)] {
         assert!(s.execute("effects.setParam", set(bad.clone())).is_err(), "{bad}");
     }
     assert_eq!(blend(&s), ParamValue::Choice(12));
@@ -1085,6 +1117,31 @@ fn enable_flips_each_selected_clip() {
     s.execute("clip.enable", json!({"clips": [b]})).unwrap();
     s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
     assert_eq!((enabled(&s, a), enabled(&s, b)), (true, true));
+}
+
+/// #3031: with linked selection on, Enable on an Alt-selected audio clip flips only that clip,
+/// while a linked selection still flips both sides.
+#[test]
+fn enable_on_an_individual_selection_leaves_the_linked_partner() {
+    let mut s = demo();
+    assert!(s.state.linked_selection);
+    let enabled = |s: &Session, c: ClipId| s.active_sequence().unwrap().find_item(c).unwrap().1.enabled;
+    let video = ClipId(v1(&s)[0].0);
+    let audio = {
+        let q = s.active_sequence().unwrap();
+        let link = q.find_item(video).unwrap().1.link.unwrap();
+        q.all_tracks().flat_map(|t| t.items.iter()).find(|i| i.link == Some(link) && i.id != video).unwrap().id
+    };
+    s.execute("timeline.select", json!({"clips": [audio.0], "linked": false})).unwrap();
+    assert_eq!(s.state.selection, vec![audio]);
+    s.execute("clip.enable", json!({})).unwrap();
+    assert_eq!((enabled(&s, video), enabled(&s, audio)), (true, false), "only the selected audio is disabled");
+    s.execute("clip.enable", json!({})).unwrap();
+    assert_eq!((enabled(&s, video), enabled(&s, audio)), (true, true));
+    // a linked selection still flips both sides
+    s.execute("timeline.select", json!({"clips": [audio.0], "linked": true})).unwrap();
+    s.execute("clip.enable", json!({})).unwrap();
+    assert_eq!((enabled(&s, video), enabled(&s, audio)), (false, false));
 }
 
 /// #580: Escape takes back what a gesture changed, merged or not: the project returns to the mark,

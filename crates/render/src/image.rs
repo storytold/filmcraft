@@ -197,4 +197,20 @@ impl Image {
         });
         out
     }
+
+    /// [`Self::over_black_rgba8`] with each pixel's alpha in the fourth byte: the color bytes are
+    /// the same (the sRGB of the premultiplied linear color), so the picture still shows over
+    /// black, and the alpha says where it is transparent.
+    pub fn over_black_with_alpha_rgba8(&self) -> Vec<u8> {
+        let mut out = vec![0u8; self.w * self.h * 4];
+        out.par_chunks_mut(self.w * 4).zip(self.px.par_chunks(self.w * 4)).for_each(|(o, s)| {
+            for (o, s) in o.as_chunks_mut::<4>().0.iter_mut().zip(s.as_chunks::<4>().0) {
+                o[0] = filmcraft_color::linear_to_srgb_u8(s[0]);
+                o[1] = filmcraft_color::linear_to_srgb_u8(s[1]);
+                o[2] = filmcraft_color::linear_to_srgb_u8(s[2]);
+                o[3] = (s[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        });
+        out
+    }
 }

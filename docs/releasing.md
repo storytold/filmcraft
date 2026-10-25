@@ -59,8 +59,8 @@ signing jobs are refused, and the draft-release job, which needs them, is skippe
 `filmcraft --version` and `filmcraft-cli --version` print the version from `Cargo.toml`.
 
 **Fonts.** Every build job checks out [craft-fonts](https://github.com/storytold/craft-fonts) at a
-pinned commit (the `ref:` of its craft-fonts checkout step, marked `# bump deliberately`) and builds
-with `CRAFT_FONTS_DIR` and `CRAFT_FONTS_REQUIRED=1`, so releases embed its Japanese fonts and fail
+pinned commit (`craft-fonts-ref` in `.github/workflows/release.yml` and `freebsd.yml`) and builds
+with `CRAFT_FONTS_DIR` and `CRAFT_FONTS_REQUIRED=1`, so releases embed its fonts and fail
 rather than ship without them (the web build embeds only the UI font, to stay small). The packages
 carry each embedded font's licence (`copy_font_licences` in `packaging/env.sh`). Bump the pins
 deliberately, in every job at once.

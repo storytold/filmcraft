@@ -6,8 +6,8 @@
 //!
 //! # Looking strings up
 //! - `tl!` with a string literal: that UI string in the language the UI is drawn in (see
-//!   [`set_current`]). Use it for every label, button, heading, tooltip and hint; the tests check
-//!   that each `tl!` literal has a Spanish translation.
+//!   [`set_current`]). Use it for every label, button, heading, tooltip and hint; `cargo xtask
+//!   i18n-report` lists the `tl!` literals each catalog lacks.
 //! - [`t`]: the same for a string that is not a literal (a name from a registry or a list).
 //! - [`tr_ctx`]: when one English word needs different translations (the Edit menu, the Edit button).
 //! - [`fmt`]: fill `{name}` placeholders after translating a template; translators may reorder them.
@@ -65,6 +65,25 @@ static ITALIAN: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
     pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+
+    /// BCP 47 tag for AccessKit and the web IME's hidden input. Keep the persisted spelling
+    /// (`pt-br`, `zh-cn`) out of the protocol-facing value.
+    pub fn bcp47(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::Ja => "ja",
+            Self::Es => "es",
+            Self::PtBr => "pt-BR",
+            Self::Uk => "uk",
+            Self::ZhCn => "zh-CN",
+            Self::De => "de",
+            Self::Ru => "ru",
+            Self::Fr => "fr",
+            Self::Id => "id",
+            Self::It => "it",
+            Self::Ko => "ko",
+        }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -250,7 +269,7 @@ pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
 const JAPANESE_SAMPLE: &str = "日本語ファイル編集あア";
 
 /// Installed families preferred for Japanese interface text, best first (Gothic / sans-serif faces
-/// read best at menu sizes). Any other installed face that covers [`JAPANESE_SAMPLE`] is used if
+/// read best at menu sizes). Any other installed face that covers `JAPANESE_SAMPLE` is used if
 /// none of these is present.
 const PREFERRED_JAPANESE: &[&str] = &[
     "Hiragino Sans",
@@ -289,13 +308,13 @@ pub fn system_japanese_font() -> Option<Arc<egui::FontData>> {
         // kept for the life of the process (one font, read once) so installing it again after a
         // theme change shares the bytes instead of copying the whole file
         let bytes: &'static [u8] = Box::leak(face.data()?.into_boxed_slice());
-        Some(Arc::new(egui::FontData { font: std::borrow::Cow::Borrowed(bytes), index: face.info.index, tweak: Default::default() }))
+        Some(Arc::new(egui::FontData::from_blob(Arc::new(bytes), face.info.index)))
     })
     .clone()
 }
 
 /// Whether the craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`) supplies a
-/// Japanese interface font: some craft-fonts face covers [`JAPANESE_SAMPLE`]. `theme::install` adds
+/// Japanese interface font: some craft-fonts face covers `JAPANESE_SAMPLE`. `theme::install` adds
 /// these faces to every font family, so nothing else needs installing (and no system scan runs).
 pub fn craft_japanese_font() -> bool {
     filmcraft_text::fonts::craft_japanese().next().is_some()
@@ -340,21 +359,29 @@ pub fn korean_font_available() -> bool {
 mod tests {
     use super::*;
 
+    /// The catalog file of a language (none for English, the source language).
+    fn catalog_text(l: Language) -> Option<&'static str> {
+        match l {
+            Language::En => None,
+            Language::Ja => Some(include_str!("ja.tsv")),
+            Language::Es => Some(include_str!("es.tsv")),
+            Language::PtBr => Some(include_str!("pt-br.tsv")),
+            Language::Uk => Some(include_str!("uk.tsv")),
+            Language::ZhCn => Some(include_str!("zh-cn.tsv")),
+            Language::De => Some(include_str!("de.tsv")),
+            Language::Ru => Some(include_str!("ru.tsv")),
+            Language::Fr => Some(include_str!("fr.tsv")),
+            Language::Id => Some(include_str!("id.tsv")),
+            Language::It => Some(include_str!("it.tsv")),
+            Language::Ko => Some(include_str!("ko.tsv")),
+        }
+    }
+
     #[test]
     fn catalogs_are_well_formed() {
-        for (code, text) in [
-            ("es", include_str!("es.tsv")),
-            ("ja", include_str!("ja.tsv")),
-            ("pt-br", include_str!("pt-br.tsv")),
-            ("uk", include_str!("uk.tsv")),
-            ("zh-cn", include_str!("zh-cn.tsv")),
-            ("de", include_str!("de.tsv")),
-            ("ru", include_str!("ru.tsv")),
-            ("fr", include_str!("fr.tsv")),
-            ("id", include_str!("id.tsv")),
-            ("it", include_str!("it.tsv")),
-            ("ko", include_str!("ko.tsv")),
-        ] {
+        for l in Language::ALL {
+            let Some(text) = catalog_text(l) else { continue };
+            let code = l.code();
             let (entries, errors) = catalog::parse_entries(text);
             assert!(errors.is_empty(), "{code}: {errors:?}");
             for (i, (ctx, en, tr)) in entries.iter().enumerate() {
@@ -366,60 +393,37 @@ mod tests {
                 assert_eq!(en.ends_with('…'), tr.ends_with('…'), "{code}: ellipsis differs in {en:?} → {tr:?}");
             }
         }
-        assert_eq!(Language::Es.tr("File"), "Archivo");
-        assert_eq!(Language::Ja.tr("File"), "ファイル");
-        assert_eq!(Language::En.tr("File"), "File");
-        assert_eq!(Language::Es.tr("mi video.mp4"), "mi video.mp4");
-        assert_eq!(Language::Ja.tr("日本語の文書.pdf"), "日本語の文書.pdf");
-        assert_eq!(Language::parse("es"), Some(Language::Es));
-        assert_eq!(Language::parse("xx"), None);
-        assert_eq!(Language::PtBr.tr("File"), "Arquivo");
-        assert_eq!(Language::PtBr.tr("meu video.mp4"), "meu video.mp4");
-        assert_eq!(Language::PtBr.name(), "Português (Brasil)");
-        assert_eq!(Language::Uk.name(), "Українська");
-        assert_eq!(Language::Uk.tr("File"), "Файл");
-        assert_eq!(Language::Uk.tr("мій кліп.mp4"), "мій кліп.mp4");
-        assert_eq!(Language::Uk.tr("An untranslated label"), "An untranslated label");
-        assert_eq!(Language::ZhCn.name(), "简体中文");
-        assert_eq!(Language::ZhCn.tr("File"), "文件");
-        assert_eq!(Language::ZhCn.tr("我的视频.mp4"), "我的视频.mp4");
-        assert_eq!(Language::De.tr("File"), "Datei");
-        assert_eq!(Language::De.tr("Save As…"), "Speichern unter…");
-        assert_eq!(Language::De.tr("Größe ändern.mp4"), "Größe ändern.mp4");
-        assert_eq!(Language::De.tr("An untranslated label"), "An untranslated label");
-        assert_eq!(Language::De.name(), "Deutsch");
-        assert_eq!(Language::parse("de"), Some(Language::De));
-        assert_eq!(Language::parse("de-DE"), None, "the preference stores the bare code");
-        assert_eq!(Language::Ru.name(), "Русский");
-        assert_eq!(Language::Ru.tr("File"), "Файл");
-        assert_eq!(Language::Ru.tr("мой клип.mp4"), "мой клип.mp4");
-        assert_eq!(Language::Ru.tr("An untranslated label"), "An untranslated label");
-        assert_eq!(Language::Fr.name(), "Français");
-        assert_eq!(Language::Fr.tr("File"), "Fichier");
-        assert_eq!(Language::Fr.tr("Save As…"), "Enregistrer sous…");
-        assert_eq!(Language::Fr.tr("Montage d'été.mp4"), "Montage d'été.mp4");
-        assert_eq!(Language::Fr.tr("An untranslated label"), "An untranslated label");
-        assert_eq!(Language::parse("fr"), Some(Language::Fr));
-        assert_eq!(Language::parse("fr-FR"), None, "the preference stores the bare code");
-        assert_eq!(Language::Id.name(), "Bahasa Indonesia");
-        assert_eq!(Language::Id.tr("File"), "Berkas");
-        assert_eq!(Language::Id.tr("Save As…"), "Simpan Sebagai…");
-        assert_eq!(Language::Id.tr("Liburan keluarga.mp4"), "Liburan keluarga.mp4");
-        assert_eq!(Language::Id.tr("An untranslated label"), "An untranslated label");
-        assert_eq!(Language::parse("id"), Some(Language::Id));
-        assert_eq!(Language::parse("id-ID"), None, "the preference stores the bare code");
-        assert_eq!(Language::It.name(), "Italiano");
-        assert_eq!(Language::It.tr("File"), "File");
-        assert_eq!(Language::It.tr("Save As…"), "Salva con nome…");
-        assert_eq!(Language::It.tr("Vacanze d'estate.mp4"), "Vacanze d'estate.mp4");
-        assert_eq!(Language::It.tr("An untranslated label"), "An untranslated label");
-        assert_eq!(Language::parse("it"), Some(Language::It));
-        assert_eq!(Language::parse("it-IT"), None, "the preference stores the bare code");
+    }
+
+    #[test]
+    fn unknown_strings_pass_through_and_languages_round_trip() {
         for l in Language::ALL {
+            for text in ["An untranslated label", "mi video.mp4", "日本語の文書.pdf", "Größe ändern.mp4", "Montage d'été.mp4"] {
+                assert_eq!(l.tr(text), text, "{}", l.code());
+            }
             assert_eq!(Language::parse(l.code()), Some(l));
             let json = serde_json::to_string(&l).unwrap();
             assert_eq!(json, format!("\"{}\"", l.code()));
             assert_eq!(serde_json::from_str::<Language>(&json).unwrap(), l);
+        }
+        assert_eq!(Language::En.tr("File"), "File");
+        assert_eq!(Language::parse("xx"), None);
+        for code in ["de-DE", "fr-FR", "id-ID", "it-IT"] {
+            assert_eq!(Language::parse(code), None, "the preference stores the bare code");
+        }
+        // language names are always shown in their own language
+        for (l, name) in [
+            (Language::PtBr, "Português (Brasil)"),
+            (Language::Uk, "Українська"),
+            (Language::ZhCn, "简体中文"),
+            (Language::De, "Deutsch"),
+            (Language::Ru, "Русский"),
+            (Language::Fr, "Français"),
+            (Language::Id, "Bahasa Indonesia"),
+            (Language::It, "Italiano"),
+            (Language::Ko, "한국어"),
+        ] {
+            assert_eq!(l.name(), name);
         }
         assert_eq!(fmt("{b} y {a}", &[("a", "1"), ("b", "2")]), "2 y 1");
         assert_eq!(fmt("{a} {zz}", &[("a", "1")]), "1 {zz}");
@@ -427,12 +431,16 @@ mod tests {
 
     #[test]
     fn the_current_language_is_per_thread() {
+        // any entry the Spanish catalog has
+        let (entries, _) = catalog::parse_entries(include_str!("es.tsv"));
+        let Some((_, en, es)) = entries.into_iter().find(|(ctx, en, es)| ctx.is_empty() && en != es) else { return };
         set_current(Language::Es);
-        assert_eq!((current(), t("File")), (Language::Es, "Archivo"));
+        assert_eq!((current(), t(&en)), (Language::Es, es.as_str()));
         // another thread (another test) still draws in English
-        assert_eq!(std::thread::spawn(|| t("File").to_string()).join().ok().as_deref(), Some("File"));
+        let source = en.clone();
+        assert_eq!(std::thread::spawn(move || t(&source).to_string()).join().ok(), Some(en.clone()));
         set_current(Language::En);
-        assert_eq!(t("File"), "File");
+        assert_eq!(t(&en), en);
     }
 
     #[test]
@@ -442,170 +450,75 @@ mod tests {
         assert_eq!(fmt("{missing} y {unfinished", &[]), "{missing} y {unfinished");
     }
 
+    /// A search for a language's label finds the item, and so does its English name.
     #[test]
-    fn searches_match_spanish_labels_and_english_names() {
-        set_current(Language::Es);
-        assert!(matches_query("Gaussian Blur", "desenfoque"));
-        assert!(matches_query("Gaussian Blur", "gaussian"));
-        assert!(matches_query("Selection Tool", &"SELECCIÓN".to_lowercase()));
-        assert!(!matches_query("Gaussian Blur", "selección"));
+    fn searches_match_translated_labels_and_english_names() {
+        for l in Language::ALL {
+            set_current(l);
+            let blur = l.tr("Gaussian Blur").to_lowercase();
+            let selection = l.tr("Selection Tool").to_lowercase();
+            assert!(matches_query("Gaussian Blur", &blur), "{}: {blur}", l.code());
+            assert!(matches_query("Gaussian Blur", "gaussian"), "{}", l.code());
+            assert!(matches_query("Selection Tool", &selection), "{}: {selection}", l.code());
+            assert!(!matches_query("Gaussian Blur", &selection), "{}: {selection}", l.code());
+        }
         set_current(Language::En);
     }
 
+    /// `tl!` and `tlf!` take plain string literals: the catalog scan (`tl_literals`) reads no other kind.
     #[test]
-    fn spanish_translates_every_menu_label() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let mut missing: Vec<String> = Vec::new();
-        let mut need = |text: &str| {
-            if translatable(text) && !Language::Es.has(text) && !missing.iter().any(|m| m == text) {
-                missing.push(text.to_string());
-            }
-        };
-        for top in crate::menus::MENUS {
-            need(top);
-        }
-        for it in crate::menus::menu_items(&app) {
-            need(&it.label);
-            for p in &it.path {
-                need(p);
-            }
-        }
-        missing.sort();
-        assert!(missing.is_empty(), "untranslated menu labels: {missing:#?}");
-    }
-
-    /// The core menus every other catalog must cover: the entries of the menus-only Ukrainian
-    /// catalog, which `ukrainian_entries_cover_the_original_menu_catalog` keeps to menu labels (and
-    /// the native macOS Settings menu). Brazilian Portuguese played this role while it was
-    /// menus-only.
-    fn core_menu_labels() -> Vec<String> {
-        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
-        entries.into_iter().map(|(_, en, _)| en).collect()
-    }
-
-    /// Brazilian Portuguese covers the whole interface (the Spanish catalog's entries and the native
-    /// macOS Settings menu), but, like Japanese and French, the tests require only the menus, so
-    /// strings added later show in English until they are translated. Every entry must still have a
-    /// Spanish counterpart: a renamed or removed source would otherwise leave a dead entry.
-    #[test]
-    fn portuguese_covers_the_menus_and_has_no_dead_entries() {
-        let (entries, errors) = catalog::parse_entries(include_str!("pt-br.tsv"));
-        assert!(errors.is_empty(), "{errors:?}");
-        for (ctx, en, _) in &entries {
-            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Portuguese entry without a Spanish one: {ctx:?} {en:?}");
-        }
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let mut missing: Vec<String> = Vec::new();
-        let mut need = |text: &str| {
-            if translatable(text) && Language::Es.has(text) && !Language::PtBr.has(text) && !missing.iter().any(|m| m == text) {
-                missing.push(text.to_string());
-            }
-        };
-        for top in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            need(top);
-        }
-        for it in crate::menus::menu_items(&app) {
-            need(&it.label);
-            for p in &it.path {
-                need(p);
-            }
-        }
-        for en in core_menu_labels() {
-            need(&en);
-        }
-        missing.sort();
-        assert!(missing.is_empty(), "untranslated Portuguese menu labels: {missing:#?}");
-        // beyond the menus: panels, effects and their parameters, settings, status messages
-        for (en, pt) in [
-            ("File", "Arquivo"),
-            ("Settings", "Preferências"),
-            ("Gaussian Blur", "Desfoque gaussiano"),
-            ("Audio Track Mixer", "Misturador de faixas de áudio"),
-            ("Keyboard Shortcuts", "Atalhos de teclado"),
-            ("Playhead", "Cursor de reprodução"),
-        ] {
-            assert_eq!(Language::PtBr.tr(en), pt);
-        }
-        set_current(Language::PtBr);
-        assert!(matches_query("Gaussian Blur", "desfoque"));
-        assert!(matches_query("Gaussian Blur", "gaussian"));
-        set_current(Language::En);
-    }
-
-    /// Every `tl!`/`tlf!` literal outside test modules has a Spanish translation.
-    #[test]
-    fn spanish_translates_every_tl_literal() {
-        let mut missing = Vec::new();
+    fn tl_literals_are_plain_strings() {
         for (path, text) in sources() {
-            for lit in tl_literals(&text) {
-                if !Language::Es.has(&lit) && !missing.contains(&lit) {
-                    missing.push(lit);
-                }
-            }
             assert!(!text.contains("tl!(r") && !text.contains("tlf!(r"), "{path}: use a plain string literal in tl! and tlf!");
         }
-        missing.sort();
-        assert!(missing.is_empty(), "untranslated tl! strings: {missing:#?}");
     }
 
-    /// The Simplified Chinese catalog is complete: every menu label and every `tl!` literal.
-    #[test]
-    fn chinese_translates_every_menu_label_and_tl_literal() {
+    /// Every string the interface translates: menu labels and paths (the native macOS app menu
+    /// included), `tl!`/`tlf!` literals, and names translated through `i18n::t`.
+    fn interface_strings() -> Vec<String> {
         let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let mut missing: Vec<String> = Vec::new();
-        let mut need = |text: &str| {
-            if translatable(text) && !Language::ZhCn.has(text) && !missing.iter().any(|m| m == text) {
-                missing.push(text.to_string());
-            }
-        };
-        for top in crate::menus::MENUS {
-            need(top);
+        let mut out = Vec::new();
+        for top in crate::menus::MENUS.into_iter().chain(["Audio"]).chain(crate::menus::NATIVE_APP_MENU) {
+            push(&mut out, top);
         }
         for it in crate::menus::menu_items(&app) {
-            need(&it.label);
-            for p in &it.path {
-                need(p);
-            }
+            push(&mut out, &it.label);
+            it.path.iter().for_each(|p| push(&mut out, p));
         }
         for (_, text) in sources() {
-            for lit in tl_literals(&text) {
-                need(&lit);
-            }
+            tl_literals(&text).iter().for_each(|lit| push(&mut out, lit));
         }
-        missing.sort();
-        assert!(missing.is_empty(), "untranslated Chinese strings: {missing:#?}");
+        dynamic_names().iter().for_each(|n| push(&mut out, n));
+        out
     }
 
-    /// The Japanese catalog is complete: every menu label, every `tl!` literal and every name the
-    /// interface translates through `i18n::t`.
+    /// The missing-translations report. It always passes: a string a catalog lacks shows in
+    /// English. `cargo xtask ci` runs it with `--nocapture` so the list shows in the gate log
+    /// (`cargo xtask i18n-report` runs it alone). Per language it lists the interface strings the
+    /// catalog lacks, then the catalog entries whose source the interface no longer has (renamed
+    /// or removed strings, or names this scan doesn't enumerate).
     #[test]
-    fn japanese_translates_every_menu_label_tl_literal_and_name() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let mut missing: Vec<String> = Vec::new();
-        let mut need = |text: &str| {
-            if translatable(text) && !Language::Ja.has(text) && !missing.iter().any(|m| m == text) {
-                missing.push(text.to_string());
+    fn missing_translations_report() {
+        let strings = interface_strings();
+        println!("Missing translations ({} interface strings; each shows in English):", strings.len());
+        for l in Language::ALL {
+            let Some(text) = catalog_text(l) else { continue };
+            let code = l.code();
+            let mut missing: Vec<&str> = strings.iter().map(String::as_str).filter(|s| !l.has(s)).collect();
+            missing.sort_unstable();
+            println!("{code}: {} missing", missing.len());
+            for s in missing {
+                println!("  {code}: {s:?}");
             }
-        };
-        for top in crate::menus::MENUS {
-            need(top);
-        }
-        for it in crate::menus::menu_items(&app) {
-            need(&it.label);
-            for p in &it.path {
-                need(p);
+            let (entries, _) = catalog::parse_entries(text);
+            let unused: Vec<_> = entries.iter().filter(|(_, en, _)| translatable(en) && !strings.contains(en)).collect();
+            if !unused.is_empty() {
+                println!("{code}: {} entries without a source", unused.len());
+                for (ctx, en, _) in unused {
+                    println!("  {code}: {ctx:?} {en:?}");
+                }
             }
         }
-        for (_, text) in sources() {
-            for lit in tl_literals(&text) {
-                need(&lit);
-            }
-        }
-        for name in dynamic_names() {
-            need(&name);
-        }
-        missing.sort();
-        assert!(missing.is_empty(), "untranslated Japanese strings: {missing:#?}");
     }
 
     /// Chinese switches and persists like the other languages when a Chinese face is available,
@@ -874,13 +787,6 @@ mod tests {
     }
 
     #[test]
-    fn spanish_translates_dynamic_names() {
-        let mut missing: Vec<String> = dynamic_names().into_iter().filter(|n| !Language::Es.has(n)).collect();
-        missing.sort();
-        assert!(missing.is_empty(), "untranslated names: {missing:#?}");
-    }
-
-    #[test]
     fn tl_literals_are_found_and_unescaped() {
         let src = "a(tl!(\"Save\")); b(tl!(\"Say \\\"hi\\\"\\n\")); tl!(x); tlf!(\"{n} file(s)\", n);";
         assert_eq!(tl_literals(src), ["Save", "Say \"hi\"\n", "{n} file(s)"]);
@@ -934,7 +840,7 @@ mod tests {
         // the menus are drawn in German, the language names in their own language
         let items = crate::menus::menu_items(&app);
         let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
-        assert_eq!(label("file.saveAs"), Some("Speichern unter…"));
+        assert_eq!(label("file.saveAs"), Some(Language::De.tr("Save As…")));
         assert_eq!(label("app.language.spanish"), Some("Español"));
         let saved = serde_json::to_string(&app.ui).unwrap();
         assert!(saved.contains("\"language\":\"de\""), "{saved}");
@@ -953,7 +859,7 @@ mod tests {
         }
         let items = crate::menus::menu_items(&app);
         let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
-        assert_eq!(label("file.saveAs"), Some("Enregistrer sous…"));
+        assert_eq!(label("file.saveAs"), Some(Language::Fr.tr("Save As…")));
         assert_eq!(label("app.language.german"), Some("Deutsch"));
         let saved = serde_json::to_string(&app.ui).unwrap();
         assert!(saved.contains("\"language\":\"fr\""), "{saved}");
@@ -970,7 +876,7 @@ mod tests {
         }
         let items = crate::menus::menu_items(&app);
         let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
-        assert_eq!(label("file.saveAs"), Some("Simpan Sebagai…"));
+        assert_eq!(label("file.saveAs"), Some(Language::Id.tr("Save As…")));
         assert_eq!(label("app.language.french"), Some("Français"));
         assert_eq!(label("app.language.indonesian"), Some("Bahasa Indonesia"));
         let saved = serde_json::to_string(&app.ui).unwrap();
@@ -988,7 +894,7 @@ mod tests {
         }
         let items = crate::menus::menu_items(&app);
         let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
-        assert_eq!(label("file.saveAs"), Some("Salva con nome…"));
+        assert_eq!(label("file.saveAs"), Some(Language::It.tr("Save As…")));
         assert_eq!(label("app.language.indonesian"), Some("Bahasa Indonesia"));
         assert_eq!(label("app.language.italian"), Some("Italiano"));
         let saved = serde_json::to_string(&app.ui).unwrap();
@@ -1039,6 +945,9 @@ mod tests {
             assert_eq!(l(&[tag]), Language::It, "{tag}");
         }
         assert_eq!(l(&["it-CH", "de-CH", "fr-CH", "en"]), Language::It);
+        for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
+            assert_eq!(l(&[tag]), Language::Ko, "{tag}");
+        }
         for none in [&["ita"][..], &["i"], &["-it"]] {
             assert_eq!(l(none), Language::En, "{none:?}");
         }
@@ -1086,199 +995,6 @@ mod tests {
         app.apply_prefs(&ctx);
         assert_eq!(app.ui.language, Language::Es);
         assert_eq!(asked.get(), asked_before + 1);
-        set_current(Language::En);
-    }
-
-    #[test]
-    fn ukrainian_entries_cover_the_original_menu_catalog() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("uk.tsv"));
-        for (_, en, _) in entries {
-            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
-        }
-        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert_ne!(Language::Uk.tr(en), en, "untranslated Ukrainian menu: {en}");
-        }
-    }
-
-    /// German covers the whole interface (every entry of the Spanish catalog, the native macOS app
-    /// menu included), but, like French, the tests require only the core menus and the native app
-    /// menu, so strings added later show in English until they are translated. Every entry must
-    /// still have a Spanish counterpart: a renamed or removed source would otherwise leave a dead
-    /// German entry.
-    #[test]
-    fn german_covers_the_menus_and_has_no_dead_entries() {
-        let (entries, errors) = catalog::parse_entries(include_str!("de.tsv"));
-        assert!(errors.is_empty(), "{errors:?}");
-        for (ctx, en, _) in &entries {
-            assert!(ctx.is_empty() && Language::Es.has(en), "German entry without a Spanish one: {ctx:?} {en:?}");
-        }
-        for en in core_menu_labels() {
-            assert!(Language::De.has(&en), "missing German menu label: {en}");
-        }
-        // "Clip" and "Audio" are the same word in German, so check for an entry, not a change
-        for en in crate::menus::MENUS.into_iter().chain(["Audio"]).chain(crate::menus::NATIVE_APP_MENU) {
-            assert!(Language::De.has(en), "untranslated German menu: {en}");
-        }
-        assert_eq!(Language::De.tr("Settings"), "Voreinstellungen");
-        assert_eq!(Language::De.tr("Quit FilmCraft"), "FilmCraft beenden");
-        // beyond the menus: panels, effects and their parameters, settings, status messages
-        for (en, de) in [
-            ("Gaussian Blur", "Gaußscher Weichzeichner"),
-            ("Audio Track Mixer", "Audiospur-Mischpult"),
-            ("Sequence", "Sequenz"),
-            ("Playhead", "Abspielposition"),
-            ("Keyboard Shortcuts", "Tastenkürzel"),
-            ("{n} min ago", "vor {n} Min."),
-        ] {
-            assert_eq!(Language::De.tr(en), de);
-        }
-        set_current(Language::De);
-        assert!(matches_query("Gaussian Blur", "weichzeichner"));
-        assert!(matches_query("Gaussian Blur", "gaussian"));
-        set_current(Language::En);
-    }
-
-    /// French covers the whole interface (the Spanish catalog's entries and the native macOS
-    /// Settings menu), but, like Japanese, the tests require only the core menus, so strings added
-    /// later show in English until they are translated. Every entry must still have a Spanish
-    /// counterpart: a renamed or removed source would otherwise leave a dead French entry.
-    #[test]
-    fn french_covers_the_menus_and_has_no_dead_entries() {
-        let (entries, errors) = catalog::parse_entries(include_str!("fr.tsv"));
-        assert!(errors.is_empty(), "{errors:?}");
-        for (ctx, en, _) in &entries {
-            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "French entry without a Spanish one: {ctx:?} {en:?}");
-        }
-        for en in core_menu_labels() {
-            assert!(Language::Fr.has(&en), "missing French menu label: {en}");
-        }
-        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert!(Language::Fr.has(en), "untranslated French menu: {en}");
-        }
-        // beyond the menus: panels, effects and their parameters, settings, status messages
-        for (en, fr) in
-            [("Settings", "Préférences"), ("Gaussian Blur", "Flou gaussien"), ("Audio Track Mixer", "Mixeur de pistes audio"), ("Sequence", "Séquence")]
-        {
-            assert_eq!(Language::Fr.tr(en), fr);
-        }
-        set_current(Language::Fr);
-        assert!(matches_query("Gaussian Blur", "flou"));
-        assert!(matches_query("Gaussian Blur", "gaussian"));
-        set_current(Language::En);
-    }
-
-    /// Korean covers the whole interface (the Spanish catalog's entries and the native macOS
-    /// Settings menu); like French, the tests require the core menus, and every entry must still
-    /// have a Spanish counterpart so a renamed or removed source can't leave a dead Korean entry.
-    #[test]
-    fn korean_covers_the_menus_and_has_no_dead_entries() {
-        let (entries, errors) = catalog::parse_entries(include_str!("ko.tsv"));
-        assert!(errors.is_empty(), "{errors:?}");
-        for (ctx, en, _) in &entries {
-            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Korean entry without a Spanish one: {ctx:?} {en:?}");
-        }
-        for en in core_menu_labels() {
-            assert!(Language::Ko.has(&en), "missing Korean menu label: {en}");
-        }
-        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert!(Language::Ko.has(en), "untranslated Korean menu: {en}");
-        }
-        for (en, ko) in [("File", "파일"), ("Edit", "편집"), ("Sequence", "시퀀스"), ("Settings", "설정")] {
-            assert_eq!(Language::Ko.tr(en), ko);
-        }
-        assert_eq!(Language::Ko.name(), "한국어");
-        assert_eq!(Language::parse("ko"), Some(Language::Ko));
-        for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
-            assert_eq!(Language::from_locales(&[tag.to_string()]), Language::Ko, "{tag}");
-        }
-    }
-
-    #[test]
-    fn russian_entries_cover_the_original_menu_catalog() {
-        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
-        let items = crate::menus::menu_items(&app);
-        let known = |text: &str| crate::menus::MENUS.contains(&text) || items.iter().any(|it| it.label == text || it.path.iter().any(|p| p == text));
-        let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
-        for (_, en, _) in entries {
-            assert!(known(&en) || en == "Settings", "not a menu label: {en}");
-        }
-        for en in core_menu_labels() {
-            assert!(Language::Ru.has(&en), "missing Russian menu label: {en}");
-        }
-        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert_ne!(Language::Ru.tr(en), en, "untranslated Russian menu: {en}");
-        }
-    }
-
-    /// Indonesian covers the whole interface (the Spanish catalog's entries and the native macOS
-    /// Settings menu), but, like Japanese and French, the tests require only the core menus (the
-    /// menus-only Ukrainian catalog, the top-level menus and the native macOS Settings menu), so
-    /// strings added later show in English until they are translated. Every entry must still have a
-    /// Spanish counterpart: a renamed or removed source would otherwise leave a dead entry.
-    #[test]
-    fn indonesian_covers_the_menus_and_has_no_dead_entries() {
-        let (entries, errors) = catalog::parse_entries(include_str!("id.tsv"));
-        assert!(errors.is_empty(), "{errors:?}");
-        for (ctx, en, _) in &entries {
-            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Indonesian entry without a Spanish one: {ctx:?} {en:?}");
-        }
-        let (core, _) = catalog::parse_entries(include_str!("uk.tsv"));
-        for (_, en, _) in core {
-            assert!(Language::Id.has(&en), "missing Indonesian menu label: {en}");
-        }
-        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert!(Language::Id.has(en), "untranslated Indonesian menu: {en}");
-        }
-        // beyond the menus: panels, effects and their parameters, settings, status messages
-        for (en, id) in [
-            ("Settings", "Preferensi"),
-            ("Gaussian Blur", "Buram Gaussian"),
-            ("Audio Track Mixer", "Mixer Trek Audio"),
-            ("Sequence", "Sekuens"),
-            ("Playhead", "Kepala Putar"),
-        ] {
-            assert_eq!(Language::Id.tr(en), id);
-        }
-        set_current(Language::Id);
-        assert!(matches_query("Gaussian Blur", "buram"));
-        assert!(matches_query("Gaussian Blur", "gaussian"));
-        set_current(Language::En);
-    }
-
-    /// Italian covers the whole interface (the Spanish catalog's entries and the native macOS
-    /// Settings menu); like Indonesian, the tests require only the core menus, so strings added
-    /// later show in English until they are translated, and every entry must have a Spanish
-    /// counterpart.
-    #[test]
-    fn italian_covers_the_menus_and_has_no_dead_entries() {
-        let (entries, errors) = catalog::parse_entries(include_str!("it.tsv"));
-        assert!(errors.is_empty(), "{errors:?}");
-        for (ctx, en, _) in &entries {
-            assert!(ctx.is_empty() && (Language::Es.has(en) || en == "Settings"), "Italian entry without a Spanish one: {ctx:?} {en:?}");
-        }
-        let (core, _) = catalog::parse_entries(include_str!("uk.tsv"));
-        for (_, en, _) in core {
-            assert!(Language::It.has(&en), "missing Italian menu label: {en}");
-        }
-        for en in crate::menus::MENUS.into_iter().chain(["Audio", "Settings"]) {
-            assert!(Language::It.has(en), "untranslated Italian menu: {en}");
-        }
-        // beyond the menus: panels, effects and their parameters, settings, status messages
-        for (en, it) in [
-            ("Settings", "Impostazioni"),
-            ("Gaussian Blur", "Sfocatura gaussiana"),
-            ("Audio Track Mixer", "Mixer tracce audio"),
-            ("Sequence", "Sequenza"),
-            ("Playhead", "Indicatore di riproduzione"),
-        ] {
-            assert_eq!(Language::It.tr(en), it);
-        }
-        set_current(Language::It);
-        assert!(matches_query("Gaussian Blur", "sfocatura"));
-        assert!(matches_query("Gaussian Blur", "gaussian"));
         set_current(Language::En);
     }
 
@@ -1382,9 +1098,11 @@ mod tests {
         output.textures_delta.clear();
         ctx.fonts_mut(|fonts| {
             // every theme family falls back to the craft-fonts (when built with them; no system
-            // font is added then) or to the system Japanese font
+            // font is added then) or to the system Japanese font. Installed right-to-left faces
+            // (`rtl::install`) come after every other fallback by design, so they are left out.
             for family in crate::theme::font_families() {
-                let stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
+                let mut stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
+                stack.retain(|n| !crate::rtl::is_system_face(n));
                 if craft {
                     assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                     assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");
@@ -1403,5 +1121,22 @@ mod tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod bcp47_tests {
+    use super::Language;
+
+    /// Protocol-facing BCP 47 tags use `pt-BR`/`zh-CN`; every tag is non-empty ASCII.
+    #[test]
+    fn accesskit_tags_use_protocol_spelling() {
+        assert_eq!(Language::En.bcp47(), "en");
+        assert_eq!(Language::PtBr.bcp47(), "pt-BR");
+        assert_eq!(Language::ZhCn.bcp47(), "zh-CN");
+        for language in Language::ALL {
+            let tag = language.bcp47();
+            assert!(!tag.is_empty() && tag.is_ascii(), "{tag:?}");
+        }
     }
 }

@@ -84,7 +84,7 @@ pub fn show_failed(app: &mut crate::FilmcraftApp, ctx: &egui::Context) {
     let mut close = false;
     let mut elems: Vec<(&str, egui::Rect, String)> = Vec::new();
     egui::Window::new(tl!("Couldn't open your web browser"))
-        .id(egui::Id::new("failed-link"))
+        .id(egui::Id::unique("failed-link"))
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -97,7 +97,7 @@ pub fn show_failed(app: &mut crate::FilmcraftApp, ctx: &egui::Context) {
             ui.label(tl!("Open this address in your browser yourself:"));
             ui.horizontal(|ui| {
                 let mut text = link.url.as_str();
-                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(340.0));
+                let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut text).desired_width(340.0)), "Link address");
                 elems.push(("failedLink.url", r.rect, link.url.clone()));
                 let c = ui.button(tl!("Copy"));
                 elems.push(("failedLink.copy", c.rect, "Copy".into()));

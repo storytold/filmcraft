@@ -22,7 +22,7 @@ workspace_version() {
 }
 
 VERSION="${FILMCRAFT_VERSION:-$(workspace_version)}"
-if [ -z "$VERSION" ]; then
+if [[ -z "$VERSION" ]]; then
   echo "error: could not read [workspace.package] version from $ROOT/Cargo.toml" >&2
   exit 1
 fi
@@ -32,7 +32,7 @@ DIST="${DIST:-$ROOT/dist/release}"
 mkdir -p "$DIST"
 export DIST
 
-if [ -z "${FILMCRAFT_BUILD_SHA:-}" ]; then
+if [[ -z "${FILMCRAFT_BUILD_SHA:-}" ]]; then
   FILMCRAFT_BUILD_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
 fi
 export FILMCRAFT_BUILD_SHA
@@ -41,15 +41,15 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 
 # Emit a GitHub Actions warning (plain stderr outside Actions).
 warn() {
-  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning::$*"; else echo "warning: $*" >&2; fi
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::warning::$*"; else echo "warning: $*" >&2; fi
 }
 
 # Copy licence and readme files that exist into a package directory, plus the licences of the
 # craft-fonts fonts the build embedded (only when built with CRAFT_FONTS_DIR).
 copy_docs() {
   local dest="$1" f
-  for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT; do
-    if [ -f "$ROOT/$f" ]; then cp "$ROOT/$f" "$dest/"; fi
+  for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT NOTICE; do
+    if [[ -f "$ROOT/$f" ]]; then cp "$ROOT/$f" "$dest/"; fi
   done
   copy_font_licences "$dest"
 }
@@ -58,9 +58,9 @@ copy_docs() {
 # Does nothing without CRAFT_FONTS_DIR.
 copy_font_licences() {
   local dest="$1" lic family
-  if [ -z "${CRAFT_FONTS_DIR:-}" ]; then return 0; fi
+  if [[ -z "${CRAFT_FONTS_DIR:-}" ]]; then return 0; fi
   for lic in "$CRAFT_FONTS_DIR"/fonts/*/OFL.txt; do
-    [ -f "$lic" ] || continue
+    [[ -f "$lic" ]] || continue
     family="$(basename "$(dirname "$lic")")"
     cp "$lic" "$dest/OFL-$family.txt"
   done
