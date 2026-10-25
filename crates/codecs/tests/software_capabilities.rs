@@ -44,3 +44,18 @@ fn upstream_vp8_decoder_remains_available() {
     assert!(filmcraft_codecs::software_video_decoder(&entry).is_ok());
     assert!(filmcraft_codecs::make_video_decoder(&entry).is_ok());
 }
+
+#[test]
+fn upstream_raw_factory_remains_registered_for_dispatch_and_software_fallback() {
+    use filmcraft_isobmff::{CodecConfig, FourCc, SampleEntry};
+    assert!(filmcraft_codecs::video_decoder_registered(filmcraft_codecs::video::raw_factory));
+    for format in [FourCc(*b"raw "), FourCc(*b"2vuy"), FourCc(*b"v210")] {
+        let mut entry = SampleEntry::video(format, CodecConfig::Unknown { fourcc: format, raw: Vec::new() }, 16, 16);
+        entry.video.as_mut().unwrap().depth = 24;
+        assert!(filmcraft_codecs::software_video_decoder(&entry).is_ok(), "software fallback for {format:?}");
+        assert!(filmcraft_codecs::make_video_decoder(&entry).is_ok(), "registered dispatch for {format:?}");
+    }
+    // Raw registration does not expand the deliberately limited media V1 coverage.
+    let records = software_decoder_capabilities().unwrap();
+    assert_eq!(records.iter().map(|c| c.codec).collect::<Vec<_>>(), vec![VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1]);
+}

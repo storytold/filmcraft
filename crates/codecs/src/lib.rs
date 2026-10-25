@@ -272,7 +272,7 @@ mod builtin_registration_tests {
                 BuiltinVideoDecoder::Dnx,
                 BuiltinVideoDecoder::Mjpeg,
                 BuiltinVideoDecoder::Mpeg2,
-    BuiltinVideoDecoder::Raw,
+                BuiltinVideoDecoder::Raw,
             ]
         );
         for decoder in [BuiltinVideoDecoder::H264, BuiltinVideoDecoder::Hevc, BuiltinVideoDecoder::Av1] {
