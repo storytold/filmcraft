@@ -398,3 +398,48 @@ fn a_graphics_tab_edit_writes_keyframed_text_where_it_is_shown() {
     assert_eq!(at(&mut d, it.start.0), filmcraft_project::ParamValue::Text("Edited".into()), "the shown (start) value changed");
     assert_eq!(at(&mut d, late), filmcraft_project::ParamValue::Text("End".into()), "the end keeps its own");
 }
+
+/// #2494: with text selected by the Type tool, Font Size edits the selected characters. The field
+/// showed the layer's size instead of theirs, so a typed size seemed not to take and a drag
+/// started over from the layer's size every frame (it hardly changed anything). Now the field
+/// shows the selection's size and a drag grows it.
+#[test]
+fn font_size_follows_the_selected_characters() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics","tool":"Type"}));
+    d.exec("playhead.set", json!({"seconds":2}));
+    d.frames(3);
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x":p[0]+p[2]*0.2,"y":p[1]+p[3]*0.35}));
+    d.ok("ui.type", json!({"text":"Size"}));
+    d.ok("ui.key", json!({"key":"Cmd+A"}));
+    d.frames(3);
+    let run_size = |d: &mut Driver| -> Option<f32> {
+        let s = &d.harness.state().session;
+        let q = s.active_sequence().unwrap();
+        let ed = d.harness.state().ui.gfx_edit.clone()?;
+        let (_, it) = q.find_item(filmcraft_project::ClipId(ed.clip))?;
+        let idx = filmcraft_project::graphic::layer_indices(&it.effects);
+        let e = &it.effects[*idx.get(ed.layer)?];
+        e.layer.as_ref()?.runs.iter().filter_map(|r| r.style.size).next_back()
+    };
+    let r = d.rect("graphics.prop.size");
+    d.ok("ui.drag", json!({"from":{"x":r[0]+r[2]/2.0,"y":r[1]+r[3]/2.0},"to":{"x":r[0]+r[2]/2.0+80.0,"y":r[1]+r[3]/2.0},"steps":8}));
+    d.frames(3);
+    let after = run_size(&mut d).expect("the selected characters got a size");
+    assert!(after > 120.0, "the drag grows the selection's size by the whole drag, not one step: {after}");
+
+    // a typed size takes, and a drag then starts from it, not from the size shown before (#2522 review)
+    d.ok("ui.click", json!({"id": "graphics.prop.size"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "60"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert_eq!(run_size(&mut d), Some(60.0), "the typed size is the selection's");
+    let r = d.rect("graphics.prop.size");
+    d.ok("ui.drag", json!({"from":{"x":r[0]+r[2]/2.0,"y":r[1]+r[3]/2.0},"to":{"x":r[0]+r[2]/2.0+20.0,"y":r[1]+r[3]/2.0},"steps":4}));
+    d.frames(3);
+    let dragged = run_size(&mut d).unwrap();
+    assert!(dragged > 60.0 && dragged < after - 10.0, "the drag grows 60, not the earlier {after}: {dragged}");
+}

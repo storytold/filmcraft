@@ -1247,6 +1247,27 @@ impl Ctx<'_> {
         }
         self.actions.push(("graphics.set".into(), json!({"clip": self.clip.0, "layer": self.layer, "props": {id: v}})));
     }
+    /// The value a property shows: with a Type-tool selection, a character property is the first
+    /// selected character's own style when it has one, as that is what editing it changes (#2494:
+    /// the field showed the layer's size, so typing seemed not to take and dragging started over
+    /// from the layer's size every frame).
+    fn shown(&self, id: &str) -> ParamValue {
+        if let (Some((a, _)), Some(k)) = (self.range, char_style_key(id)) {
+            let runs = self.e.layer.as_ref().map_or(&[][..], |x| x.runs.as_slice());
+            let style =
+                runs.iter().filter(|r| r.start <= a && a < r.end).fold(filmcraft_project::graphic_design::CharStyle::default(), |acc, r| acc.merged(&r.style));
+            let v = match k {
+                "size" => style.size,
+                "tracking" => style.tracking,
+                "baselineShift" => style.baseline_shift,
+                _ => None,
+            };
+            if let Some(v) = v {
+                return ParamValue::Float(f64::from(v));
+            }
+        }
+        pv(self.e, id, self.mt)
+    }
     fn auto(&mut self, id: &str, r: Rect, label: &str) {
         self.autos.push((format!("graphics.prop.{id}"), r, label.to_string()));
     }
@@ -1286,7 +1307,7 @@ impl Ctx<'_> {
         }
     }
     fn number(&mut self, ui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
-        let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
+        let v = self.shown(id).as_f64().unwrap_or(0.0);
         let (r, mut vui) = self.row(ui, label);
         let (resp, nv) = crate::widgets::hot_number(&mut vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, label);
@@ -1296,7 +1317,7 @@ impl Ctx<'_> {
         }
     }
     fn number_in(&mut self, vui: &mut egui::Ui, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
-        let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
+        let v = self.shown(id).as_f64().unwrap_or(0.0);
         let (resp, nv) = crate::widgets::hot_number(vui, egui::Id::new(("gfxp", self.clip.0, self.layer, id)), v, speed, range, dec, unit, &self.t);
         self.auto(id, resp.rect, id);
         if let Some(nv) = nv {
