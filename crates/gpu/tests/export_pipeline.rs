@@ -13,9 +13,19 @@ use std::sync::Arc;
 
 /// The same wrapper the app and CLI register: `filmcraft-gpu`'s renderer behind
 /// `filmcraft_export`'s trait.
+static RENDERER_CREATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
 
 impl FrameRenderer for GpuFrameRenderer {
+    fn supports_prepared_plan(&self) -> bool {
+        true
+    }
+
+    fn render_prepared(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_render::Image> {
+        self.0.render_prepared(plan)
+    }
+
     fn render(
         &mut self,
         project: &filmcraft_project::Project,
@@ -60,11 +70,23 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
             red,
             TrackKind::Video,
             filmcraft_time::Tick::ZERO,
-            TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)),
+            TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(6)),
             filmcraft_time::FrameRate::FPS_24,
         )
         .unwrap();
     p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
+    for i in 1..4 {
+        let clip = p
+            .make_track_item(
+                red,
+                TrackKind::Video,
+                filmcraft_time::FrameRate::FPS_24.tick_of(i * 6),
+                TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(6)),
+                filmcraft_time::FrameRate::FPS_24,
+            )
+            .unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+    }
     let mut m = SourceMap::default();
     m.0.insert(red, Arc::new(g));
     (Arc::new(p), seq, m)
@@ -83,7 +105,7 @@ fn export_png(dir: &str, gpu: GpuRendering, (w, h): (u32, u32)) {
         path: std::env::temp_dir().join(format!("fc-gpu-export-{dir}")).to_string_lossy().into_owned(),
         ..Default::default()
     };
-    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
+    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(24)));
     s.gpu_rendering = gpu;
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
 }
@@ -119,16 +141,22 @@ fn gpu_export_matches_cpu_and_counts() {
     export_png("off-auto", GpuRendering::Auto, (320, 180));
     assert_eq!(png("off-cpu", "img000.png"), png("off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
 
-    register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present")))));
+    register_frame_renderer(|| {
+        let n = RENDERER_CREATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        eprintln!("GPU renderer created: {n}");
+        Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present"))))
+    });
     let sizes = [(320u32, 180u32), (17, 13), (1, 1), (257, 129)];
     for (i, size) in sizes.into_iter().enumerate() {
         export_png("cpu", GpuRendering::Off, size);
         export_png("gpu", GpuRendering::Auto, size);
-        for f in ["000", "001"] {
+        for f in (0..24).map(|n| format!("{n:03}")) {
             assert_parity(&png("cpu", &format!("img{f}.png")), &png("gpu", &format!("img{f}.png")), &format!("{:?} frame {f}", size));
         }
         let _ = i;
     }
+    // Four GPU renderer instances are created for each of four exports.
+    assert_eq!(RENDERER_CREATIONS.load(std::sync::atomic::Ordering::SeqCst), 16, "expected four GPU renderers per export");
     let GpuRenderStats { frames, .. } = filmcraft_export::gpu_render_stats();
     assert!(frames >= 8, "gpu frames counted across the parity exports: {frames}");
 }
