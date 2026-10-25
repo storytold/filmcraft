@@ -542,7 +542,12 @@ pub fn write(doc: &Document, drop_frame: bool) -> String {
     write_with(doc, drop_frame, true, true)
 }
 
-/// [`write`] choosing which caption streams to include.
+/// Write MCC with independently selected CEA-608 field 1 and CEA-708 service 1 streams.
+///
+/// Emit only scheduled data frames, preserving their timestamps and explicit erase/hide
+/// commands. Empty time spans add no packets; CDP counters advance per emitted packet and
+/// wrap at 16 bits. `drop_frame` selects 30DF rather than 30 timecode labels at 29.97 fps.
+/// An empty document or two disabled streams produces a header with no data lines.
 pub fn write_with(doc: &Document, drop_frame: bool, cea608: bool, cea708: bool) -> String {
     let f1 = if cea608 { scc::schedule(doc) } else { BTreeMap::new() };
     let dtv = if cea708 { schedule_708(doc) } else { BTreeMap::new() };
@@ -669,10 +674,12 @@ pub fn parse(text: &str) -> Result<Document> {
 mod tests {
     use super::*;
 
+    /// Build a caption fixture from start/end frame indices on the MCC 29.97 fps grid.
     fn cue(s: i64, e: i64, text: &str) -> Cue {
         Cue { start: RATE.tick_of(s), end: RATE.tick_of(e), text: text.into(), ..Default::default() }
     }
 
+    /// Check that MCC abbreviations round-trip bytes and reject an incomplete hex pair.
     #[test]
     fn abbreviations_round_trip() {
         let b = [0x61, 0x01, 0x49, 0x96, 0x69, 0xfa, 0, 0, 0xfa, 0, 0, 0xfc, 0x80, 0x80, 0x00, 0x12, 0xe1, 0, 0, 0, 0xfb, 0x80, 0x80, 0xfd, 0x80, 0x80];
@@ -682,6 +689,7 @@ mod tests {
         assert_eq!(expand("T52S5"), None);
     }
 
+    /// Verify CDP framing, caption triplets, sequence fields, and both packet checksums.
     #[test]
     fn cdp_structure_and_checksum() {
         let d = FrameData { f1: Some((0x14, 0x20)), dtvcc: vec![(true, 0x02, 0x21), (false, 0x89, 0x01)] };
@@ -702,6 +710,7 @@ mod tests {
         assert_eq!(t[19], [0xfa, 0, 0]);
     }
 
+    /// Preserve caption text and timing through combined-stream and CEA-708-only exports.
     #[test]
     fn writes_and_reads_608_and_708() {
         let doc = Document {
@@ -722,6 +731,8 @@ mod tests {
         assert!(parse("garbage").is_err());
     }
 
+    /// Keep separated short captions compact while preserving cues and valid CDP packets.
+    /// Exercise each stream combination with both drop-frame and non-drop timecode labels.
     #[test]
     fn export_size_depends_on_caption_data_not_empty_frames() {
         // A small reproducer: the old writer emits thousands of padding-only lines.
@@ -744,6 +755,7 @@ mod tests {
         }
     }
 
+    /// Bound output for distant or long cues near the tick limit without changing their timing.
     #[test]
     fn distant_and_long_cues_round_trip_near_tick_limit() {
         let last = RATE.frame_at(crate::Tick(i64::MAX)) - 10;
@@ -759,6 +771,7 @@ mod tests {
         }
     }
 
+    /// Emit only the MCC header when the document is empty or both streams are disabled.
     #[test]
     fn empty_schedules_have_no_data_lines() {
         let doc = Document { cues: vec![cue(60, 120, "Caption")], ..Default::default() };
@@ -766,6 +779,7 @@ mod tests {
         assert!(!write(&Document::default(), true).contains('\t'));
     }
 
+    /// Prevent CEA-708 text and line breaks from overflowing a window's declared dimensions.
     #[test]
     fn decoder_keeps_708_text_within_declared_window_dimensions() {
         let mut decoder = Dec708::new();
