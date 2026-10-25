@@ -3609,3 +3609,12 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+	Keyframe Interpolation: Linear	Interpolazione fotogrammi chiave: Lineare
+	Keyframe Interpolation: Bezier	Interpolazione fotogrammi chiave: Bézier
+	Keyframe Interpolation: Auto Bezier	Interpolazione fotogrammi chiave: Bézier automatica
+	Keyframe Interpolation: Continuous Bezier	Interpolazione fotogrammi chiave: Bézier continua
+	Keyframe Interpolation: Hold	Interpolazione fotogrammi chiave: Mantieni
+	Keyframe Interpolation: Ease In	Interpolazione fotogrammi chiave: Rallenta in entrata
+	Keyframe Interpolation: Ease Out	Interpolazione fotogrammi chiave: Rallenta in uscita
+	Select keyframes in Effect Controls first	Seleziona prima dei fotogrammi chiave in Controllo effetti
+	Keyframes	Fotogrammi chiave

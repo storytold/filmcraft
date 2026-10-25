@@ -131,6 +131,15 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("mixer.showHideTracks", "Show/Hide Tracks…", [], None),
     uic!("mixer.meterInputOnly", "Meter Input(s) Only", [], None),
     uic!("graphics.beginTextEditing", "Begin Text Editing for a Graphic Layer", [], Some("Cmd+Alt+'")),
+    // #2149: the keyframes selected in Effect Controls take an interpolation (no default keys,
+    // as in Premiere; assign them in Keyboard Shortcuts)
+    uic!("keyframes.interpolation.linear", "Keyframe Interpolation: Linear", [], None),
+    uic!("keyframes.interpolation.bezier", "Keyframe Interpolation: Bezier", [], None),
+    uic!("keyframes.interpolation.autoBezier", "Keyframe Interpolation: Auto Bezier", [], None),
+    uic!("keyframes.interpolation.continuousBezier", "Keyframe Interpolation: Continuous Bezier", [], None),
+    uic!("keyframes.interpolation.hold", "Keyframe Interpolation: Hold", [], None),
+    uic!("keyframes.interpolation.easeIn", "Keyframe Interpolation: Ease In", [], None),
+    uic!("keyframes.interpolation.easeOut", "Keyframe Interpolation: Ease Out", [], None),
     uic!("help.filmcraftHelp", "FilmCraft Help…", ["Help"], Some("F1")),
     uic!("app.quit", "Quit FilmCraft", [], Some("Cmd+Q")),
 ];
@@ -214,6 +223,15 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         "mixer.showHideTracks" => Ok(crate::panels::mixer::open_show_hide_tracks(app, ctx)),
         "mixer.meterInputOnly" => crate::panels::mixer::set_meter_input_only(app, params),
         "graphics.beginTextEditing" => begin_text_editing(app),
+        _ if id.starts_with("keyframes.interpolation.") => {
+            let kind = id.trim_start_matches("keyframes.interpolation.");
+            let keys = app.ui.keyframe_selection.clone();
+            if keys.is_empty() {
+                Err(tl!("Select keyframes in Effect Controls first").to_string())
+            } else {
+                app.session.execute("effects.setInterpolations", json!({"keyframes": keys, "interpolation": kind})).map_err(|e| e.to_string())
+            }
+        }
         "help.filmcraftHelp" => {
             crate::links::open(app, ctx, HELP_URL);
             Ok(json!({"url": HELP_URL}))

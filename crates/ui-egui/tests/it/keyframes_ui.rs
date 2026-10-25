@@ -709,6 +709,52 @@ fn mask_keyframe_menus_preserve_the_effect_and_other_masks() {
     }
 }
 
+fn interps(d: &Driver, keys: &[filmcraft_ui_egui::state::KeyframeRef]) -> Vec<filmcraft_project::Interpolation> {
+    let it = d.harness.state().session.active_sequence().unwrap().find_item(ClipId(keys[0].clip)).unwrap().1;
+    keys.iter().map(|k| it.effects[k.effect].params[&k.param].keyframes.iter().find(|x| x.time == k.time).unwrap().interp).collect()
+}
+
+/// #2149 / #1691: an interpolation picked on one keyframe of a selection applies to all of them,
+/// and every interpolation is a command that can be given a shortcut (Keyboard Shortcuts).
+#[test]
+fn interpolation_applies_to_every_selected_keyframe_and_has_commands() {
+    use filmcraft_project::Interpolation::{EaseIn, EaseOut, Hold, Linear};
+    let (mut d, clip) = Driver::demo();
+    let keys = lane_keys(&mut d, &clip, &[("scale", 1.0), ("scale", 2.0), ("rotation", 1.5)]);
+    // nothing selected: the command says so and changes nothing
+    let r = d.call("ui.menu.invoke", json!({"id": "keyframes.interpolation.easeIn"}));
+    assert_ne!(r["ok"], true, "{r}");
+    assert_eq!(interps(&d, &keys), [Linear, Linear, Linear]);
+
+    select_keys(&mut d, &keys[..2]);
+    let undo = d.undo_len();
+    d.ok("ui.menu.invoke", json!({"id": "keyframes.interpolation.easeIn"}));
+    d.frames(2);
+    assert_eq!(interps(&d, &keys), [EaseIn, EaseIn, Linear], "the selected keyframes only");
+    assert_eq!(d.undo_len(), undo + 1);
+
+    // right-click one of the selection ▸ Ease Out: both, in one step
+    d.right_click(&key_id(&d, &keys[1]));
+    d.click("effectControls.keyframeMenu.easeOut");
+    assert_eq!(interps(&d, &keys), [EaseOut, EaseOut, Linear]);
+    assert_eq!(d.undo_len(), undo + 2);
+    // right-click a keyframe outside the selection: just that one
+    d.right_click(&key_id(&d, &keys[2]));
+    d.click("effectControls.keyframeMenu.hold");
+    assert_eq!(interps(&d, &keys), [EaseOut, EaseOut, Hold]);
+
+    // the commands are listed for Keyboard Shortcuts and a key given to one applies it
+    let rows = d.exec("shortcuts.list", json!({"query": "Keyframe Interpolation"})).to_string();
+    for k in ["linear", "bezier", "autoBezier", "continuousBezier", "hold", "easeIn", "easeOut"] {
+        assert!(rows.contains(&format!("keyframes.interpolation.{k}")), "{k}: {rows}");
+    }
+    d.exec("shortcuts.set", json!({"command": "keyframes.interpolation.linear", "keys": "Alt+Shift+F9"}));
+    select_keys(&mut d, &keys);
+    d.ok("ui.key", json!({"key": "Alt+Shift+F9"}));
+    d.frames(3);
+    assert_eq!(interps(&d, &keys), [Linear, Linear, Linear]);
+}
+
 /// #2328: a line separates the fixed effects (Motion, Opacity, Time Remapping) from the effects
 /// added from the library; without added effects there is none.
 #[test]

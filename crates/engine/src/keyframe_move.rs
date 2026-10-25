@@ -2,7 +2,7 @@
 //! relative timing intact, including at the clip boundaries. Selection itself is a UI concern.
 use std::collections::{BTreeMap, HashSet};
 
-use filmcraft_project::{ClipId, Keyframe, Param, Sequence, TrackItem};
+use filmcraft_project::{ClipId, Interpolation, Keyframe, Param, Sequence, TrackItem};
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -106,6 +106,50 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     Ok(json!({"delta":delta,"keyframes":keys}))
+}
+
+/// An interpolation by name: `easeIn`, `Ease In`, `auto_bezier`… (case, spaces, `_` and `-` ignored).
+fn interpolation_named(name: &str) -> Option<Interpolation> {
+    let n = name.to_ascii_lowercase().replace([' ', '_', '-'], "");
+    Interpolation::ALL.into_iter().find(|i| i.label().to_ascii_lowercase().replace(' ', "") == n)
+}
+
+/// `effects.setInterpolations`: one temporal interpolation for many keyframes (the keyframes
+/// selected in Effect Controls) as one undo step (#2149). Every reference must name an existing
+/// keyframe; nothing changes otherwise.
+pub(crate) fn set_interpolations(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effects.setInterpolations";
+    let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need keyframes"))?;
+    if raw.is_empty() || raw.len() > MAX_KEYS {
+        return Err(bad(CMD, "keyframe count must be between 1 and 4096"));
+    }
+    let name = p.get("interpolation").and_then(Value::as_str).ok_or_else(|| bad(CMD, "need `interpolation`"))?;
+    let kind = interpolation_named(name)
+        .ok_or_else(|| bad(CMD, format!("unknown interpolation `{name}` (linear, bezier, autoBezier, continuousBezier, hold, easeIn, easeOut)")))?;
+    let keys: Vec<Key> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(CMD, "invalid keyframe reference"))?;
+    let q = s.active_sequence().ok_or(crate::EngineError::NoSequence)?;
+    for key in &keys {
+        let (_, it) = q.find_item(ClipId(key.clip)).ok_or_else(|| bad(CMD, "clip does not exist"))?;
+        let effect = it.effects.get(key.effect).ok_or_else(|| bad(CMD, "effect does not exist"))?;
+        let param = match key.mask {
+            Some(mask) => effect.masks.get(mask).and_then(|m| m.param(&key.param)),
+            None => effect.params.get(&key.param),
+        }
+        .ok_or_else(|| bad(CMD, "parameter does not exist"))?;
+        if !param.keyframes.iter().any(|k| k.time == key.time) {
+            return Err(bad(CMD, "keyframe does not exist"));
+        }
+    }
+    s.edit_sequence("Keyframe Interpolation", |sequence, _, _| {
+        for key in &keys {
+            let param = param_mut(sequence, &(key.clip, key.effect, key.mask, key.param.clone()))?;
+            if let Some(k) = param.keyframes.iter_mut().find(|k| k.time == key.time) {
+                k.interp = kind;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(json!({"keyframes": keys.len(), "interpolation": kind.label()}))
 }
 
 #[cfg(test)]
@@ -215,5 +259,31 @@ mod tests {
                 assert_eq!(diff, delta.0 * 2 * if reverse { -1 } else { 1 });
             }
         }
+    }
+
+    #[test]
+    fn interpolation_of_many_keyframes_is_one_undo_step() {
+        let (mut s, keys) = fixture();
+        let undo = s.history.undo.len();
+        let r = s.execute("effects.setInterpolations", json!({"keyframes": keys, "interpolation": "easeIn"})).unwrap();
+        assert_eq!(r["keyframes"], 3);
+        for k in &keys {
+            let t = Tick(k["time"].as_i64().unwrap());
+            assert!(values(&s, k).iter().any(|x| x.time == t && x.interp == Interpolation::EaseIn));
+        }
+        assert_eq!(s.history.undo.len(), undo + 1);
+        // names are forgiving; unknown names and missing keyframes change nothing
+        s.execute("effects.setInterpolations", json!({"keyframes": [keys[0].clone()], "interpolation": "Auto Bezier"})).unwrap();
+        assert_eq!(values(&s, &keys[0])[0].interp, Interpolation::AutoBezier);
+        let before = s.project.clone();
+        assert!(s.execute("effects.setInterpolations", json!({"keyframes": keys, "interpolation": "wobbly"})).is_err());
+        let mut gone = keys.clone();
+        gone[2]["time"] = json!(1);
+        assert!(s.execute("effects.setInterpolations", json!({"keyframes": gone, "interpolation": "hold"})).is_err());
+        assert!(s.execute("effects.setInterpolations", json!({"keyframes": [], "interpolation": "hold"})).is_err());
+        assert!(Arc::ptr_eq(&before, &s.project), "a refused request changes nothing");
+        s.execute("edit.undo", json!({})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(values(&s, &keys[1]).iter().all(|x| x.interp == Interpolation::Linear));
     }
 }
