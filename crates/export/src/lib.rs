@@ -771,6 +771,13 @@ pub trait VideoEncoder: Send {
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
         None
     }
+    /// How many packets the encoder would have returned by now (over all calls) if it coded one
+    /// picture batch at a time, when it returns them later (the GOP-parallel H.264 encoder): the
+    /// export interleaves video and audio by this count so the file does not depend on when the
+    /// background work finishes. `None`: every packet returned so far.
+    fn packets_due(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Audio encoder (AAC) plugged in by codec crates; PCM is built in.
@@ -1533,6 +1540,8 @@ impl H264Encoder {
 }
 
 impl VideoEncoder for H264Encoder {
+    /// An `avc1` sample entry from the encoder's avcC (or its SPS and PPS), with the colour
+    /// signalling.
     fn sample_entry(&self) -> SampleEntry {
         let cfg = filmcraft_isobmff::AvcConfig::parse(&self.enc.avcc()).unwrap_or_else(|_| {
             let (sps, pps) = self.enc.sps_pps();
@@ -1542,9 +1551,12 @@ impl VideoEncoder for H264Encoder {
         self.signal.apply_to(&mut e, false);
         e
     }
+    /// The frame rate's numerator, so that a frame lasts `rate.den` ticks.
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
+    /// Convert the frame to 8-bit 4:2:0 and encode it. With constant QP or CRF the packets may
+    /// come out later than the frame (see [`VideoEncoder::packets_due`]).
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         timed(Stage::Convert, || match f.hdr {
             Some(rgb) => {
@@ -1558,10 +1570,16 @@ impl VideoEncoder for H264Encoder {
         let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(self.packets(ps))
     }
+    /// Encode what is left and return every packet not returned yet.
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
-        let ps = self.enc.flush();
+        let ps = self.enc.flush().map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(self.packets(ps))
     }
+    /// The packets the serial H.264 encoder would have returned by now.
+    fn packets_due(&self) -> Option<u64> {
+        Some(self.enc.packets_due())
+    }
+    /// One frame duration when B-frames delay the first decoding time, else none.
     fn media_start(&self) -> Option<i64> {
         // With B-frames the first DTS is one frame before the first PTS.
         (self.enc.delay() > 0).then_some(self.rate.den)
@@ -1694,6 +1712,16 @@ pub(crate) fn h264_slices(height: u32) -> usize {
     (height.div_ceil(16) as usize).div_ceil(4).max(1)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests build the H.264 encoder on its serial path (no GOP-parallel coding) on this thread,
+    /// to compare files with the default.
+    pub(crate) static SERIAL_H264: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The built-in H.264 encoder for [`Format::H264`] (MP4 / MOV with length-prefixed samples, MXF
+/// with an Annex B stream): keyframe distance, machine-independent slice count, rate control,
+/// pass, profile, level, pixel aspect and HDR signalling from the export settings.
 fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     if format != Format::H264 {
         return None;
@@ -1704,6 +1732,10 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     cfg.aud = s.format.is_mxf();
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     cfg.slices = h264_slices(h);
+    #[cfg(test)]
+    if SERIAL_H264.with(std::cell::Cell::get) {
+        cfg.parallel_gops = false;
+    }
     let kbps = s.bitrate_kbps.max(100);
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
     cfg.rate = match s.bitrate_mode {

@@ -59,14 +59,23 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// A zeroed frame of `w` x `h` luma samples with padded planes.
     pub fn new(w: usize, h: usize) -> Self {
         Frame { y: Plane::new(w, h, LUMA_PAD), u: Plane::new(w / 2, h / 2, CHROMA_PAD), v: Plane::new(w / 2, h / 2, CHROMA_PAD) }
     }
+    /// Replicate the edge samples of every plane into its padding.
     pub fn extend_edges(&mut self) {
         self.y.extend_edges();
         self.u.extend_edges();
         self.v.extend_edges();
     }
+}
+
+/// Bytes of a [`Frame`] of `w` x `h` (macroblock-aligned) luma samples, padding included.
+#[cfg(feature = "threads")]
+pub fn frame_bytes(w: usize, h: usize) -> usize {
+    let plane = |w: usize, h: usize, pad: usize| (w + 2 * pad).saturating_mul(h + 2 * pad);
+    plane(w, h, LUMA_PAD).saturating_add(plane(w / 2, h / 2, CHROMA_PAD).saturating_mul(2))
 }
 
 /// A decoded reference picture with half-sample planes for fast sub-pel access.

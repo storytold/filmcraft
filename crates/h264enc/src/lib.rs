@@ -4,7 +4,8 @@
 //! - Intra 16x16 / 4x4 / 8x8 mode decision, hexagon motion search with quarter-sample refinement,
 //!   16x16/16x8/8x16/8x8 partitions, P_Skip, B-frames with spatial direct/B_Skip, in-loop deblocking.
 //! - Rate control: constant QP, constant quality (CRF-like), 1-pass ABR with VBV, 2-pass VBR.
-//! - Slice-parallel encoding with rayon (feature `threads`, on by default).
+//! - Slice-parallel encoding with rayon (feature `threads`, on by default); constant QP and constant
+//!   quality also encode whole GOPs concurrently, with the same bytes as one GOP at a time.
 //!
 //! ```no_run
 //! use filmcraft_h264enc::{Encoder, EncoderConfig, RateControl, YuvFrame};
@@ -14,7 +15,7 @@
 //! let (y, u, v) = (vec![128u8; 1280 * 720], vec![128u8; 640 * 360], vec![128u8; 640 * 360]);
 //! let frame = YuvFrame { y: &y, u: &u, v: &v, y_stride: 1280, uv_stride: 640 };
 //! let mut packets = enc.encode(&frame, 0).unwrap();
-//! packets.extend(enc.flush());
+//! packets.extend(enc.flush().unwrap());
 //! ```
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
@@ -24,6 +25,8 @@ mod cabac_mb;
 mod cavlc;
 mod deblock;
 mod dsp;
+#[cfg(feature = "threads")]
+mod gop;
 mod intra;
 mod lookahead;
 mod mbinfo;
@@ -36,6 +39,7 @@ mod tables;
 mod transform;
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 pub use ratecontrol::{FrameStat, PassStats};
 
@@ -45,7 +49,7 @@ use lookahead::{Complexity, LowRes};
 use mbinfo::MbInfo;
 use nal::{NAL_AUD, NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, Pps, SliceHeader, SliceType, Sps, Vui};
 use picture::{CHROMA_PAD, Frame, LUMA_PAD, RefPic, build_hpel};
-use ratecontrol::RcKind;
+use ratecontrol::{FixedQp, RcKind};
 use slice::{Band, EncParams, FrameEnc, Lambdas, SliceEnc, SliceOut};
 use tables::NUM_CTX;
 use transform::QuantTables;
@@ -61,6 +65,11 @@ pub enum Error {
     InvalidConfig(String),
     #[error("input frame planes too small for the configured size")]
     BadFrame,
+    /// A GOP of the GOP-parallel path failed (its thread panicked): its pictures are lost, and the
+    /// stream goes on from an IDR when it would have continued from that GOP. Later calls are
+    /// unaffected.
+    #[error("H.264 GOP encoding failed: {0}")]
+    Worker(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -166,9 +175,19 @@ pub struct EncoderConfig {
     /// Requested level_idc (41 = level 4.1); None = the lowest level that fits. A level too low
     /// for the stream is raised to the one it needs.
     pub level: Option<u8>,
+    /// Encode whole GOPs concurrently when the rate control allows it: constant QP and constant
+    /// quality (their frame QPs need no feedback from earlier frames), feature `threads`, more than
+    /// one thread, and two GOPs of `keyint` pictures within the 1 GiB picture buffer (so not 4K
+    /// with a long `keyint`). The packets and the reconstruction are byte-identical to the serial
+    /// path; they only come out later (see [`Encoder::packets_due`]). On by default; off encodes
+    /// one picture batch at a time, as the bitrate modes always do.
+    pub parallel_gops: bool,
 }
 
 impl EncoderConfig {
+    /// Defaults for a `width` x `height` stream at `fps_num / fps_den` pictures a second: High
+    /// profile, balanced preset, CRF 23, `keyint` 250, two B-frames, every core, Annex B with
+    /// access unit delimiters, GOP-parallel coding allowed.
     pub fn new(width: u32, height: u32, fps_num: u32, fps_den: u32) -> Self {
         EncoderConfig {
             width,
@@ -192,6 +211,7 @@ impl EncoderConfig {
             content_light: None,
             aud: true,
             level: None,
+            parallel_gops: true,
         }
     }
 }
@@ -249,6 +269,7 @@ struct Pool {
 }
 
 impl Pool {
+    /// Run `f` on the encoder's pool, or on this thread when there is none.
     fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
         #[cfg(feature = "threads")]
         if let Some(p) = &self.pool {
@@ -258,7 +279,9 @@ impl Pool {
     }
 }
 
-pub struct Encoder {
+/// Settings, tables and parameter sets: everything coding a picture reads besides the pictures
+/// and the reference state. Shared with the GOP threads.
+struct Ctx {
     cfg: EncoderConfig,
     params: EncParams,
     sps: Sps,
@@ -269,29 +292,151 @@ pub struct Encoder {
     lam: Lambdas,
     cabac_i: Box<[(i8, i8); NUM_CTX]>,
     cabac_pb: Box<[(i8, i8); NUM_CTX]>,
+    slices: usize,
+    pool: Pool,
+    max_refs: usize,
+}
+
+/// What [`encode_batch`] reads and updates besides its pictures: the reference state of a coded
+/// video sequence. The serial path keeps one for the whole stream; the GOP-parallel path gives
+/// each GOP its own, starting at its IDR with the counters the stream had reached there.
+#[derive(Default)]
+struct Refs {
+    dpb: Vec<RefPic>,
+    next_frame_num: u32,
+    /// Identity of the latest reference picture (numbered from 1 over the whole stream).
+    ref_uid: u32,
+    /// IDR pictures coded before (its parity is the next `idr_pic_id`).
+    idr_count: u32,
+    /// Display number of the latest IDR, the POC origin.
+    idr_display: u64,
+    /// The identification (and HDR) SEI went out with the first picture of the stream.
+    sei_sent: bool,
+    frame_pool: Vec<Frame>,
+    hpel_pool: Vec<[picture::Plane; 3]>,
+}
+
+impl Refs {
+    /// A picture buffer of the padded size, from the pool or new.
+    fn new_frame(&mut self, p: &EncParams) -> Frame {
+        self.frame_pool.pop().unwrap_or_else(|| Frame::new(p.mbw * 16, p.mbh * 16))
+    }
+
+    /// Keep a picture buffer for reuse (up to 8).
+    fn recycle(&mut self, f: Frame) {
+        if self.frame_pool.len() < 8 {
+            self.frame_pool.push(f);
+        }
+    }
+
+    /// Keep a set of half-sample planes for reuse (up to 4).
+    fn recycle_hpel(&mut self, h: [picture::Plane; 3]) {
+        if self.hpel_pool.len() < 4 {
+            self.hpel_pool.push(h);
+        }
+    }
+
+    /// Keep the picture and half-sample buffers of a reference picture no longer used.
+    fn recycle_ref(&mut self, r: RefPic) {
+        self.recycle(r.frame);
+        self.recycle_hpel(r.hpel);
+    }
+
+    /// Keep the buffers of a reference state nothing continues from.
+    #[cfg(feature = "threads")]
+    fn reuse(&mut self, other: Refs) {
+        for r in other.dpb {
+            self.recycle_ref(r);
+        }
+        for f in other.frame_pool {
+            self.recycle(f);
+        }
+        for h in other.hpel_pool {
+            self.recycle_hpel(h);
+        }
+    }
+
+    /// Continue the stream from `other` (the GOP that ended at a flush), keeping the spare buffers
+    /// of both.
+    #[cfg(feature = "threads")]
+    fn adopt(&mut self, other: Refs) {
+        let old = std::mem::replace(self, other);
+        self.reuse(old);
+    }
+
+    /// Move the reference state out for the next GOP segment, keeping the frame pool here (the
+    /// calling thread imports into it).
+    #[cfg(feature = "threads")]
+    fn take_state(&mut self) -> Refs {
+        Refs {
+            dpb: std::mem::take(&mut self.dpb),
+            next_frame_num: self.next_frame_num,
+            ref_uid: self.ref_uid,
+            idr_count: self.idr_count,
+            idr_display: self.idr_display,
+            sei_sent: self.sei_sent,
+            frame_pool: Vec::new(),
+            hpel_pool: std::mem::take(&mut self.hpel_pool),
+        }
+    }
+}
+
+/// A picture with its coding decisions: type, IDR and decoding time (before the reordering offset).
+struct Pic {
+    input: Input,
+    st: SliceType,
+    idr: bool,
+    dts: i64,
+}
+
+/// Pictures that do not reference each other, coded together: one I or P picture, or the B
+/// pictures of a mini-GOP.
+struct Batch {
+    pics: Vec<Pic>,
+    /// Coding-order index of the first picture (the two-pass rate control's frame index).
+    first: usize,
+    /// The reconstruction capture generation ([`Encoder::set_recon_capture`]) when capture was on
+    /// as the batch was formed.
+    recon: Option<u64>,
+}
+
+/// A coded picture and what the rate control and the reconstruction capture take from it (in
+/// coding order, on the calling thread).
+struct Coded {
+    packet: Packet,
+    st: SliceType,
+    qpf: f64,
+    cplx: f64,
+    recon: Option<ReconFrame>,
+}
+
+pub struct Encoder {
+    ctx: Arc<Ctx>,
     rc: ratecontrol::RateControl,
     record_pass1: bool,
     pending: VecDeque<Input>,
     prev_lowres: Option<LowRes>,
     display_count: u64,
     last_idr: u64,
-    idr_count: u32,
-    next_frame_num: u32,
-    dpb: Vec<RefPic>,
+    /// Pictures given their place in coding order so far.
     coded_count: u64,
     display_pts: VecDeque<i64>,
     dts_offset: Option<i64>,
     /// First two presentation times (to derive the frame interval).
     all_pts: Vec<i64>,
+    /// Coded packets not returned yet.
     held: Vec<Packet>,
-    frame_pool: Vec<Frame>,
-    hpel_pool: Vec<[picture::Plane; 3]>,
-    sei_sent: bool,
-    slices: usize,
-    pool: Pool,
     recon: Option<Vec<ReconFrame>>,
-    ref_uid: u32,
-    max_refs: usize,
+    /// Bumped by every [`Encoder::set_recon_capture`]: pictures captured under an earlier call are
+    /// dropped, as the serial path drops them.
+    recon_epoch: u64,
+    /// The reference state of the serial path; on the GOP-parallel path the state a flush ended
+    /// with (the stream may continue from it) and the spare buffers of the calling thread.
+    refs: Refs,
+    #[cfg(feature = "threads")]
+    gops: Option<gop::Gops>,
+    /// A GOP failure not reported yet.
+    failed: Option<Error>,
 }
 
 const LOG2_MAX_FRAME_NUM: u32 = 8;
@@ -309,7 +454,7 @@ fn crf_level_kbps(crf: f32, mbw: usize, mbh: usize, fps: f64) -> u32 {
     (pixels * fps * bpp / 1000.0).ceil() as u32
 }
 
-impl Encoder {
+impl Ctx {
     /// The settings that shaped the stream, x264-style (`key=value` separated by spaces), for the
     /// user_data_unregistered SEI: a file says how it was made (`strings`, `ffprobe -show_data`).
     fn options(&self) -> String {
@@ -350,7 +495,12 @@ impl Encoder {
             u8::from(c.scenecut),
         )
     }
+}
 
+impl Encoder {
+    /// An encoder for `cfg`: checks the size (even, 2..=16384), frame rate, B-frames and bitrate,
+    /// picks the level, builds the parameter sets, the slice count and the thread pool, and takes
+    /// the GOP-parallel path when the configuration allows it ([`EncoderConfig::parallel_gops`]).
     pub fn new(mut cfg: EncoderConfig) -> Result<Self, Error> {
         if cfg.width == 0 || cfg.height == 0 || !cfg.width.is_multiple_of(2) || !cfg.height.is_multiple_of(2) || cfg.width > 16384 || cfg.height > 16384 {
             return Err(Error::InvalidDimensions(cfg.width, cfg.height));
@@ -428,8 +578,8 @@ impl Encoder {
         };
         let max_refs = if cfg.bframes > 0 { 2 } else { 1 };
         let (kbps_for_level, rc_kind, vbv) = match (&cfg.rate, &cfg.pass) {
-            (RateControl::Qp(q), _) => (None, RcKind::Qp((*q).min(51)), (None, None)),
-            (RateControl::Crf(c), _) => (Some(crf_level_kbps(*c, mbw, mbh, fps)), RcKind::Crf(c.clamp(0.0, 51.0)), (None, None)),
+            (RateControl::Qp(q), _) => (None, RcKind::Fixed(FixedQp::Qp((*q).min(51))), (None, None)),
+            (RateControl::Crf(c), _) => (Some(crf_level_kbps(*c, mbw, mbh, fps)), RcKind::Fixed(FixedQp::Crf(c.clamp(0.0, 51.0))), (None, None)),
             (RateControl::Cbr { kbps }, Pass::Second(st)) => (Some(*kbps), ratecontrol::RateControl::plan_two_pass(st, *kbps), (Some(*kbps), Some(*kbps))),
             (RateControl::Cbr { kbps }, Pass::First) => (Some(*kbps), RcKind::Abr { kbps: *kbps }, (None, None)),
             (RateControl::Cbr { kbps }, Pass::Single) => (Some(*kbps), RcKind::Abr { kbps: *kbps }, (Some(*kbps), Some(*kbps))),
@@ -488,7 +638,9 @@ impl Encoder {
         let pool = Pool {};
         let record_pass1 = cfg.pass == Pass::First;
         let rc = ratecontrol::RateControl::new(rc_kind, fps, vbv.0, vbv.1);
-        Ok(Encoder {
+        #[cfg(feature = "threads")]
+        let gops = gop::Gops::new(&cfg, rc.fixed(), threads, picture::frame_bytes(mbw * 16, mbh * 16), max_refs);
+        let ctx = Ctx {
             params,
             sps,
             sps_nal,
@@ -498,57 +650,82 @@ impl Encoder {
             lam: Lambdas::new(),
             cabac_i: Box::new(tables::cabac_init_i()),
             cabac_pb: Box::new(tables::cabac_init_pb0()),
+            slices,
+            pool,
+            max_refs,
+            cfg,
+        };
+        Ok(Encoder {
+            ctx: Arc::new(ctx),
             rc,
             record_pass1,
             pending: VecDeque::new(),
             prev_lowres: None,
             display_count: 0,
             last_idr: 0,
-            idr_count: 0,
-            next_frame_num: 0,
-            dpb: Vec::new(),
             coded_count: 0,
             display_pts: VecDeque::new(),
             dts_offset: None,
             all_pts: Vec::new(),
             held: Vec::new(),
-            frame_pool: Vec::new(),
-            hpel_pool: Vec::new(),
-            sei_sent: false,
-            slices,
-            pool,
             recon: None,
-            ref_uid: 0,
-            max_refs,
-            cfg,
+            recon_epoch: 0,
+            refs: Refs::default(),
+            #[cfg(feature = "threads")]
+            gops,
+            failed: None,
         })
     }
 
+    /// The configuration the encoder runs with (B-frames off for Baseline, `keyint` at least 1).
     pub fn config(&self) -> &EncoderConfig {
-        &self.cfg
+        &self.ctx.cfg
     }
 
     /// The SPS and PPS NAL units (without start codes).
     pub fn sps_pps(&self) -> (Vec<u8>, Vec<u8>) {
-        (self.sps_nal.clone(), self.pps_nal.clone())
+        (self.ctx.sps_nal.clone(), self.ctx.pps_nal.clone())
     }
 
     /// AVCDecoderConfigurationRecord (`avcC` box payload) for MP4 muxing (4-byte NAL lengths).
     pub fn avcc(&self) -> Vec<u8> {
-        nal::avcc(&self.sps_nal, &self.pps_nal, self.sps.profile_idc, self.sps.constraint_flags, self.sps.level_idc)
+        let c = &self.ctx;
+        nal::avcc(&c.sps_nal, &c.pps_nal, c.sps.profile_idc, c.sps.constraint_flags, c.sps.level_idc)
     }
 
-    /// Number of frames the output is delayed by (B-frame reordering).
+    /// Reordering delay in frames (B-frames): the first decoding time is this many frame intervals
+    /// before the first presentation time.
     pub fn delay(&self) -> usize {
-        self.cfg.bframes as usize
+        self.ctx.cfg.bframes as usize
     }
 
-    /// Enable capture of reconstructed pictures (for verification).
+    /// Whether this encoder codes whole GOPs concurrently (see [`EncoderConfig::parallel_gops`]).
+    pub fn gop_parallel(&self) -> bool {
+        #[cfg(feature = "threads")]
+        let on = self.gops.is_some();
+        #[cfg(not(feature = "threads"))]
+        let on = false;
+        on
+    }
+
+    /// How many packets the serial path would have returned by now, over all calls. The
+    /// GOP-parallel path returns the same packets in the same order, only later: a packet once it
+    /// and every packet before it are coded, all of them by [`Encoder::flush`]. A muxer that
+    /// interleaves by call (the export writes a group's video, then its audio) follows this count
+    /// to write the same file either way.
+    pub fn packets_due(&self) -> u64 {
+        if self.dts_offset.is_some() { self.coded_count } else { 0 }
+    }
+
+    /// Enable capture of reconstructed pictures (for verification). Pictures captured before and
+    /// not taken yet are dropped.
     pub fn set_recon_capture(&mut self, on: bool) {
         self.recon = if on { Some(Vec::new()) } else { None };
+        self.recon_epoch += 1;
     }
 
-    /// Take the reconstructed pictures captured so far (coding order).
+    /// Take the reconstructed pictures captured so far (coding order); on the GOP-parallel path,
+    /// those of the packets returned so far.
     pub fn take_recon(&mut self) -> Vec<ReconFrame> {
         self.recon.as_mut().map(std::mem::take).unwrap_or_default()
     }
@@ -558,7 +735,8 @@ impl Encoder {
         if !self.record_pass1 {
             return None;
         }
-        Some(PassStats { frames: self.rc.pass1.clone(), fps: self.cfg.fps_num as f64 / self.cfg.fps_den as f64 })
+        let c = &self.ctx.cfg;
+        Some(PassStats { frames: self.rc.pass1.clone(), fps: c.fps_num as f64 / c.fps_den as f64 })
     }
 
     /// Encode one picture. Returns zero or more packets in decoding order, or
@@ -568,12 +746,23 @@ impl Encoder {
         self.try_encode(frame, pts)
     }
 
+    /// Encode one picture: zero or more packets in decoding order. [`Error::BadFrame`] if the
+    /// planes are smaller than the configured size; [`Error::Worker`] if a GOP of the GOP-parallel
+    /// path failed (the picture was taken; packets of other GOPs come with the next call). After a
+    /// failure the next picture not scheduled yet is coded as an IDR, so no later picture refers to
+    /// the lost ones.
     pub fn try_encode(&mut self, frame: &YuvFrame, pts: i64) -> Result<Vec<Packet>, Error> {
+        #[cfg(feature = "threads")]
+        {
+            self.gop_check();
+            self.gop_make_room();
+        }
         let src = self.import(frame)?;
-        let use_aq = self.cfg.aq_strength > 0.0 && !matches!(self.cfg.rate, RateControl::Qp(_));
-        let (mbw, mbh, strength) = (self.params.mbw, self.params.mbh, self.cfg.aq_strength);
+        let cfg = &self.ctx.cfg;
+        let use_aq = cfg.aq_strength > 0.0 && !matches!(cfg.rate, RateControl::Qp(_));
+        let (mbw, mbh, strength) = (self.ctx.params.mbw, self.ctx.params.mbh, cfg.aq_strength);
         let prev = self.prev_lowres.take();
-        let (lowres, cplx, aq) = self.pool.install(|| {
+        let (lowres, cplx, aq) = self.analyse(|| {
             let lowres = LowRes::new(&src);
             let cplx = lookahead::complexity(&lowres, prev.as_ref());
             let aq = if use_aq { lookahead::aq_offsets(&src, mbw, mbh, strength) } else { Vec::new() };
@@ -587,38 +776,51 @@ impl Encoder {
             self.all_pts.push(pts);
         }
         let input = Input { frame: src, pts, display, cplx, aq };
+        #[cfg(feature = "threads")]
+        let restart = self.gop_restart();
+        #[cfg(not(feature = "threads"))]
+        let restart = false;
+        let cfg = &self.ctx.cfg;
         let since = display - self.last_idr;
-        let fps = self.cfg.fps_num as f64 / self.cfg.fps_den as f64;
+        let fps = cfg.fps_num as f64 / cfg.fps_den as f64;
         let min_gap = (fps / 2.0).max(1.0) as u64;
-        let scenecut = self.cfg.scenecut && display > 0 && since >= min_gap && cplx.inter as f64 > 0.75 * cplx.intra as f64;
-        let idr = display == 0 || since >= self.cfg.keyint as u64 || scenecut;
-        let mut out = Vec::new();
+        let scenecut = cfg.scenecut && display > 0 && since >= min_gap && cplx.inter as f64 > 0.75 * cplx.intra as f64;
+        let idr = restart || display == 0 || since >= cfg.keyint as u64 || scenecut;
         if idr {
-            self.flush_minigop(&mut out);
+            self.flush_minigop();
             self.last_idr = display;
-            self.encode_batch(vec![(input, SliceType::I, true)], &mut out);
+            self.schedule(vec![(input, SliceType::I, true)]);
         } else {
             self.pending.push_back(input);
-            if self.pending.len() > self.cfg.bframes as usize {
-                self.flush_minigop(&mut out);
+            if self.pending.len() > self.ctx.cfg.bframes as usize {
+                self.flush_minigop();
             }
         }
-        Ok(self.release(out, false))
+        self.finish_call(false)
     }
 
-    /// Encode all buffered pictures.
-    pub fn flush(&mut self) -> Vec<Packet> {
-        let mut out = Vec::new();
-        self.flush_minigop(&mut out);
-        self.release(out, true)
+    /// Encode all buffered pictures and return every packet not returned yet (the GOP-parallel
+    /// path waits for all its GOPs). The stream may continue afterwards. [`Error::Worker`] if a
+    /// GOP failed: its pictures are lost, the other packets come with the next call.
+    pub fn flush(&mut self) -> Result<Vec<Packet>, Error> {
+        #[cfg(feature = "threads")]
+        {
+            self.gop_check();
+            self.gop_restart();
+        }
+        self.flush_minigop();
+        #[cfg(feature = "threads")]
+        self.gop_finish();
+        self.finish_call(true)
     }
 
-    /// Assign decoding timestamps. The k-th coded picture gets the k-th smallest presentation time minus the
-    /// reordering delay (one frame interval when B-frames are enabled); packets are held back until that interval is known.
-    fn release(&mut self, out: Vec<Packet>, flushing: bool) -> Vec<Packet> {
-        self.held.extend(out);
+    /// The end of a call: take the GOPs done, settle the decoding-time offset, return the packets
+    /// (or report a failed GOP, keeping the packets for the next call).
+    fn finish_call(&mut self, flushing: bool) -> Result<Vec<Packet>, Error> {
+        #[cfg(feature = "threads")]
+        self.gop_poll();
         if self.dts_offset.is_none() {
-            if self.cfg.bframes == 0 {
+            if self.ctx.cfg.bframes == 0 {
                 self.dts_offset = Some(0);
             } else if self.all_pts.len() >= 2 {
                 let mut v = self.all_pts.clone();
@@ -626,11 +828,18 @@ impl Encoder {
                 self.dts_offset = Some(v[1] - v[0]);
             } else if flushing {
                 self.dts_offset = Some(0);
-            } else {
-                return Vec::new();
             }
         }
-        let off = self.dts_offset.unwrap_or(0);
+        if let Some(e) = self.failed.take() {
+            return Err(e);
+        }
+        Ok(self.release())
+    }
+
+    /// Assign decoding timestamps. The k-th coded picture gets the k-th smallest presentation time minus the
+    /// reordering delay (one frame interval when B-frames are enabled); packets are held back until that interval is known.
+    fn release(&mut self) -> Vec<Packet> {
+        let Some(off) = self.dts_offset else { return Vec::new() };
         let mut res = std::mem::take(&mut self.held);
         for p in res.iter_mut() {
             p.dts -= off;
@@ -638,18 +847,77 @@ impl Encoder {
         res
     }
 
-    fn flush_minigop(&mut self, out: &mut Vec<Packet>) {
+    /// Run the analysis of an input picture on the encoder's pool or, on the GOP-parallel path, on
+    /// a small pool of its own: there the encoder's pool is busy with the slices of the GOPs being
+    /// coded and the analysis would wait behind them, starving the GOPs of input. The results do
+    /// not depend on the pool.
+    fn analyse<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        #[cfg(feature = "threads")]
+        if let Some(p) = self.gops.as_ref().and_then(gop::Gops::analysis_pool) {
+            return p.install(f);
+        }
+        self.ctx.pool.install(f)
+    }
+
+    /// End the pending mini-GOP: its last picture is scheduled as a P picture, then the pictures
+    /// before it as B pictures, together in one batch.
+    fn flush_minigop(&mut self) {
         let Some(p) = self.pending.pop_back() else { return };
+        // the B pictures stay pending (and counted in the GOP-parallel picture budget) until the
+        // P picture is scheduled
+        self.schedule(vec![(p, SliceType::P, false)]);
         let bs: Vec<(Input, SliceType, bool)> = self.pending.drain(..).map(|b| (b, SliceType::B, false)).collect();
-        self.encode_batch(vec![(p, SliceType::P, false)], out);
         if !bs.is_empty() {
             // B-frames are non-reference pictures: encode them all concurrently.
-            self.encode_batch(bs, out);
+            self.schedule(bs);
         }
     }
 
+    /// Give pictures their place in coding order, with their decoding times, and code them: now on
+    /// the serial path, with their GOP on the GOP-parallel one.
+    fn schedule(&mut self, pics: Vec<(Input, SliceType, bool)>) {
+        let first = self.coded_count as usize;
+        let mut batch = Vec::with_capacity(pics.len());
+        for (input, st, idr) in pics {
+            // decoding timestamp base: the k-th smallest presentation time (offset applied in `release`)
+            // One display time is queued per input picture, so the queue is never empty here.
+            let pos = self.display_pts.iter().enumerate().min_by_key(|(_, p)| **p).map(|(i, _)| i);
+            let dts = pos.and_then(|p| self.display_pts.remove(p)).unwrap_or(input.pts);
+            self.coded_count += 1;
+            batch.push(Pic { input, st, idr, dts });
+        }
+        let batch = Batch { pics: batch, first, recon: self.recon.is_some().then_some(self.recon_epoch) };
+        #[cfg(feature = "threads")]
+        if self.gops.is_some() {
+            self.gop_schedule(batch);
+            return;
+        }
+        let recon = batch.recon;
+        let rc = &mut self.rc;
+        for c in encode_batch(&self.ctx, &mut self.refs, &mut |st, cplx, i| rc.frame_qp(st, cplx, i), batch) {
+            self.deliver(c, recon);
+        }
+    }
+
+    /// Take a coded picture in coding order: rate-control statistics, reconstruction, packet.
+    fn deliver(&mut self, c: Coded, recon: Option<u64>) {
+        let bits = c.packet.data.len() as u64 * 8;
+        self.rc.update(c.st, c.qpf, c.cplx, bits);
+        if self.record_pass1 {
+            self.rc.record_pass1(c.st, c.qpf, c.cplx, bits);
+        }
+        if let (Some(frame), Some(rv)) = (c.recon, self.recon.as_mut())
+            && recon == Some(self.recon_epoch)
+        {
+            rv.push(frame);
+        }
+        self.held.push(c.packet);
+    }
+
+    /// Copy an input picture into a padded picture buffer, repeating its last column and row into
+    /// the padding; [`Error::BadFrame`] when a stride or plane is too small for the configured size.
     fn import(&mut self, f: &YuvFrame) -> Result<Frame, Error> {
-        let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
+        let (w, h) = (self.ctx.cfg.width as usize, self.ctx.cfg.height as usize);
         let (cw, ch) = (w / 2, h / 2);
         if f.y_stride < w
             || f.uv_stride < cw
@@ -659,7 +927,7 @@ impl Encoder {
         {
             return Err(Error::BadFrame);
         }
-        let mut fr = self.new_frame();
+        let mut fr = self.refs.new_frame(&self.ctx.params);
         for (pl, src, stride, pw, ph) in [(&mut fr.y, f.y, f.y_stride, w, h), (&mut fr.u, f.u, f.uv_stride, cw, ch), (&mut fr.v, f.v, f.uv_stride, cw, ch)] {
             let aw = pl.w;
             for y in 0..pl.h {
@@ -672,306 +940,291 @@ impl Encoder {
         }
         Ok(fr)
     }
-
-    fn new_frame(&mut self) -> Frame {
-        self.frame_pool.pop().unwrap_or_else(|| Frame::new(self.params.mbw * 16, self.params.mbh * 16))
-    }
-
-    fn recycle(&mut self, f: Frame) {
-        if self.frame_pool.len() < 8 {
-            self.frame_pool.push(f);
-        }
-    }
-
-    /// Encode a batch of pictures that do not reference each other (a single I/P picture, or the B-frames of a
-    /// mini-GOP). Slices of all pictures in the batch are encoded in parallel.
-    fn encode_batch(&mut self, pics: Vec<(Input, SliceType, bool)>, out: &mut Vec<Packet>) {
-        struct Job {
-            input: Input,
-            st: SliceType,
-            idr: bool,
-            qpf: f64,
-            qp: u8,
-            cplx: f64,
-            aq: Vec<i8>,
-            hdr: SliceHeader,
-            nal_ref_idc: u8,
-            l0: Option<usize>,
-            l1: Option<usize>,
-            poc: i32,
-            rec: Option<Frame>,
-            mbs: Vec<MbInfo>,
-            results: Vec<SliceOut>,
-        }
-        let mut jobs: Vec<Job> = Vec::with_capacity(pics.len());
-        for (input, mut st, idr) in pics {
-            if idr {
-                let old: Vec<RefPic> = std::mem::take(&mut self.dpb);
-                for r in old {
-                    self.recycle_ref(r);
-                }
-                self.next_frame_num = 0;
-            }
-            let poc = 2 * (input.display as i64 - self.last_idr as i64) as i32;
-            let by_id = self.dpb.iter().enumerate().max_by_key(|(_, r)| r.id).map(|(i, _)| i);
-            let (mut l0, mut l1) = match st {
-                SliceType::I => (None, None),
-                SliceType::P => (by_id, None),
-                SliceType::B => (
-                    self.dpb.iter().enumerate().filter(|(_, r)| r.poc < poc).max_by_key(|(_, r)| r.poc).map(|(i, _)| i),
-                    self.dpb.iter().enumerate().filter(|(_, r)| r.poc > poc).min_by_key(|(_, r)| r.poc).map(|(i, _)| i),
-                ),
-            };
-            if st == SliceType::B && (l0.is_none() || l1.is_none()) {
-                st = SliceType::P;
-                l0 = by_id;
-                l1 = None;
-            }
-            if st == SliceType::P && l0.is_none() {
-                st = SliceType::I;
-            }
-            let is_ref = st != SliceType::B;
-            let cplx = match st {
-                SliceType::I => input.cplx.intra,
-                _ => input.cplx.inter,
-            } as f64;
-            let qpf = self.rc.frame_qp(st, cplx, self.coded_count as usize + jobs.len());
-            let qp = qpf.round().clamp(0.0, 51.0) as u8;
-            let aq: Vec<i8> = if input.aq.is_empty() {
-                Vec::new()
-            } else {
-                input.aq.iter().map(|&o| ((qpf + o as f64).round().clamp(0.0, 51.0) as i32 - qp as i32) as i8).collect()
-            };
-            let nal_ref_idc = if idr {
-                3
-            } else if is_ref {
-                2
-            } else {
-                0
-            };
-            let hdr = SliceHeader {
-                first_mb: 0,
-                slice_type: st,
-                nal_ref_idc,
-                idr,
-                idr_pic_id: self.idr_count % 2,
-                frame_num: self.next_frame_num % (1 << LOG2_MAX_FRAME_NUM),
-                log2_max_frame_num: LOG2_MAX_FRAME_NUM,
-                poc_lsb: (poc as u32) % (1 << LOG2_MAX_POC_LSB),
-                log2_max_poc_lsb: LOG2_MAX_POC_LSB,
-                l0_modification: None,
-                cabac: self.params.cabac,
-                slice_qp: qp as i32,
-                pic_init_qp: 26,
-                disable_deblocking: if self.slices > 1 { 2 } else { 0 },
-                alpha_offset_div2: 0,
-                beta_offset_div2: 0,
-            };
-            let rec = self.new_frame();
-            let mbs = vec![MbInfo::default(); self.params.mbw * self.params.mbh];
-            jobs.push(Job { input, st, idr, qpf, qp, cplx, aq, hdr, nal_ref_idc, l0, l1, poc, rec: Some(rec), mbs, results: Vec::new() });
-        }
-
-        // ---- parallel slice encoding (+ deblocking of each slice band)
-        let (mbw, mbh) = (self.params.mbw, self.params.mbh);
-        let n = self.slices;
-        let bounds: Vec<(usize, usize)> = (0..n).map(|s| (s * mbh / n, (s + 1) * mbh / n)).filter(|(a, b)| b > a).collect();
-        let capture = self.recon.is_some();
-        let mut slice_results: Vec<Vec<SliceOut>> = (0..jobs.len()).map(|_| Vec::new()).collect();
-        // Every job carries its reconstruction buffer (`rec: Some(..)` above).
-        let mut bufs: Vec<(Frame, Vec<MbInfo>)> = jobs.iter_mut().filter_map(|j| Some((j.rec.take()?, std::mem::take(&mut j.mbs)))).collect();
-        {
-            let this = &*self;
-            let fencs: Vec<FrameEnc> = jobs
-                .iter()
-                .map(|j| FrameEnc {
-                    p: &this.params,
-                    qt: &this.qt,
-                    cost_tab: &this.cost_tab,
-                    st: j.hdr.slice_type,
-                    src: &j.input.frame,
-                    l0: j.l0.map(|i| &this.dpb[i]),
-                    l1: j.l1.map(|i| &this.dpb[i]),
-                    qp: j.qp,
-                    aq: &j.aq,
-                    hdr: j.hdr.clone(),
-                    nal_ref_idc: j.nal_ref_idc,
-                    nal_type: if j.idr { NAL_IDR } else { NAL_SLICE },
-                    cabac_table: if j.hdr.slice_type == SliceType::I { &this.cabac_i } else { &this.cabac_pb },
-                    lam: &this.lam,
-                })
-                .collect();
-            let dps: Vec<DeblockParams> = jobs
-                .iter()
-                .map(|j| DeblockParams {
-                    alpha_offset: 0,
-                    beta_offset: 0,
-                    chroma_qp_offset: this.params.chroma_qp_offset,
-                    ref_ids: [j.l0.map_or(-1, |i| this.dpb[i].id as i32), j.l1.map_or(-1, |i| this.dpb[i].id as i32)],
-                })
-                .collect();
-            let deblock: Vec<bool> = jobs.iter().map(|j| j.hdr.slice_type != SliceType::B || capture).collect();
-            type Task<'t> = (usize, usize, usize, usize, &'t mut [u8], &'t mut [u8], &'t mut [u8], &'t mut [MbInfo]);
-            let mut tasks: Vec<Task> = Vec::new();
-            for (pi, (rec, mbs)) in bufs.iter_mut().enumerate() {
-                let ys = rec.y.stride;
-                let cs = rec.u.stride;
-                let mut yrest = &mut rec.y.data[LUMA_PAD * ys..];
-                let mut urest = &mut rec.u.data[CHROMA_PAD * cs..];
-                let mut vrest = &mut rec.v.data[CHROMA_PAD * cs..];
-                let mut mrest = &mut mbs[..];
-                for (k, &(r0, r1)) in bounds.iter().enumerate() {
-                    let rows = r1 - r0;
-                    let (a, b) = std::mem::take(&mut yrest).split_at_mut(rows * 16 * ys);
-                    yrest = b;
-                    let (ua, ub) = std::mem::take(&mut urest).split_at_mut(rows * 8 * cs);
-                    urest = ub;
-                    let (va, vb) = std::mem::take(&mut vrest).split_at_mut(rows * 8 * cs);
-                    vrest = vb;
-                    let (ma, mb) = std::mem::take(&mut mrest).split_at_mut(rows * mbw);
-                    mrest = mb;
-                    tasks.push((pi, k, r0, r1, a, ua, va, ma));
-                }
-            }
-            let ys = jobs_stride_y(mbw);
-            let cs = jobs_stride_c(mbw);
-            let run = |(pi, k, r0, r1, y, u, v, m): Task| -> (usize, usize, SliceOut) {
-                let out = SliceEnc::new(&fencs[pi], Band { y: &mut *y, u: &mut *u, v: &mut *v, ys, cs }, &mut *m, r0, r1, k as u16).encode();
-                if deblock[pi] {
-                    let mut by = BandPlane { data: y, stride: ys, pad: LUMA_PAD };
-                    let mut bu = BandPlane { data: u, stride: cs, pad: CHROMA_PAD };
-                    let mut bv = BandPlane { data: v, stride: cs, pad: CHROMA_PAD };
-                    deblock_band(&mut by, &mut bu, &mut bv, m, mbw, r1 - r0, &dps[pi]);
-                }
-                (pi, k, out)
-            };
-            #[cfg(feature = "threads")]
-            let results: Vec<(usize, usize, SliceOut)> = {
-                use rayon::prelude::*;
-                if tasks.len() > 1 { this.pool.install(|| tasks.into_par_iter().map(run).collect()) } else { tasks.into_iter().map(run).collect() }
-            };
-            #[cfg(not(feature = "threads"))]
-            let results: Vec<(usize, usize, SliceOut)> = tasks.into_iter().map(run).collect();
-            let mut results = results;
-            results.sort_by_key(|r| (r.0, r.1));
-            for (pi, _, r) in results {
-                slice_results[pi].push(r);
-            }
-        }
-        for ((j, (rec, mbs)), res) in jobs.iter_mut().zip(bufs).zip(slice_results) {
-            j.rec = Some(rec);
-            j.mbs = mbs;
-            j.results = res;
-        }
-
-        // ---- finalise each picture in coding order
-        for job in jobs {
-            let Job { input, st, idr, qpf, qp, cplx, hdr: _, nal_ref_idc: _, l0: _, l1: _, poc, rec, mbs, results, aq: _ } = job;
-            let Some(mut rec) = rec else { continue };
-            let is_ref = st != SliceType::B;
-            let annexb = self.cfg.format == PacketFormat::AnnexB;
-            let mut nals: Vec<Vec<u8>> = Vec::new();
-            if annexb && self.cfg.aud {
-                let t = match st {
-                    SliceType::I => 0,
-                    SliceType::P => 1,
-                    SliceType::B => 2,
-                };
-                nals.push(nal::nal(0, NAL_AUD, &nal::aud_rbsp(t)));
-            }
-            if idr && annexb {
-                nals.push(self.sps_nal.clone());
-                nals.push(self.pps_nal.clone());
-            }
-            if !self.sei_sent {
-                self.sei_sent = true;
-                let text = format!("filmcraft-h264enc {} - clean-room H.264 encoder - options: {}", env!("CARGO_PKG_VERSION"), self.options());
-                nals.push(nal::nal(0, NAL_SEI, &nal::sei_user_data_rbsp(&text)));
-                if self.cfg.mastering_display.is_some() || self.cfg.content_light.is_some() {
-                    nals.push(nal::nal(0, NAL_SEI, &nal::sei_hdr_rbsp(self.cfg.mastering_display.as_ref(), self.cfg.content_light)));
-                }
-            }
-            for r in results {
-                nals.push(r.nal);
-            }
-            let mut data = Vec::with_capacity(nals.iter().map(|n| n.len() + 4).sum());
-            for n in &nals {
-                if annexb {
-                    data.extend_from_slice(&[0, 0, 0, 1]);
-                } else {
-                    data.extend_from_slice(&(n.len() as u32).to_be_bytes());
-                }
-                data.extend_from_slice(n);
-            }
-            let total_bits = data.len() as u64 * 8;
-            self.rc.update(st, qpf, cplx, total_bits);
-            if self.record_pass1 {
-                self.rc.record_pass1(st, qpf, cplx, total_bits);
-            }
-            if let Some(rv) = self.recon.as_mut() {
-                let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
-                let mut y = Vec::with_capacity(w * h);
-                let mut u = Vec::with_capacity(w * h / 4);
-                let mut v = Vec::with_capacity(w * h / 4);
-                rec.y.copy_out(w, h, &mut y);
-                rec.u.copy_out(w / 2, h / 2, &mut u);
-                rec.v.copy_out(w / 2, h / 2, &mut v);
-                rv.push(ReconFrame { pts: input.pts, y, u, v });
-            }
-            if is_ref {
-                let hp = self.hpel_pool.pop();
-                let hpel = self.pool.install(|| {
-                    rec.extend_edges();
-                    build_hpel(&rec.y, hp)
-                });
-                self.ref_uid += 1;
-                let rp = RefPic { frame: rec, hpel, mbs, poc, id: self.ref_uid };
-                if self.dpb.len() >= self.max_refs {
-                    // sliding window: drop the oldest
-                    if let Some(oldest) = self.dpb.iter().enumerate().min_by_key(|(_, r)| r.id).map(|(i, _)| i) {
-                        let r = self.dpb.remove(oldest);
-                        self.recycle_ref(r);
-                    }
-                }
-                self.dpb.push(rp);
-                self.next_frame_num = (self.next_frame_num + 1) % (1 << LOG2_MAX_FRAME_NUM);
-            } else {
-                self.recycle(rec);
-            }
-            if idr {
-                self.idr_count += 1;
-            }
-            // decoding timestamp base: the k-th smallest presentation time (offset applied in `release`)
-            // One display time is queued per input picture, so the queue is never empty here.
-            let pos = self.display_pts.iter().enumerate().min_by_key(|(_, p)| **p).map(|(i, _)| i);
-            let dts_base = pos.and_then(|p| self.display_pts.remove(p)).unwrap_or(input.pts);
-            self.coded_count += 1;
-            let frame_type = if idr {
-                FrameType::Idr
-            } else {
-                match st {
-                    SliceType::I => FrameType::I,
-                    SliceType::P => FrameType::P,
-                    SliceType::B => FrameType::B,
-                }
-            };
-            self.recycle(input.frame);
-            out.push(Packet { data, pts: input.pts, dts: dts_base, keyframe: idr, frame_type, qp });
-        }
-    }
-
-    fn recycle_ref(&mut self, r: RefPic) {
-        self.recycle(r.frame);
-        if self.hpel_pool.len() < 4 {
-            self.hpel_pool.push(r.hpel);
-        }
-    }
 }
 
+/// Encode a batch of pictures that do not reference each other (a single I/P picture, or the B-frames of a
+/// mini-GOP) against the reference state `refs`, which it updates. Slices of all pictures in the batch are
+/// encoded in parallel. `frame_qp(type, complexity, coding index)` gives each picture's QP, all of them
+/// before any is coded; the caller applies the rate-control update of each [`Coded`] picture in order.
+fn encode_batch(ctx: &Ctx, refs: &mut Refs, frame_qp: &mut dyn FnMut(SliceType, f64, usize) -> f64, batch: Batch) -> Vec<Coded> {
+    struct Job {
+        input: Input,
+        st: SliceType,
+        idr: bool,
+        dts: i64,
+        qpf: f64,
+        qp: u8,
+        cplx: f64,
+        aq: Vec<i8>,
+        hdr: SliceHeader,
+        nal_ref_idc: u8,
+        l0: Option<usize>,
+        l1: Option<usize>,
+        poc: i32,
+        rec: Option<Frame>,
+        mbs: Vec<MbInfo>,
+        results: Vec<SliceOut>,
+    }
+    let Batch { pics, first, recon } = batch;
+    let capture = recon.is_some();
+    let mut jobs: Vec<Job> = Vec::with_capacity(pics.len());
+    for Pic { input, mut st, idr, dts } in pics {
+        if idr {
+            let old: Vec<RefPic> = std::mem::take(&mut refs.dpb);
+            for r in old {
+                refs.recycle_ref(r);
+            }
+            refs.next_frame_num = 0;
+            refs.idr_display = input.display;
+        }
+        let poc = 2 * (input.display as i64 - refs.idr_display as i64) as i32;
+        let dpb = &refs.dpb;
+        let by_id = dpb.iter().enumerate().max_by_key(|(_, r)| r.id).map(|(i, _)| i);
+        let (mut l0, mut l1) = match st {
+            SliceType::I => (None, None),
+            SliceType::P => (by_id, None),
+            SliceType::B => (
+                dpb.iter().enumerate().filter(|(_, r)| r.poc < poc).max_by_key(|(_, r)| r.poc).map(|(i, _)| i),
+                dpb.iter().enumerate().filter(|(_, r)| r.poc > poc).min_by_key(|(_, r)| r.poc).map(|(i, _)| i),
+            ),
+        };
+        if st == SliceType::B && (l0.is_none() || l1.is_none()) {
+            st = SliceType::P;
+            l0 = by_id;
+            l1 = None;
+        }
+        if st == SliceType::P && l0.is_none() {
+            st = SliceType::I;
+        }
+        let is_ref = st != SliceType::B;
+        let cplx = match st {
+            SliceType::I => input.cplx.intra,
+            _ => input.cplx.inter,
+        } as f64;
+        let qpf = frame_qp(st, cplx, first + jobs.len());
+        let qp = qpf.round().clamp(0.0, 51.0) as u8;
+        let aq: Vec<i8> = if input.aq.is_empty() {
+            Vec::new()
+        } else {
+            input.aq.iter().map(|&o| ((qpf + o as f64).round().clamp(0.0, 51.0) as i32 - qp as i32) as i8).collect()
+        };
+        let nal_ref_idc = if idr {
+            3
+        } else if is_ref {
+            2
+        } else {
+            0
+        };
+        let hdr = SliceHeader {
+            first_mb: 0,
+            slice_type: st,
+            nal_ref_idc,
+            idr,
+            idr_pic_id: refs.idr_count % 2,
+            frame_num: refs.next_frame_num % (1 << LOG2_MAX_FRAME_NUM),
+            log2_max_frame_num: LOG2_MAX_FRAME_NUM,
+            poc_lsb: (poc as u32) % (1 << LOG2_MAX_POC_LSB),
+            log2_max_poc_lsb: LOG2_MAX_POC_LSB,
+            l0_modification: None,
+            cabac: ctx.params.cabac,
+            slice_qp: qp as i32,
+            pic_init_qp: 26,
+            disable_deblocking: if ctx.slices > 1 { 2 } else { 0 },
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
+        };
+        let rec = refs.new_frame(&ctx.params);
+        let mbs = vec![MbInfo::default(); ctx.params.mbw * ctx.params.mbh];
+        jobs.push(Job { input, st, idr, dts, qpf, qp, cplx, aq, hdr, nal_ref_idc, l0, l1, poc, rec: Some(rec), mbs, results: Vec::new() });
+    }
+
+    // ---- parallel slice encoding (+ deblocking of each slice band)
+    let (mbw, mbh) = (ctx.params.mbw, ctx.params.mbh);
+    let n = ctx.slices;
+    let bounds: Vec<(usize, usize)> = (0..n).map(|s| (s * mbh / n, (s + 1) * mbh / n)).filter(|(a, b)| b > a).collect();
+    let mut slice_results: Vec<Vec<SliceOut>> = (0..jobs.len()).map(|_| Vec::new()).collect();
+    // Every job carries its reconstruction buffer (`rec: Some(..)` above).
+    let mut bufs: Vec<(Frame, Vec<MbInfo>)> = jobs.iter_mut().filter_map(|j| Some((j.rec.take()?, std::mem::take(&mut j.mbs)))).collect();
+    {
+        let this = ctx;
+        let dpb = &refs.dpb;
+        let fencs: Vec<FrameEnc> = jobs
+            .iter()
+            .map(|j| FrameEnc {
+                p: &this.params,
+                qt: &this.qt,
+                cost_tab: &this.cost_tab,
+                st: j.hdr.slice_type,
+                src: &j.input.frame,
+                l0: j.l0.map(|i| &dpb[i]),
+                l1: j.l1.map(|i| &dpb[i]),
+                qp: j.qp,
+                aq: &j.aq,
+                hdr: j.hdr.clone(),
+                nal_ref_idc: j.nal_ref_idc,
+                nal_type: if j.idr { NAL_IDR } else { NAL_SLICE },
+                cabac_table: if j.hdr.slice_type == SliceType::I { &this.cabac_i } else { &this.cabac_pb },
+                lam: &this.lam,
+            })
+            .collect();
+        let dps: Vec<DeblockParams> = jobs
+            .iter()
+            .map(|j| DeblockParams {
+                alpha_offset: 0,
+                beta_offset: 0,
+                chroma_qp_offset: this.params.chroma_qp_offset,
+                ref_ids: [j.l0.map_or(-1, |i| dpb[i].id as i32), j.l1.map_or(-1, |i| dpb[i].id as i32)],
+            })
+            .collect();
+        let deblock: Vec<bool> = jobs.iter().map(|j| j.hdr.slice_type != SliceType::B || capture).collect();
+        type Task<'t> = (usize, usize, usize, usize, &'t mut [u8], &'t mut [u8], &'t mut [u8], &'t mut [MbInfo]);
+        let mut tasks: Vec<Task> = Vec::new();
+        for (pi, (rec, mbs)) in bufs.iter_mut().enumerate() {
+            let ys = rec.y.stride;
+            let cs = rec.u.stride;
+            let mut yrest = &mut rec.y.data[LUMA_PAD * ys..];
+            let mut urest = &mut rec.u.data[CHROMA_PAD * cs..];
+            let mut vrest = &mut rec.v.data[CHROMA_PAD * cs..];
+            let mut mrest = &mut mbs[..];
+            for (k, &(r0, r1)) in bounds.iter().enumerate() {
+                let rows = r1 - r0;
+                let (a, b) = std::mem::take(&mut yrest).split_at_mut(rows * 16 * ys);
+                yrest = b;
+                let (ua, ub) = std::mem::take(&mut urest).split_at_mut(rows * 8 * cs);
+                urest = ub;
+                let (va, vb) = std::mem::take(&mut vrest).split_at_mut(rows * 8 * cs);
+                vrest = vb;
+                let (ma, mb) = std::mem::take(&mut mrest).split_at_mut(rows * mbw);
+                mrest = mb;
+                tasks.push((pi, k, r0, r1, a, ua, va, ma));
+            }
+        }
+        let ys = jobs_stride_y(mbw);
+        let cs = jobs_stride_c(mbw);
+        let run = |(pi, k, r0, r1, y, u, v, m): Task| -> (usize, usize, SliceOut) {
+            let out = SliceEnc::new(&fencs[pi], Band { y: &mut *y, u: &mut *u, v: &mut *v, ys, cs }, &mut *m, r0, r1, k as u16).encode();
+            if deblock[pi] {
+                let mut by = BandPlane { data: y, stride: ys, pad: LUMA_PAD };
+                let mut bu = BandPlane { data: u, stride: cs, pad: CHROMA_PAD };
+                let mut bv = BandPlane { data: v, stride: cs, pad: CHROMA_PAD };
+                deblock_band(&mut by, &mut bu, &mut bv, m, mbw, r1 - r0, &dps[pi]);
+            }
+            (pi, k, out)
+        };
+        #[cfg(feature = "threads")]
+        let results: Vec<(usize, usize, SliceOut)> = {
+            use rayon::prelude::*;
+            if tasks.len() > 1 { this.pool.install(|| tasks.into_par_iter().map(run).collect()) } else { tasks.into_iter().map(run).collect() }
+        };
+        #[cfg(not(feature = "threads"))]
+        let results: Vec<(usize, usize, SliceOut)> = tasks.into_iter().map(run).collect();
+        let mut results = results;
+        results.sort_by_key(|r| (r.0, r.1));
+        for (pi, _, r) in results {
+            slice_results[pi].push(r);
+        }
+    }
+    for ((j, (rec, mbs)), res) in jobs.iter_mut().zip(bufs).zip(slice_results) {
+        j.rec = Some(rec);
+        j.mbs = mbs;
+        j.results = res;
+    }
+
+    // ---- finalise each picture in coding order
+    let cfg = &ctx.cfg;
+    let mut coded = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        let Job { input, st, idr, dts, qpf, qp, cplx, hdr: _, nal_ref_idc: _, l0: _, l1: _, poc, rec, mbs, results, aq: _ } = job;
+        let Some(mut rec) = rec else { continue };
+        let is_ref = st != SliceType::B;
+        let annexb = cfg.format == PacketFormat::AnnexB;
+        let mut nals: Vec<Vec<u8>> = Vec::new();
+        if annexb && cfg.aud {
+            let t = match st {
+                SliceType::I => 0,
+                SliceType::P => 1,
+                SliceType::B => 2,
+            };
+            nals.push(nal::nal(0, NAL_AUD, &nal::aud_rbsp(t)));
+        }
+        if idr && annexb {
+            nals.push(ctx.sps_nal.clone());
+            nals.push(ctx.pps_nal.clone());
+        }
+        if !refs.sei_sent {
+            refs.sei_sent = true;
+            let text = format!("filmcraft-h264enc {} - clean-room H.264 encoder - options: {}", env!("CARGO_PKG_VERSION"), ctx.options());
+            nals.push(nal::nal(0, NAL_SEI, &nal::sei_user_data_rbsp(&text)));
+            if cfg.mastering_display.is_some() || cfg.content_light.is_some() {
+                nals.push(nal::nal(0, NAL_SEI, &nal::sei_hdr_rbsp(cfg.mastering_display.as_ref(), cfg.content_light)));
+            }
+        }
+        for r in results {
+            nals.push(r.nal);
+        }
+        let mut data = Vec::with_capacity(nals.iter().map(|n| n.len() + 4).sum());
+        for n in &nals {
+            if annexb {
+                data.extend_from_slice(&[0, 0, 0, 1]);
+            } else {
+                data.extend_from_slice(&(n.len() as u32).to_be_bytes());
+            }
+            data.extend_from_slice(n);
+        }
+        let recon = capture.then(|| {
+            let (w, h) = (cfg.width as usize, cfg.height as usize);
+            let mut y = Vec::with_capacity(w * h);
+            let mut u = Vec::with_capacity(w * h / 4);
+            let mut v = Vec::with_capacity(w * h / 4);
+            rec.y.copy_out(w, h, &mut y);
+            rec.u.copy_out(w / 2, h / 2, &mut u);
+            rec.v.copy_out(w / 2, h / 2, &mut v);
+            ReconFrame { pts: input.pts, y, u, v }
+        });
+        if is_ref {
+            let hp = refs.hpel_pool.pop();
+            let hpel = ctx.pool.install(|| {
+                rec.extend_edges();
+                build_hpel(&rec.y, hp)
+            });
+            refs.ref_uid += 1;
+            let rp = RefPic { frame: rec, hpel, mbs, poc, id: refs.ref_uid };
+            if refs.dpb.len() >= ctx.max_refs {
+                // sliding window: drop the oldest
+                if let Some(oldest) = refs.dpb.iter().enumerate().min_by_key(|(_, r)| r.id).map(|(i, _)| i) {
+                    let r = refs.dpb.remove(oldest);
+                    refs.recycle_ref(r);
+                }
+            }
+            refs.dpb.push(rp);
+            refs.next_frame_num = (refs.next_frame_num + 1) % (1 << LOG2_MAX_FRAME_NUM);
+        } else {
+            refs.recycle(rec);
+        }
+        if idr {
+            refs.idr_count += 1;
+        }
+        let frame_type = if idr {
+            FrameType::Idr
+        } else {
+            match st {
+                SliceType::I => FrameType::I,
+                SliceType::P => FrameType::P,
+                SliceType::B => FrameType::B,
+            }
+        };
+        refs.recycle(input.frame);
+        coded.push(Coded { packet: Packet { data, pts: input.pts, dts, keyframe: idr, frame_type, qp }, st, qpf, cplx, recon });
+    }
+    coded
+}
+
+/// Row stride of a padded luma plane `mbw` macroblocks wide.
 fn jobs_stride_y(mbw: usize) -> usize {
     mbw * 16 + 2 * LUMA_PAD
 }
 
+/// Row stride of a padded chroma plane `mbw` macroblocks wide.
 fn jobs_stride_c(mbw: usize) -> usize {
     mbw * 8 + 2 * CHROMA_PAD
 }

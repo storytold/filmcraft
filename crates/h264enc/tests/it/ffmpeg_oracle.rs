@@ -26,6 +26,7 @@ struct Run {
     recon: Vec<ReconFrame>,
 }
 
+/// Encode `frames` with `c`, capturing the reconstruction (sorted into display order).
 fn encode(c: EncoderConfig, frames: &[Yuv]) -> Run {
     let mut enc = Encoder::new(c).unwrap();
     enc.set_recon_capture(true);
@@ -33,7 +34,7 @@ fn encode(c: EncoderConfig, frames: &[Yuv]) -> Run {
     for (i, f) in frames.iter().enumerate() {
         packets.extend(enc.encode(&f.frame(), i as i64).unwrap());
     }
-    packets.extend(enc.flush());
+    packets.extend(enc.flush().unwrap());
     let mut recon = enc.take_recon();
     recon.sort_by_key(|r| r.pts);
     let stream = packets.iter().flat_map(|p| p.data.iter().copied()).collect();
@@ -213,6 +214,8 @@ fn vbr_opening_second_is_not_starved() {
     assert!((kbps - 2000.0).abs() / 2000.0 <= 0.10, "{kbps:.1} kbps vs target 2000");
 }
 
+/// A two-pass VBR encode decodes cleanly and lands within 10 % of its 800 kb/s target, with the
+/// first-pass statistics going through their text form.
 #[test]
 fn two_pass_vbr_hits_target() {
     if ffmpeg().is_none() {
@@ -227,7 +230,7 @@ fn two_pass_vbr_hits_target() {
     for (i, f) in frames.iter().enumerate() {
         enc.encode(&f.frame(), i as i64).unwrap();
     }
-    enc.flush();
+    enc.flush().unwrap();
     let stats = enc.pass_stats().unwrap();
     assert_eq!(stats.frames.len(), n);
     let p1: u64 = stats.frames.iter().map(|f| f.bits).sum();
@@ -242,6 +245,7 @@ fn two_pass_vbr_hits_target() {
     assert!((k - 800.0).abs() / 800.0 <= 0.10, "2-pass: {k:.1} kbps vs 800");
 }
 
+/// ffprobe reports the frame types in display order as encoded, B pictures included.
 #[test]
 fn bframes_order_via_ffprobe() {
     if ffmpeg().is_none() || ffprobe().is_none() {
@@ -278,6 +282,8 @@ fn bframes_order_via_ffprobe() {
     assert!(theirs.contains(&'B'));
 }
 
+/// Length-prefixed packets turned into Annex B with the avcC's parameter sets decode to the
+/// reconstruction.
 #[test]
 fn length_prefixed_with_avcc() {
     if ffmpeg().is_none() {
@@ -301,7 +307,7 @@ fn length_prefixed_with_avcc() {
     for (i, f) in frames.iter().enumerate() {
         packets.extend(enc.encode(&f.frame(), i as i64).unwrap());
     }
-    packets.extend(enc.flush());
+    packets.extend(enc.flush().unwrap());
     // convert to Annex-B using the avcC parameter sets
     let mut stream = Vec::new();
     for nal in [sps, pps] {
