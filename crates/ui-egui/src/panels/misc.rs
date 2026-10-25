@@ -13,8 +13,11 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let redo: Vec<String> = app.session.history.redo.iter().rev().map(|h| h.0.clone()).collect();
     let mut target: Option<i64> = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut child, |ui| {
-        let row = |ui: &mut egui::Ui, label: &str, current: bool, dim: bool| -> bool {
+        // automation ids: `history.open`, `history.step.<n>` (1 = the oldest edit) and `history.redo.<n>`
+        let mut row = |ui: &mut egui::Ui, id: String, label: &str, current: bool, dim: bool| -> bool {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+            // the list scrolls: rows out of view are not offered, a partly shown one only where it shows
+            app.auto.add_visible(&id, &resp, label);
             if current {
                 ui.painter().rect_filled(r, 0.0, t.row_selected);
             } else if resp.hovered() {
@@ -23,16 +26,16 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), if dim { t.text_faint } else { t.text });
             resp.clicked()
         };
-        if row(ui, tl!("Open"), undo.is_empty(), false) {
+        if row(ui, "history.open".into(), tl!("Open"), undo.is_empty(), false) {
             target = Some(-(undo.len() as i64));
         }
         for (i, l) in undo.iter().enumerate() {
-            if row(ui, crate::i18n::t(l), i + 1 == undo.len(), false) {
+            if row(ui, format!("history.step.{}", i + 1), crate::i18n::t(l), i + 1 == undo.len(), false) {
                 target = Some(i as i64 + 1 - undo.len() as i64);
             }
         }
         for (i, l) in redo.iter().enumerate() {
-            if row(ui, crate::i18n::t(l), false, true) {
+            if row(ui, format!("history.redo.{}", i + 1), crate::i18n::t(l), false, true) {
                 target = Some(i as i64 + 1);
             }
         }

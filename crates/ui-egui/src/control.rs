@@ -8,6 +8,8 @@
 //! - `engine.commands`: list engine commands; `ui.menu.list`: menu tree with enablement
 //! - `ui.inspect`: UI state + every registered widget (`elements`: id, label, rect)
 //! - `ui.elements {prefix?}`: registered widgets (optionally filtered by id prefix)
+//! - `ui.coverage`: last frame's interactive widgets that no element covers (reachable only by
+//!   coordinates), plus scroll areas and resize handles (`background`)
 //! - `ui.set {tool?, workspace?, mode?, theme?, focused?, playbackRes?, timeline?:{pps,scroll}}`
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
 //! - `ui.set {tts: {voice, pitch, pace, text…}}`: patch the Text to Speech panel draft
@@ -141,6 +143,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items(app)).unwrap_or_default()),
         "ui.inspect" => ok(inspect(app, ctx)),
         "perf.stats" => ok(crate::perf::stats(app)),
+        // every control on screen an agent cannot target by id (`uncovered`), from the last frame
+        "ui.coverage" => ok(serde_json::to_value(&app.auto.coverage).unwrap_or_default()),
         "ui.elements" => {
             if app.timeline_still < 2 {
                 // rects of timeline elements are still moving (e.g. the fit after opening a sequence)

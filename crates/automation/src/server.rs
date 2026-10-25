@@ -200,7 +200,11 @@ impl FilmcraftMcp {
         Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), tool_router: Self::tool_router() }
     }
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), tool_router: Self::tool_router() })
+        Self::bridge_with(BridgeClient::new(addr)?)
+    }
+    /// Bridge mode over `client` (for example one that starts the app: [`BridgeClient::launching`]).
+    pub fn bridge_with(client: BridgeClient) -> Result<Self, AutomationError> {
+        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(client))), tool_router: Self::tool_router() })
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
@@ -500,6 +504,15 @@ impl FilmcraftMcp {
 
     /// Forward a click to the live editor; an omitted count is sent as null and uses its default.
     #[tool(
+        title = "Live app: controls without an id",
+        description = "Live app: interactive widgets on screen that no ui_elements id covers (reachable only by x,y): type, label, rect, sense. `background` lists scroll areas and resize handles. An empty `uncovered` means every control on screen is clickable by id.",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn ui_coverage(&self) -> Result<CallToolResult, McpError> {
+        self.ui("ui.coverage", json!({})).await
+    }
+
+    #[tool(
         title = "Live app: click",
         description = "Live app: click an element by id or at x,y (points). Supports right/middle button, double-click (count=2) and modifiers.",
         annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
@@ -606,7 +619,7 @@ impl FilmcraftMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
+const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it, `ui_coverage` lists any on-screen control without an id. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmcraft://document";

@@ -95,6 +95,7 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
         // right-click the header: delete this track or every empty caption track (registered
         // before the lock / eye toggles so those stay on top)
         let hresp = ui.interact(hrect, egui::Id::unique(("cap-header", tr.id.0)), Sense::click());
+        app.auto.add_response(&format!("timeline.captionTrack.{label}.header"), &hresp, &format!("{} (right-click for track options)", tr.name));
         hresp.context_menu(|ui| {
             for (key, text, cmd, p) in [
                 ("delete", tl!("Delete Caption Track"), "captions.deleteTrack", json!({"track": tr.id.0})),

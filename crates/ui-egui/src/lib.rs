@@ -2146,6 +2146,7 @@ impl FilmcraftApp {
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
+        self.auto.add_response("app.statusBar", &resp, "Status bar (click clears the message)");
         if resp.clicked() {
             self.ui.status.clear();
         }
@@ -2397,6 +2398,10 @@ impl FilmcraftApp {
         if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
+        // the accessibility tree names the controls agents click (`automation::Registry::end_frame`)
+        if self.control_rx.is_some() {
+            ctx.enable_accesskit();
+        }
         let had_synthetic = !self.synthetic.is_empty() || self.synthetic_pending_step.is_some();
         self.drain_control(ctx);
         if (!self.synthetic.is_empty() || self.synthetic_pending_step.is_some()) && !had_synthetic {
@@ -2563,6 +2568,12 @@ impl FilmcraftApp {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
+        }
+        // driven by an agent: every control drawn this pass gets an id (`auto.…` from the
+        // accessibility tree when its panel registered none), and `ui.coverage` reports the rest.
+        // Only the accepted pass: a discarded one is redrawn, and its entries cleared.
+        if self.control_rx.is_some() && !ctx.will_discard() {
+            self.auto.end_frame(ui.ctx());
         }
         self.last_ui_time = self.now();
         if !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {

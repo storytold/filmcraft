@@ -101,6 +101,8 @@ fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberO
     let text = format!("{value:.decimals$}{suffix}");
     let galley = ui.painter().layout_no_wrap(text, Tokens::ui(12.0), t.hot_text);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + vec2(4.0, 4.0), Sense::click_and_drag());
+    // a number field to assistive tech and to agents (`auto.…` ids name it after its row's label)
+    resp.widget_info(|| egui::WidgetInfo::drag_value(resp.enabled(), value));
     let col = if resp.hovered() || resp.dragged() { t.accent_hover } else { t.hot_text };
     ui.painter().galley_with_override_text_color(rect.min + vec2(2.0, 2.0), galley, col);
     if resp.hovered() || resp.dragged() {
@@ -200,6 +202,7 @@ pub fn timecode_field(
         return None;
     }
     let resp = ui.interact(rect, id, Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::drag_value(resp.enabled(), rate.frame_at(time) as f64));
     ui.painter().text(pos2(rect.min.x, rect.center().y), Align2::LEFT_CENTER, text, Tokens::timecode(), color);
     // (frame at the press, frames dragged so far, where the pointer was pressed)
     let drag_id = id.with("drag");
@@ -278,6 +281,7 @@ pub fn revert_drag_on_escape<T: Clone + Send + Sync + 'static>(ctx: &egui::Conte
 pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &Tokens, bold: bool) -> (Response, bool) {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, resp.enabled(), title));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, t.hover);
     }
@@ -298,6 +302,7 @@ pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &To
 /// A small pill toggle button with text (e.g. "M", "S" on track headers).
 pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: Color32, t: &Tokens, id: egui::Id) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, resp.enabled(), on, letter));
     let bg = if on {
         on_color
     } else if resp.hovered() {
@@ -316,6 +321,7 @@ pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: 
 /// A flat icon toggle inside a rect.
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, resp.enabled(), on, format!("{icon:?}")));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 2.0, t.hover);
     }
@@ -346,6 +352,7 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
 pub fn dropdown_text(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::Id) -> Response {
     // Premiere: 24 pt, #0e0e0e fill, 1 pt #303030 border, radius 4, chevron at the right.
     let resp = ui.interact(rect, id, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, resp.enabled(), text));
     ui.painter().rect_filled(rect, 4.0, t.field_bg);
     ui.painter().rect_stroke(
         rect,
