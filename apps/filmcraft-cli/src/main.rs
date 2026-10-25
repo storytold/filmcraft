@@ -269,6 +269,16 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
     }
+    fn render_rgba8(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        self.0.render_rgba8(project, seq, t, opts, sources)
+    }
 }
 
 fn register_gpu_frame_renderer() {
@@ -489,6 +499,11 @@ async fn cli() {
                     let written = written_paths(&v, out).join(", ");
                     check_offline(&a, &offline_media(&v), &format!("export: {written}"));
                     diag(format_args!("exported {written} in {:.1}s", t0.elapsed().as_secs_f64()));
+                    if let Backend::Local(_) = &b {
+                        diag(format_args!("RGBA8 FASTPATH: {} kare", filmcraft_export::rgba8_fast_frames()));
+                        let gpu = filmcraft_export::gpu_render_stats();
+                        diag(format_args!("GPU FRAMES: {} | GPU FALLBACKS: {}", gpu.frames, gpu.fallbacks));
+                    }
                 }
                 Err(e) => fail(format!("export: {e}")),
             }
