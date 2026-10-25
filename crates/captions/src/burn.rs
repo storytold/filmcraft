@@ -146,6 +146,11 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     .round();
     let side = w as f32 * 0.05;
     let widths: Vec<f32> = lines.iter().map(|l| filmcraft_text::measure(l, &ts)).collect();
+    // the style's offset moves the block from its anchored place (#2476), as far as it stays in
+    // the frame
+    let finite = |v: f32| if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 };
+    let (dx, dy) = (finite(style.offset[0]) * w as f32, finite(style.offset[1]) * h as f32);
+    let top = (top + dy).clamp(0.0, (h as f32 - block_h).max(0.0)).round();
     let xs: Vec<f32> = widths
         .iter()
         .map(|&lw| match align {
@@ -155,6 +160,11 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         })
         .collect();
     let outline = (style.outline * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
+    // the outline grows the block too: it stays inside the frame as well (#2526 review)
+    let edge = pad_x + outline.ceil() + 1.0;
+    let (lo, hi) = (xs.iter().fold(f32::MAX, |m, x| m.min(*x - edge)), xs.iter().zip(&widths).fold(f32::MIN, |m, (x, lw)| m.max(x + lw + edge)));
+    let dx = if lo.is_finite() && hi.is_finite() { dx.clamp(-lo.max(0.0), (w as f32 - hi).max(0.0)) } else { 0.0 };
+    let xs: Vec<f32> = xs.into_iter().map(|x| x + dx).collect();
     let grow = outline.ceil() + 1.0;
     let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
     let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
@@ -287,6 +297,23 @@ mod tests {
         }
         assert!(white > 500, "{white}");
         assert!(boxy > 1000, "{boxy}");
+    }
+
+    /// #2476: the style's offset moves the captions from their anchored place, and an offset past
+    /// the frame's edge stops at it.
+    #[test]
+    fn the_offset_moves_the_block_and_keeps_it_in_the_frame() {
+        let base = render_caption(&cap("Hello"), &CaptionStyle::default(), 1920, 1080).unwrap();
+        let st = CaptionStyle { offset: [0.1, -0.2], ..Default::default() };
+        let o = render_caption(&cap("Hello"), &st, 1920, 1080).unwrap();
+        assert!((o.x - base.x - 192).abs() <= 1, "x {} → {}", base.x, o.x);
+        assert!((o.y - base.y + 216).abs() <= 1, "y {} → {}", base.y, o.y);
+        for (offset, outline) in [([1.0, 1.0], 0.0), ([-1.0, -1.0], 0.0), ([f32::NAN, f32::INFINITY], 0.0), ([1.0, 0.0], 12.0), ([-1.0, 0.0], 12.0)] {
+            let st = CaptionStyle { offset, outline, ..Default::default() };
+            let o = render_caption(&cap("Hello"), &st, 1920, 1080).unwrap();
+            let (x1, y1) = (i64::from(o.x) + o.w as i64, i64::from(o.y) + o.h as i64);
+            assert!(o.x >= -2 && x1 <= 1922 && o.y >= -2 && y1 <= 1082, "{offset:?}: {} {} {} {}", o.x, o.y, o.w, o.h);
+        }
     }
 
     #[test]
