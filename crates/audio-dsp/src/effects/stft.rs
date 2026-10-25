@@ -75,6 +75,7 @@ impl StftChannel {
 /// `first` is set for the first channel that frames on this sample. Neighbouring channels that
 /// frame on the same samples share one complex FFT (`a + i·b`), except for frames with a
 /// non-finite sample, which run per channel so the bad channel cannot contaminate its neighbour.
+/// `pairing` says whether the forward FFT is shared too or only the inverse one.
 pub(crate) fn stream(
     stft: &mut [StftChannel],
     spec: &mut Spectral,
@@ -82,6 +83,7 @@ pub(crate) fn stream(
     len: usize,
     hop: usize,
     scale: f32,
+    pairing: Pairing,
     bins: &mut impl FnMut(usize, bool, &mut [f32], &mut [f32]),
 ) {
     let nch = channels.len().min(stft.len());
@@ -95,9 +97,25 @@ pub(crate) fn stream(
                 let x = (channels[ch][i], channels[ch + 1][i]);
                 let (ya, yb) = StftChannel::tick_pair(&mut lo[ch], &mut hi[0], x, hop, &mut |a, b, out_a, out_b| {
                     if all_finite(a) && all_finite(b) {
-                        spec.analyse_pair(a, b);
-                        bins(ch, first, &mut spec.re[..half], &mut spec.im[..half]);
-                        bins(ch + 1, false, &mut spec.re2, &mut spec.im2);
+                        match pairing {
+                            Pairing::Full => {
+                                spec.analyse_pair(a, b);
+                                bins(ch, first, &mut spec.re[..half], &mut spec.im[..half]);
+                                bins(ch + 1, false, &mut spec.re2, &mut spec.im2);
+                            }
+                            Pairing::SynthesisOnly => {
+                                // Each channel's spectrum is bit-identical to its mono analysis;
+                                // the edited half spectra then share one inverse FFT.
+                                spec.analyse(a);
+                                bins(ch, first, &mut spec.re[..half], &mut spec.im[..half]);
+                                spec.re2.copy_from_slice(&spec.re[..half]);
+                                spec.im2.copy_from_slice(&spec.im[..half]);
+                                spec.analyse(b);
+                                bins(ch + 1, false, &mut spec.re[..half], &mut spec.im[..half]);
+                                spec.re[..half].swap_with_slice(&mut spec.re2);
+                                spec.im[..half].swap_with_slice(&mut spec.im2);
+                            }
+                        }
                         if spec.pair_finite(half) {
                             spec.synthesise_add_pair(out_a, out_b, scale);
                         } else {
@@ -131,6 +149,18 @@ pub(crate) fn stream(
             }
         }
     }
+}
+
+/// How much of the STFT two paired channels share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pairing {
+    /// Forward and inverse FFT (`a + i·b`). The analysed spectra differ from the mono ones at
+    /// rounding level, so only for effects whose bin edit is continuous in the spectrum.
+    Full,
+    /// Only the inverse FFT. For effects whose bin edit makes discrete decisions on the spectrum
+    /// (peak picking, thresholds): a rounding-level change could flip one, so they get the exact
+    /// mono analysis.
+    SynthesisOnly,
 }
 
 /// Branch-free scan (vectorises, unlike a short-circuiting `all`).
@@ -282,17 +312,116 @@ mod tests {
         let mut joint = src.clone();
         {
             let mut chans: Vec<&mut [f32]> = joint.iter_mut().map(|c| c.as_mut_slice()).collect();
-            stream(&mut stft, &mut spec, &mut chans, len, hop, scale, &mut gain);
+            stream(&mut stft, &mut spec, &mut chans, len, hop, scale, Pairing::Full, &mut gain);
         }
         for ch in 0..3 {
             let mut single = vec![StftChannel::new(n)];
             let mut y = src[ch].clone();
-            stream(&mut single, &mut spec, &mut [&mut y], len, hop, scale, &mut |_, first, re, im| gain(ch, first, re, im));
+            stream(&mut single, &mut spec, &mut [&mut y], len, hop, scale, Pairing::Full, &mut |_, first, re, im| gain(ch, first, re, im));
             let peak = y.iter().fold(0.0f32, |a, v| a.max(v.abs()));
             let dev = y.iter().zip(&joint[ch]).fold(0.0f32, |a, (p, q)| a.max((p - q).abs()));
             assert!(peak > 0.1 && dev < 1e-5 * peak, "channel {ch}: deviation {dev}");
             if ch == 2 {
                 assert!(y.iter().zip(&joint[ch]).all(|(p, q)| p.to_bits() == q.to_bits()));
+            }
+        }
+    }
+
+    /// Every STFT effect gives each channel of a paired (shared complex FFT) run the output it
+    /// would have as a mono signal, to rounding, on finite tone + transient material. Covers
+    /// identical channels (the pitch-shifter repro: three channels, +3 semitones, 256-sample
+    /// blocks) and channels with different content and level.
+    #[test]
+    fn paired_effects_match_mono_on_transients() {
+        use crate::AudioEffect;
+        use crate::effects::{DeNoise, DeReverb, FftFilter, PitchShifter};
+        const SR: f32 = 48_000.0;
+        let len = 48_000;
+        let material = |f: f64, amp: f32, phase: f64, click_every: usize, click_at: usize, noise: f32, seed: u64| -> Vec<f32> {
+            let mut rng = Rng::new(seed);
+            let mut x: Vec<f32> = crate::testutil::sine(f, amp as f64, SR as f64, len, phase).iter().map(|v| v + noise * rng.uniform()).collect();
+            for (i, v) in x.iter_mut().enumerate() {
+                if i % click_every == click_at {
+                    *v += 0.8 * amp / 0.3;
+                }
+            }
+            x
+        };
+        let tone = material(440.0, 0.3, 0.0, 6000, 1500, 0.0, 1);
+        let identical = vec![tone.clone(), tone.clone(), tone];
+        let different =
+            vec![material(440.0, 0.3, 0.0, 6000, 1500, 0.0, 1), material(1250.0, 0.05, 0.7, 4410, 333, 0.01, 2), material(97.0, 0.2, 1.3, 9000, 7000, 0.0, 3)];
+        let make = |name: &str, ch: usize| -> Box<dyn AudioEffect> {
+            let mut fx: Box<dyn AudioEffect> = match name {
+                "DeReverb" => Box::new(DeReverb::new(SR, ch)),
+                "FftFilter" => Box::new(FftFilter::new(SR, ch)),
+                "DeNoise" => Box::new(DeNoise::new(SR, ch)),
+                _ => Box::new(PitchShifter::new(SR, ch)),
+            };
+            if name == "PitchShifter" {
+                fx.set_param("semitones", 3.0);
+            }
+            fx
+        };
+        let run = |name: &str, src: &[Vec<f32>]| -> Vec<Vec<f32>> {
+            let mut fx = make(name, src.len());
+            let mut y = src.to_vec();
+            for start in (0..len).step_by(256) {
+                let end = (start + 256).min(len);
+                let mut blk: Vec<&mut [f32]> = y.iter_mut().map(|c| &mut c[start..end]).collect();
+                fx.process(&mut blk);
+            }
+            y
+        };
+        let mut failures = Vec::new();
+        for name in ["PitchShifter", "DeNoise", "DeReverb", "FftFilter"] {
+            for (label, src) in [("identical", &identical), ("different", &different)] {
+                let joint = run(name, src);
+                for (ch, chan) in src.iter().enumerate() {
+                    let want = run(name, std::slice::from_ref(chan)).remove(0);
+                    let peak = want.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+                    let dev = want.iter().zip(&joint[ch]).fold(0.0f32, |a, (p, q)| a.max((p - q).abs()));
+                    assert!(joint[ch].iter().all(|v| v.is_finite()) && peak > 0.01, "{name} {label} ch{ch}: peak {peak}");
+                    if dev > 1e-5 * peak {
+                        failures.push(format!("{name} {label} ch{ch}: max diff {dev} at peak {peak}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// DeNoise's noise gate is a hard threshold on the smoothed PSD: on stationary noise many bins
+    /// sit near it. With a shared forward FFT a rounding-level change flipped some, and the output
+    /// moved by up to ~4e-4 of the peak here. Paired channels must match mono to rounding.
+    #[test]
+    fn paired_denoise_matches_mono_near_its_threshold() {
+        use crate::AudioEffect;
+        use crate::effects::DeNoise;
+        const SR: f32 = 48_000.0;
+        let len = 512 * 940;
+        let mut rng = Rng::new(9);
+        let a: Vec<f32> = (0..len).map(|_| 0.1 * rng.uniform()).collect();
+        let t = crate::testutil::sine(700.0, 0.2, SR as f64, len, 0.0);
+        let b: Vec<f32> = (0..len).map(|i| t[i] + 0.03 * rng.uniform()).collect();
+        for (thr, red) in [(0.5, 20.0), (2.0, 30.0)] {
+            let run = |src: &[&Vec<f32>]| -> Vec<Vec<f32>> {
+                let mut fx = DeNoise::new(SR, src.len());
+                fx.set_param("threshold", thr);
+                fx.set_param("reduction", red);
+                let mut y: Vec<Vec<f32>> = src.iter().map(|c| c.to_vec()).collect();
+                for s in (0..len).step_by(512) {
+                    let mut blk: Vec<&mut [f32]> = y.iter_mut().map(|c| &mut c[s..s + 512]).collect();
+                    fx.process(&mut blk);
+                }
+                y
+            };
+            let joint = run(&[&a, &b]);
+            for (ch, c) in [&a, &b].into_iter().enumerate() {
+                let want = run(&[c]).remove(0);
+                let peak = want.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                let dev = want.iter().zip(&joint[ch]).fold(0.0f32, |m, (p, q)| m.max((p - q).abs()));
+                assert!(peak > 0.05 && dev <= 1e-5 * peak, "threshold {thr} ch{ch}: deviation {dev} (peak {peak})");
             }
         }
     }

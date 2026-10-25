@@ -1,6 +1,6 @@
 //! Restoration: DeHum (harmonic notch comb) and DeNoise (STFT spectral gating).
 
-use super::stft::{Spectral, StftChannel, fft_size, stream};
+use super::stft::{Pairing, Spectral, StftChannel, fft_size, stream};
 use crate::biquad::{Biquad, Coeffs, FilterType};
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
 
@@ -207,7 +207,7 @@ impl AudioEffect for DeNoise {
         let (floor, thr, release) = (self.floor, self.thr, self.release);
         let scale = 1.0 / (n as f32 * 2.0);
         let (states, sg) = (&mut self.noise, &mut self.smoothed_gains);
-        stream(&mut self.stft, &mut self.spec, channels, len, hop, scale, &mut |ch, _, re, im| {
+        stream(&mut self.stft, &mut self.spec, channels, len, hop, scale, Pairing::SynthesisOnly, &mut |ch, _, re, im| {
             let st = &mut states[ch];
             let bins = n / 2 + 1;
             for k in 0..bins {
