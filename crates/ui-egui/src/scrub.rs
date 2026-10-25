@@ -6,6 +6,11 @@
 //! the new position. One output stream stays open for the whole scrub: each move only re-aims it,
 //! so the device is not reopened every frame. The stream closes when the button is released and
 //! the grain has played, when the setting is off, or when playback starts.
+//!
+//! The grain plays on [`ScrubOut`], a separate output from playback's: opening an output stream
+//! starts the OS audio engine, which can take most of a second (0.5-1 s measured on WASAPI,
+//! #2633), and `cpal::Stream` is `!Send`. An implementation opens the stream on a thread that
+//! keeps owning it and returns at once, so a press or a drag never waits for the device.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -19,6 +24,23 @@ pub const GRAIN_S: f64 = 0.08;
 const RAMP_S: f64 = 0.004;
 /// How long the stream stays open after the last move once the button is up.
 const LINGER_S: f64 = 0.25;
+
+/// The scrub grain's output, separate from playback's.
+///
+/// Opening a device stream can take most of a second (WASAPI starts the audio engine; 0.5-1 s
+/// measured on Realtek, #2633), and `cpal::Stream` is `!Send`, so an implementation opens it on a
+/// thread that then owns it. [`play`](ScrubOut::play) must return at once: it is called from the
+/// frame that moves the playhead.
+pub trait ScrubOut {
+    /// The rate the grain is mixed at, known without opening the stream.
+    fn sample_rate(&self) -> u32;
+    /// Play `fill`, opening the output if needed. Returns at once.
+    fn play(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>);
+    /// The device may be given back; the output closes when its own linger ends.
+    fn stop(&mut self);
+    /// Apply Settings ▸ Audio Hardware: the next grain opens the new device.
+    fn configure(&mut self, _hw: &filmcraft_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
+}
 
 /// What the audio callback plays next: `left` of `total` frames from `cursor`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -63,9 +85,15 @@ impl FilmcraftApp {
         let ph = self.session.playhead();
         let prev = self.scrub.last_tick.replace(ph);
         if self.playback.playing || self.source_playback.clock.playing {
-            // playback (Program or Source) owns the device: it stopped the scrub stream when it
-            // started, and the scrub must not stop it when the button is released
-            self.scrub.open = false;
+            // playback (Program or Source) owns the playback output: it stopped the scrub stream
+            // when it started, and the scrub must not stop it when the button is released. The
+            // scrub's own output (a separate device) is closed here (#2633).
+            if self.scrub.open {
+                self.scrub.open = false;
+                if let Some(out) = self.scrub_out.as_mut() {
+                    out.stop();
+                }
+            }
             return false;
         }
         let on = self.session.prefs.audio.scrub_audio;
@@ -73,7 +101,9 @@ impl FilmcraftApp {
             self.scrub_grain(ph, now);
         }
         if self.scrub.open && (!on || (!down && now - self.scrub.last_move >= LINGER_S)) {
-            if let Some(a) = self.audio.as_mut() {
+            if let Some(out) = self.scrub_out.as_mut() {
+                out.stop();
+            } else if let Some(a) = self.audio.as_mut() {
                 a.stop();
             }
             self.scrub.open = false;
@@ -84,8 +114,10 @@ impl FilmcraftApp {
     /// Aim the scrub stream at `at` (opening it if needed) and play one grain.
     fn scrub_grain(&mut self, at: Tick, now: f64) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
-        let Some(a) = self.audio.as_ref() else { return };
-        let sr = a.sample_rate();
+        let sr = match self.scrub_out.as_ref() {
+            Some(out) => out.sample_rate(),
+            None => self.audio.as_ref().map_or(0, |a| a.sample_rate()),
+        };
         if sr == 0 {
             return;
         }
@@ -100,11 +132,16 @@ impl FilmcraftApp {
         }
         let mix = crate::playback_mix(&self.session, seq_id, sr);
         let fill = grain_fill(mix, self.scrub.grain.clone(), ((RAMP_S * sr as f64) as i64).max(1));
-        let Some(a) = self.audio.as_mut() else { return };
-        a.stop();
-        match a.start(fill) {
-            Ok(_) => self.scrub.open = true,
-            Err(e) => log::warn!("audio output unavailable for scrubbing: {e}"),
+        if let Some(out) = self.scrub_out.as_mut() {
+            // Opens on the output's own thread: a cold device takes ~0.6 s, too long for this frame.
+            self.scrub.open = true;
+            out.play(fill);
+        } else if let Some(a) = self.audio.as_mut() {
+            a.stop();
+            match a.start(fill) {
+                Ok(_) => self.scrub.open = true,
+                Err(e) => log::warn!("audio output unavailable for scrubbing: {e}"),
+            }
         }
     }
 }
@@ -211,6 +248,31 @@ mod tests {
         let mut buf = vec![0.0; 4096 * 2]; // more than a grain
         f(&mut buf, 2);
         buf.iter().map(|s| s.abs()).sum()
+    }
+
+    /// #2633: a sequence that becomes active while the scrub stream is open must not keep the fill
+    /// the previous one built (an open stream only moves its grain cursor, it does not mix again):
+    /// the next grain opens it for the sequence that is active now, at the same rate.
+    #[test]
+    fn a_sequence_change_reopens_an_open_scrub_stream() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.newProject", serde_json::json!({"name": "two"})).unwrap();
+        s.execute("file.newSequence", serde_json::json!({"name": "A", "video": 1, "audio": 1})).unwrap();
+        let first = s.state.active_sequence.unwrap();
+        s.execute("file.newSequence", serde_json::json!({"name": "B", "video": 1, "audio": 1})).unwrap();
+        s.prefs.audio.scrub_audio = true;
+        let mut app = FilmcraftApp::new(s);
+        app.apply_prefs(&egui::Context::default());
+        let fill: Arc<Mutex<Option<Fill>>> = Arc::new(Mutex::new(None));
+        app.audio = Some(Box::new(Out { fill }));
+        let rate = app.session.sequence_rate();
+        app.session.set_playhead(rate.tick_of(48));
+        assert!(!app.scrub_tick(0.0, true), "pressing alone plays nothing");
+        app.session.set_playhead(rate.tick_of(60));
+        assert!(app.scrub_tick(0.02, true), "a move opens the stream");
+        app.session.execute("sequence.open", serde_json::json!({"item": first.0})).unwrap();
+        app.apply_prefs(&egui::Context::default());
+        assert!(!app.scrub.is_open(), "the stream the other sequence opened is not reused");
     }
 
     /// #211: moving the playhead with the button down plays the sequence's sound at the new spot;

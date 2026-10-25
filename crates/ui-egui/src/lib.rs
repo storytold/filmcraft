@@ -291,6 +291,15 @@ pub struct FilmcraftApp {
     pub playback: Playback,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
+    /// Audio during scrubbing (#211), on its own output so opening it never waits for the device
+    /// (#2633). Falls back to `audio` when the platform layer installs none (headless tests).
+    pub scrub_out: Option<Box<dyn scrub::ScrubOut>>,
+    /// The sequence sample rate `scrub_out` was last configured for. `configure` is the only path
+    /// that carries it, and a sequence change does not touch the preferences (#2633).
+    scrub_rate: Option<u32>,
+    /// The sequence the open scrub stream's fill was built for. A stream that is still open only
+    /// moves its grain cursor, so another sequence needs the stream opened again (#2633).
+    scrub_sequence: Option<filmcraft_project::ItemId>,
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
@@ -560,6 +569,9 @@ impl FilmcraftApp {
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,
+            scrub_out: None,
+            scrub_rate: None,
+            scrub_sequence: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
@@ -730,6 +742,9 @@ impl FilmcraftApp {
             ctx.global_style_mut(|s| s.animation_time = animation);
         }
         if self.applied_prefs.as_ref() == Some(&self.session.prefs) {
+            // A sequence can ask the device for another sample rate without touching the
+            // preferences: Settings ▸ Sequence, opening another project, switching sequences.
+            self.sync_scrub_output();
             return;
         }
         let p = self.session.prefs.clone();
@@ -773,6 +788,13 @@ impl FilmcraftApp {
                 a.stop();
                 a.configure(&p.audio_hardware, rate);
             }
+            if let Some(out) = self.scrub_out.as_mut() {
+                out.stop();
+                out.configure(&p.audio_hardware, rate);
+            }
+            self.scrub.device_stopped();
+            self.scrub_rate = rate;
+            self.scrub_sequence = self.session.state.active_sequence;
         }
         if (hardware_changed || pitch_changed) && self.playback.playing && self.playback.preroll.is_none() {
             self.playback.anchor_tick = self.session.playhead();
@@ -792,6 +814,33 @@ impl FilmcraftApp {
             }
         }
         self.applied_prefs = Some(p);
+    }
+
+    /// Point the scrub output at the sequence that is active now (#2633).
+    /// [`FilmcraftApp::apply_prefs`] carries the sequence's sample rate to the output, but it
+    /// returns early while the settings stay the same, and Settings ▸ Sequence, opening another
+    /// project or switching sequences change what the next grain needs without changing them. A
+    /// stale rate mixes the grain at the wrong speed; and a stream that is still open (the button
+    /// is down, or it lingers for a moment) keeps the fill it was opened with, which mixes the
+    /// sequence that was active then, so another sequence needs it opened again even at the same
+    /// rate. Only the rate needs a new configuration: a new fill replaces the old one in place.
+    fn sync_scrub_output(&mut self) {
+        let rate = self.session.active_sequence().map(|q| q.settings.sample_rate);
+        let sequence = self.session.state.active_sequence;
+        if rate == self.scrub_rate && sequence == self.scrub_sequence {
+            return;
+        }
+        let rate_changed = rate != self.scrub_rate;
+        self.scrub_rate = rate;
+        self.scrub_sequence = sequence;
+        if rate_changed {
+            let hw = self.session.prefs.audio_hardware.clone();
+            if let Some(out) = self.scrub_out.as_mut() {
+                out.stop();
+                out.configure(&hw, rate);
+            }
+        }
+        self.scrub.device_stopped();
     }
 
     /// Every sequence has its own Timeline view (zoom, scroll, track heights), as Premiere's
@@ -1060,6 +1109,22 @@ impl FilmcraftApp {
         Ok(seconds)
     }
 
+    /// Whether [`FilmcraftApp::stop`] has a transport to stop: Program or Source playback, a
+    /// preroll, or a recording that runs one. A press that only moves the playhead uses this so it
+    /// does not close an audio stream that is already open (#2633): dropping the output stream
+    /// makes the next scrub grain open the device again, and on WASAPI that open is slow.
+    pub fn transport_running(&self) -> bool {
+        self.playback.playing
+            // A panel that panicked clears `playing` but leaves the output playing, and the clock
+            // stays on: the press still has that stream to stop.
+            || self.playback.audio_clock
+            || self.source_playback.clock.playing
+            || self.playback.preroll.is_some()
+            || self.session.mixrec.active()
+            || self.session.mcrec.active()
+            || self.session.voiceover.recording()
+    }
+
     pub fn stop(&mut self) {
         self.playback.playing = false;
         self.playback.stop_at = None;
@@ -1069,6 +1134,9 @@ impl FilmcraftApp {
         self.frames.stop_prefetch();
         if let Some(a) = self.audio.as_mut() {
             a.stop();
+        }
+        if let Some(out) = self.scrub_out.as_mut() {
+            out.stop();
         }
         self.scrub.device_stopped();
         self.playback.audio_clock = false;
@@ -2562,6 +2630,67 @@ mod audio_recovery_tests {
         assert_eq!(starts.load(Ordering::Relaxed), 1, "2x playback must start audio output");
         assert!(app.playback.audio_clock, "the device is still the master clock");
         app.stop();
+    }
+
+    /// #2633: a press that only moves the playhead has nothing to stop, so it must not close the
+    /// audio stream (closing it makes the next scrub grain open the device again).
+    #[test]
+    fn only_a_running_transport_has_something_to_stop() {
+        let mut session = Session::default();
+        session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        assert!(!app.transport_running(), "nothing runs in a new project");
+        app.playback.playing = true;
+        assert!(app.transport_running(), "Program playback runs a transport");
+        app.playback.playing = false;
+        app.source_playback.clock.playing = true;
+        assert!(app.transport_running(), "Source playback runs one");
+        app.source_playback.clock.playing = false;
+        app.playback.preroll = Some(0.0);
+        assert!(app.transport_running(), "a preroll runs one");
+        app.playback.preroll = None;
+        assert!(!app.transport_running());
+        app.playback.audio_clock = true;
+        assert!(app.transport_running(), "an output a panicked frame left playing is stopped too");
+        app.playback.audio_clock = false;
+        assert!(!app.transport_running());
+    }
+
+    /// #2633: the scrub output follows the sequence's sample rate, not only the audio settings.
+    /// Settings ▸ Sequence (and opening another project or sequence) changes it without touching
+    /// them, and `apply_prefs` returns early then, so the output kept the rate it was built with.
+    #[test]
+    fn the_scrub_output_follows_the_sequence_sample_rate() {
+        let mut session = Session::default();
+        session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        let rates = Arc::new(std::sync::Mutex::new(Vec::new()));
+        app.scrub_out = Some(Box::new(RecordingScrubOut { rates: rates.clone() }));
+        app.apply_prefs(&ctx);
+        let first = app.session.active_sequence().unwrap().settings.sample_rate;
+        assert_eq!(*rates.lock().unwrap(), vec![Some(first)], "the first frame configures it");
+        app.apply_prefs(&ctx);
+        assert_eq!(rates.lock().unwrap().len(), 1, "the same rate is not configured again");
+        app.session.execute("sequence.settings", json!({"sampleRate": 44100})).unwrap();
+        app.apply_prefs(&ctx);
+        assert_eq!(*rates.lock().unwrap(), vec![Some(first), Some(44_100)], "the sequence's new rate reaches it");
+    }
+
+    /// A scrub output that records the document rate of every `configure`.
+    struct RecordingScrubOut {
+        rates: Arc<std::sync::Mutex<Vec<Option<u32>>>>,
+    }
+
+    impl scrub::ScrubOut for RecordingScrubOut {
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+        fn play(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) {}
+        fn stop(&mut self) {}
+        fn configure(&mut self, _: &filmcraft_engine::settings::AudioHardwarePrefs, document_rate: Option<u32>) {
+            self.rates.lock().unwrap().push(document_rate);
+        }
     }
 
     /// Capture the block primed by the real shuttle playback path, without relying on a
