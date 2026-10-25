@@ -240,7 +240,7 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
     }
     let mut df = app.session.state.show_duplicate_frame_markers;
-    let c = ui.checkbox(&mut df, tl!("Show Duplicate Frame Markers"));
+    let c = ui.checkbox_drag(&mut df, tl!("Show Duplicate Frame Markers"));
     app.auto.add("timeline.settings.showDuplicateFrameMarkers", c.rect, "Show Duplicate Frame Markers");
     if c.changed() {
         let _ = app.session.execute("sequence.showDuplicateFrameMarkers", json!({"on": df}));
