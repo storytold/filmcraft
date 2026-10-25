@@ -451,7 +451,7 @@
 	Are you sure you want to discard your changes to '{file}'?	「{file}」への変更を破棄してもよろしいですか？
 	Yes	はい
 	No	いいえ
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	プロジェクトにメディアを追加します。ウィンドウ内の任意の場所にファイルをドロップするか、下のソースを選択してください。
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	プロジェクトにメディアを追加します。ウィンドウ内の任意の場所にファイルまたはフォルダーをドロップするか、下のソースを選択してください。
 	Browse files…	ファイルを参照…
 	Movies, audio and stills from disk	ディスク上のムービー、オーディオ、静止画
 	Demo footage	デモ素材

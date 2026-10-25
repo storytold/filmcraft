@@ -540,7 +540,16 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(b) = bin {
             q["bin"] = json!(b);
         }
-        return s.execute("file.import", q);
+        let r = s.execute("file.import", q)?;
+        if empty.is_empty() {
+            return Ok(r);
+        }
+        // folders without media among plain files: reported like the bin-walking path below does,
+        // not silently skipped
+        let mut out = serde_json::Map::new();
+        merge_import(&mut out, r);
+        merge_import(&mut out, json!({"errors": empty.iter().map(|e| format!("{e}: no media files")).collect::<Vec<_>>()}));
+        return Ok(Value::Object(out));
     }
     let mut out = serde_json::Map::new();
     merge_import(&mut out, json!({"items": [], "errors": empty.iter().map(|e| format!("{e}: no media files")).collect::<Vec<_>>(), "bins": []}));

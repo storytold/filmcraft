@@ -1480,8 +1480,12 @@ impl FilmcraftApp {
         })
     }
 
-    /// Import dropped files. With Timeline ▸ drop imports to the timeline, the new items are also
-    /// queued to be placed at the pointer (see `timeline::interact`).
+    /// Import dropped files and folders. A folder becomes a bin named after it, its media inside it
+    /// and each of its sub-folders a bin within it (Premiere's behaviour): `mediaBrowser.import`
+    /// walks it with the same depth and folder budgets as the Media Browser's import. Files import
+    /// exactly as before — `imageSequence: false` keeps single-file sequence detection in
+    /// `file.import` untouched. With Timeline ▸ drop imports to the timeline, the new items are
+    /// also queued to be placed at the pointer (see `timeline::interact`).
     fn handle_drops(&mut self, ctx: &egui::Context) {
         // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
         let hovering = ctx.input(|i| i.raw.hovered_files.len());
@@ -1499,18 +1503,29 @@ impl FilmcraftApp {
                 paths.push(p.to_string_lossy().to_string());
             }
         }
-        if !paths.is_empty() {
-            let pointer = self.drop_pointer(ctx);
-            let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-            if let Ok(v) = imported
-                && let Some(pos) = pointer
-                && self.session.prefs.timeline.drop_import_to_timeline
-            {
-                let items: Vec<filmcraft_engine::project::ItemId> =
-                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-                if !items.is_empty() {
-                    self.pending_timeline_drop = Some((items, pos));
+        if paths.is_empty() {
+            return;
+        }
+        let pointer = self.drop_pointer(ctx);
+        let imported = self.session.execute("mediaBrowser.import", json!({"paths": paths, "bin": self.import_bin().0, "imageSequence": false}));
+        // Say why a drop did not fully import (a folder without media, an unsupported file), as the
+        // Import dialog does; a complete failure is in the Events log as well.
+        match &imported {
+            Ok(v) => {
+                if let Some(errs) = v["errors"].as_array().filter(|e| !e.is_empty()) {
+                    self.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
                 }
+            }
+            Err(e) => self.ui.status = e.to_string(),
+        }
+        if let Ok(v) = imported
+            && let Some(pos) = pointer
+            && self.session.prefs.timeline.drop_import_to_timeline
+        {
+            let items: Vec<filmcraft_engine::project::ItemId> =
+                v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+            if !items.is_empty() {
+                self.pending_timeline_drop = Some((items, pos));
             }
         }
     }

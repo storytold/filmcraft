@@ -909,6 +909,9 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     Some(resp)
 }
 
+/// A folder tile: icon, with the folder name and its item count sharing the row below. The count is
+/// laid out first and a long name is cut off with "…" where it would run into it, so the two never
+/// overlap at any tile size; a count wider than the tile is clipped to the tile's label row.
 fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &View, actions: &mut Actions) {
     let t = app.tokens;
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
@@ -924,10 +927,34 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     let mut n = Vec::new();
     b.all_items(&mut n);
     let f = font(app);
-    let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x, th.max.y + 20.0));
+    // The count is laid out first and the name row narrowed to what is left of it, as the clip
+    // card does for its duration.
+    let count_text = tlf!("{n} items", n = n.len());
+    let mut count = ui.painter().layout_no_wrap(count_text.clone(), Tokens::ui(f - 1.5), t.text_dim);
+    if count.size().x > th.width() {
+        let mut job = egui::text::LayoutJob::single_section(count_text, egui::TextFormat::simple(Tokens::ui(f - 1.5), t.text_dim));
+        job.wrap.max_width = ((th.width() - 6.0) / 2.0).max(0.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('…');
+        count = ui.fonts_mut(|fonts| fonts.layout_job(job));
+    }
+
+    let cw = count.size().x;
+    let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2((th.max.x - cw - 6.0).max(th.min.x), th.max.y + 20.0));
     if !rename_field(app, ui, nr, None, Some(b.id.0), &v.prefix) {
-        ui.painter().with_clip_rect(nr).text(pos2(th.min.x, th.max.y + 11.0), Align2::LEFT_CENTER, &b.name, Tokens::ui(f - 0.5), t.text);
-        ui.painter().text(pos2(th.max.x, th.max.y + 11.0), Align2::RIGHT_CENTER, tlf!("{n} items", n = n.len()), Tokens::ui(f - 1.5), t.text_dim);
+        let mut job = egui::text::LayoutJob::single_section(b.name.clone(), egui::TextFormat::simple(Tokens::ui(f - 0.5), t.text));
+        job.wrap.max_width = nr.width().max(0.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('…');
+        let name = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        ui.painter().with_clip_rect(nr).galley(pos2(th.min.x, th.max.y + 11.0 - name.size().y / 2.0), name, t.text);
+        // The count starts at `th.max.x - cw`, left of `th.min.x` when `cw` exceeds the tile width
+        // (tiny tiles, deep bins); clip it to the tile's label row so it cannot paint outside the
+        // tile. The count position and the name's `nr` clip are unchanged.
+        let lr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x, th.max.y + 20.0));
+        ui.painter().with_clip_rect(lr).galley(pos2(th.max.x - cw, th.max.y + 11.0 - count.size().y / 2.0), count, t.text_dim);
     }
     app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th, &b.name);
     accept_bin_drop(app, ui, th, b.id.0, actions);

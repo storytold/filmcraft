@@ -6,3 +6,4 @@ plan/
 .DS_Store
 .claude/worktrees/
 __pycache__/
+.andromity/
