@@ -699,7 +699,7 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::Av1 => {
-                    v += &format!(", AV1 Main (hardware encoder), {}", self.bitrate_mode.label());
+                    v += &format!(", AV1 Main, {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),

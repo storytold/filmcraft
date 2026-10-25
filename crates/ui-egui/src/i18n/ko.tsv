@@ -1397,6 +1397,7 @@
 	Hard Mono	강한 흑백
 	Hard Sun	강한 햇빛
 	Hardware (AV1 has no software encoder)	하드웨어 (AV1은 소프트웨어 인코더 없음)
+	Software (AV1)	소프트웨어 (AV1)
 	Hardware (H.265 has no software encoder)	하드웨어 (H.265는 소프트웨어 인코더 없음)
 	Hardware decoding	하드웨어 디코딩
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	하드웨어 디코딩: 자동은 지원 스트림에 시스템 비디오 디코더(macOS는 VideoToolbox, Windows는 Media Foundation, Linux는 H.264·HEVC용 VA-API 또는 NVDEC)를 쓰고, 그 외나 하드웨어 실패 시 FilmCraft 자체 디코더를 씁니다. 이미 열린 미디어는 다시 열 때까지 기존 디코더를 유지합니다.
