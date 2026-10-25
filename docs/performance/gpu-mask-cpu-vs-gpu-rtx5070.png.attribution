@@ -1,0 +1,8 @@
+asset:        gpu-mask-cpu-vs-gpu-rtx5070.png
+title:        CPU and GPU opacity-mask export frame comparison
+author:       TheGalitube and FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file:  LICENSE-MIT, LICENSE-APACHE
+added:        2026-10-22 by TheGalitube
+notes:        Generated from FilmCraft's synthetic color-matte project by the opacity-mask GPU export parity test on an NVIDIA GeForce RTX 5070; CPU reference is on the left and direct GPU RGBA8 output is on the right.

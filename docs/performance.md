@@ -905,3 +905,42 @@ decode 2642 / 2925 → 2506 / 2064; playback 5246 / 7903 → 3379 / 3121; scrub 
 Not feasible / not done: reduced-resolution decode for H.264 / HEVC (inter prediction needs
 full-resolution references, so it cannot be bit-exact; ½/¼ playback already decimates after
 decode); AV1 internals untouched (measured only); export encoders not optimised.
+
+## GPU export fast path on Windows (RTX 5070, 2026-10-22)
+
+Measured on the user's PC: AMD Ryzen 7 5800X (16 logical cores), NVIDIA GeForce RTX 5070 (12,227 MiB),
+driver 617.42. Release benchmark, 1080p23.976, 191 frames, three video layers with Proc Amp, Gaussian
+Blur, Vignette, Brightness & Contrast, Sharpen and a 70% opacity layer. The bench generated its
+`a1080.mp4` fixture locally. Both modes used the same software H.264/AAC encoder and software decode;
+only GPU Rendering changed. Each row is the median of three runs; timings are wall-clock.
+
+| Rendering | Median export | Run range | CPU ms/frame | GPU frames / fallbacks |
+|---|---:|---:|---:|---:|
+| CPU (`--gpu-rendering off`) | 82.0 s | 79.6–85.7 s | 1,229 | 0 / 0 |
+| GPU (`--gpu-rendering auto`) | 55.9 s | 43.3–60.0 s | 346 | 573 / 0 |
+
+The median GPU export was 1.47× faster (32% less wall time); its best run was 43.3 s versus 79.6 s
+for the best CPU run. The GPU renderer handled every frame in all three runs. No hardware encoder
+frames were used. Raw run times were CPU `[85.74, 79.61, 82.02]` s and GPU `[55.93, 59.98, 43.29]` s.
+The masked direct RGBA8 frame measured p99 channel difference **1** and mean **0.020** against the
+CPU reference (limits: p99 ≤ 6 and mean < 1.5).
+
+![Generated masked frame comparison: CPU reference on the left, direct GPU RGBA8 export on the right](performance/gpu-mask-cpu-vs-gpu-rtx5070.png)
+
+Separately, TheGalitube reports a prior 12 GB source export taking **over 7 hours before** and **about
+40 minutes after** GPU export support (at least 10.5× less elapsed time). The source, codec settings,
+and run logs for that historical comparison were not recorded with this report, so it is kept
+separate from the controlled 1080p measurement above.
+
+Reproduce the controlled comparison with the `bench` example's single-section mode. The explicit
+`--hw off` keeps hardware decoding and encoding disabled in both runs, while `--gpu-rendering`
+changes only the export compositor:
+
+```powershell
+cargo run --release -p filmcraft-ui-egui --example bench -- --section export --only h264_fx --hw off --gpu-rendering off --repeat 3
+cargo run --release -p filmcraft-ui-egui --example bench -- --section export --only h264_fx --hw off --gpu-rendering auto --repeat 3
+```
+
+Capture the frame comparison on a GPU-enabled machine by setting
+`FILMCRAFT_MASK_COMPARISON_PNG` to an output path before running
+`cargo test -p filmcraft-gpu --release opacity_masked_media_stays_on_the_gpu_and_matches_cpu -- --nocapture`.
