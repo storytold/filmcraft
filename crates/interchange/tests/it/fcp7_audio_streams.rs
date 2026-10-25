@@ -246,8 +246,25 @@ fn excessive_stream_descriptions_return_error_without_panicking() {
 
 // Catch whole-import rejection, silent fallback, dropping a stream (and shifting its selector),
 // resetting valid neighboring metadata, or losing authored pan while recovering one bad field.
-fn check_invalid_audio_field(key: &str, valid: &str, above_max: &str, expected: (u32, u32, Option<u32>)) {
-    for invalid in ["0", "-1", "NaN", "4294967296", "18446744073709551616", "invalid", above_max] {
+fn check_invalid_audio_field(key: &str, valid: &str, above_max: &str, above_max_fraction: &str, expected: (u32, u32, Option<u32>)) {
+    for invalid in [
+        "0",
+        "-1",
+        "NaN",
+        "inf",
+        "-inf",
+        "Infinity",
+        "-Infinity",
+        "1e999",
+        "-0.6",
+        "0.0",
+        "0.49",
+        "4294967296",
+        "18446744073709551616",
+        "invalid",
+        above_max,
+        above_max_fraction,
+    ] {
         for bad_index in 0..2 {
             let good = AUDIO.replace("48000", "44100").replace("<channelcount>2", "<channelcount>6").replace("<depth>16", "<depth>24");
             let bad = AUDIO.replace(&format!("<{key}>{valid}</{key}>"), &format!("<{key}>{invalid}</{key}>"));
@@ -278,17 +295,79 @@ fn check_invalid_audio_field(key: &str, valid: &str, above_max: &str, expected: 
 
 #[test]
 fn invalid_audio_sample_rates_warn_and_keep_importing() {
-    check_invalid_audio_field("samplerate", "48000", "384001", (48000, 2, Some(16)));
+    check_invalid_audio_field("samplerate", "48000", "384001", "384000.5", (48000, 2, Some(16)));
 }
 
 #[test]
 fn invalid_audio_channel_counts_warn_and_keep_importing() {
-    check_invalid_audio_field("channelcount", "2", "65", (48000, 2, Some(16)));
+    check_invalid_audio_field("channelcount", "2", "65", "64.5", (48000, 2, Some(16)));
 }
 
 #[test]
 fn invalid_audio_depths_warn_and_keep_importing() {
-    check_invalid_audio_field("depth", "16", "65", (48000, 2, None));
+    check_invalid_audio_field("depth", "16", "65", "64.5", (48000, 2, None));
+}
+
+// Rejecting finite decimal or rounded legacy values must not silently replace valid metadata.
+fn check_float_audio_field(key: &str, valid: &str, cases: &[(&str, (u32, u32, Option<u32>))]) {
+    for (text, expected) in cases {
+        let xml = REPRO.replace(&format!("<{key}>{valid}</{key}>"), &format!("<{key}>{text}</{key}>"));
+        let result = std::panic::catch_unwind(|| import(xml.as_bytes(), Format::Fcp7Xml, None)).unwrap();
+        let (imp, report) = result.unwrap();
+        assert_eq!(streams(&imp).len(), 2);
+        for stream in streams(&imp) {
+            assert_eq!((stream.sample_rate, stream.channels, stream.bits_per_sample), *expected, "{key}={text}");
+        }
+        assert!(report.entries.is_empty(), "{key}={text}: {report:?}");
+        assert_eq!(audio(&imp).audio_stream, 1);
+        assert!(audio(&imp).source_channels.is_empty());
+        assert_eq!(balance(audio(&imp)), 0.0);
+    }
+}
+
+#[test]
+fn float_formatted_audio_sample_rates_preserve_legacy_rounding() {
+    check_float_audio_field(
+        "samplerate",
+        "48000",
+        &[
+            ("44100.0", (44100, 2, Some(16))),
+            ("44099.5", (44100, 2, Some(16))),
+            ("44100.4", (44100, 2, Some(16))),
+            ("384000.0", (384000, 2, Some(16))),
+            ("1.49", (1, 2, Some(16))),
+        ],
+    );
+}
+
+#[test]
+fn float_formatted_audio_channel_counts_preserve_legacy_rounding() {
+    check_float_audio_field(
+        "channelcount",
+        "2",
+        &[
+            ("6.0", (48000, 6, Some(16))),
+            ("5.5", (48000, 6, Some(16))),
+            ("6.4", (48000, 6, Some(16))),
+            ("64.0", (48000, 64, Some(16))),
+            ("1.49", (48000, 1, Some(16))),
+        ],
+    );
+}
+
+#[test]
+fn float_formatted_audio_depths_preserve_bounded_rounding() {
+    check_float_audio_field(
+        "depth",
+        "16",
+        &[
+            ("24.0", (48000, 2, Some(24))),
+            ("23.5", (48000, 2, Some(24))),
+            ("24.4", (48000, 2, Some(24))),
+            ("64.0", (48000, 2, Some(64))),
+            ("1.49", (48000, 2, Some(1))),
+        ],
+    );
 }
 
 #[test]

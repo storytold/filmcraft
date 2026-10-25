@@ -46,7 +46,8 @@ The error preserves the project mapping rather than silently rewriting it. Inval
 selectors are reported and their audio clip is skipped. Invalid individual sample rates, channel
 counts and bit depths warn and keep importing, using the missing-field defaults of 48 kHz, two
 channels and unspecified depth respectively. Valid fields, sibling descriptions and stream order
-are retained. Missing fields use those defaults without an invalid-field warning. Descriptions are
+are retained. Finite decimal values retain legacy rounding when the rounded number is within the
+field's bounds. Missing fields use those defaults without an invalid-field warning. Descriptions are
 bounded to 64 streams, 64 channels per stream, 384 kHz and 64-bit samples; exceeding the stream count
 still returns a parse error rather than truncating descriptions or changing stream selection.
 Export checks every stream against the same numeric bounds before returning XML.

@@ -138,9 +138,10 @@ fn file_audio_streams(file: Node, report: &mut Report) -> Result<Vec<AudioStream
         if streams.len() >= MAX_AUDIO_STREAMS {
             return Err(Error::parse(Format::Fcp7Xml, "too many source audio streams"));
         }
-        let mut number = |n, key, max, fallback| -> Option<u32> {
+        let mut number = |n, key, max: u32, fallback| -> Option<u32> {
             let text = child_text(n, key)?;
-            let value = text.parse::<u32>().ok().filter(|v| *v > 0 && *v <= max);
+            // Preserve legacy decimal rounding, validating finite positive bounds before casting.
+            let value = text.parse::<f64>().ok().filter(|v| v.is_finite()).map(f64::round).filter(|v| (1.0..=f64::from(max)).contains(v)).map(|v| v as u32);
             if value.is_none() {
                 report.warn(format!("invalid audio {key}; {fallback}"));
             }
