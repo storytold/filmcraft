@@ -50,6 +50,10 @@ pub struct MediaPool {
     /// item → (reference key, source)
     sources: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     proxies: RwLock<HashMap<ItemId, (String, SharedSource)>>,
+    /// Per item: the lock held while its source is being opened (see [`Self::opening`]).
+    opening: Mutex<HashMap<ItemId, Arc<Mutex<()>>>>,
+    /// Per item: the proxy key that last failed to open, and when (see [`PROXY_RETRY`]).
+    proxy_failed: Mutex<HashMap<ItemId, (String, web_time::Instant)>>,
     offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
     use_proxies: AtomicBool,
     /// Per item: video frames that failed in a row in the monitors (see [`Self::monitor_source`]).
@@ -67,6 +71,8 @@ impl Default for MediaPool {
         Self {
             sources: RwLock::new(HashMap::new()),
             proxies: RwLock::new(HashMap::new()),
+            opening: Mutex::new(HashMap::new()),
+            proxy_failed: Mutex::new(HashMap::new()),
             offline: Arc::new(RwLock::new(HashMap::new())),
             use_proxies: AtomicBool::new(false),
             failures: Arc::default(),
@@ -74,6 +80,24 @@ impl Default for MediaPool {
             stored: RwLock::default(),
         }
     }
+}
+
+/// How long a proxy that failed to open is not tried again for the same item. The requests that
+/// wait for one item's open (an export batch, playback prefetch) take turns: without it, a proxy
+/// that takes long to fail (a share that times out) would make each of them pay that time in turn.
+const PROXY_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `open()`, and whether a read in it was deferred ([`filmcraft_media::pending`]), leaving the
+/// thread's own mark as it was: where the open runs on the asking thread (the web build), a mark
+/// an earlier layer of the same frame set stays, so the frame is still known to be incomplete.
+fn open_noting_pending<T>(open: impl FnOnce() -> T) -> (T, bool) {
+    let before = filmcraft_media::pending::take();
+    let opened = open();
+    let during = filmcraft_media::pending::take();
+    if before {
+        filmcraft_media::pending::mark();
+    }
+    (opened, during)
 }
 
 /// Largest file [`MediaPool::probe_file`] reads whole when no streaming reader takes it (WAV,
@@ -177,7 +201,47 @@ impl MediaPool {
     pub fn remove(&self, item: ItemId) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
         self.proxies.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+        let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+        if opening.get(&item).is_some_and(|g| Arc::strong_count(g) == 1) {
+            opening.remove(&item);
+        }
+        drop(opening);
+        self.proxy_failed.lock().unwrap_or_else(|e| e.into_inner()).remove(&item);
         self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+    }
+
+    /// The lock a thread holds while it opens `item`'s source (full-resolution or proxy). Workers
+    /// that ask for an item the pool does not hold yet at the same moment (an export's first
+    /// frames, each on its own thread) wait here instead of each opening the file, with its own
+    /// decoder and GOP cache, and then share the one source. `None` when the open would run on
+    /// the calling thread (see [`Self::open_apart`]): a frame worker waiting inside the opener's
+    /// rayon work could block on the lock it holds, so such a thread opens without it.
+    fn opening(&self, item: ItemId) -> Option<Arc<Mutex<()>>> {
+        filmcraft_codecs::gop::opens_apart().then(|| self.opening.lock().unwrap_or_else(|e| e.into_inner()).entry(item).or_default().clone())
+    }
+
+    /// Run `open` (a source's opening, under the item's gate) off the caller's rayon pool. An
+    /// opener that decodes at open (an EXR still) starts rayon work; a frame worker waiting inside
+    /// that work would pick up another frame job of its pool, which blocks on the gate the worker
+    /// holds (#480, [`filmcraft_codecs::gop::isolated_open`]). A read the opener could not serve
+    /// yet is marked on this thread, as if it had opened here.
+    fn open_apart(open: impl FnOnce() -> Result<SharedSource, MediaError> + Send) -> Result<SharedSource, MediaError> {
+        match filmcraft_codecs::gop::isolated_open(|| Ok(open_noting_pending(open))) {
+            Ok((opened, pending)) => {
+                if pending {
+                    filmcraft_media::pending::mark();
+                }
+                opened
+            }
+            Err(e) => Err(MediaError::Io(format!("the opener stopped: {e}"))),
+        }
+    }
+
+    /// The cached full-resolution source of `item` when it was opened under `key` (or without one).
+    fn cached_under(&self, item: ItemId, key: &str) -> Option<SharedSource> {
+        let sources = self.sources.read().unwrap_or_else(|e| e.into_inner());
+        let (k, s) = sources.get(&item)?;
+        (k.is_empty() || k == key).then(|| s.clone())
     }
 
     /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
@@ -232,6 +296,8 @@ impl MediaPool {
     pub fn clear(&self) {
         self.sources.write().unwrap_or_else(|e| e.into_inner()).clear();
         self.proxies.write().unwrap_or_else(|e| e.into_inner()).clear();
+        self.opening.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, g| Arc::strong_count(g) > 1);
+        self.proxy_failed.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.offline.write().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
@@ -319,10 +385,13 @@ impl MediaPool {
             return Some(s);
         }
         let key = media_key(m);
-        if let Some((k, s)) = self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item)
-            && (k.is_empty() || *k == key)
-        {
-            return Some(s.clone());
+        if let Some(s) = self.cached_under(item, &key) {
+            return Some(s);
+        }
+        let gate = self.opening(item);
+        let _opening = gate.as_ref().map(|g| g.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(s) = self.cached_under(item, &key) {
+            return Some(s);
         }
         let src: SharedSource = match &m.media {
             MediaRef::Generator(g) => {
@@ -334,12 +403,14 @@ impl MediaPool {
                 self.set_offline(item, OfflineReason::MadeOffline, path, "made offline");
                 Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
             }
-            MediaRef::File { path } => match self.follow_media(path).and_then(|file| {
-                if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
-                    open_image_sequence(&file, services, m.info.frame_rate(), &it.name)
-                } else {
-                    self.open_file(&file, services)
-                }
+            MediaRef::File { path } => match Self::open_apart(|| {
+                self.follow_media(path).and_then(|file| {
+                    if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
+                        open_image_sequence(&file, services, m.info.frame_rate(), &it.name)
+                    } else {
+                        self.open_file(&file, services)
+                    }
+                })
             }) {
                 Ok(s) => {
                     self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
@@ -367,12 +438,24 @@ impl MediaPool {
 
     fn proxy_source(&self, item: ItemId, path: &str, m: &MediaClip, services: &dyn Services) -> Option<SharedSource> {
         let key = format!("proxy:{path}");
-        if let Some((k, s)) = self.proxies.read().unwrap_or_else(|e| e.into_inner()).get(&item)
-            && *k == key
-        {
-            return Some(s.clone());
+        let cached = || {
+            let proxies = self.proxies.read().unwrap_or_else(|e| e.into_inner());
+            proxies.get(&item).filter(|(k, _)| *k == key).map(|(_, s)| s.clone())
+        };
+        if let Some(s) = cached() {
+            return Some(s);
         }
-        match self.follow_media(path).and_then(|file| self.open_file(&file, services)) {
+        let gate = self.opening(item);
+        let _opening = gate.as_ref().map(|g| g.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(s) = cached() {
+            return Some(s);
+        }
+        let failed_lately =
+            self.proxy_failed.lock().unwrap_or_else(|e| e.into_inner()).get(&item).is_some_and(|(k, at)| *k == key && at.elapsed() < PROXY_RETRY);
+        if failed_lately {
+            return None;
+        }
+        match Self::open_apart(|| self.follow_media(path).and_then(|file| self.open_file(&file, services))) {
             Ok(s) => {
                 // a proxy with fewer audio streams than the original (say one track of an OBS
                 // recording's seven) still stands in for the picture; the audio comes from the
@@ -380,19 +463,23 @@ impl MediaPool {
                 let audio_from = if s.info().audio_streams.len() < m.info.audio_streams.len() {
                     log::warn!("proxy has fewer audio streams than the original: {path}; audio from full-resolution media");
                     match &m.media {
-                        MediaRef::File { path: original } if !m.offline => self.follow_media(original).and_then(|file| self.open_file(&file, services)).ok(),
+                        MediaRef::File { path: original } if !m.offline => {
+                            Self::open_apart(|| self.follow_media(original).and_then(|file| self.open_file(&file, services))).ok()
+                        }
                         _ => None,
                     }
                 } else {
                     None
                 };
                 let src: SharedSource = Arc::new(ProxySource { proxy: s, info: m.info.clone(), audio_from });
+                self.proxy_failed.lock().unwrap_or_else(|e| e.into_inner()).remove(&item);
                 self.proxies.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src.clone()));
                 Some(src)
             }
             Err(e) => {
                 // a missing proxy falls back to the full-resolution media
                 log::warn!("proxy offline: {path}: {e}");
+                self.proxy_failed.lock().unwrap_or_else(|e| e.into_inner()).insert(item, (key, web_time::Instant::now()));
                 None
             }
         }
@@ -713,6 +800,227 @@ mod tests {
         let missing = dir.join("missing.wav").to_string_lossy().to_string();
         assert!(matches!(MediaPool::default().open_file(&missing, &crate::FsServices), Err(MediaError::Offline(_))));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A host whose reader takes 50 ms to open any path (paths starting with `missing` fail after
+    /// that), counting the opens, how many ran at once and the threads they ran on.
+    struct SlowReader {
+        bytes: Arc<[u8]>,
+        opens: std::sync::atomic::AtomicUsize,
+        opening: std::sync::atomic::AtomicUsize,
+        most_at_once: std::sync::atomic::AtomicUsize,
+        /// Wait (up to 10 s) for a second open in progress before finishing.
+        wait_for_company: bool,
+        /// Run a pending rayon job of the opening thread's pool while opening, as an opener that
+        /// decodes on rayon (an EXR still) does while it waits for its own work.
+        yield_to_rayon: bool,
+        threads: Mutex<Vec<String>>,
+    }
+    impl SlowReader {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes: bytes.into(),
+                opens: Default::default(),
+                opening: Default::default(),
+                most_at_once: Default::default(),
+                wait_for_company: false,
+                yield_to_rayon: false,
+                threads: Default::default(),
+            }
+        }
+    }
+    impl Services for SlowReader {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            Err(std::io::Error::other(format!("{path}: read whole")))
+        }
+        fn write_file(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn reader(&self, path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            let at_once = self.opening.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most_at_once.fetch_max(at_once, Ordering::SeqCst);
+            self.threads.lock().unwrap().push(std::thread::current().name().unwrap_or("").to_string());
+            if self.yield_to_rayon {
+                rayon::yield_now();
+            }
+            let started = web_time::Instant::now();
+            while self.wait_for_company && self.opening.load(Ordering::SeqCst) < 2 && started.elapsed() < std::time::Duration::from_secs(10) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            self.most_at_once.fetch_max(self.opening.load(Ordering::SeqCst), Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.opening.fetch_sub(1, Ordering::SeqCst);
+            if path.starts_with("missing") {
+                return Some(Err(std::io::Error::new(std::io::ErrorKind::NotFound, path.to_string())));
+            }
+            Some(Ok(Arc::new(filmcraft_media::reader::MemReader(self.bytes.clone()))))
+        }
+    }
+
+    /// A project with a WAV item per `(path, proxy path)`, and the reader that serves them all.
+    fn wav_items(items: &[(&str, Option<&str>)]) -> (Project, Vec<ItemId>, SlowReader) {
+        let services = SlowReader::new(filmcraft_media::wav::write_wav16(&[0.0, 0.5, -0.5, 0.25], 2, 48_000));
+        let info = MediaPool::default().open_file("a.wav", &services).unwrap().info().clone();
+        services.opens.store(0, Ordering::SeqCst);
+        services.threads.lock().unwrap().clear();
+        let mut project = Project::new("race");
+        let ids = items
+            .iter()
+            .map(|(path, proxy)| {
+                project.add_item(
+                    path,
+                    filmcraft_project::Label::Iris,
+                    ItemKind::Media(MediaClip {
+                        media: MediaRef::File { path: path.to_string() },
+                        info: info.clone(),
+                        interpret: Default::default(),
+                        mark_in: None,
+                        mark_out: None,
+                        markers: vec![],
+                        offline: false,
+                        proxy: proxy.map(|p| MediaRef::File { path: p.to_string() }),
+                        identity: None,
+                    }),
+                    None,
+                )
+            })
+            .collect();
+        (project, ids, services)
+    }
+
+    /// `requests` frame jobs on a rayon pool of `workers` threads named `frame-<n>`, as an export
+    /// renders a batch, each resolving `item`. Fails when they have not all finished within 30 s
+    /// (workers stuck for good are left behind).
+    fn ask_from_frame_workers(
+        pool: &Arc<MediaPool>,
+        project: &Arc<Project>,
+        item: ItemId,
+        services: &Arc<SlowReader>,
+        workers: usize,
+        requests: usize,
+    ) -> Vec<SharedSource> {
+        use rayon::prelude::*;
+        let (pool, project, services) = (pool.clone(), project.clone(), services.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let asking = std::thread::spawn(move || {
+            let frames = rayon::ThreadPoolBuilder::new().num_threads(workers).thread_name(|n| format!("frame-{n}")).build().expect("a frame pool");
+            let sources: Vec<SharedSource> = frames.install(|| {
+                (0..requests).into_par_iter().with_max_len(1).map(|_| pool.source_for(&project, item, &*services).expect("the item opens")).collect()
+            });
+            let _ = tx.send(sources);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(sources) => sources,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("the frame workers are stuck: deadlock"),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match asking.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => panic!("the frame workers ended without their sources"),
+            },
+        }
+    }
+
+    /// An export's frame workers ask for a clip's first frames at the same moment, before the
+    /// pool holds its source: the file is opened once and every worker gets that one source.
+    #[test]
+    fn parallel_first_requests_open_an_item_once() {
+        let (project, ids, services) = wav_items(&[("a.wav", None)]);
+        let (project, services, pool) = (Arc::new(project), Arc::new(services), Arc::new(MediaPool::default()));
+        let sources = ask_from_frame_workers(&pool, &project, ids[0], &services, 8, 8);
+        assert_eq!(services.opens.load(Ordering::SeqCst), 1, "one open per item, however many ask at once");
+        assert!(sources.iter().all(|s| Arc::ptr_eq(s, &sources[0])), "every worker shares the one source");
+        assert_eq!(pool.open_sources(), 1);
+    }
+
+    /// The same for an item read through its proxy.
+    #[test]
+    fn parallel_first_requests_open_a_proxy_once() {
+        let (project, ids, services) = wav_items(&[("a.wav", Some("a-proxy.wav"))]);
+        let (project, services, pool) = (Arc::new(project), Arc::new(services), Arc::new(MediaPool::default()));
+        pool.set_use_proxies(true);
+        let sources = ask_from_frame_workers(&pool, &project, ids[0], &services, 8, 8);
+        assert_eq!(services.opens.load(Ordering::SeqCst), 1, "one open of the proxy, however many ask at once");
+        assert!(sources.iter().all(|s| Arc::ptr_eq(s, &sources[0])), "every worker shares the one proxy source");
+        assert_eq!(pool.open_sources(), 1, "the proxy, not the full-resolution file");
+        assert!(pool.cached(ids[0]).is_none(), "the full-resolution file was not opened");
+    }
+
+    /// A proxy that fails to open is tried once by the requests waiting for it, which then read
+    /// the full-resolution file: they do not each pay for the failure in turn.
+    #[test]
+    fn parallel_first_requests_try_a_missing_proxy_once() {
+        let (project, ids, services) = wav_items(&[("a.wav", Some("missing-proxy.wav"))]);
+        let (project, services, pool) = (Arc::new(project), Arc::new(services), Arc::new(MediaPool::default()));
+        pool.set_use_proxies(true);
+        let sources = ask_from_frame_workers(&pool, &project, ids[0], &services, 8, 8);
+        assert_eq!(services.opens.load(Ordering::SeqCst), 2, "the proxy once, then the full-resolution file once");
+        assert!(sources.iter().all(|s| Arc::ptr_eq(s, &sources[0])), "every worker shares the full-resolution source");
+    }
+
+    /// Waiting is per item: two items asked for at once open side by side.
+    #[test]
+    fn different_items_open_in_parallel() {
+        if std::thread::available_parallelism().map_or(1, |n| n.get()) < 2 {
+            eprintln!("skipped: one core, the open pool has a single thread");
+            return;
+        }
+        let (project, ids, mut services) = wav_items(&[("a.wav", None), ("b.wav", None)]);
+        services.wait_for_company = true;
+        let pool = MediaPool::default();
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for item in &ids {
+                scope.spawn(|| {
+                    start.wait();
+                    pool.full_res_source(&project, *item, &services).expect("the item opens");
+                });
+            }
+        });
+        assert_eq!(services.opens.load(Ordering::SeqCst), 2);
+        assert_eq!(services.most_at_once.load(Ordering::SeqCst), 2, "the two opens overlapped");
+    }
+
+    /// Opens run on the open pool, never on the frame workers that ask for them.
+    #[test]
+    fn opens_run_on_the_open_pool() {
+        let (project, ids, services) = wav_items(&[("a.wav", Some("a-proxy.wav"))]);
+        let (project, services, pool) = (Arc::new(project), Arc::new(services), Arc::new(MediaPool::default()));
+        ask_from_frame_workers(&pool, &project, ids[0], &services, 4, 4);
+        pool.set_use_proxies(true);
+        ask_from_frame_workers(&pool, &project, ids[0], &services, 4, 4);
+        let threads = services.threads.lock().unwrap().clone();
+        assert_eq!(threads.len(), 2, "one open of the file, one of the proxy");
+        assert!(threads.iter().all(|t| t.starts_with("open-")), "opened on {threads:?}");
+    }
+
+    /// A frame worker holds an item's gate while its open runs rayon work (an EXR still decodes as
+    /// it opens). On the frame worker's own pool, that work would let the worker pick up another
+    /// frame job of the batch, which waits for the gate the worker holds, for good.
+    #[test]
+    fn an_opener_running_rayon_work_never_deadlocks_the_frame_workers() {
+        let (project, ids, mut services) = wav_items(&[("a.wav", None)]);
+        services.yield_to_rayon = true;
+        let (project, services, pool) = (Arc::new(project), Arc::new(services), Arc::new(MediaPool::default()));
+        let sources = ask_from_frame_workers(&pool, &project, ids[0], &services, 2, 32);
+        assert_eq!(sources.len(), 32);
+        assert_eq!(services.opens.load(Ordering::SeqCst), 1);
+    }
+
+    /// Opening an item keeps a deferred-read mark the thread already had (an earlier layer of the
+    /// frame whose data is still being fetched), and reports one the open itself made. Where the
+    /// open runs on the asking thread (the web build) the frame would otherwise be encoded without
+    /// that layer.
+    #[test]
+    fn opening_keeps_the_threads_deferred_read_mark() {
+        let _ = filmcraft_media::pending::take();
+        filmcraft_media::pending::mark();
+        let ((), during) = open_noting_pending(|| ());
+        assert!(!during, "the open deferred nothing");
+        assert!(filmcraft_media::pending::take(), "the earlier mark stays");
+
+        let ((), during) = open_noting_pending(filmcraft_media::pending::mark);
+        assert!(during, "the open's own deferred read is reported");
+        assert!(!filmcraft_media::pending::take(), "and left to the caller to mark");
     }
 
     /// A file whose first frame decodes and whose later frames need a decoder FilmCraft lacks.

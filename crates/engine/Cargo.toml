@@ -51,3 +51,4 @@ filmcraft-testkit = { workspace = true }
 filmcraft-dng = { workspace = true, features = ["writer"] }
 filmcraft-isobmff = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+rayon = { workspace = true }

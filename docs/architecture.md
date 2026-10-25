@@ -225,7 +225,10 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
 - **Sources.** `media::MediaSource` yields `video_frame(FrameRequest)` and
   `audio(start, frames, rate)` in media time. Sources are `Send + Sync` and shared by monitors,
   thumbnails, playback and export. The engine's `MediaPool` creates one per project item, lazily,
-  through registered openers (`codecs::openers()`: MP4/MOV, MKV/WebM, audio files).
+  through registered openers (`codecs::openers()`: MP4/MOV, MKV/WebM, audio files); threads that
+  ask for an item not opened yet at the same time (an export's parallel frame workers) wait for the
+  one open instead of each opening a source of their own. The open runs on a pool of its own
+  (`codecs::gop::isolated_open`), not on the asking thread's rayon pool nor on the decode pool.
 - **Pixel aspect ratio.** Demuxers report it in `VideoStreamInfo::par` (MP4/MOV `pasp`, Matroska
   display size, MXF aspect ratio, MPEG sequence header / VUI); Interpret Footage's
   `Interpretation::par` overrides it (`clip.interpretFootage {pixelAspect}`), and
