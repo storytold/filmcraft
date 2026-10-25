@@ -337,21 +337,37 @@ pub(crate) fn spin_blur(img: &Image, x: f32, y: f32, cx: f32, cy: f32, ang: f32,
     }
     scale4(acc, 1.0 / n as f32)
 }
-/// Disc (bokeh-like) blur of radius `r` with `n` golden-angle samples.
-pub(crate) fn disc_blur(img: &Image, x: f32, y: f32, r: f32, n: usize) -> [f32; 4] {
+/// The sample offsets of a disc (bokeh-like) blur of radius `r` with `n` golden-angle samples
+/// (empty: no blur), for [`disc_blur_with`]. They depend
+/// only on `r` and `n`, so a frame works them out once instead of for every pixel (#1871: the
+/// square root, sine and cosine of every sample of every pixel were most of a Lens Blur frame).
+pub(crate) fn disc_offsets(r: f32, n: usize) -> Vec<(f32, f32)> {
     if r < 0.5 || n <= 1 {
+        return Vec::new();
+    }
+    (0..n)
+        .map(|i| {
+            let rr = r * ((i as f32 + 0.5) / n as f32).sqrt();
+            let a = i as f32 * 2.399_963;
+            (rr * a.cos(), rr * a.sin())
+        })
+        .collect()
+}
+
+/// Disc (bokeh-like) blur at `(x, y)` with `n` golden-angle samples, their offsets from
+/// [`disc_offsets`].
+pub(crate) fn disc_blur_with(img: &Image, x: f32, y: f32, offsets: &[(f32, f32)]) -> [f32; 4] {
+    if offsets.is_empty() {
         return img.sample_bilinear_clamped(x, y);
     }
     let mut acc = [0.0; 4];
-    for i in 0..n {
-        let rr = r * ((i as f32 + 0.5) / n as f32).sqrt();
-        let a = i as f32 * 2.399_963;
-        let p = img.sample_bilinear_clamped(x + rr * a.cos(), y + rr * a.sin());
+    for &(dx, dy) in offsets {
+        let p = img.sample_bilinear_clamped(x + dx, y + dy);
         for k in 0..4 {
             acc[k] += p[k];
         }
     }
-    scale4(acc, 1.0 / n as f32)
+    scale4(acc, 1.0 / offsets.len() as f32)
 }
 /// Sample count for a blur of extent `len` pixels.
 #[inline]

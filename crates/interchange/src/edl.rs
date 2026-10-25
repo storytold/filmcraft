@@ -375,7 +375,9 @@ impl Ctx<'_> {
                 }
             }
             let id = ti.id;
-            self.b.ensure_tracks(&mut self.seq, kind, idx + 1);
+            if !self.b.ensure_tracks(&mut self.seq, kind, idx + 1) {
+                continue;
+            }
             let mut next = self.b.p.next_id;
             let track = &mut self.seq.tracks_mut(kind)[idx];
             overwrite(track, ti, &mut || {
@@ -487,7 +489,9 @@ fn import_event(ctx: &mut Ctx, ev: &Event, report: &mut Report) {
             let chans: BTreeSet<Ch> = l2.chans.iter().copied().collect();
             for ch in chans {
                 let (kind, idx) = ctx.track_index(ch, 0);
-                ctx.b.ensure_tracks(&mut ctx.seq, kind, idx + 1);
+                if !ctx.b.ensure_tracks(&mut ctx.seq, kind, idx + 1) {
+                    continue;
+                }
                 let to = placed.iter().find(|(k, i, _)| *k == kind && *i == idx).map(|p| p.2);
                 let track = &mut ctx.seq.tracks_mut(kind)[idx];
                 let from = if from_black { None } else { track.items.iter().find(|i| i.end() == t0).map(|i| i.id) };

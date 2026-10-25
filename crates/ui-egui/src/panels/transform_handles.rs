@@ -277,7 +277,7 @@ fn changes(d: &Drag, effect: &str, cur: Pos2) -> Vec<(&'static str, Value)> {
 }
 
 /// The resize cursor for a handle in direction `v` from the box's centre.
-fn resize_cursor(v: egui::Vec2) -> CursorIcon {
+pub(crate) fn resize_cursor(v: egui::Vec2) -> CursorIcon {
     let deg = v.y.atan2(v.x).to_degrees().rem_euclid(180.0);
     if !(22.5..157.5).contains(&deg) {
         CursorIcon::ResizeHorizontal

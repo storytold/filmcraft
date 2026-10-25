@@ -929,8 +929,12 @@ fn consolidate_duplicates(s: &mut Session, _: &Value) -> Result<Value> {
     let mut groups: BTreeMap<String, Vec<ItemId>> = BTreeMap::new();
     for it in s.project.items.values() {
         if let ItemKind::Media(m) = &it.kind {
-            // same file (or generator), interpretation and streams
-            let shape = (m.info.video.is_some(), m.info.has_audio(), m.info.duration);
+            let generator_rate = if matches!(&m.media, MediaRef::Generator(filmcraft_media::Generator::CountingLeader)) {
+                m.info.video.as_ref().map(|v| v.frame_rate)
+            } else {
+                None
+            };
+            let shape = (m.info.video.is_some(), m.info.has_audio(), m.info.duration, generator_rate);
             let key = serde_json::to_string(&(&m.media, &m.interpret, m.offline, shape)).unwrap_or_default();
             groups.entry(key).or_default().push(it.id);
         }
@@ -1234,7 +1238,15 @@ fn parse_format(f: &str) -> Option<AudioChannels> {
 fn audio_channels(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<ItemId> =
         items_p(s, p).into_iter().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| m.info.has_audio())).collect();
-    if items.is_empty() || p.get("channels").is_some() {
+    // `channels` is the only thing the timeline-clip branch below reads, so it alone decides
+    // which branch runs: no project item selected used to fall into it too (on the theory that
+    // there was nothing else to do), but a `channels`-less call with no item selected (e.g. a
+    // stray `format` with an empty project selection, #1845) then reset the selected clips'
+    // `source_channels` to `[]` via `unwrap_or_default()` instead of being rejected.
+    if items.is_empty() && p.get("channels").is_none() {
+        return Err(bad("clip.audioChannels", "select a clip with audio, or a project item to set its format"));
+    }
+    if p.get("channels").is_some() {
         // timeline audio clips: which source channels each plays
         let clips = match p.get("clips").and_then(Value::as_array) {
             Some(a) if a.iter().all(Value::is_u64) => a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect(),

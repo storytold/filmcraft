@@ -39,6 +39,9 @@ pub mod credits;
 pub mod dock;
 mod dock_shared;
 mod dock_ui;
+/// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
+const MAX_THUMB_TEXTURES: usize = 512;
+
 pub mod frames;
 pub mod graphics_notice;
 pub mod header;
@@ -229,6 +232,10 @@ pub struct Playback {
     /// The audio clock's last reading and when (egui time, s) it last moved: a device that stops
     /// consuming samples hands the clock back to the wall clock (see [`AUDIO_STALL_S`]).
     audio_seen: (u64, f64),
+    /// When playback lost its output (a failed open or a dead stream), when it is opened again
+    /// (egui time, s; 0 = not retrying). Pause/play proves a fresh stream works, so a stream the
+    /// device keeps dropping is reopened on a timer (see [`AUDIO_RETRY_S`]).
+    audio_retry_at: f64,
     /// Audio underruns for the current (or last) play (desktop: sound is mixed ahead).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio_stats: std::sync::Arc<play_ahead::AudioStats>,
@@ -252,6 +259,11 @@ pub struct Playback {
 /// #136); playback must not freeze on it. Devices that are slow to start (Bluetooth) stay well
 /// under this.
 pub const AUDIO_STALL_S: f64 = 1.0;
+
+/// How often (s) playback re-opens the output after its stream or device failed, while playing
+/// goes on silently on the wall clock. Reopening is what pause/play does by hand; doing it on a
+/// timer brings the sound back when the device recovers (#2503).
+pub const AUDIO_RETRY_S: f64 = 2.0;
 
 /// How long `ui.screenshot` waits for the window to present the frame.
 const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
@@ -289,6 +301,9 @@ pub struct FilmcraftApp {
     pub auto: automation::Registry,
     /// Named textures (monitors, thumbnails) with the key they show.
     textures: HashMap<String, (FrameKey, TextureHandle)>,
+    /// The UI pass each thumbnail texture was last used in: thumbnails beyond
+    /// [`MAX_THUMB_TEXTURES`] are freed, least recently used first (#1682).
+    thumb_used: HashMap<String, u64>,
     control_rx: Option<Receiver<ControlRequest>>,
     /// One explicit panel reveal; consumed by the custom renderer, never repeated per frame.
     pub(crate) pending_panel_raise: Option<PanelKind>,
@@ -553,6 +568,7 @@ impl FilmcraftApp {
             native_dialog: None,
             auto: Default::default(),
             textures: HashMap::new(),
+            thumb_used: HashMap::new(),
             control_rx: None,
             pending_panel_raise: None,
             control_input_only: false,
@@ -633,6 +649,7 @@ impl FilmcraftApp {
                 FrameServer::default_workers(),
             ));
             self.textures.clear();
+            self.thumb_used.clear();
             self.tl.reset_media_caches();
             // the new frame server needs the Memory settings
             self.applied_prefs = None;
@@ -685,6 +702,16 @@ impl FilmcraftApp {
         }
     }
 
+    /// View ▸ Reset Interface Zoom: the scale Settings ▸ Appearance ▸ UI Scale asks for (the
+    /// system's with Auto), undoing any session zoom (#2253).
+    /// Returns the zoom factor set (egui reports it from the next pass on).
+    pub(crate) fn reset_ui_zoom(&mut self, ctx: &egui::Context) -> f32 {
+        let native = ctx.native_pixels_per_point().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0);
+        let zoom = self.session.prefs.appearance.ui_scale_factor().map_or(1.0, |scale| scale / native);
+        ctx.set_zoom_factor(zoom);
+        zoom
+    }
+
     /// Make the UI follow the settings after they change (theme, tooltips, frame cache budget,
     /// play after rendering, audio device).
     pub fn apply_prefs(&mut self, ctx: &egui::Context) {
@@ -696,6 +723,11 @@ impl FilmcraftApp {
             if k != self.tokens.kind {
                 self.set_theme(ctx, k);
             }
+        }
+        // checked every frame: a theme or font change installs the style again
+        let animation = if self.session.prefs.appearance.animations { theme::ANIMATION_TIME } else { 0.0 };
+        if ctx.global_style().animation_time != animation {
+            ctx.global_style_mut(|s| s.animation_time = animation);
         }
         if self.applied_prefs.as_ref() == Some(&self.session.prefs) {
             return;
@@ -747,7 +779,7 @@ impl FilmcraftApp {
             let now = ctx.input(|i| i.time);
             self.playback.anchor_time = now;
             self.playback.audio_seen = (0, now);
-            self.start_audio();
+            self.start_audio(now);
         }
         if let Some(note) = self.audio.as_ref().and_then(|a| a.note()) {
             self.ui.status = note;
@@ -849,6 +881,13 @@ impl FilmcraftApp {
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {
+        // closed while floating: it floats again where it was (#1985); taken before the Timeline's
+        // own restore below docks it
+        let open = self.ui.dock.contains(p) || self.ui.floating.iter().any(|group| group.panels.contains(&p));
+        let refloat = match self.ui.closed_floating.iter().position(|(k, _)| *k == p) {
+            Some(i) if !open => Some(self.ui.closed_floating.remove(i).1),
+            _ => None,
+        };
         if p == PanelKind::Timeline && !self.ui.floating.iter().any(|group| group.panels.contains(&p)) {
             self.ui.dock.restore_timeline();
         }
@@ -872,6 +911,15 @@ impl FilmcraftApp {
                 _ => PanelKind::Project,
             };
             self.ui.dock.open_near(p, near);
+        }
+        if let Some(rect) = refloat.filter(|r| r.iter().all(|v| v.is_finite())) {
+            let rect = [rect[0], rect[1], rect[2].max(160.0), rect[3].max(120.0)];
+            if let Err(e) = self.apply_dock(craft_ui::docking::Action::Float { panel: p, rect }) {
+                // refused (it is the only docked panel left): it stays docked, and its floating
+                // place is kept rather than lost
+                log::warn!("could not float {} again: {e}", p.id());
+                self.ui.closed_floating.push((p, rect));
+            }
         }
         let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: p });
         self.ui.focused = p;
@@ -963,6 +1011,7 @@ impl FilmcraftApp {
             a.stop();
         }
         self.playback.audio_clock = false;
+        self.playback.audio_retry_at = 0.0;
     }
 
     /// Start the clock (and audio) once the first frames are ready or the preroll timed out.
@@ -971,7 +1020,7 @@ impl FilmcraftApp {
         self.playback.anchor_time = now;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.audio_seen = (0, now);
-        self.start_audio();
+        self.start_audio(now);
         // Audio Track Mixer: an automation pass runs while playing forward in real time
         if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
             let t = self.session.playhead();
@@ -1023,6 +1072,7 @@ impl FilmcraftApp {
         }
         self.scrub.device_stopped();
         self.playback.audio_clock = false;
+        self.playback.audio_retry_at = 0.0;
         if self.session.mixrec.active() {
             let t = self.session.playhead();
             if let Err(e) = self.session.execute("mixer.recordStop", json!({"time": t.0})) {
@@ -1033,7 +1083,7 @@ impl FilmcraftApp {
         panels::voiceover::on_stop(self);
     }
 
-    fn start_audio(&mut self) {
+    fn start_audio(&mut self, now: f64) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let start_tick = self.session.playhead();
         let Some(a) = self.audio.as_mut() else { return };
@@ -1042,6 +1092,7 @@ impl FilmcraftApp {
         // either the original rate conversion or pitch-corrected program audio.
         let Some((mix_rate, mix)) = shuttle::mix(&self.session, seq_id, sr, self.playback.speed) else {
             a.stop();
+            self.playback.audio_retry_at = 0.0;
             return;
         };
         let cursor = start_tick.to_units_floor(i64::from(mix_rate));
@@ -1061,6 +1112,7 @@ impl FilmcraftApp {
         match a.start(fill) {
             Ok(_) => {
                 self.playback.audio_clock = true;
+                self.playback.audio_retry_at = 0.0;
                 if let Some(note) = self.audio.as_ref().and_then(|audio| audio.note()) {
                     self.ui.status = note;
                 }
@@ -1068,6 +1120,7 @@ impl FilmcraftApp {
             Err(e) => {
                 log::warn!("audio output unavailable: {e}");
                 self.playback.audio_clock = false;
+                self.playback.audio_retry_at = now + AUDIO_RETRY_S;
             }
         }
     }
@@ -1090,6 +1143,15 @@ impl FilmcraftApp {
         if self.playback.anchor_time < 0.0 {
             self.playback.anchor_time = now;
         }
+        if !self.playback.audio_clock && self.playback.audio_retry_at > 0.0 && now >= self.playback.audio_retry_at {
+            // The output failed mid-play: open it again where the wall clock got to (what
+            // pause/play does by hand), so a recovering device brings the sound back.
+            self.playback.audio_retry_at = now + AUDIO_RETRY_S;
+            self.playback.anchor_tick = self.session.playhead();
+            self.playback.anchor_time = now;
+            self.playback.audio_seen = (0, now);
+            self.start_audio(now);
+        }
         let rate = self.session.sequence_rate();
         if self.playback.audio_clock
             && let Some(audio) = self.audio.as_mut()
@@ -1103,6 +1165,7 @@ impl FilmcraftApp {
             self.playback.anchor_tick = self.session.playhead();
             self.playback.anchor_time = now;
             self.playback.audio_clock = false;
+            self.playback.audio_retry_at = now + AUDIO_RETRY_S;
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
@@ -1161,16 +1224,28 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- textures
 
-    /// Upload a rendered frame into a named texture (only when the key changed).
+    /// Upload a rendered frame into a named texture (only when the key changed), opaque: the
+    /// picture over black.
     pub fn texture_for(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba) -> egui::TextureId {
+        self.upload_frame(ctx, name, key, img, false)
+    }
+
+    /// Like [`Self::texture_for`], keeping the frame's alpha, so what is painted under the
+    /// texture (the monitors' Transparency Grid) shows through its transparent areas.
+    pub fn texture_with_alpha(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba) -> egui::TextureId {
+        self.upload_frame(ctx, name, key, img, true)
+    }
+
+    fn upload_frame(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba, alpha: bool) -> egui::TextureId {
+        let image = || img.color_image(alpha);
         if let Some((k, tex)) = self.textures.get_mut(name) {
             if *k != key {
-                tex.set(egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.px), TextureOptions::LINEAR);
+                tex.set(image(), TextureOptions::LINEAR);
                 *k = key;
             }
             return tex.id();
         }
-        let tex = ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.px), TextureOptions::LINEAR);
+        let tex = ctx.load_texture(name, image(), TextureOptions::LINEAR);
         let id = tex.id();
         self.textures.insert(name.to_string(), (key, tex));
         id
@@ -1251,12 +1326,40 @@ impl FilmcraftApp {
         let name = format!("thumb-{}-{}-{}", item.0, frame, width);
         if let Some(img) = self.frames.get(&key) {
             let id = self.texture_for(ctx, &name, key, &img);
+            self.thumb_touched(ctx, &name);
             return Some((id, egui::vec2(img.w as f32, img.h as f32)));
         }
         let scale = width as f32 / src_w.max(1) as f32;
         let project = self.session.project.clone();
         self.frames.request(key, rate.tick_of(frame), scale, &project, 50);
-        self.texture_existing(&name)
+        let shown = self.texture_existing(&name);
+        if shown.is_some() {
+            self.thumb_touched(ctx, &name);
+        }
+        shown
+    }
+
+    /// Note that thumbnail texture `name` is used in this pass, and free the least recently used
+    /// thumbnails once there are more than [`MAX_THUMB_TEXTURES`]: every frame shown in a timeline
+    /// tile or a hover scrub got a texture of its own that was never freed (#1682).
+    fn thumb_touched(&mut self, ctx: &egui::Context, name: &str) {
+        let pass = ctx.cumulative_pass_nr();
+        if self.thumb_used.insert(name.to_string(), pass).is_some() || self.thumb_used.len() <= MAX_THUMB_TEXTURES {
+            return;
+        }
+        // down to three quarters, never a thumbnail already drawn in this pass
+        let mut old: Vec<(u64, String)> = self.thumb_used.iter().filter(|(_, p)| **p < pass).map(|(n, p)| (*p, n.clone())).collect();
+        old.sort_unstable();
+        let excess = self.thumb_used.len().saturating_sub(MAX_THUMB_TEXTURES * 3 / 4);
+        for (_, n) in old.into_iter().take(excess) {
+            self.thumb_used.remove(&n);
+            self.textures.remove(&n);
+        }
+    }
+
+    /// The number of thumbnail textures held (tests, diagnostics).
+    pub fn thumbnail_textures(&self) -> usize {
+        self.textures.keys().filter(|n| n.starts_with("thumb-")).count()
     }
 
     // ---------------------------------------------------------------- files
@@ -1701,7 +1804,7 @@ impl FilmcraftApp {
         let focused = ctx.input(|i| i.focused);
         let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
         ctx.data_mut(|d| d.insert_temp(focus_key, focused));
-        if !on || filmcraft_engine::media_watch::media_files(&self.session.project).is_empty() {
+        if !on || filmcraft_engine::media_watch::media_files(&self.session.project, &self.session.media).is_empty() {
             return;
         }
         let last: f64 = ctx.data(|d| d.get_temp(last_key)).unwrap_or(f64::NEG_INFINITY);
@@ -1754,7 +1857,8 @@ impl FilmcraftApp {
         self.handle_drops(&ctx);
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
-                if self.control_input_only {
+                // control-only mode ignores native menu commands, but Quit stays available (#1943)
+                if self.control_input_only && id != "app.quit" {
                     continue;
                 }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
@@ -2410,7 +2514,7 @@ mod audio_recovery_tests {
     use super::*;
     use std::sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     struct Device {
@@ -2655,6 +2759,74 @@ mod audio_recovery_tests {
             shown <= second && shown + app.session.sequence_rate().frame_duration() > second,
             "the playhead follows the frames the device played: {shown:?}"
         );
+        app.stop();
+    }
+
+    /// A device whose stream dies mid-play (`ticking`) or whose open fails (`opens`).
+    struct Reviving {
+        starts: Arc<AtomicUsize>,
+        opens: Arc<AtomicBool>,
+        ticking: Arc<AtomicBool>,
+    }
+
+    impl AudioOut for Reviving {
+        fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            if self.opens.load(Ordering::Relaxed) { Ok(48_000) } else { Err("device unavailable".into()) }
+        }
+        fn stop(&mut self) {}
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+        fn played_frames(&self) -> Option<u64> {
+            self.ticking.load(Ordering::Relaxed).then_some(0)
+        }
+    }
+
+    #[test]
+    fn a_lost_output_is_reopened_and_the_sound_returns() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let ticking = Arc::new(AtomicBool::new(true));
+        app.audio = Some(Box::new(Reviving { starts: starts.clone(), opens: Arc::new(AtomicBool::new(true)), ticking: ticking.clone() }));
+        app.play(1.0);
+        app.end_preroll(0.0);
+        assert!(app.playback.audio_clock && starts.load(Ordering::Relaxed) == 1);
+        // the stream dies: the device stops reporting a playback clock
+        ticking.store(false, Ordering::Relaxed);
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!app.playback.audio_clock);
+        // the device recovers before the next retry: playback reopens it itself
+        ticking.store(true, Ordering::Relaxed);
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0 + AUDIO_RETRY_S + 0.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "the output is reopened without pause/play");
+        assert!(app.playback.audio_clock, "the fresh stream is the master clock again");
+        app.stop();
+    }
+
+    #[test]
+    fn a_device_that_appears_mid_playback_starts_sounding() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let opens = Arc::new(AtomicBool::new(false));
+        app.audio = Some(Box::new(Reviving { starts: starts.clone(), opens: opens.clone(), ticking: Arc::new(AtomicBool::new(true)) }));
+        app.play(1.0);
+        app.end_preroll(0.0);
+        assert!(!app.playback.audio_clock, "no device yet: playing on the wall clock");
+        // headphones plug in while playing: the next retry opens them
+        opens.store(true, Ordering::Relaxed);
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(AUDIO_RETRY_S + 0.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(starts.load(Ordering::Relaxed), 2, "the output is retried without pause/play");
+        assert!(app.playback.audio_clock);
         app.stop();
     }
 }

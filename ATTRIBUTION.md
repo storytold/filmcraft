@@ -28,7 +28,7 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `docs/images/filmcraft-keyframes.png` | FilmCraft contributors | Original work: FilmCraft screenshot; frames from Night of the Living Dead (1968, public domain) | MIT OR Apache-2.0; film frames public domain |
 | `docs/images/filmcraft-export.png` | FilmCraft contributors | Original work: FilmCraft screenshot; frame from Night of the Living Dead (1968, public domain) | MIT OR Apache-2.0; film frames public domain |
 | `docs/images/filmcraft-assembly.png` | FilmCraft contributors | Original work: FilmCraft screenshot; frames from Carnival of Souls (1962), Night of the Living Dead (1968), thumbnails of all demo media | MIT OR Apache-2.0; film frames public domain |
-| `docs/images/filmcraft-lumetri.png` | FilmCraft contributors | Original work: FilmCraft UI crop (Lumetri Color panel) | MIT OR Apache-2.0 |
+| `docs/images/filmcraft-color-panel.png` | FilmCraft contributors | Original work: FilmCraft UI crop (color grading panel) | MIT OR Apache-2.0 |
 | `docs/images/filmcraft-scopes.png` | FilmCraft contributors | Original work: FilmCraft UI crop (scopes of a Charade (1963) frame, public domain) | MIT OR Apache-2.0 |
 | `docs/images/filmcraft-effects.png` | FilmCraft contributors | Original work: FilmCraft screenshot crop; NASA Earth Views (US Government work, public domain) | MIT OR Apache-2.0; footage public domain |
 | `docs/images/filmcraft-timeline.png` | FilmCraft contributors | Original work: FilmCraft UI crop; thumbnails from Night of the Living Dead (1968) and Carnival of Souls (1962), CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
@@ -130,6 +130,10 @@ carry each font's licence as `OFL-<family>.txt`.
 | BIZ UDPGothic Regular, Bold (Morisawa) | Japanese UI text; Japanese fallback for sans titles (the web build embeds only Regular) | OFL-1.1 |
 | Shippori Mincho Regular (FONTDASU) | Japanese fallback for serif titles (native builds) | OFL-1.1 |
 | BIZ UDMincho Regular (Morisawa) | Japanese fallback for serif titles (native builds) | OFL-1.1 |
+| Noto Sans CJK SC Regular (Google, Adobe) | Chinese UI text and media names; Chinese fallback for titles (native builds) | OFL-1.1 |
+| Noto Sans Arabic Regular (Google) | Arabic UI text; Arabic fallback for titles (native builds) | OFL-1.1 |
+| Noto Sans Thai Regular (Google) | Thai fallback for titles (native builds) | OFL-1.1 |
+| Noto Sans Georgian Regular (Google) | Georgian fallback for titles (native builds) | OFL-1.1 |
 
 ## First-party brand marks
 

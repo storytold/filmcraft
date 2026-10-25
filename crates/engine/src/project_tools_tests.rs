@@ -307,6 +307,11 @@ fn media_properties_settings_and_scratch_disks() {
     assert!(s.execute("file.projectSettings.general", json!({"renderer": "quantum"})).is_err());
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.project.settings.renderer, crate::project_tools::RENDERER_GPU);
+    // Scratch Disks: a drive another system names is refused before the project has a folder
+    if cfg!(unix) {
+        assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": r"D:\Captured"})).is_err());
+        assert!(s.project.settings.scratch.captured.is_none());
+    }
     // Scratch Disks: previews follow the Video Previews folder once the project is saved
     let proj = dir.join("Show.fcproj").to_string_lossy().to_string();
     s.execute("file.saveAs", json!({"path": proj})).unwrap();
@@ -320,6 +325,46 @@ fn media_properties_settings_and_scratch_disks() {
     s.execute("file.projectSettings.scratchDisks", json!({"videoPreviews": null})).unwrap();
     assert!(s.project.settings.scratch.video_previews.is_none());
     assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": 5})).is_err());
+}
+
+/// Edit Original hands only regular media files to the system opener.
+#[test]
+fn edit_original_opens_media_files_only() {
+    let d = tmp_dir("orig-kinds");
+    for f in ["clip.mov", "Still.PNG", "run.bat", "app.desktop", "clip.mov.lnk"] {
+        std::fs::write(d.join(f), b"").unwrap();
+    }
+    for f in ["Tool.app", "folder.mov"] {
+        std::fs::create_dir_all(d.join(f)).unwrap();
+    }
+    let ok = |f: &str| crate::project_tools::openable_original(&d.join(f).to_string_lossy()).is_ok();
+    assert!(ok("clip.mov") && ok("Still.PNG"));
+    for f in ["run.bat", "app.desktop", "clip.mov.lnk", "Tool.app", "folder.mov", "missing.mov", ""] {
+        assert!(!ok(f), "{f}");
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(d.join("app.desktop"), d.join("link.mov")).unwrap();
+        assert!(!ok("link.mov"), "a media name linking to another kind of file");
+        std::os::unix::fs::symlink(d.join("clip.mov"), d.join("link.desktop")).unwrap();
+        assert!(!ok("link.desktop"), "another kind of name linking to a media file");
+    }
+    // The command refuses a clip whose file is not media, and returns no paths to open.
+    let path = d.join("take.mp4");
+    make_movie(&path, DemoScene::Aurora, 64, 36, 8);
+    let (mut s, items, _) = session_with(&[&path]);
+    let id = items[0];
+    let bat = d.join("run.bat").to_string_lossy().into_owned();
+    s.edit("relink", |pr, _| {
+        if let Some(ItemKind::Media(m)) = pr.item_mut(id).map(|it| &mut it.kind) {
+            m.media = filmcraft_project::MediaRef::File { path: bat };
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.execute("project.select", json!({"items": [id.0]})).unwrap();
+    let e = s.execute("edit.editOriginal", json!({})).unwrap_err().to_string();
+    assert!(e.contains("run.bat"), "{e}");
 }
 
 #[test]

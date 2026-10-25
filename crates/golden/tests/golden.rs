@@ -738,16 +738,33 @@ fn scenes_are_distinct() {
 
 // ---- GPU parity ----
 
-fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+/// A device for the GPU parity tests, or `None` (with a `SKIPPED` note) when the machine has no
+/// usable adapter. `require_float_target` additionally demands a renderable `Rgba32Float`, which
+/// only the effect-chain plan needs; main falls back to CPU effects on adapters without it.
+fn device(context: &str, require_float_target: bool) -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok() else {
+        eprintln!("SKIPPED ({context}): no GPU adapter");
+        return None;
+    };
+    let name = adapter.get_info().name;
+    let renderable = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba32Float).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+    if require_float_target && !renderable {
+        eprintln!("SKIPPED ({context}): adapter {name} cannot render to Rgba32Float");
+        return None;
+    }
+    match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
+        Ok(device) => Some(device),
+        Err(_) => {
+            eprintln!("SKIPPED ({context}): adapter {name} refused a device");
+            None
+        }
+    }
 }
 
 #[test]
 fn gpu_matches_cpu_on_golden_scenes() {
-    let Some((dev, q)) = device() else {
-        eprintln!("SKIPPED (gpu parity): no GPU adapter");
+    let Some((dev, q)) = device("gpu parity", false) else {
         return;
     };
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
@@ -807,8 +824,7 @@ fn interior_diff(plan: &filmcraft_render::plan::FramePlan, a: &Rgba8, b: &Rgba8)
 /// printed too.
 #[test]
 fn gpu_blend_modes_match_cpu_render() {
-    let Some((dev, q)) = device() else {
-        eprintln!("SKIPPED (gpu blend parity): no GPU adapter");
+    let Some((dev, q)) = device("gpu blend parity", false) else {
         return;
     };
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
@@ -855,8 +871,7 @@ fn gpu_blend_modes_match_cpu_render() {
 /// blend modes: the plan does the same (Screen clips cross-dissolving on V2 over V1).
 #[test]
 fn gpu_transition_of_blended_clips_matches_cpu_render() {
-    let Some((dev, q)) = device() else {
-        eprintln!("SKIPPED (gpu blend parity): no GPU adapter");
+    let Some((dev, q)) = device("gpu blend parity", false) else {
         return;
     };
     let mut b = Builder::new(2);
@@ -931,8 +946,7 @@ fn gpu_effect_chains_match_cpu_render() {
         assert!(!fx.ops.is_empty());
     }
     assert!(layers[4].fx.is_none(), "Emboss is rendered on the CPU");
-    let Some((dev, q)) = device() else {
-        eprintln!("SKIPPED (gpu effect parity): no GPU adapter");
+    let Some((dev, q)) = device("gpu effect parity", true) else {
         return;
     };
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);

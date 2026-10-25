@@ -3,6 +3,16 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Control input limits
+
+The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).
+The MCP bridge sends null for omitted counts/steps, so the validator treats null like an absent
+field: one click or 12 drag steps. Negative, fractional, non-numeric and over-limit values still
+return errors before queuing any input. Zero clicks emit no button events; 0–1 drag steps use 2.
+`control::input_bounds_tests` covers defaults, rejection, unchanged pending input and valid
+gestures; `keyboard_ui` verifies that rejected requests leave the UI usable. See the
+[control protocol](../../docs/control-protocol.md).
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the
@@ -18,7 +28,8 @@ the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screensho
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
-Chinese, German, Russian, French, Indonesian, Korean and Italian (which cover the whole interface). The language is stored in the engine's `general.interfaceLanguage` preference,
+Chinese, German, Russian, French, Indonesian, Korean and Italian (all but Ukrainian and Russian cover
+the whole interface; those two cover the core menus). The language is stored in the engine's `general.interfaceLanguage` preference,
 restored on startup, and also available in Settings > General.
 Its default, System Language (`system`), follows the operating system: the first of the user's
 preferred languages that the interface has (the host supplies them through
@@ -32,15 +43,20 @@ fills translated templates, and `i18n::t` translates names from registries. Plac
 (including user filenames containing braces) are inserted literally. Catalog translations are
 original work using ordinary language, without proprietary localisation resources.
 
-Spanish, Japanese, Simplified Chinese, French and Brazilian Portuguese cover menus, panels, dialogs, settings and registry labels. Searches accept both the
+Spanish, Japanese, Simplified Chinese, French, Brazilian Portuguese and German cover menus, panels, dialogs, settings and registry labels. Searches accept both the
 translated label and its English source, including Unicode capitals. Project content, command ids
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
-English. Ukrainian and Russian currently cover the core menus, German every menu; they fall back
-to English elsewhere.
+English. Ukrainian and Russian currently cover the core menus; they fall back to English elsewhere.
 
-Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders,
-literal/menu/registry coverage and UI behaviour; `cargo xtask ci` runs the workspace gates. Visual
-checks use the control channel to switch language and capture the resulting panels.
+A string a catalog lacks shows in English, so a missing translation never fails a test or a
+build. `cargo xtask i18n-report` prints each language's missing strings (menus, `tl!` literals and
+registry names) and its entries whose source the interface no longer has; `cargo xtask ci` prints
+the same report in its log.
+
+Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders
+and UI behaviour in other languages (switching, search, font coverage); `cargo xtask ci` runs the
+workspace gates. Visual checks use the control channel to switch language and capture the resulting
+panels.
 
 ## Source playback
 

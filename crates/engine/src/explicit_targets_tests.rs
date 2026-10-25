@@ -130,7 +130,7 @@ fn naming_nothing_usable_does_not_enable_a_command() {
     assert!(why.starts_with("-1 is not a clip id"), "{why}");
     assert_eq!(disabled(s.execute("clip.replaceFromBin", json!({"clips": [v1(&s)[0].id.0], "item": 987_654_321u64}))), "select a clip in the Project panel");
     // `edit.cut` takes no `clips`: it works on the selection only
-    assert_eq!(disabled(s.execute("edit.cut", json!({"clips": [v1(&s)[0].id.0]}))), "no clips selected");
+    assert_eq!(disabled(s.execute("edit.cut", json!({"clips": [v1(&s)[0].id.0]}))), "no clips or captions selected");
     assert!(std::sync::Arc::ptr_eq(&before, &s.project), "nothing was edited");
 }
 
@@ -306,4 +306,27 @@ fn link_leaves_clips_without_a_partner_unlinked() {
     assert_eq!(clip(&s, v0).unwrap().link, clip(&s, a0).unwrap().link);
     assert_eq!(clip(&s, v1).unwrap().link, None, "v1 has no overlapping audio in the selection");
     assert_eq!(clip(&s, a2).unwrap().link, None, "a2 has no overlapping video in the selection");
+}
+
+/// #1103: Unlink with a selection that also holds an unlinked clip (a title, a music clip) unlinks
+/// the linked ones, as the Timeline's context menu offers, instead of re-linking them.
+#[test]
+fn unlink_with_an_unlinked_clip_in_the_selection_still_unlinks() {
+    let mut s = demo();
+    let (v, a) = (v1(&s), a1(&s));
+    let (v0, a0, v1, a1) = (v[0].id, a[0].id, v[1].id, a[1].id);
+    assert!(clip(&s, v0).unwrap().link.is_some() && clip(&s, v1).unwrap().link.is_some(), "the demo's clips start linked");
+    // make one clip unlinked on its own: its partner goes with it (no one-member link stays)
+    s.execute("clip.link", json!({"clips": [a1.0]})).unwrap();
+    assert_eq!(clip(&s, a1).unwrap().link, None);
+    assert_eq!(clip(&s, v1).unwrap().link, None, "the partner left alone is unlinked too");
+    s.execute("clip.link", json!({"clips": [v0.0, a0.0]})).unwrap();
+    s.execute("clip.link", json!({"clips": [v0.0, a0.0]})).unwrap();
+    assert!(clip(&s, v0).unwrap().link.is_some(), "v0 and a0 linked again");
+    // v0 + a0 linked, v1 not: Unlink
+    let r = s.execute("clip.link", json!({"clips": [v0.0, a0.0, v1.0]})).unwrap();
+    assert_eq!(r["linked"], false);
+    for c in [v0, a0, v1] {
+        assert_eq!(clip(&s, c).unwrap().link, None, "{c:?}");
+    }
 }

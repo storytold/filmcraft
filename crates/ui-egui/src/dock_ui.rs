@@ -97,12 +97,23 @@ impl FilmcraftApp {
             Action::Activate { panel } => Some(*panel),
             _ => None,
         };
+        // a panel closed while floating remembers where; closed while docked, it forgets (#1985)
+        let closing = match &action {
+            Action::Close { panel } => Some((*panel, self.ui.floating.iter().find(|g| g.panels.contains(panel)).map(|g| g.rect))),
+            _ => None,
+        };
         self.commit_dock(|shared| {
             crate::dock_shared::check_last_docked(shared, &action)?;
             shared.apply(action).map_err(|error| error.to_string())
         })?;
         if let Some(panel) = reveal {
             self.pending_panel_raise = Some(panel);
+        }
+        if let Some((panel, rect)) = closing {
+            self.ui.closed_floating.retain(|(p, _)| *p != panel);
+            if let Some(rect) = rect {
+                self.ui.closed_floating.push((panel, rect));
+            }
         }
         if relocating
             || self.ui.keys.maximized.is_some_and(|panel| !self.ui.dock.contains(panel) && !self.ui.floating.iter().any(|group| group.panels.contains(&panel)))
