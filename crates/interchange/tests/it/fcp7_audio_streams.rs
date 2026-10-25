@@ -1,6 +1,6 @@
 //! Regression for issue #2872 using the reporter's xmeml layout, without opening media.
-mod support;
-use filmcraft_interchange::{ExportOptions, Format, Imported, export, import};
+use crate::support;
+use filmcraft_interchange::{ExportOptions, Format, Imported, Level, export, import};
 use filmcraft_project::{TrackItem, TrackKind};
 use support::*;
 
@@ -239,16 +239,81 @@ fn invalid_stream_selectors_skip_audio_with_a_warning() {
     }
 }
 #[test]
-fn malformed_stream_descriptions_return_errors_without_panicking() {
-    let mut cases = vec![REPRO.replacen(AUDIO, &AUDIO.repeat(filmcraft_media::MAX_AUDIO_STREAMS + 1), 1)];
-    for (key, valid) in [("samplerate", "48000"), ("channelcount", "2"), ("depth", "16")] {
-        for invalid in ["0", "-1", "4294967296"] {
-            cases.push(REPRO.replace(&format!("<{key}>{valid}</{key}>"), &format!("<{key}>{invalid}</{key}>")));
+fn excessive_stream_descriptions_return_error_without_panicking() {
+    let xml = REPRO.replacen(AUDIO, &AUDIO.repeat(filmcraft_media::MAX_AUDIO_STREAMS + 1), 1);
+    assert!(std::panic::catch_unwind(|| import(xml.as_bytes(), Format::Fcp7Xml, None)).unwrap().is_err());
+}
+
+// Catch whole-import rejection, silent fallback, dropping a stream (and shifting its selector),
+// resetting valid neighboring metadata, or losing authored pan while recovering one bad field.
+fn check_invalid_audio_field(key: &str, valid: &str, above_max: &str, expected: (u32, u32, Option<u32>)) {
+    for invalid in ["0", "-1", "NaN", "4294967296", "18446744073709551616", "invalid", above_max] {
+        for bad_index in 0..2 {
+            let good = AUDIO.replace("48000", "44100").replace("<channelcount>2", "<channelcount>6").replace("<depth>16", "<depth>24");
+            let bad = AUDIO.replace(&format!("<{key}>{valid}</{key}>"), &format!("<{key}>{invalid}</{key}>"));
+            let descriptions = if bad_index == 0 { format!("{bad}{good}") } else { format!("{good}{bad}") };
+            let pan = PAN.replace("<value>0</value>", "<value>-0.35</value>");
+            let xml = REPRO.replacen(&format!("{AUDIO}\n                {AUDIO}"), &descriptions, 1).replace("</sourcetrack>", &format!("</sourcetrack>{pan}"));
+            assert_ne!(xml, REPRO);
+            let result = std::panic::catch_unwind(|| import(xml.as_bytes(), Format::Fcp7Xml, None));
+            assert!(result.is_ok(), "{key}={invalid}, stream {bad_index} panicked");
+            let result = result.unwrap();
+            assert!(result.is_ok(), "{key}={invalid}, stream {bad_index} aborted import: {result:?}");
+            let (imp, report) = result.unwrap();
+            let seq = imp.project.sequence(only_seq(&imp)).unwrap();
+            assert_eq!(seq.video_tracks.iter().map(|t| t.items.len()).sum::<usize>(), 1);
+            assert_eq!(seq.audio_tracks.iter().map(|t| t.items.len()).sum::<usize>(), 1);
+            assert_eq!(audio(&imp).audio_stream, 1);
+            assert!(audio(&imp).source_channels.is_empty());
+            assert!((balance(audio(&imp)) + 35.0).abs() < 1e-9);
+            assert_eq!(streams(&imp).len(), 2);
+            let recovered = &streams(&imp)[bad_index];
+            assert_eq!((recovered.sample_rate, recovered.channels, recovered.bits_per_sample), expected);
+            let sibling = &streams(&imp)[1 - bad_index];
+            assert_eq!((sibling.sample_rate, sibling.channels, sibling.bits_per_sample), (44100, 6, Some(24)));
+            assert!(report.entries.iter().any(|e| e.level == Level::Warning && e.message.contains(key)), "{key}={invalid}: {report:?}");
         }
     }
-    for xml in cases {
-        assert!(std::panic::catch_unwind(|| import(xml.as_bytes(), Format::Fcp7Xml, None)).unwrap().is_err());
+}
+
+#[test]
+fn invalid_audio_sample_rates_warn_and_keep_importing() {
+    check_invalid_audio_field("samplerate", "48000", "384001", (48000, 2, Some(16)));
+}
+
+#[test]
+fn invalid_audio_channel_counts_warn_and_keep_importing() {
+    check_invalid_audio_field("channelcount", "2", "65", (48000, 2, Some(16)));
+}
+
+#[test]
+fn invalid_audio_depths_warn_and_keep_importing() {
+    check_invalid_audio_field("depth", "16", "65", (48000, 2, None));
+}
+
+#[test]
+fn missing_audio_fields_keep_existing_defaults_without_invalid_field_warnings() {
+    let missing = "<audio><samplecharacteristics/></audio>";
+    let xml = REPRO.replace(AUDIO, missing);
+    let (imp, report) = import(xml.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert_eq!(streams(&imp).len(), 2);
+    for stream in streams(&imp) {
+        assert_eq!((stream.sample_rate, stream.channels, stream.bits_per_sample), (48000, 2, None));
     }
+    assert!(!report.entries.iter().any(|e| ["samplerate", "channelcount", "depth"].iter().any(|key| e.message.contains(key))), "{report:?}");
+}
+
+#[test]
+fn invalid_single_stream_metadata_keeps_split_channel_and_pan() {
+    let xml = REPRO.replacen(AUDIO, "", 1).replace("<samplerate>48000</samplerate>", "<samplerate>NaN</samplerate>");
+    let result = std::panic::catch_unwind(|| import(xml.as_bytes(), Format::Fcp7Xml, None)).unwrap();
+    assert!(result.is_ok(), "invalid sample rate aborted single-stream import: {result:?}");
+    let (imp, report) = result.unwrap();
+    assert_eq!(audio(&imp).audio_stream, 0);
+    assert_eq!(audio(&imp).source_channels, vec![1]);
+    assert_eq!(balance(audio(&imp)), 100.0);
+    assert_eq!(streams(&imp)[0].sample_rate, 48000);
+    assert!(report.entries.iter().any(|e| e.level == Level::Warning && e.message.contains("samplerate")), "{report:?}");
 }
 #[test]
 fn reference_before_definition_preserves_stream_selection() {

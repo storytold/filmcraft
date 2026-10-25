@@ -130,26 +130,27 @@ struct Imp<'a, 'i, 'r> {
     error: Option<Error>,
 }
 
-/// File-level sibling audio elements describe separate source streams, not timeline tracks.
-fn file_audio_streams(file: Node) -> Result<Vec<AudioStreamInfo>> {
+/// This proposal retains file-level sibling audio descriptions as separate source streams.
+fn file_audio_streams(file: Node, report: &mut Report) -> Result<Vec<AudioStreamInfo>> {
     let mut streams = Vec::new();
     let Some(media) = child(file, "media") else { return Ok(streams) };
     for audio in children(media, "audio") {
         if streams.len() >= MAX_AUDIO_STREAMS {
             return Err(Error::parse(Format::Fcp7Xml, "too many source audio streams"));
         }
-        let number = |n, key, default, max| -> Result<u32> {
-            let value = match child_text(n, key) {
-                Some(text) => text.parse::<u32>().ok().filter(|v| *v > 0 && *v <= max),
-                None => Some(default),
-            };
-            value.ok_or_else(|| Error::parse(Format::Fcp7Xml, format!("invalid audio {key}")))
+        let mut number = |n, key, max, fallback| -> Option<u32> {
+            let text = child_text(n, key)?;
+            let value = text.parse::<u32>().ok().filter(|v| *v > 0 && *v <= max);
+            if value.is_none() {
+                report.warn(format!("invalid audio {key}; {fallback}"));
+            }
+            value
         };
         let sc = child(audio, "samplecharacteristics").unwrap_or(audio);
         streams.push(AudioStreamInfo {
-            sample_rate: number(sc, "samplerate", 48_000, 384_000)?,
-            channels: number(audio, "channelcount", 2, 64)?,
-            bits_per_sample: child_text(sc, "depth").map(|_| number(sc, "depth", 16, 64)).transpose()?,
+            sample_rate: number(sc, "samplerate", 384_000, "using 48000 Hz").unwrap_or(48_000),
+            channels: number(audio, "channelcount", 64, "using 2 channels").unwrap_or(2),
+            bits_per_sample: number(sc, "depth", 64, "leaving bit depth unspecified"),
             codec: String::new(),
         });
     }
@@ -311,7 +312,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let name = child_text(def, "name").filter(|s| !s.is_empty()).or(fallback_name).unwrap_or("Untitled").to_string();
         let rate = read_rate(def);
         let video = child(def, "media").and_then(|m| child(m, "video"));
-        let audio_streams = match file_audio_streams(def) {
+        let audio_streams = match file_audio_streams(def, self.report) {
             Ok(streams) => streams,
             Err(error) => {
                 self.error.get_or_insert(error);
