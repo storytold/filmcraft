@@ -500,6 +500,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "rgb_split" => lights::rgb_split(img, e, cx),
         "volumetric_rays" => lights::volumetric_rays(img, e, cx),
         "wonder_glow" => lights::wonder_glow(img, e, cx),
+        "halation" => lights::halation(img, e, cx),
         "lens_flare" => lights::lens_flare(img, e, cx),
         "alpha_glow" => lights::alpha_glow(img, e, cx),
         // Stylize / Perspective / Generate / Legacy & obsolete generators
