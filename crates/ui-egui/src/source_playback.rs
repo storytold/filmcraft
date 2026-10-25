@@ -234,7 +234,7 @@ impl FilmcraftApp {
                 self.source_playback.clock.audio_retry_at = 0.0;
             }
             Err(e) => {
-                self.ui.status = format!("Source audio output failed: {e}");
+                self.ui.fail(format!("Source audio output failed: {e}"));
                 self.source_playback.clock.audio_retry_at = now + AUDIO_RETRY_S;
             }
         }
@@ -301,7 +301,7 @@ impl FilmcraftApp {
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
-            self.ui.status = "Source audio output stopped responding: playing without sound (check Settings > Audio Hardware)".into();
+            self.ui.fail("Source audio output stopped responding: playing without sound (check Settings > Audio Hardware)");
         }
         let elapsed = match reading {
             Some((frames, sr)) if clock.audio_clock && sr > 0 => frames as f64 / f64::from(sr),
