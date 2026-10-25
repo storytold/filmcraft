@@ -607,3 +607,44 @@ fn deleting_media_used_on_the_timeline_makes_it_offline() {
     assert_eq!(r["offline"], 0);
     assert!(s.project.item(ItemId(unused)).is_none());
 }
+
+/// #2689: Reveal in Finder (and Reveal Proxy in Finder) give the files' real places when the
+/// project stores them relative to itself; the stored relative path made the file manager open
+/// Documents.
+#[test]
+fn reveal_resolves_paths_stored_relative_to_the_project() {
+    let dir = tmp_dir("reveal-relative");
+    let (media, proxy) = (dir.join("take.mp4"), dir.join("take_proxy.mp4"));
+    make_movie(&media, DemoScene::Aurora, 64, 36, 8);
+    make_movie(&proxy, DemoScene::Aurora, 32, 18, 8);
+    let (mut s, items, _) = session_with(&[&media]);
+    s.execute("project.select", json!({"items": [items[0].0]})).unwrap();
+    assert!(!s.is_enabled("file.revealProxy"), "no proxy attached yet");
+    s.execute("media.attachProxies", json!({"item": items[0].0, "path": proxy.to_string_lossy()})).unwrap();
+    let project = dir.join("p.fcproj");
+    s.execute("file.saveAs", json!({"path": project.to_string_lossy()})).unwrap();
+    // the same project with its paths relative to it, as a moved or shared project stores them
+    let text = std::fs::read_to_string(&project).unwrap();
+    let prefix = serde_json::to_string(&format!("{}{}", dir.to_string_lossy(), std::path::MAIN_SEPARATOR)).unwrap();
+    let prefix = prefix.trim_matches('"');
+    assert!(text.contains(prefix), "the saved project names the files by their full paths");
+    std::fs::write(&project, text.replace(prefix, "")).unwrap();
+    let mut s = Session::default();
+    s.execute("file.open", json!({"path": project.to_string_lossy()})).unwrap();
+    let item = s.project.items.values().find(|i| i.name.starts_with("take")).unwrap().id;
+    let stored = s.project.item(item).and_then(|i| i.as_media()).map(|m| m.media.clone());
+    assert_eq!(stored, Some(filmcraft_project::MediaRef::File { path: "take.mp4".into() }), "stored relative");
+    s.execute("project.select", json!({"items": [item.0]})).unwrap();
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+    let revealed = s.execute("file.reveal", json!({})).unwrap()["paths"][0].as_str().unwrap().to_string();
+    assert_eq!(real(std::path::Path::new(&revealed)), real(&media));
+    let revealed = s.execute("file.revealProxy", json!({})).unwrap()["paths"][0].as_str().unwrap().to_string();
+    assert_eq!(real(std::path::Path::new(&revealed)), real(&proxy));
+    // a subclip reveals its media's proxy (#2711 review)
+    s.execute("source.open", json!({"item": item.0})).unwrap();
+    s.execute("project.setMarks", json!({"item": item.0, "in": 0, "out": filmcraft_time::Tick::from_seconds_f64(0.2).0})).unwrap();
+    let sub = s.execute("clip.makeSubclip", json!({})).unwrap()["item"].as_u64().unwrap();
+    let revealed = s.execute("file.revealProxy", json!({"items": [sub]})).unwrap()["paths"][0].as_str().unwrap().to_string();
+    assert_eq!(real(std::path::Path::new(&revealed)), real(&proxy));
+    let _ = std::fs::remove_dir_all(&dir);
+}
