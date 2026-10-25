@@ -74,6 +74,7 @@ pub fn audio_api(cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, Mus
     Ok(Box::new(hosted::Hosted::generic(cfg, transport()?)?))
 }
 
+#[cfg_attr(not(feature = "native"), allow(unused_variables))]
 pub fn stable_audio_local(models_dir: Option<&Path>, cfg: &HashMap<String, String>) -> Result<Box<dyn Provider>, MusicError> {
     let dir = models_dir.ok_or_else(|| MusicError::Unavailable("no models folder".into()))?;
     let manifest = models::load_manifest(dir, LOCAL_MODEL_ID)?;
