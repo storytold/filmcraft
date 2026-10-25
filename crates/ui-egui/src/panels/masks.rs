@@ -1,13 +1,14 @@
 //! Effect masks in the UI: the mask rows of Effect Controls (create ellipse / 4-point polygon /
 //! pen masks, per-mask Path / Feather / Opacity / Expansion / Inverted / mode) and on-monitor
 //! editing on the Program monitor (drag vertices, Bézier handles, the whole mask, feather,
-//! expansion and corner-roundness handles; the pen places a free-draw Bézier mask).
+//! expansion and corner-roundness handles; a marquee or Shift-click selects several vertices,
+//! which move together; the pen places a free-draw Bézier mask).
 //!
 //! Automation ids: `effectControls.<effect>.mask.{ellipse,polygon,pen}`,
 //! `effectControls.<effect>.mask<k>` (+ `.mode`, `.inverted`, `.delete`, and the parameter rows
 //! `effectControls.<effect>.mask<k>.<param>.*`), `program.mask.vertex.<i>`, `program.mask.in.<i>`,
 //! `program.mask.out.<i>`, `program.mask.body`, `program.mask.feather`, `program.mask.expansion`,
-//! `program.mask.roundness`, `program.maskPen`.
+//! `program.mask.roundness`, `program.mask.marquee`, `program.maskPen`.
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_geom::{Affine, Vec2};
@@ -297,6 +298,27 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let v = lin_inv.apply(Vec2::new(d.x as f64, d.y as f64));
         [v.x, v.y]
     };
+    // ---- vertex marquee: a drag that starts on the picture outside the shape (under every
+    // handle, so they come first; Selection tool only, the Hand pans). It sits over the graphics
+    // overlay, so it leaves graphic layers to it and takes over its click on empty space. Where the
+    // marquee started (stored for the gesture, until the button is up) keeps it registered over a
+    // layer through the release.
+    let marquee_id = egui::Id::new("mask-marquee");
+    let marquee_from = egui::Id::new("mask-marquee-from");
+    let selection_tool = app.ui.tool == crate::state::Tool::Selection;
+    if !ui.input(|i| i.pointer.primary_down() || i.pointer.primary_released()) {
+        ui.data_mut(|d| d.remove::<Pos2>(marquee_from));
+    }
+    let marquee_on = ui.data(|d| d.get_temp::<Pos2>(marquee_from)).is_some();
+    let on_layer = |p: Pos2| pic.contains(p) && crate::panels::graphics::visible_layers(app, pic, frame).iter().any(|v| v.hit(p));
+    let marquee = (selection_tool && (marquee_on || !ui.input(|i| i.pointer.hover_pos()).is_some_and(on_layer)))
+        .then(|| ui.interact(pic, marquee_id, Sense::click_and_drag()));
+    if let Some(r) = &marquee {
+        app.auto.add("program.mask.marquee", pic, "Mask vertex marquee");
+        if r.clicked() {
+            crate::panels::graphics::deselect_on_monitor(app, ui);
+        }
+    }
     // ---- whole mask (drag inside)
     let bb = Rect::from_points(&screen).expand(2.0).intersect(pic);
     let body = ui.interact(bb, egui::Id::new("mask-body"), Sense::click_and_drag());
@@ -306,6 +328,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let ok = ptr_in(body.interact_pointer_pos());
         ui.data_mut(|d| d.insert_temp(gesture_id.with("body"), ok));
     }
+    // (inside the outline's box but outside the shape, the drag is a marquee too)
+    let body_marquee = selection_tool && !ui.data(|d| d.get_temp::<bool>(gesture_id.with("body"))).unwrap_or(false);
     if body.dragged_by(LEFT) && ui.data(|d| d.get_temp::<bool>(gesture_id.with("body"))).unwrap_or(false) && body.drag_delta() != egui::Vec2::ZERO {
         let d = drag_step(ui, egui::Id::new(("mask-body-drag", gesture)), body.drag_delta());
         if d != egui::Vec2::ZERO {
@@ -360,9 +384,13 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     actions.extend(roundness_handle(app, ui, &painter, &path, &to_screen, &target));
     // ---- tangent handles and vertices
     let sel_v_id = egui::Id::new(("mask-sel-vertex", sel.clip.0, sel.effect, sel.mask));
-    let sel_v: Option<usize> = ui.data(|d| d.get_temp(sel_v_id));
+    let n_v = path.vertices.len();
+    // (stored with the vertex count: once a vertex is added or deleted, by any edit or by undo, the
+    // indices name other vertices and the selection goes)
+    let mut sel_vs: Vec<usize> = ui.data(|d| d.get_temp::<(usize, Vec<usize>)>(sel_v_id)).filter(|(n, _)| *n == n_v).map(|(_, v)| v).unwrap_or_default();
     let alt = ui.input(|i| i.modifiers.alt);
     let cmd = ui.input(|i| i.modifiers.command);
+    let shift = ui.input(|i| i.modifiers.shift);
     for (i, v) in path.vertices.iter().enumerate() {
         if v.is_corner() {
             continue;
@@ -387,7 +415,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     for (i, v) in path.vertices.iter().enumerate() {
         let p = sp(&to_screen, v.p);
         let vr = Rect::from_center_size(p, vec2(7.0, 7.0));
-        let selected = sel_v == Some(i);
+        let selected = sel_vs.contains(&i);
         painter.rect_filled(vr, 0.0, if selected { col } else { Color32::WHITE });
         painter.rect_stroke(vr, 0.0, Stroke::new(1.0, col), egui::StrokeKind::Middle);
         let r = ui.interact(vr.expand(3.0), egui::Id::new(("mask-vertex", i)), Sense::click_and_drag()).on_hover_text(if cfg!(target_os = "macos") {
@@ -396,13 +424,23 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             tl!("Drag: move · Alt-click: smooth/corner · Ctrl-click: delete")
         });
         app.auto.add(&format!("program.mask.vertex.{i}"), vr, "Mask vertex");
-        if r.drag_started_by(LEFT) {
-            ui.data_mut(|d| d.insert_temp(sel_v_id, i));
+        // dragging a selected vertex moves the whole selection; another one is selected first
+        // (added to it with Shift)
+        if r.drag_started_by(LEFT) && !selected {
+            if !shift {
+                sel_vs.clear();
+            }
+            sel_vs.push(i);
+            ui.data_mut(|d| d.insert_temp(sel_v_id, (n_v, sel_vs.clone())));
         }
         if r.dragged_by(LEFT) && r.drag_delta() != egui::Vec2::ZERO {
             let d = drag_step(ui, egui::Id::new(("mask-vertex-drag", gesture, i)), r.drag_delta());
             if d != egui::Vec2::ZERO {
-                actions.push(("masks.moveVertex".into(), with(json!({"vertex": i, "delta": clip_delta(d), "merge": format!("vertex-{gesture}")}))));
+                let which = if sel_vs.len() > 1 && sel_vs.contains(&i) { json!({"vertices": sel_vs}) } else { json!({"vertex": i}) };
+                let mut p = with(which);
+                p["delta"] = json!(clip_delta(d));
+                p["merge"] = json!(format!("vertex-{gesture}"));
+                actions.push(("masks.moveVertex".into(), p));
             }
         }
         if r.clicked() {
@@ -411,8 +449,42 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             } else if cmd {
                 actions.push(("masks.removeVertex".into(), with(json!({"vertex": i}))));
             } else {
-                ui.data_mut(|d| d.insert_temp(sel_v_id, i));
+                if !shift {
+                    sel_vs.clear();
+                }
+                if let Some(k) = sel_vs.iter().position(|v| *v == i) {
+                    sel_vs.remove(k);
+                } else {
+                    sel_vs.push(i);
+                }
+                ui.data_mut(|d| d.insert_temp(sel_v_id, (n_v, sel_vs.clone())));
             }
+        }
+    }
+    // the marquee selects the vertices inside it on release (Shift adds them to the selection)
+    let mq = marquee.iter().chain(body_marquee.then_some(&body));
+    let (started, dragging, stopped) =
+        mq.fold((false, false, false), |(a, b, c), r| (a || r.drag_started_by(LEFT), b || r.dragged_by(LEFT), c || r.drag_stopped_by(LEFT)));
+    if started && let Some(o) = ui.input(|i| i.pointer.press_origin()) {
+        ui.data_mut(|d| d.insert_temp(marquee_from, o));
+    }
+    let from: Option<Pos2> = ui.data(|d| d.get_temp(marquee_from));
+    if let (Some(o), Some(p)) = (from.filter(|_| dragging || stopped), ui.input(|i| i.pointer.latest_pos())) {
+        let r = Rect::from_two_pos(o, p);
+        if stopped {
+            ui.data_mut(|d| d.remove::<Pos2>(marquee_from));
+            if !shift {
+                sel_vs.clear();
+            }
+            for (i, v) in path.vertices.iter().enumerate() {
+                if r.contains(sp(&to_screen, v.p)) && !sel_vs.contains(&i) {
+                    sel_vs.push(i);
+                }
+            }
+            ui.data_mut(|d| d.insert_temp(sel_v_id, (n_v, sel_vs.clone())));
+        } else {
+            painter.rect_filled(r, 0.0, col.gamma_multiply(0.15));
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0, col), egui::StrokeKind::Middle);
         }
     }
     // Cmd-click on an edge adds a vertex there

@@ -131,6 +131,10 @@ carry each font's licence as `OFL-<family>.txt`.
 | BIZ UDPGothic Regular, Bold (Morisawa) | Japanese UI text; Japanese fallback for sans titles (the web build embeds only Regular) | OFL-1.1 |
 | Shippori Mincho Regular (FONTDASU) | Japanese fallback for serif titles (native builds) | OFL-1.1 |
 | BIZ UDMincho Regular (Morisawa) | Japanese fallback for serif titles (native builds) | OFL-1.1 |
+| Noto Sans CJK SC Regular (Google, Adobe) | Chinese UI text and media names; Chinese fallback for titles (native builds) | OFL-1.1 |
+| Noto Sans Arabic Regular (Google) | Arabic UI text; Arabic fallback for titles (native builds) | OFL-1.1 |
+| Noto Sans Thai Regular (Google) | Thai fallback for titles (native builds) | OFL-1.1 |
+| Noto Sans Georgian Regular (Google) | Georgian fallback for titles (native builds) | OFL-1.1 |
 
 ## First-party brand marks
 

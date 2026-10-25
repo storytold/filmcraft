@@ -17,7 +17,8 @@
 //! listening square (`mixer.A1.pan51`, drag; double-click: front centre) with Center % and LFE
 //! controls (`mixer.A1.pan51.center`, `mixer.A1.pan51.lfe`). Meters show one bar per channel
 //! (six for 5.1 strips). The panel menu (`mixer.menu`) holds Show/Hide Tracks (`mixer.menu.showHide`,
-//! then `mixer.showHide.<A1|S1>` per strip) and Meter Input(s) Only (`mixer.menu.meterInputOnly`).
+//! then `mixer.showHide.<A1|S1>` per strip) and Meter Input(s) Only (`mixer.menu.meterInputOnly`),
+//! which are also the commands `mixer.showHideTracks` and `mixer.meterInputOnly`.
 
 use std::collections::HashMap;
 
@@ -87,7 +88,7 @@ pub const INPUT_METER: u64 = u64::MAX - 1;
 
 /// Per-strip meter state, `strip id → [level, peak]` per channel (dBFS; 2 channels, or 6 for 5.1
 /// strips), fed by the playing mix ([`filmcraft_render::mixer::LiveMix`]) with fast attack and a
-/// 20 dB/s fall. [`INPUT_METER`] holds the voice-over input.
+/// 20 dB/s fall (peak holds 6 dB/s) while live, dropping within a quarter second after Stop. [`INPUT_METER`] holds the voice-over input.
 pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f32; 2]>> {
     let id = egui::Id::new("mixer-meters");
     let frame = ui.ctx().cumulative_frame_nr();
@@ -102,15 +103,18 @@ pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f
     if !input.is_empty() {
         fresh.push((INPUT_METER, input));
     }
+    // scrubbing plays through the same mixer, so its grains move the meters too
+    let live = app.playback.playing || app.session.voiceover.recording() || app.scrub.is_open();
+    // Once stopped, bars and peak holds drop within a quarter second instead of easing down for
+    // seconds, which read as audio still playing.
+    let (level_fall, peak_fall) = if live { (20.0, 6.0) } else { (360.0, 360.0) };
     let dt = ui.input(|i| i.stable_dt).min(0.1);
     for v in st.values_mut() {
         for m in v.iter_mut() {
-            m[0] = (m[0] - 20.0 * dt).max(-90.0);
-            m[1] = (m[1] - 6.0 * dt).max(-90.0);
+            m[0] = (m[0] - level_fall * dt).max(-90.0);
+            m[1] = (m[1] - peak_fall * dt).max(-90.0);
         }
     }
-    // scrubbing plays through the same mixer, so its grains move the meters too
-    let live = app.playback.playing || app.session.voiceover.recording() || app.scrub.is_open();
     if live {
         for (k, p) in fresh {
             let e = st.entry(k).or_default();
@@ -208,6 +212,35 @@ fn targets(seq: &Sequence, id: TrackId) -> Vec<&Track> {
 
 // ------------------------------------------------------------------------------------- track mixer
 
+/// Egui memory key of the open Show/Hide Tracks dialog.
+const SHOW_HIDE_TRACKS_OPEN: &str = "mixer-show-hide-open";
+
+/// The key the Audio Track Mixer menu shows for `id`: its Audio Track Mixer binding, else its
+/// application-wide one; empty when it has neither.
+fn panel_key(app: &FilmcraftApp, id: &str) -> String {
+    let bindings = app.session.shortcuts.for_command(id);
+    let b = bindings.iter().find(|b| b.panel.as_deref() == Some("Audio Track Mixer")).or_else(|| bindings.iter().find(|b| b.panel.is_none()));
+    b.map(|b| crate::menus::shortcut_text(&b.keys)).unwrap_or_default()
+}
+
+/// Show/Hide Tracks… (`mixer.showHideTracks`): shows the Audio Track Mixer and opens its dialog.
+pub(crate) fn open_show_hide_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> Value {
+    app.show_panel(crate::dock::PanelKind::AudioTrackMixer);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(SHOW_HIDE_TRACKS_OPEN), true));
+    json!({"dialog": "showHideTracks"})
+}
+
+/// Meter Input(s) Only (`mixer.meterInputOnly`, `{"on":bool?}`): sets the option, or toggles it
+/// without `on`.
+pub(crate) fn set_meter_input_only(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String> {
+    let on = match params.get("on") {
+        None | Some(Value::Null) => !app.ui.mixer_meter_input_only,
+        Some(v) => v.as_bool().ok_or("`on` must be true or false")?,
+    };
+    app.ui.mixer_meter_input_only = on;
+    Ok(json!({"meterInputOnly": on}))
+}
+
 pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     // Keep the immutable project snapshot alive while UI commands mutate the session.
@@ -234,16 +267,17 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mresp = ui.interact(menu_r, egui::Id::new("mixer-menu"), Sense::click()).on_hover_text(tl!("Audio Track Mixer menu"));
     icons::paint(ui.painter(), menu_r.shrink(2.0), Icon::Hamburger, if mresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add("mixer.menu", menu_r, "Audio Track Mixer menu");
-    let show_hide_id = egui::Id::new("mixer-show-hide-open");
+    let show_hide_id = egui::Id::new(SHOW_HIDE_TRACKS_OPEN);
     let mut show_hide: bool = ui.data(|d| d.get_temp(show_hide_id)).unwrap_or(false);
+    let (show_hide_key, meter_input_key) = (panel_key(app, "mixer.showHideTracks"), panel_key(app, "mixer.meterInputOnly"));
     egui::Popup::menu(&mresp).show(|ui| {
-        let r = ui.button(tl!("Show/Hide Tracks…"));
+        let r = ui.add(egui::Button::new(tl!("Show/Hide Tracks…")).shortcut_text(show_hide_key));
         app.auto.add("mixer.menu.showHide", r.rect, "Show/Hide Tracks…");
         if r.clicked() {
             show_hide = true;
         }
         let on = app.ui.mixer_meter_input_only;
-        let r = ui.selectable_label(on, tl!("Meter Input(s) Only"));
+        let r = ui.add(egui::Button::selectable(on, tl!("Meter Input(s) Only")).shortcut_text(meter_input_key));
         app.auto.add("mixer.menu.meterInputOnly", r.rect, "Meter Input(s) Only");
         if r.clicked() {
             app.ui.mixer_meter_input_only = !on;

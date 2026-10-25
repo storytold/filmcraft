@@ -53,6 +53,7 @@ filmcraft-codecs = { workspace = true }
 filmcraft-platform = { workspace = true }
 filmcraft-interchange = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
+tempfile = "3"
 
 # build.rs bakes contributors/contributors.json into the binary (About ▸ Contributors).
 [build-dependencies]

@@ -180,6 +180,14 @@ pub fn dragged_project_item(ui: &egui::Ui) -> Option<ItemId> {
         _ => None,
     }
 }
+/// An item dragged from the Project panel (or the Media Browser), but not a Source Monitor drag,
+/// whose In/Out range and video/audio choice only a timeline drop keeps.
+pub fn dragged_panel_item(ui: &egui::Ui) -> Option<ItemId> {
+    match payload(ui) {
+        Some(DragPayload::Item(i)) => Some(i),
+        _ => None,
+    }
+}
 /// The items a drag from the Project panel carries: the whole selection when the dragged item is
 /// one of several selected, otherwise just the dragged item.
 pub fn dragged_selection(app: &FilmcraftApp, item: ItemId) -> Vec<ItemId> {
@@ -331,6 +339,14 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         }
                         ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
                         ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+                        let mut work_area = app.session.active_sequence().is_some_and(|q| q.work_area.is_some());
+                        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Checkbox::new(&mut work_area, tl!("Work Area Bar")));
+                        app.auto.add("panel.menu.Timeline.workAreaBar", r.rect, "Work Area Bar");
+                        if r.changed()
+                            && let Err(e) = app.session.execute("sequence.workAreaBar", serde_json::json!({"show": work_area}))
+                        {
+                            app.ui.status = e.to_string();
+                        }
                     }
                     if p == PanelKind::Project {
                         ui.separator();
@@ -343,6 +359,10 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                     if p == PanelKind::Source {
                         ui.separator();
                         close |= monitor::source_panel_menu(app, ui);
+                    }
+                    if p == PanelKind::History {
+                        ui.separator();
+                        close |= misc::history_panel_menu(app, ui);
                     }
                 });
             app.auto.add("panel.menu.scroll", scroll.inner_rect, "Panel menu");

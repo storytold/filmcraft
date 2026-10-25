@@ -48,6 +48,16 @@ const NV16_VIDEO: u32 = u32::from_be_bytes(*b"422v");
 const NV16_FULL: u32 = u32::from_be_bytes(*b"422f");
 const P210_VIDEO: u32 = u32::from_be_bytes(*b"x422");
 const P210_FULL: u32 = u32::from_be_bytes(*b"xf22");
+/// H.264 and HEVC parameter parsing both enforce a maximum decoded-picture
+/// buffer and reorder depth of 16 pictures.
+const MAX_REORDER_DEPTH: usize = 16;
+
+fn validate_reorder_depth(reorder: usize) -> std::result::Result<(), String> {
+    if reorder > MAX_REORDER_DEPTH {
+        return Err("VideoToolbox reorder depth is too large".into());
+    }
+    Ok(())
+}
 
 /// How decoded buffers are laid out and what each output picture carries.
 #[derive(Clone, Debug)]
@@ -437,6 +447,7 @@ impl VtDecoder {
     /// A decoder for the stream, or why VideoToolbox does not take it (unsupported format, no
     /// hardware decoder, session creation failed).
     pub fn new(info: NalStreamInfo) -> std::result::Result<Self, String> {
+        validate_reorder_depth(info.reorder)?;
         let layout = layout(&info)?;
         if !hardware_available(info.codec) {
             return Err("no hardware decoder".into());
@@ -567,5 +578,16 @@ impl VideoDecoder for VtDecoder {
 
     fn is_disposable(&self, sample: &[u8]) -> bool {
         self.info.is_disposable(sample)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reorder_depth_matches_supported_stream_limits() {
+        assert!(validate_reorder_depth(MAX_REORDER_DEPTH).is_ok());
+        assert!(validate_reorder_depth(MAX_REORDER_DEPTH + 1).is_err());
     }
 }

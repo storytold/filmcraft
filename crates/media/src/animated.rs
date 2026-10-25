@@ -1,11 +1,11 @@
-//! Animated images (APNG and animated GIF) as movie clips (#402).
+//! Animated images (APNG, animated GIF, and animated WebP) as movie clips (#402).
 //!
 //! The still decoders read only the first picture of these files. [`open`] decodes every frame
 //! instead, composited onto the full canvas by the `image` crate (APNG blend and dispose operations,
-//! GIF disposal methods), and keeps them with their timing:
+//! GIF and WebP disposal methods), and keeps them with their timing:
 //!
-//! - each frame lasts its own delay; GIF delays of 10 ms or less play as 100 ms and APNG delays
-//!   under 10 ms as 10 ms, as browsers do, so a zero delay never makes a zero-length frame;
+//! - each frame lasts its own delay; GIF delays of 10 ms or less play as 100 ms and APNG and WebP
+//!   delays under 10 ms as 10 ms, as browsers do, so a zero delay never makes a zero-length frame;
 //! - consecutive identical frames are merged (one picture, the sum of their delays);
 //! - the clip is one pass through the animation (the file's loop count is not applied);
 //! - transparency is kept: the source reports alpha when any frame has a pixel that is not fully
@@ -31,29 +31,37 @@ use crate::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result,
 pub const MAX_FRAMES: usize = 10_000;
 /// Most bytes of decoded RGBA pictures kept from one file (after merging identical frames).
 pub const MAX_DECODED_BYTES: usize = 1 << 30;
+/// Most RGBA bytes in one animation canvas while its decoder produces a frame.
+const MAX_DECODED_FRAME_BYTES: usize = 512 << 20;
 
 /// Animated image formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Apng,
     Gif,
+    WebP,
 }
 
 impl Format {
+    /// Identify an animated image format from its container signature.
     fn sniff(b: &[u8]) -> Option<Format> {
         if b.starts_with(b"\x89PNG\r\n\x1a\n") {
             Some(Format::Apng)
         } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
             Some(Format::Gif)
+        } else if b.get(0..4) == Some(&b"RIFF"[..]) && b.get(8..12) == Some(&b"WEBP"[..]) {
+            Some(Format::WebP)
         } else {
             None
         }
     }
 
+    /// Return the codec label shown in media metadata.
     fn codec(self) -> &'static str {
         match self {
             Format::Apng => "APNG",
             Format::Gif => "GIF",
+            Format::WebP => "WebP",
         }
     }
 
@@ -66,6 +74,7 @@ impl Format {
         let (numer, denom) = match self {
             Format::Gif if ms <= 10 => (100, 1),
             Format::Apng if ms < 10 => (10, 1),
+            Format::WebP if ms < 10 => (10, 1),
             _ => (numer, denom),
         };
         let ticks = numer.saturating_mul(TICKS_PER_SECOND as u128) / denom.saturating_mul(1000);
@@ -81,8 +90,8 @@ pub struct AnimatedSource {
     starts: Vec<Tick>,
 }
 
-/// Decode `bytes` as an animated image. `None` when it is not an APNG or GIF with at least two
-/// frames that decode (the caller then opens it as a still).
+/// Decode `bytes` as an animated image. `None` when it is not an APNG, GIF, or animated WebP with
+/// at least two frames that decode (the caller then opens it as a still).
 pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
     let format = Format::sniff(bytes)?;
     let frames = match format {
@@ -99,19 +108,34 @@ pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
             d.set_limits(Limits::default()).ok()?;
             d.into_frames()
         }
+        Format::WebP => {
+            let mut d = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+            if !d.has_animation() {
+                return None;
+            }
+            let (width, height) = d.dimensions();
+            if rgba_bytes(width, height).is_none_or(|bytes| bytes > MAX_DECODED_FRAME_BYTES) {
+                return Some(Err(MediaError::Unsupported(format!("{name}: animated WebP canvas exceeds the {MAX_DECODED_FRAME_BYTES}-byte frame limit"))));
+            }
+            d.set_limits(Limits::default()).ok()?;
+            d.into_frames()
+        }
     };
     AnimatedSource::from_frames(name, format, frames, bytes.len() as u64).map(Ok)
 }
 
 impl AnimatedSource {
+    /// Build a clip from decoded full-canvas frames, merging consecutive identical pictures.
     fn from_frames(name: &str, format: Format, frames: Frames<'_>, file_size: u64) -> Option<Self> {
         let mut pictures: Vec<(u32, u32, Vec<u8>)> = Vec::new();
         let mut durations: Vec<Tick> = Vec::new();
+        let mut decoded_frames = 0usize;
         let mut decoded = 0usize;
         let mut has_alpha = false;
         for frame in frames.take(MAX_FRAMES) {
             // a damaged frame ends the animation at the frames before it
             let Ok(frame) = frame else { break };
+            decoded_frames = decoded_frames.saturating_add(1);
             let ticks = format.frame_ticks(frame.delay());
             let buffer = frame.into_buffer();
             let (w, h) = buffer.dimensions();
@@ -131,7 +155,7 @@ impl AnimatedSource {
             pictures.push((w, h, rgba));
             durations.push(ticks);
         }
-        if pictures.len() < 2 {
+        if pictures.len() < 2 && !(format == Format::WebP && decoded_frames >= 2) {
             return None;
         }
         let (width, height) = pictures.first().map(|p| (p.0, p.1))?;
@@ -182,6 +206,11 @@ impl AnimatedSource {
     }
 }
 
+/// Checked byte size of an RGBA8 image.
+fn rgba_bytes(width: u32, height: u32) -> Option<usize> {
+    usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?.checked_mul(4)
+}
+
 /// The clip's frame rate: the rate of its most common frame duration, when that is a sensible video
 /// rate (1 to 120 frames per second), else 30 fps. Frames are shown for their own durations
 /// whatever this says; it sets the clip's timebase (e.g. a sequence made from the clip).
@@ -207,14 +236,17 @@ fn rate_of(durations: &[Tick]) -> FrameRate {
 }
 
 impl MediaSource for AnimatedSource {
+    /// Return the clip's media metadata.
     fn info(&self) -> &MediaInfo {
         &self.info
     }
 
+    /// Return the picture displayed at the requested media time.
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>> {
         self.frames.get(self.index_at(req.time)).cloned().ok_or(MediaError::NoStream("video"))
     }
 
+    /// Animated image files do not provide audio.
     fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> Result<AudioBuffer> {
         Err(MediaError::NoStream("audio"))
     }

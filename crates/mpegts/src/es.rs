@@ -652,11 +652,14 @@ impl Splitter {
                     match next {
                         Some(d) => {
                             self.skipped += d as u64;
-                            self.trim(self.buf.len() - (i + 1 + d));
+                            // Keep a cursor into the current window rather than draining its
+                            // prefix for every false sync candidate.
+                            self.next_frame = Some(at + 1 + d as u64);
                         }
                         None => {
                             self.skipped += (self.buf.len() - i - 1) as u64;
-                            self.trim(0);
+                            // A split header can begin in the final few bytes; compact once.
+                            self.trim(7);
                             return;
                         }
                     }
