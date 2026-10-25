@@ -292,6 +292,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
     for step in 0..5 {
         d.harness.input_mut().events.push(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Wheel,
             delta: egui::vec2(0.0, -10.0),
             modifiers: egui::Modifiers::NONE,
             phase: egui::TouchPhase::Move,

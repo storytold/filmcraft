@@ -700,3 +700,33 @@ fn linked_video_drag_adds_video_and_audio_tracks() {
 fn linked_audio_drag_adds_audio_and_video_tracks() {
     move_existing_clip_to_a_new_track(true, true);
 }
+
+/// #3300: with Alt held, dragging the edge of one side of a linked clip trims only that side; the
+/// linked audio keeps its range. Without Alt the partner still follows.
+#[test]
+fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
+    for alt in [true, false] {
+        let mut d = Driver::demo();
+        let seq = d.app().session.active_sequence().expect("sequence");
+        let (video, sound) = seq.video_tracks[0]
+            .items
+            .iter()
+            .find_map(|v| {
+                let a = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|a| v.link.is_some() && a.link == v.link)?;
+                Some((v.id.0, a.id.0))
+            })
+            .expect("a linked clip on V1");
+        let (v0, a0) = (d.span(video), d.span(sound));
+        let (_, x1, y) = d.edges(video);
+        d.ok("ui.drag", json!({"from": {"x": x1 - 3.0, "y": y}, "to": {"x": x1 - 63.0, "y": y}, "steps": 20, "modifiers": {"alt": alt}}));
+        d.frames(2);
+        let v1 = d.span(video);
+        assert_eq!(v1.0, v0.0, "alt={alt}: the In point stays");
+        assert!(v1.1 < v0.1, "alt={alt}: the video's Out edge was trimmed: {v0:?} -> {v1:?}");
+        if alt {
+            assert_eq!(d.span(sound), a0, "Alt-trim leaves the linked audio alone");
+        } else {
+            assert_eq!(d.span(sound).1, a0.1 - (v0.1 - v1.1), "the linked audio follows a plain trim");
+        }
+    }
+}

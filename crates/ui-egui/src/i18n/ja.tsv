@@ -3452,8 +3452,8 @@
 	Commits	コミット
 	% of all commits	全コミットに占める割合 (%)
 	Lines +/−	行数 +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	オーディオ出力に失敗したため、無音で再生しています (「環境設定 ▸ オーディオハードウェア」を確認してください)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	オーディオ出力が応答しないため、無音で再生しています (「環境設定 ▸ オーディオハードウェア」を確認してください)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	オーディオ出力に失敗したため、無音で再生しています (「環境設定 > オーディオハードウェア」を確認してください)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	オーディオ出力が応答しないため、無音で再生しています (「環境設定 > オーディオハードウェア」を確認してください)
 	Clip Speed / Duration	クリップの速度 / 長さ
 	Speed:	速度:
 	Reverse Speed	逆再生する
@@ -3619,7 +3619,7 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
-# View ▸ Reset Interface Zoom (#2253).
+# View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	インターフェイスのズームをリセット
 	Track Color	トラックカラー
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます

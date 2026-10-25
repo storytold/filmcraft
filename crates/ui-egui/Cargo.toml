@@ -27,7 +27,7 @@ filmcraft-export = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-scopes = { workspace = true }
 egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "clipboard"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
@@ -52,6 +52,9 @@ filmcraft-codecs = { workspace = true }
 # itself stays OS-independent and web-portable)
 filmcraft-platform = { workspace = true }
 filmcraft-interchange = { workspace = true }
+# A dependency's dev-dependencies do not propagate through egui_kittest: name the fonts this
+# test root needs explicitly so glyph and accessibility assertions run against the bundled faces.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
 tempfile = "3"
 

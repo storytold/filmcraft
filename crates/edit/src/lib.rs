@@ -556,6 +556,12 @@ pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
 /// Move items by (track, time) offsets with overwrite (default drag) or insert (Cmd-drag) semantics.
 /// `moves`: (item, destination track, new start).
 pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_mode: bool, ctx: &mut EditCtx) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for (clip, _, _) in moves {
+        if !seen.insert(*clip) {
+            return Err(EditError::Other(format!("clip {} is listed more than once in this move", clip.0)));
+        }
+    }
     let mut work = seq.clone();
     let mut placed = Vec::new();
     for (c, dest, start) in moves {

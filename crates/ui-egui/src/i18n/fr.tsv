@@ -3438,8 +3438,8 @@
 	Commits	Commits
 	% of all commits	% de tous les commits
 	Lines +/−	Lignes +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Échec de la sortie audio : lecture sans son (vérifiez Préférences ▸ Matériel audio)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	La sortie audio ne répond pas : lecture sans son (vérifiez Préférences ▸ Matériel audio)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Échec de la sortie audio : lecture sans son (vérifiez Préférences > Matériel audio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	La sortie audio ne répond pas : lecture sans son (vérifiez Préférences > Matériel audio)
 	Clip Speed / Duration	Vitesse/durée du clip
 	Speed:	Vitesse :
 	Reverse Speed	Vitesse inversée
@@ -3579,7 +3579,7 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
-# View ▸ Reset Interface Zoom (#2253).
+# View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	Réinitialiser le zoom de l'interface
 	Track Color	Couleur de la piste
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques

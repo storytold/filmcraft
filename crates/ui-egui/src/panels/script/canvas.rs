@@ -140,7 +140,7 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
         app.ui.script.lasso_end = Some(pointer);
         ui.ctx().request_repaint();
     }
-    let empty_canvas = ui.interact(body, egui::Id::new("script.emptyCanvas"), Sense::click());
+    let empty_canvas = ui.interact(body, egui::Id::unique("script.emptyCanvas"), Sense::click());
     app.auto.add("script.emptyCanvas", empty_canvas.rect, "Clear script selection");
     let mut scroll_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
     let project_drag = crate::panels::dragged_project_item(ui).is_some();
@@ -502,7 +502,7 @@ fn take_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, visible:
         .show(&mut scroll_ui, |ui| {
             ui.allocate_space(vec2(total, 1.0));
         });
-    app.ui.script.take_scroll = output.state.offset.x.clamp(0.0, max_scroll);
+    app.ui.script.take_scroll = output.state.clamped_offset().x.clamp(0.0, max_scroll);
     let track = Rect::from_min_max(pos2(bar.left(), output.inner_rect.bottom() + style.bar_inner_margin), bar.max);
     let width = (track.width() * visible / total.max(1.0)).max(style.handle_min_length).min(track.width());
     let thumb =
@@ -539,7 +539,7 @@ fn margin_ruler(
         ("script.margin.right", rect.left() + left_w, tl!("Drag to change script wrapping"), false),
     ] {
         let marker = Rect::from_center_size(pos2(x, rect.center().y), vec2(16.0, rect.height()));
-        let response = ui.interact(marker, egui::Id::new(id), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal).on_hover_text(description);
+        let response = ui.interact(marker, egui::Id::unique(id), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal).on_hover_text(description);
         app.auto.add(id, response.rect, description);
         paint.add(egui::Shape::convex_polygon(
             vec![pos2(x - 4.0, rect.top() + 2.0), pos2(x + 4.0, rect.top() + 2.0), pos2(x, rect.top() + 9.0)],
@@ -632,7 +632,7 @@ fn row_view(
     let t = app.tokens;
     let left = Rect::from_min_size(row.min, vec2(left_w, row.height()));
     let right = row;
-    let interaction = ui.interact(row, egui::Id::new(("script.line", line.id.0)), Sense::click());
+    let interaction = ui.interact(row, egui::Id::unique(("script.line", line.id.0)), Sense::click());
     app.auto.add(&format!("script.line.{}", line.id.0), interaction.rect, &line.text);
     // Select on press: a slight pointer slip or releasing Shift before the
     // mouse button must not leave the range at the previous row.
@@ -740,7 +740,7 @@ fn row_view(
     let text_x = left.min.x + text_inset;
     if app.ui.script.edit_line == Some(line.id.0) {
         let edit_rect = Rect::from_min_max(pos2(text_x, left.min.y + 2.0), pos2(left.max.x, left.max.y - 2.0));
-        let edit_id = ui.id().with(("script.line.edit", line.id.0));
+        let edit_id = ui.scope_id().with(("script.line.edit", line.id.0));
         let pasted = if ui.memory(|memory| memory.has_focus(edit_id)) {
             ui.input_mut(|input| {
                 let index = input.events.iter().position(|event| matches!(event, egui::Event::Paste(_)))?;
@@ -753,7 +753,10 @@ fn row_view(
             None
         };
         let paste_cursor = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|state| state.cursor.char_range());
-        let response = ui.put(edit_rect, egui::TextEdit::singleline(&mut app.ui.script.edit_text).id(edit_id).desired_width(edit_rect.width()));
+        let response = crate::widgets::accessible_name(
+            ui.put(edit_rect, egui::TextEdit::singleline(&mut app.ui.script.edit_text).id(edit_id).desired_width(edit_rect.width())),
+            "Edit script line",
+        );
         app.auto.add_response(&format!("script.line.{}.edit", line.id.0), &response, "Edit script line");
         if response.changed() {
             app.ui.script.text_paste_revision = None;
@@ -850,7 +853,7 @@ fn row_view(
             paint.rect_filled(Rect::from_min_size(pos2(cx - halo.width * 0.5, candle_bottom - cap_height), vec2(halo.width, cap_height)), 0.0, t.text_dim);
         }
         let candle = Rect::from_min_size(pos2(cx - TAKE_W * 0.5, draw_row.min.y), vec2(TAKE_W, draw_row.height()));
-        let response = ui.interact(candle.intersect(draw_clip), egui::Id::new(("script.candle", take.id.0, line.id.0)), Sense::click());
+        let response = ui.interact(candle.intersect(draw_clip), egui::Id::unique(("script.candle", take.id.0, line.id.0)), Sense::click());
         app.auto.add(&format!("script.take.{}.line.{}", take.id.0, line.id.0), response.rect, "Take coverage");
         if response.clicked() {
             *foreground_click = true;
@@ -899,7 +902,7 @@ fn row_view(
                 Stroke::NONE,
             ));
             let response = ui
-                .interact(mark_rect.intersect(draw_clip), egui::Id::new(("script.mark", mark.id.0)), Sense::click_and_drag())
+                .interact(mark_rect.intersect(draw_clip), egui::Id::unique(("script.mark", mark.id.0)), Sense::click_and_drag())
                 .on_hover_text(tl!("Click to cue Source; Command/Ctrl-drag to move this mark to another script line"));
             app.auto.add(&format!("script.mark.{}", mark.id.0), response.rect, "Open this mark in Source monitor");
             if response.drag_started() && ui.input(|input| input.modifiers.command) {
@@ -958,7 +961,7 @@ fn endpoint_interaction(
         }
         let handle = Rect::from_center_size(pos2(cx, y), vec2(24.0, 14.0)).intersect(clip);
         let response = ui
-            .interact(handle, egui::Id::new(("script.endpoint", take.id.0, top)), Sense::click_and_drag())
+            .interact(handle, egui::Id::unique(("script.endpoint", take.id.0, top)), Sense::click_and_drag())
             .on_hover_cursor(egui::CursorIcon::ResizeVertical)
             .on_hover_text(tl!("Command-drag (Mac) or Ctrl-drag (Windows) to adjust candle length"));
         app.auto.add(&format!("script.take.{}.{}Handle", take.id.0, if top { "top" } else { "bottom" }), response.rect, "Adjust candle length");
@@ -1015,8 +1018,9 @@ fn thumbnail_interaction(
     take_click: &mut bool,
     actions: &mut Vec<Action>,
 ) {
-    let response =
-        ui.interact(thumbnail.intersect(clip), egui::Id::new(("script.thumbnail", header.id)), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::Grab);
+    let response = ui
+        .interact(thumbnail.intersect(clip), egui::Id::unique(("script.thumbnail", header.id)), Sense::click_and_drag())
+        .on_hover_cursor(egui::CursorIcon::Grab);
     app.auto.add(&format!("script.slate.{}.thumbnail", header.id), response.rect, "Setup thumbnail");
     if response.clicked() || response.drag_started() {
         *foreground_click = true;

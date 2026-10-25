@@ -3,6 +3,9 @@
 //!
 //! Every generator is a pure function of (settings, media time, output scale): deterministic and
 //! resolution-independent, so low-resolution playback renders directly at the reduced size.
+//!
+//! Counting Leader beeps last one source frame at each second mark. Use exact audio sample
+//! positions and the rational source frame rate for the gate, without rounded timestamp boundaries.
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -162,13 +165,14 @@ impl MediaSource for GeneratorSource {
         let mut out = AudioBuffer::silence(sample_rate, 2, frames);
         let sr = sample_rate as f32;
         let total = self.info.duration.to_units_floor(sample_rate as i64);
+        let frame_rate = self.info.frame_rate().sane();
         for i in 0..frames {
             let n = start + i as i64;
             if n < 0 || n >= total {
                 continue;
             }
             let t = n as f32 / sr;
-            let (l, r) = audio_sample(&self.generator, t, n);
+            let (l, r) = audio_sample(&self.generator, t, n, sample_rate, frame_rate);
             out.channels[0][i] = l;
             out.channels[1][i] = r;
         }
@@ -188,7 +192,7 @@ fn hash(n: i64) -> f32 {
     (x >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
 }
 
-fn audio_sample(g: &Generator, t: f32, n: i64) -> (f32, f32) {
+fn audio_sample(g: &Generator, t: f32, n: i64, sample_rate: u32, frame_rate: FrameRate) -> (f32, f32) {
     match g {
         Generator::BarsAndTone => {
             let s = (TAU * 1000.0 * t).sin() * db(-20.0);
@@ -200,8 +204,9 @@ fn audio_sample(g: &Generator, t: f32, n: i64) -> (f32, f32) {
         }
         Generator::CountingLeader => {
             // 1 kHz beep for one frame at each second mark (the "2-pop" style beep).
-            let frac = t.fract();
-            let s = if frac < 1.0 / 24.0 { (TAU * 1000.0 * t).sin() * db(-20.0) } else { 0.0 };
+            let in_frame = sample_rate != 0
+                && i128::from(n.rem_euclid(i64::from(sample_rate))) * i128::from(frame_rate.num) < i128::from(sample_rate) * i128::from(frame_rate.den);
+            let s = if in_frame { (TAU * 1000.0 * t).sin() * db(-20.0) } else { 0.0 };
             (s, s)
         }
         Generator::Demo(scene) => demo_audio(*scene, t, n),
@@ -567,6 +572,114 @@ mod tests {
         let a = g.audio(0, 480, 48000).unwrap();
         let peak = a.peaks()[0];
         assert!((peak - db(-20.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn counting_leader_beeps_last_exactly_one_source_frame() {
+        let sample_rate = 48_000;
+        for rate in [FrameRate::FPS_24, FrameRate::FPS_25, FrameRate::FPS_30, FrameRate::FPS_50, FrameRate::FPS_60, FrameRate::FPS_23_976, FrameRate::FPS_29_97]
+        {
+            let source = GeneratorSource::new(Generator::CountingLeader, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
+            let carrier = GeneratorSource::new(Generator::Tone { hz: 1000.0, db: -20.0 }, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
+            let frame_samples = (sample_rate as u64 * rate.den as u64).div_ceil(rate.num as u64) as usize;
+            for start in [0, sample_rate as i64, 2 * sample_rate as i64] {
+                let audio = source.audio(start, frame_samples + 8, sample_rate).unwrap();
+                let expected = carrier.audio(start, frame_samples, sample_rate).unwrap();
+                for (channel, carrier_channel) in audio.channels.iter().zip(&expected.channels) {
+                    assert!(carrier_channel.iter().any(|s| s.abs() > 0.05), "{rate:?}, start {start}: carrier should be audible");
+                    assert_eq!(
+                        &channel[..frame_samples],
+                        carrier_channel.as_slice(),
+                        "{rate:?}, start {start}: in-frame beep differs from the ungated carrier"
+                    );
+                    assert!(channel[frame_samples..].iter().all(|s| *s == 0.0), "{rate:?}, start {start}: beep extends beyond one frame");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn counting_leader_custom_rate_stops_at_exact_sample_boundary() {
+        let sample_rate = 41_000;
+        let source = GeneratorSource::new(Generator::CountingLeader, 64, 36, FrameRate { num: 41, den: 1 }, Tick(3 * TICKS_PER_SECOND));
+        let carrier = GeneratorSource::new(Generator::Tone { hz: 1000.0, db: -20.0 }, 64, 36, FrameRate { num: 41, den: 1 }, Tick(3 * TICKS_PER_SECOND));
+        for start in [0, 41_000, 82_000] {
+            let audio = source.audio(start, 1_008, sample_rate).unwrap();
+            let expected = carrier.audio(start, 1_000, sample_rate).unwrap();
+            for (channel, carrier_channel) in audio.channels.iter().zip(&expected.channels) {
+                assert_eq!(&channel[..1_000], carrier_channel.as_slice(), "custom-rate beep stops before the frame boundary");
+                assert!(channel[1_000..].iter().all(|s| *s == 0.0), "sample exactly at frame boundary must be silent");
+            }
+        }
+    }
+
+    #[test]
+    fn counting_leader_gate_is_independent_of_request_boundaries() {
+        for sample_rate in [41_000u32, 44_100, 48_000] {
+            for rate in [FrameRate::FPS_24, FrameRate::FPS_60, FrameRate::FPS_23_976, FrameRate::FPS_29_97, FrameRate { num: 41, den: 1 }] {
+                let source = GeneratorSource::new(Generator::CountingLeader, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
+                let frame_samples = (u64::from(sample_rate) * rate.den as u64).div_ceil(rate.num as u64) as usize;
+                let start = i64::from(sample_rate) - 3;
+                let audio = source.audio(start, frame_samples + 8, sample_rate).unwrap();
+                for channel in &audio.channels {
+                    assert!(channel[..3].iter().all(|s| *s == 0.0), "{rate:?}, {sample_rate}: previous second should be silent");
+                    assert!(channel[3..3 + frame_samples].iter().any(|s| s.abs() > 0.05), "{rate:?}, {sample_rate}: missing beep");
+                    assert!(channel[3 + frame_samples..].iter().all(|s| *s == 0.0), "{rate:?}, {sample_rate}: beep exceeds frame");
+                }
+                let first = source.audio(start, 5, sample_rate).unwrap();
+                let second = source.audio(start + 5, frame_samples + 3, sample_rate).unwrap();
+                for c in 0..2 {
+                    let split: Vec<_> = first.channels[c].iter().chain(&second.channels[c]).copied().collect();
+                    assert_eq!(split, audio.channels[c], "{rate:?}, {sample_rate}: split requests change samples");
+                }
+                let end = source.audio(i64::from(sample_rate) + frame_samples as i64 - 2, 6, sample_rate).unwrap();
+                assert!(end.channels.iter().all(|channel| channel[2..].iter().all(|s| *s == 0.0)), "{rate:?}, {sample_rate}: end-crossing block leaks");
+            }
+        }
+    }
+
+    #[test]
+    fn counting_leader_malformed_rates_use_default_frame_gate() {
+        let sample_rate = 48_000u32;
+        let default_rate = FrameRate::default();
+        let frame_samples = (u64::from(sample_rate) * default_rate.den as u64).div_ceil(default_rate.num as u64);
+        let start = frame_samples as i64 - 2;
+        let carrier = GeneratorSource::new(Generator::Tone { hz: 1000.0, db: -20.0 }, 64, 36, default_rate, Tick(3 * TICKS_PER_SECOND));
+        let expected = carrier.audio(start, 2, sample_rate).unwrap();
+        assert!(expected.channels.iter().all(|channel| channel.iter().any(|sample| sample.abs() > 0.05)));
+        for rate in [FrameRate { num: 41, den: 0 }, FrameRate { num: 0, den: 0 }, FrameRate { num: i64::MIN, den: 1 }, FrameRate { num: 1, den: i64::MIN }] {
+            let source = GeneratorSource::new(Generator::CountingLeader, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
+            let audio = source.audio(start, 8, sample_rate).unwrap();
+            for (channel, carrier_channel) in audio.channels.iter().zip(&expected.channels) {
+                assert_eq!(&channel[..2], carrier_channel.as_slice(), "{rate:?}: fallback beep stops before the frame boundary");
+                assert!(channel[2..].iter().all(|sample| *sample == 0.0), "{rate:?}: fallback gate exceeds one frame");
+            }
+            let fallback = GeneratorSource::new(Generator::CountingLeader, 64, 36, default_rate, Tick(3 * TICKS_PER_SECOND));
+            assert_eq!(audio.channels, fallback.audio(start, 8, sample_rate).unwrap().channels, "{rate:?}: changed fallback");
+        }
+    }
+
+    #[test]
+    fn counting_leader_gate_handles_zero_and_hostile_rates() {
+        let invalid = [FrameRate { num: 0, den: 0 }, FrameRate { num: i64::MIN, den: 1 }, FrameRate { num: 1, den: i64::MIN }, FrameRate { num: 41, den: 0 }];
+        let rates =
+            invalid.into_iter().chain([FrameRate { num: 1, den: i64::MAX }, FrameRate { num: i64::MAX, den: 1 }, FrameRate { num: i64::MAX, den: i64::MAX }]);
+        for rate in rates {
+            let source = GeneratorSource::new(Generator::CountingLeader, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
+            for sample_rate in [0, 1, 48_000, u32::MAX] {
+                for start in [-2, 0, 1] {
+                    let audio = std::panic::catch_unwind(|| source.audio(start, 8, sample_rate)).unwrap().unwrap();
+                    assert!(audio.channels.iter().flatten().all(|s| s.is_finite()), "{rate:?}, {sample_rate}: non-finite audio");
+                    if sample_rate == 0 {
+                        assert!(audio.channels.iter().flatten().all(|s| *s == 0.0));
+                    }
+                    if invalid.contains(&rate) {
+                        let fallback = GeneratorSource::new(Generator::CountingLeader, 64, 36, FrameRate::default(), Tick(3 * TICKS_PER_SECOND));
+                        assert_eq!(audio.channels, fallback.audio(start, 8, sample_rate).unwrap().channels, "{rate:?}: changed fallback");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
