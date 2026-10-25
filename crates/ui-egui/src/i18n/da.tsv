@@ -1,0 +1,3601 @@
+# Danish (da) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
+#
+#   context  empty          a plain UI string; `source` is the English text in the code
+#   escapes  
+  	  \  inside a column. `{name}` placeholders must appear in both columns;
+#            translators may reorder them. A trailing "…" (dialog commands) is kept.
+#   lines starting with # and blank lines are ignored.
+#
+# Clean-room: written from the meaning of FilmCraft's English labels in standard Danish
+# (Microsoft/Apple style), using the feature names speakers of video software know.
+	AAF…	AAF…
+	About FilmCraft	Om FilmCraft
+	Add Audio Submix Track	Tilføj lyd-submixspor
+	Add Caption at Playhead	Tilføj undertekst ved afspilningshovedet
+	Add Chapter Marker…	Tilføj kapitelmarkør…
+	Add Edit	Tilføj redigering
+	Add Edit to All Tracks	Tilføj redigering på alle spor
+	Add Flash Cue Marker…	Tilføj flash-cue-markør…
+	Add Frame Hold	Tilføj framehold
+	Add Guide…	Tilføj hjælpelinje…
+	Add Marker	Tilføj markør
+	Add New Caption Track…	Tilføj nyt undertekstspor…
+	Add Range Marker	Tilføj intervalmarkør
+	Add Range Marker to In and Out	Tilføj intervalmarkør til ind- og udpunkt
+	Add Tracks…	Tilføj spor…
+	Adjustment Layer…	Justeringslag…
+	Align to Selection	Justér til markering
+	Align to Video Frame	Justér til videoframe
+	Align to Video Frame as Group	Justér til videoframe som gruppe
+	All Panels	Alle paneler
+	Alpha	Alfa
+	Appearance	Udseende
+	Appearance…	Udseende…
+	Apply Audio Transition	Anvend lydovergang
+	Apply Default Transitions to Selection	Anvend standardovergange på markering
+	Apply Video Transition	Anvend videoovergang
+	Arrange	Arrangér
+	ArtCraft Website	ArtCraft-websted
+	Assembly	Montage
+	Attach Proxies…	Vedhæft proxies…
+	Audio	Lyd
+	Audio Channels…	Lydkanaler…
+	Audio Clip Mixer	Lydklipsmixer
+	Audio Gain…	Lydforstærkning…
+	Audio Hardware…	Lydhardware…
+	Audio In	Lyd ind
+	Audio Meters	Lydmålere
+	Audio Options	Lydindstillinger
+	Audio Out	Lyd ud
+	Audio Track Mixer	Lydspormixer
+	Audio Waveform	Lydbølgeform
+	Audio…	Lyd…
+	Auto Save…	Automatisk gemning…
+	Automate to Sequence…	Automatiser til sekvens…
+	Avid Log Exchange…	Avid Log Exchange…
+	Bars and Tone…	Farvebjælker og tone…
+	Bin	Bin
+	Bin From Selection	Bin ud fra markering
+	Black Video…	Sort video…
+	Blue	Blå
+	Bottom	Nederst
+	Breakout to Mono	Opdel til mono
+	Bring Forward	Flyt fremad
+	Bring to Front	Placér forrest
+	Brown	Brun
+	Captions	Undertekster
+	Captions and Graphics	Undertekster og grafik
+	Captions…	Undertekster…
+	Caribbean	Caribisk
+	Center Horizontally	Centrér vandret
+	Center Vertically	Centrér lodret
+	Cerulean	Ceruleblå
+	Clear	Ryd
+	Clear Guides	Ryd hjælpelinjer
+	Clear In	Ryd indpunkt
+	Clear In and Out	Ryd ind- og udpunkt
+	Clear Markers	Ryd markører
+	Clear Out	Ryd udpunkt
+	Clear Selected Marker	Ryd valgt markør
+	Clip	Klip
+	Close	Luk
+	Close All Other Projects	Luk alle andre projekter
+	Close All Projects	Luk alle projekter
+	Close Gap	Luk mellemrum
+	Close Project	Luk projekt
+	Color	Farve
+	Color Management…	Farvestyring…
+	Color Matte…	Farvematte…
+	Color…	Farve…
+	Comparison View	Sammenligningsvisning
+	Composite Video	Kompositvideo
+	Consolidate Duplicates	Konsolidér dubletter
+	Copy	Kopiér
+	Copy Paste Includes Sequence Markers	Kopiér/indsæt inkluderer sekvensmarkører
+	Create Captions from Transcript…	Opret undertekster fra transskription…
+	Create Multi-Camera Source Sequence…	Opret multikamera-kildesekvens…
+	Create Proxies…	Opret proxies…
+	Cut	Klip
+	Dark	Mørk
+	Darkest	Mørkest
+	Delete Render Files	Slet beregnede filer
+	Delete Render Files In to Out	Slet beregnede filer fra ind- til udpunkt
+	Delete Tracks…	Slet spor…
+	Delete Transcript	Slet transskription
+	Demo Footage	Demomateriale
+	Demo Project	Demoprojekt
+	Deselect All	Fravælg alle
+	Detach Proxies	Frakobl proxies
+	Display Mode	Visningstilstand
+	Distribute	Fordel
+	Distribute Horizontally	Fordel vandret
+	Distribute Space Horizontally	Fordel afstand vandret
+	Distribute Space Vertically	Fordel afstand lodret
+	Distribute Vertically	Fordel lodret
+	Duplicate	Duplikér
+	Dynamic Audio Waveforms	Dynamiske lydbølgeformer
+	EDL…	EDL…
+	Edit	Rediger
+	Edit Offline…	Rediger offline…
+	Edit Original	Rediger original
+	Edit Subclip…	Rediger delklip…
+	Edit Workspaces…	Rediger arbejdsområder…
+	Editing	Redigering
+	Effect Controls	Effektkontroller
+	Effects	Effekter
+	Ellipse	Ellipse
+	Enable	Aktivér
+	Enable Remix	Aktivér Remix
+	Essential Graphics	Essentiel grafik
+	Essential Sound	Essentiel lyd
+	Events	Hændelser
+	Export	Eksportér
+	Export As Motion Graphics Template…	Eksportér som Motion Graphics-skabelon…
+	Export Markers as CSV…	Eksportér markører som CSV…
+	Extract	Udpak
+	Extract Audio	Udpak lyd
+	FCPXML…	FCPXML…
+	Field Options…	Feltindstillinger…
+	File	Filer
+	File…	Fil…
+	Fill frame	Fyld frame
+	FilmCraft Help…	FilmCraft-hjælp…
+	FilmCraft on GitHub	FilmCraft på GitHub
+	FilmCraft on getartcraft.com	FilmCraft på getartcraft.com
+	Final Cut Pro XML…	Final Cut Pro XML…
+	Find Next	Find næste
+	Find…	Find…
+	Fit	Tilpas
+	Fit to frame	Tilpas til frame
+	Flatten	Flad ud
+	Forest	Skovgrøn
+	Frame Blending	Frameblanding
+	Frame Hold Options…	Indstillinger for framehold…
+	Frame Sampling	Framesampling
+	From Bin	Fra bin
+	From Source Monitor	Fra kildemonitor
+	From Source Monitor, Match Frame	Fra kildemonitor, match frame
+	From file…	Fra fil…
+	Full	Fuld
+	General…	Generelt…
+	Generate Audio Waveform	Generér lydbølgeform
+	Get Media File Properties for	Hent mediefilens egenskaber for
+	Go to Gap	Gå til mellemrum
+	Go to In	Gå til indpunkt
+	Go to Next Caption Segment	Gå til næste undertekstsegment
+	Go to Next Marker	Gå til næste markør
+	Go to Out	Gå til udpunkt
+	Go to Previous Caption Segment	Gå til forrige undertekstsegment
+	Go to Previous Marker	Gå til forrige markør
+	Go to Split	Gå til opdeling
+	Graphics and Titles	Grafik og titler
+	Graphics…	Grafik…
+	Green	Grøn
+	Group	Gruppér
+	Guide Templates	Hjælpelinjeskabeloner
+	Help	Hjælp
+	Hide All Caption Tracks	Skjul alle undertekstspor
+	Hide FilmCraft	Skjul FilmCraft
+	Hide Others	Skjul andre
+	High Quality Playback	Afspilning i høj kvalitet
+	History	Historik
+	Import From	Importér fra
+	Import Image Sequence…	Importér billedsekvens…
+	Import from Media Browser	Importér fra mediebrowser
+	Import…	Importér…
+	Info	Info
+	Ingest Settings…	Ingest-indstillinger…
+	Insert	Indsæt
+	Insert Frame Hold Segment	Indsæt framehold-segment
+	Install Motion Graphics Template…	Installér Motion Graphics-skabelon…
+	Interpret Footage…	Fortolk optagelser…
+	Iris	Iris
+	Join the ArtCraft Discord…	Deltag i ArtCrafts Discord…
+	Keyboard Shortcuts…	Tastaturgenveje…
+	Label	Mærkat
+	Labels…	Mærkater…
+	Language	Sprog
+	Lavender	Lavendel
+	Learning	Læring
+	Left	Venstre
+	Libraries	Biblioteker
+	Lift	Løft
+	Light	Lys
+	Link	Sammenkæd
+	Link Media…	Sammenkæd medier…
+	Linked Selection	Sammenkædet markering
+	Lock Guides	Lås hjælpelinjer
+	Lumetri Color	Lumetri Color
+	Lumetri Scopes	Lumetri Scopes
+	Magenta	Magenta
+	Magnification	Forstørrelse
+	Make Offline…	Gør offline…
+	Make Subclip…	Opret delklip…
+	Make Subsequence	Opret undersekvens
+	Manage Guides…	Administrér hjælpelinjer…
+	Mango	Mango
+	Mark Clip	Markér klip
+	Mark In	Markér indpunkt
+	Mark Out	Markér udpunkt
+	Mark Selection	Markér markering
+	Mark Split	Markér opdeling
+	Markers	Markører
+	Match Frame	Match frame
+	Media Analysis & Transcription…	Medianalyse & transskription…
+	Media Browser	Mediebrowser
+	Media Cache…	Mediecache…
+	Media…	Medier…
+	Memory…	Hukommelse…
+	Merge Clips…	Flet klip…
+	Metadata	Metadata
+	Modify	Modificér
+	Motion Graphics Template…	Motion Graphics-skabelon…
+	Multi-Camera	Multikamera
+	Multi-Camera View	Multikameravisning
+	Nest…	Indlejre…
+	New	Ny
+	New Layer	Nyt lag
+	New Project Panel	Nyt projektpanel
+	Next Appearance Mode	Næste udseendetilstand
+	Next in Sequence	Næste i sekvens
+	Next in Track	Næste på spor
+	Normalize Mix Track…	Normalisér mixspor…
+	OMF…	OMF…
+	Offline File…	Offline fil…
+	Open Project…	Åbn projekt…
+	Open Recent	Åbn seneste
+	Clear Recent Files	Ryd seneste filer
+	OpenTimelineIO…	OpenTimelineIO…
+	Optical Flow	Optisk flow
+	Overwrite	Overskriv
+	Paste	Indsæt
+	Paste Attributes…	Indsæt attributter…
+	Paste Insert	Indsæt som insert
+	Paused Resolution	Pauseopløsning
+	Playback Resolution	Afspilningsopløsning
+	Playback…	Afspilning…
+	Plugins…	Plugins…
+	Polygon	Polygon
+	Preferences	Indstillinger
+	Previous in Sequence	Forrige i sekvens
+	Previous in Track	Forrige på spor
+	Program	Program
+	Progress	Fremskridt
+	Project	Projekt
+	Project Manager…	Projektstyring…
+	Project Settings	Projektindstillinger
+	Project…	Projekt…
+	Properties	Egenskaber
+	Proxy	Proxy
+	Purple	Lilla
+	Quit FilmCraft	Afslut FilmCraft
+	Reconnect Full Resolution Media…	Genforbind medier i fuld opløsning…
+	Recover Unsaved Changes…	Gendan ikke-gemte ændringer…
+	Rectangle	Rektangel
+	Red	Rød
+	Redo	Gentag
+	Reference Monitor	Referencemonitor
+	Remix	Remix
+	Remix Properties…	Remix-egenskaber…
+	Remove Attributes…	Fjern attributter…
+	Remove Filler Words	Fjern fyldord
+	Remove Pauses	Fjern pauser
+	Remove Unused	Fjern ubrugte
+	Rename…	Omdøb…
+	Render Audio	Beregn lyd
+	Render Effects In to Out	Beregn effekter fra ind- til udpunkt
+	Render In to Out	Beregn fra ind- til udpunkt
+	Render Selection	Beregn markering
+	Replace Fonts in Projects…	Erstat skrifttyper i projekter…
+	Replace With Clip	Erstat med klip
+	Report an Issue…	Rapportér et problem…
+	Reset All Parameters	Nulstil alle parametre
+	Reset Duration	Nulstil varighed
+	Reset to Saved Layout	Nulstil til gemt layout
+	Restore Captions from Source Clip	Gendan undertekster fra kildeklip
+	Reveal Log Files…	Vis logfiler i mappen…
+	Reverse Match Frame	Omvendt match frame
+	Revert	Fortryd ændringer
+	Revert Remix	Fortryd Remix
+	Review	Gennemgang
+	Right	Højre
+	Ripple Delete	Ripple-sletning
+	Ripple Delete Head Frame	Ripple-slet startframe
+	Ripple Sequence Markers	Ripple sekvensmarkører
+	Rose	Rosa
+	Safe Margins	Sikkerhedsmarginer
+	Save	Gem
+	Save All	Gem alle
+	Save As…	Gem som…
+	Save Changes to this Workspace	Gem ændringer i dette arbejdsområde
+	Save Guides as Template…	Gem hjælpelinjer som skabelon…
+	Save a Copy…	Gem en kopi…
+	Save as New Workspace…	Gem som nyt arbejdsområde…
+	Save as Template…	Gem som skabelon…
+	Scale to Frame Size	Skalér til framestørrelse
+	Scene Edit Detection…	Detektion af sceneskift…
+	Scratch Disks…	Scratch-diske…
+	Search Bin	Søgebin
+	Select	Vælg
+	Select All	Vælg alt
+	Select All Matching	Vælg alle matchende
+	Select Label Group	Vælg mærkatgruppe
+	Select Next Graphic	Vælg næste grafik
+	Select Next Layer	Vælg næste lag
+	Select Previous Graphic	Vælg forrige grafik
+	Select Previous Layer	Vælg forrige lag
+	Selection Follows Playhead	Markering følger afspilningshovedet
+	Selection as FilmCraft Project…	Markering som FilmCraft-projekt…
+	Selection…	Markering…
+	Send Backward	Flyt bagud
+	Send to Back	Placér bagerst
+	Sequence	Sekvens
+	Sequence From Clip	Sekvens fra klip
+	Sequence Settings…	Sekvensindstillinger…
+	Sequence…	Sekvens…
+	Settings	Indstillinger
+	Show Active Caption Tracks Only	Vis kun aktive undertekstspor
+	Show All Caption Tracks	Vis alle undertekstspor
+	Show All Marker Colors	Vis alle markørfarver
+	Show Guides	Vis hjælpelinjer
+	Show Rulers	Vis linealer
+	Show Through Edits	Vis gennemgående klip
+	Simplify Sequence…	Forenkl sekvens…
+	Snap in Program Monitor	Snap i programmonitor
+	Snap in Timeline	Snap på tidslinje
+	Source	Kilde
+	Source Settings…	Kildeindstillinger…
+	Speed/Duration…	Hastighed/varighed…
+	Synchronize…	Synkronisér…
+	System Compatibility Report…	Systemkompatibilitetsrapport…
+	Tan	Beige
+	Teal	Petrol
+	Text	Tekst
+	Time Interpolation	Tidsinterpolation
+	Timecode	Tidskode
+	Timecode…	Tidskode…
+	Timeline	Tidslinje
+	Timeline…	Tidslinje…
+	Toggle Proxies	Slå proxies til/fra
+	Tools	Værktøjer
+	Top	Øverst
+	Transcribe Sequence…	Transskribér sekvens…
+	Transcribe…	Transskribér…
+	Transcript	Transskription
+	Transparent Video…	Gennemsigtig video…
+	Trim Edit	Trimredigering
+	Trim…	Trim…
+	Undo	Fortryd
+	Ungroup	Ophæv gruppering
+	Universal Counting Leader…	Universal Counting Leader…
+	Update Metadata…	Opdatér metadata…
+	Upgrade Caption to Graphic	Opgradér undertekst til grafik
+	Upgrade to Source Graphic	Opgradér til kildegrafik
+	Vertical Text	Lodret tekst
+	Video In	Video ind
+	Video Options	Videoindstillinger
+	Video Out	Video ud
+	Video and Audio Waveform Split	Video- og lydbølgeformsopdeling
+	View	Vis
+	Violet	Violet
+	Window	Vindue
+	Workspaces	Arbejdsområder
+	Yellow	Gul
+	Zoom In	Zoom ind
+	Zoom Out	Zoom ud
+	Zoom to Sequence	Zoom til sekvens
+	Project Notes	Projektnoter
+	Refresh Changed Media	Opdatér ændrede medier
+	Medium	Mellem
+	Recent	Seneste
+	Home	Hjem
+	Import	Importér
+	{name} - Edited	{name} - redigeret
+	Full screen	Fuld skærm
+	Volume	Lydstyrke
+	Master volume: use the Audio Track Mixer	Hovedlydstyrke: brug lydspormixeren
+	Search	Søg
+	Quick Export	Hurtig eksport
+	Join the ArtCraft Discord (discord.gg/artcraft)	Deltag i ArtCrafts Discord (discord.gg/artcraft)
+	Cancel	Annullér
+	OK	OK
+	Interpret Footage	Fortolk optagelser
+	Color Management · {n} item	Farvestyring · {n} element
+	Color Management · {n} items	Farvestyring · {n} elementer
+	Media colour space (from file metadata): {detected}	Mediets farverum (fra filmetadata): {detected}
+	Override media colour space:	Tilsidesæt mediets farverum:
+	Use file metadata	Brug filmetadata
+	Sequence Color Management	Sekvensens farvestyring
+	Working Color Space	Arbejdsfarverum
+	Wide gamut color (composite in BT.2020)	Bred farvegamut (komposit i BT.2020)
+	Auto tone map media (HDR and log into SDR)	Automatisk tonemapping af medier (HDR og log til SDR)
+	Audio Gain	Lydforstærkning
+	Set Gain to:	Angiv forstærkning til:
+	Adjust Gain by:	Justér forstærkning med:
+	Normalize Max Peak to:	Normalisér maks. top til:
+	Normalize All Peaks to:	Normalisér alle toppe til:
+	Peak Amplitude: {peak}	Topamplitude: {peak}
+	Standard	Standard
+	Adaptive	Adaptiv
+	Mono	Mono
+	Stereo	Stereo
+	Add Tracks	Tilføj spor
+	Amount	Mængde
+	Placement	Placering
+	Track type	Sportype
+	Add video tracks	Tilføj videospor
+	Add audio tracks	Tilføj lydspor
+	Add audio submix tracks	Tilføj lyd-submixspor
+	After {name}	Efter {name}
+	Before First Track	Før første spor
+	Delete Tracks	Slet spor
+	Video Tracks	Videospor
+	Audio Tracks	Lydspor
+	Delete Video Tracks	Slet videospor
+	Delete Audio Tracks	Slet lydspor
+	All Empty Tracks	Alle tomme spor
+	Caption Tracks	Undertekstspor
+	Delete Caption Tracks	Slet undertekstspor
+	Delete Caption Track	Slet undertekstspor
+	Delete Empty Caption Tracks	Slet tomme undertekstspor
+	Version {version}	Version {version}
+	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Et clean-room-udviklet, ikke-lineært videoredigeringsprogram i ren Rust. En del af ArtCraft-familien.
+	Join the ArtCraft Discord	Deltag i ArtCrafts Discord
+	Source code on GitHub	Kildekode på GitHub
+	Report an issue	Rapportér et problem
+	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT OR Apache-2.0. Skrifttyper: Inter, Noto Serif og JetBrains Mono (SIL OFL 1.1).
+	just now	lige nu
+	{n} s ago	{n} s siden
+	{n} min ago	{n} min siden
+	{n} h ago	{n} t siden
+	All Events	Alle hændelser
+	Warnings and Errors	Advarsler og fejl
+	Errors Only	Kun fejl
+	Clear All	Ryd alt
+	No events.	Ingen hændelser.
+	Show finished jobs	Vis fuldførte job
+	Cancelled	Annulleret
+	Failed: {e}	Mislykkedes: {e}
+	Done	Færdig
+	No background jobs.	Ingen baggrundsjob.
+	Recover Unsaved Changes	Gendan ikke-gemte ændringer
+	Untitled	Unavngivet
+	FilmCraft was closed while “{name}” had unsaved changes.	FilmCraft blev lukket, mens »{name}« havde ikke-gemte ændringer.
+	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	FilmCraft afsluttede uventet, mens »{name}« havde ikke-gemte ændringer.
+	Recover unsaved changes from {when}?	Gendan ikke-gemte ændringer fra {when}?
+	The project had not been saved yet.	Projektet var endnu ikke blevet gemt.
+	{n} sessions have unsaved changes:	{n} sessioner har ikke-gemte ændringer:
+	Discard	Kassér
+	Recover	Gendan
+	Not Now	Ikke nu
+	Are you sure you want to discard your changes to '{file}'?	Er du sikker på, at du vil kassere dine ændringer i '{file}'?
+	Yes	Ja
+	No	Nej
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	Føj medier til dit projekt. Træk filer hvor som helst hen i vinduet, eller vælg en kilde nedenfor.
+	Browse files…	Gennemse filer…
+	Movies, audio and stills from disk	Film, lyd og stillbilleder fra disk
+	Demo footage	Demomateriale
+	Six procedural 1080p clips with sound	Seks procedurelle 1080p-klip med lyd
+	Demo project	Demoprojekt
+	A cut sequence with transitions, effects and music	En klippet sekvens med overgange, effekter og musik
+	Bars and Tone	Farvebjælker og tone
+	SMPTE HD bars with 1 kHz reference tone	SMPTE HD-bjælker med 1 kHz-referencetone
+	Community	Fællesskab
+	Join us on Discord	Deltag i vores Discord
+	OMF Export Settings	Eksportindstillinger for OMF
+	AAF Export Settings	Eksportindstillinger for AAF
+	OMF Title:	OMF-titel:
+	Mixdown video	Mixdown af video
+	Audio:	Lyd:
+	Encapsulate	Indkapsl
+	Separate Audio	Adskil lyd
+	Embed	Integrér
+	Separate Files	Separate filer
+	Link to Media	Sammenkæd til medier
+	Audio File Format:	Lydfilformat:
+	Sample Rate:	Samplingsfrekvens:
+	Bits per Sample:	Bit pr. sample:
+	Rendering:	Beregning:
+	Trim audio files	Trim lydfiler
+	Handle Frames:	Handle-frames:
+	Render audio clip effects	Beregn lydklipseffekter
+	Breakout to mono	Opdel til mono
+	Exported {path}	Eksporterede {path}
+	Select a clip to view its metadata.	Vælg et klip for at se dets metadata.
+	Clip: {name}	Klip: {name}
+	Open	Åbn
+	(no sequence)	(ingen sekvens)
+	Show or hide {color} markers	Vis eller skjul {color} markører
+	Marker	Markør
+	{tc}  Chapter	{tc}  Kapitel
+	No markers. Press M to add one.	Ingen markører. Tryk på M for at tilføje en.
+	All markers are hidden by the colour filter.	Alle markører er skjult af farvefilteret.
+	Type:	Type:
+	Video:	Video:
+	Codec:	Codec:
+	Duration:	Varighed:
+	Settings:	Indstillinger:
+	Playhead:	Afspilningshoved:
+	Video {n}:	Video {n}:
+	Audio {n}:	Lyd {n}:
+	UI:	UI:
+	{fps} fps · {n} frames queued	{fps} fps · {n} frames i kø
+	{panel} — coming in a later milestone	{panel} — kommer i en senere milepæl
+	Close Panel	Luk panel
+	Close Other Timeline Panels	Luk andre tidslinjepaneler
+	Close All	Luk alle
+	Maximize Frame	Maksimér frame
+	Restore Frame	Gendan frame
+	Restore Workspace	Gendan arbejdsområde
+	Reveal Sequence in Project	Vis sekvens i projektet
+	Video Thumbnails	Videominiaturer
+	Audio Waveforms	Lydbølgeformer
+	Delete Preset	Slet forudindstilling
+	Export Preset…	Eksportér forudindstilling…
+	Import Presets…	Importér forudindstillinger…
+	Effect presets	Effektforudindstillinger
+	Save Preset	Gem forudindstilling
+	Name:	Navn:
+	Type	Type
+	Scale	Skalering
+	Anchor to In Point	Forankr til indpunkt
+	Anchor to Out Point	Forankr til udpunkt
+	Without keyframes	Uden nøglebilleder
+	Description:	Beskrivelse:
+	Saved preset “{name}”	Gemte forudindstillingen »{name}«
+	Current duration {seconds} s	Aktuel varighed {seconds} s
+	Remix Properties	Remix-egenskaber
+	Target Duration:	Målvarighed:
+	Segments:	Segmenter:
+	Fewer · More	Færre · Flere
+	Variations:	Variationer:
+	Remixed to {seconds} s	Remixet til {seconds} s
+	{mode} · no clip	{mode} · intet klip
+	{mode} · no sequence	{mode} · ingen sekvens
+	Remove Row	Fjern række
+	Add a timecode row	Tilføj en tidskoderække
+	Panner	Panner
+	Mute	Lyd fra
+	Send {n} Level	Send {n}-niveau
+	Show Keyframes	Vis nøglebilleder
+	Clip Keyframes	Klipnøglebilleder
+	Track Keyframes	Spornøglebilleder
+	Delete	Slet
+	Untitled Workspace	Unavngivet arbejdsområde
+	New Workspace	Nyt arbejdsområde
+	Edit Workspaces	Rediger arbejdsområder
+	Rename	Omdøb
+	Restore Original	Gendan original
+	Search effects	Søg efter effekter
+	Apply to Selected Clips	Anvend på valgte klip
+	Metadata Display	Metadatavisning
+	Save As New View Preset	Gem som ny visningsforudindstilling
+	Manage Saved View Presets	Administrér gemte visningsforudindstillinger
+	Freeform View Options	Indstillinger for fri visning
+	Save Arrangement	Gem arrangement
+	Saves the view, columns, sort, thumbnail and font size.	Gemmer visning, kolonner, sortering, miniaturer og skriftstørrelse.
+	Grid spacing:	Gitterafstand:
+	Default clip size:	Standardklipstørrelse:
+	Snap to grid	Snap til gitter
+	Show clip names	Vis klipnavne
+	Show durations	Vis varigheder
+	Show:	Vis:
+	Search fields	Søgefelter
+	Project Metadata	Projektmetadata
+	Add Property…	Tilføj egenskab…
+	Column order	Kolonnerækkefølge
+	{n}. (empty)	{n}. (tom)
+	Restore	Gendan
+	Overwrite with Current View	Overskriv med aktuel visning
+	Graphics text search arrives with M10.1–M10.2	Tekstsøgning i grafik kommer med M10.1–M10.2
+	Open a sequence to work with captions	Åbn en sekvens for at arbejde med undertekster
+	Add captions	Tilføj undertekster
+	Create a caption track or import a caption file.	Opret et undertekstspor, eller importér en undertekstfil.
+	Create new caption track	Opret nyt undertekstspor
+	Import captions file…	Importér undertekstfil…
+	New {format} track	Nyt {format}-spor
+	Add caption at playhead	Tilføj undertekst ved afspilningshovedet
+	Split caption at playhead	Del undertekst ved afspilningshovedet
+	Merge selected captions	Flet valgte undertekster
+	Delete selected captions	Slet valgte undertekster
+	No captions on this track. Press + to add one at the playhead.	Ingen undertekster på dette spor. Tryk på + for at tilføje en ved afspilningshovedet.
+	No matching captions.	Ingen matchende undertekster.
+	Open a sequence to see its transcript	Åbn en sekvens for at se dens transskription
+	Transcribe sequence	Transskribér sekvens
+	Speech-to-text turns the dialogue into editable text.	Tale-til-tekst omdanner dialogen til redigerbar tekst.
+	This build has no speech-to-text; import a transcript with transcript.set.	Denne build har ingen tale-til-tekst; importér en transskription med transcript.set.
+	Transcribe	Transskribér
+	Extract selected text	Udpak markeret tekst
+	Lift selected text	Løft valgt tekst
+	Remove filler words	Fjern fyldord
+	Create captions	Opret undertekster
+	Speaker	Taler
+	Box	Boks
+	Align	Juster
+	Align left	Juster venstre
+	Align center	Juster centreret
+	Align right	Juster højre
+	Position	Placering
+	Position: top	Placering: øverst
+	Position: middle	Placering: midten
+	Position: bottom	Placering: nederst
+	(gap)	(mellemrum)
+	Out: {name}	Ud: {name}
+	In: {name}	Ind: {name}
+	Play Around Edit (Space loops, Shift+K once)	Afspil omkring klippepunkt (Space gentager, Skift+K én gang)
+	Trim Backward Many	Trim mange bagud
+	Trim Backward	Trim bagud
+	Apply Default Transitions	Anvend standardovergange
+	Apply Default Transitions to Selection (Shift+D)	Anvend standardovergange på markering (Skift+D)
+	Trim Forward	Trim fremad
+	Trim Forward Many	Trim mange fremad
+	Exit Trim Mode	Afslut trimtilstand
+	Voice-over record (right-click: Voice-Over Record Settings…)	Optag voice-over (højreklik: Indstillinger for voice-over-optagelse…)
+	Voice-Over Record Settings…	Indstillinger for voice-over-optagelse…
+	Recording voice-over…	Optager voice-over…
+	Voice-over recorded: {p}	Voice-over optaget: {p}
+	Voice-over recording stopped (nothing recorded)	Voice-over-optagelse stoppet (intet optaget)
+	Post-roll	Post-roll
+	● Recording	● Optager
+	Voice-Over Record Settings	Indstillinger for voice-over-optagelse
+	Source:	Kilde:
+	Default Input	Standardinput
+	Input:	Input:
+	Channel {n}	Kanal {n}
+	Countdown Sound Cues	Lydsignaler til nedtælling
+	Pre-roll:	Pre-roll:
+	 seconds	 sekunder
+	Post-roll:	Post-roll:
+	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	Afspilningen starter pre-roll før afspillerhovedet (eller ind-punktet); hvis Ind/Ud er markeret, starter og stopper optagelsen dér.
+	Effect	Effekt
+	Clip Fx Editor	Klip-Fx-editor
+	Track Fx Editor	Spor-Fx-editor
+	Master Gain	Masterforstærkning
+	Reset	Nulstil
+	Band {n}	Bånd {n}
+	Solo	Solo
+	Bypass	Bypass
+	Thr	Tær
+	Ratio	Forh.
+	Att	Att
+	Rel	Rel
+	Gain	Forstærkning
+	Output Gain	Udgangsforstærkning
+	Limiter	Limiter
+	Link Channels	Sammenkæd kanaler
+	Limiter Threshold	Tærskel for limiter
+	Limiter Release	Release for limiter
+	Auto Gate	Auto-gate
+	Threshold	Tærskel
+	Attack	Attack
+	Release	Release
+	Hold	Hold
+	Compressor	Kompressor
+	Auto Makeup	Auto-kompensation
+	Makeup	Kompensation
+	Expander	Expander
+	Soft Clip	Soft clip
+	(no sequences)	(ingen sekvenser)
+	(no clips)	(ingen klip)
+	Show Transport Controls	Vis transportkontroller
+	Loop	Loop
+	Multi-Camera Audio Follows Video	Multikamera-lyd følger videoen
+	Multi-Camera Record	Multikamera-optagelse
+	Multi-Camera Selection Top Down	Multikameravalg oppefra og ned
+	Show Multi-Camera Preview Monitor	Vis multikamera-forhåndsvisning
+	Auto-Adjust Multi-Camera Playback Quality	Juster automatisk multikamera-afspilningskvalitet
+	Transmit Multi-Camera View	Udsend multikameravisning
+	Multi-Camera Layout	Multikameralayout
+	Automatic	Automatisk
+	Edit Cameras…	Redigér kameraer…
+	Add Marker (M)	Tilføj markør (M)
+	Mark In (I)	Markér ind (I)
+	Mark Out (O)	Markér ud (O)
+	Go to In (Shift+I)	Gå til ind-punkt (Skift+I)
+	Step Back 1 Frame (Left)	Gå 1 billede tilbage (Left)
+	Play-Stop Toggle (Space)	Afspil/stop (Space)
+	Step Forward 1 Frame (Right)	Gå 1 billede frem (Right)
+	Go to Out (Shift+O)	Gå til ud-punkt (Skift+O)
+	Insert (,)	Indsæt (,)
+	Overwrite (.)	Overskriv (.)
+	Export Frame (Shift+E)	Eksportér billede (Skift+E)
+	Lift (;)	Løft (;)
+	Extract (')	Udtræk (')
+	Export Frame: use Export mode (M6)	Eksportér billede: brug eksporttilstand (M6)
+	Button Editor	Knapeditor
+	More transport controls	Flere transportkontroller
+	Multi-Camera Record on	Multikamera-optagelse slået til
+	Multi-Camera Record off	Multikamera-optagelse slået fra
+	{first} - Merged	{first} - Sammenlagt
+	{first} Multicam	{first} multikamera
+	In Points	Ind-punkter
+	Out Points	Ud-punkter
+	Clip Marker	Klipmarkør
+	Merge Clips	Sammenlæg klip
+	Create Multi-Camera Source Sequence	Opret multikamera-kildesekvens
+	Synchronize Clips	Synkroniser klip
+	Clip Name:	Klipnavn:
+	Sequence Name:	Sekvensnavn:
+	{n} clip(s): {names}	{n} klip: {names}
+	{n} clip(s) selected; the clip on the reference track stays put.	{n} klip valgt; klippet på referencesporet bliver stående.
+	Synchronize Point	Synkroniseringspunkt
+	Ignore Hours	Ignorér timer
+	first marker	første markør
+	Offset Audio by:	Forskyd lyd med:
+	Offset:	Forskydning:
+	 frames	 billeder
+	Reference track:	Referencespor:
+	lowest (V1…)	laveste (V1…)
+	Remove Audio from AV Clip	Fjern lyd fra AV-klip
+	Camera 1	Kamera 1
+	All Cameras	Alle kameraer
+	Switch Audio	Skift lyd
+	Camera Names	Kameranavne
+	Clip Names	Klipnavne
+	Enumerate Cameras	Nummerér kameraer
+	Camera Angle Metadata	Metadata for kameravinkler
+	Move source clips to Processed Clips bin	Flyt kildeklip til bakken Behandlede klip
+	Synchronized {n} clip group(s)	Synkroniserede {n} klipgruppe(r)
+	Merged clip created	Sammenlagt klip oprettet
+	Multi-camera source sequence with {n} camera(s)	Multikamera-kildesekvens med {n} kamera(er)
+	No multi-camera clip at the playhead	Intet multikamera-klip ved afspillerhovedet
+	Camera {n} — {name}	Kamera {n} — {name}
+	Page {page} of {pages}	Side {page} af {pages}
+	Previous page	Forrige side
+	Next page	Næste side
+	Multi-Camera Record On/Off (0)	Multikamera-optagelse til/fra (0)
+	Record	Optag
+	Edit Cameras	Redigér kameraer
+	Cameras shown in the Multi-Camera view (uncheck to hide).	Kameraer, der vises i multikameravisningen (fravælg for at skjule).
+	Recorded {n} multi-camera cut(s)	Optog {n} multikamera-klip
+	Clamp Signal	Begræns signal
+	Presets	Forudindstillinger
+	Parade ({kind})	Parade ({kind})
+	Waveform ({kind})	Bølgeform ({kind})
+	Parade Type	Paradetype
+	Waveform Type	Bølgeformtype
+	Vectorscope Targets	Vectorscope-mål
+	Colour Space	Farverum
+	Brightness	Lysstyrke
+	Signal Scale	Signalskala
+	Histogram	Histogram
+	Paste Attributes	Indsæt attributter
+	Remove Attributes	Fjern attributter
+	New Offline File	Ny offlinefil
+	Nested Sequence Name	Navn på indlejret sekvens
+	Make Subclip	Opret underklip
+	Edit Subclip	Redigér underklip
+	Modify Clip: Audio Channels	Ændr klip: lydkanaler
+	Modify Clip: Timecode	Ændr klip: tidskode
+	Frame Hold Options	Indstillinger for standbillede
+	Field Options	Feltindstillinger
+	Save Project	Gem projekt
+	Motion	Bevægelse
+	Opacity	Uigennemsigtighed
+	Time Remapping	Tidsomlægning
+	Channel Volume	Kanallydstyrke
+	In Point	Ind-punkt
+	Out Point	Ud-punkt
+	Playhead	Afspillerhoved
+	Source Timecode	Kildetidskode
+	Sequence Time	Sekvenstid
+	Video Attributes	Videoattributter
+	Audio Attributes	Lydattributter
+	No effects	Ingen effekter
+	Scale Attribute Times	Skalér attributternes tider
+	File Name:	Filnavn:
+	Tape Name:	Båndnavn:
+	Contains:	Indeholder:
+	Video	Video
+	Width:	Bredde:
+	Height:	Højde:
+	Frame Rate:	Billedhastighed:
+	Media Start:	Mediestart:
+	Subclip: {name}	Underklip: {name}
+	Start:	Start:
+	End:	Slut:
+	Restrict Trims To Subclip Boundaries	Begræns trimning til underklippets grænser
+	Convert to Master Clip	Konvertér til masterklip
+	Clip Channel Format:	Klipkanalformat:
+	Number of Audio Clips:	Antal lydklip:
+	Media Source Channels	Mediets kildekanaler
+	Ch. {n}	Kan. {n}
+	Clip {n}	Klip {n}
+	Source channels the selected audio clips play:	Kildekanaler, som de valgte lydklip afspiller:
+	Set Timecode:	Angiv tidskode:
+	Use the file's timecode	Brug filens tidskode
+	Hold On	Fasthold ved
+	Timecode:	Tidskode:
+	Hold Filters	Behold filtre
+	Reverse Field Dominance	Omvend feltdominans
+	Processing Options	Behandlingsindstillinger
+	None	Ingen
+	Always Deinterlace	Deinterlace altid
+	Flicker Removal	Fjern flimren
+	Save changes to “{project_name}” before closing?	Vil du gemme ændringerne i »{project_name}«, inden du lukker?
+	Don't Save	Gem ikke
+	All media is online.	Alle medier er online.
+	{name} (copy)	{name} (kopi)
+	Offline	Offline
+	Missing	Mangler
+	Link Media	Sammenkæd medie
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} klip kan ikke finde deres medier. Find dem, søg i en mappe, eller lad dem være offline.
+	Clip Name	Klipnavn
+	File Name	Filnavn
+	File Path	Filsti
+	Status	Status
+	Match file properties:	Match filegenskaber:
+	File Extension	Filendelse
+	Clip ID (fingerprint)	Klip-id (fingeraftryk)
+	Duration	Varighed
+	Media Start	Mediestart
+	Frame Size / Rate	Billedstørrelse / hastighed
+	Align Timecode	Afstem tidskode
+	Relink others automatically	Sammenkæd resten automatisk
+	Search in:	Søg i:
+	Browse…	Gennemse…
+	A file dialog is already open	En fildialog er allerede åben
+	Exact name matches only	Kun match på nøjagtige navne
+	No candidates yet — Search a folder or Locate the file.	Ingen kandidater endnu — søg i en mappe, eller find filen.
+	✔ same file	✔ samme fil
+	✔ matches	✔ matcher
+	✖ different file	✖ anden fil
+	Preview	Forhåndsvisning
+	Offline All	Gør alle offline
+	Locate…	Find…
+	Linked {n} clip(s)	Sammenkædede {n} klip
+	Nothing found with that name.	Fandt intet med det navn.
+	Make Offline	Gør offline
+	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	Gør {n} valgte klip offline. Klippene viser offline-skiferen, indtil du sammenkæder dem igen.
+	Media files remain on disk	Mediefiler forbliver på disken
+	Media files are deleted	Mediefiler slettes
+	Create Proxies	Opret proxier
+	{n} clip(s) selected.	{n} klip valgt.
+	Format and size	Format og størrelse
+	Destination	Destination
+	Next to the original media, in a Proxies folder	Ved siden af de oprindelige medier, i en Proxies-mappe
+	Proxies are made in the background and attached when done. Export always uses full-resolution media.	Proxier oprettes i baggrunden og tilknyttes, når de er færdige. Eksport bruger altid medier i fuld opløsning.
+	Creating {n} proxy file(s)…	Opretter {n} proxyfil(er)…
+	Project Manager	Projekthåndtering
+	Sequences	Sekvenser
+	Resulting Project	Resulterende projekt
+	Collect Files and Copy to New Location	Saml filer og kopiér til ny placering
+	Consolidate and Transcode	Konsolidér og transkod
+	Options	Indstillinger
+	Exclude Unused Clips	Udelad ubrugte klip
+	Include Handles:	Medtag handles:
+	Include Proxies	Medtag proxier
+	Include Preview Files	Medtag forhåndsvisningsfiler
+	Destination Path	Destinationsti
+	Disk space: original {original} · resulting {result} ({n} files)	Diskplads: original {original} · resulterende {result} ({n} filer)
+	Disk space: —	Diskplads: —
+	Calculate	Beregn
+	Project Manager: writing {path}	Projekthåndtering: skriver {path}
+	Timeline: (no sequences)	Tidslinje: (ingen sekvenser)
+	Browse	Gennemse
+	Select audio clips, then click a preset to apply it.	Vælg lydklip, og klik derefter på en forudindstilling for at anvende den.
+	{name} (user)	{name} (bruger)
+	Select audio clips to edit them here	Vælg lydklip for at redigere dem her
+	Multiple Clips Selected	Flere klip valgt
+	The selected clips have different audio types. Assign one type to edit them together.	De valgte klip har forskellige lydtyper. Tildel én type for at redigere dem samlet.
+	Assign an audio type to the selection:	Tildel en lydtype til markeringen:
+	Clear Audio Type	Ryd lydtype
+	Preset:	Forudindstilling:
+	(Custom)	(Brugerdefineret)
+	Preset name	Navn på forudindstilling
+	Reduce Noise	Reducér støj
+	Reduce Rumble	Reducér rumble
+	DeHum	DeHum
+	DeEss	DeEss
+	Reduce Reverb	Reducér efterklang
+	Dynamics	Dynamik
+	EQ	EQ
+	Enhance Speech	Forbedr tale
+	Low Tone	Bas
+	High Tone	Diskant
+	Mix	Mix
+	Reverb	Efterklang
+	Stereo Width	Stereobredde
+	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	Remixing af musik til en bestemt varighed er endnu ikke tilgængelig. Trim klippet, og tilføj en overblænding i stedet.
+	Pan	Pan
+	Auto-Match	Auto-match
+	Not matched yet	Endnu ikke matchet
+	Matches each of the {n} clips on its own.	Matcher hvert af de {n} klip for sig.
+	Duck against:	Duck i forhold til:
+	Untagged	Umærket
+	Sensitivity	Følsomhed
+	Reduce By	Reducér med
+	Fades	Fades
+	Generate Keyframes	Generér nøglebilleder
+	Clip Volume	Kliplydstyrke
+	(no clip selected)	(intet klip valgt)
+	Master · {name}	Master · {name}
+	Add Lumetri Color to clip	Tilføj Lumetri Color til klippet
+	Input LUT	Input-LUT
+	Temperature	Temperatur
+	Tint	Tonning
+	Saturation	Mætning
+	Exposure	Eksponering
+	Contrast	Kontrast
+	Highlights	Højlys
+	Shadows	Skygger
+	Whites	Hvidt
+	Blacks	Sort
+	HDR	HDR
+	HDR White	HDR-hvid
+	HDR Specular	HDR-spejling
+	Look	Look
+	Look LUT	Look-LUT
+	Intensity	Intensitet
+	Adjustments	Justeringer
+	Faded Film	Blegnet film
+	Sharpen	Skarphed
+	Vibrance	Vibrance
+	RGB Curves	RGB-kurver
+	HDR Range	HDR-område
+	Hue Saturation Curves	Farvetone- og mætningskurver
+	Hue vs Sat	Farvetone vs mætning
+	Hue vs Hue	Farvetone vs farvetone
+	Hue vs Luma	Farvetone vs luma
+	Luma vs Sat	Luma vs mætning
+	Sat vs Sat	Mætning vs mætning
+	Midtones	Mellemtoner
+	Key	Nøgle
+	Hue	Farvetone
+	Hue Range	Farvetoneområde
+	Saturation Min	Min. mætning
+	Luma Min	Min. luma
+	Luma Max	Maks. luma
+	Soften	Blødgør
+	Show Mask	Vis maske
+	Off	Fra
+	Color/Gray	Farve/grå
+	Color/Black	Farve/sort
+	White/Black	Hvid/sort
+	Refine	Forfin
+	Denoise	Fjern støj
+	Blur	Slør
+	Correction	Korrektion
+	Hue Shift	Farvetoneskift
+	Midpoint	Midtpunkt
+	Roundness	Rundhed
+	Feather	Feather
+	LUT	LUT
+	Color Match	Farvematch
+	Reference	Reference
+	Face Detection (protect skin tones)	Ansigtsgenkendelse (beskytter hudtoner)
+	Apply Match	Anvend match
+	Create ellipse mask	Opret ellipsemaske
+	Create 4-point polygon mask	Opret polygonmaske med 4 punkter
+	Free draw bezier	Tegn bezier med fri hånd
+	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	Klik i programmonitoren for at placere maskepunkter (træk for at lave kurver); klik på det første punkt eller tryk på Enter for at lukke
+	Delete Mask	Slet maske
+	Inverted	Inverteret
+	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	Træk: flyt · Alt-klik: glat/hjørne · Cmd-klik: slet
+	Track selected mask backward	Spor valgt maske bagud
+	Track selected mask backward 1 frame	Spor valgt maske 1 billede bagud
+	Track selected mask forward 1 frame	Spor valgt maske 1 billede frem
+	Track selected mask forward	Spor valgt maske frem
+	Stop tracking	Stop sporing
+	Tracking method: {method}	Sporingsmetode: {method}
+	Composite	Komposit
+	Comparison	Sammenligning
+	Video and Waveform	Video og bølgeform
+	System Default	Systemstandard
+	Default location	Standardplacering
+	Font family	Skrifttypefamilie
+	Label Colors	Etiketfarver
+	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	Afkodede billeder, der holdes til monitorer og miniaturer: {used} af {budget}.
+	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft holder resten af RAM'en fri til andre programmer.
+	not available in this session	ikke tilgængelig i denne session
+	Currently: {loc} — {files} file(s), {size}	I øjeblikket: {loc} — {files} fil(er), {size}
+	 ({ch} output channels)	 ({ch} udgangskanaler)
+	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	Program venstre → enhedsoutput {l}, højre → enhedsoutput {r}{dev}. Output ud over enhedens kanaler falder tilbage til 1 og 2.
+	Auto-saves go to: {dir}	Autogemte filer placeres i: {dir}
+	Recovery copy: {dir}	Gendannelseskopi: {dir}
+	Last auto-save {a} · last recovery copy {j}	Seneste autogemning {a} · seneste gendannelseskopi {j}
+	Last auto-save {a}	Seneste autogemning {a}
+	Last recovery copy {j}	Seneste gendannelseskopi {j}
+	Remove Media Cache Files	Fjern mediecachefiler
+	Deleted {n} file(s), {size}.	Slettede {n} fil(er), {size}.
+	Reset…	Nulstil…
+	Source · {name}	Kilde · {name}
+	Reset Effect	Nulstil effekt
+	Reset Parameter	Nulstil parameter
+	Save Preset…	Gem forudindstilling…
+	Custom Setup	Brugerdefineret opsætning
+	Edit…	Redigér…
+	Show graphs	Vis grafer
+	Toggle animation	Slå animation til/fra
+	Eyedropper (pick a color from the Program monitor)	Pipette (vælg en farve fra programmonitoren)
+	Eyedropper: no picture to sample	Pipette: intet billede at sample
+	Add/Remove Keyframe	Tilføj/fjern nøglebillede
+	Temporal Interpolation	Tidsmæssig interpolation
+	Linear	Lineær
+	Bezier	Bezier
+	Auto Bezier	Auto-bezier
+	Continuous Bezier	Kontinuerlig bezier
+	Ease In	Ease ind
+	Ease Out	Ease ud
+	Select a clip to grade	Vælg et klip at graduere
+	Select a clip to see its properties	Vælg et klip for at se dets egenskaber
+	Anchor point	Ankerpunkt
+	Rotation	Rotation
+	Level	Niveau
+	Speed {n}%	Hastighed {n}%
+	Value	Værdi
+	Velocity	Ændringshastighed
+	Default	Standard
+	Custom ({n} points)	Brugerdefineret ({n} punkter)
+	Select a graphic clip, or use the Type tool (T) on the Program monitor	Vælg et grafikklip, eller brug tekstværktøjet (T) i programmonitoren
+	Create new graphic	Opret ny grafik
+	New Text Layer	Nyt tekstlag
+	New Text	Ny tekst
+	New Rectangle	Nyt rektangel
+	New Ellipse	Ny ellipse
+	Delete Layer	Slet lag
+	Select a layer to edit its properties.	Vælg et lag for at redigere dets egenskaber.
+	Align Left	Juster venstre
+	Align Center Horizontally	Centrér vandret
+	Align Right	Juster højre
+	Align Top	Juster øverst
+	Align Center Vertically	Centrér lodret
+	Align Bottom	Juster nederst
+	Font	Skrifttype
+	Font Style	Skrifttypestil
+	Font Size	Skriftstørrelse
+	Alignment	Justering
+	Left Align Text	Venstrestil tekst
+	Center Align Text	Centrér tekst
+	Right Align Text	Højrestil tekst
+	Justify	Fordel
+	Tracking	Bogstavafstand
+	Leading	Linjeafstand
+	Baseline Shift	Baselineforskydning
+	Text Box Width	Tekstboksbredde
+	Style	Typografi
+	Faux Bold	Falsk fed
+	Faux Italic	Falsk kursiv
+	All Caps	Versaler
+	Small Caps	Kapitæler
+	Underline	Understreg
+	OpenType	OpenType
+	Kerning	Knibning
+	Ligatures	Ligaturer
+	Shape	Form
+	Size	Størrelse
+	Corner Radius	Hjørneradius
+	Polygon Sides	Polygonsider
+	Fill	Fyld
+	Stroke	Streg
+	Stroke 2	Streg 2
+	Background	Baggrund
+	   Opacity	   Uigennemsigtighed
+	   Size	   Størrelse
+	   Corner Radius	   Hjørneradius
+	Shadow	Skygge
+	   Angle	   Vinkel
+	   Distance	   Afstand
+	   Blur	   Sløring
+	Search templates	Søg i skabeloner
+	All Categories	Alle kategorier
+	Install…	Installér…
+	Install Motion Graphics Template (.fcgt)	Installér motion graphics-skabelon (.fcgt)
+	No templates match.	Ingen skabeloner matcher.
+	{category} · My Template	{category} · Min skabelon
+	Apply	Anvend
+	Remove	Fjern
+	{n} editable properties	{n} redigerbare egenskaber
+	   Template: {name}	   Skabelon: {name}
+	Intro Duration	Introvarighed
+	Outro Duration	Outrovarighed
+	Roll	Rul
+	Start Off Screen	Start uden for skærmen
+	End Off Screen	Slut uden for skærmen
+	Preroll	Preroll
+	Postroll	Postroll
+	Video Frame	Videobillede
+	Pin To	Fastgør til
+	Pinned Edges	Fastgjorte kanter
+	FilmCraft Graphics Template	FilmCraft-grafikskabelon
+	{n} Font	{n} Skrifttype
+	{n} Size	{n} Størrelse
+	{n} Color	{n} Farve
+	{n} Position	{n} Placering
+	Show {n}	Vis {n}
+	My Templates	Mine skabeloner
+	Export As Motion Graphics Template	Eksportér som motion graphics-skabelon
+	Category:	Kategori:
+	Editable properties:	Redigerbare egenskaber:
+	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	Gemt som en FilmCraft-grafikskabelon (.fcgt) i din skabelonmappe.
+	Exported graphics template to {path}	Eksporterede grafikskabelon til {path}
+	Replace Fonts in Projects	Erstat skrifttyper i projekter
+	Fonts used in the project:	Skrifttyper, der bruges i projektet:
+	{f} (missing)	{f} (mangler)
+	Replace:	Erstat:
+	Replaced {n} font uses	Erstattede {n} skrifttypeanvendelser
+	Show/Hide Effects and Sends	Vis/skjul effekter og sends
+	Audio Track Mixer menu	Menu til lydspormixer
+	Show/Hide Tracks…	Vis/skjul spor…
+	Meter Input(s) Only	Mål kun input
+	Show/Hide Tracks	Vis/skjul spor
+	Show All	Vis alle
+	Post-Fader	Post-fader
+	Remove Effect	Fjern effekt
+	Fill the slots above first	Udfyld først pladserne ovenfor
+	pre 	pre 
+	Pre-Fader	Pre-fader
+	Mute Send	Mute send
+	Remove Send	Fjern send
+	New Submix	Ny submix
+	Pan / balance (drag; double-click: centre)	Pan / balance (træk; dobbeltklik: centreret)
+	Solo safe	Solo safe
+	Enable track for recording	Aktivér spor til optagelse
+	Volume (drag; double-click: 0 dB)	Lydstyrke (træk; dobbeltklik: 0 dB)
+	5.1 panner (drag the puck; double-click: front centre)	5.1-panorering (træk i pucken; dobbeltklik: center forrest)
+	Center	Center
+	Go to In Point	Gå til ind-punkt
+	Go to Out Point	Gå til ud-punkt
+	Play In to Out	Afspil fra ind til ud
+	Record (voice-over on the record-enabled track)	Optag (voice-over på sporet med aktiveret optagelse)
+	Write keyframes	Skriv nøglebilleder
+	Something went wrong while drawing the window. Your project is still open; save it to be safe.	Noget gik galt, mens vinduet blev tegnet. Dit projekt er stadig åbent; gem det for en sikkerheds skyld.
+	Continue	Fortsæt
+	Go Back	Gå tilbage
+	Go Forward	Gå fremad
+	Up One Level	Et niveau op
+	File Types Displayed	Viste filtyper
+	List View	Listevisning
+	Thumbnail View	Miniaturevisning
+	Ingest	Ingest
+	Open Ingest Settings	Åbn ingest-indstillinger
+	Import as Image Sequence	Importér som billedsekvens
+	{sel} of {total} items selected	{sel} af {total} elementer valgt
+	{total} items	{total} elementer
+	Cannot open {dir}: {e}	Kan ikke åbne {dir}: {e}
+	Favorites	Favoritter
+	Local Drives	Lokale drev
+	Network	Netværk
+	Recent Directories	Seneste mapper
+	  (none)	  (ingen)
+	Remove from Favorites	Fjern fra favoritter
+	Add to Favorites	Føj til favoritter
+	Clear Recent Directories	Ryd seneste mapper
+	Open In Source Monitor	Åbn i kildemonitor
+	Reveal in Finder	Vis i Finder
+	Edit Columns…	Redigér kolonner…
+	Hover Scrub	Hover-scrub
+	New Media Browser Panel	Nyt mediebrowserpanel
+	Create Folder For Imported Projects	Opret mappe til importerede projekter
+	Allow Duplicate Media During Project Import	Tillad duplikerede medier under projektimport
+	Refresh	Opdater
+	Edit Columns	Redigér kolonner
+	Guides	Hjælpelinjer
+	(no audio)	(ingen lyd)
+	Generating waveform…	Genererer bølgeform…
+	Reference  {tc}	Reference  {tc}
+	Set	Angiv
+	Set the reference to the playhead	Angiv referencen til afspillerhovedet
+	Reference: next frame	Reference: næste billede
+	Reference: previous frame	Reference: forrige billede
+	RGBA Channels	RGBA-kanaler
+	Add Guide	Tilføj hjælpelinje
+	Save Guides as Template	Gem hjælpelinjer som skabelon
+	Manage Guides	Administrer hjælpelinjer
+	Orientation:	Orientering:
+	Vertical	Lodret
+	Horizontal	Vandret
+	Position:	Placering:
+	No saved guide templates.	Ingen gemte hjælpelinjeskabeloner.
+	Project: {name}	Projekt: {name}
+	Bin: {name}	Bakke: {name}
+	Up one level	Et niveau op
+	Video Usage: {vu}  Audio Usage: {au}	Videoanvendelse: {vu}  Lydanvendelse: {au}
+	Icon View	Ikonvisning
+	Freeform View	Friformvisning
+	Sort Icons	Sortér ikoner
+	Clear (Delete)	Ryd (Delete)
+	New Item	Nyt element
+	New Bin	Ny bakke
+	Find	Find
+	Automate to Sequence	Automatisér til sekvens
+	Select items to clear	Vælg elementer, der skal ryddes
+	User Order	Brugerrækkefølge
+	Descending	Faldende
+	Refresh Project	Opdater projekt
+	Reveal Project in Finder…	Vis projekt i Finder…
+	New Bin From Selection	Ny bakke fra markering
+	New Search Bin	Ny søgebakke
+	New Project Shortcut	Ny projektgenvej
+	List	Liste
+	Icon	Ikon
+	Freeform	Fri form
+	Preview Area	Forhåndsvisningsområde
+	Thumbnails	Miniaturebilleder
+	Thumbnails show effects applied	Miniaturebilleder viser anvendte effekter
+	Thumbnail controls for all pointing devices	Styring af miniaturebilleder for alle pegeenheder
+	Refresh Sort Order	Opdater sorteringsrækkefølge
+	Metadata Display…	Metadata-visning…
+	Save Current View Preset	Gem aktuel visningsforudindstilling
+	Restore View Preset	Gendan visningsforudindstilling
+	Project View Preset {n}	Projektvisningsforudindstilling {n}
+	Freeform View Options…	Indstillinger for visning i fri form…
+	Media missing	Medie mangler
+	Unreadable	Kan ikke læses
+	Open in Source Monitor	Åbn i kildemonitoren
+	Open in Timeline	Åbn i tidslinjen
+	New Sequence From Clip	Ny sekvens fra klip
+	Set Poster Frame	Angiv plakatbillede
+	Open in Place	Åbn på stedet
+	Open in New Tab	Åbn i nyt faneblad
+	Open in New Window	Åbn i nyt vindue
+	{n} items	{n} elementer
+	Stack	Stak
+	Unstack	Fjern stak
+	Clip Size	Klipstørrelse
+	Larger	Større
+	Smaller	Mindre
+	Align to Grid	Juster til gitter
+	Reset to Grid	Nulstil til gitter
+	Save Arrangement…	Gem opstilling…
+	Restore Arrangement	Gendan opstilling
+	Delete Arrangement	Slet opstilling
+	Drop media here to create sequence.	Slip medier her for at oprette en sekvens.
+	Double-click a sequence in the Project panel to open it here.	Dobbeltklik på en sekvens i projektpanelet for at åbne den her.
+	Open Demo Project	Åbn demoprojekt
+	Insert and overwrite sequences as nests or individual clips	Indsæt og overskriv sekvenser som indlejrede sekvenser eller enkelte klip
+	Snap in Timeline (S)	Fastgør i tidslinjen (S)
+	Caption track options	Indstillinger for undertekstspor
+	Timeline Display Settings	Visningsindstillinger for tidslinje
+	Show Video Thumbnails	Vis videominiaturebilleder
+	Head	Hoved
+	Head and Tail	Hoved og hale
+	Continuous	Kontinuerlig
+	Show Audio Waveform	Vis lydbølgeform
+	Expand All Tracks	Udfold alle spor
+	Minimize All Tracks	Minimer alle spor
+	Unrendered: should play back in real time	Ikke beregnet: bør kunne afspilles i realtid
+	Unrendered: render to play back in real time	Ikke beregnet: beregn for at afspille i realtid
+	Rendered preview	Beregnet forhåndsvisning
+	✓ Enable	✓ Aktivér
+	Unlink	Frakobl
+	(Default)	(Standard)
+	(RGB) Gamma	(RGB) Gamma
+	(RGB) Input Black Level	(RGB) Sort inputniveau
+	(RGB) Input White Level	(RGB) Hvidt inputniveau
+	(RGB) Output Black Level	(RGB) Sort outputniveau
+	(RGB) Output White Level	(RGB) Hvidt outputniveau
+	+ Cmd	+ Cmd
+	+ Opt	+ Opt
+	10 Bit Black Point	10-bit sortpunkt
+	10 Bit White Point	10-bit hvidpunkt
+	105mm Prime	105 mm prime
+	29.97 fps Drop-Frame	29.97 fps drop-frame
+	29.97 fps Non Drop-Frame	29.97 fps non-drop-frame
+	35mm Prime	35 mm prime
+	3D Roll	3D-rulning
+	3D Rotate	3D-rotation
+	3D Spin	3D-spin
+	3D Spinback	3D-spin baglæns
+	4-Color Gradient	4-farvegradient
+	5.1 Media	5.1-medier
+	5.1 Mixdown Type	5.1-mixdowntype
+	50-300mm Zoom	50-300 mm zoom
+	59.94 fps Drop-Frame	59.94 fps drop-frame
+	59.94 fps Non Drop-Frame	59.94 fps non-drop-frame
+	ASC CDL	ASC CDL
+	Accessible color contrast	Tilgængelig farvekontrast
+	Action-Safe Margin	Handlingssikker margen
+	Active Monitor	Aktiv monitor
+	Add	Tilføj
+	Add tracks automatically when editing source clips onto the Timeline	Tilføj automatisk spor, når du redigerer kildeklip på tidslinjen
+	Place files dropped onto the Timeline directly on the Timeline	Placér filer, der slippes på tidslinjen, direkte på tidslinjen
+	1 file	1 fil
+	{n} files	{n} filer
+	Additional Scale	Yderligere skalering
+	Additive Dissolve	Additiv overgang
+	Additive Dissolve (Legacy)	Additiv overgang (ældre)
+	Adjust	Juster
+	Advanced	Avanceret
+	Aggressive	Aggressiv
+	Align and Transform	Juster og transformér
+	All lines	Alle linjer
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	Lad markeringsværktøjet vælge rulle- og rippletrim uden ændringstast
+	Allow current tool to change trim type of previously selected edit point	Tillad, at det aktuelle værktøj ændrer trimtypen for det tidligere valgte klippunkt
+	Allow duplicate media during project import	Tillad duplikerede medier under projektimport
+	Alpha Adjust	Alfa-justering
+	Alpha Blurriness	Alfa-sløringsgrad
+	Alpha Channel	Alfakanal
+	Alpha Glow	Alfaglød
+	Always import embedded CEA-708 closed captions with wide aspect.	Importér altid indlejrede lukkede CEA-708-undertekster med bredt billedeforhold.
+	Always override audio tags	Tilsidesæt altid lydtags
+	Ambience	Ambiens
+	Ambience Intensity	Ambiensintensitet
+	Ambience Light Color	Ambienslysfarve
+	Amount of Noise	Støjmængde
+	Amount to Decolor	Afarvningsgrad
+	Amount to Tint	Toningsgrad
+	Amplifier	Forstærker
+	Amplify	Forstærkning
+	Amplitude	Amplitude
+	Amplitude and Compression	Amplitude og komprimering
+	Analog	Analog
+	Analog Delay	Analog delay
+	Analyze all imported media to search for visuals or audio	Analysér alle importerede medier for at søge efter visuelt indhold eller lyd
+	Anamorphic	Anamorfisk
+	Anchor	Anker
+	Anchor Point	Ankerpunkt
+	Angle	Vinkel
+	Animation	Animation
+	Anti-aliasing Quality	Antialiasing-kvalitet
+	Anti-flicker Filter	Antiflimmerfilter
+	Antialiasing for Best Quality	Antialiasing for bedste kvalitet
+	Asymmetry	Asymmetri
+	At Startup	Ved opstart
+	At playback end, return to beginning when restarting playback	Ved afspilningens slutning: gå tilbage til begyndelsen, når afspilningen genstartes
+	Attempt to force hardware to document sample rate	Forsøg at tvinge hardwaren til at bruge dokumentets samplingfrekvens
+	Audio Codec	Lydcodec
+	Audio Duration	Lydvarighed
+	Audio Effects	Lydeffekter
+	Audio Hardware	Lydhardware
+	Audio In Point	Indgangspunkt for lyd
+	Audio Info	Lydinformation
+	Audio Out Point	Udgangspunkt for lyd
+	Audio Samples	Lydsamples
+	Audio Time Units	Lydtidsenheder
+	Audio Transition Default Duration	Standardvarighed for lydovergange
+	Audio Transitions	Lydovergange
+	Audio Usage	Lydanvendelse
+	Auto	Auto
+	Auto Align	Autojuster
+	Auto Reframe	Automatisk omformning
+	Auto Save	Autogemning
+	Auto Save also saves the current project(s)	Autogemning gemmer også de aktuelle projekter
+	Auto-tag audio types in the timeline	Tag automatisk lydtyper i tidslinjen
+	Auto-transcribe all imported clips	Transskribér automatisk alle importerede klip
+	Auto-transcribe only clips in sequences	Transskribér automatisk kun klip i sekvenser
+	Automatch Time	Automatch-tid
+	Automatic Click Remover	Automatisk klikfjerner
+	Automatically Hide Dependent Clips	Skjul automatisk afhængige klip
+	Automatically Save Every	Gem automatisk hver
+	Automatically delete cache files older than	Slet automatisk cachefiler ældre end
+	Automatically delete oldest cache files when cache exceeds	Slet automatisk de ældste cachefiler, når cachen overstiger
+	Automatically refresh growing files	Opdater automatisk voksende filer
+	Automatically resume playback for growing files in Source Monitor	Genoptag automatisk afspilning af voksende filer i kildemonitoren
+	Automatically save projects	Gem projekter automatisk
+	Automatically transcribe clips	Transskribér klip automatisk
+	Automation Keyframe Optimization	Optimering af nøglebilleder for automatisering
+	Background Color	Baggrundsfarve
+	Background Corner Radius	Hjørneradius for baggrund
+	Background Opacity	Baggrundsuigennemsigtighed
+	Background Size	Baggrundsstørrelse
+	Background fill	Baggrundsfyld
+	Balance	Balance
+	Balanced Voice	Balanceret stemme
+	Band 1	Bånd 1
+	Band 2	Bånd 2
+	Band 3	Bånd 3
+	Band 4	Bånd 4
+	Band 5	Bånd 5
+	Band Pass	Båndpas
+	Band Slide	Stribeglidning
+	Band Stop	Båndspærring
+	Bandpass	Båndpas
+	Barn Doors	Ladeporte
+	Basic	Grundlæggende
+	Basic 3D	Grundlæggende 3D
+	Basic Correction	Grundlæggende korrektion
+	Bass	Bas
+	Behind	Bagved
+	Bessel	Bessel
+	Bevel Alpha	Alfa-skråkant
+	Bevel join	Skrå samling
+	Binauralizer - Ambisonics	Binauralizer - Ambisonics
+	Bins	Bakker
+	Black	Sort
+	Black & White	Sort & hvid
+	Black Input Level	Sort inputniveau
+	Black and white	Sort-hvid
+	Black and white with crushed blacks and strong contrast	Sort-hvid med knuste sorte og kraftig kontrast
+	Bleach Bypass	Bleach bypass
+	Bleach-bypass style: desaturated with hard contrast	Bleach bypass-stil: nedtonede farver med hård kontrast
+	Blend	Blanding
+	Blend Mode	Blandingstilstand
+	Blend With Original	Blanding med original
+	Blending Mode	Blandingstilstand
+	Block Dissolve	Blokovergang
+	Block Height	Blokhøjde
+	Block Motion	Blokbevægelse
+	Block Size	Blokstørrelse
+	Block Width	Blokbredde
+	Blocks	Blokke
+	Blue Blurriness	Blå sløringsgrad
+	Blue Curve	Blå kurve
+	Blue Offset	Blå forskydning
+	Blue Power	Blå potens
+	Blue Slope	Blå hældning
+	Blue-Blue	Blå-blå
+	Blue-Const	Blå-konstant
+	Blue-Green	Blå-grøn
+	Blue-Red	Blå-rød
+	Blur & Sharpen	Sløring & skarphed
+	Blur Amount	Sløringsgrad
+	Blur Angle	Sløringsvinkel
+	Blur Dimensions	Sløringsdimensioner
+	Blur Dissolve	Sløringsovergang
+	Blur Layer	Sløringslag
+	Blur Length	Sløringslængde
+	Blurriness	Sløringsgrad
+	Bokeh Blur	Bokeh-sløring
+	Boost	Boost
+	Border	Kant
+	Border Color	Kantfarve
+	Border Width	Kantbredde
+	Borders	Kanter
+	Bottom Center	Nederst i midten
+	Bottom Left	Nederst til venstre
+	Bottom Right	Nederst til højre
+	Bounce	Bounce
+	Branching	Forgrening
+	Bright	Lys
+	Bright Air	Lys luft
+	Bright Studio	Lyst studie
+	Brightness & Contrast	Lysstyrke & kontrast
+	British Stack	Britisk stack
+	Brush Hardness	Penselhårdhed
+	Brush Opacity	Penseluigennemsigtighed
+	Brush Position	Penselposition
+	Brush Size	Penselstørrelse
+	Brush Spacing (secs)	Penselmellemrum (sek.)
+	Brush Strokes	Penselstrøg
+	Bubbles	Bobler
+	Bulge	Bulning
+	Bulge Smoother	Udjævning af bulning
+	Bump Height	Reliefhøjde
+	Burn Alpha	Brænd alfa
+	Burn Chroma	Brænd kroma
+	Burn Color	Brænd farve
+	Butt cap	Flad ende
+	Butterworth	Butterworth
+	CEA-608	CEA-608
+	CEA-708	CEA-708
+	Cache analysis results for re-use	Cache analyseresultater til genbrug
+	Camera Angle	Kameravinkel
+	Camera Blur	Kamerasløring
+	Camera Shake	Kamerarystelse
+	Capitalisation	Store bogstaver
+	Cathedral	Katedral
+	Cell Pattern	Cellemønster
+	Center Channel Pan	Panorering af midterkanal
+	Center Gradient	Centreret gradient
+	Center Input	Centreret input
+	Center Out	Ud fra midten
+	Center Point (Latitude)	Midtpunkt (breddegrad)
+	Center Point (Longitude)	Midtpunkt (længdegrad)
+	Center Split	Midtersplit
+	Center of Sphere	Kuglens centrum
+	Cents	Cent
+	Change to Color	Skift til farve
+	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	Ændringerne kopieres i baggrunden et øjeblik efter hver redigering. Hvis FilmCraft lukker uventet ned, får du mulighed for at gendanne dem, næste gang programmet starter.
+	Channel	Kanal
+	Channel Blur	Kanalsløring
+	Channel Mix	Kanalmix
+	Channel Mixer	Kanalmikser
+	Chaos	Kaos
+	Chebyshev	Chebyshev
+	Checker Wipe	Ternet wipe
+	Checkerboard	Skakbræt
+	Chinese	Kinesisk
+	Choke	Choke
+	Chorus	Chorus
+	Chorus/Flanger	Chorus/Flanger
+	Chroma	Kroma
+	Chroma Leak	Kromalækage
+	Chromatic Aberration (Blue)	Kromatisk aberration (blå)
+	Chromatic Aberration (Green)	Kromatisk aberration (grøn)
+	Chromatic Aberration (Red)	Kromatisk aberration (rød)
+	Cineon Converter	Cineon-konverter
+	Circle	Cirkel
+	Clarity	Klarhed
+	Clean Combo	Ren combo
+	Clean Up Noisy Dialogue	Fjern støj fra dialog
+	Clear Muddiness	Fjern mudret klang
+	Client	Klient
+	Clip Level	Klipniveau
+	Clipping	Klipning
+	Clock Wipe	Ur-wipe
+	Clock Wipe (Legacy)	Ur-wipe (ældre)
+	Clockwise	Med uret
+	Clone	Klon
+	Closed Captions	Lukkede undertekster
+	Color & Alpha	Farve & alfa
+	Color 1	Farve 1
+	Color 2	Farve 2
+	Color 3	Farve 3
+	Color 4	Farve 4
+	Color Balance	Farvebalance
+	Color Burn	Farvebrænding
+	Color Channel	Farvekanal
+	Color Correction	Farvekorrektion
+	Color Distortion	Farveforvrængning
+	Color Dodge	Farvelysning
+	Color Emboss	Farverelief
+	Color Key	Farvenøgle
+	Color Pass	Bevar farve
+	Color Replace	Udskift farve
+	Color Space	Farverum
+	Color Theme	Farvetema
+	Color To Leave	Farve der skal bevares
+	Color Tolerance	Farvetolerance
+	Color Wheels & Match	Farvehjul & match
+	Colorize	Farvelæg
+	Columns	Kolonner
+	Comment	Kommentar
+	Complexity	Kompleksitet
+	Composite In Back	Kompositér bagved
+	Composite In Front	Kompositér foran
+	Composite Using	Kompositér ved hjælp af
+	Composite on Original	Kompositér på originalen
+	Compound Blur	Sammensat sløring
+	Compression Before Clipping	Komprimering før klipning
+	Constant Gain	Konstant gain
+	Constant Power	Konstant effekt
+	Conversion Type	Konverteringstype
+	Convolution Reverb	Convolution reverb
+	Cool Blue	Kølig blå
+	Cool, desaturated and punchy	Kølig, nedtonet og kraftfuld
+	Core Width	Kernebredde
+	Corner	Hjørne
+	Corner Pin	Hjørnepin
+	Count	Antal
+	Counter-clockwise	Mod uret
+	Crash Recovery	Gendannelse efter nedbrud
+	Crawl Left	Crawl til venstre
+	Crawl Right	Crawl til højre
+	Create folder for imported projects	Opret mappe til importerede projekter
+	Creative	Kreativ
+	Crop	Beskær
+	Crop Less <-> Smooth More	Mindre beskæring <-> mere udjævning
+	Cross Displacement	Krydsforskydning
+	Cross Dissolve	Krydsovergang
+	Cross Dissolve (Legacy)	Krydsovergang (ældre)
+	Cross Zoom	Krydszoom
+	Cross Zoom (Legacy)	Krydszoom (ældre)
+	Crossfade	Krydsfade
+	Crossovers	Crossovers
+	Crystallize	Krystallisér
+	Crystals	Krystaller
+	Cube Spin	Terningspin
+	Curl Radius	Krølleradius
+	Current Time	Aktuel tid
+	Cursor	Markør
+	Curvature	Krumning
+	Curve	Kurve
+	Curves	Kurver
+	Custom	Tilpasset
+	Custom Color	Tilpasset farve
+	Cutoff	Grænseværdi
+	Cyan-teal shadows and warm highlights with a little more contrast	Cyan-teal skygger og varme højlys med lidt mere kontrast
+	Cycle (in Revolutions)	Cyklus (i omdrejninger)
+	Cycle Evolution	Cyklus for udvikling
+	Damping	Dæmpning
+	Damping HF	Dæmpning HF
+	Damping LF	Dæmpning LF
+	Darken	Mørkere
+	Darker Color	Mørkere farve
+	Date Created	Oprettelsesdato
+	Date Modified	Ændringsdato
+	Day for night: darker, cooler and less saturated	Dag-for-nat: mørkere, køligere og mindre mættet
+	DeEsser	DeEsser
+	DeHummer	DeHummer
+	DeNoise	DeNoise
+	DeReverb	DeReverb
+	Decay	Henfald
+	Decay Time (RT60)	Henfaldstid (RT60)
+	Default Audio Tracks	Standardlydspor
+	Default Emoji font	Standardskrifttype til emoji
+	Default Media Scaling	Standardskalering af medier
+	Default Output	Standardoutput
+	Default closed caption font	Standardskrifttype til lukkede undertekster
+	Default language	Standardsprog
+	Default paragraph direction	Standardretning for afsnit
+	Default subtitle and text font	Standardskrifttype til undertekster og tekst
+	Delay	Delay
+	Delay 1	Delay 1
+	Delay 2	Delay 2
+	Delay 3	Delay 3
+	Delay 4	Delay 4
+	Delay and Echo	Delay og ekko
+	Delete files older than	Slet filer ældre end
+	Delete oldest files when the cache exceeds	Slet de ældste filer, når cachen overstiger
+	Delete…	Slet…
+	Depth	Dybde
+	Desaturate	Fjern mætning
+	Description	Beskrivelse
+	Detail Amplitude	Detaljeamplitude
+	Detail Level	Detaljeniveau
+	Detailed Analysis	Detaljeret analyse
+	Device Class	Enhedsklasse
+	Dialogue	Dialog
+	Diamond	Diamant
+	Difference	Forskel
+	Dimensions	Dimensioner
+	Dimmed	Nedtonet
+	Dip to Black	Dyk i sort
+	Dip to Black (Legacy)	Dyk i sort (ældre)
+	Dip to Color	Dyk i farve
+	Dip to White	Dyk i hvid
+	Dip to White (Legacy)	Dyk i hvid (ældre)
+	Direction	Retning
+	Directional	Retningsbestemt
+	Directional Blur	Retningssløring
+	Directional Blur (Legacy)	Retningssløring (ældre)
+	Disable video output when in the background	Deaktivér video-output, når programmet er i baggrunden
+	Disperse	Spredning
+	Displacement	Forskydning
+	Display Color Management	Farvestyring for skærm
+	Display Color Settings	Farveindstillinger for skærm
+	Display out of sync indicators for unlinked clips	Vis indikatorer for manglende synkronisering ved frakoblede klip
+	Dissolve	Overgang
+	Dissolve Blocks	Overgangsblokke
+	Distance	Afstand
+	Distance to Image	Afstand til billede
+	Distort	Forvræng
+	Distortion	Forvrængning
+	Distortion Complexity	Forvrængningskompleksitet
+	Distortion Rate	Forvrængningshastighed
+	Distortion Type	Forvrængningstype
+	Divide	Dividér
+	Do not delete cache files automatically	Slet ikke cachefiler automatisk
+	Don't label speakers	Mærk ikke talere
+	Double-click	Dobbeltklik
+	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Afkodning i kladdetilstand ved reduceret afspilningsopløsning (H.264: hurtigere, nogle billeder er mindre filtrerede)
+	Drive	Drev
+	Drop Shadow	Slagskygge
+	Dry	Dry
+	Dry Out	Dry out
+	Dry Up a Roomy Voice	Fjern rumklang fra stemmen
+	Duck Deep Under Dialogue	Duck dybt under dialog
+	Duck Under Dialogue	Duck under dialog
+	Duck Under Voice and Effects	Duck under stemme og effekter
+	Ducking	Ducking
+	Dutch	Nederlandsk
+	Dynamic Link	Dynamic Link
+	Dynamics Processing	Dynamikbehandling
+	Early Reflections	Tidlige refleksioner
+	Earthquake	Jordskælv
+	Ease In and Out	Ease ind og ud
+	Easing	Easing
+	Echo	Ekko
+	Echo Glow	Ekko-glød
+	Echo Operator	Ekko-operator
+	Echo Time (seconds)	Ekkotid (sekunder)
+	Echoes	Ekkoer
+	Edge Color	Kantfarve
+	Edge Feather	Kantudjævning
+	Edge Glow	Kantglød
+	Edge Sharpness	Kantskarphed
+	Edge Softness	Kantblødhed
+	Edge Thickness	Kanttykkelse
+	Edge Thin	Kanttynding
+	Edge Threshold	Kanttærskel
+	Edge Type	Kanttype
+	Edge Width	Kantbredde
+	Elliptical	Elliptisk
+	Emboss	Relief
+	Enable HSL Secondary	Aktivér sekundær HSL
+	Enable Mercury Transmit	Aktivér Mercury Transmit
+	Enable ProRes hardware accelerated encoding, if available	Aktivér hardwareaccelereret ProRes-kodning, hvis tilgængelig
+	Enable clip and XMP metadata linking	Aktivér sammenkædning af klip- og XMP-metadata
+	Enable developer mode	Aktivér udviklertilstand
+	Enable hardware accelerated decoding (requires restart)	Aktivér hardwareaccelereret afkodning (kræver genstart)
+	Enable language auto-detection	Aktivér automatisk sprogregistrering
+	Enable proxies	Aktivér proxier
+	End Color	Slutfarve
+	End Point	Slutpunkt
+	End of Ramp	Rampens slutpunkt
+	Error	Fejl
+	Evolution	Udvikling
+	Evolution Options	Indstillinger for udvikling
+	Exciter Amount	Exciter-mængde
+	Exciter Mode	Exciter-tilstand
+	Exclusion	Udelukkelse
+	Exponential Fade	Eksponentiel fade
+	Extended Dynamic Range Monitoring	Overvågning af udvidet dynamikområde
+	FFT Filter	FFT-filter
+	Fade	Fade
+	Fade Out	Fade ud
+	Faded Matte	Afbleget mat
+	Falloff	Falloff
+	Far Away	Langt væk
+	Fast	Hurtig
+	Faster Motion	Hurtigere bevægelse
+	Feedback	Feedback
+	Feedback 1	Feedback 1
+	Feedback 2	Feedback 2
+	Feedback 3	Feedback 3
+	Feedback 4	Feedback 4
+	Feet + Frames 16mm	Fod + billeder 16 mm
+	Feet + Frames 35mm	Fod + billeder 35 mm
+	Female	Kvinde
+	File Size	Filstørrelse
+	Fill Background	Udfyld baggrund
+	Fill Color	Udfyldningsfarve
+	Fill Left with Right	Udfyld venstre med højre
+	Fill Point	Udfyldningspunkt
+	Fill Right with Left	Udfyld højre med venstre
+	Fill Selector	Udfyldningsvælger
+	Film Dissolve	Filmovergang
+	Film Dissolve (Legacy)	Filmovergang (ældre)
+	Film Roll	Filmrulning
+	Filter	Filter
+	Filter Frequency	Filterfrekvens
+	Filter Resonance	Filterresonans
+	Filter and EQ	Filter og EQ
+	Final Delay	Afsluttende delay
+	Find Edges	Find kanter
+	Flanger	Flanger
+	Flare	Flare
+	Flare Brightness	Flare-lysstyrke
+	Flare Center	Flare-center
+	Flare Color	Flare-farve
+	Flash	Flash
+	Flicker	Flimmer
+	Flickers	Flimrer
+	Flip Motion	Vendingsbevægelse
+	Flip Over	Vend om
+	Float	Float
+	Focus	Fokus
+	Focus Blur	Fokussløring
+	Focus Point	Fokuspunkt
+	Focus Shape	Fokusform
+	Focus Size	Fokusstørrelse
+	Fold Motion	Foldningsbevægelse
+	Foldback	Foldback
+	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Parametre til farvestyring finder du under fanen Indstillinger i panelet Lumetri Color.
+	Format	Format
+	Four Scopes (RGB, 8 bit)	Fire scopes (RGB, 8 bit)
+	Four Scopes (YUV, float, no clamp)	Fire scopes (YUV, float, uden clamp)
+	Fractal Influence	Fraktalinflydelse
+	Fractal Type	Fraktaltype
+	Frame	Billede
+	Frame Color	Rammefarve
+	Frame Count	Billedantal
+	Frame Layout	Billedlayout
+	Frame Rate	Billedhastighed
+	Frame Width	Rammebredde
+	Frame cache for monitors and thumbnails	Billedcache til monitorer og miniaturebilleder
+	Frames	Billeder
+	Framing	Indramning
+	French	Fransk
+	Frequency	Frekvens
+	From	Fra
+	From East	Fra øst
+	From North	Fra nord
+	From South	Fra syd
+	From West	Fra vest
+	From the Left	Fra venstre
+	From the Right	Fra højre
+	Front + LFE	Front + LFE
+	Front + Rear	Front + bagkanaler
+	Front + Rear + LFE	Front + bagkanaler + LFE
+	Front Only	Kun front
+	Fuzz	Fuzz
+	GB	GB
+	Gamma	Gamma
+	Gamma Correction	Gammakorrektion
+	Gamut Warning	Gamut-advarsel
+	Gamut Warning Color	Farve til gamut-advarsel
+	Gap	Mellemrum
+	Gap Color	Mellemrumsfarve
+	Gaussian Blur	Gaussisk sløring
+	Gaussian Blur (Legacy)	Gaussisk sløring (ældre)
+	General	Generelt
+	Generate	Generér
+	Generate Timecode	Generér tidskode
+	Generate waveforms and conform audio using multithreading	Generér bølgeformer og tilpas lyd ved hjælp af multitrådsbehandling
+	Generate waveforms automatically during import	Generér automatisk bølgeformer under import
+	German	Tysk
+	Ghosts	Spøgelser
+	Glass	Glas
+	Glint	Glimt
+	Glitch	Glitch
+	Glow	Glød
+	Glow Brightness	Glødelysstyrke
+	Glow Color	Glødefarve
+	Glow Only	Kun glød
+	Glow Radius	Gløderadius
+	Glow Saturation	Glødemætning
+	Glow Width	Glødebredde
+	Golden Hour	Gylden time
+	Good	God
+	Gradient	Gradient
+	Gradient End	Gradientende
+	Gradient Layer	Gradientlag
+	Gradient Placement	Gradientplacering
+	Gradient Scatter	Gradientspredning
+	Gradient Shape	Gradientform
+	Gradient Start	Gradientstart
+	Gradient Wipe	Gradient-wipe
+	Gradient Wipe (Legacy)	Gradient-wipe (ældre)
+	Grain Size	Kornstørrelse
+	Graphic Equalizer (10 Bands)	Grafisk equalizer (10 bånd)
+	Graphic Equalizer (20 Bands)	Grafisk equalizer (20 bånd)
+	Graphic Equalizer (30 Bands)	Grafisk equalizer (30 bånd)
+	Graphics	Grafik
+	Green Blurriness	Grøn sløring
+	Green Curve	Grøn kurve
+	Green Offset	Grøn forskydning
+	Green Power	Grøn styrke
+	Green Slope	Grøn hældning
+	Green-Blue	Grøn-blå
+	Green-Const	Grøn-konst
+	Green-Green	Grøn-grøn
+	Green-Red	Grøn-rød
+	Grid	Gitter
+	Grow	Vækst
+	Growing Files	Voksende filer
+	Grunge	Grunge
+	Grunge & Distort	Grunge og forvrængning
+	GuitarSuite	GuitarSuite
+	HDR Graphics White (Nits)	HDR-grafikhvid (nits)
+	HLS Vectorscope + Histogram	HLS-vektorskop + histogram
+	HSL Secondary	HSL-sekundær
+	Hard	Hård
+	Hard Clip	Hård klipning
+	Hard Light	Hårdt lys
+	Hard Limiter	Hård limiter
+	Hard Mix	Hård mix
+	Hardware decoding	Hardwareafkodning
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardwareafkodning: Automatisk bruger systemets videoafkoder (VideoToolbox på macOS, Media Foundation på Windows, VA-API eller NVDEC til H.264 og HEVC på Linux) til de strømme, den understøtter, og FilmCrafts egen afkoder til alt andet eller hvis hardwaren svigter. Medier, der allerede er åbne, bevarer deres afkoder, indtil de genåbnes.
+	Head Size	Hovedstørrelse
+	Heart	Hjerte
+	Height	Højde
+	Hexagon	Sekskant
+	Hide Back Face	Skjul bagside
+	High	Høj
+	High Cutoff	Høj afskæring
+	High Frequency Cut	Højfrekvensafskæring
+	High Frequency Damping	Højfrekvensdæmpning
+	High Pass	Højpas
+	High Shelf	Høj hylde
+	High Shelf Gain	Forstærkning (høj hylde)
+	High contrast with held highlights and deep shadows	Høj kontrast med tilbageholdte højlys og dybe skygger
+	Highlight	Højlys
+	Highlight Blue Balance	Blåbalance i højlys
+	Highlight Brightness	Lysstyrke i højlys
+	Highlight Color	Farve i højlys
+	Highlight Green Balance	Grønbalance i højlys
+	Highlight Red Balance	Rødbalance i højlys
+	Highlight Rolloff	Højlystonefald
+	Highlight Threshold	Højlystærskel
+	Highlight Tint	Toning i højlys
+	Highlights Lightness	Lyshed i højlys
+	Highpass	Højpas
+	Hindi	Hindi
+	Hindi digits	Hindi-cifre
+	Horizontal 16:9	Vandret 16:9
+	Horizontal Alignment	Vandret justering
+	Horizontal Blocks	Vandrette blokke
+	Horizontal Decentering	Vandret decentrering
+	Horizontal Displacement	Vandret forskydning
+	Horizontal Flip	Vandret spejling
+	Horizontal Margin	Vandret margen
+	Horizontal and Vertical	Vandret og lodret
+	Hue Center	Farvetonecentrum
+	Hue Tolerance	Farvetonetolerance
+	I/O Buffer Size	I/O-bufferstørrelse
+	Ignore Alpha	Ignorér alfa
+	Image Control	Billedkontrol
+	Immersive Video	Immersiv video
+	Import numbered stills as image sequences	Importér nummererede stillbilleder som billedsekvenser
+	Impulse	Impuls
+	In a Room	I et rum
+	In the Media Cache	I mediecachen
+	In the project	I projektet
+	In/Out Duration	Ind-/udvarighed
+	Include captions on import	Medtag undertekster ved import
+	Incoming	Indkommende
+	Indeterminate Media Timebase	Ubestemt medietidsbase
+	Initial Delay	Indledende forsinkelse
+	Inner	Indre
+	Inner Radius	Indre radius
+	Input Boost	Inputforstærkning
+	Inset	Indsunket
+	Inside	Indvendig
+	Inside Color	Indvendig farve
+	Inter	Inter
+	Interior Room Tone	Indendørs rumlyd
+	Internal Black Point	Intern sortpunkt
+	Internal White Point	Intern hvidpunkt
+	Interpolation	Interpolation
+	Intersect	Gennemskæring
+	Inverse Falloff	Omvendt aftagning
+	Invert	Invertér
+	Invert Alpha	Invertér alfa
+	Invert Blur	Invertér sløring
+	Invert Fill	Invertér udfyldning
+	Invert Gradient	Invertér gradient
+	Invert Left	Invertér venstre
+	Invert Right	Invertér højre
+	Iris Box	Iris-firkant
+	Iris Cross	Iris-kryds
+	Iris Diamond	Iris-diamant
+	Iris Radius	Irisradius
+	Iris Rotation	Irisrotation
+	Iris Round	Iris-rund
+	Iris Shape	Irisform
+	Italian	Italiensk
+	Japanese	Japansk
+	JetBrains Mono	JetBrains Mono
+	Join Through Edits	Sammenføj gennem redigeringer
+	Ripple Trim In	Ripple-beskæring af indpunkt
+	Ripple Trim Out	Ripple-beskæring af udpunkt
+	Roll Edit	Rul-redigering
+	Trim In	Beskær indpunkt
+	Trim Out	Beskær udpunkt
+	Kaleidoscope	Kalejdoskop
+	Keep a recovery copy of unsaved changes	Gem en gendannelseskopi af ikke-gemte ændringer
+	Key Color	Nøglefarve
+	Keying	Keying
+	Korean	Koreansk
+	Label Defaults	Standardetiketter
+	Label speakers	Mærk talere
+	Labels	Etiketter
+	Large Hall	Stor sal
+	Large Trim Offset	Stor beskæringsforskydning
+	Large Volume Adjustment	Stor lydstyrkejustering
+	Latch	Latch
+	Layer Name	Lagnavn
+	Layers	Lag
+	Leave Color	Bevar farve
+	Left - Left	Venstre - venstre
+	Left - Right	Venstre - højre
+	Left channel to device output	Venstre kanal til enhedens output
+	Left to Right	Venstre til højre
+	Left to right	Venstre til højre
+	Legacy	Ældre
+	Length	Længde
+	Lens Blur	Linsesløring
+	Lens Distortion	Linseforvrængning
+	Lens Flare	Linseblænding
+	Lens Type	Linsetype
+	Level 1	Niveau 1
+	Level 2	Niveau 2
+	Level 3	Niveau 3
+	Level 4	Niveau 4
+	Levels	Niveauer
+	Lifted blacks, softer contrast, muted colour	Løftede sorte, blødere kontrast, afdæmpet farve
+	Light 1	Lys 1
+	Light 2	Lys 2
+	Light 3	Lys 3
+	Light 4	Lys 4
+	Light 5	Lys 5
+	Light Angle	Lysvinkel
+	Light Color	Lysets farve
+	Light Intensity	Lysintensitet
+	Light Leak	Lyslækage
+	Light Leaks	Lyslækager
+	Light Sweep	Lysfejning
+	Light Type	Lystype
+	Lighten	Lysne
+	Lighter Color	Lysere farve
+	Lighting Effects	Belysningseffekter
+	Lightning	Lyn
+	Lights & Blurs	Lys og sløring
+	Lights & Glows	Lys og glød
+	Line Thickness	Linjetykkelse
+	Linear Burn	Lineær brænding
+	Linear Dodge (Add)	Lineær dodge (tilføj)
+	Linear Light	Lineært lys
+	Linear Ramp	Lineær gradient
+	Linear Wipe	Lineær wipe
+	Linear Wipe (Legacy)	Lineær wipe (ældre)
+	Linear keyframe thinning	Lineær udtynding af nøglebilleder
+	Linear to Log	Lineær til log
+	Liquid Distortion	Væskeforvrængning
+	Local Projects	Lokale projekter
+	Location	Placering
+	Log Note	Lognotat
+	Log to Linear	Log til lineær
+	Log to Log	Log til log
+	Logo Cutout	Logoudklip
+	Long Shadow	Lang skygge
+	Look-Ahead Time	Look-ahead-tid
+	Loudness	Loudness
+	Loudness Maximizer	Loudness-maksimering
+	Loudness Meter	Loudness-måler
+	Louver	Persienne
+	Low	Lav
+	Low Frequency Cut	Lavfrekvensafskæring
+	Low Pass	Lavpas
+	Low Shelf	Lav hylde
+	Low Shelf Gain	Forstærkning (lav hylde)
+	Lower Left	Nederst til venstre
+	Lower Right	Nederst til højre
+	Lowpass	Lavpas
+	Luma	Luma
+	Luma Curve	Lumakurve
+	Luma Fade	Lumaudtoning
+	Luma Key	Luma key
+	Luma Source	Lumakilde
+	Luma and Chroma	Luma og kroma
+	Lumetri Presets	Lumetri-forudindstillinger
+	Luminance	Luminans
+	Luminance Threshold	Luminanstærskel
+	Luminosity	Luminositet
+	MB	MB
+	Magnify	Forstør
+	Magnify (Legacy)	Forstør (ældre)
+	Maintain pitch while shuttling	Bevar tonehøjden under spoling
+	Major Radius	Stor radius
+	Male	Mand
+	Map Black To	Afbild sort til
+	Map White To	Afbild hvid til
+	Maps full-range levels into 16–235 (video range) with a luma curve	Afbilder niveauer i fuldt interval til 16–235 (videointerval) med en lumakurve
+	Mask Only	Kun maske
+	Master Amplitude	Master-amplitude
+	Mastering	Mastering
+	Match frame sets in point	Match frame sætter indpunktet
+	Matte	Matte
+	Matte Alpha	Matte-alfa
+	Matte Cleanup	Matte-oprydning
+	Matte Generation	Matte-generering
+	Matte Luma	Matte-luma
+	Maximum	Maksimum
+	Maximum Amplitude	Maksimal amplitude
+	Maximum Block Size	Maksimal blokstørrelse
+	Maximum Blur	Maksimal sløring
+	Maximum Project Versions	Maksimalt antal projektversioner
+	Maximum Reduction	Maksimal reduktion
+	Maximum Scale	Maksimal skalering
+	Media	Medier
+	Media Analysis	Medieanalyse
+	Media Analysis & Transcription	Medieanalyse og transskription
+	Media Cache	Mediecache
+	Media Cache Database	Mediecachedatabase
+	Media Cache Files	Mediecachefiler
+	Media Cache Management	Mediecacheadministration
+	Media Duration	Medievarighed
+	Media End	Medieslut
+	Media Time	Medietid
+	Media Timecode	Medietidskode
+	Media Type	Medietype
+	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	Medieanalyse og transskriptioner cachelagres i mappen Mediecache. Genanalyse er ikke nødvendig, hvis mediet importeres til et andet projekt på denne computer.
+	Median	Median
+	Medium Room	Mellemstort rum
+	Memory	Hukommelse
+	Metadata & Timecode Burn-in	Indbrænding af metadata og tidskode
+	Method	Metode
+	Metrics Kerning	Metrisk knibning
+	Mid	Mellem
+	Mid Point	Midtpunkt
+	Midtone Blue Balance	Blåbalance i mellemtoner
+	Midtone Green Balance	Grønbalance i mellemtoner
+	Midtone Red Balance	Rødbalance i mellemtoner
+	Midtones Lightness	Lyshed i mellemtoner
+	Minimum	Minimum
+	Minimum time	Minimumstid
+	Minimum time interval thinning	Udtynding ved minimumstidsinterval
+	Minor Radius	Lille radius
+	Mirror	Spejl
+	Mirror Alternate	Skiftevis spejling
+	Missing font replacement	Erstatning af manglende skrifttyper
+	Miter join	Vinklet samling
+	Miter limit	Vinkelgrænse
+	Mixed Crystals	Blandede krystaller
+	Mode	Tilstand
+	Modern High Gain	Moderne high gain
+	Modulation	Modulation
+	Modulation Rate	Modulationshastighed
+	Mono Media	Monomedier
+	Monochrome	Monokrom
+	Monochrome toned cyan-blue	Monokromtonet cyan-blå
+	Monochrome toned warm brown	Monokromtonet varm brun
+	Monoscopic	Monoskopisk
+	Monospace only	Kun monospace
+	More colour in the less saturated areas	Mere farve i de mindre mættede områder
+	Morph Cut	Morfklip
+	Mosaic	Mosaik
+	Mosaic (Legacy)	Mosaik (ældre)
+	Motion Blur	Bevægelsessløring
+	Motion Camera	Bevægelseskamera
+	Motion Preset	Bevægelsesforudindstilling
+	Motion Tween	Bevægelsestween
+	Move	Flyt
+	Movie	Film
+	Movie (audio and video)	Film (lyd og video)
+	Multiband Compressor	Multibåndkompressor
+	Multichannel Mono Media	Flerkanals-monomedier
+	Multiply	Multiplicér
+	Multitap Delay	Multitap-delay
+	Music	Musik
+	Mute input during timeline recording	Slå input fra under tidslinjeoptagelse
+	Name	Navn
+	Narrow	Smal
+	Neon Color	Neonfarve
+	Neon Wipe	Neon-wipe
+	Next to original media files	Ved siden af oprindelige mediefiler
+	Night	Nat
+	No Motion	Ingen bevægelse
+	No Scroll	Ingen rulning
+	No plugins are installed. Changes will take effect the next time you start FilmCraft.	Der er ikke installeret nogen plugins. Ændringerne træder i kraft, næste gang du starter FilmCraft.
+	Noise	Støj
+	Noise & Grain	Støj og korn
+	Noise (Legacy)	Støj (ældre)
+	Noise Level	Støjniveau
+	Noise Reduction/Restoration	Støjreduktion/restaurering
+	Noise Type	Støjtype
+	Non-Additive Dissolve	Ikke-additiv opløsning
+	Normal	Normal
+	Notch 1	Notch 1
+	Notch 2	Notch 2
+	Notch 3	Notch 3
+	Notch 4	Notch 4
+	Notch 5	Notch 5
+	Notch 6	Notch 6
+	Notch Filter	Notchfilter
+	Notch Width	Notchbredde
+	Number Of Echoes	Antal ekkoer
+	Number of Harmonics	Antal overtoner
+	Obsolete	Forældet
+	Octagon	Ottekant
+	Offset	Forskydning
+	Offset (Turbulence)	Forskydning (turbulens)
+	Offset From	Forskydning fra
+	Offset To	Forskydning til
+	Omni	Omni
+	On	Til
+	On Original Image	På originalbillede
+	On Transparent	På gennemsigtigt
+	Open Air	Åben luft
+	Open Most Recent	Åbn seneste
+	Open in new window	Åbn i nyt vindue
+	Open in place	Åbn på stedet
+	Open new tab	Åbn ny fane
+	Opens up the shadows	Åbner skyggerne
+	Order	Rækkefølge
+	Orientation	Orientering
+	Outer	Ydre
+	Outgoing	Udgående
+	Output	Output
+	Output Mapping	Output-tilknytning
+	Outside	Udvendig
+	Outside Color	Udvendig farve
+	Overflow	Overflow
+	Overlay	Overlejring
+	Overshoot	Overskridning
+	Page Peel	Sidekrølning
+	Page Scroll	Siderulning
+	Page Turn	Sidevending
+	Paint Bucket	Malerspand
+	Paint On Black	Mal på sort
+	Paint On Original Image	Mal på originalbillede
+	Paint On Transparent	Mal på gennemsigtigt
+	Paint On White	Mal på hvidt
+	Paint Style	Malestil
+	Paint Surface	Maleunderlag
+	Pan (Y Axis)	Panorering (Y-akse)
+	Panel Wipe	Panel-wipe
+	Panels	Paneler
+	Panner - Ambisonics	Panorering - Ambisonics
+	Parade	Parade
+	Parade (RGB)	Parade (RGB)
+	Parametric Equalizer	Parametrisk equalizer
+	Passband Ripple	Pasbåndskrusning
+	Path	Sti
+	Path Points	Stipunkter
+	Pause Media Encoder queue during playback	Sæt Media Encoder-køen på pause under afspilning
+	Peak Frequency	Topfrekvens
+	Peak Gain	Topforstærkning
+	Pedestal	Pedestal
+	Pentagon	Femkant
+	Per line	Pr. linje
+	Percent Blur	Sløring i procent
+	Perspective	Perspektiv
+	Phase Difference	Faseforskel
+	Phaser	Phaser
+	Phone Call	Telefonsamtale
+	Phosphor	Fosfor
+	Phosphor Color	Fosforfarve
+	Photocopy	Fotokopi
+	Photocopy Color	Fotokopifarve
+	Pillow	Pude
+	Pin All	Fastgør alle
+	Pin Horizontal	Fastgør vandret
+	Pin Light	Priklys
+	Pin Vertical	Fastgør lodret
+	Pinning	Fastgøring
+	Pitch Shifter	Tonehøjdeskifter
+	Plate	Plade
+	Plateau Wipe	Plateau-wipe
+	Plateaus	Plateauer
+	Plates	Plader
+	Play after rendering previews	Afspil efter beregning af forhåndsvisninger
+	Play audio while scrubbing in Source and Program Monitors	Afspil lyd under skrubning i kilde- og programmonitorer
+	Playback	Afspilning
+	Playhead position determines trim monitor loop playback	Afspilningshovedets placering bestemmer loopafspilningen i beskæringsmonitoren
+	Plugins	Plugins
+	Podcast Voice	Podcaststemme
+	Point 1	Punkt 1
+	Point 1 Color	Punkt 1-farve
+	Point 1 Latitude	Punkt 1-breddegrad
+	Point 1 Longitude	Punkt 1-længdegrad
+	Point 2	Punkt 2
+	Point 2 Color	Punkt 2-farve
+	Point 2 Latitude	Punkt 2-breddegrad
+	Point 2 Longitude	Punkt 2-længdegrad
+	Point 3	Punkt 3
+	Point 3 Color	Punkt 3-farve
+	Point 3 Latitude	Punkt 3-breddegrad
+	Point 3 Longitude	Punkt 3-længdegrad
+	Point 4	Punkt 4
+	Point 5	Punkt 5
+	Point 6	Punkt 6
+	Point 7	Punkt 7
+	Point 8	Punkt 8
+	Points	Punkter
+	Policy	Politik
+	Pop Motion	Pop-bevægelse
+	Portuguese	Portugisisk
+	Position & Rotation	Placering og rotation
+	Position Amount	Placeringsgrad
+	Position, Scale & Rotation	Placering, skalering og rotation
+	Position, Scale, Rotation	Placering, skalering, rotation
+	Posterize	Posterisér
+	Posterize Time	Posterisér tid
+	Pre-Delay	Pre-delay
+	Prefix	Præfiks
+	Presence Lift	Presence-løft
+	Preserve Luminosity	Bevar luminans
+	Preserve Scale	Bevar skalering
+	ProcAmp	ProcAmp
+	Projecting cap	Fremspringende linjeende
+	Projects	Projekter
+	Pull Motion	Trækbevægelse
+	Pulls highlights and whites down	Trækker højlys og de hvide ned
+	Push	Skub
+	Push (Legacy)	Skub (ældre)
+	Q	Q
+	RAM reserved for other applications	RAM reserveret til andre programmer
+	RGB	RGB
+	RGB Split	RGB-split
+	RGB-White	RGB-hvid
+	Radial	Radial
+	Radial Blur	Radial sløring
+	Radial Ramp	Radial gradient
+	Radial Wipe	Radial wipe
+	Radial Wipe (Legacy)	Radial wipe (ældre)
+	Radio Announcer	Radiooplæser
+	Radio Voice	Radiostemme
+	Radius	Radius
+	Ramp	Gradient
+	Ramp Shape	Gradientform
+	Random	Tilfældig
+	Random Seed	Tilfældigt seed
+	Range	Interval
+	Ray	Stråle
+	Ray Color	Strålefarve
+	Ray Length	Strålelængde
+	Rays	Stråler
+	Rays Only	Kun stråler
+	Read	Læs
+	Rec. 2100	Rec. 2100
+	Rec. 601	Rec. 601
+	Rec. 709	Rec. 709
+	Red Blurriness	Rød sløring
+	Red Curve	Rød kurve
+	Red Offset	Rød forskydning
+	Red Power	Rød styrke
+	Red Slope	Rød hældning
+	Red-Blue	Rød-blå
+	Red-Const	Rød-konst
+	Red-Green	Rød-grøn
+	Red-Red	Rød-rød
+	Reduce Axis	Reduktionsakse
+	Reduce Interlace Flicker	Reducér interlace-flimmer
+	Reflected	Reflekteret
+	Reflection Angle	Refleksionsvinkel
+	Reflection Center	Refleksionscentrum
+	Refraction	Refraktion
+	Reframe Offset	Omramningsforskydning
+	Reframe Zoom	Omramningszoom
+	Refresh growing Files Every	Opdatér voksende filer hver
+	Relaxed	Afslappet
+	Release Time	Release-tid
+	Relief	Relief
+	Remaining	Resterende
+	Remove Fringe	Fjern kant
+	Render Edit in Audition files to:	Beregn Edit in Audition-filer til:
+	Render audio when rendering video	Beregn lyd, når video beregnes
+	Repair	Reparér
+	Repeat Edge Pixels	Gentag kantpixels
+	Replace Color	Erstat farve
+	Replace With Clip From Source Monitor	Erstat med klip fra kildemonitor
+	Replicate	Replikér
+	Responsive Design - Position	Responsivt design - placering
+	Responsive Design - Time	Responsivt design - tid
+	Restore open sequences when opening projects	Gendan åbne sekvenser, når projekter åbnes
+	Result	Resultat
+	Retro	Retro
+	Reveal Nested Sequence	Vis indlejret sekvens
+	Reveal Original Image	Vis originalbillede
+	Reveal in Project	Vis i projekt
+	Reverb Amount	Rumklangmængde
+	Reverse	Omvendt
+	Right - Left	Højre - venstre
+	Right - Right	Højre - højre
+	Right channel to device output	Højre kanal til enhedens output
+	Right to left	Højre til venstre
+	Ripple trim adds edits to keep both sides of trim in sync	Ripple-beskæring tilføjer klip for at holde begge sider af beskæringen synkroniserede
+	Roll (Z Axis)	Rul (Z-akse)
+	Room Size	Rumstørrelse
+	Rotation Amount	Rotationsgrad
+	Roughen	Ujævnhed
+	Roughen Color	Ujævnhedsfarve
+	Roughen Edges	Ujævne kanter
+	Round cap	Rund linjeende
+	Round join	Rund samling
+	Rounded Crop	Afrundet beskæring
+	Rows	Rækker
+	Russian	Russisk
+	Rusty	Rusten
+	Rusty Color	Rustfarve
+	SFX	SFX
+	Sample Rate	Samplingsfrekvens
+	Saturation at 50 %	Mætning ved 50 %
+	Save .cfa and .pek media cache files next to original media files when possible	Gem .cfa- og .pek-mediecachefiler ved siden af de oprindelige mediefiler, når det er muligt
+	Scale (Degrees)	Skalering (grader)
+	Scale Amount	Skaleringsgrad
+	Scale From	Skalering fra
+	Scale Height	Højdeskalering
+	Scale Match	Skaleringsmatch
+	Scale To	Skalering til
+	Scale Width	Breddeskalering
+	Scale to frame size	Skalér til billedstørrelse
+	Scan Lines	Skanlinjer
+	Scene	Scene
+	Scientific Filter	Videnskabeligt filter
+	Scratch disk location for Captured Audio	Placering af scratchdisk til optaget lyd
+	Screen	Skærm
+	Seconds	Sekunder
+	Segments	Segmenter
+	Semi-tones	Halvtoner
+	Sequence Name	Sekvensnavn
+	Sequence Timecode	Sekvenstidskode
+	Set focus on the Timeline when performing Insert/Overwrite edits	Sæt fokus på tidslinjen ved indsæt-/overskrivredigeringer
+	Set to frame size	Sæt til billedstørrelse
+	Setting	Indstilling
+	Shadow Angle	Skyggevinkel
+	Shadow Blue Balance	Blåbalance i skygger
+	Shadow Blur	Skyggesløring
+	Shadow Color	Skyggefarve
+	Shadow Distance	Skyggeafstand
+	Shadow Green Balance	Grønbalance i skygger
+	Shadow Only	Kun skygge
+	Shadow Opacity	Skyggeopacitet
+	Shadow Red Balance	Rødbalance i skygger
+	Shadow Size	Skyggestørrelse
+	Shadow Tint	Toning i skygger
+	Shadows Lightness	Lyshed i skygger
+	Shake	Rystelse
+	Shape Dissolve	Formopløsning
+	Shape Flow	Formflow
+	Shape Size	Formstørrelse
+	Shapes	Former
+	Shard Size	Skærvstørrelse
+	Sharp Colors	Skarpe farver
+	Sharpen Amount	Skærpningsgrad
+	Shift Center To	Forskyd centrum til
+	Shift clips that overlap trim point during ripple trimming	Forskyd klip, der overlapper beskæringspunktet, under ripple-beskæring
+	Shot	Shot
+	Show "Project:" and "Bin:" in Project panel tab	Vis "Projekt:" og "Beholder:" i projektpanelets faneblad
+	Show Clip Mismatch Warning dialog	Vis advarselsdialog om klipuoverensstemmelse
+	Show Event Indicator	Vis hændelsesindikator
+	Show Focus Area	Vis fokustområde
+	Show Home	Vis startside
+	Show Mask Tracker Preview	Vis forhåndsvisning af maskesporing
+	Show Only Noise	Vis kun støj
+	Show Open Dialog	Vis dialogboksen Åbn
+	Show Project Load Error Dialog	Vis dialogboks for fejl under projektindlæsning
+	Show Rich Tool Tips	Vis udvidede værktøjstips
+	Show Tool Tips	Vis værktøjstips
+	Show Workspace Reset Warning dialog on double click	Vis advarselsdialog om nulstilling af arbejdsområde ved dobbeltklik
+	Show system compatibility issues at startup	Vis problemer med systemkompatibilitet ved opstart
+	Shrink	Krymp
+	Shutter Angle	Lukkervinkel
+	Similarity	Lighed
+	Simple Notch Filter	Enkel notchfilter
+	Simple Parametric EQ	Enkel parametrisk EQ
+	Simple Text	Enkel tekst
+	Single-band Compressor	Enkeltbåndskompressor
+	Sinusoidal	Sinusformet
+	Skew	Skævhed
+	Skew Axis	Skævhedsakse
+	Slats	Lameller
+	Slice	Skive
+	Slices	Skiver
+	Slide	Glid
+	Slide (Legacy)	Glid (ældre)
+	Slope	Hældning
+	Slow	Langsom
+	Slower Motion	Langsommere bevægelse
+	Small Room	Lille rum
+	Smart Limit	Smart grænse
+	Smart Tools	Smarte værktøjer
+	Smart quotes	Smarte anførselstegn
+	Smooth	Blødgør
+	Smooth Motion	Jævn bevægelse
+	Smooth Scroll	Jævn rulning
+	Smoothness	Jævnhed
+	Snap playhead in Timeline when Snap is enabled	Fastgør afspilningshovedet i tidslinjen, når fastgøring er aktiveret
+	Soft	Blød
+	Soft Clamp	Blød begrænsning
+	Soft Edges (Best Quality)	Bløde kanter (bedste kvalitet)
+	Soft Light	Blødt lys
+	Soft Wipe	Blød udviskning
+	Soften Harshness	Blødgør hårdhed
+	Softness	Blødhed
+	Solarize	Solarisér
+	Solid Colors	Ensfarvede
+	Source Point	Kildepunkt
+	Source Text	Kildetekst
+	Spacer	Mellemrum
+	Spanish	Spansk
+	Speaker Angle	Højttalervinkel
+	Speaker Labeling	Talermærkning
+	Special	Speciel
+	Special Effects	Specialeffekter
+	Speech model	Talemodel
+	Speed	Hastighed
+	Spherize	Kugleform
+	Spiky	Spids
+	Spill	Spild
+	Spill Suppression	Spildundertrykkelse
+	Spin	Drej
+	Spin Direction	Drejeretning
+	Spin Motion	Drejebevægelse
+	Split	Opdel
+	Split (Legacy)	Opdel (ældre)
+	Spotlight	Spotlys
+	Spread	Spredning
+	Spring Motion	Fjederbevægelse
+	Square	Firkantet
+	Square (Width Only)	Firkantet (kun bredde)
+	Square 1:1	Firkantet 1:1
+	Stabilization	Stabilisering
+	Stabilize Only	Stabilisér kun
+	Stabilize, Crop	Stabilisér, beskær
+	Stabilize, Crop, Auto-scale	Stabilisér, beskær, autoskalér
+	Stabilize, Synthesize Edges	Stabilisér, syntetisér kanter
+	Stages	Faser
+	Star	Stjerne
+	Star Wipe	Stjerneudviskning
+	Start Angle	Startvinkel
+	Start Color	Startfarve
+	Start Point	Startpunkt
+	Start at 0	Start ved 0
+	Start at 1	Start ved 1
+	Start of Ramp	Start af rampe
+	Start with an Empty Project	Start med et tomt projekt
+	Starting Intensity	Startintensitet
+	Static Plates	Statiske plader
+	Step forward/back many	Gå mange billeder frem/tilbage
+	Stereo Expand	Stereoudvidelse
+	Stereo Expander	Stereoudvider
+	Stereo Imagery	Stereobillede
+	Stereo Media	Stereomedie
+	Stereo Phasing	Stereofasning
+	Stereoscopic - Over/Under	Stereoskopisk - over/under
+	Stereoscopic - Side by Side	Stereoskopisk - side om side
+	Still	Stillbillede
+	Still Image Default Duration	Standardvarighed for stillbilleder
+	Stone Church	Stenkirke
+	Stopband Attenuation	Stopbåndsdæmpning
+	Straight Color	Ren farve
+	Strength	Styrke
+	Stretch	Stræk
+	Stretch Gradient to Fit	Stræk gradient til at passe
+	Stretch Map to Fit	Stræk kort til at passe
+	Stretch Width or Height	Stræk bredde eller højde
+	Stretch Wipe	Strækudviskning
+	Stretch to Fit Frame	Stræk til at passe i rammen
+	Stripe	Strimmel
+	Stripes	Strimler
+	Strobe Color	Strobefarve
+	Strobe Duration (secs)	Strobevarighed (sek.)
+	Strobe Light	Stroboskoplys
+	Strobe Period (secs)	Strobeperiode (sek.)
+	Stroke 2 Color	Streg 2-farve
+	Stroke 2 Type	Streg 2-type
+	Stroke 2 Width	Streg 2-bredde
+	Stroke Angle	Stregvinkel
+	Stroke Color	Stregfarve
+	Stroke Density	Stregtæthed
+	Stroke Length	Streglængde
+	Stroke Length (secs)	Streglængde (sek.)
+	Stroke Only	Kun streg
+	Stroke Randomness	Stregtilfældighed
+	Stroke Type	Stregtype
+	Stroke Width	Stregbredde
+	Stroke line cap	Linjeafslutning
+	Stroke line join	Linjesamling
+	Studio Reverb	Studioreverb
+	Stylize	Stilisér
+	Subclip End	Underklip-slut
+	Subclip Start	Underklip-start
+	Subspace Warp	Subspace-warp
+	Subtitle	Undertekst
+	Subtract	Træk fra
+	Sum multichannel outputs to mono in Source Monitor	Sammenlæg flerkanalsoutput til mono i kildemonitor
+	Super Narrow	Super smal
+	Surface Gloss	Overfladeglans
+	Surface Material	Overflademateriale
+	Surround Reverb	Surround-reverb
+	Swap	Ombyt
+	Swap Channels	Ombyt kanaler
+	Swivel	Rotér
+	Synthetic	Syntetisk
+	TV Power	TV-power
+	Tape	Bånd
+	Tape Name	Båndnavn
+	Tape/Tube	Bånd/rør
+	Target Aspect	Målaspekt
+	Target Color	Målfarve
+	Target Field of View	Målsynsfelt
+	Target Loudness	Mål-loudness
+	Teal & Orange	Teal & orange
+	Telephone	Telefon
+	Teletext	Tekst-TV
+	Template Properties	Skabeloneegenskaber
+	Text Animator	Tekstanimator
+	Text Color	Tekstfarve
+	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	Mediecachen indeholder beregnede forhåndsvisninger af ikke-gemte projekter og andre filer, som FilmCraft kan gendanne. Det er altid sikkert at slette dem; FilmCraft genopbygger dem efter behov.
+	Thickness	Tykkelse
+	Tile Gradient	Fliselagt gradient
+	Tilt	Tilt
+	Tilt (X Axis)	Tilt (X-akse)
+	Time	Tid
+	Time and Pitch	Tid og tonehøjde
+	Timecode Conversion	Timecode-konvertering
+	Timeline Mouse Scrolling	Muserulning i tidslinjen
+	Timeline Playback Auto-Scrolling	Automatisk rulning i tidslinjen under afspilning
+	Tint Color	Toningsfarve
+	To	Til
+	Tolerance	Tolerance
+	Tone	Tone
+	Top Center	Øverst i midten
+	Top Left	Øverst til venstre
+	Top Right	Øverst til højre
+	Touch	Berør
+	Track Matte Key	Track Matte Key
+	Transcription	Transskription
+	Transcription preferences	Transskriptionsindstillinger
+	Transform	Transformér
+	Transformers	Transformere
+	Transience	Forbigåenhed
+	Transition Completion	Overgangsfuldførelse
+	Transition Softness	Overgangsblødhed
+	Transparency	Gennemsigtighed
+	Trash	Papirkurv
+	Travel Motion	Rejsebevægelse
+	Treble	Diskant
+	Triangle	Trekant
+	Trim	Trim
+	Tube	Rør
+	Tube-modeled Compressor	Rørmodeleret kompressor
+	Tubular	Rørformet
+	Turbulent	Turbulent
+	Turbulent Displace	Turbulent forskydning
+	Turbulent Sharp	Turbulent skarp
+	Turbulent Smooth	Turbulent jævn
+	Turbulent Smoother	Turbulent jævnere
+	Tweed	Tweed
+	Twirl	Hvirvl
+	Twirl (Legacy)	Hvirvl (ældre)
+	Twirl Center	Hvirvlcentrum
+	Twirl Radius	Hvirvlradius
+	Twist	Vridning
+	Twist Smoother	Jævnere vridning
+	Typewriter	Skrivemaskine
+	Ultra Key	Ultra Key
+	Uniform Scale	Ensartet skalering
+	Uniform Spacing	Ensartet mellemrum
+	Unsharp Mask	Uskarp maskering
+	Update it at least every	Opdatér den mindst hver
+	Update timeline dynamically during ripple edits.	Opdatér tidslinjen dynamisk under ripple-redigeringer.
+	Upper Frequency	Øvre frekvens
+	Upper Left	Øvre venstre
+	Upper Right	Øvre højre
+	Use Color Noise	Brug farvestøj
+	Use End Color	Brug slutfarve
+	Use File	Brug fil
+	Use Glow Color	Brug glødfarve
+	Use Media Source	Brug mediekilde
+	Use Tint Color	Brug toningsfarve
+	Utility	Værktøj
+	VHS Damage	VHS-skade
+	VR Blur	VR-slør
+	VR Chroma Leaks	VR-chromalæk
+	VR Chromatic Aberrations	VR-kromatisk aberration
+	VR Color Gradients	VR-farvegradienter
+	VR De-Noise	VR-støjfjernelse
+	VR Digital Glitch	VR-digital glitch
+	VR Fractal Noise	VR-fraktalstøj
+	VR Glow	VR-glød
+	VR Gradient Wipe	VR-gradientudviskning
+	VR Iris Wipe	VR-irisudviskning
+	VR Light Leaks	VR-lyslæk
+	VR Light Rays	VR-lystråler
+	VR Mobius Zoom	VR Mobius-zoom
+	VR Plane to Sphere	VR plan til kugle
+	VR Projection	VR-projektion
+	VR Random Blocks	VR-tilfældige blokke
+	VR Rotate Sphere	VR-rotér kugle
+	VR Sharpen	VR-skærp
+	VR Spherical Blur	VR-sfærisk slør
+	Validate Content Credentials on import	Validér Content Credentials ved import
+	Vectorscope (YUV)	Vektorskop (YUV)
+	Vectorscope + Waveform YC	Vektorskop + bølgeform YC
+	Vectorscope HLS	Vektorskop HLS
+	Vectorscope YUV	Vektorskop YUV
+	Venetian Blinds	Persienner
+	Vertical 4:5	Lodret 4:5
+	Vertical 9:16	Lodret 9:16
+	Vertical Alignment	Lodret justering
+	Vertical Blocks	Lodrette blokke
+	Vertical Decentering	Lodret decentrering
+	Vertical Displacement	Lodret forskydning
+	Vertical Flip	Lodret vending
+	Vertical Margin	Lodret margen
+	Very Narrow	Meget smal
+	Video 1	Video 1
+	Video 2	Video 2
+	Video 3	Video 3
+	Video 4	Video 4
+	Video 5	Video 5
+	Video 6	Video 6
+	Video 7	Video 7
+	Video 8	Video 8
+	Video Codec	Videocodec
+	Video Duration	Videovarighed
+	Video Effects	Videoeffekter
+	Video In Point	Videoindpunkt
+	Video Info	Videoinfo
+	Video Limiter	Videobegrænser
+	Video Out Point	Videoudpunkt
+	Video Transition Default Duration	Standardvarighed for videoovergange
+	Video Transitions	Videoovergange
+	Video Usage	Videobrug
+	Vignette	Vignette
+	Vivid Light	Levende lys
+	Vocal Booth	Vokalkabine
+	Vocal Enhancer	Vokalforbedring
+	Voice	Stemme
+	Voice in a Hall	Stemme i en sal
+	Volumetric Rays	Volumetriske stråler
+	Warm Film	Varm film
+	Warm Room	Varmt rum
+	Warm Voice	Varm stemme
+	Warm print stock with gentle roll-off	Varm kopifilm med blød roll-off
+	Warm, soft late-afternoon light	Varmt, blødt lys sidst på eftermiddagen
+	Warning	Advarsel
+	Warp Stabilizer	Warp-stabilisator
+	Wave	Bølge
+	Wave Height	Bølgehøjde
+	Wave Speed	Bølgehastighed
+	Wave Warp	Bølgeforvrængning
+	Wave Width	Bølgebredde
+	Waveform	Bølgeform
+	Waveform (Luma)	Bølgeform (luma)
+	Waveform (RGB)	Bølgeform (RGB)
+	Wavelength	Bølgelængde
+	Wet	Våd
+	Wet Out	Vådt output
+	When Opening a Project	Ved åbning af et projekt
+	Whip	Pisk
+	Whip (Legacy)	Pisk (ældre)
+	Whisper base (balanced)	Whisper base (afbalanceret)
+	Whisper small (most accurate)	Whisper small (mest præcis)
+	Whisper tiny (fastest)	Whisper tiny (hurtigst)
+	White	Hvid
+	White Input Level	Hvidt indgangsniveau
+	White Is High	Hvid er højt
+	Wide Outdoor	Bredt udendørs
+	Widener	Udvider
+	Width	Bredde
+	Wiggle	Wiggle
+	Wipe	Udviskning
+	Wipe Angle	Udviskningsvinkel
+	Wonder Glow	Vidunderglød
+	Wrap Back	Vikle tilbage
+	Write	Skriv
+	Write XMP ID to files on import	Skriv XMP-id til filer ved import
+	Write clip markers to XMP	Skriv klipmarkører til XMP
+	Write-on	Skriv-på
+	X Rotation	X-rotation
+	Y Rotation	Y-rotation
+	YC	YC
+	YC no Chroma	YC uden chroma
+	YUV	YUV
+	Yellow-green highlights and blue-lifted shadows from crossed channel curves	Gulgrønne højlys og skygger løftet mod blåt fra krydsede kanalkurver
+	Z Position	Z-position
+	Z Rotation	Z-rotation
+	Zoom	Zoom
+	Zoom Amount	Zoommængde
+	Zoom Blur	Zoomslør
+	Zoom Strength	Zoomstyrke
+	days	dage
+	frames	billeder
+	milliseconds	millisekunder
+	minute(s)	minut(er)
+	second(s)	sekund(er)
+	seconds	sekunder
+	Create Search Bin	Opret søgebin
+	Edit Offline File	Redigér offline-fil
+	Source Settings	Kildeindstillinger
+	Update Metadata	Opdatér metadata
+	Automate To Sequence	Automatisér til sekvens
+	Scene Edit Detection	Sceneklipdetektion
+	Analyze	Analysér
+	Normalize Mix Track	Normalisér mixspor
+	Simplify Sequence	Forenkl sekvens
+	Simplify	Forenkl
+	Transcribe Sequence	Transskribér sekvens
+	Save as Template	Gem som skabelon
+	Flash Cue Marker	Flash-cue-markør
+	System Compatibility Report	Systemkompatibilitetsrapport
+	no GPU adapter: the CPU compositor is used	ingen GPU-adapter: CPU-compositoren bruges
+	Avid Log Exchange	Avid Log Exchange
+	FilmCraft Project	FilmCraft-projekt
+	{name} Selection.fcproj	{name}-markering.fcproj
+	{name} (Simplified)	{name} (forenklet)
+	Find in:	Find i:
+	Find:	Find:
+	Search:	Søg:
+	Clip Names and Markers	Klipnavne og markører
+	Match:	Match:
+	All	Alle
+	Any	Enhver
+	Case Sensitive	Versalfølsom
+	Scratch Disks	Scratchdisks
+	Ingest Settings	Ingest-indstillinger
+	Captured and Generated:	Optaget og genereret:
+	Video Previews:	Videoforhåndsvisninger:
+	Audio Previews:	Lydforhåndsvisninger:
+	Project Auto Save:	Automatisk gemning af projekter:
+	Same as Project	Samme som projekt
+	Path: {path}	Sti: {path}
+	Transcode	Transkod
+	Copy and Create Proxies	Kopiér og opret proxyer
+	Action:	Handling:
+	Destination:	Destination:
+	Next to the media	Ved siden af mediet
+	Video Rendering and Playback	Videoberegning og afspilning
+	Renderer:	Beregningsmotor:
+	Display Format:	Visningsformat:
+	Milliseconds	Millisekunder
+	Capture	Optag
+	Capture Format:	Optageformat:
+	Action and Title Safe Areas	Handlings- og titelsikre områder
+	Title Safe Area	Titelsikkert område
+	Action Safe Area	Handlingssikkert område
+	Total Duration	Samlet varighed
+	Average Data Rate	Gennemsnitlig datahastighed
+	Colour	Farve
+	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Hz · {n} kanal(er)
+	Media Name:	Medianavn:
+	Scene:	Scene:
+	Shot/Take:	Billed/take:
+	Log Note:	Logbemærkning:
+	Codec: {codec}	Codec: {codec}
+	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	Skriv metadata for de valgte klip ({n}) til XMP-filer ved siden af deres medier?
+	Existing XMP files written by other applications are left unchanged.	Eksisterende XMP-filer, der er skrevet af andre programmer, ændres ikke.
+	To {name}	Til {name}
+	Ordering:	Rækkefølge:
+	Sort Order	Sorteringsrækkefølge
+	Selection Order	Markeringsrækkefølge
+	Placement:	Placering:
+	Sequentially	Sekventielt
+	At Unnumbered Markers	Ved unummererede markører
+	Method:	Metode:
+	Insert Edit	Indsætningsredigering
+	Overwrite Edit	Overskrivningsredigering
+	Clip Overlap:	Klipoverlap:
+	Frames per Still:	Billeder pr. stillbillede:
+	Transitions	Overgange
+	Apply Default Audio Transition	Anvend standardlydovergang
+	Apply Default Video Transition	Anvend standardvideoovergang
+	Ignore Options	Ignoreringsindstillinger
+	Ignore Audio	Ignorer lyd
+	Ignore Video	Ignorer video
+	Apply a cut at each detected cut point	Anvend et klip ved hvert registrerede klipunkt
+	Create a bin of subclips from each detected cut point	Opret en bin med underklip fra hvert registrerede klipunkt
+	Create a clip marker at each detected cut point	Opret en klipmarkør ved hvert registrerede klipunkt
+	Sensitivity:	Følsomhed:
+	Normalize Mix Track to:	Normalisér mixspor til:
+	Disabled clips	Deaktiverede klip
+	Empty tracks	Tomme spor
+	Gaps	Huller
+	Video effects	Videoeffekter
+	Audio effects	Lydeffekter
+	Text (graphics and captions)	Tekst (grafik og undertekster)
+	Clips	Klip
+	Move clips to the lowest track possible	Flyt klip til det lavest mulige spor
+	Keep:	Behold:
+	Video and Audio	Video og lyd
+	Video Only	Kun video
+	Audio Only	Kun lyd
+	Language:	Sprog:
+	Audio on track {t}	Lyd på spor {t}
+	Audio analysis:	Lydanalyse:
+	Recognize when different speakers are talking	Genkend, når forskellige talere taler
+	Template Name:	Skabelonnavn:
+	Comments:	Kommentarer:
+	 (unavailable)	 (utilgængelig)
+	Decoders	Dekodere
+	Containers	Containere
+	Export formats	Eksportformater
+	Match {n} of {total}	Matcher {n} af {total}
+	Saved template {path}	Skabelon gemt som {path}
+	Scene Edit Detection: analysing in the background (see Progress)	Sceneklipdetektion: analyserer i baggrunden (se Fremdrift)
+	Delete Search Bin	Slet søgebin
+	 (removed from {list})	 (fjernet fra {list})
+	{key} can't be used as a shortcut	{key} kan ikke bruges som genvej
+	Keyboard Shortcuts	Tastaturgenveje
+	{active} (modified)	{active} (ændret)
+	Loaded “{name}”	Indlæste »{name}«
+	My Shortcuts	Mine genveje
+	Deleted preset “{active}”	Slettede forudindstillingen »{active}«
+	Export…	Eksportér…
+	Exported to {path}	Eksporteret til {path}
+	Export: no file chosen (agents: shortcuts.export {path})	Eksport: ingen fil valgt (agents: shortcuts.export {path})
+	Imported “{name}”	Importerede »{name}«
+	Import: no file chosen (agents: shortcuts.import {path})	Import: ingen fil valgt (agents: shortcuts.import {path})
+	Keyboard: US (macOS)	Tastatur: US (macOS)
+	Keyboard: US	Tastatur: US
+	Save preset as:	Gem forudindstilling som:
+	Commands:	Kommandoer:
+	{panel} Panel	{panel}-panel
+	Application shortcuts work whatever panel has focus	Programgenveje fungerer uanset hvilket panel der er i fokus
+	Panel shortcuts override application shortcuts while that panel has focus	Panelgenveje tilsidesætter programgenveje, mens panelet er i fokus
+	Modifier held / selected	Ændringstast holdt nede / valgt
+	Search commands or keys	Søg efter kommandoer eller taster
+	Selected: {command}	Valgt: {command}
+	Command	Kommando
+	Shortcut	Genvej
+	Type a shortcut… (Esc cancels)	Tryk på en genvej… (Esc annullerer)
+	Add another shortcut	Tilføj endnu en genvej
+	No matching commands	Ingen matchende kommandoer
+	Key:	Tast:
+	Modifiers	Ændringstaster
+	Nothing is assigned to this key	Intet er tildelt denne tast
+	Click a key on the keyboard to see its shortcuts	Klik på en tast på tastaturet for at se dens genveje
+	Assign {key} to {command}	Tildel {key} til {command}
+	Conflict: {key} is assigned to {commands} ({ctx})	Konflikt: {key} er tildelt {commands} ({ctx})
+	 and 	 og 
+	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	Klik på en kommandos genvejsfelt, og tryk på taster for at tildele den; + tilføjer endnu en genvej.
+	Cleared {n} shortcut(s) of {command}	Fjernede {n} genvej(e) for {command}
+	No export preset named `{name}`	Ingen eksportforudindstilling med navnet `{name}`
+	Open a sequence to export	Åbn en sekvens for at eksportere
+	Destinations	Destinationer
+	Media File	Mediefil
+	Queue ({n})	Kø ({n})
+	Send exports here with Send to Queue, then start the queue.	Send eksporter hertil med Send til kø, og start derefter køen.
+	Ready	Klar
+	Encoding {n}%	Koder {n}%
+	Start Queue	Start kø
+	Stop	Stop
+	Clear Finished	Ryd afsluttede
+	Not supported by FilmCraft's encoders yet	Understøttes endnu ikke af FilmCrafts kodere
+	Sequence name	Sekvensnavn
+	Folder	Mappe
+	Preset	Forudindstilling
+	More presets…	Flere forudindstillinger…
+	Multiplexer	Multiplexer
+	The sequence has no caption track.	Sekvensen har intet undertekstspor.
+	Export Options	Eksportindstillinger
+	Burn Captions Into Video	Brænd undertekster ind i videoen
+	Create Sidecar File	Opret sidecar-fil
+	File Format	Filformat
+	SubRip Subtitle (.srt)	SubRip-undertekst (.srt)
+	WebVTT (.vtt)	WebVTT (.vtt)
+	Title	Titel
+	Creator	Opretter
+	Copyright	Ophavsret
+	Image	Billede
+	Frame Size	Billedstørrelse
+	Match Source	Match kilde
+	Field Order	Feltorden
+	Aspect	Aspekt
+	Profile	Profil
+	Bitrate Encoding	Bitratekodning
+	Target Bitrate	Målbitrate
+	Adaptive ({bpp} bits per pixel)	Adaptiv ({bpp} bits pr. pixel)
+	Maximum Bitrate	Maksimal bitrate
+	Quality (CRF)	Kvalitet (CRF)
+	Key Frame Distance	Nøglebilledafstand
+	Quality	Kvalitet
+	Render at Maximum Depth	Beregn med maksimal dybde
+	Use Maximum Render Quality	Brug maksimal beregningskvalitet
+	Export Audio	Eksportér lyd
+	Audio Format	Lydformat
+	Uncompressed (PCM)	Ukomprimeret (PCM)
+	Match Source ({seq_sr} Hz)	Match kilde ({seq_sr} Hz)
+	Channels	Kanaler
+	Audio Bitrate	Lydbitrate
+	Sample Size	Prøvestørrelse
+	16 bit	16 bit
+	24 bit	24 bit
+	32 bit	32 bit
+	32 bit float	32 bit float
+	FLAC stores whole-number samples only	FLAC gemmer kun heltalsprøver
+	MXF export writes integer PCM only	MXF-eksport skriver kun heltals-PCM
+	Size / Opacity	Størrelse / opacitet
+	Image Overlay	Billedoverlejring
+	PNG or JPEG file	PNG- eller JPEG-fil
+	Name Overlay	Navneoverlejring
+	Timecode Overlay	Timecode-overlejring
+	Luma Min / Max	Luma min. / maks.
+	Loudness Normalization	Loudness-normalisering
+	True Peak Limit	True peak-grænse
+	Audio only	Kun lyd
+	Scaling	Skalering
+	Scale To Fit	Skalér til at passe
+	Scale To Fill	Skalér til at udfylde
+	Stretch To Fill	Stræk til at udfylde
+	Summary	Oversigt
+	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Sekvens, {w}x{h}, {fps} fps, {rate} Hz
+	Estimated file size: {size}	Anslået filstørrelse: {size}
+	Send to Queue	Send til kø
+	Exporting {path}	Eksporterer {path}
+	Added to the export queue	Føjet til eksportkøen
+	Preset Manager	Håndtering af forudindstillinger
+	Search presets	Søg i forudindstillinger
+	Favorites only	Kun favoritter
+	Show in the Preset menu	Vis i forudindstillingsmenuen
+	User	Bruger
+	Save current settings as:	Gem de aktuelle indstillinger som:
+	Export presets	Eksportér forudindstillinger
+	Import: no file chosen (agents: export.presets.import {path})	Import: ingen fil valgt (agents: export.presets.import {path})
+	Export: no file chosen (agents: export.presets.export {path, names})	Eksport: ingen fil valgt (agents: export.presets.export {path, names})
+	Quick Export: open a sequence first	Hurtig eksport: åbn en sekvens først
+	File Name & Location	Filnavn og placering
+	Quick Export: {path}	Hurtig eksport: {path}
+	Graphics problem: switched to software compositing	Grafikproblem: skiftede til softwarebaseret compositing
+	GPU acceleration is unavailable; preview renders on the CPU	GPU-acceleration er utilgængelig; forhåndsvisninger beregnes på CPU'en
+	Exporting	Eksporterer
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Klik for at vælge, eller klik i det tomme område og træk for at foretage rammemarkering. Brug Skift, Alt og Cmd til andre muligheder.
+	Click to select all clips to the right in all tracks. Shift-click for a single track.	Klik for at vælge alle klip til højre i alle spor. Skift-klik for et enkelt spor.
+	Click to select all clips to the left in all tracks. Shift-click for a single track.	Klik for at vælge alle klip til venstre i alle spor. Skift-klik for et enkelt spor.
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	Træk et redigeringspunkt for at foretage ripple-trim; senere klip flyttes, så hullet forbliver lukket.
+	Drag an edit point to roll it: the out of one clip and the in of the next move together.	Træk et redigeringspunkt for at rulle det: udpunktet på det ene klip og indpunktet på det næste flyttes samtidig.
+	Drag an edge to change the clip's speed so it fills the new duration.	Træk i en kant for at ændre klippets hastighed, så det udfylder den nye varighed.
+	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	Træk i kanten af et musikklip for at remixe det til den nye varighed ved musikalsk matchende beats.
+	Click to split a clip. Shift-click to split all tracks.	Klik for at opdele et klip. Skift-klik for at opdele alle spor.
+	Drag a clip to slip its source in/out without moving it.	Træk et klip for at forskyde dets kilde ind/ud uden at flytte det.
+	Drag a clip to slide it between its neighbours.	Træk et klip for at skubbe det mellem naboerne.
+	Drag to scroll the timeline.	Træk for at rulle tidslinjen.
+	Click to zoom in; Opt-click to zoom out.	Klik for at zoome ind; Alt-klik for at zoome ud.
+	FilmCraft hit an error	FilmCraft stødte på en fejl
+	Details: {path}	Detaljer: {path}
+	Opened {url}	Åbnede {url}
+	(empty)	(tom)
+	Step Back 1 Frame	Gå 1 billede tilbage
+	Step Forward 1 Frame	Gå 1 billede frem
+	Match Playhead	Match afspilningshoved
+	Gang to Program	Kobl til program
+	AAC Audio	AAC-lyd
+	AAC Audio 48 kHz 320 kbps	AAC-lyd 48 kHz 320 kbps
+	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	MPEG-4-lyd (.m4a), stereo 48 kHz AAC-LC ved 320 kbps
+	AIFF	AIFF
+	AIFF 48 kHz 16-bit	AIFF 48 kHz 16-bit
+	AIFF, stereo 48 kHz 16-bit PCM	AIFF, stereo 48 kHz 16-bit PCM
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24-bit
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, stereo 48 kHz 24-bit, tabsfri
+	FLAC (lossless)	FLAC (tabsfri)
+	Compression Level	Komprimeringsniveau
+	0 fastest, 8 smallest	0 hurtigst, 8 mindst
+	APV	APV
+	APV 422-10	APV 422-10
+	APV 422-12	APV 422-12
+	Anamorphic 2:1 (2.0)	Anamorfisk 2:1 (2.0)
+	Animated GIF	Animeret GIF
+	Animated GIF 640×360	Animeret GIF 640×360
+	Apple ProRes	Apple ProRes
+	Apple ProRes 422	Apple ProRes 422
+	Apple ProRes 422 HQ	Apple ProRes 422 HQ
+	Apple ProRes 422 LT	Apple ProRes 422 LT
+	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444 med alfa
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
+	Application	Program
+	Apply Guide Template	Anvend hjælpelinjeskabelon
+	Auto Save Now	Gem automatisk nu
+	Auto-Match Loudness	Match lydstyrke automatisk
+	Avid DNxHR	Avid DNxHR
+	Avid DNxHR HQ	Avid DNxHR HQ
+	Avid DNxHR LB	Avid DNxHR LB
+	Avid DNxHR SQ	Avid DNxHR SQ
+	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	OP-Atom i Avid-stil: DNxHR HQ-billedfil plus én 24-bit 48 kHz PCM-fil pr. kanal (_A1, _A2…)
+	BMP	BMP
+	BMP Sequence	BMP-sekvens
+	Baseline	Baseline
+	Begin Text Editing for a Graphic Layer	Begynd tekstredigering på et grafiklag
+	Begins With	Begynder med
+	Blur In	Slør ind
+	Blur Out	Slør ud
+	Brightens inside a feathered circular mask	Gør lysere inden for en rund maske med blød kant
+	Broadcast	Broadcast
+	CBR	CBR
+	Cancel Dynamic Trim	Annuller dynamisk trim
+	Cancel Queued Export	Annuller eksport i kø
+	Center Left	Midt til venstre
+	Center Right	Midt til højre
+	Center align text	Centrér tekst
+	Change Mask	Skift maske
+	Clear All Events	Ryd alle hændelser
+	Clear Edit Point Selection	Ryd markering af redigeringspunkter
+	Clear Finished Exports	Ryd færdige eksporter
+	Clear Poster Frame	Ryd plakatbillede
+	Close Bin	Luk bin
+	Close Sequence	Luk sekvens
+	Contains	Indeholder
+	Cut to Camera 1	Klip til kamera 1
+	Cut to Camera 2	Klip til kamera 2
+	Cut to Camera 3	Klip til kamera 3
+	Cut to Camera 4	Klip til kamera 4
+	Cut to Camera 5	Klip til kamera 5
+	Cut to Camera 6	Klip til kamera 6
+	Cut to Camera 7	Klip til kamera 7
+	Cut to Camera 8	Klip til kamera 8
+	Cut to Camera 9	Klip til kamera 9
+	D1/DV NTSC (0.9091)	D1/DV NTSC (0.9091)
+	D1/DV PAL (1.0940)	D1/DV PAL (1.0940)
+	DVCPRO HD (1.5)	DVCPRO HD (1.5)
+	Darkens outside a feathered oval mask	Gør mørkere uden for en oval maske med blød kant
+	Decrease Audio Tracks Height	Formindsk højden på lydspor
+	Decrease Clip Volume	Formindsk klippets lydstyrke
+	Decrease Clip Volume Many	Formindsk klippets lydstyrke meget
+	Decrease Font Size by Five Units	Formindsk skriftstørrelsen med fem enheder
+	Decrease Font Size by One Unit	Formindsk skriftstørrelsen med én enhed
+	Decrease Leading by Five Units	Formindsk linjeafstanden med fem enheder
+	Decrease Leading by One Unit	Formindsk linjeafstanden med én enhed
+	Decrease Video Tracks Height	Formindsk højden på videospor
+	Delete Captions	Slet undertekster
+	Delete Graphic Layer	Slet grafiklag
+	Delete Guide Template	Slet hjælpelinjeskabelon
+	Delete Media Cache Files	Slet mediecache-filer
+	Discard Unsaved Changes	Forkast ikke-gemte ændringer
+	Does Not Contain	Indeholder ikke
+	Download Speech Model	Hent talemodel
+	Dynamic Trim Stop	Stop dynamisk trim
+	Edit Caption Text	Rediger underteksttekst
+	Ellipse Tool	Ellipseværktøj
+	Ends With	Ender med
+	Entire Source	Hele kilden
+	EssentialSound	EssentialSound
+	Export Frame	Eksportér billede
+	Extend Next Edit To Playhead	Udvid næste redigeringspunkt til afspilningshovedet
+	Extend Previous Edit To Playhead	Udvid forrige redigeringspunkt til afspilningshovedet
+	Extend Selected Edit to Playhead	Udvid valgt redigeringspunkt til afspilningshovedet
+	Extend Selection Down	Udvid markering ned
+	Extend Selection Left	Udvid markering til venstre
+	Extend Selection Right	Udvid markering til højre
+	Extend Selection Up	Udvid markering op
+	Fade In	Fade ind
+	Gaussian Blur from 0 to 60 over the last second	Gaussisk sløring fra 0 til 60 i løbet af det sidste sekund
+	Gaussian Blur from 60 to 0 over the first second	Gaussisk sløring fra 60 til 0 i løbet af det første sekund
+	Generate Ducking Keyframes	Generér ducking-nøglebilleder
+	Go to Next Edit Point	Gå til næste redigeringspunkt
+	Go to Next Edit Point on Any Track	Gå til næste redigeringspunkt på et vilkårligt spor
+	Go to Previous Edit Point	Gå til forrige redigeringspunkt
+	Go to Previous Edit Point on Any Track	Gå til forrige redigeringspunkt på et vilkårligt spor
+	Go to Selected Clip End	Gå til valgt klips slutning
+	Go to Selected Clip Start	Gå til valgt klips start
+	Go to Sequence End	Gå til sekvensens slutning
+	Go to Sequence Start	Gå til sekvensens start
+	H.264	H.264
+	AV1	AV1
+	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	H.264 1920×1080 til videodelingssider, VBR 1 gennemløb, 16 Mbps
+	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080, VBR 1 gennemløb, 20 Mbps mål, AAC 320 kbps
+	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080, VBR 2 gennemløb, 18 Mbps
+	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	H.264 3840×2160 til videodelingssider, VBR 1 gennemløb, 45 Mbps
+	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160, VBR 1 gennemløb, 60 Mbps mål, AAC 320 kbps
+	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160, VBR 2 gennemløb, 50 Mbps
+	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	H.264 9:16 portræt til korte sociale videoer, skaleret til at udfylde, 12 Mbps
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264 i sekvensens billedstørrelse og billedhastighed; 0,05 bit pr. pixel
+	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	H.264 i sekvensens billedstørrelse og billedhastighed; 0,1 bit pr. pixel
+	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	H.264 i sekvensens billedstørrelse og billedhastighed; bithastigheden tilpasses billedstørrelsen (0,2 bit pr. pixel)
+	HD Anamorphic 1080 (1.333)	HD anamorfisk 1080 (1.333)
+	Hand Tool	Håndværktøj
+	High Quality 1080p HD	Høj kvalitet 1080p HD
+	High Quality 2160p 4K	Høj kvalitet 2160p 4K
+	Image Sequence	Billedsekvens
+	Increase Audio Tracks Height	Forøg højden på lydspor
+	Increase Clip Volume	Forøg klippets lydstyrke
+	Increase Clip Volume Many	Forøg klippets lydstyrke meget
+	Increase Font Size by Five Units	Forøg skriftstørrelsen med fem enheder
+	Increase Font Size by One Unit	Forøg skriftstørrelsen med én enhed
+	Increase Leading by Five Units	Forøg linjeafstanden med fem enheder
+	Increase Leading by One Unit	Forøg linjeafstanden med én enhed
+	Increase Video Tracks Height	Forøg højden på videospor
+	Large blocks resolving to the picture over the first second	Store blokke, der bliver til billedet i løbet af det første sekund
+	Left align text	Venstrejuster tekst
+	Looping GIF, 640×360 at 15 fps	GIF i loop, 640×360 ved 15 fps
+	Lower First	Nederste felt først
+	Lumetri	Lumetri
+	MXF OP-Atom	MXF OP-Atom
+	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
+	MXF OP1a	MXF OP1a
+	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ
+	MXF OP1a H.264	MXF OP1a H.264
+	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ
+	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, starttidskode
+	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a, H.264 High lang GOP (0,3 bit pr. pixel), 24-bit 48 kHz PCM
+	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, starttidskode
+	Main	Main
+	Mark In (Hover Scrub)	Markér ind (hover-skrubning)
+	Mark Out (Hover Scrub)	Markér ud (hover-skrubning)
+	Masks	Masker
+	Match Source – Adaptive High Bitrate	Match kilde – adaptiv høj bithastighed
+	Match Source – Adaptive Low Bitrate	Match kilde – adaptiv lav bithastighed
+	Match Source – Adaptive Medium Bitrate	Match kilde – adaptiv mellem bithastighed
+	Matches	Matcher
+	Maximize or Restore Active Frame	Maksimér eller gendan aktiv ramme
+	Maximize or Restore Frame Under Cursor	Maksimér eller gendan rammen under markøren
+	Media Browser Settings	Indstillinger for mediebrowser
+	MediaBrowser	MediaBrowser
+	MediaCache	MediaCache
+	Merge Captions	Flet undertekster
+	Mixer	Mixer
+	Mosaic In	Mosaik ind
+	Move All Audio Targets Down	Flyt alle lydmål ned
+	Move All Audio Targets Up	Flyt alle lydmål op
+	Move All Video Targets Down	Flyt alle videomål ned
+	Move All Video Targets Up	Flyt alle videomål op
+	Move Selection Down	Flyt markering ned
+	Move Selection End	Flyt markering til slutningen
+	Move Selection Home	Flyt markering til begyndelsen
+	Move Selection Left	Flyt markering til venstre
+	Move Selection Page Down	Flyt markering en side ned
+	Move Selection Page Up	Flyt markering en side op
+	Move Selection Right	Flyt markering til højre
+	Move Selection Up	Flyt markering op
+	Multi-Camera Record On/Off Toggle	Slå multikameraoptagelse til/fra
+	Multicam	Multikamera
+	Navigate to End of Segment	Navigér til segmentets slutning
+	Navigate to Next Line	Navigér til næste linje
+	Navigate to Next Word	Navigér til næste ord
+	Navigate to Previous Line	Navigér til forrige linje
+	Navigate to Previous Word	Navigér til forrige ord
+	Navigate to Start of Segment	Navigér til segmentets start
+	Navigation	Navigation
+	Next Multi-Camera Page	Næste multikameraside
+	Nudge Clip Selection Down	Skub klipmarkering ned
+	Nudge Clip Selection Left Five Frames	Skub klipmarkering fem billeder til venstre
+	Nudge Clip Selection Left One Frame	Skub klipmarkering ét billede til venstre
+	Nudge Clip Selection Right Five Frames	Skub klipmarkering fem billeder til højre
+	Nudge Clip Selection Right One Frame	Skub klipmarkering ét billede til højre
+	Nudge Clip Selection Up	Skub klipmarkering op
+	Nudge Selected Object down by five	Skub valgt objekt ned med fem
+	Nudge Selected Object down by one	Skub valgt objekt ned med ét
+	Nudge Selected Object to left by five	Skub valgt objekt til venstre med fem
+	Nudge Selected Object to left by one	Skub valgt objekt til venstre med ét
+	Nudge Selected Object to right by five	Skub valgt objekt til højre med fem
+	Nudge Selected Object to right by one	Skub valgt objekt til højre med ét
+	Nudge Selected Object up by five	Skub valgt objekt op med fem
+	Nudge Selected Object up by one	Skub valgt objekt op med ét
+	Nudge Volume +1dB	Skub lydstyrke +1dB
+	Nudge Volume +3dB	Skub lydstyrke +3dB
+	Nudge Volume -1dB	Skub lydstyrke -1dB
+	Nudge Volume -3dB	Skub lydstyrke -3dB
+	Numbered BMP stills (24-bit)	Nummererede BMP-billeder (24-bit)
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	JPEG-sekvens
+	Targa Sequence	Targa-sekvens
+	DPX Sequence	DPX-sekvens
+	Numbered JPEG stills (quality 90)	Nummererede JPEG-billeder (kvalitet 90)
+	Numbered Targa stills (24-bit, uncompressed)	Nummererede Targa-billeder (24-bit, ukomprimeret)
+	Numbered DPX stills (10-bit RGB)	Nummererede DPX-billeder (10-bit RGB)
+	OpenEXR	OpenEXR
+	OpenEXR Sequence	OpenEXR-sekvens
+	Numbered OpenEXR stills (half float, linear, uncompressed)	Nummererede OpenEXR-billeder (half float, lineær, ukomprimeret)
+	Numbered PNG stills at the sequence's frame size	Nummererede PNG-billeder i sekvensens billedstørrelse
+	Numbered TIFF stills (RGB, 8-bit)	Nummererede TIFF-billeder (RGB, 8-bit)
+	Opacity 0 → 100 % over the first second	Opacitet 0 → 100 % i løbet af det første sekund
+	Opacity 100 → 0 % over the last second	Opacitet 100 → 0 % i løbet af det sidste sekund
+	Open Bin	Åbn bin
+	Open Search	Åbn søgning
+	PNG	PNG
+	PNG Sequence	PNG-sekvens
+	Panel	Panel
+	Pen Tool	Pen-værktøj
+	PiP 35% Upper Right	PiP 35 % øverst til højre
+	Picture-in-picture: 35 % scale in the upper right	Billede i billede: 35 % skalering øverst til højre
+	Play Around	Afspil omkring
+	Play In to Out with Preroll/Postroll	Afspil fra ind til ud med forrulning/efterrulning
+	Play from Playhead to Out Point	Afspil fra afspilningshoved til ud-punkt
+	Play/Stop	Afspil/stop
+	Previous Multi-Camera Page	Forrige multikameraside
+	Progressive	Progressiv
+	ProjectPanel	ProjectPanel
+	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM
+	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM
+	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM
+	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) med alfakanal, 24-bit 48 kHz PCM
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM
+	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, 24-bit 48 kHz PCM
+	Rate Stretch Tool	Hastighedsstrækningsværktøj
+	Razor Tool	Barberbladsværktøj
+	Rectangle Tool	Rektangelværktøj
+	Remix Tool	Remix-værktøj
+	Right align text	Højrejuster tekst
+	Ripple Edit Tool	Ripple-redigeringsværktøj
+	Ripple Trim Next Edit to Playhead	Ripple-trim næste redigeringspunkt til afspilningshovedet
+	Ripple Trim Previous Edit to Playhead	Ripple-trim forrige redigeringspunkt til afspilningshovedet
+	Rolling Edit Tool	Rullende redigeringsværktøj
+	Select Camera 1	Vælg kamera 1
+	Select Camera 2	Vælg kamera 2
+	Select Camera 3	Vælg kamera 3
+	Select Camera 4	Vælg kamera 4
+	Select Camera 5	Vælg kamera 5
+	Select Camera 6	Vælg kamera 6
+	Select Camera 7	Vælg kamera 7
+	Select Camera 8	Vælg kamera 8
+	Select Camera 9	Vælg kamera 9
+	Select Clip at Playhead	Vælg klip ved afspilningshovedet
+	Select Find Box	Vælg søgefelt
+	Select Next Clip	Vælg næste klip
+	Select Next Panel	Vælg næste panel
+	Select Previous Clip	Vælg forrige klip
+	Select Previous Panel	Vælg forrige panel
+	Select to Next Line	Markér til næste linje
+	Select to Next Word	Markér til næste ord
+	Select to Previous Line	Markér til forrige linje
+	Select to Previous Word	Markér til forrige ord
+	Select to Segment End	Markér til segmentets slutning
+	Select to Segment Start	Markér til segmentets start
+	Selection Tool	Markeringsværktøj
+	Set Comparison Reference	Angiv sammenligningsreference
+	Set Creative Look	Angiv kreativt look
+	Set Input LUT	Angiv input-LUT
+	Set Project Panel View	Angiv visning i projektpanel
+	Show Next Screen	Vis næste skærm
+	Show Previous Screen	Vis forrige skærm
+	Show Program Transcript	Vis programmets transskript
+	Shuttle Left	Shuttle tilbage
+	Shuttle Right	Shuttle fremad
+	Shuttle Slow Left	Langsom shuttle tilbage
+	Shuttle Slow Right	Langsom shuttle fremad
+	Shuttle Stop	Shuttle-stop
+	Slide Clip Selection Left Five Frames	Slide klipmarkering fem billeder til venstre
+	Slide Clip Selection Left One Frame	Slide klipmarkering ét billede til venstre
+	Slide Clip Selection Right Five Frames	Slide klipmarkering fem billeder til højre
+	Slide Clip Selection Right One Frame	Slide klipmarkering ét billede til højre
+	Slide Tool	Slide-værktøj
+	Slip Clip Selection Left Five Frames	Slip klipmarkering fem billeder til venstre
+	Slip Clip Selection Left One Frame	Slip klipmarkering ét billede til venstre
+	Slip Clip Selection Right Five Frames	Slip klipmarkering fem billeder til højre
+	Slip Clip Selection Right One Frame	Slip klipmarkering ét billede til højre
+	Slip Tool	Slip-værktøj
+	Social Vertical 1080×1920	Social lodret 1080×1920
+	Soft Vignette	Blød vignette
+	Source In/Out	Kilde ind/ud
+	Split Caption	Opdel undertekst
+	Square Pixels (1.0)	Kvadratiske pixels (1.0)
+	Stack Clips	Læg klip i stak
+	Start Export Queue	Start eksportkøen
+	Start Voice-over Recording	Start speakeroptagelse
+	Step Back Five Frames	Gå fem billeder tilbage
+	Step Back One Frame	Gå ét billede tilbage
+	Step Forward Five Frames	Gå fem billeder frem
+	Step Forward One Frame	Gå ét billede frem
+	Stop Export Queue	Stop eksportkøen
+	Stop Multi-Camera Recording	Stop multikameraoptagelse
+	Stop Voice-over Recording	Stop speakeroptagelse
+	Sync Voice-over Capture	Synkronisér speakeroptagelse
+	TIFF	TIFF
+	TIFF Sequence	TIFF-sekvens
+	TextPanel	TextPanel
+	Thumbnail Size Next	Næste miniaturestørrelse
+	Thumbnail Size Previous	Forrige miniaturestørrelse
+	Toggle All Audio Targets	Slå alle lydmål til/fra
+	Toggle All Source Audio	Slå al kildelyd til/fra
+	Toggle All Source Video	Slå al kildevideo til/fra
+	Toggle All Video Targets	Slå alle videomål til/fra
+	Toggle Audio During Scrubbing	Slå lyd til/fra under skrubning
+	Toggle Full Screen	Slå fuldskærm til/fra
+	Toggle Mute for All Targeted Audio Tracks	Slå dæmpning til/fra for alle målrettede lydspor
+	Toggle Solo for All Targeted Audio Tracks	Slå solo til/fra for alle målrettede lydspor
+	Toggle Source/Program Monitor Focus	Skift fokus mellem kilde- og programmonitor
+	Toggle Target Audio 1	Slå lydmål 1 til/fra
+	Toggle Target Audio 2	Slå lydmål 2 til/fra
+	Toggle Target Audio 3	Slå lydmål 3 til/fra
+	Toggle Target Audio 4	Slå lydmål 4 til/fra
+	Toggle Target Audio 5	Slå lydmål 5 til/fra
+	Toggle Target Audio 6	Slå lydmål 6 til/fra
+	Toggle Target Audio 7	Slå lydmål 7 til/fra
+	Toggle Target Audio 8	Slå lydmål 8 til/fra
+	Toggle Target Video 1	Slå videomål 1 til/fra
+	Toggle Target Video 2	Slå videomål 2 til/fra
+	Toggle Target Video 3	Slå videomål 3 til/fra
+	Toggle Target Video 4	Slå videomål 4 til/fra
+	Toggle Target Video 5	Slå videomål 5 til/fra
+	Toggle Target Video 6	Slå videomål 6 til/fra
+	Toggle Target Video 7	Slå videomål 7 til/fra
+	Toggle Target Video 8	Slå videomål 8 til/fra
+	Toggle Track Output for All Targeted Video Tracks	Slå sporoutput til/fra for alle målrettede videospor
+	Toggle Trim Type	Skift trimetype
+	Toggle View	Skift visning
+	Track Select Backward Tool	Sporvalg bagud-værktøj
+	Track Select Forward Tool	Sporvalg fremad-værktøj
+	Track Selected Mask	Spor valgt maske
+	Trim Next Edit to Playhead	Trim næste redigeringspunkt til afspilningshovedet
+	Trim Previous Edit to Playhead	Trim forrige redigeringspunkt til afspilningshovedet
+	Trimming	Trimning
+	Type Tool	Tekstværktøj
+	Unstack Clips	Tag klip ud af stakken
+	Upper First	Øverste felt først
+	VBR, 1 pass	VBR, 1 gennemløb
+	VBR, 2 pass	VBR, 2 gennemløb
+	CRF (constant quality)	CRF (konstant kvalitet)
+	Vimeo 1080p Full HD	Vimeo 1080p Full HD
+	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
+	Voice-over Record	Speakeroptagelse
+	Voiceover	Speaker
+	WAV, stereo 48 kHz 16-bit PCM	WAV, stereo 48 kHz 16-bit PCM
+	WAV, stereo 48 kHz 24-bit PCM	WAV, stereo 48 kHz 24-bit PCM
+	Warm Tint	Varm toning
+	Warm highlights, brown shadows	Varme højlys, brune skygger
+	Waveform Audio	Waveform Audio
+	Waveform Audio 48 kHz 16-bit	Waveform Audio 48 kHz 16-bit
+	Waveform Audio 48 kHz 24-bit	Waveform Audio 48 kHz 24-bit
+	Web & Social	Web og sociale medier
+	Work Area	Arbejdsområde
+	Write Automation	Skriv automation
+	YouTube 1080p Full HD	YouTube 1080p Full HD
+	YouTube 2160p 4K Ultra HD	YouTube 2160p 4K Ultra HD
+	Zoom Program Monitor to 100%	Zoom programmonitor til 100 %
+	Zoom Program Monitor to Fit	Zoom programmonitor, så den passer
+	Zoom Source Monitor to 100%	Zoom kildemonitor til 100 %
+	Zoom Source Monitor to Fit	Zoom kildemonitor, så den passer
+	Zoom Tool	Zoomværktøj
+	with:	med:
+	Interface Language	Brugerfladesprog
+	System Language	Systemsprog
+	Cinematic	Filmisk
+	Film Emulation	Filmemulering
+	Technical	Teknisk
+	Teal Shadows, Warm Skin	Blågrønne skygger, varm hud
+	Night Exterior	Nat-eksteriør
+	Golden Dusk	Gylden skumring
+	Steel Blue	Stålblå
+	Hard Sun	Hård sol
+	Faded Print	Blegnet print
+	Silver Retention	Sølvtilbageholdelse
+	Cross Processed	Krydsprocesseret
+	Warm Negative	Varm negativ
+	Neutral Mono	Neutral mono
+	Hard Mono	Hård mono
+	Sepia Tone	Sepiaton
+	Cold Mono	Kold mono
+	Lift Shadows	Løft skygger
+	Protect Highlights	Beskyt højlys
+	Half Saturation	Halv mætning
+	Boost Vibrance	Forøg vibrance
+	Legal Range Squeeze	Sammenpresning til lovligt område
+	A boxed label with a round pointer; move the label and the pointer follows.	En indrammet etiket med en rund peger; flyt etiketten, og pegeren følger med.
+	A rounded tag that fits its text, with a status dot.	En afrundet mærkat, der passer til sin tekst, med en statusprik.
+	A title on a rounded card with a soft shadow.	En titel på et afrundet kort med blød skygge.
+	Accent Color	Accentfarve
+	Bar Color	Bjælkefarve
+	Box Color	Boksfarve
+	Box Opacity	Boksopacitet
+	Callout – Pointer	Callout – peger
+	Callout – Tag	Callout – mærkat
+	Callouts	Callouts
+	Credits	Rulletekster
+	Dot Color	Prikfarve
+	Heading	Overskrift
+	Large centred title, accent rule and subtitle.	Stor centreret titel, accentlinje og undertitel.
+	Lower Third – Rule	Lower third – linje
+	Lower Third – Slab	Lower third – plade
+	Lower Thirds	Lower thirds
+	Name Color	Navnefarve
+	Name Size	Navnestørrelse
+	Name and role on a coloured slab that widens with the name.	Navn og rolle på en farvet plade, der bliver bredere i takt med navnet.
+	Name over a thin rule that always matches the name's width.	Navn over en tynd linje, der altid matcher navnets bredde.
+	Pointer Color	Pegerfarve
+	Role	Rolle
+	Rule Color	Linjefarve
+	Show Dot	Vis prik
+	Show Role	Vis rolle
+	Slab Color	Pladefarve
+	Tag Color	Mærkatfarve
+	Title Color	Titelfarve
+	Title Size	Titelstørrelse
+	Title – Boxed	Titel – indrammet
+	Title – Centered	Titel – centreret
+	Titles	Titler
+	Select an item to preview it	Vælg et element for at forhåndsvise det
+	End Credits	Slutrulletekster
+	End Credits – Roll	Slutrulletekster – rul op
+	Ticker – Crawl	Ticker – rul hen
+	Centred credits that roll up from below the frame and leave at the top.	Centrerede rulletekster, der ruller op fra under billedet og forsvinder ud i toppen.
+	A news-style line that crawls in from the right and leaves at the left.	En linje i nyhedsstil, der ruller ind fra højre og forsvinder ud til venstre.
+	out	ud
+	in	ind
+	The language changed but could not be saved: {e}	Sproget blev ændret, men kunne ikke gemmes: {e}
+	no Chinese font is installed on this system; the interface stays in English	der er ikke installeret en kinesisk skrifttype på dette system; brugerfladen forbliver på engelsk
+	no Korean font is installed on this system; the interface stays in English	der er ikke installeret en koreansk skrifttype på dette system; brugerfladen forbliver på engelsk
+	no Japanese font is installed on this system; the interface stays in English	der er ikke installeret en japansk skrifttype på dette system; brugerfladen forbliver på engelsk
+	Show	Vis
+	Sort	Sortér
+	Reverse the order	Omvend rækkefølgen
+	Grab bag	Diverse
+	Table	Tabel
+	No contributor data was built into this copy.	Der er ikke indbygget bidragyderdata i denne kopi.
+	No model credits were built into this copy.	Der er ikke indbygget modelkrediteringer i denne kopi.
+	Company	Firma
+	Model	Model
+	Version	Version
+	Commits	Commits
+	% of all commits	% af alle commits
+	Lines +/−	Linjer +/−
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Lydoutput fejlede: afspiller uden lyd (tjek Indstillinger ▸ Lydhardware)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Lydoutput svarer ikke: afspiller uden lyd (tjek Indstillinger ▸ Lydhardware)
+	Clip Speed / Duration	Kliphastighed / varighed
+	Speed:	Hastighed:
+	Reverse Speed	Omvendt hastighed
+	Ripple Edit, Shifting Trailing Clips	Ripple-redigering, forskyder efterfølgende klip
+	About	Om
+	Contributors	Bidragydere
+	Models	Modeller
+	Main (8-bit)	Main (8-bit)
+	Main 10 (10-bit, HDR)	Main 10 (10-bit, HDR)
+	Main (8-bit; Main 10 for HDR sequences)	Main (8-bit; Main 10 til HDR-sekvenser)
+	Encoder	Encoder
+	Hardware (H.265 has no software encoder)	Hardware (H.265 har ingen software-encoder)
+	Hardware (AV1 has no software encoder)	Hardware (AV1 har ingen software-encoder)
+	Text Properties	Tekstegenskaber
+	Text Box Height	Tekstfelthøjde
+	Paragraph Text	Afsnitstekst
+	Point Text	Punkttekst
+	Text Layer Type	Tekstlagstype
+	Text Styling	Tekstformatering
+	New Color Matte	Ny farvematte
+	Color Matte Color	Farvemattens farve
+	Color:	Farve:
+	 · {time} left	 · {time} tilbage
+	Discard take	Forkast take
+	Voice-over take discarded	Speaker-take forkastet
+	Binary assets added	Binære aktiver tilføjet
+	Binary assets removed	Binære aktiver fjernet
+	Deselect All Project Items	Fravælg alle projektelementer
+	Display name	Vist navn
+	First commit	Første commit
+	H.265 (HEVC)	H.265 (HEVC)
+	Last commit	Sidste commit
+	Line delta	Linjedelta
+	Lines added	Linjer tilføjet
+	Lines deleted	Linjer slettet
+	Merged PRs	Flettede PR'er
+	Name (A–Z)	Navn (A–Z)
+	Real name	Rigtigt navn
+	Select All Project Items	Vælg alle projektelementer
+	Username	Brugernavn
+	Vertical Type Tool	Lodret tekstværktøj
+	Go to previous keyframe	Gå til forrige nøglebillede
+	Go to next keyframe	Gå til næste nøglebillede
+	Add keyframe	Tilføj nøglebillede
+	Remove keyframe	Fjern nøglebillede
+	Turn on animation and add keyframe	Slå animation til og tilføj nøglebillede
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Klik for at vælge, eller klik i det tomme område og træk en markeringsramme for at vælge. Brug Skift, Alt og Ctrl til andre muligheder.
+	Click to zoom in; Alt-click to zoom out.	Klik for at zoome ind; Alt-klik for at zoome ud.
+	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Træk: flyt · Alt-klik: blødt/hjørne · Ctrl-klik: slet
+	Drag inward to round the corners	Træk indad for at afrunde hjørnerne
+	Include Alpha Channel	Medtag alfakanal
+	Sequence Settings	Sekvensindstillinger
+	Color Management	Farvestyring
+	VR Properties	VR-egenskaber
+	Editing Mode:	Redigeringstilstand:
+	Timebase:	Tidsbase:
+	Frame Size:	Billedstørrelse:
+	Pixel Aspect Ratio:	Pixelaspektforhold:
+	Fields:	Felter:
+	Channel Format:	Kanalformat:
+	Number of Channels:	Antal kanaler:
+	Preview File Format:	Filformat til forhåndsvisninger:
+	Working Color Space:	Arbejdsfarverum:
+	Projection:	Projektion:
+	Layout:	Layout:
+	Captured View:	Optaget visning:
+	Video Previews	Videoforhåndsvisninger
+	No Fields (Progressive Scan)	Ingen felter (progressiv scanning)
+	Custom ({ratio})	Brugerdefineret ({ratio})
+	{rate} frames/second	{rate} billeder/sekund
+	{rate} fps Drop-Frame Timecode	{rate} fps drop-frame-tidskode
+	{rate} fps Non Drop-Frame Timecode	{rate} fps tidskode uden drop-frame
+	{rate} fps Timecode	{rate} fps tidskode
+	horizontal	vandret
+	vertical	lodret
+	Scale motion effects proportionally when changing frame size	Skalér bevægelseseffekter proportionalt, når billedstørrelsen ændres
+	Maximum Bit Depth	Maksimal bitdybde
+	Maximum Render Quality	Maksimal beregningskvalitet
+	Composite in Linear Color	Sammensæt i lineær farve
+	Auto Tone Map Media (HDR and log into SDR)	Automatisk tonemapping af medier (HDR og log til SDR)
+	Configure…	Konfigurér…
+	Not supported in FilmCraft yet	Understøttes ikke i FilmCraft endnu
+	FilmCraft always composites in linear light	FilmCraft sammensætter altid i lineært lys
+	Loop marked range	Afspil markeret område i løkke
+	Play Source	Afspil kilde
+	Source Play/Stop	Afspil/stop kilde
+	Stop Source	Stop kilde
+	New Sequence	Ny sekvens
+	Tracks	Spor
+	tracks	spor
+	Clear Transition	Fjern overgang
+	Set Transition Duration	Angiv overgangens varighed
+	Active	Aktiv
+	Appearance Mode	Udseendetilstand
+	Dark Theme	Mørkt tema
+	Light Theme	Lyst tema
+	Sync with system	Synkronisér med systemet
+	UI Scale	UI-skala
+	Auto (system)	Automatisk (system)
+	In	Ind
+	Out	Ud
+	Fill Type	Udfyldningstype
+	Gradient Angle	Gradientvinkel
+	Linear Gradient	Lineær gradient
+	Solid	Ensfarvet
+	GPU Rendering	GPU-beregning
+	Composite on the GPU when available	Sammensæt på GPU'en, når det er muligt
+	Text to Speech	Tekst til tale
+	Edit Narration	Rediger speakertekst
+	Dock Panel	Fastgør panel
+	Undock Panel	Frigør panel
+	Docking Action	Fastgørelseshandling
+	Resize floating panel	Ændr størrelse på flydende panel
+	Get Project Notes	Hent projektnoter
+	Edit Project Notes	Rediger projektnoter
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Noter til dette projekt: gøremål, instruktioner, bildenumre… Gemmes sammen med projektet.
+	Use Effect Shutter Angle	Brug effektens lukkervinkel
+	Appearance Settings…	Indstillinger for udseende…
+	Add to favorites	Føj til favoritter
+	Remove from favorites	Fjern fra favoritter
+	Compression	Komprimering
+	ZIP (1 scan line)	ZIP (1 scanningslinje)
+	ZIP (16 scan lines)	ZIP (16 scanningslinjer)
+	Safe graphics mode: {mode}	Sikker grafiktilstand: {mode}
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	En tidligere start mislykkedes med standardgrafikken. Opdatering af grafikdriveren løser som regel problemet.
+	Use Default Graphics	Brug standardgrafik
+	The default graphics are used from the next start.	Standardgrafikken bruges fra næste start.
+	DirectX 12 only	Kun DirectX 12
+	software rendering	softwareberegning
+	Label Color Presets	Forudindstillede etiketfarver
+	{name} (Modified)	{name} (ændret)
+	Revert to the preset's colors and names	Gendan forudindstillingens farver og navne
+	Import a preset file…	Importér en forudindstillingsfil…
+	Export the labels to a preset file…	Eksportér etiketterne til en forudindstillingsfil…
+	Show the presets folder	Vis mappen med forudindstillinger
+	Delete this preset	Slet denne forudindstilling
+	Opens in your web browser: {url}	Åbnes i din webbrowser: {url}
+	Saves this session's log and shows it in your file manager.	Gemmer loggen for denne session og viser den i din filhåndtering.
+	Shows a report on this computer.	Viser en rapport om denne computer.
+	Shows the version, community links and credits in a FilmCraft window.	Viser versionen, links til fællesskabet og krediteringer i et FilmCraft-vindue.
+	Couldn't open your web browser	Kunne ikke åbne din webbrowser
+	Open this address in your browser yourself:	Åbn selv denne adresse i din browser:
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardwareafkodning: Automatisk bruger systemets videoafkoder (VideoToolbox på macOS, Media Foundation på Windows, VA-API til H.264 og HEVC på Linux) til de strømme, den understøtter, og FilmCrafts egen afkoder til alt andet eller hvis hardwaren fejler. Medier, der allerede er åbne, bevarer deres afkoder, indtil de åbnes igen.
