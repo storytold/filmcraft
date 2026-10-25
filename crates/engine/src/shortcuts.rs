@@ -17,8 +17,9 @@
 //! the macOS Control key.
 //!
 //! Built-in presets: **FilmCraft Default** (each command's default plus the Premiere-default audit,
-//! see [`Shortcuts::audit`]), **Premiere Pro Compatible**, **Final Cut Pro Compatible** and
-//! **Avid Media Composer Compatible** ([`crate::shortcut_presets`]). Custom presets are JSON files in
+//! see [`Shortcuts::audit`]), **Premiere Pro Compatible**, **Final Cut Pro Compatible**,
+//! **Avid Media Composer Compatible** and **Evolve**
+//! ([`crate::shortcut_presets`]). Custom presets are JSON files in
 //! `<data dir>/Keyboard Shortcuts/`; the active set persists in `active.json` there.
 //!
 //! Commands the frontend owns (tools, transport, panels, workspaces) are registered with
@@ -60,7 +61,21 @@ pub const DEFAULT_PRESET: &str = "FilmCraft Default";
 pub const PREMIERE_PRESET: &str = "Premiere Pro Compatible";
 pub const FCP_PRESET: &str = "Final Cut Pro Compatible";
 pub const AVID_PRESET: &str = "Avid Media Composer Compatible";
-pub const BUILTIN_PRESETS: [&str; 4] = [DEFAULT_PRESET, PREMIERE_PRESET, FCP_PRESET, AVID_PRESET];
+pub const EVOLVE_PRESET: &str = "Evolve";
+pub const BUILTIN_PRESETS: [&str; 5] = [DEFAULT_PRESET, PREMIERE_PRESET, FCP_PRESET, AVID_PRESET, EVOLVE_PRESET];
+/// Appended to the name of a custom preset file saved under a name that has since become a
+/// built-in preset (a custom "Evolve" is listed and loaded as "Evolve (custom)"; its file is kept).
+const CUSTOM_SUFFIX: &str = " (custom)";
+/// How many such files of one built-in name get a listed name ("Evolve (custom 2)"…).
+const MAX_ALIASES: usize = 100;
+
+/// A custom preset file and the name it is listed under ([`Shortcuts::user_presets`]).
+struct CustomPreset {
+    listed: String,
+    /// The name inside the file.
+    stored: String,
+    path: PathBuf,
+}
 
 const FILE_FORMAT: &str = "filmcraft-keyboard-shortcuts";
 const DIR_NAME: &str = "Keyboard Shortcuts";
@@ -620,9 +635,13 @@ impl Shortcuts {
             PREMIERE_PRESET => presets::premiere(),
             FCP_PRESET => presets::FINAL_CUT.to_vec(),
             AVID_PRESET => presets::AVID.to_vec(),
+            EVOLVE_PRESET => presets::EVOLVE.to_vec(),
             _ => return None,
         };
         self.apply_table(&mut b, &table);
+        if name == EVOLVE_PRESET {
+            b.retain(|x| !presets::EVOLVE_UNBOUND.contains(&x.command.as_str()));
+        }
         drop_control_collisions(&mut b, p);
         Some(b)
     }
@@ -648,17 +667,58 @@ impl Shortcuts {
 
     /// Custom preset names (files in the presets directory).
     pub fn user_presets(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.custom_presets().into_iter().map(|c| c.listed).collect();
+        v.sort();
+        v
+    }
+
+    /// The custom preset files, each under the name it is listed, loaded and deleted by. A file saved
+    /// under a name that has since become a built-in preset (a custom "Evolve") is listed as
+    /// "Evolve (custom)", or "Evolve (custom 2)"… when a preset of that name exists, so every listed
+    /// name is exactly one file. Files are not renamed or rewritten.
+    fn custom_presets(&self) -> Vec<CustomPreset> {
         let Some(dir) = self.presets_dir() else { return Vec::new() };
         let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-        let mut v: Vec<String> = rd
+        let mut files: Vec<(String, PathBuf)> = rd
             .flatten()
             .filter(|e| e.file_name() != ACTIVE_FILE)
-            .filter_map(|e| std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice::<PresetFile>(&b).ok()).map(|p| p.name))
-            .filter(|n| !BUILTIN_PRESETS.contains(&n.as_str()))
+            .filter_map(|e| {
+                let path = e.path();
+                let f = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<PresetFile>(&b).ok())?;
+                Some((f.name, path))
+            })
             .collect();
-        v.sort();
-        v.dedup();
-        v
+        files.sort();
+        files.dedup_by(|a, b| a.0 == b.0);
+        let (aliased, own): (Vec<_>, Vec<_>) = files.into_iter().partition(|(stored, _)| BUILTIN_PRESETS.contains(&stored.as_str()));
+        let mut out: Vec<CustomPreset> = own.into_iter().map(|(stored, path)| CustomPreset { listed: stored.clone(), stored, path }).collect();
+        for (stored, path) in aliased {
+            let free = (1..=MAX_ALIASES)
+                .map(|i| if i == 1 { format!("{stored}{CUSTOM_SUFFIX}") } else { format!("{stored} (custom {i})") })
+                .find(|n| !out.iter().any(|c| c.listed == *n));
+            if let Some(listed) = free {
+                out.push(CustomPreset { listed, stored, path });
+            }
+        }
+        out
+    }
+
+    /// The file of custom preset `name`.
+    fn custom_path(&self, name: &str) -> Option<PathBuf> {
+        self.custom_presets().into_iter().find(|c| c.listed == name).map(|c| c.path).or_else(|| self.preset_path(name))
+    }
+
+    /// The preset `active.json` names: a set saved as a custom preset whose name has since become a
+    /// built-in one (its file still holds the same bindings) is that custom preset, not the built-in.
+    fn active_name(&self, f: &PresetFile) -> String {
+        if !f.modified && BUILTIN_PRESETS.contains(&f.name.as_str()) {
+            let bindings = convert(f.bindings.clone(), f.platform);
+            let same = |c: &CustomPreset| read_file(&c.path).is_ok_and(|custom| convert(custom.bindings, custom.platform) == bindings);
+            if let Some(c) = self.custom_presets().into_iter().find(|c| c.stored == f.name && same(c)) {
+                return c.listed;
+            }
+        }
+        f.name.clone()
     }
 
     fn preset_path(&self, name: &str) -> Option<PathBuf> {
@@ -673,9 +733,9 @@ impl Shortcuts {
         let Ok(bytes) = std::fs::read(&path) else { return };
         match serde_json::from_slice::<PresetFile>(&bytes) {
             Ok(f) => {
-                self.preset = f.name.clone();
+                self.preset = self.active_name(&f);
                 if !f.modified
-                    && let Some(b) = self.builtin(&f.name)
+                    && let Some(b) = self.builtin(&self.preset)
                 {
                     self.bindings = b;
                     self.modified = false;
@@ -846,7 +906,7 @@ impl Shortcuts {
         let bindings = match self.builtin(name) {
             Some(b) => b,
             None => {
-                let path = self.preset_path(name).ok_or("no data directory for custom presets")?;
+                let path = self.custom_path(name).ok_or("no data directory for custom presets")?;
                 let f = read_file(&path)?;
                 convert(f.bindings, f.platform)
             }
@@ -867,6 +927,10 @@ impl Shortcuts {
         if BUILTIN_PRESETS.iter().any(|b| b.eq_ignore_ascii_case(name)) {
             return Err(format!("`{name}` is a built-in preset; choose another name"));
         }
+        // the listed name of an older custom preset saved under a built-in name
+        if self.custom_presets().iter().any(|c| c.listed != c.stored && c.listed.eq_ignore_ascii_case(name)) {
+            return Err(format!("`{name}` is the name of an existing custom preset; choose another name"));
+        }
         let path = self.preset_path(name).ok_or("no data directory for custom presets")?;
         write_file(&path, &self.file(name, false))?;
         let before = self.snapshot();
@@ -880,7 +944,7 @@ impl Shortcuts {
         if BUILTIN_PRESETS.contains(&name) {
             return Err("built-in presets cannot be deleted".into());
         }
-        let path = self.preset_path(name).ok_or("no data directory for custom presets")?;
+        let path = self.custom_path(name).ok_or("no data directory for custom presets")?;
         std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         if self.preset == name {
             self.modified = true;

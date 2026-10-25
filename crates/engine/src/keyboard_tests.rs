@@ -38,11 +38,12 @@ fn target_v1(s: &mut Session) {
 
 #[test]
 fn shortcut_tables_have_no_key_used_twice_in_one_scope() {
-    let tables: [(&str, Vec<presets::Entry>); 4] = [
+    let tables: [(&str, Vec<presets::Entry>); 5] = [
         ("Premiere", presets::premiere()),
         ("FilmCraft panels", presets::FILMCRAFT_PANEL.iter().chain(presets::PREMIERE_PANEL).copied().collect()),
         ("Final Cut", presets::FINAL_CUT.to_vec()),
         ("Avid", presets::AVID.to_vec()),
+        ("Evolve", presets::EVOLVE.to_vec()),
     ];
     for (name, table) in tables {
         let mut seen: std::collections::BTreeMap<(String, String), &str> = Default::default();

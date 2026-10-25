@@ -354,6 +354,7 @@ fn view_menu_and_settings_name_each_color_theme_alike() {
     for (menu_id, id) in [
         ("view.theme.dark", "settings.appearance.darkTheme.darkest"),
         ("view.theme.medium", "settings.appearance.darkTheme.dark"),
+        ("view.theme.evolve", "settings.appearance.darkTheme.evolve"),
         ("view.theme.light", "settings.appearance.lightTheme.light"),
     ] {
         let found = d.ok("ui.elements", json!({"prefix": id}));

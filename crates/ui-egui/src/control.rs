@@ -157,11 +157,22 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     None => return err(format!("unknown tool `{t}`")),
                 }
             }
+            // a failed save of the set is reported after the requested workspace is shown
+            let mut set_saved = Ok(());
+            if let Some(set) = s("workspaceSet") {
+                match crate::dock::WorkspaceSet::from_name(set) {
+                    Some(set) => set_saved = app.set_workspace_set(set),
+                    None => return err("unknown workspace set (standard, evolve)"),
+                }
+            }
             if let Some(w) = s("workspace") {
                 match crate::dock::find(&app.workspaces, w) {
                     Some(w) => app.set_workspace(&w),
                     None => return err(format!("unknown workspace `{w}`")),
                 }
+            }
+            if let Err(e) = set_saved {
+                return err(e);
             }
             if let Some(m) = s("mode") {
                 app.ui.mode = match m.to_ascii_lowercase().as_str() {
@@ -173,7 +184,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             if let Some(th) = s("theme") {
                 match crate::theme::ThemeKind::from_name(th) {
                     Some(k) => crate::panels::settings::set_theme(app, ctx, k),
-                    None => return err("unknown theme (dark, medium, light)"),
+                    None => return err("unknown theme (dark, medium, evolve, light)"),
                 }
             }
             // the open Settings dialog: page and draft values (`{"page": id, "values": {key: value}}`)
@@ -535,6 +546,8 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "input": {"mode": if app.control_input_only { "controlOnly" } else { "interactive" },
             "nativeWindowFocused": app.native_window_focused, "effectiveWindowFocused": ctx.input(|input| input.focused)},
         "ui": app.ui,
+        "workspaceSet": app.workspaces.set.id(),
+        "workspaces": crate::dock::names(&app.workspaces),
         "sourcePlayback": {"playing": app.source_playback.clock.playing, "audioClock": app.source_playback.clock.audio_clock, "playhead": app.session.state.source_playhead.0},
         "playback": {"playing": app.playback.playing, "speed": app.playback.speed, "loop": app.playback.looping, "audioClock": app.playback.audio_clock, "dropped": app.playback.meter.counts().1, "shown": app.playback.meter.counts().0, "preroll": app.playback.preroll.is_some()},
         "playhead": app.session.playhead().0,

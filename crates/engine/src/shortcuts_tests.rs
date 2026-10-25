@@ -17,6 +17,7 @@ fn with_ui_commands(s: &mut Session) {
         CommandInfo::new("playback.toggle", "Play/Stop", &[], Some("Space")),
         CommandInfo::new("playback.forward", "Shuttle Right", &[], Some("L")),
         CommandInfo::new("playback.slowForward", "Shuttle Slow Right", &[], None),
+        CommandInfo::new("playback.slowReverse", "Shuttle Slow Left", &[], None),
         CommandInfo::new("playback.playAround", "Play Around", &[], None),
         CommandInfo::new("tool.razor", "Razor Tool", &[], Some("C")),
         CommandInfo::new("app.keyboardShortcuts", "Keyboard Shortcuts…", &["Edit"], Some("Cmd+Alt+K")),
@@ -219,6 +220,32 @@ fn compat_presets_map_other_editors() {
     s.execute("shortcuts.loadPreset", json!({"name": "Avid Media Composer Compatible"})).unwrap();
     assert_eq!(s.shortcuts.primary("sequence.lift").as_deref(), Some("Z"));
     assert_eq!(s.shortcuts.for_command("markers.markIn").len(), 2, "I and E");
+    s.execute("shortcuts.loadPreset", json!({"name": "Evolve"})).unwrap();
+    assert_eq!(s.shortcuts.primary("source.insert").as_deref(), Some("F9"));
+    assert_eq!(s.shortcuts.primary("tool.razor").as_deref(), Some("B"));
+    assert_eq!(s.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+B"));
+    assert_eq!(s.shortcuts.primary("markers.markSelection").as_deref(), Some("Shift+A"));
+    assert_eq!(s.shortcuts.primary("markers.goNext").as_deref(), Some("Shift+Down"));
+    assert!(s.shortcuts.primary("playhead.nextEditAnyTrack").is_none(), "Shift+Down was taken by Go to Next Marker");
+    // ⇧J / ⇧L are fast reverse / forward in such suites, which FilmCraft has no command for: the
+    // preset does not keep FilmCraft Default's slow shuttle there
+    for id in crate::shortcut_presets::EVOLVE_UNBOUND {
+        assert!(s.shortcuts.for_command(id).is_empty(), "{id}: {:?}", s.shortcuts.for_command(id));
+    }
+    assert!(!s.shortcuts.bindings.iter().any(|b| b.keys == "Shift+J" || b.keys == "Shift+L"), "⇧J / ⇧L stay free");
+    // every Evolve entry whose command is known here is bound as listed, with its context (the
+    // frontend's commands are covered by crates/ui-egui/tests/keyboard_ui.rs)
+    for (id, keys, panel) in crate::shortcut_presets::EVOLVE {
+        if !s.shortcuts.commands().iter().any(|c| c.id == *id) {
+            continue;
+        }
+        let panel = (!panel.is_empty()).then_some(*panel);
+        assert!(
+            s.shortcuts.for_command(id).iter().any(|b| b.keys == *keys && b.panel.as_deref() == panel),
+            "{id} {keys} {panel:?}: {:?}",
+            s.shortcuts.for_command(id)
+        );
+    }
     assert!(!s.shortcuts.modified);
     assert!(s.execute("shortcuts.loadPreset", json!({"name": "Nope"})).is_err());
     s.execute("shortcuts.loadPreset", json!({"name": "FilmCraft Default"})).unwrap();
@@ -268,6 +295,87 @@ fn custom_presets_persist_export_and_import() {
     s.execute("shortcuts.deletePreset", json!({"name": "My Keys"})).unwrap();
     assert!(s.execute("shortcuts.deletePreset", json!({"name": "FilmCraft Default"})).is_err());
     assert_eq!(s.execute("shortcuts.presets", json!({})).unwrap()["custom"], json!(["From Windows"]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn custom_preset_saved_under_a_new_builtin_name_stays_reachable() {
+    // a custom preset saved as "Evolve" before that became a built-in preset, and active
+    let dir = temp_dir("custom-evolve");
+    let mut s = Session::default();
+    s.shortcuts.set_dir(&dir);
+    s.execute("shortcuts.set", json!({"command": "sequence.addEdit", "keys": "Cmd+Shift+B"})).unwrap();
+    s.execute("shortcuts.savePreset", json!({"name": "Old Evolve"})).unwrap();
+    let keys = dir.join("Keyboard Shortcuts");
+    for file in ["Old Evolve.json", "active.json"] {
+        let path = keys.join(file);
+        let mut f: crate::shortcuts::PresetFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        f.name = "Evolve".into();
+        std::fs::write(&path, serde_json::to_vec(&f).unwrap()).unwrap();
+    }
+    std::fs::rename(keys.join("Old Evolve.json"), keys.join("Evolve.json")).unwrap();
+    // after the upgrade it is listed, restored at launch and loaded as "Evolve (custom)"
+    let mut t = Session::default();
+    t.shortcuts.set_dir(&dir);
+    assert_eq!(t.shortcuts.preset, "Evolve (custom)");
+    assert_eq!(t.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+Shift+B"));
+    assert_eq!(t.execute("shortcuts.presets", json!({})).unwrap()["custom"], json!(["Evolve (custom)"]));
+    t.execute("shortcuts.loadPreset", json!({"name": "Evolve"})).unwrap();
+    assert_eq!(t.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+B"), "the built-in preset");
+    t.execute("shortcuts.loadPreset", json!({"name": "Evolve (custom)"})).unwrap();
+    assert_eq!(t.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+Shift+B"));
+    assert!(keys.join("Evolve.json").exists(), "the file is kept");
+    // the active built-in Evolve (written by this build) still comes back as the built-in
+    t.execute("shortcuts.loadPreset", json!({"name": "Evolve"})).unwrap();
+    let mut u = Session::default();
+    u.shortcuts.set_dir(&dir);
+    assert_eq!(u.shortcuts.preset, "Evolve");
+    assert_eq!(u.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+B"));
+    // the listed name is reserved, and deleting it removes that file
+    assert!(t.execute("shortcuts.savePreset", json!({"name": "Evolve (custom)"})).is_err());
+    t.execute("shortcuts.deletePreset", json!({"name": "Evolve (custom)"})).unwrap();
+    assert!(!keys.join("Evolve.json").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_custom_preset_named_like_the_alias_keeps_its_own_file() {
+    // a preset saved as "Evolve (custom)", and an older custom preset saved as "Evolve"
+    let dir = temp_dir("custom-evolve-alias");
+    let keys = dir.join("Keyboard Shortcuts");
+    let mut s = Session::default();
+    s.shortcuts.set_dir(&dir);
+    s.execute("shortcuts.set", json!({"command": "sequence.addEdit", "keys": "Cmd+Shift+Y"})).unwrap();
+    s.execute("shortcuts.savePreset", json!({"name": "Evolve (custom)"})).unwrap();
+    s.execute("shortcuts.set", json!({"command": "sequence.addEdit", "keys": "Cmd+Shift+B"})).unwrap();
+    s.execute("shortcuts.savePreset", json!({"name": "Old Evolve"})).unwrap();
+    let path = keys.join("Old Evolve.json");
+    let mut f: crate::shortcuts::PresetFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    f.name = "Evolve".into();
+    std::fs::write(keys.join("Evolve.json"), serde_json::to_vec(&f).unwrap()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    // each name is its own file: the literal one keeps its name, the older one is listed next to it
+    let mut t = Session::default();
+    t.shortcuts.set_dir(&dir);
+    assert_eq!(t.execute("shortcuts.presets", json!({})).unwrap()["custom"], json!(["Evolve (custom 2)", "Evolve (custom)"]));
+    t.execute("shortcuts.loadPreset", json!({"name": "Evolve (custom)"})).unwrap();
+    assert_eq!(t.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+Shift+Y"));
+    t.execute("shortcuts.loadPreset", json!({"name": "Evolve (custom 2)"})).unwrap();
+    assert_eq!(t.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+Shift+B"));
+    // the alias is reserved; the literal preset can still be saved over
+    assert!(t.execute("shortcuts.savePreset", json!({"name": "Evolve (custom 2)"})).is_err());
+    t.execute("shortcuts.loadPreset", json!({"name": "Evolve (custom)"})).unwrap();
+    t.execute("shortcuts.savePreset", json!({"name": "Evolve (custom)"})).unwrap();
+    // deleting the literal preset removes its file only, and the older one is listed under the alias again
+    t.execute("shortcuts.deletePreset", json!({"name": "Evolve (custom)"})).unwrap();
+    assert!(!keys.join("Evolve (custom).json").exists());
+    assert!(keys.join("Evolve.json").exists());
+    assert_eq!(t.execute("shortcuts.presets", json!({})).unwrap()["custom"], json!(["Evolve (custom)"]));
+    t.execute("shortcuts.loadPreset", json!({"name": "Evolve (custom)"})).unwrap();
+    assert_eq!(t.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+Shift+B"));
+    // and deleting the alias removes the older file
+    t.execute("shortcuts.deletePreset", json!({"name": "Evolve (custom)"})).unwrap();
+    assert!(!keys.join("Evolve.json").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

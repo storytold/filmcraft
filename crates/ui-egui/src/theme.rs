@@ -2,6 +2,9 @@
 //!
 //! The default theme follows the look of Premiere Pro's current dark UI (values measured from
 //! black-box screenshots, see `plan/premiere/02-ui-ux.md`); fonts are Inter + JetBrains Mono (OFL).
+//! The Evolve theme ([`ThemeKind::Evolve`]) is an original palette in the spirit of page-based
+//! grading suites' dark interfaces: cool charcoal panels, a warm orange highlight, near-white timecodes
+//! (`docs/appearance.md`). No values, images or other assets of any vendor are used.
 
 use std::sync::Arc;
 
@@ -16,31 +19,46 @@ pub enum ThemeKind {
     /// Slightly lighter grey panels (Premiere's brightness slider mid position).
     Medium,
     Light,
+    /// Cool charcoal panels with a warm orange highlight, in the spirit of page-based grading
+    /// suites' dark interfaces (an original palette, see the module docs).
+    Evolve,
 }
 
 impl ThemeKind {
-    /// Settings ▸ Appearance ▸ Color Theme value (`darkest`, `dark`, `light`).
+    /// Every theme, in the order Settings ▸ Appearance lists them.
+    pub const ALL: [ThemeKind; 4] = [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Evolve, ThemeKind::Light];
+
+    /// Settings ▸ Appearance ▸ Color Theme value (`darkest`, `dark`, `evolve`, `light`).
     pub fn pref_name(self) -> &'static str {
         match self {
             ThemeKind::Dark => "darkest",
             ThemeKind::Medium => "dark",
             ThemeKind::Light => "light",
+            ThemeKind::Evolve => "evolve",
         }
     }
     pub fn from_pref(s: &str) -> ThemeKind {
         match s {
             "dark" => ThemeKind::Medium,
             "light" => ThemeKind::Light,
+            "evolve" => ThemeKind::Evolve,
             _ => ThemeKind::Dark,
         }
     }
+    /// `ui.set {theme}` and `view.theme.<name>`: `dark`, `medium`, `light`, `evolve` (also the
+    /// preference values).
     pub fn from_name(s: &str) -> Option<ThemeKind> {
         match s.to_ascii_lowercase().as_str() {
             "dark" | "darkest" => Some(ThemeKind::Dark),
             "medium" | "grey" | "gray" => Some(ThemeKind::Medium),
             "light" => Some(ThemeKind::Light),
+            "evolve" => Some(ThemeKind::Evolve),
             _ => None,
         }
+    }
+    /// Light themes use egui's light visuals and dark text; every other theme is a dark one.
+    pub fn is_light(self) -> bool {
+        self == ThemeKind::Light
     }
 }
 
@@ -259,6 +277,7 @@ impl Tokens {
                 hover: Color32::from_rgb(64, 64, 64),
                 ..dark
             },
+            ThemeKind::Evolve => evolve(dark),
             ThemeKind::Light => Tokens {
                 app_bg: Color32::from_rgb(180, 180, 180),
                 header_bg: Color32::from_rgb(214, 214, 214),
@@ -332,12 +351,128 @@ impl Tokens {
             },
         }
     }
+}
+
+/// The Evolve theme: an original palette in the spirit of page-based grading suites' dark
+/// interfaces. Cool (slightly blue) charcoal panels on a near-black background, thin gutters, a warm orange
+/// highlight for selections, the focused panel and primary buttons, a red playhead, near-white
+/// timecodes and a darker viewer well. Chrome measurements (tab height, radii, gaps) are
+/// FilmCraft's own. Secondary text reaches WCAG AA against every panel surface
+/// (`tests::evolve_text_contrast_meets_wcag_aa`).
+fn evolve(dark: Tokens) -> Tokens {
+    let panel = Color32::from_rgb(0x28, 0x28, 0x2d);
+    let chrome = Color32::from_rgb(0x1f, 0x1f, 0x24);
+    // a fill under white labels (4.5:1); as text on the panels the orange is `hot_text`
+    let accent = Color32::from_rgb(0xbe, 0x51, 0x1b);
+    let text = Color32::from_rgb(0xe4, 0xe4, 0xea);
+    let text_dim = Color32::from_rgb(0xb4, 0xb4, 0xbc);
+    let text_faint = Color32::from_rgb(0x86, 0x86, 0x90);
+    Tokens {
+        kind: ThemeKind::Evolve,
+        app_bg: Color32::from_rgb(0x12, 0x12, 0x16),
+        header_bg: chrome,
+        panel_bg: panel,
+        tab_bg: chrome,
+        tab_text: text_dim,
+        tab_text_active: text,
+        focus: Color32::from_rgb(0xe8, 0x7e, 0x46),
+        accent,
+        accent_hover: Color32::from_rgb(0xc4, 0x54, 0x1b),
+        text,
+        text_dim,
+        text_faint,
+        icon: text_dim,
+        icon_active: text,
+        hover: Color32::from_rgb(0x34, 0x34, 0x3a),
+        pressed: Color32::from_rgb(0x46, 0x46, 0x4e),
+        field_bg: Color32::from_rgb(0x1a, 0x1a, 0x1e),
+        field_border: Color32::from_rgb(0x3c, 0x3c, 0x44),
+        separator: Color32::from_rgb(0x38, 0x38, 0x40),
+        row_alt: Color32::from_rgb(0x2c, 0x2c, 0x32),
+        row_selected: Color32::from_rgb(0x44, 0x3a, 0x34),
+        hot_text: Color32::from_rgb(0xf2, 0xa2, 0x6a),
+        pill_active_bg: Color32::from_rgb(0x42, 0x42, 0x4a),
+        clip_bar_bg: Color32::from_rgb(0x3e, 0x3a, 0x44),
+        control_surface: Color32::from_rgb(0x2f, 0x2f, 0x35),
+        control_well: Color32::from_rgb(0x17, 0x17, 0x1b),
+        control_border: Color32::from_rgb(0x56, 0x56, 0x5e),
+        control_handle_bg: Color32::from_rgb(0x36, 0x36, 0x3c),
+        control_handle: Color32::from_rgb(0xe8, 0xe8, 0xee),
+        control_handle_dim: text_dim,
+        plot_bg: Color32::from_rgb(0x1c, 0x1c, 0x21),
+        plot_grid: Color32::from_rgb(0x30, 0x30, 0x37),
+        plot_axis: Color32::from_rgb(0x4a, 0x4a, 0x52),
+        plot_handle: Color32::from_rgb(0xe8, 0xe8, 0xee),
+        plot_handle_dim: Color32::from_rgb(0x9a, 0x9a, 0xa4),
+        meter_bg: Color32::from_rgb(0x0f, 0x0f, 0x12),
+        meter_readout_bg: Color32::from_rgb(0x1a, 0x1a, 0x1e),
+        meter_clip_off: Color32::from_rgb(0x3a, 0x3a, 0x42),
+        panner_bg: Color32::from_rgb(0x1c, 0x1c, 0x21),
+        panner_border: Color32::from_rgb(0x66, 0x66, 0x70),
+        panner_speaker: Color32::from_rgb(0x9a, 0x9a, 0xa4),
+        fader_knob: Color32::from_rgb(0x6a, 0x6a, 0x74),
+        eq_track: Color32::from_rgb(0x36, 0x36, 0x3c),
+        eq_tick: Color32::from_rgb(0x66, 0x66, 0x70),
+        eq_knob: Color32::from_rgb(0xc4, 0xc4, 0xcc),
+        eq_knob_active: Color32::from_rgb(0xf2, 0xf2, 0xf6),
+        eq_node: Color32::from_rgb(0xec, 0xec, 0xf0),
+        eq_node_off: Color32::from_rgb(0x7a, 0x7a, 0x84),
+        crossover_handle: Color32::WHITE,
+        keyframe_plot_bg: Color32::from_rgb(0x1c, 0x1c, 0x21),
+        keyframe_plot_grid: Color32::from_rgb(0x2e, 0x2e, 0x35),
+        keyframe_plot_axis: Color32::from_rgb(0x3a, 0x3a, 0x42),
+        keyframe_handle: Color32::from_rgb(0xd6, 0xd6, 0xde),
+        switch_fill: Color32::from_rgb(0xd8, 0xd8, 0xe0),
+        switch_knob: Color32::from_rgb(0x24, 0x24, 0x29),
+        switch_border: Color32::from_rgb(0x8c, 0x8c, 0x96),
+        slider_disabled_track: Color32::from_rgb(0x4c, 0x4c, 0x54),
+        slider_disabled_knob: Color32::from_rgb(0x6c, 0x6c, 0x76),
+        button_hover: Color32::from_rgb(0x34, 0x34, 0x3a),
+        button_border: Color32::from_rgb(0x50, 0x50, 0x58),
+        caption_track_bg: Color32::from_rgb(0x2a, 0x27, 0x33),
+        scroll_thumb: Color32::from_rgb(0x50, 0x50, 0x58),
+        scroll_thumb_hover: Color32::from_rgb(0x6e, 0x6e, 0x78),
+        vertical_scroll_thumb: Color32::from_rgb(0x54, 0x54, 0x5c),
+        disabled_clip_bg: Color32::from_rgb(0x33, 0x33, 0x39),
+        tl_bg: Color32::from_rgb(0x20, 0x20, 0x25),
+        tl_track_bg: Color32::from_rgb(0x2a, 0x2a, 0x30),
+        tl_track_bg_alt: Color32::from_rgb(0x26, 0x26, 0x2c),
+        tl_header_bg: Color32::from_rgb(0x24, 0x24, 0x29),
+        tl_ruler_bg: chrome,
+        tl_ruler_tick: Color32::from_rgb(0x8e, 0x8e, 0x98),
+        tl_ruler_text: text_dim,
+        playhead: Color32::from_rgb(0xe4, 0x3f, 0x2e),
+        track_target: Color32::from_rgb(0xb8, 0x55, 0x24),
+        in_out_shade: Color32::from_rgb(0x3f, 0x3f, 0x47),
+        clip_selected_border: Color32::from_rgb(0xf4, 0xf4, 0xf8),
+        monitor_bg: Color32::from_rgb(0x18, 0x18, 0x1c),
+        timecode: Color32::from_rgb(0xf0, 0xf0, 0xf4),
+        danger: Color32::from_rgb(0xe0, 0x4e, 0x3c),
+        radius: 3.0,
+        radius_sm: 3.0,
+        gap: 3.0,
+        tab_h: 30.0,
+        ..dark
+    }
+}
+
+impl Tokens {
+    /// The highlight as text on the panels (links, "Active" and "User" labels, the shortcut being
+    /// recorded). The Evolve orange
+    /// is a fill dark enough for white labels, too dark for normal text on its charcoal panels, so
+    /// there the text is the lighter `hot_text` orange; the other themes use the highlight itself.
+    pub fn accent_text(&self) -> Color32 {
+        if self.kind == ThemeKind::Evolve { self.hot_text } else { self.accent }
+    }
 
     /// Settings ▸ Appearance on top of a theme: the highlight colour (selections, primary buttons,
     /// the focus outline, the playhead, timecodes, drag values and track targeting) and accessible
     /// colour contrast (brighter secondary text and borders).
     pub fn with_appearance(mut self, highlight: Option<[u8; 3]>, accessible_contrast: bool) -> Self {
-        if let Some([r, g, b]) = highlight {
+        // The default highlight means "the theme's own highlight": the Evolve theme keeps its
+        // orange until the user picks a colour of their own.
+        let default = filmcraft_engine::settings::parse_hex(filmcraft_engine::settings::DEFAULT_HIGHLIGHT);
+        if let Some([r, g, b]) = highlight.filter(|h| Some(*h) != default || self.kind != ThemeKind::Evolve) {
             let c = Color32::from_rgb(r, g, b);
             // A highlight of the user's own also colours the theme's other blues: the same hue, as
             // much more or less saturated and bright as each of them is than the theme's highlight.
@@ -360,7 +495,7 @@ impl Tokens {
             self.accent_hover = Color32::from_rgb(lift(r), lift(g), lift(b));
         }
         if accessible_contrast {
-            if self.kind == ThemeKind::Light {
+            if self.kind.is_light() {
                 self.text_dim = Color32::from_rgb(40, 40, 40);
                 self.text_faint = Color32::from_rgb(80, 80, 80);
                 self.field_border = Color32::from_rgb(110, 110, 110);
@@ -458,7 +593,7 @@ fn add_craft_fonts(fonts: &mut FontDefinitions) {
 }
 
 pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
-    let light = t.kind == ThemeKind::Light;
+    let light = t.kind.is_light();
     // FilmCraft decides between light and dark itself (Settings ▸ Appearance ▸ Appearance Mode), so
     // egui must not switch to its other built-in style when the system appearance changes.
     ctx.set_theme(if light { egui::Theme::Light } else { egui::Theme::Dark });
@@ -470,7 +605,7 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
     v.override_text_color = Some(t.text);
     v.selection.bg_fill = t.accent;
     v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
-    v.hyperlink_color = t.accent;
+    v.hyperlink_color = t.accent_text();
     v.window_stroke = Stroke::new(1.0, t.field_border);
     v.window_corner_radius = egui::CornerRadius::same(6);
     v.menu_corner_radius = egui::CornerRadius::same(6);
@@ -584,9 +719,99 @@ mod tests {
     #[test]
     fn the_default_highlight_leaves_the_theme_blues_as_designed() {
         let default = filmcraft_engine::settings::parse_hex(filmcraft_engine::settings::DEFAULT_HIGHLIGHT);
-        for k in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+        for k in ThemeKind::ALL {
             assert_eq!(highlight_blues(&Tokens::for_kind(k).with_appearance(default, false)), highlight_blues(&Tokens::for_kind(k)), "{k:?}");
+            assert_eq!(Tokens::for_kind(k).with_appearance(default, false).accent, Tokens::for_kind(k).accent, "{k:?} keeps its own highlight");
         }
+    }
+
+    /// WCAG 2.x relative luminance and contrast ratio (sRGB).
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        fn luminance(c: Color32) -> f64 {
+            let lin = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        }
+        let (l1, l2) = (luminance(a), luminance(b));
+        (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05)
+    }
+
+    /// The Evolve palette: normal text at WCAG AA (4.5:1) on every surface it is drawn on, large
+    /// or decorative text (faint labels, ruler ticks) at 3:1, and the highlight distinct from the
+    /// panels it marks.
+    #[test]
+    fn evolve_text_contrast_meets_wcag_aa() {
+        let t = Tokens::for_kind(ThemeKind::Evolve);
+        assert_eq!(t.kind, ThemeKind::Evolve);
+        let surfaces = [
+            ("panel", t.panel_bg),
+            ("tab strip", t.tab_bg),
+            ("header", t.header_bg),
+            ("field", t.field_bg),
+            ("hover", t.hover),
+            ("row", t.row_alt),
+            ("selected row", t.row_selected),
+            ("timeline", t.tl_bg),
+            ("track", t.tl_track_bg),
+            ("ruler", t.tl_ruler_bg),
+            ("monitor", t.monitor_bg),
+            ("app", t.app_bg),
+        ];
+        for (name, bg) in surfaces {
+            for (what, fg) in [
+                ("text", t.text),
+                ("secondary text", t.text_dim),
+                ("tab text", t.tab_text),
+                ("active tab text", t.tab_text_active),
+                ("icons", t.icon),
+                ("timecode", t.timecode),
+                ("ruler text", t.tl_ruler_text),
+                ("hot text", t.hot_text),
+            ] {
+                let ratio = contrast(fg, bg);
+                assert!(ratio >= 4.5, "{what} on {name}: {ratio:.2}:1 is below WCAG AA");
+            }
+            let faint = contrast(t.text_faint, bg);
+            assert!(faint >= 3.0, "faint text on {name}: {faint:.2}:1");
+        }
+        // the accent as a fill under white labels (primary buttons, selections), also hovered, and
+        // as text on the surfaces (links, labels): normal text, 4.5:1
+        for (what, fill) in [("accent", t.accent), ("hovered accent", t.accent_hover)] {
+            let ratio = contrast(Color32::WHITE, fill);
+            assert!(ratio >= 4.5, "white labels on the {what}: {ratio:.2}:1 is below WCAG AA");
+        }
+        for (name, bg) in surfaces {
+            let ratio = contrast(t.accent_text(), bg);
+            assert!(ratio >= 4.5, "accent text on {name}: {ratio:.2}:1 is below WCAG AA");
+        }
+        assert!(contrast(t.accent, t.panel_bg) >= 3.0 && contrast(t.focus, t.panel_bg) >= 3.0 && contrast(t.playhead, t.tl_track_bg) >= 3.0);
+        // Dark chrome around lighter panels, as in page-based suites: the window background is the darkest surface.
+        let lum = |c: Color32| u16::from(c.r()) + u16::from(c.g()) + u16::from(c.b());
+        assert!(lum(t.app_bg) < lum(t.header_bg) && lum(t.header_bg) < lum(t.panel_bg) && lum(t.monitor_bg) < lum(t.panel_bg));
+        // the theme is its own: not the Darkest palette with another accent
+        let dark = Tokens::for_kind(ThemeKind::Dark);
+        assert!(t.panel_bg != dark.panel_bg && t.accent != dark.accent && t.playhead != dark.playhead && t.timecode != dark.timecode);
+        assert!(!t.kind.is_light());
+    }
+
+    /// Theme names round-trip through the preference value, `ui.set {theme}` and serde.
+    #[test]
+    fn evolve_theme_names_round_trip() {
+        for k in ThemeKind::ALL {
+            assert_eq!(ThemeKind::from_pref(k.pref_name()), k);
+            assert_eq!(ThemeKind::from_name(&format!("{k:?}")), Some(k), "the view.theme.* id");
+            let json = serde_json::to_string(&k).unwrap();
+            assert_eq!(serde_json::from_str::<ThemeKind>(&json).unwrap(), k);
+        }
+        assert_eq!(ThemeKind::from_pref("nonsense"), ThemeKind::Dark);
+        // a highlight of the user's own still recolours the Evolve theme
+        let t = Tokens::for_kind(ThemeKind::Evolve).with_appearance(Some([0x2f, 0x6b, 0xdf]), false);
+        assert_eq!(t.accent, Tokens::for_kind(ThemeKind::Evolve).accent, "the default highlight is the theme's own");
+        let t = Tokens::for_kind(ThemeKind::Evolve).with_appearance(Some([0x40, 0xa0, 0x60]), false);
+        assert_eq!(t.accent, Color32::from_rgb(0x40, 0xa0, 0x60));
+        assert_ne!(t.playhead, Tokens::for_kind(ThemeKind::Evolve).playhead);
     }
 
     #[test]
@@ -616,7 +841,7 @@ mod tests {
             return;
         }
         let ctx = egui::Context::default();
-        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+        for kind in ThemeKind::ALL {
             install(&ctx, &Tokens::for_kind(kind));
             ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
             ctx.fonts_mut(|fonts| {

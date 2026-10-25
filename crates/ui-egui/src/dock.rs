@@ -179,6 +179,85 @@ fn vsplit(size: SplitSize, a: DockNode, b: DockNode) -> DockNode {
 
 pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
 
+/// The pages of the Evolve workspace set, in page-bar order (`docs/appearance.md`).
+pub const EVOLVE_PAGES: [&str; 6] = ["Media", "Cut", "Edit", "Color", "Audio", "Deliver"];
+
+/// Window ▸ Workspace Set: which family of built-in workspaces the window offers. A set is a
+/// feature of the docking model: it decides the built-in layouts, the order Window ▸ Workspaces
+/// lists them in, which saved workspaces belong to it, and whether the page bar is shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceSet {
+    /// The standard workspaces (Editing, Assembly, Color, Effects, …), the default.
+    #[default]
+    Standard,
+    /// The Evolve pages (Media, Cut, Edit, Color, Audio, Deliver) with the page bar at
+    /// the bottom of the window.
+    Evolve,
+}
+
+/// Read by name ([`WorkspaceSet::from_name`]): a value this build does not know (a file from
+/// another version) is the standard set rather than a workspaces file that fails to load.
+impl<'de> Deserialize<'de> for WorkspaceSet {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(d)?;
+        Ok(WorkspaceSet::from_name(&name).unwrap_or_default())
+    }
+}
+
+impl WorkspaceSet {
+    pub const ALL: [WorkspaceSet; 2] = [WorkspaceSet::Standard, WorkspaceSet::Evolve];
+
+    /// Command-id key and `ui.set {workspaceSet}` value: `standard` | `evolve`.
+    pub fn id(self) -> &'static str {
+        match self {
+            WorkspaceSet::Standard => "standard",
+            WorkspaceSet::Evolve => "evolve",
+        }
+    }
+    /// Window ▸ Workspace Set menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            WorkspaceSet::Standard => "Standard Workspaces",
+            WorkspaceSet::Evolve => "Evolve Pages",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<WorkspaceSet> {
+        match s.to_ascii_lowercase().replace([' ', '_', '-'], "").as_str() {
+            "standard" | "workspaces" => Some(WorkspaceSet::Standard),
+            "evolve" | "pages" => Some(WorkspaceSet::Evolve),
+            _ => None,
+        }
+    }
+    /// The built-in workspaces of the set, in menu (and page-bar) order.
+    pub fn builtins(self) -> &'static [&'static str] {
+        match self {
+            WorkspaceSet::Standard => &WORKSPACES,
+            WorkspaceSet::Evolve => &EVOLVE_PAGES,
+        }
+    }
+    /// The workspace shown when the set is first chosen or the current one is gone.
+    pub fn default_workspace(self) -> &'static str {
+        match self {
+            WorkspaceSet::Standard => "Editing",
+            WorkspaceSet::Evolve => "Edit",
+        }
+    }
+    /// Whether the window shows the page bar (the Evolve set).
+    pub fn has_page_bar(self) -> bool {
+        self == WorkspaceSet::Evolve
+    }
+    /// The command id that switches to a built-in workspace of this set: the Standard set's are
+    /// `window.workspace.<slug>`, Evolve's pages `window.page.<slug>` (so the Edit page never
+    /// collides with Edit Workspaces…, `window.workspace.edit`).
+    pub fn command_id(self, name: &str) -> String {
+        match self {
+            WorkspaceSet::Evolve if EVOLVE_PAGES.contains(&name) => format!("window.page.{}", slug(name)),
+            _ => format!("window.workspace.{}", slug(name)),
+        }
+    }
+}
+
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
 
@@ -189,6 +268,8 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
     pub current: String,
+    /// Window ▸ Workspace Set (files from before it have the Standard set).
+    pub set: WorkspaceSet,
 }
 
 /// A named layout. `layout` is a [`DockNode`] kept as JSON, so one unreadable entry (a panel a
@@ -201,6 +282,15 @@ pub struct SavedWorkspace {
     /// Kept raw for the same per-workspace failure isolation as the dock tree.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub floating: serde_json::Value,
+    /// The set the workspace belongs to (older files: Standard).
+    #[serde(default, skip_serializing_if = "WorkspaceSet::is_standard")]
+    pub set: WorkspaceSet,
+}
+
+impl WorkspaceSet {
+    fn is_standard(set: &WorkspaceSet) -> bool {
+        *set == WorkspaceSet::Standard
+    }
 }
 
 impl WorkspacePrefs {
@@ -232,20 +322,23 @@ pub fn slug(name: &str) -> String {
     name.to_ascii_lowercase().replace(' ', "")
 }
 
+/// A built-in workspace of either set: it can be changed and reset, never renamed or deleted.
 pub fn is_builtin(name: &str) -> bool {
-    WORKSPACES.contains(&name)
+    WORKSPACES.contains(&name) || EVOLVE_PAGES.contains(&name)
 }
 
-/// Every workspace, built-in and the user's own, in one alphabetical list (Premiere's Window ▸
-/// Workspaces).
+/// Every workspace of the set in use, built-in and the user's own. The Standard set is one
+/// alphabetical list (Window ▸ Workspaces as before); the Evolve set lists its pages in page
+/// order, then the user's own workspaces alphabetically.
 pub fn names(prefs: &WorkspacePrefs) -> Vec<String> {
-    let mut v: Vec<String> = WORKSPACES.iter().map(|s| s.to_string()).collect();
-    for s in &prefs.saved {
-        if !v.contains(&s.name) {
-            v.push(s.name.clone());
-        }
+    let mut v: Vec<String> = prefs.set.builtins().iter().map(|s| s.to_string()).collect();
+    let mut own: Vec<String> = prefs.saved.iter().filter(|s| s.set == prefs.set && !v.contains(&s.name)).map(|s| s.name.clone()).collect();
+    own.sort_by_key(|n| n.to_lowercase());
+    own.dedup();
+    v.extend(own);
+    if prefs.set == WorkspaceSet::Standard {
+        v.sort_by_key(|n| n.to_lowercase());
     }
-    v.sort_by_key(|n| n.to_lowercase());
     v
 }
 
@@ -260,7 +353,7 @@ pub fn saved_layout(prefs: &WorkspacePrefs, name: &str) -> DockNode {
 }
 
 pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
-    let saved = prefs.saved.iter().find(|saved| saved.name == name).and_then(|saved| {
+    let saved = prefs.saved.iter().find(|saved| saved.name == name && saved.set == prefs.set).and_then(|saved| {
         let mut layout = Layout {
             root: serde_json::from_value(saved.layout.clone()).ok()?,
             floating: if saved.floating.is_null() { vec![] } else { serde_json::from_value(saved.floating.clone()).ok()? },
@@ -270,7 +363,81 @@ pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
         }
         layout.validate().ok().map(|()| layout)
     });
-    saved.unwrap_or_else(|| Layout { root: workspace(name), floating: vec![] })
+    saved.unwrap_or_else(|| Layout { root: workspace_in(prefs.set, name), floating: vec![] })
+}
+
+/// The default layout of a named workspace of a set.
+pub fn workspace_in(set: WorkspaceSet, name: &str) -> DockNode {
+    match set {
+        WorkspaceSet::Standard => workspace(name),
+        WorkspaceSet::Evolve => evolve_page(name),
+    }
+}
+
+/// The default layout of an Evolve page, built from FilmCraft's panels where an editor coming
+/// from a page-based suite expects them. Every page keeps a Timeline and a Program monitor so opening a sequence
+/// always has somewhere to show it (`restore_timeline`).
+pub fn evolve_page(name: &str) -> DockNode {
+    use PanelKind::*;
+    use SplitSize::*;
+    let timeline = || hsplit(FixedB(116.0), tabs(&[Timeline], 0), tabs(&[AudioMeters], 0));
+    let timeline_with_tools = || hsplit(FixedA(64.0), tabs(&[Tools], 0), timeline());
+    match name {
+        // Media: storage browser left, viewer over the bins, metadata right. The Timeline is a
+        // tab of the bins group: hidden until a sequence is opened, as on a grading suite's Media page.
+        "Media" => hsplit(
+            FixedA(300.0),
+            tabs(&[MediaBrowser, Libraries], 0),
+            vsplit(Ratio(0.56), hsplit(Ratio(0.68), tabs(&[Source, Program], 0), tabs(&[Metadata, Info, Markers], 0)), tabs(&[Project, History, Timeline], 0)),
+        ),
+        // Cut: bins and the viewer on top, the timeline across the bottom.
+        "Cut" => {
+            vsplit(Ratio(0.5), hsplit(Ratio(0.42), tabs(&[Project, MediaBrowser, Effects, Markers], 0), tabs(&[Program, Source], 0)), timeline_with_tools())
+        }
+        // Color: the clip strip on top, the viewer between the bins and the scopes, grading
+        // controls (Lumetri) across the bottom.
+        "Color" => vsplit(
+            FixedA(190.0),
+            timeline(),
+            vsplit(
+                Ratio(0.58),
+                hsplit(
+                    Ratio(0.24),
+                    tabs(&[Project, Markers, History], 0),
+                    hsplit(Ratio(0.6), tabs(&[Program], 0), tabs(&[LumetriScopes, ReferenceMonitor], 0)),
+                ),
+                hsplit(Ratio(0.62), tabs(&[LumetriColor, Effects, EffectControls], 0), tabs(&[Info, Metadata], 0)),
+            ),
+        ),
+        // Audio: a tall timeline for the audio tracks, the mixer and meters above it.
+        "Audio" => vsplit(
+            Ratio(0.4),
+            hsplit(
+                Ratio(0.26),
+                tabs(&[Project, EssentialSound, Effects, Markers], 0),
+                hsplit(Ratio(0.46), tabs(&[Program, Source], 0), tabs(&[AudioTrackMixer, AudioClipMixer, TextToSpeech], 0)),
+            ),
+            timeline_with_tools(),
+        ),
+        // Deliver: the render queue and job progress left of the viewer; Export mode draws the
+        // export settings (`FilmcraftApp::set_workspace`).
+        "Deliver" => hsplit(Ratio(0.3), tabs(&[Progress, Events, Project], 0), vsplit(Ratio(0.56), tabs(&[Program], 0), timeline())),
+        // Edit (default): media pool and effects left, source and timeline viewers, the inspector
+        // right, the timeline across the bottom.
+        _ => hsplit(
+            FixedB(340.0),
+            vsplit(
+                Ratio(0.55),
+                hsplit(
+                    Ratio(0.3),
+                    tabs(&[Project, MediaBrowser, Effects, Libraries, Markers, History], 0),
+                    hsplit(Ratio(0.5), tabs(&[Source, AudioClipMixer, Metadata], 0), tabs(&[Program], 0)),
+                ),
+                timeline_with_tools(),
+            ),
+            tabs(&[EffectControls, Properties, EssentialGraphics, Text], 0),
+        ),
+    }
 }
 
 /// Older Effects workspaces stored the same Effect Controls panel twice: selected beside
@@ -927,6 +1094,112 @@ mod tests {
             let d = workspace(w);
             assert!(d.contains(PanelKind::Timeline), "{w}");
             assert!(d.contains(PanelKind::Program), "{w}");
+        }
+    }
+
+    /// Every Evolve page: a valid tree (no empty tab groups, no split without panels, every
+    /// active index in range, no panel twice), the Timeline and Program monitor present, the
+    /// panels an editor expects on that page reachable, and a serde round trip.
+    #[test]
+    fn evolve_pages_are_valid_and_place_the_expected_panels() {
+        use PanelKind::*;
+        fn check(node: &DockNode, path: &str) {
+            match node {
+                DockNode::Tabs { panels, active } => {
+                    assert!(!panels.is_empty(), "{path}: empty tab group");
+                    assert!(*active < panels.len(), "{path}: active {active} of {}", panels.len());
+                }
+                DockNode::Split { a, b, size, .. } => {
+                    if let SplitSize::Ratio(r) = size {
+                        assert!(*r > 0.0 && *r < 1.0, "{path}: ratio {r}");
+                    }
+                    check(a, &format!("{path}a"));
+                    check(b, &format!("{path}b"));
+                }
+            }
+        }
+        let expected: [(&str, &[PanelKind]); 6] = [
+            ("Media", &[MediaBrowser, Project, Source, Metadata]),
+            ("Cut", &[Project, Program, Timeline]),
+            ("Edit", &[Project, Source, Program, Timeline, Effects, EffectControls]),
+            ("Color", &[Program, LumetriColor, LumetriScopes, Timeline]),
+            ("Audio", &[Timeline, AudioTrackMixer, AudioMeters]),
+            ("Deliver", &[Progress, Program]),
+        ];
+        assert_eq!(expected.map(|(n, _)| n), EVOLVE_PAGES);
+        for (page, panels) in expected {
+            let d = evolve_page(page);
+            check(&d, "");
+            let mut all = Vec::new();
+            d.panels(&mut all);
+            let mut unique = all.clone();
+            unique.sort_by_key(|p| p.id());
+            unique.dedup();
+            assert_eq!(unique.len(), all.len(), "{page}: a panel appears twice: {all:?}");
+            for p in [Timeline, Program].iter().chain(panels) {
+                assert!(d.contains(*p), "{page} has no {p:?}");
+            }
+            Layout { root: d.clone(), floating: vec![] }.validate().unwrap_or_else(|e| panic!("{page}: {e}"));
+            let json = serde_json::to_string(&d).unwrap();
+            assert_eq!(serde_json::from_str::<DockNode>(&json).unwrap(), d, "{page} round-trips");
+            assert_eq!(workspace_in(WorkspaceSet::Evolve, page), d);
+        }
+        // every page is reachable by its own name; an unknown name is the Edit page
+        assert_eq!(evolve_page("nonsense"), evolve_page("Edit"));
+        assert_ne!(evolve_page("Color"), workspace("Color"), "the Evolve Color page is not the Standard Color workspace");
+    }
+
+    /// The set decides the built-in names, their order, which saved workspaces are listed, and
+    /// which layout a name resolves to; the prefs file round-trips with the set, and files from
+    /// before the set read as the Standard set.
+    #[test]
+    fn workspace_sets_keep_their_own_workspaces() {
+        let mut prefs = WorkspacePrefs::default();
+        assert_eq!(prefs.set, WorkspaceSet::Standard);
+        assert_eq!(names(&prefs).len(), WORKSPACES.len());
+        prefs.saved.push(SavedWorkspace {
+            name: "Mine".into(),
+            layout: serde_json::to_value(workspace("Editing")).unwrap(),
+            floating: serde_json::Value::Null,
+            set: WorkspaceSet::Standard,
+        });
+        prefs.saved.push(SavedWorkspace {
+            name: "Grade".into(),
+            layout: serde_json::to_value(evolve_page("Color")).unwrap(),
+            floating: serde_json::Value::Null,
+            set: WorkspaceSet::Evolve,
+        });
+        let standard = names(&prefs);
+        assert!(standard.contains(&"Mine".to_string()) && !standard.contains(&"Grade".to_string()) && !standard.contains(&"Cut".to_string()));
+        assert_eq!(saved_layout(&prefs, "Color"), workspace("Color"));
+        prefs.set = WorkspaceSet::Evolve;
+        let evolve = names(&prefs);
+        assert_eq!(&evolve[..6], &EVOLVE_PAGES.map(str::to_string), "pages in page order: {evolve:?}");
+        assert_eq!(evolve.get(6).map(String::as_str), Some("Grade"));
+        assert!(!evolve.contains(&"Mine".to_string()) && !evolve.contains(&"Editing".to_string()));
+        assert_eq!(saved_layout(&prefs, "Color"), evolve_page("Color"));
+        assert_eq!(saved_layout(&prefs, "Grade"), evolve_page("Color"));
+        assert_eq!(find(&prefs, "audio").as_deref(), Some("Audio"));
+        assert_eq!(find(&prefs, "editing"), None);
+        assert!(is_builtin("Deliver") && is_builtin("Editing") && !is_builtin("Grade"));
+        assert_eq!(WorkspaceSet::Evolve.command_id("Edit"), "window.page.edit");
+        assert_eq!(WorkspaceSet::Evolve.command_id("Grade"), "window.workspace.grade");
+        assert_eq!(WorkspaceSet::Standard.command_id("Editing"), "window.workspace.editing");
+        // serde: the set is written and read back; a Standard-set workspace carries no `set`
+        let json = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(json["set"], "evolve");
+        assert!(json["saved"][0].get("set").is_none() && json["saved"][1]["set"] == "evolve");
+        assert_eq!(serde_json::from_value::<WorkspacePrefs>(json).unwrap(), prefs);
+        let legacy: WorkspacePrefs =
+            serde_json::from_str(r#"{"saved":[{"name":"Old","layout":{"Tabs":{"panels":["Project"],"active":0}}}],"current":"Old"}"#).unwrap();
+        assert_eq!((legacy.set, legacy.saved[0].set), (WorkspaceSet::Standard, WorkspaceSet::Standard));
+        // a set this build does not know (a file from another version) reads as the standard set
+        let older: WorkspacePrefs =
+            serde_json::from_str(r#"{"set":"evolve","saved":[{"name":"A","layout":{"Tabs":{"panels":["Project"],"active":0}},"set":"unknown"}]}"#).unwrap();
+        assert_eq!((older.set, older.saved[0].set), (WorkspaceSet::Evolve, WorkspaceSet::Standard));
+        for set in WorkspaceSet::ALL {
+            assert_eq!(WorkspaceSet::from_name(set.id()), Some(set));
+            assert_eq!(serde_json::from_value::<WorkspaceSet>(serde_json::to_value(set).unwrap()).unwrap(), set);
         }
     }
 

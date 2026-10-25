@@ -50,6 +50,7 @@ pub mod icons;
 pub mod links;
 pub mod menus;
 pub mod native_dialogs;
+pub mod pages;
 pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
@@ -861,23 +862,78 @@ impl FilmcraftApp {
         }
     }
 
+    /// Window ▸ Workspace Set: switch the family of built-in workspaces (saved to
+    /// `workspaces.json`) and show the current workspace's namesake in the new set, else the
+    /// set's default workspace. When the file can't be written the switch still completes in
+    /// memory (the layout always matches the set) and the error is returned.
+    pub fn set_workspace_set(&mut self, set: dock::WorkspaceSet) -> Result<(), String> {
+        if self.workspaces.set != set {
+            let mut next = self.workspaces.clone();
+            next.set = set;
+            // the set and the page shown in it are saved together, once (`set_workspace` then
+            // finds `current` already set and saves nothing)
+            let name = dock::find(&next, &self.ui.workspace).unwrap_or_else(|| set.default_workspace().to_string());
+            next.current = name.clone();
+            let saved = self.set_workspaces(next);
+            self.set_workspace(&name);
+            // leaving the Deliver page for a set without pages: back to the workspace, not Export mode
+            if !set.has_page_bar() && self.ui.mode == state::Mode::Export {
+                self.ui.mode = state::Mode::Edit;
+            }
+            if let Err(e) = saved {
+                self.ui.status = e.clone();
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Switch to workspace set `set` and show its workspace `name` (a page or a workspace asked for
+    /// by name). The workspace is shown even when `workspaces.json` can't be written; the save
+    /// error (of the set, else of the workspace) is returned after it.
+    pub fn select_in_workspace_set(&mut self, set: dock::WorkspaceSet, name: &str) -> Result<(), String> {
+        let saved = self.set_workspace_set(set);
+        let shown = self.show_workspace(name);
+        if let Err(e) = &shown {
+            self.ui.status = e.clone();
+        }
+        saved.and(shown)
+    }
+
+    /// Show workspace `name` of the set in use; a failed save of `workspaces.json` goes to the
+    /// status line.
     pub fn set_workspace(&mut self, name: &str) {
+        if let Err(e) = self.show_workspace(name) {
+            self.ui.status = e;
+        }
+    }
+
+    /// [`Self::set_workspace`], returning the save of `workspaces.json` (the workspace is shown
+    /// either way).
+    fn show_workspace(&mut self, name: &str) -> Result<(), String> {
         self.ui.workspace = name.to_string();
         let layout = dock::saved_docking(&self.workspaces, name);
         self.ui.dock = layout.root;
         self.ui.floating = layout.floating;
         self.pending_panel_raise = None;
         self.ui.keys.maximized = None;
-        if self.workspaces.current != name {
-            let mut next = self.workspaces.clone();
-            next.current = name.to_string();
-            if let Err(e) = self.set_workspaces(next) {
-                self.ui.status = e;
+        // The Evolve Deliver page is the export settings and queue: Export mode draws them
+        if self.workspaces.set.has_page_bar() {
+            if name == "Deliver" {
+                self.ui.mode = state::Mode::Export;
+            } else if self.ui.mode == state::Mode::Export {
+                self.ui.mode = state::Mode::Edit;
             }
         }
         if name == "Color" {
             self.ui.show_scopes = false;
         }
+        if self.workspaces.current != name {
+            let mut next = self.workspaces.clone();
+            next.current = name.to_string();
+            return self.set_workspaces(next);
+        }
+        Ok(())
     }
 
     pub fn show_panel(&mut self, p: PanelKind) {
@@ -1887,11 +1943,18 @@ impl FilmcraftApp {
             header::show(self, ui, header);
         }
         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
-        let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
+        // the page bar of the Evolve workspace set sits between the body and the status bar
+        let pages_h = if self.workspaces.set.has_page_bar() { pages::HEIGHT } else { 0.0 };
+        let body =
+            egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - pages_h - 2.0));
         match self.ui.mode {
             state::Mode::Edit => self.dock_area(ui, body),
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
+        }
+        if pages_h > 0.0 {
+            let bar = egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - status_h - pages_h), egui::pos2(full.max.x, full.max.y - status_h));
+            pages::show(self, ui, bar);
         }
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;

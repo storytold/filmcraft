@@ -451,3 +451,133 @@ pub const AVID: &[Entry] = &[
     ("view.zoomOut", "Cmd+[", ""),
     ("markers.add", "F5", ""),
 ];
+
+/// The Evolve keyboard (a page-based grading suite's default keys, macOS) mapped onto the equivalent FilmCraft commands:
+/// selection and trim modes, J/K/L and frame stepping, marks and markers, the three-point edits
+/// on the function keys, trimming on `,` `.` and the bracket keys, transitions, zoom, the pages
+/// on Shift+2…8 (which switch to the Evolve workspace set), project and bin commands. Keys
+/// the suite has that FilmCraft has no command for are listed in `docs/keyboard.md`.
+pub const EVOLVE: &[Entry] = &[
+    // Modes and tools
+    ("tool.selection", "A", ""),
+    ("trim.edit", "T", ""),
+    ("tool.razor", "B", ""),
+    ("sequence.snap", "N", ""),
+    ("sequence.linkedSelection", "Cmd+Shift+L", ""),
+    // Playback and navigation
+    ("playback.toggle", "Space", ""),
+    ("playback.reverse", "J", ""),
+    ("playback.stop", "K", ""),
+    ("playback.forward", "L", ""),
+    ("playback.playAround", "/", ""),
+    ("playback.inToOut", "Alt+/", ""),
+    ("playback.loop", "Cmd+/", ""),
+    ("playhead.stepBack", "Left", ""),
+    ("playhead.stepForward", "Right", ""),
+    // page-based suites jump one second here; FilmCraft steps five frames
+    ("playhead.stepBack5", "Shift+Left", ""),
+    ("playhead.stepForward5", "Shift+Right", ""),
+    ("playhead.prevEdit", "Up", ""),
+    ("playhead.nextEdit", "Down", ""),
+    ("playhead.start", "Home", ""),
+    ("playhead.end", "End", ""),
+    ("sequence.matchFrame", "F", ""),
+    ("window.toggleMonitorFocus", "Q", ""),
+    ("window.toggleFullScreen", "Cmd+F", ""),
+    ("view.programZoomFit", "Z", ""),
+    ("audio.toggleScrubbing", "Shift+S", ""),
+    // Marks and markers
+    ("markers.markIn", "I", ""),
+    ("markers.markOut", "O", ""),
+    ("markers.markClip", "X", ""),
+    ("markers.markSelection", "Shift+A", ""),
+    ("markers.clearIn", "Alt+I", ""),
+    ("markers.clearOut", "Alt+O", ""),
+    ("markers.clearInOut", "Alt+X", ""),
+    ("markers.goToIn", "Shift+I", ""),
+    ("markers.goToOut", "Shift+O", ""),
+    ("markers.add", "M", ""),
+    ("markers.clearCurrent", "Alt+M", ""),
+    ("markers.goPrev", "Shift+Up", ""),
+    ("markers.goNext", "Shift+Down", ""),
+    // Edits
+    ("source.insert", "F9", ""),
+    ("source.overwrite", "F10", ""),
+    ("clip.replaceFromSource", "F11", ""),
+    ("sequence.addEdit", "Cmd+B", ""),
+    ("sequence.joinThroughEdits", "Alt+\\", ""),
+    ("edit.undo", "Cmd+Z", ""),
+    ("edit.redo", "Cmd+Shift+Z", ""),
+    ("edit.cut", "Cmd+X", ""),
+    ("edit.copy", "Cmd+C", ""),
+    ("edit.paste", "Cmd+V", ""),
+    ("edit.pasteInsert", "Cmd+Shift+V", ""),
+    ("edit.pasteAttributes", "Alt+V", ""),
+    ("edit.selectAll", "Cmd+A", ""),
+    ("edit.deselectAll", "Cmd+Shift+A", ""),
+    ("edit.clear", "Backspace", ""),
+    ("edit.clear", "Delete", ""),
+    ("edit.rippleDelete", "Shift+Backspace", ""),
+    ("clip.enable", "D", ""),
+    ("clip.link", "Cmd+Alt+L", ""),
+    ("clip.speedDuration", "Cmd+R", ""),
+    ("clip.volumeUp", "Cmd+Alt+=", ""),
+    ("clip.volumeDown", "Cmd+Alt+-", ""),
+    // Transitions
+    ("trim.applyDefaultTransition", "Cmd+T", ""),
+    ("sequence.applyVideoTransition", "Alt+T", ""),
+    ("sequence.applyAudioTransition", "Shift+T", ""),
+    // Trimming
+    ("trim.selectNearest", "V", ""),
+    ("trim.toggleType", "U", ""),
+    ("trim.extendToPlayhead", "E", ""),
+    ("trim.previous", "Shift+[", ""),
+    ("trim.next", "Shift+]", ""),
+    ("trim.ripplePrevious", "Cmd+Shift+[", ""),
+    ("trim.rippleNext", "Cmd+Shift+]", ""),
+    ("trim.backward", ",", ""),
+    ("trim.forward", ".", ""),
+    ("trim.backwardMany", "Shift+,", ""),
+    ("trim.forwardMany", "Shift+.", ""),
+    ("timeline.nudgeUp", "Alt+Up", "Timeline"),
+    ("timeline.nudgeDown", "Alt+Down", "Timeline"),
+    // Zoom (also in the Timeline panel, where the Standard preset's track-height keys would shadow them)
+    ("view.zoomIn", "Cmd+=", ""),
+    ("view.zoomIn", "Cmd+=", "Timeline"),
+    ("view.zoomOut", "Cmd+-", ""),
+    ("view.zoomOut", "Cmd+-", "Timeline"),
+    ("view.zoomToSequence", "Shift+Z", ""),
+    // Multicam: the number keys cut to that angle
+    ("multicam.cutToCamera1", "1", ""),
+    ("multicam.cutToCamera2", "2", ""),
+    ("multicam.cutToCamera3", "3", ""),
+    ("multicam.cutToCamera4", "4", ""),
+    ("multicam.cutToCamera5", "5", ""),
+    ("multicam.cutToCamera6", "6", ""),
+    ("multicam.cutToCamera7", "7", ""),
+    ("multicam.cutToCamera8", "8", ""),
+    ("multicam.cutToCamera9", "9", ""),
+    // Pages (Shift+5 is a grading suite's compositing page, which FilmCraft has no counterpart for)
+    ("file.projectManager", "Shift+1", ""),
+    ("window.page.media", "Shift+2", ""),
+    ("window.page.cut", "Shift+3", ""),
+    ("window.page.edit", "Shift+4", ""),
+    ("window.page.color", "Shift+6", ""),
+    ("window.page.audio", "Shift+7", ""),
+    ("window.page.deliver", "Shift+8", ""),
+    ("file.projectSettings.general", "Shift+9", ""),
+    // Project and application
+    ("file.newSequence", "Cmd+N", ""),
+    ("file.newBin", "Cmd+Shift+N", ""),
+    ("file.import", "Cmd+I", ""),
+    ("file.save", "Cmd+S", ""),
+    ("file.saveAs", "Cmd+Shift+S", ""),
+    ("app.settings.general", "Cmd+,", ""),
+    ("app.keyboardShortcuts", "Cmd+Alt+K", ""),
+    ("app.quit", "Cmd+Q", ""),
+];
+
+/// Commands the Evolve preset leaves with no key: such suites use ⇧J / ⇧L for fast reverse /
+/// forward, which FilmCraft has no command for, so FilmCraft Default's slow shuttle keys there are
+/// dropped rather than kept with a different meaning (`docs/keyboard.md`).
+pub const EVOLVE_UNBOUND: &[&str] = &["playback.slowReverse", "playback.slowForward"];

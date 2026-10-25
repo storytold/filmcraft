@@ -108,6 +108,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // ids follow `ThemeKind`, labels follow Settings ▸ Appearance ▸ Color Theme (`darkest`, `dark`, `light`)
     uic!("view.theme.dark", "Darkest", ["View", "Appearance"], None),
     uic!("view.theme.medium", "Dark", ["View", "Appearance"], None),
+    uic!("view.theme.evolve", "Evolve Dark", ["View", "Appearance"], None),
     uic!("view.theme.light", "Light", ["View", "Appearance"], None),
     uic!("view.appearanceMode.next", "Next Appearance Mode", ["View", "Appearance"], None),
     uic!("window.workspace.editing", "Editing", ["Window", "Workspaces"], Some("Alt+Shift+1")),
@@ -121,6 +122,16 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
     uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
     uic!("window.workspace.edit", "Edit Workspaces…", ["Window", "Workspaces"], None),
+    // the Evolve pages (shown in Window ▸ Workspaces while that set is in use; the ids
+    // switch to the set from anywhere) and the set itself
+    uic!("window.page.media", "Media", ["Window", "Workspaces"], None),
+    uic!("window.page.cut", "Cut", ["Window", "Workspaces"], None),
+    uic!("window.page.edit", "Edit", ["Window", "Workspaces"], None),
+    uic!("window.page.color", "Color", ["Window", "Workspaces"], None),
+    uic!("window.page.audio", "Audio", ["Window", "Workspaces"], None),
+    uic!("window.page.deliver", "Deliver", ["Window", "Workspaces"], None),
+    uic!("window.workspaceSet.standard", "Standard Workspaces", ["Window", "Workspace Set"], None),
+    uic!("window.workspaceSet.evolve", "Evolve Pages", ["Window", "Workspace Set"], None),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.trackSelectForward", "Track Select Forward Tool", [], Some("A")),
     uic!("tool.trackSelectBackward", "Track Select Backward Tool", [], Some("Shift+A")),
@@ -718,6 +729,8 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.indonesian" => it.checked = Some(app.ui.language == crate::i18n::Language::Id),
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
+            "window.workspaceSet.standard" => it.checked = Some(app.workspaces.set == crate::dock::WorkspaceSet::Standard),
+            "window.workspaceSet.evolve" => it.checked = Some(app.workspaces.set == crate::dock::WorkspaceSet::Evolve),
             _ => {}
         }
         if it.id.starts_with("view.") {

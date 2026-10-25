@@ -1303,7 +1303,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         let _ = r;
                         ui.label(egui::RichText::new(p.settings.format.label()).color(t.text_dim).size(11.0));
                         if !p.builtin {
-                            ui.label(egui::RichText::new(tl!("User")).color(t.accent).size(10.5));
+                            ui.label(egui::RichText::new(tl!("User")).color(t.accent_text()).size(10.5));
                         }
                     });
                 }

@@ -3255,10 +3255,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                     painter.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(3.0, app.tokens.accent));
                     // Keep the edge label readable even when the clip/transition is only a few pixels wide.
                     let label = if edge == "in" { tl!("In") } else { tl!("Out") };
-                    let label_width = painter.layout_no_wrap(label.to_string(), Tokens::ui(11.0), app.tokens.accent).size().x + 8.0;
+                    let label_width = painter.layout_no_wrap(label.to_string(), Tokens::ui(11.0), app.tokens.accent_text()).size().x + 8.0;
                     let label_rect = Rect::from_center_size(pos2(p.x, row.rect.top() + 10.0), vec2(label_width, 15.0));
                     painter.rect_filled(label_rect, 2.0, app.tokens.panel_bg);
-                    painter.text(label_rect.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.0), app.tokens.accent);
+                    painter.text(label_rect.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.0), app.tokens.accent_text());
                     app.auto.add("timeline.transitionDropPreview", r.intersect(layout.content), edge);
                 }
             } else {

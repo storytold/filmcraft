@@ -670,7 +670,8 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
             } else if cresp.hovered() {
                 ui.painter().rect_stroke(cell, 3.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
             }
-            ui.painter().text(cell.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, &text, Tokens::ui(12.5), if recording { t.accent } else { t.hot_text });
+            let color = if recording { t.accent_text() } else { t.hot_text };
+            ui.painter().text(cell.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, &text, Tokens::ui(12.5), color);
             app.auto.add(&format!("shortcuts.cell.{id}"), cell, &text);
             if cresp.clicked() {
                 app.shortcut_editor.selected = Some(id.clone());

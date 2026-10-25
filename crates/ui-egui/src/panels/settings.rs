@@ -259,7 +259,7 @@ fn theme_card(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, key: &
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(crate::i18n::t(title)).size(12.5).strong());
                     if active {
-                        ui.label(RichText::new(tl!("Active")).size(11.0).color(t.accent));
+                        ui.label(RichText::new(tl!("Active")).size(11.0).color(t.accent_text()));
                     }
                 });
                 ui.add_space(4.0);
