@@ -945,6 +945,10 @@ pub struct GfxEdit {
     pub layer: usize,
     pub caret: usize,
     pub anchor: usize,
+    /// What an input method is composing at the caret, not yet in the text (Korean shows each
+    /// syllable here until the next one starts it, #2445).
+    #[serde(default)]
+    pub preedit: String,
 }
 
 fn shown() -> bool {
