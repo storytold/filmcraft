@@ -385,6 +385,10 @@ pub struct FilmcraftApp {
     pub command_inbox: Option<Receiver<String>>,
     /// A V key press (or a Ctrl+V paste) reached the app and its release hasn't yet.
     v_down: bool,
+    /// When (egui time) the native menu last ran a paste command: on macOS its key equivalent
+    /// takes the Cmd+V press, and the release that still reaches egui must not be turned into a
+    /// second press by the #611 workaround (#2361). Cleared by that release.
+    menu_paste_at: Option<f64>,
     /// OS files/image that were already on the clipboard when the last Copy/Cut ran. Paste ignores
     /// that same media so it pastes the copied clips instead (#697).
     pub(crate) stale_clipboard_media: Option<String>,
@@ -612,6 +616,7 @@ impl FilmcraftApp {
             transcript_cache: Default::default(),
             command_inbox: None,
             v_down: false,
+            menu_paste_at: None,
             stale_clipboard_media: None,
             gpu: None,
             watched_render: None,
@@ -1590,15 +1595,24 @@ impl FilmcraftApp {
             // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
             // passes its release: put the press back, so Paste can paste files or an image (#611).
             let mut swallowed = None;
+            // the V release ends it; the time limit is only a safety net for a release that never
+            // comes (focus lost while the key was down), long enough for a held key
+            let menu_pasted = self.menu_paste_at.is_some_and(|t| i.time - t < 10.0);
             for e in &i.events {
                 match e {
                     egui::Event::Key { key: egui::Key::V, pressed, modifiers: m, .. } => {
-                        if !pressed && !self.v_down {
+                        if !pressed && !self.v_down && !menu_pasted {
                             swallowed = Some(*m);
+                        }
+                        if !pressed {
+                            self.menu_paste_at = None;
                         }
                         self.v_down = *pressed;
                     }
                     egui::Event::Paste(_) if modifiers.command => self.v_down = true,
+                    // back from another window: a menu paste's release that never came won't
+                    // come now, and must not take the next Cmd+V's (#2361)
+                    egui::Event::WindowFocused(true) => self.menu_paste_at = None,
                     _ => {}
                 }
             }
@@ -1860,6 +1874,11 @@ impl FilmcraftApp {
                 // control-only mode ignores native menu commands, but Quit stays available (#1943)
                 if self.control_input_only && id != "app.quit" {
                     continue;
+                }
+                // only the key equivalent (Cmd held), not a click on the menu item, leaves a V
+                // release to swallow
+                if matches!(id.as_str(), "edit.paste" | "edit.pasteInsert" | "edit.pasteAttributes") && ctx.input(|i| i.modifiers.command) {
+                    self.menu_paste_at = Some(ctx.input(|i| i.time));
                 }
                 if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
                     self.ui.status = e;
