@@ -69,6 +69,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "file.saveAsTemplate" => (tl!("Save as Template"), "saveTemplate", tl!("Save")),
         "markers.addFlashCue" => (tl!("Flash Cue Marker"), "flashCue", tl!("OK")),
         "help.systemCompatibilityReport" => (tl!("System Compatibility Report"), "systemReport", tl!("Close")),
+        "help.graphicsRecovery" => (tl!("Graphics Recovery"), "graphicsRecovery", tl!("Close")),
         "file.newColorMatte" => (tl!("New Color Matte"), "colorMatte", tl!("OK")),
         "project.matteColor" => (tl!("Color Matte Color"), "matteColor", tl!("OK")),
         _ => return None,
@@ -131,6 +132,23 @@ pub fn open_path(app: &mut FilmcraftApp, ctx: &egui::Context, path: &str, reveal
     }
 }
 
+/// Help ▸ Graphics Recovery…: whether the graphics device was lost in this session and the window
+/// recreated (`recovered`, with `reason`, `at`, `mode`, `software`, `panicked`), the adapter the
+/// window draws through, and where the logs are.
+pub fn graphics_recovery_report(app: &FilmcraftApp) -> Value {
+    let gpu = app.gpu.as_ref().map(|g| g.render_state.adapter.get_info().name);
+    let mut r = json!({"recovered": false, "gpu": gpu, "logs": logs_dir(app).to_string_lossy()});
+    if let Some(info) = &app.graphics_recovery {
+        r["recovered"] = json!(true);
+        r["reason"] = json!(info.reason);
+        r["at"] = json!(info.at);
+        r["mode"] = json!(info.mode);
+        r["software"] = json!(info.software);
+        r["panicked"] = json!(info.panicked);
+    }
+    r
+}
+
 /// Where Reveal Log Files points: `<data dir>/Logs` (the temp folder without a data directory).
 pub fn logs_dir(app: &FilmcraftApp) -> std::path::PathBuf {
     app.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("Logs")).unwrap_or_else(|| filmcraft_engine::temp_dir().join("FilmCraft Logs"))
@@ -186,6 +204,11 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             let report = system_report(app);
             app.ui.extras.dialog = Some(ClipDialogDraft { command: id.into(), params: json!({}), info: report.clone(), error: String::new() });
             return Some(Ok(json!({"dialog": "systemReport", "report": report})));
+        }
+        "help.graphicsRecovery" => {
+            let report = graphics_recovery_report(app);
+            app.ui.extras.dialog = Some(ClipDialogDraft { command: id.into(), params: json!({}), info: report.clone(), error: String::new() });
+            return Some(Ok(json!({"dialog": "graphicsRecovery", "report": report})));
         }
         "edit.editOriginal" | "file.reveal" => {
             let reveal = id == "file.reveal";
@@ -461,7 +484,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let mut browse: Option<String> = None;
-    let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
+    let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport" | "help.graphicsRecovery");
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::new(("menu-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
@@ -775,6 +798,31 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             "markers.addFlashCue" => {
                 text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
                 text(ui, &mut elems, pre, p, "comment", tl!("Comments:"), 220.0);
+            }
+            "help.graphicsRecovery" => {
+                let r = &d.info;
+                if r["recovered"].as_bool().unwrap_or(false) {
+                    let reason = r["reason"].as_str().unwrap_or_default();
+                    let at = r["at"].as_str().unwrap_or_default();
+                    ui.label(RichText::new(tlf!("The graphics device was lost at {at} ({reason}).", at, reason)).strong());
+                    if r["software"].as_bool().unwrap_or(false) {
+                        ui.label(tl!("FilmCraft recreated its window and is rendering in software: the preview composites on the CPU, so playback is slower."));
+                    } else {
+                        ui.label(tl!("FilmCraft recreated its window on a new graphics device."));
+                    }
+                    ui.label(tl!("Save your work now. Programs that use the GPU heavily (video decoders, games, other editors) can take all of its memory; close them and restart FilmCraft to return to GPU rendering."));
+                    if r["panicked"].as_bool().unwrap_or(false) {
+                        ui.label(tl!("The loss surfaced as an error inside the window's paint path; the crash log has the details."));
+                    }
+                } else {
+                    ui.label(RichText::new(tl!("No graphics problem has occurred in this session.")).strong());
+                    ui.label(tl!("If the graphics device is lost (out of GPU memory, a driver reset), FilmCraft keeps running: it recreates its window, renders in software and shows a notice. Save your work when that happens, then restart FilmCraft to return to GPU rendering."));
+                }
+                if let Some(gpu) = r["gpu"].as_str() {
+                    ui.label(tlf!("Graphics device: {gpu}", gpu));
+                }
+                ui.separator();
+                ui.label(RichText::new(tlf!("Logs: {path}", path = r["logs"].as_str().unwrap_or_default())).small());
             }
             "help.systemCompatibilityReport" => {
                 let r = &d.info;

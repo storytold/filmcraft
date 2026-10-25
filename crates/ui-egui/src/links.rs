@@ -49,6 +49,7 @@ pub fn menu_hint(command: &str) -> Option<String> {
         match command {
             "help.revealLogFiles" => tl!("Saves this session's log and shows it in your file manager."),
             "help.systemCompatibilityReport" => tl!("Shows a report on this computer."),
+            "help.graphicsRecovery" => tl!("Explains what happens when the graphics device is lost, and what to do."),
             "app.about" => tl!("Shows the version, community links and credits in a FilmCraft window."),
             _ => return None,
         }

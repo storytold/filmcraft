@@ -450,6 +450,27 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             }
             ok(json!({"playing": app.playback.playing, "playhead": app.session.playhead().0}))
         }
+        "ui.injectGraphicsFault" => {
+            // Robustness tests: a lost or starved graphics device, without needing a GPU that
+            // actually runs out of memory. See `gpu_health` and docs/architecture.md § GPU loss.
+            let kind = s("kind").unwrap_or("deviceLost");
+            let reason = s("reason").unwrap_or("injected graphics fault");
+            match kind {
+                "deviceLost" => app.gpu_health.mark_lost(&format!("device lost (injected): {reason}")),
+                "outOfMemory" => app.gpu_health.mark_lost(&format!("out of GPU memory (injected): {reason}")),
+                "destroyDevice" => {
+                    // The real thing: a destroyed device refuses every allocation, so the next
+                    // non-empty paint would panic inside egui-wgpu. The poll fires the device-lost
+                    // callback now (wgpu defers it to the next maintenance).
+                    let Some(device) = app.gpu_device() else { return err("no graphics device (the window renders without wgpu)") };
+                    device.destroy();
+                    let _ = device.poll(eframe::wgpu::PollType::Poll);
+                }
+                "paintPanic" => app.inject_paint_panic = true,
+                k => return err(format!("unknown kind `{k}` (deviceLost, outOfMemory, destroyDevice, paintPanic)")),
+            }
+            ok(json!({"kind": kind, "lost": app.gpu_health.is_lost()}))
+        }
         "ui.screenshot" => {
             let crop = s("panel").and_then(PanelKind::from_name).and_then(|pk| app.auto.find(&format!("panel.{}", pk.id())).map(|e| e.rect));
             let crop = crop.or_else(|| s("id").and_then(|id| app.auto.find(id).map(|e| e.rect)));

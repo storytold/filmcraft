@@ -3601,5 +3601,20 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+	Graphics Recovery…	图形恢复…
+	Graphics Recovery	图形恢复
+	Graphics device lost; rendering in software. Save your work.	图形设备已丢失；正在使用软件渲染。请保存您的工作。
+	Graphics device lost; the window was recreated. Save your work.	图形设备已丢失；窗口已重新创建。请保存您的工作。
+	The graphics device stopped responding ({reason}). Other programs using the GPU may have taken its memory: close them and restart FilmCraft to return to GPU rendering. Help ▸ Graphics Recovery… has the details.	图形设备停止响应（{reason}）。其他使用 GPU 的程序可能占用了它的显存：请关闭它们并重新启动 FilmCraft 以恢复 GPU 渲染。详情见“帮助 ▸ 图形恢复…”。
+	Explains what happens when the graphics device is lost, and what to do.	说明图形设备丢失时会发生什么以及该怎么做。
+	The graphics device was lost at {at} ({reason}).	图形设备于 {at} 丢失（{reason}）。
+	FilmCraft recreated its window and is rendering in software: the preview composites on the CPU, so playback is slower.	FilmCraft 已重新创建窗口并使用软件渲染：预览在 CPU 上合成，因此播放会变慢。
+	FilmCraft recreated its window on a new graphics device.	FilmCraft 已在新的图形设备上重新创建窗口。
+	Save your work now. Programs that use the GPU heavily (video decoders, games, other editors) can take all of its memory; close them and restart FilmCraft to return to GPU rendering.	请立即保存您的工作。大量使用 GPU 的程序（视频解码器、游戏、其他编辑器）可能占满其显存；请关闭它们并重新启动 FilmCraft 以恢复 GPU 渲染。
+	The loss surfaced as an error inside the window's paint path; the crash log has the details.	此次丢失表现为窗口绘制路径中的错误；详情见崩溃日志。
+	No graphics problem has occurred in this session.	本次会话未发生图形问题。
+	If the graphics device is lost (out of GPU memory, a driver reset), FilmCraft keeps running: it recreates its window, renders in software and shows a notice. Save your work when that happens, then restart FilmCraft to return to GPU rendering.	如果图形设备丢失（显存耗尽、驱动程序重置），FilmCraft 会继续运行：重新创建窗口、改用软件渲染并显示通知。发生时请保存您的工作，然后重新启动 FilmCraft 以恢复 GPU 渲染。
+	Graphics device: {gpu}	图形设备：{gpu}
+	Logs: {path}	日志：{path}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。

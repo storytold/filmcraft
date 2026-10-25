@@ -3625,5 +3625,20 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	Graphics Recovery…	グラフィックの復旧…
+	Graphics Recovery	グラフィックの復旧
+	Graphics device lost; rendering in software. Save your work.	グラフィックデバイスが失われました。ソフトウェアでレンダリングしています。作業を保存してください。
+	Graphics device lost; the window was recreated. Save your work.	グラフィックデバイスが失われました。ウィンドウを再作成しました。作業を保存してください。
+	The graphics device stopped responding ({reason}). Other programs using the GPU may have taken its memory: close them and restart FilmCraft to return to GPU rendering. Help ▸ Graphics Recovery… has the details.	グラフィックデバイスが応答しなくなりました ({reason})。GPU を使う他のプログラムがそのメモリを占有した可能性があります。それらを閉じて FilmCraft を再起動すると GPU レンダリングに戻ります。詳細はヘルプ ▸ グラフィックの復旧… を参照してください。
+	Explains what happens when the graphics device is lost, and what to do.	グラフィックデバイスが失われたときに何が起こるか、どうすればよいかを説明します。
+	The graphics device was lost at {at} ({reason}).	{at} にグラフィックデバイスが失われました ({reason})。
+	FilmCraft recreated its window and is rendering in software: the preview composites on the CPU, so playback is slower.	FilmCraft はウィンドウを再作成し、ソフトウェアでレンダリングしています。プレビューは CPU で合成されるため、再生は遅くなります。
+	FilmCraft recreated its window on a new graphics device.	FilmCraft は新しいグラフィックデバイスでウィンドウを再作成しました。
+	Save your work now. Programs that use the GPU heavily (video decoders, games, other editors) can take all of its memory; close them and restart FilmCraft to return to GPU rendering.	今すぐ作業を保存してください。GPU を多く使うプログラム (ビデオデコーダー、ゲーム、他のエディター) がそのメモリをすべて占有することがあります。それらを閉じて FilmCraft を再起動すると GPU レンダリングに戻ります。
+	The loss surfaced as an error inside the window's paint path; the crash log has the details.	この損失はウィンドウの描画処理内のエラーとして現れました。詳細はクラッシュログにあります。
+	No graphics problem has occurred in this session.	このセッションではグラフィックの問題は発生していません。
+	If the graphics device is lost (out of GPU memory, a driver reset), FilmCraft keeps running: it recreates its window, renders in software and shows a notice. Save your work when that happens, then restart FilmCraft to return to GPU rendering.	グラフィックデバイスが失われた場合 (GPU メモリ不足、ドライバーのリセット) も FilmCraft は動作を続けます。ウィンドウを再作成し、ソフトウェアでレンダリングして通知を表示します。そのときは作業を保存し、FilmCraft を再起動して GPU レンダリングに戻してください。
+	Graphics device: {gpu}	グラフィックデバイス: {gpu}
+	Logs: {path}	ログ: {path}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。

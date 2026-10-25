@@ -43,6 +43,7 @@ mod dock_ui;
 const MAX_THUMB_TEXTURES: usize = 512;
 
 pub mod frames;
+pub mod gpu_health;
 pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
@@ -390,6 +391,19 @@ pub struct FilmcraftApp {
     pub(crate) stale_clipboard_media: Option<String>,
     /// GPU compositor (when running on wgpu): device state + compositor + the egui texture it feeds.
     pub gpu: Option<GpuState>,
+    /// Whether the window's graphics device still works (wgpu's callbacks, see [`gpu_health`]).
+    pub gpu_health: Arc<gpu_health::GpuHealth>,
+    /// The window's wgpu device, with or without the compositor (fault injection destroys it to
+    /// simulate a loss).
+    gpu_device: Option<eframe::wgpu::Device>,
+    /// The graphics device is lost: nothing is drawn and the host should recreate the window
+    /// ([`Self::take_graphics_restart`]); the reason.
+    graphics_restart: Option<String>,
+    /// The window was recreated after a device loss in this session (Help ▸ Graphics Recovery…).
+    pub graphics_recovery: Option<graphics_notice::GraphicsRecovery>,
+    /// Fault injection: the next paint runs a callback that panics the way egui-wgpu does without
+    /// a staging buffer (`ui.injectGraphicsFault {kind: "paintPanic"}`).
+    inject_paint_panic: bool,
     /// Preview render job being watched (job id, where to start playing when it completes).
     watched_render: Option<(u64, Tick)>,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
@@ -463,8 +477,16 @@ pub fn gpu_compositor_unsupported(adapter: &eframe::wgpu::Adapter) -> Option<Str
 }
 
 impl FilmcraftApp {
-    /// Enable the GPU compositor on the eframe wgpu device.
+    /// Guard the eframe wgpu device (its errors and loss are recorded instead of panicking, see
+    /// [`gpu_health`]) and enable the GPU compositor on it where the adapter suits it.
     pub fn set_wgpu(&mut self, rs: eframe::egui_wgpu::RenderState) {
+        // wgpu's default reaction to a validation error, an out-of-memory error or a lost device
+        // is to panic, which closed the app (or left the monitors blank) on GPUs the compositor
+        // doesn't suit, and when other processes starved the GPU. Record instead: a validation
+        // error moves the preview to the CPU compositor, a lost device has the window recreated.
+        let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        gpu_health::guard_device(&rs.device, Arc::clone(&self.gpu_health), Arc::clone(&broken));
+        self.gpu_device = Some(rs.device.clone());
         if let Some(why) = gpu_compositor_unsupported(&rs.adapter) {
             log::warn!("GPU compositor disabled ({why}); compositing on the CPU");
             // Say so instead of letting the preview quietly crawl: "GPU 0 %, CPU 100 %" with no
@@ -472,15 +494,6 @@ impl FilmcraftApp {
             self.ui.status = format!("{} ({why})", tl!("GPU acceleration is unavailable; preview renders on the CPU"));
             return;
         }
-        // wgpu's default reaction to a validation error or lost device is to panic, which closed
-        // the app (or left the monitors blank) on GPUs the compositor doesn't suit. Log instead and
-        // fall back to the CPU compositor.
-        let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = broken.clone();
-        rs.device.on_uncaptured_error(std::sync::Arc::new(move |e: eframe::wgpu::Error| {
-            log::error!("GPU error, switching to the CPU compositor: {e}");
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
-        }));
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue)));
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
@@ -541,6 +554,89 @@ impl FilmcraftApp {
         g.last_key = Some(key);
         g.size = size;
         Some((id, size))
+    }
+}
+
+/// Fault injection for the paint path: a callback that panics like egui-wgpu's `update_buffers`
+/// does when the device can't give it a staging buffer.
+struct PaintPanic;
+
+impl eframe::egui_wgpu::CallbackTrait for PaintPanic {
+    fn prepare(
+        &self,
+        _device: &eframe::wgpu::Device,
+        _queue: &eframe::wgpu::Queue,
+        _screen: &eframe::egui_wgpu::ScreenDescriptor,
+        _encoder: &mut eframe::wgpu::CommandEncoder,
+        _resources: &mut eframe::egui_wgpu::CallbackResources,
+    ) -> Vec<eframe::wgpu::CommandBuffer> {
+        crash::injected_fault("Failed to create staging buffer for index data (injected graphics fault)")
+    }
+
+    fn paint(&self, _info: egui::PaintCallbackInfo, _pass: &mut eframe::wgpu::RenderPass<'static>, _resources: &eframe::egui_wgpu::CallbackResources) {}
+}
+
+impl FilmcraftApp {
+    /// The graphics device is lost: stop drawing and have the host recreate the window.
+    fn begin_graphics_restart(&mut self, reason: &str) {
+        log::error!("graphics device lost ({reason}); the window will be recreated");
+        self.graphics_restart = Some(reason.to_string());
+        self.playback.playing = false;
+        // the compositor's resources belong to the dead device
+        self.gpu = None;
+    }
+
+    /// The graphics device is lost and the host should recreate the window (the same app, a new
+    /// eframe window, [`Self::detach_window`] in between): the reason, taken once.
+    pub fn take_graphics_restart(&mut self) -> Option<String> {
+        self.graphics_restart.take()
+    }
+
+    /// A window recreation is pending: the reason.
+    pub fn graphics_restart_pending(&self) -> Option<&str> {
+        self.graphics_restart.as_deref()
+    }
+
+    /// The window's wgpu device, when the app draws through one.
+    pub fn gpu_device(&self) -> Option<&eframe::wgpu::Device> {
+        self.gpu_device.as_ref()
+    }
+
+    /// Forget everything tied to the window that closed (its textures, device, fonts and theme),
+    /// so the app can be handed to a new eframe window with the same session, project, undo
+    /// history and control channel.
+    pub fn detach_window(&mut self) {
+        self.textures.clear();
+        self.tl.reset_media_caches();
+        self.gpu = None;
+        self.gpu_device = None;
+        self.gpu_health = Arc::default();
+        self.graphics_restart = None;
+        self.styled = false;
+        self.fonts_ready = false;
+        self.applied_prefs = None;
+        self.applied_ui_scale = None;
+        self.synthetic.clear();
+        self.synthetic_modifiers = egui::Modifiers::NONE;
+        self.monitor_asked.clear();
+        self.program_shown = None;
+        self.menu_sent.clear();
+        self.playback.playing = false;
+        for (_, _, _, reply, _) in self.pending_screenshots.drain(..) {
+            let _ = reply.send(json!({"ok": false, "error": "the window was recreated"}));
+        }
+        self.queued_screenshots.clear();
+        for w in self.input_waiters.drain(..) {
+            let _ = w.send(json!({"ok": true, "result": null}));
+        }
+    }
+
+    /// The host recreated the window after a device loss: show the notice (and its message in
+    /// the status bar) and keep the account for Help ▸ Graphics Recovery….
+    pub fn graphics_recovered(&mut self, notice: graphics_notice::GraphicsNotice, info: graphics_notice::GraphicsRecovery) {
+        self.ui.status = notice.title();
+        self.graphics_notice = Some(notice);
+        self.graphics_recovery = Some(info);
     }
 }
 
@@ -614,6 +710,11 @@ impl FilmcraftApp {
             v_down: false,
             stale_clipboard_media: None,
             gpu: None,
+            gpu_health: Arc::default(),
+            gpu_device: None,
+            graphics_restart: None,
+            graphics_recovery: None,
+            inject_paint_panic: false,
             watched_render: None,
             applied_prefs: None,
             applied_ui_scale: None,
@@ -626,6 +727,11 @@ impl FilmcraftApp {
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
         self
+    }
+
+    /// A control channel is attached (the desktop host starts its server once per process).
+    pub fn has_control(&self) -> bool {
+        self.control_rx.is_some()
     }
 
     /// Isolate an automation-owned app from native keyboard, pointer, drop and menu input.
@@ -2143,6 +2249,20 @@ impl eframe::App for FilmcraftApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.graphics_restart.is_none()
+            && let Some(reason) = self.gpu_health.lost()
+        {
+            self.begin_graphics_restart(&reason);
+        }
+        if self.graphics_restart.is_some() {
+            // The window is about to be recreated with the same session: nothing is drawn (an
+            // empty frame needs no staging buffer, the allocation egui-wgpu panics without), control
+            // requests wait for the new window, and the close must not ask to save (nothing is
+            // lost). The host reads `take_graphics_restart` once eframe returns.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.request_repaint();
+            return;
+        }
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
         if !self.styled {
@@ -2197,12 +2317,21 @@ impl eframe::App for FilmcraftApp {
     }
 
     fn on_exit(&mut self) {
+        // The window closes to be recreated after a device loss: the session goes on in the next
+        // one, so its auto-save worker keeps running.
+        if self.graphics_restart.is_some() {
+            return;
+        }
         // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
         // removes its journal, one with unsaved changes keeps it for the next launch.
         self.session.shutdown();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.graphics_restart.is_some() {
+            // see `logic`: an empty frame for a lost device
+            return;
+        }
         if !self.fonts_ready {
             ui.ctx().request_repaint();
             return;
@@ -2221,7 +2350,21 @@ impl eframe::App for FilmcraftApp {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
         }
+        if std::mem::take(&mut self.inject_paint_panic) {
+            // Runs inside egui-wgpu's `update_buffers`, where the real staging-buffer panic
+            // happens, so the host's guard is exercised on the real paint path.
+            ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(ui.max_rect(), PaintPanic));
+        }
         let ctx = ui.ctx().clone();
+        if self.graphics_restart.is_none()
+            && let Some(reason) = self.gpu_health.lost()
+        {
+            // Lost during this pass (a compositor upload failed): the shapes drawn so far would
+            // need staging buffers the device can't give. Run the pass again, empty.
+            self.begin_graphics_restart(&reason);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.request_discard("graphics device lost");
+        }
         self.last_ui_time = ctx.input(|i| i.time);
         if !self.synthetic.is_empty() {
             ctx.request_repaint();

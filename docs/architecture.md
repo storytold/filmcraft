@@ -364,6 +364,42 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   measures the whole path headlessly ([testing.md](testing.md) §5).
   Sequence audio goes through the mixer graph (`render::mixer`, §5.1); clip audio effects run on
   `audio-dsp` via `render::audio_fx`.
+- **GPU loss.** The window draws through eframe's wgpu device, and the Program monitor composites
+  on it (`FilmcraftApp::set_wgpu`). wgpu's default reaction to a lost device, an out-of-memory
+  error or a validation error is to panic, and egui-wgpu panics in its own paint path when the
+  device refuses it a staging buffer ("Failed to create staging buffer for index data"): in a
+  field report other GPU-heavy processes filled video memory and that panic closed the app three
+  times in three minutes, with the user's work. The app treats the device as something
+  that can go away at any time:
+  1. `crates/ui-egui/src/gpu_health.rs` installs wgpu's device-lost callback and uncaptured-error
+     handler on the window's device. Each is logged with its reason; a lost device, an
+     out-of-memory or an internal error flags the device lost (`GpuHealth`), a validation error only
+     moves the preview to the CPU compositor.
+  2. `FilmcraftApp::logic` reads the flag before it draws. On a lost device it draws nothing (an
+     empty frame uploads nothing, so egui-wgpu has nothing to panic on), stops playback, holds
+     control requests, and closes the window with the session intact (`on_exit` skips the journal
+     shutdown; `take_graphics_restart` tells the host why). A loss flagged during a pass discards
+     the pass (`request_discard`) and runs it again, empty.
+  3. The desktop host (`apps/filmcraft/src/main.rs`, `hosted.rs`) wraps the app so eframe parks it
+     in a slot whenever it drops it, and runs `eframe::run_native` under `catch_unwind`: the panic
+     that still escapes (the device dies between the check and the upload) unwinds through winit,
+     the panic hook writes it to the crash log and the app log, and the host takes the app back and
+     opens a new window with it, in software rendering where the platform has a software adapter
+     (`graphics::recovery_mode`; WARP on Windows, lavapipe on Linux, the default device again on
+     macOS). `GraphicsStart::device_lost` records the loss in `graphics-device-lost.json` beside
+     `graphics-start.json` without changing the saved start mode: the next launch tries the GPU
+     again. At most `MAX_WINDOW_RESTARTS` windows per process; after that the app closes with its
+     recovery journal.
+  4. The new window shows the notice "Graphics device lost; rendering in software. Save your work."
+     (`graphics_notice::GraphicsNotice::device_lost`, automation ids `graphics.notice`,
+     `graphics.notice.save`, `graphics.notice.close`) and Help ▸ Graphics Recovery… explains what
+     happened and what to do (`help.graphicsRecovery`, dialog `graphicsRecovery`).
+
+  Tests: `crates/ui-egui/tests/gpu_loss_ui.rs` destroys a real wgpu device under the app and
+  proves the empty frame survives where the old frame panicked; `apps/filmcraft/tests/graphics_loss.rs`
+  runs the desktop binary, injects the paint-path panic and a destroyed device over the control
+  channel (`ui.injectGraphicsFault`), and checks the window comes back with the notice, the app
+  keeps answering, and the logs say why.
 
 ### 5.1 Audio mixer
 

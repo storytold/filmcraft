@@ -3626,5 +3626,20 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	Graphics Recovery…	Recuperación de gráficos…
+	Graphics Recovery	Recuperación de gráficos
+	Graphics device lost; rendering in software. Save your work.	El dispositivo gráfico se perdió; se procesa por software. Guarde su trabajo.
+	Graphics device lost; the window was recreated. Save your work.	El dispositivo gráfico se perdió; se volvió a crear la ventana. Guarde su trabajo.
+	The graphics device stopped responding ({reason}). Other programs using the GPU may have taken its memory: close them and restart FilmCraft to return to GPU rendering. Help ▸ Graphics Recovery… has the details.	El dispositivo gráfico dejó de responder ({reason}). Otros programas que usan la GPU pueden haber ocupado su memoria: ciérrelos y reinicie FilmCraft para volver al procesamiento por GPU. Ayuda ▸ Recuperación de gráficos… tiene los detalles.
+	Explains what happens when the graphics device is lost, and what to do.	Explica qué ocurre cuando se pierde el dispositivo gráfico y qué hacer.
+	The graphics device was lost at {at} ({reason}).	El dispositivo gráfico se perdió a las {at} ({reason}).
+	FilmCraft recreated its window and is rendering in software: the preview composites on the CPU, so playback is slower.	FilmCraft volvió a crear su ventana y procesa por software: la vista previa se compone en la CPU, así que la reproducción es más lenta.
+	FilmCraft recreated its window on a new graphics device.	FilmCraft volvió a crear su ventana en un nuevo dispositivo gráfico.
+	Save your work now. Programs that use the GPU heavily (video decoders, games, other editors) can take all of its memory; close them and restart FilmCraft to return to GPU rendering.	Guarde su trabajo ahora. Los programas que usan mucho la GPU (descodificadores de vídeo, juegos, otros editores) pueden ocupar toda su memoria; ciérrelos y reinicie FilmCraft para volver al procesamiento por GPU.
+	The loss surfaced as an error inside the window's paint path; the crash log has the details.	La pérdida apareció como un error en la ruta de dibujo de la ventana; el registro de fallos tiene los detalles.
+	No graphics problem has occurred in this session.	No ha habido ningún problema gráfico en esta sesión.
+	If the graphics device is lost (out of GPU memory, a driver reset), FilmCraft keeps running: it recreates its window, renders in software and shows a notice. Save your work when that happens, then restart FilmCraft to return to GPU rendering.	Si se pierde el dispositivo gráfico (memoria de GPU agotada, reinicio del controlador), FilmCraft sigue funcionando: vuelve a crear su ventana, procesa por software y muestra un aviso. Guarde su trabajo cuando ocurra y reinicie FilmCraft para volver al procesamiento por GPU.
+	Graphics device: {gpu}	Dispositivo gráfico: {gpu}
+	Logs: {path}	Registros: {path}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
