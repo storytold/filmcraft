@@ -58,7 +58,32 @@ macro_rules! label_cmd {
 pub(crate) fn commands() -> Vec<CommandSpec> {
     vec![
         // ---------------- File ----------------
-        spec("file.newSequenceFromClip", "Sequence From Clip", &["File", "New"], None, r#"{"items":[id]?}"#, has_clip_items, sequence_from_clip),
+        spec(
+            "file.newSequenceFromClip",
+            "Sequence From Clip",
+            &["File", "New"],
+            None,
+            r#"{"items":[id]?,"desqueeze":bool=false}"#,
+            has_clip_items,
+            sequence_from_clip,
+        ),
+        spec(
+            "file.newDesqueezedSequenceFromClip",
+            "Desqueezed Sequence From Clip",
+            &["File", "New"],
+            None,
+            r#"{"items":[id]?}"#,
+            has_squeezed_clip_items,
+            |s, p| {
+                let mut p = p.clone();
+                if let Some(o) = p.as_object_mut() {
+                    o.insert("desqueeze".into(), json!(true));
+                } else {
+                    p = json!({"desqueeze": true});
+                }
+                sequence_from_clip(s, &p)
+            },
+        ),
         spec(
             "file.newBinFromSelection",
             "Bin From Selection",
@@ -282,7 +307,7 @@ pub(crate) fn apply_layout(v: &mut Vec<CommandSpec>) {
     edit_tail.extend(LABEL_IDS);
     edit_tail.extend(["edit.removeUnused", "edit.consolidateDuplicates"]);
     let layout: Vec<(At, Vec<&'static str>)> = vec![
-        (At::After("file.newSequence"), vec!["file.newSequenceFromClip"]),
+        (At::After("file.newSequence"), vec!["file.newSequenceFromClip", "file.newDesqueezedSequenceFromClip"]),
         (At::After("file.newBin"), vec!["file.newBinFromSelection", "file.newOfflineFile"]),
         (At::Before("file.save"), vec!["file.closeProject"]),
         (At::After("file.saveCopy"), vec!["file.saveAll"]),
@@ -348,6 +373,17 @@ fn is_clip_item(p: &Project, id: ItemId) -> bool {
 }
 fn has_clip_items(s: &Session) -> std::result::Result<(), String> {
     if s.state.project_selection.iter().any(|i| is_clip_item(&s.project, *i)) { Ok(()) } else { Err("select a clip in the Project panel".into()) }
+}
+/// The first selected clip has non-square pixels (an anamorphic squeeze): there is something to
+/// desqueeze.
+fn has_squeezed_clip_items(s: &Session) -> std::result::Result<(), String> {
+    has_clip_items(s)?;
+    let first = s.state.project_selection.iter().copied().find(|i| is_clip_item(&s.project, *i));
+    if first.and_then(|i| s.project.source_par(i)).is_some_and(|p| p != (1, 1)) {
+        Ok(())
+    } else {
+        Err("the clip has square pixels (set an anamorphic squeeze with Interpret Footage)".into())
+    }
 }
 fn can_paste_attributes(s: &Session) -> std::result::Result<(), String> {
     has_selection(s)?;
@@ -646,6 +682,9 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
         settings.height = *height;
         settings.frame_rate = *rate;
     }
+    // `desqueeze`: square pixels at the clip's display size instead of the clip's own pixels
+    let desqueezed = bool_p(p, "desqueeze").unwrap_or(false) && crate::commands::desqueeze_settings(&mut settings);
+    settings.validate().map_err(|e| bad("file.newSequenceFromClip", e))?;
     let channels = media_root(&s.project, first).and_then(|(_, m, _)| m.info.audio().map(|a| a.channels)).unwrap_or(2);
     let n_audio = media_root(&s.project, first)
         .map(|(_, m, _)| {
@@ -681,7 +720,7 @@ fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
     collapse_history(s, n0, "New Sequence From Clip");
     s.state.selection.clear();
     s.events.push(crate::Event::OpenSequence(seq));
-    Ok(json!({"sequence": seq.0, "clips": placed}))
+    Ok(json!({"sequence": seq.0, "clips": placed, "desqueezed": desqueezed}))
 }
 
 /// The media range an item edits in with: its In/Out marks, a subclip's range, or the whole item.

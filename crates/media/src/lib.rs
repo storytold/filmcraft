@@ -80,6 +80,35 @@ pub struct VideoStreamInfo {
     pub hdr: Option<filmcraft_color::HdrMetadata>,
 }
 
+/// The pixel aspect ratio of a lens squeeze a camera recorded as a number in its metadata
+/// (`1.33`, `1.5`, `2.0`): the squeeze to two decimals as an exact ratio (1.33 is
+/// 133:100, 1.5 is 3:2, 1.8 is 9:5), except a value within 0.0005 of 4/3, which is 4:3 (a
+/// camera that stores 1.3333 means the 4:3 pixel). `None` for no squeeze (1.0) and for a value
+/// that is not a usable ratio (beyond 8:1 either way, as `filmcraft_project::checked_par`
+/// refuses).
+pub fn lens_squeeze_par(factor: f64) -> Option<(u32, u32)> {
+    if !factor.is_finite() || factor <= 0.0 {
+        return None;
+    }
+    if (factor - 4.0 / 3.0).abs() < 0.0005 {
+        return Some((4, 3));
+    }
+    let hundredths = (factor * 100.0).round();
+    if !(1.0..=f64::from(u32::MAX)).contains(&hundredths) {
+        return None;
+    }
+    let n = hundredths as u32;
+    if !(13..=800).contains(&n) {
+        return None;
+    }
+    let (mut a, mut b) = (n, 100u32);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let g = a.max(1);
+    Some((n / g, 100 / g)).filter(|p| *p != (1, 1))
+}
+
 /// Most audio streams a source reports (the count comes from the file: never trusted).
 pub const MAX_AUDIO_STREAMS: usize = 64;
 

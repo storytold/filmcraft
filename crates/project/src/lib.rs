@@ -885,6 +885,112 @@ impl Default for SequenceSettings {
     }
 }
 
+/// A named sequence preset (File ▸ New ▸ Sequence ▸ Sequence Presets): a frame size, timebase and
+/// pixel aspect ratio under a group heading. Audio and colour settings stay at their defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SequencePreset {
+    pub group: &'static str,
+    pub name: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: FrameRate,
+    pub par: (u32, u32),
+}
+
+impl SequencePreset {
+    /// The settings this preset makes (the rest at their defaults).
+    pub fn settings(&self) -> SequenceSettings {
+        SequenceSettings {
+            width: self.width,
+            height: self.height,
+            frame_rate: self.frame_rate,
+            par: self.par,
+            drop_frame: self.frame_rate.supports_drop_frame(),
+            preset: self.name.to_string(),
+            ..SequenceSettings::default()
+        }
+    }
+    /// Whether `st` still has this preset's picture (size, timebase and pixel aspect ratio).
+    pub fn matches(&self, st: &SequenceSettings) -> bool {
+        (st.width, st.height, st.frame_rate, sane_par(st.par)) == (self.width, self.height, self.frame_rate, self.par)
+    }
+}
+
+const PRESET_RATES_HD: &[FrameRate] = &[
+    FrameRate::FPS_23_976,
+    FrameRate::FPS_24,
+    FrameRate::FPS_25,
+    FrameRate::FPS_29_97,
+    FrameRate::FPS_30,
+    FrameRate::FPS_50,
+    FrameRate::FPS_59_94,
+    FrameRate::FPS_60,
+];
+const PRESET_RATES_CINEMA: &[FrameRate] = &[FrameRate::FPS_23_976, FrameRate::FPS_24, FrameRate::FPS_25, FrameRate::FPS_29_97, FrameRate::FPS_30];
+const PRESET_RATES_HIGH_SPEED: &[FrameRate] = &[FrameRate::FPS_119_88, FrameRate::FPS_120];
+const PRESET_RATES_ANAMORPHIC: &[FrameRate] = &[
+    FrameRate::FPS_23_976,
+    FrameRate::FPS_24,
+    FrameRate::FPS_25,
+    FrameRate::FPS_29_97,
+    FrameRate::FPS_30,
+    FrameRate::FPS_48,
+    FrameRate::FPS_50,
+    FrameRate::FPS_59_94,
+    FrameRate::FPS_60,
+];
+
+/// Group, name prefix, size, pixel aspect ratio and the rates a preset family comes in. The name
+/// of each preset is `"{prefix} {rate}"`.
+const PRESET_FAMILIES: &[(&str, &str, (u32, u32), (u32, u32), &[FrameRate])] = &[
+    ("HD", "HD 720p", (1280, 720), (1, 1), PRESET_RATES_HD),
+    ("HD", "HD 1080p", (1920, 1080), (1, 1), PRESET_RATES_HD),
+    ("UHD 4K", "UHD 2160p", (3840, 2160), (1, 1), PRESET_RATES_HD),
+    ("UHD 4K", "UHD 2160p", (3840, 2160), (1, 1), PRESET_RATES_HIGH_SPEED),
+    // the 4K high-speed mode of some 6K cameras (3984 x 2240 at 100 / 119.88 fps)
+    ("UHD 4K", "4K 3984x2240", (3984, 2240), (1, 1), &[FrameRate { num: 100, den: 1 }, FrameRate::FPS_119_88, FrameRate::FPS_120]),
+    ("DCI 4K", "DCI 4K 2160p", (4096, 2160), (1, 1), PRESET_RATES_HD),
+    ("DCI 4K", "DCI 4K 2160p", (4096, 2160), (1, 1), &[FrameRate::FPS_48]),
+    // 6K: a common 16:9 6K sensor (6048 x 3402), DCI 1.9:1 and full-frame 1.94:1
+    ("6K", "6K 16:9 6048x3402", (6048, 3402), (1, 1), PRESET_RATES_HD),
+    ("6K", "6K DCI 6144x3240", (6144, 3240), (1, 1), PRESET_RATES_CINEMA),
+    ("6K", "6K Full Frame 6144x3160", (6144, 3160), (1, 1), PRESET_RATES_CINEMA),
+    // a 1.33x anamorphic lens on the 16:9 sensor, edited squeezed: 4:3 pixels, shown 2.37:1
+    ("6K", "6K Anamorphic 1.33x 6048x3402", (6048, 3402), (4, 3), PRESET_RATES_HD),
+    // the same edited desqueezed, in square pixels: 6048 x 1.33 = 8043.84, to the nearest even
+    // width ([`desqueezed_size`]), 2.36:1
+    ("6K", "6K Anamorphic 1.33x desqueezed 8044x3402", (8044, 3402), (1, 1), PRESET_RATES_ANAMORPHIC),
+];
+
+/// Every named sequence preset, grouped (HD, UHD 4K, DCI 4K, 6K) and in order; names are unique.
+pub fn sequence_presets() -> Vec<SequencePreset> {
+    let mut out = Vec::new();
+    for (group, prefix, (width, height), par, rates) in PRESET_FAMILIES {
+        for &frame_rate in rates.iter() {
+            // leaked once per process: the names are as static as the table they come from
+            let name: &'static str = Box::leak(format!("{prefix} {}", frame_rate.label()).into_boxed_str());
+            out.push(SequencePreset { group, name, width: *width, height: *height, frame_rate, par: *par });
+        }
+    }
+    out
+}
+
+/// The preset called `name` (exact), if any.
+pub fn sequence_preset(name: &str) -> Option<SequencePreset> {
+    sequence_presets_cached().iter().copied().find(|p| p.name == name)
+}
+
+/// The preset whose picture `st` has, if any (New Sequence shows its name as the editing mode).
+pub fn sequence_preset_of(st: &SequenceSettings) -> Option<SequencePreset> {
+    sequence_presets_cached().iter().copied().find(|p| p.matches(st))
+}
+
+/// [`sequence_presets`], built once.
+pub fn sequence_presets_cached() -> &'static [SequencePreset] {
+    static PRESETS: std::sync::OnceLock<Vec<SequencePreset>> = std::sync::OnceLock::new();
+    PRESETS.get_or_init(sequence_presets)
+}
+
 /// Largest frame side, in pixels.
 pub const MAX_FRAME_SIDE: u32 = 32_768;
 /// Largest frame area, in pixels (16384 x 16384: 16K and 16384 x 8192 panoramas fit).
@@ -921,6 +1027,53 @@ pub fn checked_par(par: (u32, u32)) -> Option<(u32, u32)> {
     }
     let g = a.max(1);
     Some((n / g, d / g))
+}
+
+/// The pixel aspect ratios Interpret Footage, Sequence Settings and the sequence presets offer by
+/// name (`(label, ratio)`): square pixels, the standard-definition DV / D1 ratios, and the
+/// anamorphic squeezes. A "1.33x" lens squeeze comes two ways and both are kept apart: exactly
+/// 1.33 (133:100, what lens makers call 1.33x; 6048 pixels show 8043.84 wide) and 4:3 (1.3333,
+/// HDV and HD Anamorphic 1080, which older FilmCraft projects also used for 1.33x lenses; 6048
+/// pixels show 8064 wide). 1.5x gives 3:2, 2x gives 2:1. Every ratio is exact in lowest terms;
+/// the label shows it rounded.
+pub const STANDARD_PIXEL_ASPECTS: [(&str, (u32, u32)); 9] = [
+    ("Square Pixels (1.0)", (1, 1)),
+    ("D1/DV NTSC (0.9091)", (10, 11)),
+    ("D1/DV NTSC Widescreen 16:9 (1.2121)", (40, 33)),
+    ("D1/DV PAL (1.0940)", (59, 54)),
+    ("D1/DV PAL Widescreen 16:9 (1.4587)", (118, 81)),
+    ("Anamorphic 1.33x, exact (1.33)", (133, 100)),
+    ("4:3 / HD Anamorphic 1080 (1.3333)", (4, 3)),
+    ("Anamorphic 1.5x / DVCPRO HD (1.5)", (3, 2)),
+    ("Anamorphic 2x (2.0)", (2, 1)),
+];
+
+pub use filmcraft_media::lens_squeeze_par;
+
+/// The size a picture of `size` storage pixels with `par` pixels is edited at in a square-pixel
+/// sequence: the height stays, the width becomes `width x par` rounded to the nearest even
+/// number of pixels (halves up). Even, because 4:2:0 and 4:2:2 encoders need even widths. A 6048
+/// x 3402 picture with an exact 1.33x squeeze (133:100, 8043.84 wide) is 8044 x 3402; with 4:3
+/// pixels it is 8064 x 3402. Square pixels keep their size; a ratio that makes no sense counts as
+/// square ([`sane_par`]); the width is at least 2 and at most `u32::MAX` rounded down to even.
+pub fn desqueezed_size(size: (u32, u32), par: (u32, u32)) -> (u32, u32) {
+    let (n, d) = sane_par(par);
+    if (n, d) == (1, 1) {
+        return size;
+    }
+    // round(w * n / d / 2) * 2, in integers: (w * n + d) / (2 * d) * 2
+    let halves = (u64::from(size.0) * u64::from(n) + u64::from(d)) / (2 * u64::from(d));
+    let w = halves.saturating_mul(2).clamp(2, u64::from(u32::MAX - 1));
+    (u32::try_from(w).unwrap_or(u32::MAX - 1), size.1)
+}
+
+/// The name of a pixel aspect ratio: its [`STANDARD_PIXEL_ASPECTS`] label, else "Custom (ratio)".
+pub fn pixel_aspect_label(par: (u32, u32)) -> String {
+    let par = sane_par(par);
+    match STANDARD_PIXEL_ASPECTS.iter().find(|(_, p)| *p == par) {
+        Some((label, _)) => (*label).to_string(),
+        None => format!("Custom ({:.4})", par_ratio(par)),
+    }
 }
 
 /// [`checked_par`], with square pixels for a ratio that is unset or makes no sense.
@@ -2236,12 +2389,116 @@ mod tests {
             assert_eq!(par_ratio(bad), 1.0, "{bad:?}");
         }
         assert!((par_ratio((4, 3)) - 4.0 / 3.0).abs() < 1e-12);
+        // the named ratios are exact, in lowest terms and labelled by name; the rest by value
+        for (label, par) in STANDARD_PIXEL_ASPECTS {
+            assert_eq!(checked_par(par), Some(par), "{label}");
+            assert_eq!(pixel_aspect_label(par), label);
+        }
+        assert_eq!(pixel_aspect_label((8, 6)), "4:3 / HD Anamorphic 1080 (1.3333)");
+        assert_eq!(pixel_aspect_label((266, 200)), "Anamorphic 1.33x, exact (1.33)");
+        assert_eq!(pixel_aspect_label((16, 9)), "Custom (1.7778)");
+        assert_eq!(pixel_aspect_label((0, 0)), "Square Pixels (1.0)");
         // 1440 x 1080 with 4:3 pixels is 1920 x 1080 square pixels, and itself in a 4:3 frame
         assert_eq!(conformed_size((1440, 1080), (4, 3), (1, 1)), (1920.0, 1080.0));
         assert_eq!(conformed_size((1440, 1080), (4, 3), (8, 6)), (1440.0, 1080.0));
         assert_eq!(conformed_size((1920, 1080), (1, 1), (4, 3)), (1440.0, 1080.0));
         assert_eq!(conformed_size((u32::MAX, u32::MAX), (8, 1), (1, 8)), (u32::MAX as f64 * 64.0, u32::MAX as f64));
         assert_eq!(conformed_size((1440, 1080), (0, 0), (u32::MAX, 1)), (1440.0, 1080.0));
+    }
+
+    #[test]
+    fn the_exact_and_the_four_thirds_squeeze_are_both_kept() {
+        // 1.33x exactly and 4:3 are different ratios with different names
+        assert_eq!(checked_par((133, 100)), Some((133, 100)));
+        assert_ne!(pixel_aspect_label((133, 100)), pixel_aspect_label((4, 3)));
+        assert!((par_ratio((133, 100)) - 1.33).abs() < 1e-12);
+        assert_eq!(conformed_size((6048, 3402), (133, 100), (1, 1)).0, 6048.0 * 1.33);
+        assert_eq!(conformed_size((6048, 3402), (4, 3), (1, 1)), (8064.0, 3402.0));
+        // recorded lens squeezes
+        assert_eq!(lens_squeeze_par(1.33), Some((133, 100)));
+        assert_eq!(lens_squeeze_par(1.330_000_1), Some((133, 100)));
+        assert_eq!(lens_squeeze_par(4.0 / 3.0), Some((4, 3)));
+        assert_eq!(lens_squeeze_par(1.3333), Some((4, 3)));
+        assert_eq!(lens_squeeze_par(1.5), Some((3, 2)));
+        assert_eq!(lens_squeeze_par(1.8), Some((9, 5)));
+        assert_eq!(lens_squeeze_par(2.0), Some((2, 1)));
+        assert_eq!(lens_squeeze_par(1.25), Some((5, 4)));
+        for none in [1.0, 0.0, -1.33, f64::NAN, f64::INFINITY, 9.0, 0.001, 1e300] {
+            assert_eq!(lens_squeeze_par(none), None, "{none}");
+        }
+        // a project from before the exact ratio stored its 1.33x squeeze as 4:3 and reads back so
+        let st: SequenceSettings = serde_json::from_value(serde_json::json!({
+            "width": 6048, "height": 3402, "frame_rate": {"num": 24000, "den": 1001}, "par": [4, 3], "sample_rate": 48000,
+            "drop_frame": false, "preset": "6K Anamorphic 1.33x 6048x3402 23.976", "audio_master": "Stereo", "preview_codec": "ProRes 422",
+            "max_bit_depth": false, "max_render_quality": false, "working_space": "Rec. 709"
+        }))
+        .unwrap();
+        assert_eq!(st.par, (4, 3));
+        assert_eq!(pixel_aspect_label(st.par), "4:3 / HD Anamorphic 1080 (1.3333)");
+        assert_eq!(sequence_preset_of(&st).map(|p| p.name), Some("6K Anamorphic 1.33x 6048x3402 23.976"));
+    }
+
+    #[test]
+    fn desqueezed_sizes_round_to_the_nearest_even_width() {
+        // the rule: width x squeeze, to the nearest even number of pixels; the height stays
+        assert_eq!(desqueezed_size((6048, 3402), (133, 100)), (8044, 3402), "8043.84 -> 8044");
+        assert_eq!(desqueezed_size((6048, 3402), (4, 3)), (8064, 3402));
+        assert_eq!(desqueezed_size((3984, 2240), (133, 100)), (5298, 2240), "5298.72 -> 5298 (5299 is odd)");
+        assert_eq!(desqueezed_size((1440, 1080), (4, 3)), (1920, 1080));
+        assert_eq!(desqueezed_size((4096, 2160), (2, 1)), (8192, 2160));
+        assert_eq!(desqueezed_size((1001, 10), (3, 2)), (1502, 10), "1501.5 -> 1502");
+        assert_eq!(desqueezed_size((1003, 10), (3, 2)), (1504, 10), "1504.5 -> 1504");
+        assert_eq!(desqueezed_size((720, 480), (10, 11)), (654, 480), "654.55 -> 654");
+        // square or nonsensical ratios keep the size; huge sizes saturate, tiny ones stay positive
+        assert_eq!(desqueezed_size((6048, 3402), (1, 1)), (6048, 3402));
+        assert_eq!(desqueezed_size((6048, 3402), (0, 0)), (6048, 3402));
+        assert_eq!(desqueezed_size((u32::MAX, 1), (8, 1)), (u32::MAX - 1, 1));
+        assert_eq!(desqueezed_size((1, 1), (1, 8)), (2, 1));
+        assert_eq!(desqueezed_size((0, 0), (2, 1)), (2, 0));
+    }
+
+    #[test]
+    fn sequence_presets_are_unique_valid_and_looked_up_by_name() {
+        let presets = sequence_presets();
+        let mut names: Vec<&str> = presets.iter().map(|p| p.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), presets.len(), "preset names are unique");
+        for p in &presets {
+            let st = p.settings();
+            assert!(st.validate().is_ok(), "{}", p.name);
+            assert_eq!(st.preset, p.name);
+            assert!(p.matches(&st), "{}", p.name);
+            assert_eq!(sequence_preset(p.name), Some(*p), "{}", p.name);
+            assert_eq!(sequence_preset_of(&st), Some(*p), "{} is the first preset with its picture", p.name);
+        }
+        assert_eq!(sequence_preset("HD 1080p 23.976").map(|p| (p.width, p.height, p.frame_rate)), Some((1920, 1080, FrameRate::FPS_23_976)));
+        assert_eq!(sequence_preset_of(&SequenceSettings::default()).map(|p| p.name), Some("HD 1080p 23.976"), "the default settings are a preset");
+        let k6 = sequence_preset("6K 16:9 6048x3402 59.94").unwrap();
+        assert_eq!((k6.width, k6.height, k6.par, k6.group), (6048, 3402, (1, 1), "6K"));
+        assert!(k6.settings().drop_frame, "NTSC rates start on drop-frame timecode");
+        let ana = sequence_preset("6K Anamorphic 1.33x 6048x3402 23.976").unwrap();
+        assert_eq!(ana.par, (4, 3));
+        assert_eq!(conformed_size((ana.width, ana.height), ana.par, (1, 1)), (8064.0, 3402.0), "shown desqueezed, 2.37:1");
+        // the desqueezed anamorphic presets: the exact 1.33x squeeze of the 6K sensor in square
+        // pixels, at every rate the user edits at
+        for rate in ["23.976", "24", "25", "29.97", "30", "48", "50", "59.94", "60"] {
+            let p = sequence_preset(&format!("6K Anamorphic 1.33x desqueezed 8044x3402 {rate}")).unwrap();
+            assert_eq!(((p.width, p.height), p.par, p.group), (desqueezed_size((6048, 3402), (133, 100)), (1, 1), "6K"), "{rate}");
+        }
+        assert!(sequence_preset("6K Anamorphic 1.33x 6048x3402 59.94").is_some(), "the squeezed presets stay");
+        assert!(sequence_preset("6K DCI 6144x3240 24").is_some() && sequence_preset("6K Full Frame 6144x3160 25").is_some());
+        assert!(sequence_preset("UHD 2160p 119.88").is_some() && sequence_preset("4K 3984x2240 119.88").is_some());
+        assert!(sequence_preset("DCI 4K 2160p 48").is_some());
+        assert_eq!(sequence_preset("HD 1080p 23.98"), None, "names are exact");
+        assert_eq!(sequence_preset(""), None);
+        let groups: Vec<&str> = presets.iter().map(|p| p.group).fold(Vec::new(), |mut g, x| {
+            if g.last() != Some(&x) {
+                g.push(x);
+            }
+            g
+        });
+        assert_eq!(groups, ["HD", "UHD 4K", "DCI 4K", "6K"], "grouped, in order");
     }
 
     #[test]

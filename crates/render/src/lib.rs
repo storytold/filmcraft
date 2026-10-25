@@ -333,7 +333,7 @@ fn adjustment_region(seq: &Sequence, item: &TrackItem, project: &Project, mt: Ti
     if full {
         return None;
     }
-    Some(Image::filled(fw, fh, [1.0; 4]).transformed(w, h, &m))
+    Some(Image::filled(fw, fh, [1.0; 4]).placed(w, h, &m))
 }
 
 /// Rendered captions of the visible caption tracks at `t` for a `w`×`h` output.
@@ -529,7 +529,7 @@ pub(crate) fn item_layer_ex(
         }
     }
     mask::apply_opacity_masks(&mut layer, item, mt, px_scale);
-    let placed = if layer.w == w && layer.h == h && identity_placement(&m) { layer } else { layer.transformed(w, h, &m) };
+    let placed = if layer.w == w && layer.h == h && identity_placement(&m) { layer } else { layer.placed(w, h, &m) };
     let (op, bl) = opacity_blend(item, mt);
     Some(Layer::Full { image: placed, opacity: op, blend: bl, opaque: false })
 }

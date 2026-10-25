@@ -342,7 +342,7 @@ fn interpret(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// `[num, den]` as a pixel aspect ratio FilmCraft can use ([`filmcraft_project::checked_par`]).
-fn pixel_aspect_p(v: &Value) -> Option<(u32, u32)> {
+pub(crate) fn pixel_aspect_p(v: &Value) -> Option<(u32, u32)> {
     let [n, d] = v.as_array()?.as_slice() else { return None };
     let (n, d) = (u32::try_from(n.as_u64()?).ok()?, u32::try_from(d.as_u64()?).ok()?);
     filmcraft_project::checked_par((n, d))
@@ -373,6 +373,10 @@ fn color_info(s: &mut Session, p: &Value) -> Result<Value> {
         // mastering display / content light level and the peak tone mapping uses
         "hdrMetadata": m.info.video.as_ref().and_then(|v| v.hdr),
         "toneMapPeakNits": m.info.video.as_ref().and_then(|v| v.hdr.and_then(|h| h.peak_nits())),
+        // the Interpret Footage dialog's other section: the pixel aspect ratio in use and the override
+        "pixelAspect": m.pixel_aspect(),
+        "pixelAspectOverride": m.interpret.par.and_then(filmcraft_project::checked_par),
+        "pixelAspectLabel": filmcraft_project::pixel_aspect_label(m.pixel_aspect()),
     }))
 }
 

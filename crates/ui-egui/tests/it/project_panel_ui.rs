@@ -1244,3 +1244,32 @@ fn dragging_clips_onto_new_item_makes_a_matching_sequence() {
     assert_eq!(sequences(&mut d), n0 + 2);
     assert_eq!(clips(&mut d), 2, "the whole selection is placed");
 }
+
+/// New Desqueezed Sequence From Clip is offered for anamorphic media only: for a subclip (whose
+/// ratio follows its parent) file.newSequence would silently make a default square sequence.
+#[test]
+fn desqueezed_sequence_entry_is_only_on_anamorphic_media() {
+    const ENTRY: &str = "New Desqueezed Sequence From Clip";
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    let media = items[0];
+    d.exec("clip.interpretFootage", json!({"items": [media], "pixelAspect": [2, 1]}));
+    d.exec("project.select", json!({"items": [media]}));
+    let sub = d.exec("clip.makeSubclip", json!({"name": "Anamorphic Sub", "item": media}))["item"].as_u64().unwrap();
+    assert_eq!(d.app().session.project.source_par(ItemId(sub)), Some((2, 1)), "the subclip reports its parent's ratio");
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    fn menu_has_entry(d: &mut Driver, item: u64) -> bool {
+        use egui_kittest::kittest::Queryable;
+        let row = format!("project.item.{item}");
+        d.wait_for(&row);
+        d.ok("ui.click", json!({"id": row, "button": "right"}));
+        d.frames(3);
+        let shown = d.harness.query_by_label(ENTRY).is_some();
+        d.key("Escape");
+        d.frames(2);
+        shown
+    }
+    assert!(menu_has_entry(&mut d, media), "anamorphic media offers the desqueezed sequence");
+    assert!(!menu_has_entry(&mut d, sub), "a subclip does not");
+}

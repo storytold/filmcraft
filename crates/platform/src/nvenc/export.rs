@@ -8,7 +8,7 @@
 //!   (as with VideoToolbox) and choosing the format is the opt-in. The export crate hands HDR pictures
 //!   over (`EncoderFrame::hdr`) only where [`super::hevc_hdr_available`] said this GPU has a 10-bit
 //!   encoder, otherwise an HDR sequence is tone-mapped to SDR as before. What NVENC cannot do
-//!   (interlaced, two-pass, non-square pixels, 10-bit on a GPU without it, sizes outside its
+//!   (interlaced, two-pass, 10-bit on a GPU without it, sizes outside its
 //!   limits...) is counted as declined and ends the export with an error that says why; when this
 //!   machine has no HEVC encoder at all, [`filmcraft_export::available`] says so and the factory
 //!   returns `None` (the export's own "encoder not available" error).
@@ -165,10 +165,8 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
     if s.bitrate_mode == BitrateMode::Crf {
         return Err("CRF (constant quality)".into());
     }
-    // the hardware path writes the aspect ratio of H.264 only
-    if hevc && s.pixel_aspect.is_some_and(|(n, d)| n != d) {
-        return Err("non-square pixels".into());
-    }
+    // non-square pixels reach both codecs as the display aspect ratio (`darWidth` / `darHeight`),
+    // and the export writes them into the container's `pasp` as well
     if s.field_order != FieldOrder::Progressive {
         return Err("interlaced output".into());
     }
@@ -356,6 +354,9 @@ mod tests {
         // the Hardware encoding toggle does not matter for HEVC (it has no software encoder)
         let off = ExportSettings { hardware_encoding: HardwareEncoding::Off, ..ok.clone() };
         assert!(config(Format::Hevc, 1280, 720, FrameRate::FPS_24, &off).is_ok());
+        // anamorphic (4:3 pixels, a 1.33x squeeze) is taken, as the display aspect ratio
+        let wide = ExportSettings { pixel_aspect: Some((4, 3)), ..ok.clone() };
+        assert_eq!(config(Format::Hevc, 1280, 720, FrameRate::FPS_24, &wide).unwrap().sar, Some((4, 3)));
         for (what, s) in [
             ("an unwritable colour signal", ExportSettings { signal: ColorSignal { primaries: 9, transfer: 1, matrix: 1 }, ..ok.clone() }),
             ("HDR with BT.709 primaries", ExportSettings { signal: ColorSignal { primaries: 1, transfer: 16, matrix: 9 }, ..ok.clone() }),
@@ -363,7 +364,6 @@ mod tests {
             ("CRF", ExportSettings { bitrate_mode: BitrateMode::Crf, ..ok.clone() }),
             ("analysis pass", ExportSettings { h264_pass: H264Pass::First, ..ok.clone() }),
             ("interlaced", ExportSettings { field_order: FieldOrder::UpperFirst, ..ok.clone() }),
-            ("non-square pixels", ExportSettings { pixel_aspect: Some((4, 3)), ..ok.clone() }),
             ("MXF", ExportSettings { format: Format::MxfOp1a, ..ok.clone() }),
         ] {
             assert!(config(Format::Hevc, 1280, 720, FrameRate::FPS_24, &s).is_err(), "{what}");

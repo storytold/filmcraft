@@ -117,6 +117,50 @@ impl Image {
         out
     }
 
+    /// [`Image::transformed`] for placing a whole picture in a frame (a clip's Motion): where the
+    /// placement only scales and moves (no rotation or skew) and doesn't minify, each destination
+    /// pixel takes the edge-clamped bilinear colour times the share of the pixel the picture's
+    /// rectangle covers. The edges are then exact: a picture scaled to exactly fill the frame
+    /// covers every pixel completely (a 1.33x desqueeze of 6048 pixels into 8044 leaves no
+    /// half-transparent first and last column, as transparent-outside filtering did), one ending
+    /// half way across a pixel covers half of it, and the inside is what [`Image::transformed`]
+    /// gives. Other placements use [`Image::transformed`].
+    pub fn placed(&self, w: usize, h: usize, m: &Affine) -> Image {
+        let axis_aligned = m.b == 0.0 && m.c == 0.0;
+        if !axis_aligned || m.a.abs() < 1.0 || m.d.abs() < 1.0 || self.w == 0 || self.h == 0 {
+            return self.transformed(w, h, m);
+        }
+        let Some(inv) = m.inverse() else { return Image::new(w, h) };
+        let b = m.bounds(&filmcraft_geom::Rect::new(0.0, 0.0, self.w as f64, self.h as f64));
+        let (bx0, by0, bx1, by1) = (b.x, b.y, b.right(), b.bottom());
+        if !(bx0.is_finite() && by0.is_finite() && bx1.is_finite() && by1.is_finite()) {
+            return Image::new(w, h);
+        }
+        let mut out = Image::new(w, h);
+        let y0 = (by0.floor().max(0.0) as usize).min(h);
+        let y1 = (by1.ceil().max(0.0) as usize).min(h);
+        let x0 = (bx0.floor().max(0.0) as usize).min(w);
+        let x1 = (bx1.ceil().max(0.0) as usize).min(w);
+        // the share of [i, i + 1] inside [lo, hi]
+        let overlap = |i: usize, lo: f64, hi: f64| ((i as f64 + 1.0).min(hi) - (i as f64).max(lo)).clamp(0.0, 1.0);
+        out.px.par_chunks_mut(w * 4).enumerate().skip(y0).take(y1.saturating_sub(y0)).for_each(|(y, row)| {
+            let cy = overlap(y, by0, by1);
+            let v = inv.d * (y as f64 + 0.5) + inv.f;
+            for x in x0..x1 {
+                let cov = (overlap(x, bx0, bx1) * cy) as f32;
+                if cov <= 0.0 {
+                    continue;
+                }
+                let u = inv.a * (x as f64 + 0.5) + inv.e;
+                let s = self.sample_bilinear_clamped(u as f32, v as f32);
+                for k in 0..4 {
+                    row[x * 4 + k] = s[k] * cov;
+                }
+            }
+        });
+        out
+    }
+
     /// Half-size box downsample.
     pub fn downsample2(&self) -> Image {
         let (w, h) = ((self.w / 2).max(1), (self.h / 2).max(1));
@@ -212,5 +256,49 @@ impl Image {
             }
         });
         out
+    }
+}
+
+#[cfg(test)]
+mod placed_tests {
+    use super::*;
+
+    /// A 603 x 34 picture desqueezed by 1.33 (801.99 wide) and scaled to fill an 802 x 34 frame:
+    /// every pixel is covered, the edges too, which transparent-outside filtering left at 0.88.
+    #[test]
+    fn a_picture_that_fills_the_frame_covers_its_edges() {
+        let src = Image::filled(603, 34, [0.5, 0.25, 0.125, 1.0]);
+        let k = 802.0 / (603.0 * 1.33);
+        let m = Affine::translate(0.0, (34.0 - 34.0 * k) / 2.0).then_apply(&Affine::scale(1.33 * k, k));
+        let out = src.placed(802, 34, &m);
+        for (x, y) in [(0, 0), (801, 0), (0, 33), (801, 33), (400, 17)] {
+            assert_eq!(out.get(x, y), [0.5, 0.25, 0.125, 1.0], "({x}, {y})");
+        }
+        let soft = src.transformed(802, 34, &m);
+        assert!(soft.get(0, 17)[3] < 0.95, "the old filtering faded the edge: {:?}", soft.get(0, 17));
+        // inside, both agree
+        assert_eq!(out.get(400, 17), soft.get(400, 17));
+    }
+
+    /// An edge half way across a pixel covers half of it; outside the picture stays transparent.
+    #[test]
+    fn partial_edges_cover_their_share_and_other_placements_fall_back() {
+        let src = Image::filled(10, 10, [1.0; 4]);
+        let out = src.placed(40, 40, &Affine::translate(5.5, 5.0).then_apply(&Affine::scale(2.0, 2.0)));
+        assert_eq!(out.get(5, 10)[3], 0.5);
+        assert_eq!(out.get(6, 10)[3], 1.0);
+        assert_eq!(out.get(25, 10)[3], 0.5);
+        assert_eq!(out.get(26, 10)[3], 0.0);
+        assert_eq!(out.get(4, 10)[3], 0.0);
+        // minifying, rotated and degenerate placements are `transformed`'s
+        let half = Affine::scale(0.5, 0.5);
+        assert_eq!(src.placed(40, 40, &half).px, src.transformed(40, 40, &half).px);
+        let rot = Affine::motion(filmcraft_geom::Vec2::new(20.0, 20.0), filmcraft_geom::Vec2::new(2.0, 2.0), 30.0, filmcraft_geom::Vec2::new(5.0, 5.0));
+        assert_eq!(src.placed(40, 40, &rot).px, src.transformed(40, 40, &rot).px);
+        let flat = Affine::scale(0.0, 2.0);
+        assert!(src.placed(40, 40, &flat).px.iter().all(|v| *v == 0.0));
+        assert!(Image::new(0, 0).placed(4, 4, &Affine::scale(2.0, 2.0)).px.iter().all(|v| *v == 0.0));
+        let huge = Affine::scale(f64::MAX, f64::MAX);
+        let _ = src.placed(4, 4, &huge);
     }
 }

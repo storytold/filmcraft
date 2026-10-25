@@ -76,7 +76,7 @@ fn hevc(path: String) -> ExportSettings {
 
 /// `key=value` lines of `ffprobe -show_entries` for the first video stream.
 fn probe(ffprobe: &Path, path: &str) -> std::collections::HashMap<String, String> {
-    let entries = "stream=codec_name,profile,codec_tag_string,pix_fmt,color_space,color_transfer,color_primaries,color_range,width,height,nb_frames,r_frame_rate,start_time,level";
+    let entries = "stream=codec_name,profile,codec_tag_string,pix_fmt,color_space,color_transfer,color_primaries,color_range,width,height,nb_frames,r_frame_rate,start_time,level,sample_aspect_ratio,display_aspect_ratio";
     let out = Command::new(ffprobe).args(["-v", "error", "-select_streams", "v:0", "-show_entries", entries, "-of", "default=nw=1", path]).output().unwrap();
     assert!(out.status.success(), "ffprobe: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
@@ -225,6 +225,28 @@ fn sizes_that_are_not_multiples_of_the_coding_block_are_cropped_back() {
     }
 }
 
+/// An anamorphic export (4:3 pixels: a 1.33x squeeze, or a sequence made from such a clip) through
+/// NVENC HEVC keeps its pixels and signals the ratio: ffprobe reads 4:3 and the 64:27 display aspect.
+#[test]
+fn anamorphic_hevc_export_signals_its_pixel_aspect() {
+    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    filmcraft_platform::register();
+    if !hevc_available() {
+        eprintln!("SKIPPED: no NVENC HEVC here");
+        return;
+    }
+    let (p, seq, m) = project(1280, 720, 12);
+    let path = tmp("anamorphic.mp4");
+    let s = ExportSettings { pixel_aspect: Some((4, 3)), ..hevc(path.clone()) };
+    let report = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert_eq!(report.frames, 12);
+    assert_eq!(decode(&path).len(), 12, "our decoder reads it");
+    let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("nvenc hevc anamorphic export") else { return };
+    let v = probe(&ffprobe, &path);
+    let get = |k: &str| v.get(k).map(String::as_str).unwrap_or("?");
+    assert_eq!((get("width"), get("height"), get("sample_aspect_ratio"), get("display_aspect_ratio")), ("1280", "720", "4:3", "64:27"), "{v:?}");
+}
+
 #[test]
 fn what_nvenc_cannot_do_is_an_error_that_says_why() {
     let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -240,7 +262,6 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
         ("HDR with BT.709 primaries", ExportSettings { signal: ColorSignal { primaries: 1, transfer: 16, matrix: 9 }, ..base.clone() }, (1280, 720)),
         ("an analysis pass", ExportSettings { h264_pass: H264Pass::First, ..base.clone() }, (1280, 720)),
         ("two-pass VBR", ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..base.clone() }, (1280, 720)),
-        ("non-square pixels", ExportSettings { pixel_aspect: Some((4, 3)), ..base.clone() }, (1280, 720)),
         ("MXF", ExportSettings { format: Format::MxfOp1a, ..base.clone() }, (1280, 720)),
         ("interlaced output", ExportSettings { field_order: FieldOrder::UpperFirst, ..base.clone() }, (1280, 720)),
         ("wider than an MP4 sample entry", base.clone(), (70_000, 64)),

@@ -690,15 +690,45 @@ pub fn roll_delta(s: &Session, left: ClipId, right: ClipId, delta: Tick) -> Resu
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
 /// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
 /// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
+/// Make `st` (the settings of a sequence for a clip with non-square pixels) a square-pixel
+/// sequence at the clip's desqueezed size ([`filmcraft_project::desqueezed_size`]: a 6048 x 3402
+/// clip with an exact 1.33x squeeze makes 8044 x 3402), named after the preset it then matches.
+/// False, and `st` unchanged, when its pixels are already square.
+pub(crate) fn desqueeze_settings(st: &mut SequenceSettings) -> bool {
+    let par = filmcraft_project::sane_par(st.par);
+    if par == (1, 1) {
+        return false;
+    }
+    let (w, h) = filmcraft_project::desqueezed_size((st.width, st.height), par);
+    st.width = w;
+    st.height = h;
+    st.par = (1, 1);
+    st.preset = filmcraft_project::sequence_preset_of(st).map_or_else(|| format!("{w}x{h} {}", st.frame_rate.label()), |p| p.name.to_string());
+    true
+}
+
+/// The `pixelAspect` parameter: `[num, den]`, a usable ratio in lowest terms
+/// ([`filmcraft_project::checked_par`]), or `None` when it is absent or null.
+pub(crate) fn pixel_aspect_param(p: &Value, cmd: &str) -> Result<Option<(u32, u32)>> {
+    match p.get("pixelAspect") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => crate::color::pixel_aspect_p(v)
+            .map(Some)
+            .ok_or_else(|| bad(cmd, format!("pixelAspect must be [num, den] between 1:{0} and {0}:1", filmcraft_project::MAX_PIXEL_ASPECT))),
+    }
+}
+
 pub(crate) fn default_seq_settings_for(media: &MediaClip) -> SequenceSettings {
     let info = &media.info;
     let mut st = SequenceSettings::default();
     if let Some(v) = &info.video {
+        // the rate and pixels the clip is interpreted with (Interpret Footage), not the file's
+        let rate = media.frame_rate();
         st.width = v.width;
         st.height = v.height;
-        st.frame_rate = v.frame_rate;
+        st.frame_rate = rate;
         st.par = media.pixel_aspect();
-        st.preset = format!("{}x{} {}", v.width, v.height, v.frame_rate.label());
+        st.preset = format!("{}x{} {}", v.width, v.height, rate.label());
     }
     if let Some(a) = info.audio() {
         st.sample_rate = a.sample_rate.max(8000);
@@ -1046,6 +1076,7 @@ pub(crate) fn place_item(
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
         ItemKind::AdjustmentLayer { width, height, .. } => Some((*width, *height)),
+        ItemKind::Subclip { .. } => s.project.resolve_media(item).and_then(|(_, m, _)| m.info.video.as_ref().map(|v| (v.width, v.height))),
         _ => None,
     }
     .unwrap_or((1920, 1080));
@@ -1055,6 +1086,7 @@ pub(crate) fn place_item(
     let media = s.media.clone();
     let scaling = s.prefs.media.default_media_scaling.clone();
     let is_media = matches!(pi.kind, ItemKind::Media(_) | ItemKind::Subclip { .. });
+    let is_nest = matches!(pi.kind, ItemKind::Sequence(_));
     s.edit(label, |p, st| {
         let seq = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
         let rate = seq.settings.frame_rate;
@@ -1070,7 +1102,11 @@ pub(crate) fn place_item(
             }
             // the picture's size at its display aspect, in sequence pixels
             let shown = filmcraft_project::conformed_size(src_size, src_par.unwrap_or(seq_par), seq_par);
-            if is_media && shown != (f64::from(frame.0), f64::from(frame.1)) {
+            let conformed = src_par.is_some_and(|p| filmcraft_project::sane_par(p) != filmcraft_project::sane_par(seq_par));
+            if (is_media || is_nest) && conformed && crate::settings::fill_subpixel_conform(&mut v, frame, shown) {
+                // a desqueezed picture that misses the frame by a fraction of a pixel (8043.84 in
+                // 8044) now fills it exactly: no hairline at the edges
+            } else if is_media && shown != (f64::from(frame.0), f64::from(frame.1)) {
                 crate::settings::apply_media_scaling(&mut v, &scaling, frame, shown);
             }
             placements.push((vdest, v));
@@ -1236,7 +1272,7 @@ fn build() -> Vec<CommandSpec> {
             "Sequence…",
             ["File", "New"],
             Some("Cmd+N"),
-            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?}"#,
+            r#"{"name":str,"preset":str?,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"pixelAspect":[num,den]?,"desqueeze":bool=false,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?}"#,
             always,
             |s, p| s.edit_group("New Sequence", |s| {
                 // `fromItems` is `fromItem` for a list: the first sets the sequence, the rest follow it back to back
@@ -1251,8 +1287,25 @@ fn build() -> Vec<CommandSpec> {
                     from_ids.insert(0, one);
                 }
                 let mut st = SequenceSettings::default();
-                if let Some(from) = from_ids.first().and_then(|i| s.project.item(*i)).and_then(|i| i.as_media()) {
+                // a subclip takes its parent media's settings
+                if let Some((_, from, _)) = from_ids.first().and_then(|i| s.project.resolve_media(*i)) {
                     st = default_seq_settings_for(from);
+                }
+                // `desqueeze`: a clip with non-square pixels makes a square-pixel sequence at its display size
+                let desqueezed = bool_p(p, "desqueeze").unwrap_or(false) && desqueeze_settings(&mut st);
+                // a named preset (`sequence.presets`) sets the picture; explicit parameters then override it
+                let preset = match p.get("preset") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let name = v.as_str().ok_or_else(|| bad("file.newSequence", "`preset` must be a preset name (see sequence.presets)"))?;
+                        Some(
+                            filmcraft_project::sequence_preset(name)
+                                .ok_or_else(|| bad("file.newSequence", format!("unknown sequence preset `{name}` (see sequence.presets)")))?,
+                        )
+                    }
+                };
+                if let Some(preset) = preset {
+                    st = SequenceSettings { sample_rate: st.sample_rate, ..preset.settings() };
                 }
                 if let Some(w) = checked_u32_p(p, "width", "file.newSequence")? {
                     st.width = w;
@@ -1262,6 +1315,9 @@ fn build() -> Vec<CommandSpec> {
                 }
                 if let Some(fps) = fps_p(p, "file.newSequence")? {
                     st.frame_rate = fps;
+                }
+                if let Some(par) = pixel_aspect_param(p, "file.newSequence")? {
+                    st.par = par;
                 }
                 if let Some(sr) = checked_u32_p(p, "sampleRate", "file.newSequence")? {
                     st.sample_rate = sr;
@@ -1277,7 +1333,12 @@ fn build() -> Vec<CommandSpec> {
                     ),
                     None => None,
                 };
-                st.preset = format!("{}x{} {}", st.width, st.height, st.frame_rate.label());
+                // named after the preset it still matches (a desqueezed clip's: the one its picture
+                // matches), else by its picture
+                st.preset = match preset.filter(|pr| pr.matches(&st)).or_else(|| filmcraft_project::sequence_preset_of(&st).filter(|_| desqueezed)) {
+                    Some(pr) => pr.name.to_string(),
+                    None => format!("{}x{} {}", st.width, st.height, st.frame_rate.label()),
+                };
                 st.validate().map_err(|e| bad("file.newSequence", e))?;
                 let nv = checked_u32_p(p, "video", "file.newSequence")?.unwrap_or(3);
                 let na = checked_u32_p(p, "audio", "file.newSequence")?.unwrap_or(3);
@@ -1302,19 +1363,33 @@ fn build() -> Vec<CommandSpec> {
                     Ok(id)
                 })?;
                 if let Some((&from, rest)) = from_ids.split_first() {
-                    let dur = s.project.item(from).map(|i| i.duration()).unwrap_or_default();
+                    // a subclip edits in with its own range of its parent's media
+                    let range = match s.project.item(from).map(|i| &i.kind) {
+                        Some(ItemKind::Subclip { range, .. }) => *range,
+                        _ => TimeRange::new(Tick::ZERO, s.project.item(from).map(|i| i.duration()).unwrap_or_default()),
+                    };
                     let tg = s.targeting();
-                    let ids =
-                        place_item(s, from, TimeRange::new(Tick::ZERO, dur), Tick::ZERO, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
+                    let ids = place_item(s, from, range, Tick::ZERO, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
                     if !rest.is_empty() {
                         let end = s.active_sequence().and_then(|q| ids.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max()).unwrap_or_default();
                         place_items(s, &json!({"time": end.0}), &json!(rest.iter().map(|i| i.0).collect::<Vec<_>>()))?;
                     }
                 }
                 s.events.push(crate::Event::OpenSequence(id));
-                Ok(json!({"sequence": id.0}))
+                Ok(json!({"sequence": id.0, "desqueezed": desqueezed}))
             })
         ),
+        query!("sequence.presets", "List Sequence Presets", "{}", |_, _| {
+            Ok(Value::Array(
+                filmcraft_project::sequence_presets_cached()
+                    .iter()
+                    .map(|p| {
+                        json!({"group": p.group, "name": p.name, "width": p.width, "height": p.height, "fps": p.frame_rate.as_f64(),
+                               "fpsNum": p.frame_rate.num, "fpsDen": p.frame_rate.den, "pixelAspect": p.par})
+                    })
+                    .collect(),
+            ))
+        }),
         cmd!("file.newBin", "Bin", ["File", "New"], Some("Cmd+B"), r#"{"name":str,"parent":binId?}"#, always, |s, p| {
             let n = str_p(p, "name").unwrap_or("New Bin").to_string();
             let parent = u64_p(p, "parent").map(filmcraft_project::BinId);
@@ -2291,7 +2366,7 @@ fn build() -> Vec<CommandSpec> {
             "Sequence Settings…",
             ["Sequence"],
             None,
-            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"scaleMotion":bool=false}"#,
+            r#"{"width":u32?,"height":u32?,"fps":f64?,"pixelAspect":[num,den]?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"scaleMotion":bool=false}"#,
             has_seq,
             |s, p| {
                 const CMD: &str = "sequence.settings";
@@ -2305,6 +2380,7 @@ fn build() -> Vec<CommandSpec> {
                     Some(w) => Some(filmcraft_color::WorkingSpace::parse(w).ok_or_else(|| bad(CMD, format!("unknown working space `{w}`")))?),
                     None => None,
                 };
+                let par = pixel_aspect_param(p, CMD)?;
                 let drop_frame = bool_p(p, "dropFrame");
                 let rate = fps.or_else(|| s.active_sequence().map(|q| q.settings.frame_rate)).unwrap_or(FrameRate::FPS_23_976);
                 if drop_frame == Some(true) && !rate.supports_drop_frame() {
@@ -2318,6 +2394,7 @@ fn build() -> Vec<CommandSpec> {
                     }
                     let q = pr.sequence_mut(id).ok_or(EngineError::NoSequence)?;
                     let old_size = (q.settings.width, q.settings.height);
+                    let old_picture = (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.par);
                     if let Some(w) = checked_u32_p(&p, "width", CMD)? {
                         q.settings.width = w;
                     }
@@ -2326,6 +2403,9 @@ fn build() -> Vec<CommandSpec> {
                     }
                     if let Some(f) = fps {
                         q.settings.frame_rate = f;
+                    }
+                    if let Some(par) = par {
+                        q.settings.par = par;
                     }
                     if let Some(sr) = checked_u32_p(&p, "sampleRate", CMD)? {
                         q.settings.sample_rate = sr;
@@ -2350,6 +2430,14 @@ fn build() -> Vec<CommandSpec> {
                         c.auto_tone_map = v;
                     }
                     q.settings.working_space = q.settings.color.working.label().into();
+                    // a changed picture renames the sequence's preset unless it still matches it
+                    let st = &q.settings;
+                    if (st.width, st.height, st.frame_rate, st.par) != old_picture
+                        && !filmcraft_project::sequence_preset(&st.preset).is_some_and(|pr| pr.matches(st))
+                    {
+                        q.settings.preset = filmcraft_project::sequence_preset_of(st)
+                            .map_or_else(|| format!("{}x{} {}", st.width, st.height, st.frame_rate.label()), |pr| pr.name.to_string());
+                    }
                     q.settings.validate().map_err(|e| bad(CMD, e))?;
                     let new_size = (q.settings.width, q.settings.height);
                     Ok(if scale_motion { edit::frame_size::scale_motion(q, old_size, new_size) } else { 0 })
