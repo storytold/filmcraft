@@ -13,7 +13,7 @@ use crate::menus::MenuItem;
 use crate::state::WorkspaceDialog;
 
 /// Command ids under `window.workspace.` that are not workspace names.
-const ACTIONS: [&str; 6] = ["reset", "saveChanges", "saveAs", "edit", "rename", "delete"];
+const ACTIONS: [&str; 7] = ["reset", "saveChanges", "saveAs", "edit", "importFromProjects", "rename", "delete"];
 
 /// `window.workspace.*`: switch (`window.workspace.<name>`), `reset`, `saveChanges`,
 /// `saveAs {name?}` (no name: open the dialog), `edit`, `rename {from, to}`, `delete {name}`.
@@ -40,6 +40,13 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         "edit" => {
             app.ui.workspace_dialog = Some(WorkspaceDialog::Edit { selected: None, name: String::new() });
             Ok(json!({"dialog": "editWorkspaces", "workspaces": dock::names(&app.workspaces)}))
+        }
+        // a toggle; `{"on": bool}` sets it
+        "importFromProjects" => {
+            let mut next = app.workspaces.clone();
+            next.import_from_projects = params.get("on").and_then(Value::as_bool).unwrap_or(!next.import_from_projects);
+            let on = next.import_from_projects;
+            app.set_workspaces(next).map(|()| json!({"importFromProjects": on}))
         }
         "rename" => rename(app, &arg("from").unwrap_or_default(), &arg("to").unwrap_or_default()),
         "delete" => delete(app, &arg("name").unwrap_or_default()),
@@ -146,8 +153,11 @@ pub fn default_menu(items: &mut Vec<MenuItem>, session: &filmcraft_engine::Sessi
 fn splice(items: &mut Vec<MenuItem>, prefs: &dock::WorkspacePrefs, session: &filmcraft_engine::Session, current: Option<&str>, tr: impl Fn(&str) -> String) {
     let is_ws = |it: &MenuItem| it.path.len() == 2 && it.path[0] == "Window" && it.path[1] == "Workspaces";
     let Some(at) = items.iter().position(is_ws) else { return };
-    let actions: Vec<MenuItem> =
+    let mut actions: Vec<MenuItem> =
         items.iter().filter(|it| is_ws(it) && it.id.strip_prefix("window.workspace.").is_some_and(|k| ACTIONS.contains(&k))).cloned().collect();
+    for it in actions.iter_mut().filter(|it| it.id == "window.workspace.importFromProjects") {
+        it.checked = Some(prefs.import_from_projects);
+    }
     items.retain(|it| !is_ws(it));
     let mut sub: Vec<MenuItem> = dock::names(prefs)
         .into_iter()
@@ -165,6 +175,45 @@ fn splice(items: &mut Vec<MenuItem>, prefs: &dock::WorkspacePrefs, session: &fil
         .collect();
     sub.extend(actions);
     items.splice(at..at, sub);
+}
+
+/// Every frame (#2258): keep the layout the next save stores in the project file up to date, and
+/// show the layout a just-opened project was saved with when Import Workspace from Projects is on.
+pub fn sync_project_layout(app: &mut FilmcraftApp) {
+    let opened = app.session.state.opened_workspace_layout.take();
+    if opened.is_some() {
+        // a project was just opened: the engine now carries its saved layout, so the live one is
+        // written again whether or not it changes (#2456 review: with import off, the file's old
+        // layout would otherwise be saved back)
+        app.project_layout_seen = None;
+    }
+    if let Some(raw) = opened
+        && app.workspaces.import_from_projects
+    {
+        match serde_json::from_value::<dock::SavedWorkspace>(raw).ok().and_then(|saved| Some((dock::read_saved(&saved)?, saved.name))) {
+            Some((layout, name)) => {
+                app.ui.dock = layout.root;
+                app.ui.floating = layout.floating;
+                app.pending_panel_raise = None;
+                app.ui.keys.maximized = None;
+                // the workspace keeps its name when this build knows it
+                if let Some(n) = dock::find(&app.workspaces, &name) {
+                    app.ui.workspace = n;
+                }
+            }
+            None => app.ui.status = tl!("The project's saved workspace can't be shown; the current layout stays.").into(),
+        }
+    }
+    let unchanged = app.session.state.workspace_layout.is_some()
+        && app.project_layout_seen.as_ref().is_some_and(|(n, l)| *n == app.ui.workspace && l.root == app.ui.dock && l.floating == app.ui.floating);
+    if unchanged {
+        return;
+    }
+    let layout = serde_json::to_value(&app.ui.dock).unwrap_or_default();
+    let floating = if app.ui.floating.is_empty() { Value::Null } else { serde_json::to_value(&app.ui.floating).unwrap_or_default() };
+    let saved = dock::SavedWorkspace { name: app.ui.workspace.clone(), layout, floating };
+    app.session.state.workspace_layout = serde_json::to_value(&saved).ok();
+    app.project_layout_seen = Some((app.ui.workspace.clone(), dock::Layout { root: app.ui.dock.clone(), floating: app.ui.floating.clone() }));
 }
 
 /// Save as New Workspace… and Edit Workspaces… dialogs.

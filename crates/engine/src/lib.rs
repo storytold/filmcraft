@@ -401,6 +401,13 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// The frontend's panel layout, stored in the project file's view when the project is saved
+    /// (#2258). The frontend keeps it up to date; the engine only carries it.
+    #[serde(skip)]
+    pub workspace_layout: Option<serde_json::Value>,
+    /// The layout the opened project file was saved with, for the frontend to take (#2258).
+    #[serde(skip)]
+    pub opened_workspace_layout: Option<serde_json::Value>,
     /// Captions copied from the Timeline, with their caption track's index (starts relative to the
     /// copied range). Copying clips empties it and copying captions empties `clipboard`, so Paste
     /// places whichever was copied last.
@@ -840,6 +847,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            workspace: self.state.workspace_layout.clone(),
         }
     }
 

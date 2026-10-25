@@ -175,7 +175,8 @@ fn save_switch_reset_rename_delete_and_restart() {
             "Reset to Saved Layout",
             "Save Changes to this Workspace",
             "Save as New Workspace…",
-            "Edit Workspaces…"
+            "Edit Workspaces…",
+            "Import Workspace from Projects"
         ],
         "one alphabetical list, then the layout commands"
     );
