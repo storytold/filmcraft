@@ -82,10 +82,35 @@ use native_dialogs::FileDialog;
 use state::UiState;
 use theme::{ThemeKind, Tokens};
 
+/// The outcome of [`AudioOut::poll_start`], which completes a scrub startup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScrubStart {
+    /// The asynchronous device open is still in flight; poll again.
+    Pending,
+    /// The stream is installed and playing.
+    Ready,
+    /// The open failed; the message says why (reported in the status bar). The next scrub move
+    /// may try again.
+    Failed(String),
+    /// Nothing is pending: the open was abandoned — [`AudioOut::stop`] ran while it was in
+    /// flight (playback took the device, Settings ▸ Audio Hardware changed it). Not an error
+    /// (the user caused it); the next scrub move opens the device again.
+    Cancelled,
+}
+
 /// Audio output provided by the platform layer (cpal on desktop, WebAudio on web).
 pub trait AudioOut {
     /// Start output; `fill(buffer, channels)` is called on the audio thread with interleaved f32.
     fn start(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String>;
+    fn start_scrub(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+        self.start(fill)
+    }
+    /// Complete a scrub startup. The default reports a synchronous start as
+    /// [`ScrubStart::Ready`]; an output that queues the device open on a worker reports
+    /// [`ScrubStart::Pending`] until it finishes.
+    fn poll_start(&mut self) -> ScrubStart {
+        ScrubStart::Ready
+    }
     fn stop(&mut self);
     /// Device sample rate.
     fn sample_rate(&self) -> u32;
@@ -93,6 +118,7 @@ pub trait AudioOut {
     fn channels(&self) -> usize {
         2
     }
+
     /// Frames played since `start` (the playback master clock), if the device reports it.
     fn played_frames(&self) -> Option<u64>;
     /// Called every frame while playing, before `played_frames`: restart a stream the device
@@ -1042,6 +1068,9 @@ impl FilmcraftApp {
                 a.stop();
                 a.configure(&p.audio_hardware, rate);
             }
+            // the scrub stream — open, or still starting — was stopped with the device: the
+            // next scrub move opens the new one instead of re-aiming the dead stream
+            self.scrub.device_stopped();
         }
         if (hardware_changed || pitch_changed) && self.playback.playing && self.playback.preroll.is_none() {
             self.playback.anchor_tick = self.session.playhead();
@@ -1440,6 +1469,7 @@ impl FilmcraftApp {
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
+            self.scrub.device_stopped();
             log::warn!("audio output lost its playback clock; playing without sound");
             self.ui.status = tl!("Audio output failed: playing without sound (check Settings > Audio Hardware)").into();
         }

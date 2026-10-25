@@ -7,14 +7,17 @@
 //! resumes where it stopped instead of playback going silent (#840).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+#[cfg(not(target_os = "macos"))]
+use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use filmcraft_engine::settings::AudioHardwarePrefs;
-use filmcraft_ui_egui::{AudioDevices, AudioOut};
+use filmcraft_ui_egui::{AudioDevices, AudioOut, ScrubStart};
 
 /// The playback mixer callback handed to [`AudioOut::start`].
 type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;
@@ -39,6 +42,93 @@ pub struct CpalOut {
     /// The fallback picked when the default device could not be opened, as (host, device) names,
     /// so later lookups (`devices`, `configure`, `start`) reuse it instead of probing every PCM.
     fallback: Mutex<Option<(String, String)>>,
+    pending_start: Option<PendingStart>,
+    /// Scrub-open workers still running, bounded by [`MAX_SCRUB_OPEN_WORKERS`]. A worker stuck
+    /// inside a driver open cannot be interrupted, so retries must not stack without bound.
+    live_workers: Arc<AtomicUsize>,
+}
+
+struct PendingStart {
+    result: Receiver<Result<OpenedOutput, String>>,
+    cancelled: Arc<AtomicBool>,
+    /// When the worker was queued; an open that has not completed by then is given up
+    /// ([`SCRUB_START_TIMEOUT`]).
+    queued: Instant,
+}
+
+struct OpenedOutput {
+    stream: cpal::Stream,
+    fill: Arc<Mutex<Fill>>,
+    played: Arc<AtomicU64>,
+    health: Arc<Health>,
+    rate: u32,
+    channels: u16,
+    note: Option<Note>,
+    fallback: Option<(String, String)>,
+}
+
+/// Gives the live-worker count back when a scrub-open worker ends, however it ends.
+#[cfg(not(target_os = "macos"))]
+struct LiveWorkers(Arc<AtomicUsize>);
+
+#[cfg(not(target_os = "macos"))]
+impl Drop for LiveWorkers {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The scrub-open worker's body: open the device off the UI thread and return the playing
+/// stream for it to adopt through [`AudioOut::poll_start`]. The device's format is validated
+/// before the stream is built — a device that changed format fails the open instead of playing
+/// the grain at the wrong speed — and a start cancelled while the device was being opened is
+/// never heard: `cancelled` is checked before the device is touched and again between building
+/// the stream and playing it.
+#[cfg(not(target_os = "macos"))]
+fn open_scrub_stream(
+    cancelled: &AtomicBool,
+    fill: Arc<Mutex<Fill>>,
+    hw: AudioHardwarePrefs,
+    document_rate: Option<u32>,
+    note: Option<Note>,
+    fallback: Option<(String, String)>,
+    rate: u32,
+    channels: u16,
+) -> Result<OpenedOutput, String> {
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("scrub audio startup was cancelled".to_string());
+    }
+    let mut output = CpalOut {
+        stream: None,
+        fill: None,
+        played: Arc::new(AtomicU64::new(0)),
+        health: Arc::new(Health::default()),
+        watchdog: Watchdog::default(),
+        epoch: Instant::now(),
+        rate,
+        channels,
+        hw,
+        document_rate,
+        note,
+        fallback: Mutex::new(fallback),
+        pending_start: None,
+        live_workers: Arc::new(AtomicUsize::new(0)),
+    };
+    let stream = output.build(fill.clone(), Some((rate, channels)))?;
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("scrub audio startup was cancelled".to_string());
+    }
+    stream.play().map_err(|e| e.to_string())?;
+    Ok(OpenedOutput {
+        stream,
+        fill,
+        played: output.played,
+        health: output.health,
+        rate: output.rate,
+        channels: output.channels,
+        note: output.note,
+        fallback: output.fallback.lock().unwrap_or_else(PoisonError::into_inner).clone(),
+    })
 }
 
 /// A hardware note for the status bar, translated when it is shown.
@@ -155,6 +245,8 @@ impl CpalOut {
             document_rate: None,
             note,
             fallback,
+            pending_start: None,
+            live_workers: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -204,6 +296,16 @@ impl CpalOut {
     /// Open the configured output device and play `fill` on it. `expect` is the (sample rate,
     /// channels) a restarted stream must keep: the mixer was set up for them.
     fn open(&mut self, fill: Arc<Mutex<Fill>>, expect: Option<(u32, u16)>) -> Result<(), String> {
+        let stream = self.build(fill, expect)?;
+        stream.play().map_err(|e| e.to_string())?;
+        self.stream = Some(stream);
+        Ok(())
+    }
+
+    /// [`Self::open`] up to the built stream, not yet played: the scrub worker checks
+    /// cancellation between the two, so a start abandoned while the device was being opened is
+    /// never heard.
+    fn build(&mut self, fill: Arc<Mutex<Fill>>, expect: Option<(u32, u16)>) -> Result<cpal::Stream, String> {
         let host = host(&self.hw.device_class);
         let DeviceChoice { device: dev, fallback } = output_device(&host, &self.hw.default_output, &self.fallback).ok_or("no output device")?;
         self.note = fallback;
@@ -250,9 +352,20 @@ impl CpalOut {
             other => return Err(format!("unsupported sample format {other:?}")),
         }
         .map_err(|e| e.to_string())?;
-        stream.play().map_err(|e| e.to_string())?;
-        self.stream = Some(stream);
-        Ok(())
+        Ok(stream)
+    }
+
+    /// Re-probe the configured device and record its format, so the next `start` mixes at the
+    /// rate the device actually runs. Without a device, the recorded format stays as it was.
+    fn refresh_device_format(&mut self) {
+        let host = host(&self.hw.device_class);
+        if let Some(choice) = output_device(&host, &self.hw.default_output, &self.fallback)
+            && let Ok(cfg) = self.config(&choice.device)
+        {
+            self.rate = cfg.sample_rate().0;
+            self.channels = cfg.channels();
+            self.note = choice.fallback;
+        }
     }
 
     /// Replace a dropped stream with a new one on the same mixer, clock and format.
@@ -292,6 +405,15 @@ impl Health {
 /// How long a stream that reported an error may go without consuming samples before it is
 /// restarted. Well under the UI's `AUDIO_STALL_S`, which gives up on the device clock.
 const STALL_RESTART: Duration = Duration::from_millis(300);
+/// How long a queued scrub open may take before it is given up. A worker stuck inside the
+/// device open (a hung driver) never reports back; without a deadline it would pin the scrub —
+/// and its 16 ms repaint poll — forever. The next scrub move opens the device again.
+const SCRUB_START_TIMEOUT: Duration = Duration::from_secs(5);
+/// At most this many scrub-open workers at once: the one the current scrub move asked for,
+/// plus one retry while an earlier (timed-out) open may still be inside the driver. A worker
+/// blocked in a driver open cannot be interrupted or reclaimed, so without a cap every retry
+/// would stack another thread against the stalled driver.
+const MAX_SCRUB_OPEN_WORKERS: usize = 2;
 /// At most this many restarts within [`RESTART_WINDOW`]; a device that keeps failing gives up.
 const MAX_RESTARTS: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(10);
@@ -394,8 +516,109 @@ impl AudioOut for CpalOut {
         Ok(self.rate)
     }
     fn stop(&mut self) {
+        if let Some(start) = self.pending_start.take() {
+            start.cancelled.store(true, Ordering::SeqCst);
+        }
         self.stream = None;
         self.fill = None;
+    }
+    fn start_scrub(&mut self, fill: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+        if self.live_workers.load(Ordering::SeqCst) >= MAX_SCRUB_OPEN_WORKERS {
+            // An earlier open is still stuck inside the driver (it timed out but its worker has
+            // not returned). Refuse rather than stack another attempt against it.
+            return Err("an earlier scrub audio open is still in progress".into());
+        }
+        self.stop();
+        #[cfg(target_os = "macos")]
+        {
+            let fill = Arc::new(Mutex::new(fill));
+            self.played = Arc::new(AtomicU64::new(0));
+            self.health = Arc::new(Health::default());
+            self.watchdog.reset(self.epoch.elapsed());
+            self.open(fill.clone(), None)?;
+            self.fill = Some(fill);
+            Ok(self.rate)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let (sender, result) = channel();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let worker_cancelled = cancelled.clone();
+            let hw = self.hw.clone();
+            let document_rate = self.document_rate;
+            let note = self.note.clone();
+            let fallback = self.fallback.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            let rate = self.rate;
+            let channels = self.channels;
+            let fill = Arc::new(Mutex::new(fill));
+            self.live_workers.fetch_add(1, Ordering::SeqCst);
+            let live = self.live_workers.clone();
+            let spawned = std::thread::Builder::new().name("filmcraft-scrub-audio".into()).spawn(move || {
+                let _live = LiveWorkers(live);
+                let result = catch_unwind(AssertUnwindSafe(|| open_scrub_stream(&worker_cancelled, fill, hw, document_rate, note, fallback, rate, channels)))
+                    .unwrap_or_else(|_| Err("scrub audio startup worker panicked".to_string()));
+                if !worker_cancelled.load(Ordering::SeqCst) {
+                    let _ = sender.send(result);
+                }
+            });
+            spawned.map_err(|e| {
+                // the worker never ran, so its slot is given back here rather than by the guard
+                self.live_workers.fetch_sub(1, Ordering::SeqCst);
+                format!("could not start scrub audio worker: {e}")
+            })?;
+            self.pending_start = Some(PendingStart { result, cancelled, queued: Instant::now() });
+            Ok(self.rate)
+        }
+    }
+    fn poll_start(&mut self) -> ScrubStart {
+        // On macOS `start_scrub` opens the device synchronously: nothing queued means the scrub
+        // stream is ready. Elsewhere a queued start that has vanished was cancelled by `stop` —
+        // playback taking the device, or Settings ▸ Audio Hardware changing it — and the next
+        // scrub move opens the device again.
+        let Some(start) = self.pending_start.as_ref() else {
+            return if cfg!(target_os = "macos") { ScrubStart::Ready } else { ScrubStart::Cancelled };
+        };
+        if start.queued.elapsed() >= SCRUB_START_TIMEOUT {
+            // A worker stuck in the device open never reports back. Give the start up — the
+            // cancelled flag keeps its late result out — so the scrub is not pinned forever.
+            if let Some(start) = self.pending_start.take() {
+                start.cancelled.store(true, Ordering::SeqCst);
+            }
+            return ScrubStart::Failed("opening the audio output device timed out".into());
+        }
+        let result = match start.result.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return ScrubStart::Pending,
+            Err(TryRecvError::Disconnected) => {
+                self.pending_start = None;
+                return ScrubStart::Failed("scrub audio startup worker stopped unexpectedly".to_string());
+            }
+        };
+        self.pending_start = None;
+        match result {
+            Ok(output) => {
+                self.stream = Some(output.stream);
+                self.fill = Some(output.fill);
+                self.played = output.played;
+                self.health = output.health;
+                self.rate = output.rate;
+                self.channels = output.channels;
+                self.note = output.note;
+                *self.fallback.lock().unwrap_or_else(PoisonError::into_inner) = output.fallback;
+                self.watchdog.reset(self.epoch.elapsed());
+                ScrubStart::Ready
+            }
+            Err(e) => {
+                // The open may have failed because the device changed format under the app (a
+                // format the scrub did not expect). Re-probe, so the next scrub move aims at
+                // the device's current format instead of failing the same way forever. The
+                // probe enumerates and opens the device synchronously on the UI thread, which
+                // is acceptable only because it runs after a failed open — rare, user-paced —
+                // and never on the startup path this scrub open moved off the UI thread.
+                self.refresh_device_format();
+                ScrubStart::Failed(e)
+            }
+        }
     }
     fn recover(&mut self) {
         if self.stream.is_none() || self.health.failed.load(Ordering::SeqCst) {
@@ -440,14 +663,7 @@ impl AudioOut for CpalOut {
         self.hw = hw.clone();
         self.document_rate = document_rate;
         // the rate playback mixes at must be known before `start`
-        let host = host(&self.hw.device_class);
-        if let Some(choice) = output_device(&host, &self.hw.default_output, &self.fallback)
-            && let Ok(cfg) = self.config(&choice.device)
-        {
-            self.rate = cfg.sample_rate().0;
-            self.channels = cfg.channels();
-            self.note = choice.fallback;
-        }
+        self.refresh_device_format();
     }
     fn note(&self) -> Option<String> {
         self.note.as_ref().map(Note::text)
@@ -499,6 +715,82 @@ mod tests {
         assert!(!health.failed.load(Ordering::SeqCst), "a stream error alone must not silence playback");
         let output = CpalOut::new();
         assert_eq!(output.played_frames(), None, "no stream, no clock");
+    }
+
+    #[test]
+    fn a_queued_scrub_start_that_never_completes_is_given_up_after_its_deadline() {
+        let mut output = CpalOut::new();
+        let (_worker, result) = std::sync::mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        output.pending_start = Some(PendingStart {
+            result,
+            cancelled: cancelled.clone(),
+            // queued before the deadline, as a worker stuck inside the device open would be
+            queued: Instant::now() - SCRUB_START_TIMEOUT,
+        });
+        match output.poll_start() {
+            ScrubStart::Failed(e) => assert!(e.contains("timed out"), "{e}"),
+            other => panic!("the hung start is given up on, not {other:?}"),
+        }
+        assert!(output.pending_start.is_none(), "the hung start is abandoned");
+        assert!(cancelled.load(Ordering::SeqCst), "the worker's late result stays out");
+        // With nothing pending, the poll reports the platform's semantics: on macOS the scrub
+        // open is synchronous, so nothing queued means ready; elsewhere it means a queued start
+        // was cancelled by `stop`.
+        let nothing_pending = if cfg!(target_os = "macos") { ScrubStart::Ready } else { ScrubStart::Cancelled };
+        assert_eq!(output.poll_start(), nothing_pending);
+    }
+
+    /// Workers stuck inside a driver open cannot be reclaimed, so the number of scrub-open
+    /// workers is bounded: once the budget is spent, a new start is refused instead of stacking
+    /// another thread against the stalled driver.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_scrub_open_is_refused_while_the_worker_budget_is_spent() {
+        let mut output = CpalOut::new();
+        output.live_workers.store(MAX_SCRUB_OPEN_WORKERS, Ordering::SeqCst);
+        let fill: Fill = Box::new(|_, _| {});
+        match output.start_scrub(fill) {
+            Err(e) => assert!(e.contains("still in progress"), "{e}"),
+            Ok(_) => panic!("the worker budget is honored"),
+        }
+    }
+
+    /// A start cancelled before its worker looks at the device returns without opening it.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_cancelled_scrub_open_never_touches_the_device() {
+        let cancelled = AtomicBool::new(true);
+        let fill: Arc<Mutex<Fill>> = Arc::new(Mutex::new(Box::new(|_, _| {})));
+        match open_scrub_stream(&cancelled, fill, AudioHardwarePrefs::default(), None, None, None, 48_000, 2) {
+            Ok(_) => panic!("a cancelled open returns instead of opening the device"),
+            Err(e) => assert!(e.contains("cancelled"), "{e}"),
+        }
+    }
+
+    /// A failed scrub open can mean the device changed format under the app. The recorded
+    /// format is refreshed, so the next scrub move aims at the device's current format instead
+    /// of failing the same way forever.
+    #[test]
+    fn a_failed_scrub_open_refreshes_the_stale_device_format() {
+        let mut output = CpalOut::new();
+        let (worker, result) = std::sync::mpsc::channel();
+        worker.send(Err("the output device now runs at 1 Hz with 2 channels".to_string())).unwrap();
+        output.pending_start = Some(PendingStart { result, cancelled: Arc::new(AtomicBool::new(false)), queued: Instant::now() });
+        output.rate = 1; // stale, as if the device's format had changed under the app
+        match output.poll_start() {
+            ScrubStart::Failed(e) => assert!(e.contains("1 Hz"), "{e}"),
+            other => panic!("the worker's failure is reported, not {other:?}"),
+        }
+        let probe = CpalOut::new();
+        let refreshed = match output.note.as_ref() {
+            // no device: nothing to refresh, the stale rate stays
+            Some(Note::NoDevice) => output.rate == 1,
+            // a device answered: the stale format was replaced by its current one
+            _ => (output.rate, output.channels) == (probe.rate, probe.channels),
+        };
+        assert!(refreshed, "the stale format is refreshed when a device answers");
+        drop(worker);
     }
 
     fn ms(n: u64) -> Duration {
