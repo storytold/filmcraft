@@ -1082,3 +1082,23 @@ fn toggle_animation_creates_a_parameter_missing_from_an_older_instance() {
     let rot = it.effect("motion").unwrap().param("rotation").unwrap();
     assert!(rot.is_animated(), "the stopwatch is on");
 }
+
+/// `project_generation` changes whenever another project replaces the session's (so work that
+/// finishes later, like a Save dialog's answer, can tell), and never with an ordinary edit.
+#[test]
+fn project_generation_changes_with_the_project_not_with_edits() {
+    let mut s = crate::Session::default();
+    let g = |s: &crate::Session| s.project_generation;
+    let mut last = g(&s);
+    s.execute("file.newBin", serde_json::json!({"name": "B"})).unwrap();
+    assert_eq!(g(&s), last, "an edit");
+    for (cmd, p) in [
+        ("file.openDemoProject", serde_json::json!({})),
+        ("file.newProject", serde_json::json!({"name": "N"})),
+        ("file.closeProject", serde_json::json!({"force": true})),
+    ] {
+        s.execute(cmd, p).unwrap();
+        assert!(g(&s) > last, "{cmd}");
+        last = g(&s);
+    }
+}

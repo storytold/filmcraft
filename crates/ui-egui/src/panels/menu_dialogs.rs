@@ -911,7 +911,14 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             if cmd == "sequence.transcribe" && q["language"] == "auto" {
                 q.as_object_mut().map(|m| m.remove("language"));
             }
+            // the app transcribes in the background: the Text panel shows the progress
+            if cmd == "sequence.transcribe" {
+                q["wait"] = json!(false);
+            }
             s.execute(cmd, q).map_err(|e| e.to_string())?;
+            if cmd == "sequence.transcribe" {
+                app.ui.status = tl!("Transcribing in the background (see the Text panel or Progress)").into();
+            }
             Ok(None)
         }
     }

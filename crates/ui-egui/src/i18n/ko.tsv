@@ -3604,3 +3604,7 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+# Transcribing in the background (Text panel).
+	Transcribing…	전사 중…
+	Stopping…	중지 중…
+	Transcribing in the background (see the Text panel or Progress)	백그라운드에서 전사 중(텍스트 패널 또는 진행률 참조)
