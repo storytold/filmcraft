@@ -234,7 +234,7 @@ impl FilmcraftApp {
                 audio.stop();
             }
             log::warn!("audio output lost its playback clock; playing without sound");
-            self.ui.status = tl!("Audio output failed: playing without sound (check Settings > Audio Hardware)").into();
+            self.ui.fail(tl!("Audio output failed: playing without sound (check Settings > Audio Hardware)"));
         }
         if let Some((f, sr)) = reading {
             if f != self.playback.audio_seen.0 {
@@ -250,7 +250,7 @@ impl FilmcraftApp {
                     a.stop();
                 }
                 log::warn!("audio output stalled (no samples consumed for {AUDIO_STALL_S} s); playing without sound");
-                self.ui.status = tl!("Audio output is not responding: playing without sound (check Settings > Audio Hardware)").into();
+                self.ui.fail(tl!("Audio output is not responding: playing without sound (check Settings > Audio Hardware)"));
             }
         }
         let elapsed = match reading {
