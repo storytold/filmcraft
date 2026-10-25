@@ -33,9 +33,22 @@ filmcraft-time = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
+# The Foundation classes the document open handler reads (NSAppleEventManager,
+# NSAppleEventDescriptor); the four-character Apple Event codes it needs are spelled out in
+# `open_documents.rs` rather than binding CoreServices for them.
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSObject",
+    "NSString",
+    "NSURL",
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSNotification",
+] }
 objc2-video-toolbox = "0.3.2"
 
 # Windows: Media Foundation decoder MFTs + Direct3D 11 / DXVA through the official `windows` bindings

@@ -3,11 +3,12 @@
 //! While files are dragged in from the OS file manager, winit on Windows delivers no cursor events
 //! (it only reports hovered and dropped files), so the UI cannot learn where a drop landed.
 //!
-//! This is the one non-media OS call in this crate: `crates/platform` is the only crate allowed
-//! `unsafe` (AGENTS.md §0.3, ADR 0001), so the single `GetCursorPos` call lives here rather than
-//! in the UI. It is read-only, has a safe `Option`-returning API, and every other platform (and a
-//! failed call) falls back to the last pointer position egui saw. Drop it once winit reports the
-//! pointer position during an OS drag-and-drop.
+//! This is one of the crate's two non-media OS calls (`open_documents.rs` is the other):
+//! `crates/platform` is the only crate allowed `unsafe` (AGENTS.md §0.3, ADR 0001), so the single
+//! `GetCursorPos` call lives here rather than in the UI. It is read-only, has a safe
+//! `Option`-returning API, and every other platform (and a failed call) falls back to the last
+//! pointer position egui saw. Drop it once winit reports the pointer position during an OS
+//! drag-and-drop.
 
 /// The cursor's position on the virtual screen in physical pixels, or `None` where the OS cannot
 /// say or this platform's windowing layer already reports it during a drag.
