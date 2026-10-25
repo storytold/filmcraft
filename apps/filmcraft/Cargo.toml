@@ -16,6 +16,10 @@ default = []
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 # Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).
 neural-voices = ["filmcraft-engine/neural-voices"]
+# Music generation: hosted providers and model downloads.
+music-download = ["filmcraft-engine/music-download"]
+# Music generation on this computer (Stable Audio 3 through ONNX Runtime, loaded at run time).
+music-native = ["filmcraft-engine/music-native"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }

@@ -11,6 +11,7 @@
 //! - `ui.set {tool?, workspace?, mode?, theme?, focused?, playbackRes?, timeline?:{pps,scroll}}`
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
 //! - `ui.set {tts: {voice, pitch, pace, text…}}`: patch the Text to Speech panel draft
+//! - `ui.set {music: {prompt, provider, duration, bpm…}}`: patch the Music panel draft
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy}`
 //! - `ui.drag {from:{id|x,y}, to:{id|x,y}, steps?, modifiers?}`: synthetic press-move-release
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`
@@ -157,6 +158,15 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 match serde_json::from_value(cur) {
                     Ok(d) => app.ui.tts = d,
                     Err(e) => return err(format!("bad `tts`: {e}")),
+                }
+            }
+            // Music panel draft (prompt, provider, duration…), merged into the current one
+            if let Some(patch) = p.get("music") {
+                let mut cur = serde_json::to_value(&app.ui.music).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(d) => app.ui.music = d,
+                    Err(e) => return err(format!("bad `music`: {e}")),
                 }
             }
             if let Some(t) = s("tool") {
