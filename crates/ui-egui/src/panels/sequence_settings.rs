@@ -513,7 +513,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             });
             ui.add_space(10.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(accent));
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(app.tokens.on_accent())).fill(accent));
                 elems.push(("sequenceSettings.ok".into(), o.rect, "OK".into()));
                 if o.clicked() {
                     apply = true;

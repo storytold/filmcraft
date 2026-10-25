@@ -370,7 +370,7 @@ fn modal_frame(t: &Tokens) -> Frame {
 
 fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
     let t = app.tokens;
-    let text = RichText::new(label).size(13.0).color(if primary { Color32::WHITE } else { t.text });
+    let text = RichText::new(label).size(13.0).color(if primary { t.on_accent() } else { t.text });
     let b = egui::Button::new(text)
         .min_size(vec2(82.0, 30.0))
         .corner_radius(CornerRadius::same(15))
@@ -957,6 +957,14 @@ mod tests {
     #[test]
     fn favorite_theme_star_and_shortcut_select_explicit_family() {
         use egui_kittest::{Harness, kittest::Queryable};
+        if let Some(path) = std::env::var_os("FILMCRAFT_THEME_SCREENSHOT") {
+            let mut dark_app = FilmcraftApp::new(filmcraft_engine::Session::default());
+            dark_app.session.execute("prefs.set", json!({"key": "appearance.colorTheme", "value": "dark"})).unwrap();
+            open(&mut dark_app, "appearance").unwrap();
+            let mut dark_h = Harness::builder().with_size(vec2(1400.0, 1000.0)).build_eframe(move |_| dark_app);
+            dark_h.run_steps(4);
+            dark_h.render().unwrap().save(path).unwrap();
+        }
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
         open(&mut app, "appearance").unwrap();
         let mut h = Harness::builder().with_size(vec2(1400.0, 1000.0)).build_eframe(move |_| app);
@@ -985,7 +993,7 @@ mod tests {
         h.get_by_label("Light").click();
         h.run_steps(3);
         assert_eq!(h.state().session.prefs.appearance.appearance_mode, "light");
-        assert_eq!(h.state().session.prefs.appearance.dark_theme, "darkest");
+        assert_eq!(h.state().session.prefs.appearance.dark_theme, "dark");
     }
 
     /// #457: on a desktop that reports 150%, UI Scale 100% makes a point one physical pixel. It is
@@ -1017,7 +1025,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
         app.apply_prefs(&ctx);
-        assert_eq!((app.session.prefs.appearance.appearance_mode.as_str(), app.tokens.kind), ("dark", ThemeKind::Dark), "new users keep Darkest");
+        assert_eq!((app.session.prefs.appearance.appearance_mode.as_str(), app.tokens.kind), ("dark", ThemeKind::Medium), "new users use standard Dark");
         app.session.execute("prefs.set", json!({"values": {"appearance.darkTheme": "dark"}})).unwrap();
         app.hooks.system_theme = Some(Box::new(|_| Some(egui::Theme::Dark)));
         for (mode, shown) in [("auto", ThemeKind::Medium), ("light", ThemeKind::Light), ("dark", ThemeKind::Medium), ("auto", ThemeKind::Medium)] {
@@ -1056,19 +1064,19 @@ mod tests {
         assert_eq!(ctx.theme(), egui::Theme::Light, "egui's style follows FilmCraft's choice");
         system.store(1, Ordering::Relaxed);
         app.apply_prefs(&ctx);
-        assert_eq!(app.tokens.kind, ThemeKind::Dark);
+        assert_eq!(app.tokens.kind, ThemeKind::Medium);
         assert_eq!(ctx.theme(), egui::Theme::Dark);
         system.store(2, Ordering::Relaxed);
         app.apply_prefs(&ctx);
         assert_eq!(app.tokens.kind, ThemeKind::Light);
         system.store(0, Ordering::Relaxed);
         app.apply_prefs(&ctx);
-        assert_eq!(app.tokens.kind, ThemeKind::Dark, "no answer: dark");
+        assert_eq!(app.tokens.kind, ThemeKind::Medium, "no answer: standard Dark");
         // a fixed mode ignores the system
         app.session.execute("prefs.set", json!({"key": "appearance.appearanceMode", "value": "dark"})).unwrap();
         system.store(2, Ordering::Relaxed);
         app.apply_prefs(&ctx);
-        assert_eq!(app.tokens.kind, ThemeKind::Dark);
+        assert_eq!(app.tokens.kind, ThemeKind::Medium);
     }
 
     #[test]

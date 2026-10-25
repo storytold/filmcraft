@@ -71,7 +71,7 @@ fn paint_badges(ui: &egui::Ui, b: &Badge, at: egui::Pos2, t: &Tokens) {
     if b.proxy {
         let pr = Rect::from_min_size(pos2(x, at.y - 7.0), vec2(16.0, 14.0));
         ui.painter().rect_filled(pr, 2.0, if b.proxy_on { t.accent } else { Color32::from_gray(70) });
-        ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
+        ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), if b.proxy_on { t.on_accent() } else { Color32::WHITE });
     }
 }
 
@@ -881,7 +881,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     if badge.proxy {
         let pr = Rect::from_min_size(pos2(th.max.x - 22.0, th.min.y + 4.0), vec2(18.0, 14.0));
         ui.painter().rect_filled(pr, 2.0, if badge.proxy_on { t.accent } else { Color32::from_gray(70) });
-        ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
+        ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), if badge.proxy_on { t.on_accent() } else { Color32::WHITE });
         app.auto.add(&format!("{pre}.item.{}.proxy", id.0), pr, "Proxy attached");
     }
     let f = font(app);
@@ -1052,7 +1052,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             {
                 let br = Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(26.0, 16.0));
                 ui.painter().rect_filled(br, 3.0, t.accent);
-                ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui(10.0), Color32::WHITE);
+                ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui(10.0), t.on_accent());
                 app.auto.add(&format!("{}.stack.{s}", v.prefix), br, &format!("Stack of {n}"));
             }
             item_interactions(app, ui, v, &resp, ItemId(c.item), &kind, actions, false, false);

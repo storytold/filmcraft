@@ -59,7 +59,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let resp = ui.interact(r, egui::Id::new(("imp-link", *id)), Sense::click()).on_hover_text(*url);
         app.auto.add(&format!("import.link.{}", id.trim_start_matches("help.")), r, label);
         let (bg, fg) = if primary {
-            (if resp.hovered() { t.accent_hover } else { t.accent }, Color32::WHITE)
+            (if resp.hovered() { t.accent_hover } else { t.accent }, t.on_accent())
         } else {
             (if resp.hovered() { t.hover } else { t.tl_header_bg }, t.text)
         };

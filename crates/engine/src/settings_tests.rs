@@ -625,16 +625,16 @@ fn drop_import_to_timeline_is_in_the_settings_registry() {
     assert_eq!(settings::field("timeline.dropImportToTimeline").map(|f| f.key), Some("timeline.dropImportToTimeline"));
 }
 
-/// New users keep the dark Darkest theme (following the system is opt-in); a file saved before
+/// New users start in standard Dark (following the system is opt-in); a file saved before
 /// appearance modes keeps showing its Color Theme as a fixed Dark or Light mode.
 #[test]
 fn appearance_defaults_and_legacy_theme_migrate() {
     let a = Preferences::default().appearance;
-    assert_eq!((a.appearance_mode.as_str(), a.dark_theme.as_str(), a.light_theme.as_str()), ("dark", "darkest", "light"));
-    assert_eq!(a.shown_theme(Some(true)), "darkest", "Dark mode ignores a light system");
+    assert_eq!((a.appearance_mode.as_str(), a.dark_theme.as_str(), a.light_theme.as_str()), ("dark", "dark", "light"));
+    assert_eq!(a.shown_theme(Some(true)), "dark", "Dark mode ignores a light system");
     let dir = tmp_dir("prefs-appearance-migrate");
     let path = dir.join("preferences.json");
-    for (theme, mode, dark, light) in [("darkest", "dark", "darkest", "light"), ("dark", "dark", "dark", "light"), ("light", "light", "darkest", "light")] {
+    for (theme, mode, dark, light) in [("darkest", "dark", "darkest", "light"), ("dark", "dark", "dark", "light"), ("light", "light", "dark", "light")] {
         std::fs::write(&path, json!({"version": 2, "appearance": {"colorTheme": theme}}).to_string()).unwrap();
         let a = Preferences::load(&path).appearance;
         assert_eq!((a.appearance_mode.as_str(), a.dark_theme.as_str(), a.light_theme.as_str()), (mode, dark, light), "{theme}");
