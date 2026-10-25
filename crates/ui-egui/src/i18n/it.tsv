@@ -3609,3 +3609,8 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+# Effect Controls: paste a copied effect's settings onto one effect (#1680).
+	Paste Settings	Incolla impostazioni
+	Copy Effect	Copia effetto
+	Paste Effects	Incolla effetti
+	Paste Effect Settings	Incolla impostazioni effetto

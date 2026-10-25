@@ -184,6 +184,40 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
+    // Copy and Paste in Effect Controls copy the selected effect and paste effects onto the clip
+    // it shows (#1680)
+    // there, and never the Timeline's clips, whatever is selected or copied
+    if app.ui.focused == PanelKind::EffectControls && params.as_object().is_none_or(|m| m.is_empty()) {
+        match id {
+            "edit.copy" => return invoke(app, ctx, "effects.copy", json!({})),
+            // Cut copies the selected effect, then removes it (a fixed effect stays: it can't go)
+            "edit.cut" => {
+                let r = invoke(app, ctx, "effects.copy", json!({}))?;
+                let sel = app.session.state.selected_effect.clone();
+                let target = sel.and_then(|e| {
+                    let q = app.session.active_sequence()?;
+                    let (_, it) = q.find_item(e.clip)?;
+                    let index = e.index(&it.effects)?;
+                    let fixed = it.effects.get(index)?.def().is_none_or(|d| d.intrinsic);
+                    (!fixed).then_some((e.clip, index))
+                });
+                if let Some((clip, index)) = target {
+                    return invoke(app, ctx, "effects.remove", json!({"clip": clip.0, "index": index}));
+                }
+                return Ok(r);
+            }
+            // onto the clip Effect Controls shows, not every selected clip
+            "edit.paste" | "edit.pasteInsert" => {
+                // the shown clip the copied effects can go on: a video one for video effects, the
+                // audio one of a linked pair for audio effects
+                let kind = app.session.state.effect_clipboard.as_ref().map(|c| c.kind);
+                let shown = crate::panels::effect_controls::shown_clip(app, kind);
+                let params = shown.map_or_else(|| json!({}), |c| json!({"clips": [c.0]}));
+                return invoke(app, ctx, "effects.paste", params);
+            }
+            _ => {}
+        }
+    }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));
@@ -713,6 +747,10 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
             _ => {}
+        }
+        // Paste in Effect Controls pastes copied effects (`invoke`), whatever the clip clipboard holds
+        if app.ui.focused == PanelKind::EffectControls && matches!(it.id.as_str(), "edit.paste" | "edit.pasteInsert") {
+            it.enabled = app.session.is_enabled("effects.paste");
         }
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));

@@ -3586,3 +3586,8 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+# Effect Controls: paste a copied effect's settings onto one effect (#1680).
+	Paste Settings	Colar configurações
+	Copy Effect	Copiar efeito
+	Paste Effects	Colar efeitos
+	Paste Effect Settings	Colar configurações do efeito

@@ -3585,3 +3585,8 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+# Effect Controls: paste a copied effect's settings onto one effect (#1680).
+	Paste Settings	Coller les paramètres
+	Copy Effect	Copier l'effet
+	Paste Effects	Coller les effets
+	Paste Effect Settings	Coller les paramètres de l'effet

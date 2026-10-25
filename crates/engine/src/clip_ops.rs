@@ -604,7 +604,7 @@ fn remove_items(p: &mut Project, ids: &[ItemId]) {
 }
 
 /// Keyframe times of an effect instance shifted / scaled from clip `from` to clip `to` (media time).
-fn retime_effect(e: &mut filmcraft_project::EffectInstance, from: &TrackItem, to: &TrackItem, scale: bool) {
+pub(crate) fn retime_effect(e: &mut filmcraft_project::EffectInstance, from: &TrackItem, to: &TrackItem, scale: bool) {
     let (f0, f1) = (from.source_in, from.source_out());
     let (t0, t1) = (to.source_in, to.source_out());
     let map = |k: Tick| -> Tick {
