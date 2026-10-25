@@ -113,7 +113,7 @@ struct Ahead {
 /// Render frames `f..end` in parallel. `None` when a source was not ready for one of them (the
 /// pending flag, taken after every frame because it is per thread): the batch is incomplete and
 /// must be rendered again.
-fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Option<Vec<Frame>> {
+fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider, progress: &Progress) -> Option<Vec<Frame>> {
     let pending = AtomicBool::new(false);
     let frames: Vec<Frame> = (f..end)
         .into_par_iter()
@@ -121,6 +121,8 @@ fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider)
             let frame = pipe.frame(fi, sources);
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
+            } else {
+                progress.made_progress(Stage::Render);
             }
             frame
         })
@@ -216,7 +218,10 @@ fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Resu
 impl Exporter {
     /// Set up an export (encoder, output size, colour signalling); sets `progress.total`.
     pub fn new(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, progress: &Progress) -> Result<Self> {
-        timed(Stage::Setup, || Self::set_up(project, seq, settings, progress))
+        progress.enter_stage(Stage::Setup);
+        let exporter = timed(Stage::Setup, || Self::set_up(project, seq, settings, progress))?;
+        progress.made_progress(Stage::Setup);
+        Ok(exporter)
     }
 
     fn set_up(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, progress: &Progress) -> Result<Self> {
@@ -245,6 +250,7 @@ impl Exporter {
         settings.h264_pass = if two_pass { H264Pass::First } else { H264Pass::Single };
         let range = export_range(&project, seq, &settings)?;
         let pipe = Arc::new(Pipeline::new(project.clone(), seq, &settings, hdr_out)?);
+        progress.made_progress(Stage::Setup);
         let (f0, f1) = frame_span(pipe.rate, range);
         let nframes = (f1 - f0) as u64;
         if !settings.part_of_batch {
@@ -252,6 +258,7 @@ impl Exporter {
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
+        progress.made_progress(Stage::Setup);
         let brand = if settings.format.is_mp4_with(settings.multiplexer) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
@@ -450,7 +457,8 @@ impl Exporter {
             }
             let a = self.audio.as_mut().ok_or_else(|| ExportError::Encode("internal: the audio pipeline was not created".into()))?;
             let settings = &self.settings;
-            timed(Stage::Loudness, || a.measure(settings, sources, &|| progress.cancel.load(Ordering::Relaxed)))?;
+            progress.enter_stage(Stage::Loudness);
+            timed(Stage::Loudness, || a.measure(settings, sources, &|| progress.cancel.load(Ordering::Relaxed), &|| progress.made_progress(Stage::Loudness)))?;
             if filmcraft_media::pending::take() {
                 return Ok(Step::Pending);
             }
@@ -476,15 +484,22 @@ impl Exporter {
             return Ok(Step::Progress);
         }
         let finishing = web_time::Instant::now();
+        progress.enter_stage(Stage::Finish);
         let mixed = self.audio.as_mut().and_then(|a| a.rest(sources));
         if filmcraft_media::pending::take() {
             return Ok(Step::Pending);
+        }
+        if progress.cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
         }
         if self.mux.is_none() && self.mxf.is_none() {
             self.open_mux()?;
         }
         let mut tail = std::mem::take(&mut self.queued);
         tail.extend(self.venc.flush()?);
+        if progress.cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
+        }
         self.write_video(tail)?;
         self.write_audio(mixed)?;
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
@@ -495,6 +510,9 @@ impl Exporter {
             if let Some(entry) = a.final_sample_entry() {
                 mux.set_sample_entry(at, entry).map_err(|e| ExportError::Io(e.to_string()))?;
             }
+        }
+        if progress.cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
         }
         let (bytes, extra_files) = match self.mxf.take() {
             Some(m) => m.finish(&self.settings)?,
@@ -509,6 +527,10 @@ impl Exporter {
             }
         };
         note_stage(Stage::Finish, finishing.elapsed());
+        if progress.cancel.load(Ordering::Relaxed) {
+            return Err(ExportError::Cancelled);
+        }
+        progress.made_progress(Stage::Finish);
         let secs = self.t0.elapsed().as_secs_f64();
         let nframes = self.frames();
         if !self.settings.part_of_batch {
@@ -532,7 +554,8 @@ impl Exporter {
             _ => {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
                 let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, f, end, sources)) {
+                progress.enter_stage(Stage::Render);
+                match timed(Stage::Render, || render_batch(pipe, f, end, sources, progress)) {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -546,7 +569,7 @@ impl Exporter {
         let plan =
             (end < self.f1 && self.overlapping() && !progress.cancel.load(Ordering::Relaxed)).then(|| (end, end.saturating_add(self.batch_len()).min(self.f1)));
         let Some((a, b)) = plan else {
-            return match self.encode_batch(f, frames, sources)? {
+            return match self.encode_batch(f, frames, sources, progress)? {
                 Encoded::Pending => Ok(Step::Pending),
                 Encoded::Done => {
                     progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
@@ -560,10 +583,12 @@ impl Exporter {
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
-                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources)))));
+                progress.enter_stage(Stage::Render);
+                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources, progress)))));
             });
-            let r = self.encode_batch(f, frames, sources);
+            let r = self.encode_batch(f, frames, sources, progress);
             encode_done = Some(web_time::Instant::now());
+            progress.enter_stage(Stage::Wait);
             r
         });
         // the scope returned only now: what is left since the encoding ended is waiting for the render
@@ -589,10 +614,15 @@ impl Exporter {
 
     /// Encode the rendered frames `f..` (the analysis pass of a two-pass export only encodes), mux
     /// them with their audio, and drop each frame as soon as it is encoded.
-    fn encode_batch(&mut self, f: i64, frames: Vec<Frame>, sources: &dyn SourceProvider) -> Result<Encoded> {
+    fn encode_batch(&mut self, f: i64, frames: Vec<Frame>, sources: &dyn SourceProvider, progress: &Progress) -> Result<Encoded> {
         if self.first_pass {
             for (k, frame) in frames.into_iter().enumerate() {
+                if progress.cancel.load(Ordering::Relaxed) {
+                    return Err(ExportError::Cancelled);
+                }
+                progress.enter_stage(Stage::Encode);
                 timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), f + k as i64))?;
+                progress.made_progress(Stage::Encode);
             }
             return Ok(Encoded::Done);
         }
@@ -605,8 +635,13 @@ impl Exporter {
         if let Some(sr) = self.audio.as_ref().map(|a| a.sr) {
             let t = web_time::Instant::now();
             for &g in &cuts {
+                if progress.cancel.load(Ordering::Relaxed) {
+                    return Err(ExportError::Cancelled);
+                }
+                progress.enter_stage(Stage::Audio);
                 let until = self.sample_at_frame(g, sr);
                 mixed.push(self.audio.as_mut().and_then(|a| a.pull(until, sources)));
+                progress.made_progress(Stage::Audio);
             }
             note_stage(Stage::Audio, t.elapsed());
         }
@@ -616,10 +651,19 @@ impl Exporter {
         }
         let mut mixed = mixed.into_iter();
         for (k, frame) in frames.into_iter().enumerate() {
+            if progress.cancel.load(Ordering::Relaxed) {
+                return Err(ExportError::Cancelled);
+            }
             let fi = f + k as i64;
+            progress.enter_stage(Stage::Encode);
             let packets = timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), fi))?;
+            progress.made_progress(Stage::Encode);
             self.queued.extend(packets);
             if cuts.contains(&(fi + 1)) {
+                if progress.cancel.load(Ordering::Relaxed) {
+                    return Err(ExportError::Cancelled);
+                }
+                progress.enter_stage(Stage::Mux);
                 timed(Stage::Mux, || -> Result<()> {
                     if self.mux.is_none() && self.mxf.is_none() {
                         self.open_mux()?;
@@ -629,6 +673,7 @@ impl Exporter {
                 })?;
                 let pcm = mixed.next().flatten();
                 timed(Stage::Audio, || self.write_audio(pcm))?;
+                progress.made_progress(Stage::Mux);
             }
         }
         Ok(Encoded::Done)

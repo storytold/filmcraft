@@ -66,7 +66,7 @@ impl AudioOut {
 
     /// The loudness pass: measure the integrated loudness of the whole range and set the gain
     /// that brings it to the target. `cancel` is polled between chunks.
-    pub fn measure(&mut self, settings: &ExportSettings, sources: &dyn SourceProvider, cancel: &dyn Fn() -> bool) -> Result<()> {
+    pub fn measure(&mut self, settings: &ExportSettings, sources: &dyn SourceProvider, cancel: &dyn Fn() -> bool, completed: &dyn Fn()) -> Result<()> {
         let ln = &settings.effects.loudness;
         if !ln.enabled {
             return Ok(());
@@ -82,6 +82,7 @@ impl AudioOut {
             let refs: Vec<&[f32]> = buf.iter().map(Vec::as_slice).collect();
             meter.process(&refs);
             pos += n as i64;
+            completed();
         }
         let measured = meter.integrated();
         let gain_db = filmcraft_audio_dsp::normalize_gain_db(measured, ln.target_lufs);
