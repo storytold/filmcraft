@@ -1952,41 +1952,53 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     if !audio_specs.is_empty() && v_clips.len() > 1 {
-                        let mut linked_audios = std::collections::HashSet::new();
-                        for (vid, item_id, vrange) in &v_clips {
-                            // Pair with overlapping audio clips from the same item, or overlapping audio clips if no same-item audio
-                            let matching: Vec<ClipId> = audio_specs
-                                .iter()
-                                .filter(|(aid, aitem, arange)| !linked_audios.contains(aid) && aitem == item_id && arange.overlaps(vrange))
-                                .map(|(aid, _, _)| *aid)
-                                .collect();
-                            let to_link = if !matching.is_empty() {
-                                matching
-                            } else {
-                                audio_specs
+                        // Each video clip's partners: overlapping audio clips from the same item, or any
+                        // overlapping audio clips if none come from the same item.
+                        let partners: Vec<Vec<ClipId>> = v_clips
+                            .iter()
+                            .map(|(_, item_id, vrange)| {
+                                let same: Vec<ClipId> = audio_specs
                                     .iter()
-                                    .filter(|(aid, _, arange)| !linked_audios.contains(aid) && arange.overlaps(vrange))
+                                    .filter(|(_, aitem, arange)| aitem == item_id && arange.overlaps(vrange))
                                     .map(|(aid, _, _)| *aid)
-                                    .collect()
-                            };
+                                    .collect();
+                                if same.is_empty() {
+                                    audio_specs.iter().filter(|(_, _, arange)| arange.overlaps(vrange)).map(|(aid, _, _)| *aid).collect()
+                                } else {
+                                    same
+                                }
+                            })
+                            .collect();
+                        // One link per pair (#507), but video clips sharing an audio clip (stacked
+                        // V1/V2 clips over one audio, #2433) are merged into the same link.
+                        let mut group: Vec<usize> = (0..v_clips.len()).collect();
+                        let mut owner: std::collections::HashMap<ClipId, usize> = std::collections::HashMap::new();
+                        for (vi, ps) in partners.iter().enumerate() {
+                            for aid in ps {
+                                if let Some(&o) = owner.get(aid) {
+                                    let (old, new) = (group.get(vi).copied().unwrap_or(vi), group.get(o).copied().unwrap_or(o));
+                                    for g in group.iter_mut().filter(|g| **g == old) {
+                                        *g = new;
+                                    }
+                                } else {
+                                    owner.insert(*aid, vi);
+                                }
+                            }
+                        }
+                        let mut links = std::collections::HashMap::new();
+                        for (vi, (vid, _, _)) in v_clips.iter().enumerate() {
+                            let g = group.get(vi).copied().unwrap_or(vi);
                             // a video clip with no audio partner stays unlinked: a one-member link would read as "linked"
-                            let l = (!to_link.is_empty()).then(|| ctx.alloc());
+                            let l = partners.get(vi).is_some_and(|ps| !ps.is_empty()).then(|| *links.entry(g).or_insert_with(|| ctx.alloc()));
                             if let Some((_, vi)) = q.find_item_mut(*vid) {
                                 vi.link = l;
-                            }
-                            for aid in to_link {
-                                linked_audios.insert(aid);
-                                if let Some((_, ai)) = q.find_item_mut(aid) {
-                                    ai.link = l;
-                                }
                             }
                         }
                         // selected audio clips with no overlapping video stay unlinked
                         for (aid, _, _) in audio_specs {
-                            if !linked_audios.contains(&aid)
-                                && let Some((_, ai)) = q.find_item_mut(aid)
-                            {
-                                ai.link = None;
+                            let l = owner.get(&aid).and_then(|o| group.get(*o)).and_then(|g| links.get(g)).copied();
+                            if let Some((_, ai)) = q.find_item_mut(aid) {
+                                ai.link = l;
                             }
                         }
                     } else {

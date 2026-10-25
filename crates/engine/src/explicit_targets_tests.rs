@@ -307,3 +307,33 @@ fn link_leaves_clips_without_a_partner_unlinked() {
     assert_eq!(clip(&s, v1).unwrap().link, None, "v1 has no overlapping audio in the selection");
     assert_eq!(clip(&s, a2).unwrap().link, None, "a2 has no overlapping video in the selection");
 }
+
+/// Two video clips stacked on V1 and V2 over the same audio (#2433: one nest duplicated into a
+/// "cam" and a "content" clip) must all end up in one link, not leave the second video unlinked.
+#[test]
+fn link_stacked_video_clips_share_overlapping_audio() {
+    let mut s = demo();
+    let (v0, a0) = (v1(&s)[0].clone(), a1(&s)[0].clone());
+    let mut p = (*s.project).clone();
+    let seq = s.state.active_sequence.unwrap();
+    let mut dup = v0.clone();
+    dup.id = ClipId(p.alloc_id());
+    dup.link = None;
+    let q = p.sequence_mut(seq).unwrap();
+    assert!(q.video_tracks.len() >= 2);
+    q.video_tracks[1].items.clear();
+    q.video_tracks[1].items.push(dup.clone());
+    for c in [v0.id, a0.id] {
+        if let Some((_, i)) = q.find_item_mut(c) {
+            i.link = None;
+        }
+    }
+    s.project = std::sync::Arc::new(p);
+
+    let r = s.execute("clip.link", json!({"clips": [v0.id.0, dup.id.0, a0.id.0]})).unwrap();
+    assert_eq!(r["linked"], true);
+    let (lv, ld, la) = (clip(&s, v0.id).unwrap().link, clip(&s, dup.id).unwrap().link, clip(&s, a0.id).unwrap().link);
+    assert!(lv.is_some(), "v1 clip linked");
+    assert_eq!(lv, la, "v1 clip linked to the audio");
+    assert_eq!(ld, la, "stacked v2 clip linked to the same audio");
+}
