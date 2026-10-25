@@ -20,6 +20,7 @@ pub mod demo;
 pub mod doc_path;
 pub mod essential_sound;
 pub mod export_tools;
+pub mod folder_import;
 pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
@@ -1287,6 +1288,8 @@ mod explicit_targets_tests;
 mod export_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod folder_import_tests;
 #[cfg(test)]
 mod gap_selection_tests;
 #[cfg(test)]
