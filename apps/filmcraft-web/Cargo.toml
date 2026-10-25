@@ -14,6 +14,11 @@ crate-type = ["cdylib", "rlib"]
 
 # Everything is wasm32-only: on other targets this crate is empty (so `cargo test --workspace`
 # and clippy stay cheap). Build with `cargo xtask web` (see docs/web.md).
+[dev-dependencies]
+filmcraft-format = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-time = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 filmcraft-engine = { workspace = true }
 filmcraft-ui-egui = { workspace = true }

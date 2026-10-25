@@ -117,6 +117,33 @@ fn a_project_saved_after_an_interchange_import_opens_again() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn interchange_rejects_oversized_offline_media_before_changing_the_project() {
+    let d = tmp_dir("ix-oversized-offline");
+    let doc = d.join("cut.xml");
+    std::fs::write(&doc, xml_with_a_scale_only_motion_filter().replace("<width>3840</width>", "<width>1000000</width>")).unwrap();
+    let mut session = Session::default();
+    let original = session.project.clone();
+    let error = session.execute("file.import", json!({"paths": [doc.to_string_lossy()]})).unwrap_err().to_string();
+    assert!(error.contains("invalid video dimensions") && error.contains("1000000x2160"), "{error}");
+    assert!(std::sync::Arc::ptr_eq(&session.project, &original));
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn interchange_rejects_oversized_sequence_before_changing_the_project() {
+    let d = tmp_dir("ix-oversized-sequence");
+    let doc = d.join("cut.xml");
+    let xml = xml_with_a_scale_only_motion_filter().replace("<width>1920</width>", "<width>32769</width>");
+    std::fs::write(&doc, xml).unwrap();
+    let mut session = Session::default();
+    let original = session.project.clone();
+    let error = session.execute("file.import", json!({"paths": [doc.to_string_lossy()]})).unwrap_err().to_string();
+    assert!(error.contains("sequence `Cut`") && error.contains("frame size"), "{error}");
+    assert!(std::sync::Arc::ptr_eq(&session.project, &original));
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 /// The anchor is centred in the file's real picture, not in the size the document declares
 /// (3840×2160 here) or the sequence's.
 #[test]

@@ -979,6 +979,30 @@ mod tests {
         set_current(Language::En);
     }
 
+    #[test]
+    fn supported_recovery_locales_cover_browser_messages() {
+        let recovery = [
+            "Could not open the browser recovery file “{name}”: {error}",
+            "The browser recovery file “{name}” was skipped by a launch option.",
+            "Recovery paused",
+            "Recover Unsaved Changes",
+            "Could not inspect the browser recovery file: {error}",
+            "Recovery unavailable",
+            "Could not read browser recovery storage: {error}. New recovery snapshots are paused. Save current work manually, then reload this page to retry.",
+            "The file is still in this browser. New recovery snapshots are paused until you preserve it.",
+            "Download recovery file",
+            "I saved the recovery file",
+            "Could not download recovery file: {error}",
+            "After the file has been saved, continue. Editing a new project may replace the browser recovery copy.",
+            "Recovery paused for unsaved changes: {error}. Repair the invalid dimensions to resume.",
+        ];
+        for language in [Language::De, Language::Es, Language::Fr, Language::Ja, Language::PtBr, Language::ZhCn] {
+            for en in recovery {
+                assert!(language.has(en), "missing {language:?} browser-recovery label: {en}");
+            }
+        }
+    }
+
     /// Every non-ASCII character of `text` renders with the bundled interface fonts, in every family.
     fn assert_bundled_fonts_cover(text: impl Iterator<Item = char>) {
         let ctx = egui::Context::default();

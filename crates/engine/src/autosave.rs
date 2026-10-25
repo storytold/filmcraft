@@ -601,8 +601,9 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
 
 /// Load a candidate's snapshot.
 pub fn load_candidate(c: &RecoveryCandidate) -> Result<filmcraft_format::Loaded, String> {
-    let b = fs::read(c.dir.join(SNAPSHOT)).map_err(|e| format!("{}: {e}", c.dir.display()))?;
-    filmcraft_format::decode(&b).map_err(|e| e.to_string())
+    let path = c.dir.join(SNAPSHOT);
+    let b = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    filmcraft_format::decode(&b).map_err(|e| format!("{}: {e}; the original snapshot is preserved for repair", path.display()))
 }
 
 pub fn discard_candidate(c: &RecoveryCandidate) -> io::Result<()> {
@@ -738,6 +739,7 @@ impl Persistence {
             latest: None,
             journaled: 0,
             autosaved: 0,
+            invalid_revision: None,
             first_pending: None,
             last_change: Instant::now(),
             next_autosave: Instant::now(),
@@ -884,6 +886,8 @@ struct Worker {
     /// Revision currently in the journal (0 = none) / last auto-saved revision.
     journaled: u64,
     autosaved: u64,
+    /// A structurally invalid revision cannot become a recovery snapshot. Retry after an edit.
+    invalid_revision: Option<u64>,
     first_pending: Option<Instant>,
     last_change: Instant,
     next_autosave: Instant,
@@ -897,7 +901,7 @@ impl Worker {
 
     fn journal_due(&self) -> Option<Instant> {
         let s = self.latest.as_ref()?;
-        if !self.prefs.recovery_journal || s.revision == self.journaled {
+        if !self.prefs.recovery_journal || s.revision == self.journaled || self.invalid_revision == Some(s.revision) {
             return None;
         }
         let max = self.first_pending.unwrap_or(self.last_change) + Duration::from_secs(self.prefs.recovery_interval_seconds as u64);
@@ -921,12 +925,19 @@ impl Worker {
             match msg {
                 Some(Msg::Dirty(s)) => {
                     let now = Instant::now();
+                    if self.invalid_revision.is_some() && self.invalid_revision != Some(s.revision) {
+                        // Start one new deadline after a rejected revision. Later edits must not
+                        // restart it; write_journal validates whichever revision is latest.
+                        self.invalid_revision = None;
+                        self.first_pending = None;
+                    }
                     self.first_pending.get_or_insert(now);
                     self.last_change = now;
                     self.latest = Some(s);
                 }
                 Some(Msg::Clean) => {
                     self.latest = None;
+                    self.invalid_revision = None;
                     self.first_pending = None;
                     self.clear_journal();
                 }
@@ -974,6 +985,11 @@ impl Worker {
 
     fn write_journal(&mut self) {
         let Some(s) = &self.latest else { return };
+        if let Err(error) = filmcraft_format::validate_project_dimensions(&s.project) {
+            self.invalid_revision = Some(s.revision);
+            self.error(format!("recovery journal kept the previous snapshot: {error}"));
+            return;
+        }
         let t0 = Instant::now();
         let bytes = filmcraft_format::encode(&s.project, false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -992,6 +1008,7 @@ impl Worker {
         match r {
             Ok(()) => {
                 self.journaled = s.revision;
+                self.invalid_revision = None;
                 self.first_pending = None;
                 let _ = self.events.send(WorkerEvent::Journaled { revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
             }
@@ -1012,6 +1029,11 @@ impl Worker {
 
     fn auto_save(&mut self) -> Result<PathBuf, String> {
         let Some(s) = &self.latest else { return Err("nothing to save".into()) };
+        if let Err(error) = filmcraft_format::validate_project_dimensions(&s.project) {
+            let message = format!("project dimensions prevent a reopenable auto-save: {error}");
+            self.error(message.clone());
+            return Err(message);
+        }
         let scratch = crate::project_tools::trusted_scratch(s.project.settings.scratch.auto_save.as_deref(), s.path.as_deref(), &self.prefs.scratch_folders);
         let (dir, name) = match (&s.path, scratch) {
             // Project Settings ▸ Scratch Disks ▸ Project Auto Save
