@@ -505,6 +505,10 @@ pub struct UiState {
     /// The status text that is an error, while `status` still holds it: shown more prominently
     /// and kept longer (see [`UiState::fail`]).
     pub status_error: Option<String>,
+    /// How many times [`UiState::fail`] has been called, so the same error shown again restarts its
+    /// time.
+    #[serde(default)]
+    pub status_errors: u64,
     /// A link the web browser couldn't open, shown with its address until closed
     /// ([`crate::links::show_failed`]).
     #[serde(default)]
@@ -1007,6 +1011,7 @@ impl UiState {
     pub fn fail(&mut self, message: impl Into<String>) {
         let message = message.into();
         self.status_error = Some(message.clone());
+        self.status_errors = self.status_errors.wrapping_add(1);
         self.status = message;
     }
 
@@ -1047,6 +1052,7 @@ impl Default for UiState {
             show_scopes: false,
             status: String::new(),
             status_error: None,
+            status_errors: 0,
             failed_link: None,
             eyedropper: None,
             keyframe_selection: Vec::new(),
