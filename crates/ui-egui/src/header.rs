@@ -132,10 +132,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         _ => (Icon::Moon, tl!("Dark")),
     };
     let tip = format!("{}: {mode}", tl!("Appearance Mode"));
-    let appearance = btn(ui, icon, "appearance", &tip, app);
-    appearance.context_menu(|ui| crate::panels::settings::appearance_context_menu(app, ui));
-    if appearance.clicked() {
-        crate::panels::settings::cycle_appearance(app, ui.ctx());
+    // Hidden when the window is too narrow to keep this button.
+    if let Some(appearance) = btn(ui, icon, "appearance", &tip, app) {
+        appearance.context_menu(|ui| crate::panels::settings::appearance_context_menu(app, ui));
+        if appearance.clicked() {
+            crate::panels::settings::cycle_appearance(app, ui.ctx());
+        }
     }
     let Some(ws_resp) = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app) else { return };
     // workspace name (caps)
