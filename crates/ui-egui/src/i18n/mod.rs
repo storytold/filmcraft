@@ -49,6 +49,8 @@ pub enum Language {
     It,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    /// Lao; requires an installed Lao system font or craft-fonts.
+    Lo,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -62,9 +64,10 @@ static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static LAO: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 13] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It, Self::Lo];
 
     /// BCP 47 tag for AccessKit and the web IME's hidden input. Keep the persisted spelling
     /// (`pt-br`, `zh-cn`) out of the protocol-facing value.
@@ -99,6 +102,7 @@ impl Language {
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
             Self::Ko => "한국어",
+            Self::Lo => "ພາສາລາວ",
         }
     }
 
@@ -116,6 +120,7 @@ impl Language {
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
             "ko" => Some(Self::Ko),
+            "lo" => Some(Self::Lo),
             _ => None,
         }
     }
@@ -130,7 +135,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 13] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -143,6 +148,7 @@ impl Language {
             ("in", Language::Id),
             ("it", Language::It),
             ("ko", Language::Ko),
+            ("lo", Language::Lo),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -175,6 +181,7 @@ impl Language {
             Self::Id => "id",
             Self::It => "it",
             Self::Ko => "ko",
+            Self::Lo => "lo",
         }
     }
 
@@ -193,6 +200,7 @@ impl Language {
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("it.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("ko.tsv")))),
+            Self::Lo => Some(LAO.get_or_init(|| Catalog::parse(include_str!("lo.tsv")))),
         }
     }
 
@@ -374,6 +382,7 @@ mod tests {
             Language::Id => Some(include_str!("id.tsv")),
             Language::It => Some(include_str!("it.tsv")),
             Language::Ko => Some(include_str!("ko.tsv")),
+            Language::Lo => Some(include_str!("lo.tsv")),
         }
     }
 
@@ -943,6 +952,9 @@ mod tests {
         }
         for tag in ["it", "IT", "it-IT", "it-CH", "it-SM", "it_IT.UTF-8", "it_IT.UTF-8@euro", "it_CH"] {
             assert_eq!(l(&[tag]), Language::It, "{tag}");
+        }
+        for tag in ["lo", "LO", "lo-LA", "lo_LA", "lo_LA.UTF-8", "LO-la"] {
+            assert_eq!(l(&[tag]), Language::Lo, "{tag}");
         }
         assert_eq!(l(&["it-CH", "de-CH", "fr-CH", "en"]), Language::It);
         for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
