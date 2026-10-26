@@ -222,6 +222,9 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             },
         ),
         spec("clip.fitToFrame", "Fit to frame", &["Clip", "Video Options"], None, r#"{"clips":[id]?}"#, has_selection, |s, p| fit_fill(s, p, false)),
+        spec("clip.setToFrameSize", "Set to Frame Size", &["Clip", "Video Options"], None, r#"{"clips":[id]?}"#, has_selection, |s, p| {
+            fit_fill_with_label(s, p, false, "Set to Frame Size")
+        }),
         spec("clip.fillFrame", "Fill frame", &["Clip", "Video Options"], None, r#"{"clips":[id]?}"#, has_selection, |s, p| fit_fill(s, p, true)),
         spec("clip.breakoutToMono", "Breakout to Mono", &["Clip", "Audio Options"], None, r#"{"items":[id]?}"#, has_audio_items, breakout_to_mono),
         spec("clip.extractAudio", "Extract Audio", &["Clip", "Audio Options"], None, r#"{"items":[id]?,"dir":str?}"#, has_extractable, extract_audio),
@@ -305,6 +308,7 @@ pub(crate) fn apply_layout(v: &mut Vec<CommandSpec>) {
                 "clip.timeInterpolation.frameBlending",
                 "clip.timeInterpolation.opticalFlow",
                 "clip.scaleToFrameSize",
+                "clip.setToFrameSize",
                 "clip.fitToFrame",
                 "clip.fillFrame",
                 "clip.audioGain",
@@ -1530,6 +1534,10 @@ fn set_interpolation(s: &mut Session, p: &Value, m: TimeInterpolation) -> Result
 /// Fit to frame (the whole clip visible) / Fill frame (the frame covered): sets Motion ▸ Scale
 /// and centres the clip.
 fn fit_fill(s: &mut Session, p: &Value, fill: bool) -> Result<Value> {
+    fit_fill_with_label(s, p, fill, if fill { "Fill Frame" } else { "Fit to Frame" })
+}
+
+fn fit_fill_with_label(s: &mut Session, p: &Value, fill: bool, label: &str) -> Result<Value> {
     let clips = video_clips(s, p);
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let (fw, fh) = (q.settings.width as f64, q.settings.height as f64);
@@ -1545,7 +1553,6 @@ fn fit_fill(s: &mut Session, p: &Value, fill: bool) -> Result<Value> {
     if sizes.is_empty() {
         return Err(bad(if fill { "clip.fillFrame" } else { "clip.fitToFrame" }, "select a video clip"));
     }
-    let label = if fill { "Fill Frame" } else { "Fit to Frame" };
     let out = s.edit_sequence(label, |q, _, _| {
         let mut out = Vec::new();
         for (c, (w, h), (dw, dh)) in &sizes {

@@ -219,8 +219,19 @@ pub enum Dialog {
     AddTracks,
     /// Sequence ▸ Sequence Settings….
     SequenceSettings,
+    ClipMismatch,
     /// Set Transition Duration (double-click a transition in the Timeline).
     TransitionDuration,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PendingClipMismatch {
+    pub command: String,
+    pub params: serde_json::Value,
+    pub item: filmcraft_project::ItemId,
+    pub sequence: filmcraft_project::ItemId,
+    pub source_item: Option<filmcraft_project::ItemId>,
+    pub settings: serde_json::Value,
 }
 
 #[derive(Default)]
@@ -303,6 +314,7 @@ pub struct FilmcraftApp {
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
+    pub(crate) pending_clip_mismatch: Option<PendingClipMismatch>,
     pub(crate) updates_rt: updates_ui::Runtime,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
@@ -641,6 +653,7 @@ impl FilmcraftApp {
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
+            pending_clip_mismatch: None,
             updates_rt: Default::default(),
             file_dialogs: Default::default(),
             native_dialog: None,

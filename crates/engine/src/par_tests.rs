@@ -116,6 +116,66 @@ fn default_media_scaling_uses_the_display_size() {
 }
 
 #[test]
+fn explicit_frame_size_commands_fit_without_toggling_or_distorting() {
+    let mut s = Session::default();
+    let item = matte(&mut s, (1, 1));
+    s.execute("file.newSequence", json!({"name": "Portrait frame", "width": 108, "height": 192, "fps": 24})).unwrap();
+    s.execute("source.open", json!({"item": item.0})).unwrap();
+    let placed = s.execute("source.overwrite", json!({})).unwrap();
+    let clip = filmcraft_project::ClipId(placed["clips"][0].as_u64().unwrap());
+    s.execute("playhead.set", json!({"seconds": 0.5})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": "motion", "param": "scale", "value": 250.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": "motion", "param": "position", "value": [12.0, 15.0]})).unwrap();
+    s.execute("clip.scaleToFrameSize", json!({"clips": [clip.0]})).unwrap();
+    s.execute("clip.scaleToFrameSize", json!({"clips": [clip.0]})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(clip).unwrap().1.scale_to_frame);
+    assert_eq!(motion_scale(&s, clip), 100.0);
+    let image = s.render_program(1.0).unwrap();
+    // 144:108 content fitted in a 108:192 frame is 108 x 81, centred vertically.
+    assert!(image.get(54, 60)[3] > 0.99);
+    assert!(image.get(54, 15)[3] < 0.01);
+    assert!(image.get(54, 175)[3] < 0.01);
+    s.execute("clip.setToFrameSize", json!({"clips": [clip.0]})).unwrap();
+    assert!(!s.active_sequence().unwrap().find_item(clip).unwrap().1.scale_to_frame);
+    assert!((motion_scale(&s, clip) - 75.0).abs() < 1e-9);
+    let set_image = s.render_program(1.0).unwrap();
+    assert_eq!(image.px, set_image.px, "both commands render the same fitted picture");
+    assert_eq!(s.undo().as_deref(), Some("Set to Frame Size"));
+    assert!(s.active_sequence().unwrap().find_item(clip).unwrap().1.scale_to_frame);
+}
+
+#[test]
+fn first_movie_mismatch_requires_an_explicit_sequence_change() {
+    let mut s = Session::default();
+    let item = matte(&mut s, (4, 3));
+    if let Some(ItemKind::Media(m)) = Arc::make_mut(&mut s.project).item_mut(item).map(|i| &mut i.kind) {
+        m.info.kind = filmcraft_media::MediaKind::Movie;
+        if let Some(video) = &mut m.info.video {
+            video.color.transfer = filmcraft_color::Transfer::Pq;
+        }
+    }
+    s.execute("file.newSequence", json!({"name": "Existing", "width": 192, "height": 108, "fps": 24})).unwrap();
+    let original = s.active_sequence().unwrap().settings.clone();
+    let check = s.execute("sequence.clipMismatch", json!({"item": item.0})).unwrap();
+    assert_eq!(check["mismatch"], true);
+    assert_eq!(check["settings"]["par"], json!([4, 3]));
+    assert_eq!(check["settings"]["workingSpace"], "rec2100-pq");
+    assert_eq!(s.active_sequence().unwrap().settings, original, "checking cannot mutate settings");
+    s.execute("sequence.matchClip", json!({"item": item.0})).unwrap();
+    assert_eq!((s.active_sequence().unwrap().settings.width, s.active_sequence().unwrap().settings.height), (144, 108));
+    assert_eq!(s.active_sequence().unwrap().settings.par, (4, 3));
+    assert_eq!(s.active_sequence().unwrap().settings.color.working, filmcraft_color::WorkingSpace::Rec2100Pq);
+    s.execute("timeline.place", json!({"item": item.0, "frame": 0})).unwrap();
+    assert_eq!(s.execute("sequence.clipMismatch", json!({"item": item.0})).unwrap()["mismatch"], false);
+    assert!(s.execute("sequence.matchClip", json!({"item": item.0})).is_err(), "established sequences cannot be changed by the first-clip action");
+    let saved = serde_json::to_vec(&s.project).unwrap();
+    assert!(!saved.is_empty(), "matched settings and clip persist");
+    s.undo();
+    s.undo();
+    assert_eq!(s.active_sequence().unwrap().settings, original);
+}
+
+#[test]
 fn interpret_footage_pixel_aspect_wins_over_the_file_and_undoes() {
     let mut s = Session::default();
     let item = matte(&mut s, (4, 3));

@@ -499,6 +499,12 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<T
         let locked = affected.iter().all(|t| seq.track(*t).is_some_and(|tr| tr.locked));
         return Err(if locked { EditError::Locked } else { EditError::Other("no gap can close: other clips on these tracks cover the deleted time".into()) });
     }
+    if spans
+        .iter()
+        .any(|span| seq.all_tracks().any(|tr| tr.locked && (affected.contains(&tr.id) || tr.sync_lock) && tr.items.iter().any(|i| i.start >= span.end())))
+    {
+        return Err(EditError::Locked);
+    }
     let mut work = seq.clone();
     delete_items(&mut work, items);
     for span in spans.iter().rev() {
@@ -534,6 +540,11 @@ pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
     let prev_end = tr.items.iter().filter(|i| i.end() <= t).map(|i| i.end()).max().unwrap_or(Tick::ZERO);
     let next_start = tr.items.iter().filter(|i| i.start > t).map(|i| i.start).min().ok_or(EditError::Nothing)?;
     let gap = TimeRange::from_bounds(prev_end, next_start);
+    // A locked track with downstream material cannot follow the ripple. Refuse the whole edit
+    // instead of silently separating linked picture and sound across tracks.
+    if seq.all_tracks().any(|other| other.locked && other.sync_lock && other.items.iter().any(|i| i.start >= gap.end())) {
+        return Err(EditError::Locked);
+    }
     let mut work = seq.clone();
     for tr in work.all_tracks_mut() {
         if tr.locked {
@@ -566,6 +577,9 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     let mut placed = Vec::new();
     for (c, dest, start) in moves {
         let (src, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        if work.track(src).ok_or(EditError::NoTrack(src))?.kind != work.track(*dest).ok_or(EditError::NoTrack(*dest))?.kind {
+            return Err(EditError::Other("a clip can move only to a track of the same kind".into()));
+        }
         if work.track(src).is_some_and(|t| t.locked) {
             return Err(EditError::Locked);
         }
@@ -604,7 +618,10 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     let mut work = seq.clone();
     let mut placed = Vec::new();
     for (c, dest, start) in moves {
-        let (_, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        let (src, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        if work.track(src).ok_or(EditError::NoTrack(src))?.kind != work.track(*dest).ok_or(EditError::NoTrack(*dest))?.kind {
+            return Err(EditError::Other("a clip can copy only to a track of the same kind".into()));
+        }
         let mut it = it.clone();
         if work.track(*dest).ok_or(EditError::NoTrack(*dest))?.locked {
             return Err(EditError::Locked);

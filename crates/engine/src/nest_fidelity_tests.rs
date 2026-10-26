@@ -66,8 +66,9 @@ fn scale_to_frame_size_on_a_nest_fills_the_frame_and_leaves_scale_alone() {
     let t = it.start + Tick(it.duration.0 / 2);
     let filled = filmcraft_render::render_sequence(&s.project, s.state.active_sequence.unwrap(), t, opts, &provider);
     assert!(filled.get(2, 2)[3] > 0.98 && filled.get(filled.w - 3, filled.h - 3)[3] > 0.98);
-    // a toggle: off again, the nest is back in the middle with nothing in the corners
+    // Applying the command again leaves the fitted result in place.
     s.execute("clip.scaleToFrameSize", json!({})).unwrap();
-    let centred = filmcraft_render::render_sequence(&s.project, s.state.active_sequence.unwrap(), t, opts, &provider);
-    assert!(centred.get(2, 2)[3] < 0.02 && centred.get(centred.w / 2, centred.h / 2)[3] > 0.98);
+    let fitted_again = filmcraft_render::render_sequence(&s.project, s.state.active_sequence.unwrap(), t, opts, &provider);
+    assert!(clip(&s, nest).scale_to_frame);
+    assert_eq!(fitted_again.px, filled.px);
 }

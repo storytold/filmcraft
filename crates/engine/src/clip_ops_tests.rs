@@ -72,6 +72,7 @@ fn menus_and_shortcuts_follow_premiere() {
             "Frame Blending",
             "Optical Flow",
             "Scale to Frame Size",
+            "Set to Frame Size",
             "Fit to frame",
             "Fill frame"
         ]

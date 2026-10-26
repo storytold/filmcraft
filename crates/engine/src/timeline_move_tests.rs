@@ -196,6 +196,158 @@ fn duplicate_move_targets_are_rejected_and_retry_is_undoable() {
     }
 }
 
+#[test]
+fn copy_and_move_reject_incompatible_tracks_without_an_edit() {
+    let mut s = demo();
+    let (_, video, audio_track, audio) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    for copy in [false, true] {
+        for (clip, track) in [(video.id, audio_track), (audio.id, s.active_sequence().unwrap().video_tracks[0].id)] {
+            let result = s.execute("timeline.move", json!({"moves": [{"clip": clip.0, "track": track.0, "time": 0}], "copy": copy, "linked": false}));
+            assert!(result.is_err(), "a clip crossed video/audio track kinds: {result:?}");
+            assert_eq!(s.project, before);
+            assert_eq!(s.history.undo.len(), undo);
+        }
+    }
+}
+
+#[test]
+fn multi_clip_transform_changes_every_picture_in_one_undo_step() {
+    let mut s = demo();
+    let (_, first, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let item = first.item;
+    let second = s.execute("timeline.place", json!({"item": item.0, "seconds": 60.0})).unwrap()["clips"][0].as_u64().unwrap();
+    s.execute("effects.setParam", json!({"clip": first.id.0, "effect": "motion", "param": "position", "value": [100.0, 200.0]})).unwrap();
+    s.execute("effects.setParam", json!({"clip": second, "effect": "motion", "param": "position", "value": [300.0, 400.0]})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let result = s
+        .execute(
+            "effects.setSelectionParam",
+            json!({
+                "clips": [first.id.0, second, sound.id.0, first.id.0],
+                "effect": "motion", "param": "position", "component": "x", "value": [700.0, 200.0]
+            }),
+        )
+        .unwrap();
+    assert_eq!(result["changed"], 2);
+    let q = s.active_sequence().unwrap();
+    let position = |id| q.find_item(id).unwrap().1.effect("motion").unwrap().param("position").unwrap().value.as_vec2().unwrap();
+    assert_eq!((position(first.id).x, position(first.id).y), (700.0, 200.0));
+    assert_eq!((position(ClipId(second)).x, position(ClipId(second)).y), (700.0, 400.0));
+    assert_eq!(s.history.undo.len(), undo + 1);
+    s.undo();
+    assert_eq!(s.project, before);
+    s.execute("effects.setSelectionParam", json!({"clips": [first.id.0, second], "effect": "motion", "param": "scale", "value": 120.0})).unwrap();
+    for id in [first.id, ClipId(second)] {
+        assert_eq!(s.active_sequence().unwrap().find_item(id).unwrap().1.effect("motion").unwrap().param("scale").unwrap().value.as_f64(), Some(120.0));
+    }
+}
+
+#[test]
+fn duplicate_command_inserts_without_overwriting_and_preserves_effects() {
+    let mut s = demo();
+    let (_, first, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    s.execute("effects.setParam", json!({"clip": first.id.0, "effect": "motion", "param": "scale", "value": 123.0})).unwrap();
+    let original = s.active_sequence().unwrap().find_item(first.id).unwrap().1.clone();
+    let original_sound = s.active_sequence().unwrap().find_item(sound.id).unwrap().1.clone();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    s.execute("timeline.select", json!({"clips": [first.id.0]})).unwrap();
+    let result = s.execute("timeline.duplicate", json!({})).unwrap();
+    let ids: Vec<ClipId> = result["copied"].as_array().unwrap().iter().filter_map(|v| v.as_u64().map(ClipId)).collect();
+    assert_eq!(ids.len(), 2);
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.find_item(first.id).unwrap().1, &original);
+    assert_eq!(q.find_item(sound.id).unwrap().1, &original_sound);
+    let picture = q.find_item(ids[0]).unwrap().1;
+    assert_eq!(picture.start, original.end());
+    assert_eq!(
+        (picture.item, picture.source_in, picture.duration, &picture.effects),
+        (original.item, original.source_in, original.duration, &original.effects)
+    );
+    assert_ne!(picture.id, original.id);
+    assert_eq!(s.history.undo.len(), undo + 1);
+    s.undo();
+    assert_eq!(s.project, before);
+}
+
+#[test]
+fn duplicate_track_copies_the_layer_with_unique_clip_ids_and_one_undo() {
+    for video in [true, false] {
+        let mut s = demo();
+        let (video_track, picture, audio_track, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+        let source = if video { video_track } else { audio_track };
+        let original = s.active_sequence().unwrap().track(source).unwrap().clone();
+        let before = s.project.clone();
+        let undo = s.history.undo.len();
+        let result = s.execute("sequence.duplicateTrack", json!({"track": source.0})).unwrap();
+        let new_id = TrackId(result["track"].as_u64().unwrap());
+        let q = s.active_sequence().unwrap();
+        assert_eq!(q.track(source).unwrap(), &original);
+        let copy = q.track(new_id).unwrap();
+        assert_eq!(copy.kind, original.kind);
+        assert_eq!(copy.items.len(), original.items.len());
+        assert_eq!(copy.effects, original.effects);
+        assert_eq!(copy.mixer, original.mixer);
+        assert_eq!(copy.sync_lock, original.sync_lock);
+        for (made, source) in copy.items.iter().zip(&original.items) {
+            assert_ne!(made.id, source.id);
+            assert_eq!(
+                (made.item, made.start, made.duration, made.source_in, &made.effects),
+                (source.item, source.start, source.duration, source.source_in, &source.effects)
+            );
+            assert_eq!(made.link, None, "a duplicated single layer must not link to the original partner");
+        }
+        assert_eq!(q.find_item(picture.id).unwrap().1.link, picture.link);
+        assert_eq!(q.find_item(sound.id).unwrap().1.link, sound.link);
+        q.check().unwrap();
+        assert_eq!(s.history.undo.len(), undo + 1);
+        s.undo();
+        assert_eq!(s.project, before);
+        s.redo();
+        assert!(s.active_sequence().unwrap().track(new_id).is_some());
+    }
+}
+
+#[test]
+fn duplicate_track_remaps_transitions_and_rejects_unknown_tracks() {
+    let mut s = demo();
+    let original = s.active_sequence().unwrap().video_tracks[0].clone();
+    let before = s.project.clone();
+    let history = s.history.clone();
+    assert!(s.execute("sequence.duplicateTrack", json!({"track": u64::MAX})).is_err());
+    assert_eq!(s.project, before);
+    assert_eq!(s.history.undo, history.undo);
+    let result = s.execute("sequence.duplicateTrack", json!({"track": "V1"})).unwrap();
+    let track = TrackId(result["track"].as_u64().unwrap());
+    let copy = s.active_sequence().unwrap().track(track).unwrap();
+    assert_eq!(copy.transitions.len(), original.transitions.len());
+    for transition in &copy.transitions {
+        assert!(!original.transitions.iter().any(|old| old.id == transition.id));
+        assert!(transition.from.into_iter().chain(transition.to).all(|id| copy.item(id).is_some()));
+    }
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+#[test]
+fn duplicate_track_respects_the_track_limit_without_mutation() {
+    let mut s = demo();
+    s.edit_sequence("Limit fixture", |q, ctx, _| {
+        while q.video_tracks.len() < crate::sequence_tools::MAX_TRACKS {
+            q.video_tracks.push(filmcraft_project::Track::new(TrackId(ctx.alloc()), filmcraft_project::TrackKind::Video, "Limit".into()));
+        }
+        Ok(())
+    })
+    .unwrap();
+    let before = s.project.clone();
+    let history = s.execute("history.list", json!({})).unwrap();
+    assert!(s.execute("sequence.duplicateTrack", json!({"track": "V1"})).is_err());
+    assert_eq!(*s.project, *before);
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+}
+
 fn reject_duplicate_new_track_move(s: &mut Session, clip: ClipId, insert: bool, linked: bool, new_first: bool) {
     s.state.selection = vec![clip];
     let before = s.project.clone();
@@ -595,7 +747,9 @@ fn copy_leaves_the_originals_and_links_the_copies() {
     let (vt, vc) = q.find_item(copies[0]).unwrap();
     let (at, ac) = q.find_item(copies[1]).unwrap();
     assert_eq!((vt, vc.start, vc.item, vc.source_in, vc.duration), (q.video_tracks[1].id, to, v.item, v.source_in, v.duration));
+    assert_eq!(vc.effects, v.effects, "copy retains intrinsic properties, applied effects and keyframes");
     assert_eq!((at, ac.start), (a_track, to), "the sound copy keeps its offset on its own track");
+    assert_eq!(ac.effects, a.effects, "audio effects and keyframes travel with the copy");
     assert!(vc.link.is_some() && vc.link == ac.link && vc.link != v.link, "the copies are linked to each other only");
     assert_eq!(s.state.selection, copies, "the copies are selected");
     q.check().unwrap();

@@ -1,7 +1,47 @@
 //! Modal dialogs (About; Keyboard Shortcuts in `shortcuts_dialog`; Settings in `settings`;
 //! Recovery/Revert in `file_dialogs`).
 
-use crate::{Dialog, FilmcraftApp};
+use crate::{Dialog, FilmcraftApp, PendingClipMismatch};
+use serde_json::{Value, json};
+
+/// Route the first picture edit through the mismatch warning. The pending command and its exact
+/// parameters are retained until the user chooses; cancelling leaves the project untouched.
+pub(crate) fn place_with_mismatch(app: &mut FilmcraftApp, command: &str, params: Value) -> Result<Value, String> {
+    let item = params
+        .get("item")
+        .and_then(Value::as_u64)
+        .or_else(|| params.get("items").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_u64))
+        .or_else(|| (command == "source.insert" || command == "source.overwrite").then_some(app.session.state.source_item).flatten().map(|i| i.0));
+    let placing_picture = params.get("video").and_then(Value::as_bool) != Some(false)
+        && !params.get("track").and_then(Value::as_str).is_some_and(|t| t.starts_with('A'))
+        && (command == "timeline.place" || app.session.targeting().video_dest.is_some());
+    if app.session.prefs.timeline.clip_mismatch_warning
+        && placing_picture
+        && let Some(item) = item
+    {
+        let check = app.session.execute("sequence.clipMismatch", json!({"item": item})).map_err(|e| e.to_string())?;
+        if check["mismatch"] == true {
+            let sequence = app.session.state.active_sequence.ok_or("no active sequence")?;
+            let source_item = matches!(command, "source.insert" | "source.overwrite").then_some(app.session.state.source_item).flatten();
+            app.pending_clip_mismatch = Some(PendingClipMismatch {
+                command: command.into(),
+                params,
+                item: filmcraft_project::ItemId(item),
+                sequence,
+                source_item,
+                settings: check["settings"].clone(),
+            });
+            app.dialog = Some(Dialog::ClipMismatch);
+            return Ok(json!({"dialog": "clipMismatch"}));
+        }
+    }
+    app.session.execute(command, params).map_err(|e| e.to_string())
+}
+
+/// A deferred placement is valid only in the sequence (and source context) that opened it.
+fn pending_context_changed(session: &filmcraft_engine::Session, pending: &PendingClipMismatch) -> bool {
+    session.state.active_sequence != Some(pending.sequence) || pending.source_item.is_some_and(|item| session.state.source_item != Some(item))
+}
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::media_dialogs::show(app, ctx);
@@ -24,6 +64,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::project_dialogs::show(app, ctx);
     crate::panels::media_browser::dialogs(app, ctx);
     crate::panels::misc::history_dialogs(app, ctx);
+    track_dialogs(app, ctx);
     let Some(d) = app.dialog else { return };
     if let Some(still_open) = crate::panels::file_dialogs::show(app, ctx, d) {
         if !still_open && app.dialog == Some(d) {
@@ -79,6 +120,64 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         Dialog::SequenceSettings => {
             if !crate::panels::sequence_settings::show(app, ctx) && app.dialog == Some(d) {
                 app.dialog = None;
+            }
+            return;
+        }
+        Dialog::ClipMismatch => {
+            let Some(pending) = app.pending_clip_mismatch.clone() else {
+                app.dialog = None;
+                return;
+            };
+            let mut choice = None;
+            egui::Window::new(tl!("Clip Mismatch Warning"))
+                .id(egui::Id::unique("clip-mismatch-warning"))
+                .collapsible(false)
+                .resizable(false)
+                .default_width(400.0)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(crate::widgets::dialog_center(ctx))
+                .show(ctx, |ui| {
+                    ui.label(tl!("This clip does not match the sequence's settings. Change the sequence to match the clip's settings?"));
+                    ui.label(format!(
+                        "{} × {}  •  {:.3} fps",
+                        pending.settings["width"].as_u64().unwrap_or(0),
+                        pending.settings["height"].as_u64().unwrap_or(0),
+                        pending.settings["fps"].as_f64().unwrap_or(0.0)
+                    ));
+                    ui.horizontal(|ui| {
+                        let change = ui.button(tl!("Change Sequence Settings"));
+                        app.auto.add("clipMismatch.change", change.rect, "Change Sequence Settings");
+                        if change.clicked() {
+                            choice = Some(true);
+                        }
+                        let keep = ui.button(tl!("Keep Existing Settings"));
+                        app.auto.add("clipMismatch.keep", keep.rect, "Keep Existing Settings");
+                        if keep.clicked() {
+                            choice = Some(false);
+                        }
+                    });
+                });
+            if let Some(change) = choice {
+                app.dialog = None;
+                app.pending_clip_mismatch = None;
+                let result = if pending_context_changed(&app.session, &pending) {
+                    Err("the sequence or source clip changed; place the clip again".to_string())
+                } else if change {
+                    app.session
+                        .edit_group("Match Sequence and Place Clip", |s| {
+                            s.execute("sequence.matchClip", json!({"item": pending.item.0}))?;
+                            s.execute(&pending.command, pending.params)
+                        })
+                        .map_err(|e| e.to_string())
+                } else {
+                    app.session.execute(&pending.command, pending.params).map_err(|e| e.to_string())
+                };
+                if let Err(e) = result {
+                    app.ui.status = e;
+                }
+            } else if crate::widgets::escape_closes(ctx) {
+                app.dialog = None;
+                app.pending_clip_mismatch = None;
             }
             return;
         }
@@ -498,4 +597,326 @@ fn about_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     link(ui, "reportIssue", Icon::Code, tl!("Report an issue"), links::ISSUES, false);
     ui.add_space(10.0);
     ui.label(egui::RichText::new(tl!("MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).")).small().color(t.text_dim));
+}
+
+pub fn track_dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    rename_track_dialog(app, ctx);
+    delete_track_confirm_modal(app, ctx);
+    output_channels_dialog(app, ctx);
+    customize_header_dialog(app, ctx);
+}
+
+fn rename_track_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut draft) = app.ui.timeline.rename_track.clone() else { return };
+    let mut keep = true;
+    let mut apply = false;
+    let mut cancel = false;
+    egui::Window::new(tl!("Rename Track"))
+        .id(egui::Id::unique("rename-track-dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .default_width(280.0)
+        .show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.label(tl!("Track Name:"));
+            let text_resp = ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(260.0));
+            app.auto.add("renameTrack.input", text_resp.rect, &draft.name);
+            let focus_id = egui::Id::unique("rename-track-focused");
+            if !ctx.data(|d| d.get_temp::<bool>(focus_id)).unwrap_or(false) {
+                text_resp.request_focus();
+                ctx.data_mut(|d| d.insert_temp(focus_id, true));
+            }
+            if text_resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                apply = true;
+            }
+            ui.add_space(10.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ok_btn = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                app.auto.add("renameTrack.ok", ok_btn.rect, "OK");
+                if ok_btn.clicked() {
+                    apply = true;
+                }
+                let cancel_btn = ui.button(tl!("Cancel"));
+                app.auto.add("renameTrack.cancel", cancel_btn.rect, "Cancel");
+                if cancel_btn.clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if crate::widgets::escape_closes(ctx) || cancel {
+        keep = false;
+    }
+    if apply {
+        let name = draft.name.trim().to_string();
+        if !name.is_empty()
+            && let Err(e) = app.session.execute("timeline.setTrack", json!({"track": draft.track.0, "name": name}))
+        {
+            app.ui.status = e.to_string();
+        }
+        keep = false;
+    }
+    if !keep {
+        ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("rename-track-focused")));
+    }
+    app.ui.timeline.rename_track = if keep { Some(draft) } else { None };
+}
+
+fn delete_track_confirm_modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(confirm) = app.ui.timeline.delete_track_confirm.clone() else { return };
+    let mut keep = true;
+    let mut delete = false;
+    let mut cancel = false;
+    egui::Window::new(tl!("Delete Track"))
+        .id(egui::Id::unique("delete-track-confirm-modal"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .default_width(380.0)
+        .show(ctx, |ui| {
+            ui.add_space(6.0);
+            let msg = tlf!(
+                "Track '{name}' contains {count} clip(s). Deleting the track will remove these clips. Are you sure you want to delete this track?",
+                name = confirm.name,
+                count = confirm.clip_count
+            );
+            ui.label(egui::RichText::new(msg).size(13.0));
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let del_btn =
+                    ui.add(egui::Button::new(egui::RichText::new(tl!("Delete")).color(egui::Color32::WHITE)).fill(egui::Color32::from_rgb(0xc0, 0x39, 0x2b)));
+                app.auto.add("deleteTrack.confirm", del_btn.rect, "Delete");
+                if del_btn.clicked() {
+                    delete = true;
+                }
+                let cancel_btn = ui.button(tl!("Cancel"));
+                app.auto.add("deleteTrack.cancel", cancel_btn.rect, "Cancel");
+                if cancel_btn.clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if crate::widgets::escape_closes(ctx) || cancel {
+        keep = false;
+    }
+    if delete {
+        if let Err(e) = app.session.execute("sequence.deleteTrack", json!({"track": confirm.track.0})) {
+            app.ui.status = e.to_string();
+        }
+        keep = false;
+    }
+    app.ui.timeline.delete_track_confirm = if keep { Some(confirm) } else { None };
+}
+
+fn output_channels_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut draft) = app.ui.timeline.output_channels_dialog.clone() else { return };
+    let Some(seq) = app.session.active_sequence() else {
+        app.ui.timeline.output_channels_dialog = None;
+        return;
+    };
+    let mut keep = true;
+    let mut apply = false;
+    let mut cancel = false;
+    egui::Window::new(tl!("Track Output Channel Assignments"))
+        .id(egui::Id::unique("output-channels-dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .default_width(340.0)
+        .show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(format!("{}: {}", tl!("Track"), draft.track_name)).strong());
+            ui.add_space(6.0);
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(tl!("Channel format:"));
+                    let format_str = match draft.channels {
+                        filmcraft_project::AudioChannels::Mono => "Mono",
+                        filmcraft_project::AudioChannels::Stereo => "Stereo",
+                        filmcraft_project::AudioChannels::Surround51 => "5.1",
+                        filmcraft_project::AudioChannels::Adaptive => "Adaptive",
+                    };
+                    let combo = egui::ComboBox::from_id_salt("output-channels-format").selected_text(format_str).width(160.0).show_ui(ui, |ui| {
+                        for (ch, name) in [
+                            (filmcraft_project::AudioChannels::Stereo, "Stereo"),
+                            (filmcraft_project::AudioChannels::Surround51, "5.1"),
+                            (filmcraft_project::AudioChannels::Mono, "Mono"),
+                            (filmcraft_project::AudioChannels::Adaptive, "Adaptive"),
+                        ] {
+                            ui.selectable_value(&mut draft.channels, ch, name);
+                        }
+                    });
+                    app.auto.add("outputChannels.format", combo.response.rect, format_str);
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(tl!("Output destination:"));
+                    let out_name = draft.output.and_then(|o| seq.mix_track(o)).map(|s| s.name.clone()).unwrap_or_else(|| tl!("Mix").to_string());
+                    let combo = egui::ComboBox::from_id_salt("output-channels-dest").selected_text(&out_name).width(160.0).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut draft.output, None, tl!("Mix"));
+                        for sub in &seq.submix_tracks {
+                            if sub.id != draft.track {
+                                ui.selectable_value(&mut draft.output, Some(sub.id), &sub.name);
+                            }
+                        }
+                    });
+                    app.auto.add("outputChannels.destination", combo.response.rect, &out_name);
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(tl!("Channel mapping:"));
+                    let map_label = draft.input_map.label();
+                    let combo = egui::ComboBox::from_id_salt("output-channels-mapping").selected_text(map_label).width(160.0).show_ui(ui, |ui| {
+                        for m in filmcraft_project::InputMap::ALL {
+                            ui.selectable_value(&mut draft.input_map, m, m.label());
+                        }
+                    });
+                    app.auto.add("outputChannels.mapping", combo.response.rect, map_label);
+                });
+            });
+            ui.add_space(10.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ok_btn = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                app.auto.add("outputChannels.ok", ok_btn.rect, "OK");
+                if ok_btn.clicked() {
+                    apply = true;
+                }
+                let cancel_btn = ui.button(tl!("Cancel"));
+                app.auto.add("outputChannels.cancel", cancel_btn.rect, "Cancel");
+                if cancel_btn.clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if crate::widgets::escape_closes(ctx) || cancel {
+        keep = false;
+    }
+    if apply {
+        let ch_str = match draft.channels {
+            filmcraft_project::AudioChannels::Mono => "mono",
+            filmcraft_project::AudioChannels::Stereo => "stereo",
+            filmcraft_project::AudioChannels::Surround51 => "5.1",
+            filmcraft_project::AudioChannels::Adaptive => "adaptive",
+        };
+        let out_val = draft.output.map(|o| json!(o.0)).unwrap_or(json!("Mix"));
+        let p = json!({
+            "strip": draft.track.0,
+            "channels": ch_str,
+            "output": out_val,
+            "inputMap": draft.input_map.label(),
+        });
+        if let Err(e) = app.session.execute("mixer.setStrip", p) {
+            app.ui.status = e.to_string();
+        }
+        keep = false;
+    }
+    app.ui.timeline.output_channels_dialog = if keep { Some(draft) } else { None };
+}
+
+fn customize_header_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if !app.ui.timeline.customize_header_dialog {
+        return;
+    }
+    let mut open = true;
+    let mut reset = false;
+    let mut custom = app.ui.timeline.header_customization.clone();
+    egui::Window::new(tl!("Customize Track Header Controls"))
+        .id(egui::Id::unique("customize-track-header-dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .default_width(320.0)
+        .show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(tl!("Common Controls")).strong());
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                let c = ui.checkbox(&mut custom.show_track_name, tl!("Track Name & Number"));
+                app.auto.add("customizeTrackHeader.trackName", c.rect, "Track Name & Number");
+                let c = ui.checkbox(&mut custom.show_source_patch, tl!("Source Patch"));
+                app.auto.add("customizeTrackHeader.sourcePatch", c.rect, "Source Patch");
+                let c = ui.checkbox(&mut custom.show_lock, tl!("Track Lock"));
+                app.auto.add("customizeTrackHeader.lock", c.rect, "Track Lock");
+                let c = ui.checkbox(&mut custom.show_target, tl!("Track Targeting"));
+                app.auto.add("customizeTrackHeader.target", c.rect, "Track Targeting");
+                let c = ui.checkbox(&mut custom.show_sync_lock, tl!("Sync Lock"));
+                app.auto.add("customizeTrackHeader.syncLock", c.rect, "Sync Lock");
+            });
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(tl!("Video Track Controls")).strong());
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                let c = ui.checkbox(&mut custom.show_visibility, tl!("Video Visibility / Output"));
+                app.auto.add("customizeTrackHeader.visibility", c.rect, "Video Visibility / Output");
+            });
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(tl!("Audio Track Controls")).strong());
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                let c = ui.checkbox(&mut custom.show_mute, tl!("Mute (M)"));
+                app.auto.add("customizeTrackHeader.mute", c.rect, "Mute");
+                let c = ui.checkbox(&mut custom.show_solo, tl!("Solo (S)"));
+                app.auto.add("customizeTrackHeader.solo", c.rect, "Solo");
+                let c = ui.checkbox(&mut custom.show_voiceover, tl!("Voice-Over Record"));
+                app.auto.add("customizeTrackHeader.voiceover", c.rect, "Voice-Over Record");
+                let c = ui.checkbox(&mut custom.show_automation, tl!("Track Keyframes / Automation"));
+                app.auto.add("customizeTrackHeader.automation", c.rect, "Track Keyframes / Automation");
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let r_btn = ui.button(tl!("Reset to Default"));
+                app.auto.add("customizeTrackHeader.reset", r_btn.rect, "Reset to Default");
+                if r_btn.clicked() {
+                    reset = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let done_btn = ui.add(egui::Button::new(egui::RichText::new(tl!("Done")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                    app.auto.add("customizeTrackHeader.done", done_btn.rect, "Done");
+                    if done_btn.clicked() {
+                        open = false;
+                    }
+                });
+            });
+        });
+    if reset {
+        custom = crate::state::TrackHeaderCustomization::default();
+    }
+    app.ui.timeline.header_customization = custom;
+    if crate::widgets::escape_closes(ctx) {
+        open = false;
+    }
+    app.ui.timeline.customize_header_dialog = open;
+}
+
+#[cfg(test)]
+mod pending_context_tests {
+    use super::{PendingClipMismatch, pending_context_changed};
+    use filmcraft_project::ItemId;
+    use serde_json::json;
+
+    #[test]
+    fn deferred_placement_rejects_a_different_sequence_or_source() {
+        let mut session = filmcraft_engine::Session::default();
+        session.state.active_sequence = Some(ItemId(1));
+        session.state.source_item = Some(ItemId(3));
+        let pending = PendingClipMismatch {
+            command: "source.overwrite".into(),
+            params: json!({}),
+            item: ItemId(3),
+            sequence: ItemId(1),
+            source_item: Some(ItemId(3)),
+            settings: json!({}),
+        };
+        assert!(!pending_context_changed(&session, &pending));
+        session.state.active_sequence = Some(ItemId(2));
+        assert!(pending_context_changed(&session, &pending));
+        session.state.active_sequence = Some(ItemId(1));
+        session.state.source_item = Some(ItemId(4));
+        assert!(pending_context_changed(&session, &pending));
+    }
 }

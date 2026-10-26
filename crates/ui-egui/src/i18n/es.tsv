@@ -3628,3 +3628,29 @@
 	No matching text.	Ningún texto coincide.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
+	Add Track	Añadir pista
+	Delete Track	Eliminar pista
+	Track Output Channel Assignments…	Asignaciones de canales de salida de pista…
+	Track Output Channel Assignments	Asignaciones de canales de salida de pista
+	Customize…	Personalizar…
+	Customize Track Header Controls	Personalizar controles de cabecera de pista
+	Rename Track	Cambiar nombre de pista
+	Track Name:	Nombre de pista:
+	Channel format:	Formato de canal:
+	Output destination:	Destino de salida:
+	Channel mapping:	Mapeo de canales:
+	Common Controls	Controles comunes
+	Video Track Controls	Controles de pista de video
+	Audio Track Controls	Controles de pista de audio
+	Track Name & Number	Nombre y número de pista
+	Source Patch	Parche de origen
+	Track Lock	Bloqueo de pista
+	Track Targeting	Destino de pista
+	Sync Lock	Bloqueo de sincronización
+	Video Visibility / Output	Visibilidad / salida de video
+	Mute (M)	Silenciar (M)
+	Solo (S)	Solo (S)
+	Voice-Over Record	Grabación de voz en off
+	Track Keyframes / Automation	Fotogramas clave / automatización de pista
+	Reset to Default	Restablecer a valores predeterminados
+	Track '{name}' contains {count} clip(s). Deleting the track will remove these clips. Are you sure you want to delete this track?	La pista '{name}' contiene {count} clip(s). Al eliminar la pista se eliminarán estos clips. ¿Seguro que quieres eliminar esta pista?
