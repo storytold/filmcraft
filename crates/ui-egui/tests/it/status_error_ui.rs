@@ -61,6 +61,7 @@ fn a_click_on_the_status_bar_dismisses_an_error() {
         h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
         h.step();
     }
+    assert!(!has(&h, "status.error"), "not drawn as an error on the frame it was clicked away");
     h.step();
     assert!(h.state().ui.status.is_empty(), "the click cleared it");
 }
