@@ -191,7 +191,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
                             let ctx = ui.ctx().clone();
                             if let Err(e) = crate::menus::invoke(app, &ctx, &format!("window.workspace.{action}"), serde_json::json!({})) {
-                                app.ui.status = e;
+                                app.ui.fail(e);
                             }
                         }
                     }

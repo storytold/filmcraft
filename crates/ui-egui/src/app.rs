@@ -303,7 +303,8 @@ impl FilmcraftApp {
                     self.show_panel(PanelKind::Source);
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
-                filmcraft_engine::Event::Toast { message, .. } => self.status(message),
+                filmcraft_engine::Event::Toast { message, error: true } => self.ui.fail(message),
+                filmcraft_engine::Event::Toast { message, error: false } => self.status(message),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
