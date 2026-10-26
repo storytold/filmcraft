@@ -61,7 +61,7 @@ fn commit_marked_text(app: &mut FilmcraftApp, ctx: &egui::Context) {
     text.replace_range(a..b, &marked);
     let params = json!({"clip": ed.clip, "layer": ed.layer, "text": text, "merge": true});
     if let Err(e) = app.session.execute("graphics.setText", params) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 

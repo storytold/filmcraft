@@ -183,7 +183,7 @@ pub(super) fn ruler_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut e
             app.auto.add(&format!("timeline.rulerMenu.{cmd}"), r.rect, label);
             if r.clicked() {
                 if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({})) {
-                    app.ui.status = e;
+                    app.ui.fail(e);
                 }
                 ui.close();
             }
@@ -235,7 +235,7 @@ pub(super) fn run_track_menu(app: &mut FilmcraftApp, ui: &egui::Ui, picked: Opti
     if let Some((cmd, params)) = picked
         && let Err(e) = crate::menus::invoke(app, &ui.ctx().clone(), &cmd, params)
     {
-        app.ui.status = e;
+        app.ui.fail(e);
     }
 }
 

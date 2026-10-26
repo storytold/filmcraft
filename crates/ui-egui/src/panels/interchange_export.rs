@@ -208,7 +208,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
         } else {
-            app.ui.status = "no save dialog available: run the command with a `path`".into();
+            app.ui.fail("no save dialog available: run the command with a `path`");
         }
     }
     ctx.data_mut(|m| m.insert_temp(draft_id(), if close { None } else { Some(d) }));

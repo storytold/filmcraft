@@ -139,7 +139,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some(id) = set_default
         && let Err(e) = app.session.execute("effects.setDefaultTransition", json!({"effect": id}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     if let Some(id) = apply {
         let r = app.session.execute("effects.apply", json!({"effect": id}));

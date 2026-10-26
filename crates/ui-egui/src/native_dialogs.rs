@@ -221,7 +221,7 @@ impl FilmcraftApp {
         let Some(p) = self.overwrite_prompt.take() else { return };
         let paths = if replace { vec![p.path] } else { Vec::new() };
         if let Err(e) = (p.then)(self, paths) {
-            self.ui.status = e;
+            self.ui.fail(e);
         }
     }
 
