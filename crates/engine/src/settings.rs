@@ -1737,12 +1737,17 @@ impl Session {
 
     /// Note a project file as the most recent one (General ▸ At Startup ▸ Open Most Recent).
     pub fn note_recent_project(&mut self) {
-        let Some(p) = self.path.clone() else { return };
-        if self.prefs.general.recent_projects.first() == Some(&p) {
+        if let Some(p) = self.path.clone() {
+            self.note_recent(&p);
+        }
+    }
+
+    pub fn note_recent(&mut self, p: &str) {
+        if self.prefs.general.recent_projects.first().is_some_and(|f| f == p) {
             return;
         }
         let mut next = self.prefs.clone();
-        next.note_recent(&p);
+        next.note_recent(p);
         let _ = self.set_prefs(next);
     }
 }

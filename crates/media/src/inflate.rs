@@ -26,6 +26,44 @@ pub fn zlib(src: &[u8], expected: usize) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+pub fn gzip(src: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
+    const FHCRC: u8 = 0x02;
+    const FEXTRA: u8 = 0x04;
+    const FNAME: u8 = 0x08;
+    const FCOMMENT: u8 = 0x10;
+    let [0x1f, 0x8b, 8, flags, _, _, _, _, _, _, rest @ ..] = src else {
+        return Err("not a gzip stream");
+    };
+    let mut body = rest;
+    if flags & FEXTRA != 0 {
+        let [lo, hi, tail @ ..] = body else { return Err("truncated gzip header") };
+        body = tail.get(usize::from(u16::from_le_bytes([*lo, *hi]))..).ok_or("truncated gzip header")?;
+    }
+    for flag in [FNAME, FCOMMENT] {
+        if flags & flag != 0 {
+            let end = body.iter().position(|&b| b == 0).ok_or("truncated gzip header")?;
+            body = body.get(end + 1..).unwrap_or_default();
+        }
+    }
+    if flags & FHCRC != 0 {
+        body = body.get(2..).ok_or("truncated gzip header")?;
+    }
+    let [.., c0, c1, c2, c3, s0, s1, s2, s3] = body else { return Err("truncated gzip stream") };
+    let crc = u32::from_le_bytes([*c0, *c1, *c2, *c3]);
+    let size = usize::try_from(u32::from_le_bytes([*s0, *s1, *s2, *s3])).unwrap_or(usize::MAX);
+    if size > limit {
+        return Err("gzip stream is larger than allowed");
+    }
+    let out = inflate(body, size)?;
+    if out.len() != size {
+        return Err("gzip stream ends early");
+    }
+    if filmcraft_bitstream::crc32(&out) != crc {
+        return Err("gzip checksum does not match");
+    }
+    Ok(out)
+}
+
 /// Inflate raw DEFLATE data, producing at most `limit` bytes (more is an error).
 pub fn inflate(src: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
     let mut bits = Bits { src, pos: 0, buf: 0, cnt: 0 };
@@ -323,6 +361,40 @@ mod tests {
     fn dynamic_block() {
         let want: Vec<u8> = (0..300usize).map(|i| ((i * i * 7 + i / 3) % 23 + 65) as u8).collect();
         assert_eq!(zlib(DYNAMIC, 300).unwrap(), want);
+    }
+
+    const GZIP: &[u8] = &[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0x40, 0x27, 0x01, 0xe3, 0x51, 0x3d, 0x8d, 0x17,
+        0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn gzip_member() {
+        assert_eq!(gzip(GZIP, 1 << 20).unwrap(), b"hello hello hello hello");
+    }
+
+    #[test]
+    fn gzip_optional_header_fields() {
+        let s = [
+            0x1f, 0x8b, 0x08, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x02, 0x00, 0x09, 0x09, 0x6e, 0x00, 0x63, 0x00, 0x00, 0x00, 0x4b, 0x4c, 0x4a, 0x06,
+            0x00, 0xc2, 0x41, 0x24, 0x35, 0x03, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(gzip(&s, 16).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn gzip_rejects_bad_input() {
+        assert!(gzip(b"plain text", 1 << 20).is_err());
+        assert!(gzip(GZIP, 4).is_err(), "over the limit");
+        for n in 0..GZIP.len() {
+            assert!(gzip(&GZIP[..n], 1 << 20).is_err(), "truncated at {n}");
+        }
+        let mut bad_crc = GZIP.to_vec();
+        bad_crc[20] ^= 1;
+        assert_eq!(gzip(&bad_crc, 1 << 20), Err("gzip checksum does not match"));
+        let mut bad_size = GZIP.to_vec();
+        bad_size[24] += 1;
+        assert!(gzip(&bad_size, 1 << 20).is_err(), "size trailer off by one");
     }
 
     #[test]

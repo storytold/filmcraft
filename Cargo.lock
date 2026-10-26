@@ -2064,6 +2064,7 @@ dependencies = [
  "chrono",
  "craft-docpath",
  "filmcraft-audio-dsp",
+ "filmcraft-bitstream",
  "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
@@ -2236,6 +2237,7 @@ dependencies = [
 name = "filmcraft-interchange"
 version = "0.13.0"
 dependencies = [
+ "filmcraft-bitstream",
  "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
@@ -2272,6 +2274,7 @@ dependencies = [
 name = "filmcraft-media"
 version = "0.13.0"
 dependencies = [
+ "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",

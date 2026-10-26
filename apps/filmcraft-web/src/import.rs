@@ -132,7 +132,7 @@ pub async fn import_files(files: Vec<web_sys::File>) -> Value {
     json!({"items": items, "errors": errors, "paths": paths})
 }
 
-/// Open a `.fcproj` file picked or dropped by the user.
+/// Open a `.fcproj` or `.prproj` file picked or dropped by the user.
 pub async fn open_project_file(file: web_sys::File) -> Result<Value, String> {
     let buf = JsFuture::from(file.array_buffer()).await.map_err(|e| format!("{e:?}"))?;
     let path = format!("/projects/{}", file.name());
@@ -143,7 +143,10 @@ pub async fn open_project_file(file: web_sys::File) -> Result<Value, String> {
 /// Handle files from a picker or a drop: projects open, everything else is imported.
 pub fn take_files(files: Vec<web_sys::File>) {
     wasm_bindgen_futures::spawn_local(async move {
-        let (projects, media): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.name().to_ascii_lowercase().ends_with(".fcproj"));
+        let (projects, media): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| {
+            let n = f.name().to_ascii_lowercase();
+            n.ends_with(".fcproj") || n.ends_with(".prproj")
+        });
         for p in projects {
             if let Err(e) = open_project_file(p).await {
                 crate::post(move |w, _| w.app.status(e));
@@ -258,7 +261,7 @@ pub fn install_hooks(app: &mut FilmcraftApp) {
         Vec::new()
     }));
     app.hooks.pick_open_project = Some(Box::new(|| {
-        pick(&["fcproj"], false);
+        pick(&["fcproj", "prproj"], false);
         None
     }));
     // Saving writes the file in memory and offers it as a download (`fs::WebServices`).
