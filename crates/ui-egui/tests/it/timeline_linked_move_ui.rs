@@ -142,7 +142,9 @@ fn moving_a_linked_video_clip_up_a_track_leaves_its_audio_on_its_track() {
     let from = pos2((x0 + x1) / 2.0, y + 10.0);
     d.drag(from, pos2(from.x, from.y - 34.0), 12);
     let (video1, partner1) = tracks_of(&d, city);
-    assert_ne!(video1, video0, "the video clip went up a track");
+    let above = d.harness.state().session.active_sequence().unwrap().video_tracks.iter().position(|t| t.id.0 == video0).map(|i| i + 1);
+    let above = above.and_then(|i| d.harness.state().session.active_sequence().unwrap().video_tracks.get(i).map(|t| t.id.0));
+    assert_eq!(Some(video1), above, "the video clip went up one track");
     let (audio_track1, audio_clip1) = partner1.expect("still linked");
     assert_eq!(audio_clip1, audio_clip);
     assert_eq!(audio_track1, audio_track0, "its linked audio stays on its own track");
@@ -165,7 +167,9 @@ fn moving_a_linked_audio_clip_down_a_track_leaves_its_video_on_its_track() {
     d.drag(from, pos2(from.x, from.y + 60.0), 12);
     let (video1, partner1) = tracks_of(&d, city);
     assert_eq!(video1, video0, "the video clip stays");
-    assert!(partner1.is_some_and(|(t, _)| Some(t) != partner0.map(|(t, _)| t)), "the audio clip changed track");
+    let audio = &d.harness.state().session.active_sequence().unwrap().audio_tracks;
+    let below = partner0.and_then(|(t, _)| audio.iter().position(|a| a.id.0 == t)).and_then(|i| audio.get(i + 1)).map(|a| a.id.0);
+    assert_eq!(partner1.map(|(t, _)| t), below, "the audio clip went down one track");
     assert_eq!(d.span(city).0, video_start0, "a vertical drag leaves the video's time alone");
     assert_eq!(d.span(audio_clip).0, audio_start0, "and the audio's");
 }
