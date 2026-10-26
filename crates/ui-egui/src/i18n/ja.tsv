@@ -3606,6 +3606,7 @@
 	The default graphics are used from the next start.	次回の起動からデフォルトのグラフィックが使用されます。
 	DirectX 12 only	DirectX 12 のみ
 	software rendering	ソフトウェアレンダリング
+	integrated GPU	内蔵 GPU
 	Label Color Presets	ラベルカラープリセット
 	{name} (Modified)	{name} (変更あり)
 	Revert to the preset's colors and names	プリセットのカラーと名前に戻す

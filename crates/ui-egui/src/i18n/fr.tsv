@@ -3572,6 +3572,7 @@
 	The default graphics are used from the next start.	Les graphismes par défaut seront utilisés au prochain démarrage.
 	DirectX 12 only	DirectX 12 uniquement
 	software rendering	rendu logiciel
+	integrated GPU	GPU intégré
 	Label Color Presets	Paramètres prédéfinis de couleur d'étiquette
 	{name} (Modified)	{name} (modifié)
 	Revert to the preset's colors and names	Revenir aux couleurs et aux noms du paramètre prédéfini

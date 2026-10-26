@@ -3582,6 +3582,7 @@
 	The default graphics are used from the next start.	下次启动时将使用默认图形。
 	DirectX 12 only	仅 DirectX 12
 	software rendering	软件渲染
+	integrated GPU	集成 GPU
 	Label Color Presets	标签颜色预设
 	{name} (Modified)	{name}（已修改）
 	Revert to the preset's colors and names	恢复为预设的颜色和名称
