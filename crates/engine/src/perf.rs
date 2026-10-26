@@ -43,6 +43,8 @@ pub fn decode_json() -> Value {
             "softwareFrames": g.frames.saturating_sub(hw.frames),
             "sessions": hw.sessions,
             "declined": hw.declined,
+            // why, once per distinct reason (the stream kind and the cause)
+            "declinedReasons": filmcraft_codecs::hw::hw_declined_reasons(),
             "fallbacks": hw.fallbacks,
         },
     })
@@ -69,6 +71,12 @@ pub fn stats(s: &Session) -> Value {
         "media": {"openSources": s.media.open_sources()},
         "jobs": {"total": s.jobs.len(), "running": running},
     })
+}
+
+/// Why hardware decoders declined streams this run, once per reason (`perf.stats`
+/// `decode.hardware.declinedReasons`), for the UI to tell the user (#2751).
+pub fn hw_declined_reasons() -> Vec<String> {
+    filmcraft_codecs::hw::hw_declined_reasons()
 }
 
 #[cfg(test)]

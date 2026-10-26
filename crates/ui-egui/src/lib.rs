@@ -406,6 +406,9 @@ pub struct FilmcraftApp {
     /// A paused monitor drew a stand-in (nearest cached) picture last frame: its exact frame is
     /// still decoding.
     pub(crate) monitor_inexact: bool,
+    /// Hardware-decoding decline reasons already told in the status bar
+    /// (`filmcraft_engine::perf::hw_declined_reasons`, #2751).
+    pub(crate) hw_declines_told: usize,
     /// Per monitor: the frames it asked for on its latest paused passes, oldest first (stand-ins
     /// while the newest renders, see `panels::monitor`).
     pub(crate) monitor_asked: HashMap<String, std::collections::VecDeque<FrameKey>>,
@@ -685,6 +688,7 @@ impl FilmcraftApp {
             capture_geometry: None,
             capture_epoch: 0,
             monitor_inexact: false,
+            hw_declines_told: 0,
             monitor_asked: HashMap::new(),
             program_shown: None,
             timeline_still: 0,
@@ -2053,6 +2057,25 @@ impl FilmcraftApp {
         ctx.request_repaint();
     }
 
+    /// A stream the hardware decoder declined now decodes on the CPU, which can make 4K or
+    /// high-bitrate video stutter: say so in the status bar, once per reason, with the reason
+    /// (on Windows, e.g. that the HEVC Video Extensions are not installed; #2751). Runs right
+    /// before the status bar is drawn, and waits while it shows another message (those clear
+    /// after a few seconds), so nothing replaces the notice before it is seen.
+    pub(crate) fn tell_hw_declines(&mut self) {
+        if !self.ui.status.is_empty() {
+            return;
+        }
+        let reasons = filmcraft_engine::perf::hw_declined_reasons();
+        // every reason that came since the last pass, not only the newest
+        if let Some(new) = reasons.get(self.hw_declines_told..).filter(|new| !new.is_empty()) {
+            let reason = new.join("; ");
+            self.ui.status =
+                tlf!("Hardware decoding isn't used for {reason}. FilmCraft decodes it on the CPU, so 4K or high-bitrate video can play back slowly.", reason);
+        }
+        self.hw_declines_told = reasons.len();
+    }
+
     /// Drain queued control requests without blocking: UI requests wait for a layout pass with a 3 s deadline (except screenshots), non-UI requests run now,
     /// and hidden windows are raised and repainted.
     fn drain_control(&mut self, ctx: &egui::Context) {
@@ -2218,6 +2241,11 @@ impl FilmcraftApp {
         }
         // Status / hint bar
         let sb = egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - status_h), full.max);
+        // a click dismisses the message shown so far, not a decline notice placed this frame
+        if ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click()).clicked() {
+            self.ui.status.clear();
+        }
+        self.tell_hw_declines();
         ui.painter().rect_filled(sb, 0.0, t.header_bg);
         let now = ui.input(|i| i.time);
         if self.ui.status != self.status_seen.0 {
@@ -2231,10 +2259,6 @@ impl FilmcraftApp {
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
-        let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
-        if resp.clicked() {
-            self.ui.status.clear();
-        }
         self.job_status(ui, sb, &t);
     }
 

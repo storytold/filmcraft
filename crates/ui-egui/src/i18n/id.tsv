@@ -3583,3 +3583,4 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	Hardware decoding isn't used for {reason}. FilmCraft decodes it on the CPU, so 4K or high-bitrate video can play back slowly.	Dekode perangkat keras tidak dipakai untuk {reason}. FilmCraft mendekodenya di CPU, jadi video 4K atau bitrate tinggi bisa diputar lambat.
