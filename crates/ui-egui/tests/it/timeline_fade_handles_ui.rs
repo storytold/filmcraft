@@ -210,3 +210,49 @@ fn a_fade_at_a_cut_stays_inside_a_short_neighbour() {
     assert_eq!(made[0].1 / one, 8, "twice the 4-frame neighbour");
     assert!(made[0].0 >= start, "it starts inside the neighbour: {made:?} for a neighbour at {start}");
 }
+
+/// A click at a cut is held to the same length as a drag: the default (30 frames) would run far
+/// past a 4-frame neighbour.
+#[test]
+fn a_click_on_a_fade_handle_at_a_cut_stays_inside_a_short_neighbour() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let one = d.app().session.sequence_rate().frame_duration().0;
+    let start = d.app().session.active_sequence().unwrap().find_item(ClipId(city)).unwrap().1.start.0;
+    d.exec("timeline.razor", json!({"track": "V1", "clip": city, "time": start + 4 * one}));
+    let rest = {
+        let q = d.app().session.active_sequence().unwrap();
+        q.video_tracks[0].items.iter().find(|i| i.start.0 == start + 4 * one).expect("the rest of the clip").id.0
+    };
+    d.frames(2);
+    let at = handle_at(&mut d, rest, false);
+    d.click_with(at, egui::Modifiers::NONE);
+    let made = transitions_to(&d, rest);
+    assert_eq!(made.len(), 1, "one transition at the cut: {made:?}");
+    assert_eq!(made[0].1 / one, 8, "twice the 4-frame neighbour, not the 30-frame default");
+}
+
+/// Each handle on a hovered clip is an automation element at the spot it can be pressed.
+#[test]
+fn the_fade_handles_of_a_hovered_clip_have_automation_ids() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    // cut in two, so that both ends of the first piece are free
+    let (start, duration) = {
+        let it = d.app().session.active_sequence().unwrap().find_item(ClipId(city)).unwrap().1.clone();
+        (it.start.0, it.duration.0)
+    };
+    let one = d.app().session.sequence_rate().frame_duration().0;
+    d.exec("timeline.razor", json!({"track": "V1", "clip": city, "time": start + duration * 3 / 4 / one * one}));
+    d.frames(2);
+    let (fade_in, fade_out) = (handle_at(&mut d, city, false), handle_at(&mut d, city, true));
+    d.hover(fade_in);
+    let els = d.ok("ui.elements", json!({"prefix": format!("timeline.clip.{city}.fade.")}));
+    for (side, at) in [("in", fade_in), ("out", fade_out)] {
+        let id = format!("timeline.clip.{city}.fade.{side}");
+        let el = els.as_array().unwrap().iter().find(|e| e["id"] == id.as_str()).unwrap_or_else(|| panic!("no {id}: {els}")).clone();
+        let r: Vec<f32> = el["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
+        let centre = pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        assert!(centre.distance(at) < 1.0, "{id} is at {centre:?}, the handle at {at:?}");
+    }
+}
