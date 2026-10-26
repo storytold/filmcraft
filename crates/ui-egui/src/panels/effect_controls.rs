@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
-use crate::state::{EffectClipboard, EffectKeyframeClipboard, EffectKeyframeClipboardEntry, EffectKeyframeTemplate, KeyframeRef};
+use crate::state::KeyframeRef;
 use crate::theme::Tokens;
 use crate::widgets::HotNumberOptions;
+use filmcraft_engine::clipboard::{EffectKeyframeClipboard, EffectKeyframeClipboardEntry, EffectKeyframeTemplate};
 
 #[path = "effect_controls_selection.rs"]
 mod selection;
@@ -432,71 +433,27 @@ fn removable_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectI
     indices
 }
 
-/// The keyframe and path-vertex counts of an effect, saturating: the size a copy would add to the
-/// clipboard.
-fn effect_clipboard_size(effect: &EffectInstance) -> (usize, usize) {
-    let mut keys = 0usize;
-    let mut vertices = 0usize;
-    for param in
-        effect.params.values().chain(effect.masks.iter().flat_map(|mask| filmcraft_project::mask::MASK_PARAMS.into_iter().filter_map(|id| mask.param(id))))
-    {
-        keys = keys.saturating_add(param.keyframes.len());
-        if let ParamValue::Path(path) = &param.value {
-            vertices = vertices.saturating_add(path.vertices.len());
-        }
-        for keyframe in &param.keyframes {
-            if let ParamValue::Path(path) = &keyframe.value {
-                vertices = vertices.saturating_add(path.vertices.len());
-            }
-        }
-    }
-    (keys, vertices)
-}
-
-/// Copy the selected effects (or `clicked` alone) into the effect clipboard, refusing intrinsic,
-/// layer, essential or oversized chains.
+/// Copy the selected effects (or `clicked` alone) to the application clipboard, which holds
+/// whatever was copied last, wherever from (see [`filmcraft_engine::clipboard`]).
 fn copy_effects(app: &mut FilmcraftApp, clip: ClipId, item: &TrackItem, clicked: usize) {
     let mut indices = selected_effect_indices(app, clip, &item.effects);
     if !indices.contains(&clicked) {
         indices = vec![clicked];
     }
-    if indices.len() > 64 {
-        app.ui.status = tl!("Select no more than 64 effects to copy").to_string();
-        return;
-    }
-    let mut copied_keys = 0usize;
-    let mut copied_vertices = 0usize;
-    for index in &indices {
-        if let Some(effect) = item.effects.get(*index) {
-            let (keys, vertices) = effect_clipboard_size(effect);
-            copied_keys = copied_keys.saturating_add(keys);
-            copied_vertices = copied_vertices.saturating_add(vertices);
-        }
-    }
-    if copied_keys > 100_000 || copied_vertices > 16_384 {
-        app.ui.status = tl!("The selected effects contain too much animation or path data to copy").to_string();
-        return;
-    }
     let effects: Vec<EffectInstance> = indices.iter().filter_map(|index| item.effects.get(*index)).cloned().collect();
-    if effects.is_empty()
-        || effects.iter().any(|effect| effect.def().is_none_or(|def| def.intrinsic || filmcraft_project::graphic::is_layer(effect) || effect.essential))
-    {
-        app.ui.status = tl!("Only standard effects can be copied").to_string();
-        return;
+    match app.session.execute("effects.copy", json!({"sourceClip": clip.0, "sourceIn": item.source_in.0, "effects": effects})) {
+        Ok(value) => app.ui.status = tlf!("Copied {count} effect(s)", count = value["copied"].as_u64().unwrap_or(0)),
+        Err(error) => app.ui.status = error.to_string(),
     }
-    app.ui.effect_clipboard = EffectClipboard { source_clip: clip.0, source_in: item.source_in, effects };
-    app.ui.effect_controls_clipboard_kind = Some(crate::state::EffectControlsClipboardKind::Effects);
-    app.ui.status = tlf!("Copied {count} effect(s)", count = indices.len());
 }
 
 /// Paste the effect clipboard onto the selected clips that accept it; audio and video chains do
 /// not mix.
 fn paste_effects(app: &mut FilmcraftApp, current_clip: ClipId) {
-    let clipboard = app.ui.effect_clipboard.clone();
-    if clipboard.effects.is_empty() {
+    let Some(clipboard) = app.session.state.effect_clipboard.clone() else {
         app.ui.status = tl!("No effects have been copied").to_string();
         return;
-    }
+    };
     let Some(first) = clipboard.effects.first().and_then(EffectInstance::def) else {
         app.ui.status = tl!("The copied effects are unavailable").to_string();
         return;
@@ -591,31 +548,10 @@ fn copy_keyframes(app: &mut FilmcraftApp) -> Result<(), String> {
         }
         clipboard.entries.push(EffectKeyframeClipboardEntry { effect: effect.effect.clone(), instance, param: key.param, mask: key.mask, offset, keyframe });
     }
-    app.ui.effect_keyframe_clipboard = clipboard;
-    app.ui.effect_controls_clipboard_kind = Some(crate::state::EffectControlsClipboardKind::Keyframes);
-    app.ui.status = tlf!("Copied {count} keyframe(s)", count = app.ui.effect_keyframe_clipboard.entries.len());
+    let count = clipboard.entries.len();
+    app.session.execute("effects.copyKeyframes", json!({"keyframes": clipboard.entries, "effects": clipboard.effects})).map_err(|error| error.to_string())?;
+    app.ui.status = tlf!("Copied {count} keyframe(s)", count = count);
     Ok(())
-}
-
-/// Paste the keyframe clipboard at the playhead and select what landed.
-fn paste_keyframes(app: &mut FilmcraftApp, current_clip: ClipId) {
-    let clipboard = app.ui.effect_keyframe_clipboard.clone();
-    if clipboard.entries.is_empty() {
-        app.ui.status = tl!("No keyframes have been copied").to_string();
-        return;
-    }
-    let target = current_clip;
-    let result = app.session.execute(
-        "effects.pasteKeyframes",
-        json!({"clip": target.0, "anchor": app.session.playhead().0, "keyframes": clipboard.entries, "effects": clipboard.effects}),
-    );
-    match result {
-        Ok(result) => match serde_json::from_value(result["keyframes"].clone()) {
-            Ok(keys) => app.ui.keyframe_selection = keys,
-            Err(error) => app.ui.status = format!("Could not select pasted keyframes: {error}"),
-        },
-        Err(error) => app.ui.status = error.to_string(),
-    }
 }
 
 /// Ctrl+C in Effect Controls: the selected keyframes, else the selected effects.
@@ -640,15 +576,6 @@ pub(crate) fn copy_selected_effects(app: &mut FilmcraftApp) {
 }
 
 /// Whether Ctrl+V has something to paste onto the Timeline selection.
-pub(crate) fn can_paste_for_shortcut(app: &FilmcraftApp) -> bool {
-    !app.session.state.selection.is_empty()
-        && match app.ui.effect_controls_clipboard_kind {
-            Some(crate::state::EffectControlsClipboardKind::Keyframes) => !app.ui.effect_keyframe_clipboard.entries.is_empty(),
-            Some(crate::state::EffectControlsClipboardKind::Effects) => !app.ui.effect_clipboard.effects.is_empty(),
-            None => false,
-        }
-}
-
 /// Whether Ctrl+C has something to copy in Effect Controls: a selected keyframe, or an effect the
 /// panel would copy. The panel claims Copy only while this holds, so a pointer resting on an empty
 /// panel leaves the chord to the Timeline selection.
@@ -748,7 +675,7 @@ mod delete_shortcut_tests {
 
         assert!(!can_copy_for_shortcut(&app), "nothing selected in the panel");
         assert!(!can_delete_for_shortcut(&app), "no keyframe and no effect selected");
-        assert!(!can_paste_for_shortcut(&app), "the panel's clipboard is empty");
+        assert!(app.session.state.effect_clipboard.is_none() && app.session.state.keyframe_clipboard.is_none(), "the clipboard is empty");
 
         // An effect selected in the panel gives Copy and Delete something to work on.
         app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).unwrap();
@@ -774,16 +701,6 @@ mod delete_shortcut_tests {
 }
 
 /// Ctrl+V in Effect Controls: paste keyframes or effects, whichever the clipboard holds.
-pub(crate) fn paste_for_shortcut(app: &mut FilmcraftApp) {
-    let Some((clip, _, _)) = selected_clip(app) else { return };
-    match app.ui.effect_controls_clipboard_kind {
-        Some(crate::state::EffectControlsClipboardKind::Keyframes) if !app.ui.effect_keyframe_clipboard.entries.is_empty() => paste_keyframes(app, clip),
-        Some(crate::state::EffectControlsClipboardKind::Effects) if !app.ui.effect_clipboard.effects.is_empty() => paste_effects(app, clip),
-        _ if !app.ui.effect_keyframe_clipboard.entries.is_empty() => paste_keyframes(app, clip),
-        _ => paste_effects(app, clip),
-    }
-}
-
 /// Effect Controls for the selected clip — or for the selected transition. Draws the effect chain,
 /// its parameters and the keyframe lane.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {

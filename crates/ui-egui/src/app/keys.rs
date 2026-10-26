@@ -74,7 +74,7 @@ impl FilmcraftApp {
 
     /// The binding ids the key presses in `i` fire, consuming those presses, and the panel
     /// shortcuts they claimed instead (see [`ClaimedShortcuts`]). `pointer_panel` is the panel the
-    /// pointer rests on, which decides whether Effect Controls owns Delete, Copy and Paste.
+    /// pointer rests on, which decides whether Effect Controls owns Delete and Copy.
     fn match_shortcuts(
         &mut self,
         i: &mut egui::InputState,
@@ -89,7 +89,6 @@ impl FilmcraftApp {
         // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
         let focused = self.ui.focused.title();
         let effect_controls_pointer = pointer_panel == PanelKind::EffectControls || self.ui.focused == PanelKind::EffectControls;
-        let timeline_pointer = pointer_panel == PanelKind::Timeline;
         let mut fire = Vec::new();
         let mut claimed = ClaimedShortcuts::default();
         let modifiers = i.modifiers;
@@ -160,18 +159,13 @@ impl FilmcraftApp {
             }
             let fires = if repeats_when_held(id) { i.consume_key(*m, *k) } else { consume_fresh_press(i, *m, *k) };
             if fires {
-                // Effect Controls takes Copy and Paste for its own selection — the selected
-                // keyframes, else the selected effect — instead of the app-wide clip commands, but
-                // only while it has something to copy or to paste: otherwise the chord belongs to
-                // the Timeline selection (Copy of the clips, Paste of the clip clipboard).
+                // Effect Controls takes Copy for its own selection — the selected keyframes, else
+                // the selected effect — instead of the app-wide clip copy, but only while it has
+                // something to copy: otherwise the chord belongs to the Timeline selection.
+                // Paste needs no scoping here: the application holds one clipboard, and
+                // `edit.paste` applies whatever was copied last (see `filmcraft_engine::clipboard`).
                 if !text_focused && effect_controls_pointer && id == "edit.copy" && panels::effect_controls::can_copy_for_shortcut(self) {
                     claimed.effect_controls_copy = true;
-                } else if !text_focused
-                    && id == "edit.paste"
-                    && panels::effect_controls::can_paste_for_shortcut(self)
-                    && (effect_controls_pointer || timeline_pointer)
-                {
-                    claimed.effect_controls_paste = true;
                 } else {
                     fire.push(id.clone());
                 }
@@ -187,9 +181,6 @@ impl FilmcraftApp {
         }
         if claimed.effect_controls_copy {
             panels::effect_controls::copy_for_shortcut(self);
-        }
-        if claimed.effect_controls_paste {
-            panels::effect_controls::paste_for_shortcut(self);
         }
     }
 
@@ -215,7 +206,22 @@ impl FilmcraftApp {
             } else {
                 json!({})
             };
-            if let Err(e) = menus::invoke(self, ctx, &id, params) {
+            let result = menus::invoke(self, ctx, &id, params);
+            // A paste reports what it applied and selects the keyframes it pasted — it may have
+            // come from the panel or from the Timeline selection, one clipboard serves both.
+            if id == "edit.paste"
+                && let Ok(value) = &result
+            {
+                if let Some(inserted) = value.get("inserted").and_then(|inserted| inserted.as_u64()) {
+                    self.ui.status = tlf!("Pasted {count} effect(s)", count = inserted);
+                }
+                if let Some(keys) = value.get("keyframes")
+                    && let Ok(keys) = serde_json::from_value(keys.clone())
+                {
+                    self.ui.keyframe_selection = keys;
+                }
+            }
+            if let Err(e) = result {
                 self.ui.status = e;
             }
         }
@@ -295,8 +301,6 @@ struct ClaimedShortcuts {
     effect_controls_delete: bool,
     /// Ctrl+C: copy the selected keyframes, else the selected effect.
     effect_controls_copy: bool,
-    /// Ctrl+V: paste whatever the Effect Controls clipboard holds.
-    effect_controls_paste: bool,
 }
 
 #[cfg(test)]

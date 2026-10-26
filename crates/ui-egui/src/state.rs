@@ -439,44 +439,6 @@ pub struct KeyframeRef {
     pub time: filmcraft_time::Tick,
 }
 
-/// A transient clipboard snapshot of ordinary effects copied in Effect Controls.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct EffectClipboard {
-    pub source_clip: u64,
-    pub source_in: filmcraft_time::Tick,
-    pub effects: Vec<filmcraft_project::EffectInstance>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct EffectKeyframeTemplate {
-    pub effect: String,
-    pub instance: usize,
-    pub template: filmcraft_project::EffectInstance,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct EffectKeyframeClipboardEntry {
-    pub effect: String,
-    pub instance: usize,
-    pub param: String,
-    pub mask: Option<usize>,
-    pub offset: filmcraft_time::Tick,
-    pub keyframe: filmcraft_project::Keyframe,
-}
-
-/// Selected animated values and timing copied from the Effect Controls lane.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct EffectKeyframeClipboard {
-    pub entries: Vec<EffectKeyframeClipboardEntry>,
-    pub effects: Vec<EffectKeyframeTemplate>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EffectControlsClipboardKind {
-    Effects,
-    Keyframes,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -525,13 +487,6 @@ pub struct UiState {
     /// Effect Controls: selected effects by stable effect id/occurrence, not a fragile row index.
     #[serde(default)]
     pub selected_effects: Vec<filmcraft_engine::EffectSel>,
-    /// Clipboard data is transient and is deliberately not written into project/UI state files.
-    #[serde(skip)]
-    pub effect_clipboard: EffectClipboard,
-    #[serde(skip)]
-    pub effect_keyframe_clipboard: EffectKeyframeClipboard,
-    #[serde(skip)]
-    pub effect_controls_clipboard_kind: Option<EffectControlsClipboardKind>,
     pub show_menu_bar: bool,
     /// The header bar (Home, Import, Edit, Export, workspaces). An app that embeds FilmCraft can hide it.
     #[serde(default = "shown")]
@@ -1067,9 +1022,6 @@ impl Default for UiState {
             effect_controls_split: 0.0,
             effect_controls_time_zoom: None,
             selected_effects: Vec::new(),
-            effect_clipboard: EffectClipboard::default(),
-            effect_keyframe_clipboard: EffectKeyframeClipboard::default(),
-            effect_controls_clipboard_kind: None,
             show_menu_bar: true,
             show_header: true,
             show_status_bar: true,

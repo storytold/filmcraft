@@ -690,7 +690,7 @@ fn a_pointer_over_the_panel_does_not_swallow_the_timeline_shortcuts() {
     d.frames(2);
     d.ok("ui.key", json!({"key": "Cmd+C"}));
     d.frames(2);
-    assert!(!d.harness.state().ui.effect_clipboard.effects.is_empty(), "the panel under the pointer takes Copy for its selection");
+    assert!(d.harness.state().session.state.effect_clipboard.is_some(), "the panel under the pointer takes Copy for its selection");
     assert!(d.harness.state().session.state.clipboard.is_empty(), "…and the Timeline's clip clipboard stays empty");
 
     // Nothing selected in the panel: Copy and Del belong to the Timeline selection again.

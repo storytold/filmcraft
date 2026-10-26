@@ -7,6 +7,7 @@ use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::clipboard::{EffectKeyframeClipboard, EffectKeyframeClipboardEntry as PasteKey, EffectKeyframeTemplate as EffectTemplate};
 use crate::{CommandSpec, EngineError, Result, Session, commands::bad};
 
 const MAX_EFFECTS: usize = 64;
@@ -46,6 +47,13 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         ),
         spec("effects.move", "Reorder Effects", r#"{"clip":id,"from":index,"to":index}"#, move_effect),
         spec("effects.paste", "Paste Effects", r#"{"sourceIn":ticks,"effects":[EffectInstance],"clips":[id]}"#, paste_effects),
+        spec("effects.copy", "Copy Effects", r#"{"sourceClip":id,"sourceIn":ticks,"effects":[EffectInstance]}"#, copy_effects),
+        spec(
+            "effects.copyKeyframes",
+            "Copy Keyframes",
+            r#"{"keyframes":[{"effect":str,"instance":n,"param":str,"mask":n?,"offset":ticks,"keyframe":Keyframe}],"effects":[{"effect":str,"instance":n,"template":EffectInstance}]}"#,
+            copy_keyframes,
+        ),
         spec(
             "effects.duplicateKeyframes",
             "Duplicate Keyframes",
@@ -385,6 +393,54 @@ fn shift_effect(effect: &mut EffectInstance, delta: Tick) -> Result<()> {
     Ok(())
 }
 
+/// `effects.copy`: put a copy of the selected effects on the application clipboard, replacing
+/// whatever it held — the clipboard is one for the whole application (see [`crate::clipboard`]).
+fn copy_effects(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effects.copy";
+    let source_clip = p.get("sourceClip").and_then(Value::as_u64).ok_or_else(|| bad(CMD, "need sourceClip"))?;
+    let source_in = p.get("sourceIn").and_then(Value::as_i64).map(Tick).ok_or_else(|| bad(CMD, "need sourceIn"))?;
+    let raw = p.get("effects").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need effects"))?;
+    if raw.is_empty() || raw.len() > MAX_EFFECTS {
+        return Err(bad(CMD, "the clipboard holds too many effects"));
+    }
+    let effects: Vec<EffectInstance> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(CMD, "invalid effects"))?;
+    let (mut keys, mut vertices) = (0usize, 0usize);
+    for effect in &effects {
+        validate_effect(effect, CMD, false)?;
+        let (effect_keys, effect_vertices) = snapshot_counts(effect);
+        keys = keys.checked_add(effect_keys).ok_or_else(|| bad(CMD, "clipboard is too large"))?;
+        vertices = vertices.checked_add(effect_vertices).ok_or_else(|| bad(CMD, "clipboard is too large"))?;
+    }
+    if keys > MAX_COPIED_KEYS || vertices > MAX_PATH_VERTICES {
+        return Err(bad(CMD, "clipboard contains too much keyframe or path data"));
+    }
+    let copied = effects.len();
+    crate::commands::set_effect_clipboard(s, crate::clipboard::EffectClipboard { source_clip, source_in, effects });
+    Ok(json!({"copied": copied}))
+}
+
+/// `edit.paste` with effects on the clipboard: apply them to the selected clips — audio effects to
+/// audio clips and video effects to video clips, as the Effect Controls panel does — and refuse
+/// when the selection holds none that take them.
+pub(crate) fn paste_clipboard_effects(s: &mut Session) -> Result<Value> {
+    const CMD: &str = "edit.paste";
+    let Some(clipboard) = s.state.effect_clipboard.clone() else { return Err(bad(CMD, "no effects have been copied")) };
+    let audio = clipboard.effects.first().and_then(EffectInstance::def).is_some_and(|def| def.kind == EffectKind::Audio);
+    let clips: Vec<u64> = {
+        let Some(q) = s.active_sequence() else { return Err(EngineError::NoSequence) };
+        s.state
+            .selection
+            .iter()
+            .filter(|clip| q.find_item(**clip).and_then(|(track, _)| q.track(track)).is_some_and(|track| (track.kind == TrackKind::Audio) == audio))
+            .map(|clip| clip.0)
+            .collect()
+    };
+    if clips.is_empty() {
+        return Err(bad(CMD, "no selected clips match the copied effects"));
+    }
+    paste_effects(s, &json!({"sourceClip": clipboard.source_clip, "sourceIn": clipboard.source_in.0, "effects": clipboard.effects, "clips": clips}))
+}
+
 /// `effects.paste`: apply a clipboard of effects to each target clip, retiming their keyframes to
 /// the target's source time.
 fn paste_effects(s: &mut Session, p: &Value) -> Result<Value> {
@@ -577,28 +633,6 @@ fn duplicate_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"keyframes": copies.into_iter().map(|(key, _)| key).collect::<Vec<_>>(), "delta": delta}))
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct PasteKey {
-    effect: String,
-    #[serde(default)]
-    instance: usize,
-    param: String,
-    #[serde(default)]
-    mask: Option<usize>,
-    offset: Tick,
-    keyframe: Keyframe,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct EffectTemplate {
-    effect: String,
-    #[serde(default)]
-    instance: usize,
-    template: EffectInstance,
-}
-
 /// Whether a value holds the variant a parameter kind expects.
 fn value_matches_kind(kind: &ParamKind, value: &ParamValue) -> bool {
     matches!(
@@ -642,6 +676,46 @@ fn same_value_type(left: &ParamValue, right: &ParamValue) -> bool {
 /// The index of the `occurrence`-th instance of effect `id` on a clip.
 fn effect_index(item: &TrackItem, id: &str, occurrence: usize) -> Option<usize> {
     item.effects.iter().enumerate().filter(|(_, effect)| effect.effect == id).nth(occurrence).map(|(index, _)| index)
+}
+
+/// `effects.copyKeyframes`: put the selected keyframes, with one effect template per instance they
+/// animate, on the application clipboard — the one clipboard for the whole application
+/// (see [`crate::clipboard`]).
+fn copy_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effects.copyKeyframes";
+    let raw_keys = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need keyframes"))?;
+    let raw_templates = p.get("effects").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need effect templates"))?;
+    if raw_keys.is_empty() || raw_keys.len() > MAX_KEYS || raw_templates.is_empty() || raw_templates.len() > MAX_EFFECTS {
+        return Err(bad(CMD, "clipboard is empty or too large"));
+    }
+    let entries: Vec<PasteKey> = serde_json::from_value(Value::Array(raw_keys.clone())).map_err(|_| bad(CMD, "invalid keyframe clipboard"))?;
+    let effects: Vec<EffectTemplate> = serde_json::from_value(Value::Array(raw_templates.clone())).map_err(|_| bad(CMD, "invalid effect templates"))?;
+    // the same checks `effects.pasteKeyframes` makes before it writes anything
+    let mut templates = BTreeMap::new();
+    for template in &effects {
+        if template.instance >= MAX_EFFECTS
+            || template.template.effect != template.effect
+            || templates.insert((template.effect.clone(), template.instance), &template.template).is_some()
+        {
+            return Err(bad(CMD, "duplicate or mismatched effect template"));
+        }
+        let def = template.template.def().ok_or_else(|| bad(CMD, "unknown effect template"))?;
+        if matches!(def.kind, EffectKind::AudioTransition | EffectKind::VideoTransition) {
+            return Err(bad(CMD, "intrinsic effects and transitions cannot be copied as keyframes"));
+        }
+    }
+    let copied = entries.len();
+    crate::commands::set_keyframe_clipboard(s, EffectKeyframeClipboard { entries, effects });
+    Ok(json!({"copied": copied}))
+}
+
+/// `edit.paste` with keyframes on the clipboard: paste them at the playhead onto the clip the
+/// Timeline selection shows, creating the effect they animate when that clip lacks it.
+pub(crate) fn paste_clipboard_keyframes(s: &mut Session) -> Result<Value> {
+    const CMD: &str = "edit.paste";
+    let Some(clipboard) = s.state.keyframe_clipboard.clone() else { return Err(bad(CMD, "no keyframes have been copied")) };
+    let clip = s.state.selection.first().copied().ok_or_else(|| bad(CMD, "select a clip to paste the copied keyframes onto"))?;
+    paste_keyframes(s, &json!({"clip": clip.0, "anchor": s.playhead().0, "keyframes": clipboard.entries, "effects": clipboard.effects}))
 }
 
 /// `effects.pasteKeyframes`: paste copied keyframes into a clip, placed relative to the playhead,
@@ -824,6 +898,69 @@ mod tests {
         let effect = item.effects.iter().position(|effect| effect.effect == "motion").expect("motion effect");
         let time = item.source_time_at(session.playhead());
         KeyRef { clip: clip.0, effect, param: param.to_string(), mask: None, time }
+    }
+
+    #[test]
+    /// The application has one clipboard: effects copied in Effect Controls replace what was
+    /// copied before them, and Paste applies whichever was copied last, wherever from.
+    fn one_clipboard_holds_whatever_was_copied_last() {
+        let (mut session, clip) = fixture();
+        session.execute("timeline.select", json!({"clips": [clip.0]})).expect("select the clip");
+        session.execute("effects.apply", json!({"clips": [clip.0], "effect": "tint"})).expect("apply tint");
+        let (effect, source_in) = {
+            let item = session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, item)| item.clone()).expect("clip");
+            (item.effects.iter().find(|effect| effect.effect == "tint").cloned().expect("tint"), item.source_in)
+        };
+        // Copy a clip, then the effects: the last copy wins, and it takes the clipboard over.
+        session.execute("edit.copy", json!({})).expect("copy the clip");
+        assert!(!session.state.clipboard.is_empty() && session.state.effect_clipboard.is_none());
+        session.execute("effects.copy", json!({"sourceClip": clip.0, "sourceIn": source_in.0, "effects": [effect]})).expect("copy the effects");
+        assert!(session.state.effect_clipboard.is_some() && session.state.clipboard.is_empty(), "the effects replaced the copied clip");
+        let tints = |session: &Session| {
+            session
+                .active_sequence()
+                .and_then(|q| q.find_item(clip))
+                .map(|(_, item)| item.effects.iter().filter(|effect| effect.effect == "tint").count())
+                .expect("clip")
+        };
+        let before = tints(&session);
+        session.execute("edit.paste", json!({})).expect("paste the effects");
+        assert_eq!(tints(&session), before + 1, "Paste applied the copied effects");
+        // Copying a clip again takes the clipboard back.
+        session.execute("edit.copy", json!({})).expect("copy the clip again");
+        assert!(session.state.effect_clipboard.is_none() && !session.state.clipboard.is_empty());
+    }
+
+    #[test]
+    /// Keyframes copied in Effect Controls share that same clipboard: Paste puts them at the
+    /// playhead on the selected clip and reports them.
+    fn copied_keyframes_paste_through_the_one_clipboard() {
+        let (mut session, clip) = fixture();
+        let key = add_key(&mut session, clip, "scale", 1.0);
+        let (instance, keyframe, effect) = {
+            let item = session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, item)| item.clone()).expect("clip");
+            let effect = item.effects[key.effect].clone();
+            let keyframe = effect.params["scale"].keyframes.iter().find(|keyframe| keyframe.time == key.time).cloned().expect("keyframe");
+            let instance = item.effects.iter().take(key.effect).filter(|previous| previous.effect == effect.effect).count();
+            (instance, keyframe, effect)
+        };
+        session.execute("timeline.select", json!({"clips": [clip.0]})).expect("select the clip");
+        session
+            .execute(
+                "effects.copyKeyframes",
+                json!({
+                    "keyframes": [{"effect": "motion", "instance": instance, "param": "scale", "offset": 0, "keyframe": keyframe}],
+                    "effects": [{"effect": "motion", "instance": instance, "template": effect}],
+                }),
+            )
+            .expect("copy the keyframes");
+        assert!(session.state.keyframe_clipboard.is_some() && session.state.clipboard.is_empty());
+        session.execute("playhead.set", json!({"seconds": 2.0})).expect("seek");
+        let pasted = session.execute("edit.paste", json!({})).expect("paste the keyframes");
+        assert_eq!(pasted["keyframes"].as_array().map(Vec::len), Some(1), "Paste reports the keyframes it placed");
+        let item = session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, item)| item.clone()).expect("clip");
+        assert_eq!(item.effects[key.effect].params["scale"].keyframes.len(), 2, "the pasted keyframe joined the copied one");
+        assert!(session.state.keyframe_clipboard.is_some(), "nothing else has been copied since");
     }
 
     #[test]

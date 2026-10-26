@@ -128,7 +128,11 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
+    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() && s.state.effect_clipboard.is_none() && s.state.keyframe_clipboard.is_none() {
+        Err("clipboard is empty".into())
+    } else {
+        Ok(())
+    }
 }
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
@@ -4345,6 +4349,27 @@ fn set_clipboard(st: &mut crate::EditorState, (clips, markers): Clipboard) {
     st.clipboard_markers = markers;
     st.clipboard_transitions.clear();
     st.caption_clipboard.clear();
+    st.effect_clipboard = None;
+    st.keyframe_clipboard = None;
+}
+
+/// Put a copy of effects on the application clipboard: everything else it held goes, as the
+/// clipboard holds whatever was copied last (see [`crate::clipboard`]).
+pub(crate) fn set_effect_clipboard(s: &mut Session, effects: crate::clipboard::EffectClipboard) {
+    s.state.clipboard.clear();
+    s.state.clipboard_markers.clear();
+    s.state.caption_clipboard.clear();
+    s.state.keyframe_clipboard = None;
+    s.state.effect_clipboard = Some(effects);
+}
+
+/// Put copied keyframes on the application clipboard, replacing everything else.
+pub(crate) fn set_keyframe_clipboard(s: &mut Session, keyframes: crate::clipboard::EffectKeyframeClipboard) {
+    s.state.clipboard.clear();
+    s.state.clipboard_markers.clear();
+    s.state.caption_clipboard.clear();
+    s.state.effect_clipboard = None;
+    s.state.keyframe_clipboard = Some(keyframes);
 }
 
 /// Put a Lift or Extract cut on the clipboard; returns how many clips it holds (0 leaves the
@@ -4388,6 +4413,14 @@ fn cut_range(q: &filmcraft_project::Sequence, tracks: &[TrackId], range: TimeRan
 /// overwriting). Caption clipboards go to the caption track. Pasted clips get fresh ids, links
 /// and groups of their own, are selected, and the playhead moves to their end.
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {
+    // The application clipboard holds whatever was copied last, wherever it was copied from:
+    // the effects or keyframes copied in Effect Controls, captions, or timeline clips.
+    if s.state.effect_clipboard.is_some() {
+        return crate::effect_ops::paste_clipboard_effects(s);
+    }
+    if s.state.keyframe_clipboard.is_some() {
+        return crate::effect_ops::paste_clipboard_keyframes(s);
+    }
     if !s.state.caption_clipboard.is_empty() {
         return crate::captions::paste(s, insert);
     }
