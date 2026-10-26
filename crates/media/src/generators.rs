@@ -19,6 +19,10 @@ use serde::{Deserialize, Serialize};
 use crate::digits::{draw_text, text_width};
 use crate::{AudioStreamInfo, FrameCache, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
 
+/// Generator frames are RGBA8 and cached. Keep one project-requested frame within the media
+/// working-set budget before allocating it.
+const MAX_GENERATOR_PIXELS: u64 = 1 << 25;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DemoScene {
     Aurora,
@@ -153,7 +157,7 @@ impl MediaSource for GeneratorSource {
         let (w, h) = (((v.width as f32 * s).round() as u32).max(2), ((v.height as f32 * s).round() as u32).max(2));
         let t = rate.tick_of(frame).seconds() as f32;
         self.cache.get_or_insert_with((frame, bucket), || {
-            let px = render(&self.generator, w, h, t, frame, rate);
+            let px = render(&self.generator, w, h, t, frame, rate)?;
             Ok(Arc::new(VideoFrame::rgba8(w, h, px).with_pts(rate.tick_of(frame))))
         })
     }
@@ -291,9 +295,16 @@ fn to8(c: [f32; 3]) -> [u8; 4] {
 }
 
 /// Render a generator frame as straight-alpha sRGB RGBA8.
-pub fn render(g: &Generator, w: u32, h: u32, t: f32, frame: i64, rate: FrameRate) -> Vec<u8> {
+pub fn render(g: &Generator, w: u32, h: u32, t: f32, frame: i64, rate: FrameRate) -> Result<Vec<u8>> {
+    let pixels = u64::from(w).checked_mul(u64::from(h)).ok_or_else(|| MediaError::Decode("generator frame dimensions overflow".into()))?;
+    if pixels > MAX_GENERATOR_PIXELS {
+        return Err(MediaError::Decode(format!("generator frame has {pixels} pixels; limit is {MAX_GENERATOR_PIXELS}")));
+    }
     let (wu, hu) = (w as usize, h as usize);
-    let mut px = vec![0u8; wu * hu * 4];
+    let len = wu.checked_mul(hu).and_then(|n| n.checked_mul(4)).ok_or_else(|| MediaError::Decode("generator frame byte count overflows".into()))?;
+    let mut px = Vec::new();
+    px.try_reserve_exact(len).map_err(|_| MediaError::Decode("cannot allocate generator frame".into()))?;
+    px.resize(len, 0);
     match g {
         Generator::BarsAndTone => bars(&mut px, wu, hu),
         Generator::ColorMatte { color } => {
@@ -315,7 +326,7 @@ pub fn render(g: &Generator, w: u32, h: u32, t: f32, frame: i64, rate: FrameRate
             });
         }
     }
-    px
+    Ok(px)
 }
 
 fn bars(px: &mut [u8], w: usize, h: usize) {
@@ -558,13 +569,14 @@ mod tests {
         let g = GeneratorSource::demo(DemoScene::OceanSunset);
         let a = g.video_frame(FrameRequest { time: Tick(TICKS_PER_SECOND), scale: 0.25 }).unwrap();
         assert_eq!((a.width, a.height), (480, 270));
-        let b = render(&Generator::Demo(DemoScene::OceanSunset), 480, 270, FrameRate::FPS_23_976.tick_of(23).seconds() as f32, 23, FrameRate::FPS_23_976);
+        let b =
+            render(&Generator::Demo(DemoScene::OceanSunset), 480, 270, FrameRate::FPS_23_976.tick_of(23).seconds() as f32, 23, FrameRate::FPS_23_976).unwrap();
         assert_eq!(a.to_rgba8(), b);
     }
 
     #[test]
     fn bars_values() {
-        let px = render(&Generator::BarsAndTone, 800, 600, 0.0, 0, FrameRate::FPS_25);
+        let px = render(&Generator::BarsAndTone, 800, 600, 0.0, 0, FrameRate::FPS_25).unwrap();
         // first bar after the side panel is 75% white
         let i = (10 * 800 + 150) * 4;
         assert_eq!(&px[i..i + 4], &[191, 191, 191, 255]);
@@ -685,10 +697,16 @@ mod tests {
     #[test]
     fn all_scenes_render() {
         for s in DemoScene::ALL {
-            let px = render(&Generator::Demo(s), 64, 36, 1.5, 36, FrameRate::FPS_24);
+            let px = render(&Generator::Demo(s), 64, 36, 1.5, 36, FrameRate::FPS_24).unwrap();
             assert!(px.as_chunks::<4>().0.iter().any(|p| p[0] > 20 || p[1] > 20 || p[2] > 20));
         }
-        let px = render(&Generator::CountingLeader, 64, 36, 1.5, 36, FrameRate::FPS_24);
+        let px = render(&Generator::CountingLeader, 64, 36, 1.5, 36, FrameRate::FPS_24).unwrap();
         assert_eq!(px.len(), 64 * 36 * 4);
+    }
+
+    #[test]
+    fn oversized_generator_frames_are_rejected_before_allocation() {
+        let err = render(&Generator::BlackVideo, 32_768, 32_768, 0.0, 0, FrameRate::FPS_24).unwrap_err();
+        assert!(err.to_string().contains("limit"), "{err}");
     }
 }

@@ -337,10 +337,12 @@ impl AviSource {
         let mut audio_streams = Vec::new();
         for &s in &astreams {
             let Some(st) = file.streams.get(s) else { continue };
-            let w = st.audio.clone().unwrap_or_default();
+            let mut w = st.audio.clone().unwrap_or_default();
+            let Ok((sample_rate, channels)) = filmcraft_media::bounded_audio_dimensions(w.sample_rate, u32::from(w.channels)) else { continue };
+            w.sample_rate = sample_rate;
+            w.channels = u16::try_from(channels).unwrap_or(u16::MAX);
             let (codec, label) = audio_codec(&w);
-            let mut sample_rate = w.sample_rate.max(1);
-            let mut channels = u32::from(w.channels.max(1));
+            let (mut sample_rate, mut channels) = (sample_rate, channels);
             let (pieces, first, starts) = match &codec {
                 ACodec::Pcm(cfg) => {
                     let block = usize::from(w.block_align.max(1)).max((usize::from(cfg.bits).div_ceil(8)) * channels as usize);
@@ -537,14 +539,18 @@ impl MediaSource for AviSource {
             return Err(MediaError::Unsupported(format!("{name} audio")));
         }
         let ch = ainfo.channels.max(1) as usize;
-        let ratio = f64::from(ainfo.sample_rate) / f64::from(sample_rate.max(1));
+        let source_frames = filmcraft_media::resample_source_frames(frames, ainfo.sample_rate, sample_rate)?;
+        let need = source_frames.checked_add(2).ok_or_else(|| MediaError::Decode("audio source window overflows".into()))?;
+        filmcraft_media::validate_audio_buffer_shape(ch, need)?;
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
+        let ratio = f64::from(ainfo.sample_rate) / f64::from(sample_rate);
         let s0 = (start as f64 * ratio).floor() as i64;
-        let need = (frames as f64 * ratio).ceil() as i64 + 2;
-        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
+        let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
+        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut i = a.starts.partition_point(|&x| x <= s0).saturating_sub(1);
         while let Some(&pk_start) = a.starts.get(i) {
-            if pk_start >= s0 + need {
+            if pk_start >= s0.saturating_add(need_i64) {
                 break;
             }
             let pk = self.audio_packet(a, &mut st, ainfo, i)?;

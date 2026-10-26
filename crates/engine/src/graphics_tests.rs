@@ -95,6 +95,31 @@ fn graphic_placement_takes_a_track_and_a_time() {
     }
 }
 
+/// Every graphic layer gets a stable uid when it is created, both in a new clip and when added to
+/// an existing one. Two byte-identical layers with different text must not share an identity.
+#[test]
+fn new_graphic_layers_get_unique_stable_uids() {
+    let mut s = demo();
+    let clip = ClipId(s.execute("graphics.newText", json!({"text": "one", "position": [960, 540], "size": 100})).unwrap()["clip"].as_u64().unwrap());
+    s.execute("graphics.newText", json!({"text": "two", "position": [960, 540], "size": 100, "clip": clip.0})).unwrap();
+    s.execute("graphics.newShape", json!({"shape": "rectangle", "clip": clip.0})).unwrap();
+    let uids = |s: &mut Session| -> Vec<u64> {
+        s.execute("graphics.list", json!({"clip": clip.0})).unwrap()["layers"].as_array().unwrap().iter().map(|l| l["uid"].as_u64().unwrap()).collect()
+    };
+    let first = uids(&mut s);
+    assert_eq!(first.len(), 3);
+    assert!(first.iter().all(|uid| *uid != 0), "every created layer is assigned a uid: {first:?}");
+    assert_eq!(first.iter().copied().collect::<std::collections::BTreeSet<_>>().len(), 3, "uids are unique: {first:?}");
+    // A real reorder keeps the same per-layer identity, and undo/redo restores it unchanged.
+    s.execute("graphics.arrangeLayer", json!({"clip": clip.0, "layer": 0, "to": "front"})).unwrap();
+    let reordered = uids(&mut s);
+    assert_eq!(reordered, vec![first[1], first[2], first[0]]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(uids(&mut s), first, "undo restores the same identities, not fresh ones");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(uids(&mut s), reordered);
+}
+
 #[test]
 fn new_text_makes_a_graphic_clip_above_the_footage() {
     let mut s = demo();

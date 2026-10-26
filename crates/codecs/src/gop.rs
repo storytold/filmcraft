@@ -463,7 +463,7 @@ const CONTINUE_THROUGH: usize = 48;
 fn decode_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
-        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let n = std::thread::available_parallelism().map(std::num::NonZeroUsize::get).unwrap_or(1);
         rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(|i| format!("decode-{i}")).build().ok()
     })
     .as_ref()
@@ -494,7 +494,7 @@ fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Resu
                 let job = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
                 job.map(|job| pool.install(job))
             });
-            spawned.map(|h| h.join())
+            spawned.map(std::thread::ScopedJoinHandle::join)
         });
         return match waited {
             Ok(Ok(Some(r))) => r,
@@ -672,7 +672,7 @@ impl GopCache {
         // after the guard on every return path: dropping a decoder can block (a hardware session
         // waits for its frames in flight) and must not hold this cache's lock.
         let mut released: Vec<Box<dyn VideoDecoder>> = Vec::new();
-        let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _decoding = DecodingGuard::enter(me);
         st.last_used = Instant::now();
         st.pin = want_pts;
@@ -875,7 +875,7 @@ impl GopCache {
             count_frames(&out);
             out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
         });
-        let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }

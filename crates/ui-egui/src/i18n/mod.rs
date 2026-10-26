@@ -66,6 +66,25 @@ static ITALIAN: OnceLock<Catalog> = OnceLock::new();
 impl Language {
     pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
 
+    /// BCP 47 tag for AccessKit and the web IME's hidden input. Keep the persisted spelling
+    /// (`pt-br`, `zh-cn`) out of the protocol-facing value.
+    pub fn bcp47(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::Ja => "ja",
+            Self::Es => "es",
+            Self::PtBr => "pt-BR",
+            Self::Uk => "uk",
+            Self::ZhCn => "zh-CN",
+            Self::De => "de",
+            Self::Ru => "ru",
+            Self::Fr => "fr",
+            Self::Id => "id",
+            Self::It => "it",
+            Self::Ko => "ko",
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::En => "English",
@@ -250,7 +269,7 @@ pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
 const JAPANESE_SAMPLE: &str = "日本語ファイル編集あア";
 
 /// Installed families preferred for Japanese interface text, best first (Gothic / sans-serif faces
-/// read best at menu sizes). Any other installed face that covers [`JAPANESE_SAMPLE`] is used if
+/// read best at menu sizes). Any other installed face that covers `JAPANESE_SAMPLE` is used if
 /// none of these is present.
 const PREFERRED_JAPANESE: &[&str] = &[
     "Hiragino Sans",
@@ -289,13 +308,13 @@ pub fn system_japanese_font() -> Option<Arc<egui::FontData>> {
         // kept for the life of the process (one font, read once) so installing it again after a
         // theme change shares the bytes instead of copying the whole file
         let bytes: &'static [u8] = Box::leak(face.data()?.into_boxed_slice());
-        Some(Arc::new(egui::FontData { font: std::borrow::Cow::Borrowed(bytes), index: face.info.index, tweak: Default::default() }))
+        Some(Arc::new(egui::FontData::from_blob(Arc::new(bytes), face.info.index)))
     })
     .clone()
 }
 
 /// Whether the craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`) supplies a
-/// Japanese interface font: some craft-fonts face covers [`JAPANESE_SAMPLE`]. `theme::install` adds
+/// Japanese interface font: some craft-fonts face covers `JAPANESE_SAMPLE`. `theme::install` adds
 /// these faces to every font family, so nothing else needs installing (and no system scan runs).
 pub fn craft_japanese_font() -> bool {
     filmcraft_text::fonts::craft_japanese().next().is_some()
@@ -1102,5 +1121,22 @@ mod tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod bcp47_tests {
+    use super::Language;
+
+    /// Protocol-facing BCP 47 tags use `pt-BR`/`zh-CN`; every tag is non-empty ASCII.
+    #[test]
+    fn accesskit_tags_use_protocol_spelling() {
+        assert_eq!(Language::En.bcp47(), "en");
+        assert_eq!(Language::PtBr.bcp47(), "pt-BR");
+        assert_eq!(Language::ZhCn.bcp47(), "zh-CN");
+        for language in Language::ALL {
+            let tag = language.bcp47();
+            assert!(!tag.is_empty() && tag.is_ascii(), "{tag:?}");
+        }
     }
 }

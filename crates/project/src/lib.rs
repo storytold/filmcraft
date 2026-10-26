@@ -1750,6 +1750,32 @@ fn resolve_auto_points_sized(e: &mut EffectInstance, frame: (u32, u32), source: 
 }
 
 impl Project {
+    /// Lazy upgrade for graphic layers written before they had stable uids: assign a unique
+    /// [`crate::graphic_design::LayerExtra::uid`] to every uid-less or duplicated graphic layer
+    /// in sequences and source graphics.
+    ///
+    /// Called when a project file is opened, before undo history starts, so every later undo
+    /// snapshot carries the same identity. The field is already optional in the file schema, so
+    /// this changes no schema version and older builds still read the file. Returns whether any
+    /// layer changed.
+    pub fn ensure_graphic_layer_uids(&mut self) -> bool {
+        let mut changed = false;
+        for item in self.items.values_mut() {
+            if let ItemKind::Sequence(seq) = &mut item.kind {
+                let seq = std::sync::Arc::make_mut(seq);
+                for track in seq.video_tracks.iter_mut().chain(seq.audio_tracks.iter_mut()) {
+                    for it in &mut track.items {
+                        changed |= crate::graphic::ensure_layer_uids(&mut it.effects);
+                    }
+                }
+            }
+        }
+        for graphic in self.source_graphics.values_mut() {
+            changed |= crate::graphic::ensure_layer_uids(&mut graphic.layers);
+        }
+        changed
+    }
+
     /// Available picture and sound, resolving a subclip to its parent media. Missing parents,
     /// cycles and overly deep subclip chains carry neither stream.
     pub fn source_streams(&self, item: ItemId) -> (bool, bool) {

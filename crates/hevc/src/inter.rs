@@ -56,7 +56,7 @@ fn filt_w<'a, P: Px + 'a, const T: usize, const W: usize>(tap: impl Fn(usize) ->
     let mut acc = [0i32; W];
     for k in 0..T {
         let c = f[k] as i32;
-        let Some(p) = tap(k).and_then(|s| s.first_chunk::<W>()) else {
+        let Some(p) = tap(k).and_then(<[P]>::first_chunk::<W>) else {
             return;
         };
         for j in 0..W {
@@ -80,7 +80,7 @@ fn filt16_w<'a, P: Px + 'a, const T: usize, const W: usize>(tap: impl Fn(usize) 
     let mut acc = [0i16; W];
     for k in 0..T {
         let c = f[k] as i16;
-        let Some(p) = tap(k).and_then(|s| s.first_chunk::<W>()) else {
+        let Some(p) = tap(k).and_then(<[P]>::first_chunk::<W>) else {
             return;
         };
         for j in 0..W {

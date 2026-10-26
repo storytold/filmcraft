@@ -484,20 +484,24 @@ impl MediaSource for Mp4Source {
         let ainfo = self.info.audio_streams.get(stream).ok_or(MediaError::NoStream("audio"))?;
         let src_rate = ainfo.sample_rate;
         let ch = ainfo.channels.max(1) as usize;
+        let source_frames = filmcraft_media::resample_source_frames(frames, src_rate, sample_rate)?;
+        let need = source_frames.checked_add(2).ok_or_else(|| MediaError::Decode("audio source window overflows".into()))?;
+        filmcraft_media::validate_audio_buffer_shape(ch, need)?;
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
         // Map the requested window to source samples (edit list offset applied: presentation = pts + edit_offset).
         let ratio = src_rate as f64 / sample_rate as f64;
         let p0 = (start as f64 * ratio).floor() as i64;
         // (in i128: a hostile edit list can make the offset large enough to overflow i64)
         let offset = i128::from(a.offset) * i128::from(src_rate) / i128::from(track.timescale.max(1));
         let s0 = i64::try_from(i128::from(p0) - offset).unwrap_or(if offset > 0 { i64::MIN } else { i64::MAX });
-        let need = (frames as f64 * ratio).ceil() as i64 + 2;
-        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
+        let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
+        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
         let first = a.starts.partition_point(|&x| x <= s0.max(0)).saturating_sub(1);
         let mut i = first;
         while let Some(sample) = track.samples.get(i) {
             let Some(&pk_start) = a.starts.get(i) else { break };
-            if pk_start >= s0.saturating_add(need) {
+            if pk_start >= s0.saturating_add(need_i64) {
                 break;
             }
             let pk = self.audio_packet(a, ainfo, &mut st, i)?;
@@ -589,7 +593,8 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
         }
         c => codec_label(c),
     };
-    Some(AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec, bits_per_sample: bits })
+    let (rate, ch) = filmcraft_media::bounded_audio_dimensions(rate, ch).ok()?;
+    Some(AudioStreamInfo { sample_rate: rate, channels: ch, codec, bits_per_sample: bits })
 }
 
 fn codec_label(c: &CodecConfig) -> String {

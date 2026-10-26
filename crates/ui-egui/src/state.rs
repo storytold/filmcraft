@@ -945,6 +945,14 @@ pub struct GfxEdit {
     pub layer: usize,
     pub caret: usize,
     pub anchor: usize,
+    /// Stable layer uid (`0` = the project layer has none).
+    #[serde(default)]
+    pub uid: u64,
+    /// Compact identity of a uid-less layer, so the edit target follows its layer through a
+    /// reorder, a deletion below it, or undo/redo instead of editing whatever moves into the
+    /// numeric index.
+    #[serde(default)]
+    pub fingerprint: u64,
 }
 
 fn shown() -> bool {

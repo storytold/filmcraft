@@ -10,12 +10,13 @@ use crate::icons::{self, Icon};
 use crate::state::Mode;
 use crate::theme::Tokens;
 
+/// Draw the header bar; dragging starts a native window move and double-click toggles maximized.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().clone();
     p.rect_filled(rect, 0.0, t.header_bg);
     p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, Color32::BLACK));
-    let drag = ui.interact(rect, egui::Id::new("header-drag"), Sense::click_and_drag());
+    let drag = ui.interact(rect, egui::Id::unique("header-drag"), Sense::click_and_drag());
     if drag.drag_started() {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
@@ -26,7 +27,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut x = rect.min.x + if app.integrated_titlebar { 104.0 } else { 14.0 };
     // Home
     let home = Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(26.0, 26.0));
-    let hresp = ui.interact(home, egui::Id::new("hdr-home"), Sense::click()).on_hover_text(tl!("Home"));
+    let hresp = ui.interact(home, egui::Id::unique("hdr-home"), Sense::click()).on_hover_text(tl!("Home"));
     app.auto.add("header.home", home, "Home");
     if hresp.hovered() {
         p.rect_filled(home, 4.0, t.hover);
@@ -41,7 +42,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let active = app.ui.mode == m;
         let galley = p.layout_no_wrap(shown.to_string(), Tokens::ui(14.0), if active { t.tab_text_active } else { t.tab_text });
         let r = Rect::from_min_size(pos2(x - 6.0, rect.min.y + 6.0), vec2(galley.size().x + 12.0, rect.height() - 12.0));
-        let resp = ui.interact(r, egui::Id::new(("mode", label)), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(("mode", label)), Sense::click());
         app.auto.add(&format!("header.mode.{}", label.to_ascii_lowercase()), r, label);
         let col = if active || resp.hovered() { t.tab_text_active } else { t.tab_text };
         let gw = galley.size().x;
@@ -95,7 +96,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         let r = Rect::from_center_size(pos2(rx - 14.0, rect.center().y), vec2(28.0, 28.0));
         rx -= 38.0;
-        let resp = ui.interact(r, egui::Id::new(("hdr", id)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(("hdr", id)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("header.{id}"), r, tip);
         if resp.hovered() {
             ui.painter().rect_filled(r, 4.0, t.hover);
@@ -120,7 +121,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let quick = btn(ui, Icon::Export, "quickExport", tl!("Quick Export"), app);
     if quick.as_ref().is_some_and(|r| r.clicked()) {
         app.ui.export.quick_open = !app.ui.export.quick_open;
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("quick-export-toggled"), true));
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("quick-export-toggled"), true));
     }
     if let Some(quick) = quick {
         crate::panels::export_mode::quick_export(app, ui.ctx(), pos2((quick.rect.right() - 340.0).max(rect.left()), rect.max.y + 4.0));
@@ -142,7 +143,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let Some(ws_resp) = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app) else { return };
     // workspace name (caps)
     let wr = Rect::from_min_size(pos2(ws_resp.rect.left() - 10.0 - name_width, rect.center().y - 10.0), vec2(name_width, 20.0));
-    let wresp = ui.interact(wr, egui::Id::new("hdr-ws-name"), Sense::click());
+    let wresp = ui.interact(wr, egui::Id::unique("hdr-ws-name"), Sense::click());
     if name_width > 0.0 {
         app.auto.add("header.workspaceName", wr, &ws);
         p.galley_with_override_text_color(pos2(wr.min.x + 4.0, rect.center().y - wg.size().y / 2.0), wg, if wresp.hovered() { t.text } else { t.text_dim });
@@ -155,7 +156,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let w = g.size().x + 36.0;
         let r = Rect::from_min_size(pos2(controls_left - w - 10.0, rect.center().y - 14.0), vec2(w, 28.0));
         if r.left() >= left_end + 10.0 {
-            let resp = ui.interact(r, egui::Id::new("hdr-discord"), Sense::click()).on_hover_text(tl!("Join the ArtCraft Discord (discord.gg/artcraft)"));
+            let resp = ui.interact(r, egui::Id::unique("hdr-discord"), Sense::click()).on_hover_text(tl!("Join the ArtCraft Discord (discord.gg/artcraft)"));
             app.auto.add("header.discord", r, "Join the ArtCraft Discord");
             if resp.hovered() {
                 ui.painter().rect_filled(r, 4.0, t.hover);
@@ -185,7 +186,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             );
         }
     }
-    let popup_id = egui::Id::new("workspaces-popup");
+    let popup_id = egui::Id::unique("workspaces-popup");
     if ws_resp.clicked() || wresp.clicked() {
         ui.ctx().data_mut(|d| d.insert_temp(popup_id, true));
     }

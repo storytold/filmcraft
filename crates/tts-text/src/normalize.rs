@@ -292,7 +292,7 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
     let (value, digits, used, minor, had_minor) = parse_amount(rest.get(skip..)?, lang)?;
     if digits > MAX_CARDINAL_DIGITS || has_leading_zero(&value, digits) {
         // Oversized amounts: every digit, unit-free, no overflow.
-        let all = rest.get(skip..skip + used)?.chars().filter(|c| c.is_ascii_digit()).collect::<String>();
+        let all = rest.get(skip..skip + used)?.chars().filter(char::is_ascii_digit).collect::<String>();
         let (words, _) = digit_run_as_words(&all);
         return Some((words, used + skip));
     }
@@ -385,7 +385,7 @@ fn parse_amount(rest: &str, _lang: Lang) -> Option<(u64, usize, usize, u32, bool
 /// A grouping mark is valid only when exactly three digits follow it.
 fn grouping_followed_by_3(rest: &str, sep_index: usize) -> bool {
     let after = rest.get(sep_index + 1..).unwrap_or("");
-    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     let boundary = after.get(digits.len()..).and_then(|r| r.chars().next()).is_none_or(|c| !c.is_ascii_digit());
     digits.len() == 3 && boundary
 }
@@ -659,7 +659,7 @@ fn parse_continuation(rest: &str, used: usize, value: u64, digits: &str) -> Opti
     match peek(after, 0) {
         Some('s' | 'S' | 't' | 'T' | 'n' | 'N' | 'd' | 'D' | 'r' | 'R') => {
             let suffix = after.get(..2)?;
-            if is_ordinal_suffix(suffix) && !peek(after, 2).is_some_and(|c| c.is_alphabetic()) {
+            if is_ordinal_suffix(suffix) && !peek(after, 2).is_some_and(char::is_alphabetic) {
                 return Some((vec![Token::Word(english_ordinal(value))], used + 2));
             }
             None
@@ -780,7 +780,7 @@ fn is_ordinal_suffix(suffix: &str) -> bool {
 /// own parser before this check, so a leftover `.`/`,`/`:`/`/` — or a sentence
 /// terminator or closing bracket — is fine.
 fn year_is_standalone(rest: &str, used: usize) -> bool {
-    !peek(rest, used).is_some_and(|c| c.is_alphanumeric())
+    !peek(rest, used).is_some_and(char::is_alphanumeric)
 }
 
 /// A digit run read digit by digit.
@@ -1018,10 +1018,10 @@ fn dotted_abbreviation(lower: &str, rest: &str, used: usize) -> Option<(Vec<Toke
         "mt" => vec![Token::Word("mount".into())],
         "st" => {
             let mut i = used + 1;
-            while peek(rest, i).is_some_and(|c| c.is_whitespace()) {
+            while peek(rest, i).is_some_and(char::is_whitespace) {
                 i += 1;
             }
-            let capitalised = peek(rest, i).is_some_and(|c| c.is_uppercase());
+            let capitalised = peek(rest, i).is_some_and(char::is_uppercase);
             vec![Token::Word(if capitalised { "saint".into() } else { "street".into() })]
         }
         "vs" => vec![Token::Word("versus".into())],
@@ -1054,7 +1054,7 @@ fn dotted_abbreviation(lower: &str, rest: &str, used: usize) -> Option<(Vec<Toke
 fn is_spellable_acronym(word: &str) -> bool {
     const KEEP_AS_WORDS: [&str; 8] = ["NASA", "UNESCO", "NATO", "UNICEF", "OPEC", "FIFA", "RADAR", "SONAR"];
     let letters: Vec<char> = word.chars().collect();
-    if letters.len() < 2 || letters.len() > 5 || !letters.iter().all(|c| c.is_ascii_uppercase()) {
+    if letters.len() < 2 || letters.len() > 5 || !letters.iter().all(char::is_ascii_uppercase) {
         return false;
     }
     if KEEP_AS_WORDS.contains(&word) {

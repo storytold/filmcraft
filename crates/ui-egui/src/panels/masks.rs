@@ -58,7 +58,7 @@ pub(crate) fn effect_rows(
     .enumerate()
     {
         let br = Rect::from_center_size(pos2(r.min.x + 40.0 + i as f32 * 24.0, r.center().y), vec2(20.0, 18.0));
-        let resp = ui.interact(br, egui::Id::new(("mask-new", clip.0, idx, kind)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(br, egui::Id::unique(("mask-new", clip.0, idx, kind)), Sense::click()).on_hover_text(tip);
         if resp.hovered() {
             ui.painter().rect_filled(br, 3.0, t.hover);
         }
@@ -91,7 +91,7 @@ pub(crate) fn effect_rows(
         crate::panels::effect_controls::row_line(ui, r, lane, &t);
         let tw = Rect::from_center_size(pos2(r.min.x + 26.0, r.center().y), vec2(10.0, 10.0));
         icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
-        let twresp = ui.interact(tw.expand(3.0), egui::Id::new(("mask-twirl", clip.0, idx, k)), Sense::click());
+        let twresp = ui.interact(tw.expand(3.0), egui::Id::unique(("mask-twirl", clip.0, idx, k)), Sense::click());
         // shape glyph: ellipse for smooth paths, square for polygons
         let path = m.path_at(mt);
         let glyph = Rect::from_center_size(pos2(r.min.x + 42.0, r.center().y), vec2(12.0, 12.0));
@@ -119,13 +119,15 @@ pub(crate) fn effect_rows(
         let mut mui = ui.new_child(egui::UiBuilder::new().max_rect(mr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let mut mode = m.mode;
         crate::panels::effect_controls::fit_to_row(&mut mui);
-        egui::ComboBox::from_id_salt(("mask-mode", clip.0, idx, k)).selected_text(crate::i18n::t(mode.label())).width(88.0).show_ui(&mut mui, |ui| {
-            for md in MaskMode::ALL {
-                if ui.selectable_value(&mut mode, md, crate::i18n::t(md.label())).changed() {
-                    actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "mode": md.label()})));
+        let combo =
+            egui::ComboBox::from_id_salt(("mask-mode", clip.0, idx, k)).selected_text(crate::i18n::t(mode.label())).width(88.0).show_ui(&mut mui, |ui| {
+                for md in MaskMode::ALL {
+                    if ui.selectable_value(&mut mode, md, crate::i18n::t(md.label())).changed() {
+                        actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "mode": md.label()})));
+                    }
                 }
-            }
-        });
+            });
+        crate::widgets::accessible_name(combo.response, "Mask mode");
         app.auto.add(&format!("{base}.mode"), mr, "Mask mode");
         if twresp.clicked() {
             if open {
@@ -167,7 +169,7 @@ pub(crate) fn effect_rows(
         let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(cr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         crate::panels::effect_controls::fit_to_row(&mut cui);
         let mut inv = m.inverted;
-        if cui.checkbox(&mut inv, "").changed() {
+        if crate::widgets::accessible_name(cui.checkbox(&mut inv, ""), "Invert").changed() {
             actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "inverted": inv})));
         }
         app.auto.add(&format!("{base}.inverted"), cr, "Inverted");
@@ -287,7 +289,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         }
         v
     };
-    let gesture_id = egui::Id::new("mask-gesture");
+    let gesture_id = egui::Id::unique("mask-gesture");
     // one gesture (undo step) per pointer press
     let mut gesture: u64 = ui.data(|d| d.get_temp(gesture_id)).unwrap_or(0);
     if ui.input(|i| i.pointer.any_pressed()) {
@@ -303,8 +305,8 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // overlay, so it leaves graphic layers to it and takes over its click on empty space. Where the
     // marquee started (stored for the gesture, until the button is up) keeps it registered over a
     // layer through the release.
-    let marquee_id = egui::Id::new("mask-marquee");
-    let marquee_from = egui::Id::new("mask-marquee-from");
+    let marquee_id = egui::Id::unique("mask-marquee");
+    let marquee_from = egui::Id::unique("mask-marquee-from");
     let selection_tool = app.ui.tool == crate::state::Tool::Selection;
     if !ui.input(|i| i.pointer.primary_down() || i.pointer.primary_released()) {
         ui.data_mut(|d| d.remove::<Pos2>(marquee_from));
@@ -321,7 +323,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     }
     // ---- whole mask (drag inside)
     let bb = Rect::from_points(&screen).expand(2.0).intersect(pic);
-    let body = ui.interact(bb, egui::Id::new("mask-body"), Sense::click_and_drag());
+    let body = ui.interact(bb, egui::Id::unique("mask-body"), Sense::click_and_drag());
     app.auto.add("program.mask.body", bb, &m.name);
     let ptr_in = |p: Option<Pos2>| p.is_some_and(|p| inside(&flat, to_clip.apply(Vec2::new(p.x as f64, p.y as f64))));
     if body.drag_started_by(LEFT) {
@@ -331,7 +333,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // (inside the outline's box but outside the shape, the drag is a marquee too)
     let body_marquee = selection_tool && !ui.data(|d| d.get_temp::<bool>(gesture_id.with("body"))).unwrap_or(false);
     if body.dragged_by(LEFT) && ui.data(|d| d.get_temp::<bool>(gesture_id.with("body"))).unwrap_or(false) && body.drag_delta() != egui::Vec2::ZERO {
-        let d = drag_step(ui, egui::Id::new(("mask-body-drag", gesture)), body.drag_delta());
+        let d = drag_step(ui, egui::Id::unique(("mask-body-drag", gesture)), body.drag_delta());
         if d != egui::Vec2::ZERO {
             actions.push(("masks.translate".into(), with(json!({"delta": clip_delta(d), "merge": format!("body-{gesture}")}))));
         }
@@ -369,7 +371,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     Stroke::NONE,
                 ));
             }
-            let r = ui.interact(hr.expand(3.0), egui::Id::new(("mask-handle", which)), Sense::drag());
+            let r = ui.interact(hr.expand(3.0), egui::Id::unique(("mask-handle", which)), Sense::drag());
             app.auto.add(&format!("program.mask.{which}"), hr, if which == "feather" { "Mask Feather" } else { "Mask Expansion" });
             if r.dragged_by(LEFT) && r.drag_delta() != egui::Vec2::ZERO {
                 let d = clip_delta(r.drag_delta());
@@ -383,7 +385,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // ---- corner roundness (masks with sharp corners: rectangles, polygons)
     actions.extend(roundness_handle(app, ui, &painter, &path, &to_screen, &target));
     // ---- tangent handles and vertices
-    let sel_v_id = egui::Id::new(("mask-sel-vertex", sel.clip.0, sel.effect, sel.mask));
+    let sel_v_id = egui::Id::unique(("mask-sel-vertex", sel.clip.0, sel.effect, sel.mask));
     let n_v = path.vertices.len();
     // (stored with the vertex count: once a vertex is added or deleted, by any edit or by undo, the
     // indices name other vertices and the selection goes)
@@ -402,7 +404,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             painter.circle_filled(h, 3.5, Color32::WHITE);
             painter.circle_stroke(h, 3.5, Stroke::new(1.0, col));
             let hr = Rect::from_center_size(h, vec2(8.0, 8.0));
-            let r = ui.interact(hr.expand(2.0), egui::Id::new(("mask-tan", which, i)), Sense::drag());
+            let r = ui.interact(hr.expand(2.0), egui::Id::unique(("mask-tan", which, i)), Sense::drag());
             app.auto.add(&format!("program.mask.{which}.{i}"), hr, "Bezier handle");
             if r.dragged_by(LEFT) && r.drag_delta() != egui::Vec2::ZERO {
                 actions.push((
@@ -418,7 +420,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let selected = sel_vs.contains(&i);
         painter.rect_filled(vr, 0.0, if selected { col } else { Color32::WHITE });
         painter.rect_stroke(vr, 0.0, Stroke::new(1.0, col), egui::StrokeKind::Middle);
-        let r = ui.interact(vr.expand(3.0), egui::Id::new(("mask-vertex", i)), Sense::click_and_drag()).on_hover_text(if cfg!(target_os = "macos") {
+        let r = ui.interact(vr.expand(3.0), egui::Id::unique(("mask-vertex", i)), Sense::click_and_drag()).on_hover_text(if cfg!(target_os = "macos") {
             tl!("Drag: move · Alt-click: smooth/corner · Cmd-click: delete")
         } else {
             tl!("Drag: move · Alt-click: smooth/corner · Ctrl-click: delete")
@@ -434,7 +436,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             ui.data_mut(|d| d.insert_temp(sel_v_id, (n_v, sel_vs.clone())));
         }
         if r.dragged_by(LEFT) && r.drag_delta() != egui::Vec2::ZERO {
-            let d = drag_step(ui, egui::Id::new(("mask-vertex-drag", gesture, i)), r.drag_delta());
+            let d = drag_step(ui, egui::Id::unique(("mask-vertex-drag", gesture, i)), r.drag_delta());
             if d != egui::Vec2::ZERO {
                 let which = if sel_vs.len() > 1 && sel_vs.contains(&i) { json!({"vertices": sel_vs}) } else { json!({"vertex": i}) };
                 let mut p = with(which);
@@ -594,7 +596,7 @@ fn roundness_handle(
         (pa.x + pa.y).total_cmp(&(pb.x + pb.y))
     })?;
     let max_radius = corners.iter().map(|c| c.max_radius).fold(0.0, f64::max);
-    let id = egui::Id::new("mask-roundness");
+    let id = egui::Id::unique("mask-roundness");
     let dist_id = id.with("dist");
     let dragging = ui.ctx().is_being_dragged(id);
     let dist: f64 = if dragging { ui.data(|d| d.get_temp(dist_id)).unwrap_or(0.0) } else { 0.0 };
@@ -687,7 +689,7 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
     let Some(to_screen) = clip_to_screen(app, &it, mt, pic, frame) else { return };
     let Some(to_clip) = to_screen.inverse() else { return };
     let col = Color32::from_rgb(0x5a, 0xb4, 0xff);
-    let resp = ui.interact(pic, egui::Id::new("mask-pen"), Sense::click_and_drag());
+    let resp = ui.interact(pic, egui::Id::unique("mask-pen"), Sense::click_and_drag());
     app.auto.add("program.maskPen", pic, "Pen mask");
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
@@ -702,7 +704,7 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
         _ => p,
     };
     let mut commit = false;
-    let pressed = resp.drag_started_by(LEFT) || (resp.clicked() && !ui.data(|m| m.get_temp::<bool>(egui::Id::new("mask-pen-placed")).unwrap_or(false)));
+    let pressed = resp.drag_started_by(LEFT) || (resp.clicked() && !ui.data(|m| m.get_temp::<bool>(egui::Id::unique("mask-pen-placed")).unwrap_or(false)));
     if pressed && let Some(p) = resp.interact_pointer_pos() {
         let near_first = d.points.first().is_some_and(|f| (sp(&to_screen, Vec2::new(f[0], f[1])) - p).length() < 8.0);
         if d.points.len() >= 3 && near_first {
@@ -712,11 +714,11 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
             d.points.push([c.x, c.y, 0.0, 0.0]);
             // read the response before data_mut: it locks the context that drag_started_by reads
             let dragging = resp.drag_started_by(LEFT);
-            ui.data_mut(|m| m.insert_temp(egui::Id::new("mask-pen-placed"), dragging));
+            ui.data_mut(|m| m.insert_temp(egui::Id::unique("mask-pen-placed"), dragging));
         }
     }
     if resp.clicked() || resp.drag_stopped() {
-        ui.data_mut(|m| m.insert_temp(egui::Id::new("mask-pen-placed"), false));
+        ui.data_mut(|m| m.insert_temp(egui::Id::unique("mask-pen-placed"), false));
     }
     if resp.dragged_by(LEFT)
         && !commit
