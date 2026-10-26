@@ -29,6 +29,16 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
         ) -> Option<filmcraft_render::Image> {
             self.0.render(project, seq, t, opts, sources)
         }
+        fn render_yuv420(
+            &mut self,
+            project: &filmcraft_project::Project,
+            seq: ItemId,
+            t: Tick,
+            opts: filmcraft_render::RenderOptions,
+            sources: &dyn filmcraft_render::SourceProvider,
+        ) -> Option<filmcraft_frame::VideoFrame> {
+            self.0.render_yuv420(project, seq, t, opts, sources)
+        }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
 }

@@ -44,6 +44,7 @@ pub mod fx;
 pub mod lut;
 pub mod mask;
 mod transition;
+mod yuv;
 pub use export_renderer::ExportRenderer;
 pub use lut::GpuLut;
 pub use mask::GpuMask;
@@ -82,6 +83,8 @@ pub struct GpuCompositor {
     backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
+    /// The YUV export pass: None until first used, then Some(None) when this device cannot build it.
+    yuv: Option<Option<yuv::YuvPass>>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
     dummy: wgpu::TextureView,
@@ -418,6 +421,7 @@ impl GpuCompositor {
             backdrop: None,
             output: None,
             accum_readback_buf: None,
+            yuv: None,
             uploads: HashMap::new(),
             clock: 0,
             dummy,
@@ -980,6 +984,47 @@ impl GpuCompositor {
         self.map_accumulator(size)
     }
 
+    /// Export rendering for encoders that take 8-bit BT.709 limited 4:2:0: `plan` composited as in
+    /// [`render_export_prepared`](Self::render_export_prepared), converted on the GPU ([`yuv`]) and
+    /// only the planes read back. None where that method returns None, or when the pass cannot run
+    /// (size over the device's limits, a failed read-back): the caller takes the f32 path.
+    pub fn render_export_yuv420(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<filmcraft_frame::VideoFrame> {
+        if matches!(plan, FramePlan::Composite { .. }) {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        self.render_plan(plan, prep, true, false);
+        let (_, view, (w, h)) = self.accum.as_ref()?;
+        let (view, w, h) = (view.clone(), *w, *h);
+        let device = self.device.clone();
+        let pass = self.yuv.get_or_insert_with(|| yuv::YuvPass::try_new(&device)).as_mut()?;
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-yuv-export") });
+        let l = pass.record(&device, &mut enc, &view, w, h)?;
+        self.queue.submit([enc.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+        let t = std::time::Instant::now();
+        let [y, u, v] = pass.read(&device, &l)?;
+        export_renderer::timing::add_map_wait(t.elapsed());
+        let color = filmcraft_color::ColorInfo {
+            matrix: filmcraft_color::Matrix::Bt709,
+            transfer: filmcraft_color::Transfer::Bt709,
+            primaries: filmcraft_color::Primaries::Bt709,
+            range: filmcraft_color::Range::Limited,
+        };
+        Some(filmcraft_frame::VideoFrame {
+            width: w,
+            height: h,
+            data: filmcraft_frame::PixelData::Yuv8 {
+                planes: [std::sync::Arc::new(y), std::sync::Arc::new(u), std::sync::Arc::new(v)],
+                chroma: filmcraft_frame::Chroma::C420,
+                alpha: None,
+            },
+            color,
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        })
+    }
+
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
     /// applied, read back as linear premultiplied RGBA f32 (what `LayerFx` ops produce on the
     /// CPU from the same frame). None when the working image does not fit in a texture.
@@ -1152,7 +1197,7 @@ impl GpuCompositor {
 /// Export readback used `PollType::wait_indefinitely`. On radv that can never return after a
 /// failed hardware-encode attempt (#1058), so the export never finishes. Eight seconds is longer
 /// than a healthy map; a timeout returns `None` and the CPU renderer takes the frame.
-fn wait_mapped(device: &wgpu::Device) -> Option<()> {
+pub(crate) fn wait_mapped(device: &wgpu::Device) -> Option<()> {
     device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(8)) }).ok().map(|_| ())
 }
 
@@ -1177,7 +1222,7 @@ const UNIFORM_FLOATS: usize = 52;
 
 /// Poll a future once: wgpu's native error scopes resolve immediately. `None` if it is still
 /// pending (then the caller assumes the worst).
-fn poll_now<F: std::future::Future>(f: F) -> Option<F::Output> {
+pub(crate) fn poll_now<F: std::future::Future>(f: F) -> Option<F::Output> {
     let mut f = std::pin::pin!(f);
     match f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
         std::task::Poll::Ready(v) => Some(v),
