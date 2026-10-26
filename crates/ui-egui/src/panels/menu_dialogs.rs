@@ -443,14 +443,14 @@ fn color(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
     ui.horizontal(|ui| {
         ui.label(label);
         let c = p.get(key).and_then(Value::as_str).and_then(filmcraft_color::parse_hex).unwrap_or([0.0, 0.0, 0.0, 1.0]);
-        let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+        let mut rgba = crate::widgets::param_to_rgba(c);
         let (r, changed, hex_rect) = crate::widgets::color_edit_with_hex(ui, egui::Id::unique((pre, key)), &mut rgba, egui::color_picker::Alpha::Opaque);
         push(elems, format!("{pre}.{key}"), &r, label);
         if let Some(rect) = hex_rect {
             elems.push((format!("{pre}.{key}.hex"), rect, tl!("HEX").into()));
         }
         if changed {
-            p[key] = json!(filmcraft_color::to_hex([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+            p[key] = json!(filmcraft_color::to_hex(crate::widgets::rgba_to_param(rgba)));
         }
     });
 }

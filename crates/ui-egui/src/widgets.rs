@@ -239,6 +239,23 @@ fn lock_pointer_while_dragging(ui: &Ui, response: &Response) {
     }
 }
 
+/// A colour parameter as the linear [`egui::Rgba`] a picker edits.
+///
+/// A colour parameter holds its value sRGB-encoded: it is what `effects.setParam` stores for a
+/// `#rrggbb` string, and what the renderer reads (a `fill`/`tint` colour comes out as the same
+/// colour on screen). `egui::Rgba` is linear, so convert on the way in, and the swatch then shows
+/// the colour the Program monitor renders.
+pub(crate) fn param_to_rgba(c: [f32; 4]) -> egui::Rgba {
+    let lin = |v: f32| filmcraft_color::srgb_to_linear(v.clamp(0.0, 1.0));
+    egui::Rgba::from_rgba_unmultiplied(lin(c[0]), lin(c[1]), lin(c[2]), c[3].clamp(0.0, 1.0))
+}
+
+/// The sRGB-encoded parameter value of a colour a picker edited — the inverse of [`param_to_rgba`].
+pub(crate) fn rgba_to_param(rgba: egui::Rgba) -> [f32; 4] {
+    let [r, g, b, a] = rgba.to_rgba_unmultiplied();
+    [filmcraft_color::linear_to_srgb(r.max(0.0)), filmcraft_color::linear_to_srgb(g.max(0.0)), filmcraft_color::linear_to_srgb(b.max(0.0)), a.clamp(0.0, 1.0)]
+}
+
 /// A compact colour swatch whose popup includes a copyable/pastable hex text field.
 /// Returns (swatch response, changed, hex field rect while the popup is open).
 pub(crate) fn color_edit_with_hex(ui: &mut Ui, id: egui::Id, rgba: &mut egui::Rgba, alpha: egui::color_picker::Alpha) -> (Response, bool, Option<Rect>) {
@@ -263,9 +280,10 @@ pub(crate) fn color_edit_with_hex(ui: &mut Ui, id: egui::Id, rgba: &mut egui::Rg
             let response = ui.add(egui::TextEdit::singleline(&mut text).id(hex_id).desired_width(86.0).char_limit(9));
             hex_rect = Some(response.rect);
             if response.changed()
-                && let Some([r, g, b, a]) = filmcraft_color::parse_hex(&text)
+                && let Some(c) = filmcraft_color::parse_hex(&text)
             {
-                hsva = egui::ecolor::Hsva::from(egui::Rgba::from_rgba_unmultiplied(r, g, b, a));
+                // the typed hex is the sRGB colour of the parameter, like the value beside it
+                hsva = egui::ecolor::Hsva::from(param_to_rgba(c));
                 changed = true;
             }
             if response.has_focus() {
@@ -759,6 +777,36 @@ mod tests {
             for c in centres {
                 assert!((c - 11.0).abs() <= 1.0, "{text:?}: text centred at {c}, the field's centre is 11");
             }
+        }
+    }
+
+    /// The sRGB bytes a colour parameter's float value stands for (what the renderer draws).
+    fn param_bytes(c: [f32; 4]) -> [u8; 4] {
+        c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+    }
+
+    /// A parameter's swatch paints the parameter's own colour: the value is sRGB-encoded, so
+    /// `#e27d38` stays `#e27d38` in the panel. It used to be shown as the sRGB encoding of that
+    /// value read as linear — a lighter colour no render of the parameter ever produced.
+    #[test]
+    fn a_colour_swatch_shows_the_parameter_colour() {
+        for hex in ["#e27d38", "#123456", "#808080", "#ffffff", "#000000"] {
+            let c = filmcraft_color::parse_hex(hex).expect("hex");
+            assert_eq!(param_to_rgba(c).to_srgba_unmultiplied(), param_bytes(c), "{hex} is drawn as its own colour");
+        }
+    }
+
+    /// What the picker stores is what the swatch showed, so reopening it does not shift the
+    /// colour: the round trip through the linear `egui::Rgba` the popup works in is exact.
+    #[test]
+    fn a_picked_colour_is_stored_as_the_colour_it_showed() {
+        for hex in ["#e27d38", "#123456", "#808080", "#010203"] {
+            let c = filmcraft_color::parse_hex(hex).expect("hex");
+            let stored = rgba_to_param(param_to_rgba(c));
+            for (got, want) in stored.iter().zip(c) {
+                assert!((got - want).abs() < 1e-4, "{hex}: stored {stored:?}, typed {c:?}");
+            }
+            assert_eq!(param_to_rgba(stored).to_srgba_unmultiplied(), param_bytes(c), "{hex} circles back");
         }
     }
 

@@ -1534,9 +1534,9 @@ fn param_value_widget(
             crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
-            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            let mut rgba = crate::widgets::param_to_rgba(*c);
             if egui::color_picker::color_edit_button_rgba(vui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+                set = Some(json!(crate::widgets::rgba_to_param(rgba)));
             }
             // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
             let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
@@ -1766,12 +1766,13 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": pd.default.as_f64().unwrap_or(0.0)}));
                         }
                     } else if let ParamValue::Color(c) = v {
-                        let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+                        let mut rgba = crate::widgets::param_to_rgba(c);
                         let (color_response, changed, hex_rect) =
                             crate::widgets::color_edit_with_hex(ui, egui::Id::unique(("lumetri-color", pd.id)), &mut rgba, egui::color_picker::Alpha::Opaque);
                         app.auto.add(&format!("lumetri.{}.color", pd.id), color_response.rect, "Color picker");
                         if changed {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [rgba.r(), rgba.g(), rgba.b(), 1.0]}));
+                            let [r, g, b, _] = crate::widgets::rgba_to_param(rgba);
+                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [r, g, b, 1.0]}));
                         }
                         if let Some(rect) = hex_rect {
                             app.auto.add(&format!("lumetri.{}.hex", pd.id), rect, "HEX color");

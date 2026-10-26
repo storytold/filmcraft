@@ -691,15 +691,20 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         app.ui.status = tl!("Eyedropper: no picture to sample").to_string();
         return;
     };
-    // the parameter stores linear values, like the colour picker beside it
-    let lin = egui::Rgba::from(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-    let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": [lin.r(), lin.g(), lin.b(), 1.0]});
+    let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": eyedropper_param(rgb)});
     if let Some(k) = armed.mask {
         params["mask"] = json!(k);
     }
     if let Err(e) = app.session.execute("effects.setParam", params) {
         app.ui.status = e.to_string();
     }
+}
+
+/// The colour parameter a sampled pixel fills: the picture and the parameter are both
+/// sRGB-encoded (see [`crate::widgets::param_to_rgba`]), so the byte stands for itself and the
+/// swatch shows exactly the pixel that was clicked.
+fn eyedropper_param(rgb: [u8; 3]) -> [f32; 4] {
+    [f32::from(rgb[0]) / 255.0, f32::from(rgb[1]) / 255.0, f32::from(rgb[2]) / 255.0, 1.0]
 }
 
 /// The average colour of the 5×5 pixels around `uv` (0..1 across and down) of a frame, so a noisy
@@ -1343,6 +1348,15 @@ mod tests {
         set_transport_visible(&mut program, "playhead.stepForward", false);
         assert_eq!(program.iter().filter(|id| *id == "playhead.stepForward").count(), 1);
         assert!(transport_visible(&source, "playhead.stepForward"));
+    }
+
+    /// An eyedropper pick fills the parameter with the pixel's own colour, so the picker's swatch
+    /// shows exactly the pixel that was clicked (not its linear value, which reads darker).
+    #[test]
+    fn an_eyedropper_pick_is_the_pixel_colour() {
+        let c = eyedropper_param([0xe2, 0x7d, 0x38]);
+        assert_eq!(c, [226.0 / 255.0, 125.0 / 255.0, 56.0 / 255.0, 1.0]);
+        assert_eq!(crate::widgets::param_to_rgba(c).to_srgba_unmultiplied(), [0xe2, 0x7d, 0x38, 255]);
     }
 
     #[test]
