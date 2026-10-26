@@ -341,15 +341,32 @@ pub fn sequence_param(s: &Session, p: &Value, cmd: &str) -> Result<ItemId> {
 /// None = the default (In/Out when set, else the whole sequence); bare `start…` / `end…` times
 /// without a `range` mean `custom`.
 pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value>, p: &Value, cmd: &str) -> Result<Option<TimeRange>> {
+    range_with_warnings(s, project, seq, v, p, cmd).map(|(range, _)| range)
+}
+
+/// A marked range of one sequence frame is valid, but easily left behind by accident.
+/// Explicit custom/work-area/entire ranges must not inherit this warning.
+pub fn single_frame_in_out(q: &filmcraft_project::Sequence, range: TimeRange) -> bool {
+    let rate = q.settings.frame_rate;
+    (q.mark_in.is_some() || q.mark_out.is_some()) && range.duration > Tick::ZERO && rate.frame_at(range.start) == rate.frame_at(range.end() - Tick(1))
+}
+
+const SINGLE_FRAME_WARNING: &str = "In/Out range is 1 frame; pass range: entire for the whole sequence";
+
+fn range_with_warnings(s: &Session, project: &Project, seq: ItemId, v: Option<&Value>, p: &Value, cmd: &str) -> Result<(Option<TimeRange>, Vec<&'static str>)> {
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     q.check_bounds().map_err(|e| bad(cmd, e))?;
     let fd = q.settings.frame_rate.frame_duration();
     let whole = TimeRange::from_bounds(Tick::ZERO, q.duration().max(fd));
     let mode = match v {
         None | Some(Value::Null) if time_p(s, p, "start").is_some() || time_p(s, p, "end").is_some() => "custom".to_string(),
-        None | Some(Value::Null) => return Ok(None),
+        None | Some(Value::Null) => {
+            let range = filmcraft_export::export_range(project, seq, &ExportSettings::default()).map_err(|e| bad(cmd, e.to_string()))?;
+            let warnings = if single_frame_in_out(q, range) { vec![SINGLE_FRAME_WARNING] } else { Vec::new() };
+            return Ok((None, warnings));
+        }
         Some(Value::String(m)) => m.to_ascii_lowercase().replace(['-', '_', ' ', '/'], ""),
-        Some(o @ Value::Object(_)) => return range_param(s, project, seq, o.get("mode").or(Some(&json!("custom"))), o, cmd),
+        Some(o @ Value::Object(_)) => return range_with_warnings(s, project, seq, o.get("mode").or(Some(&json!("custom"))), o, cmd),
         Some(other) => return Err(bad(cmd, format!("range: unexpected {other}"))),
     };
     let range = match mode.as_str() {
@@ -368,7 +385,8 @@ pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value
         other => return Err(bad(cmd, format!("range `{other}`: entire | inOut | workArea | custom"))),
     };
     filmcraft_export::validate_range(range).map_err(|e| bad(cmd, e.to_string()))?;
-    Ok(Some(range))
+    let warnings = if matches!(mode.as_str(), "inout" | "sequenceinout") && single_frame_in_out(q, range) { vec![SINGLE_FRAME_WARNING] } else { Vec::new() };
+    Ok((Some(range), warnings))
 }
 
 /// Where exports go when no path is given: next to the saved project, else ~/Movies, else the
@@ -544,12 +562,13 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "need `path`"));
     }
     let project = s.project.clone();
-    settings.range = range_param(s, &project, seq, p.get("range"), p, cmd)?;
+    let (range, warnings) = range_with_warnings(s, &project, seq, p.get("range"), p, cmd)?;
+    settings.range = range;
     settings.path = output_path(s, p, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
     let id = spawn_export(s, project, seq, settings, format!("Export {}", file_name(&path)), wait)?;
-    let mut out = json!({"job": id, "path": path});
+    let mut out = json!({"job": id, "path": path, "warnings": warnings});
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
     }
@@ -914,14 +933,15 @@ fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = sequence_param(s, &q, cmd)?;
     let (preset, mut settings) = settings_from_params(s, &q, cmd)?;
     let project = s.project.clone();
-    settings.range = range_param(s, &project, seq, q.get("range"), &q, cmd)?;
+    let (range, warnings) = range_with_warnings(s, &project, seq, q.get("range"), &q, cmd)?;
+    settings.range = range;
     settings.path = output_path(s, &q, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
     let id = spawn_export(s, project, seq, settings, format!("Quick Export {}", file_name(&path)), wait)?;
     let used = preset.map(|x| x.name).unwrap_or(name);
     s.export_queue.quick_preset = Some(used.clone());
-    Ok(json!({"job": id, "path": path, "preset": used}))
+    Ok(json!({"job": id, "path": path, "preset": used, "warnings": warnings}))
 }
 
 fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
@@ -929,7 +949,8 @@ fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = sequence_param(s, p, cmd)?;
     let (preset, mut settings) = settings_from_params(s, p, cmd)?;
     let project = s.project.clone();
-    settings.range = range_param(s, &project, seq, p.get("range"), p, cmd)?;
+    let (range, warnings) = range_with_warnings(s, &project, seq, p.get("range"), p, cmd)?;
+    settings.range = range;
     settings.path = output_path(s, p, seq, &settings, None);
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let range = filmcraft_export::export_range(&project, seq, &settings).map_err(|e| EngineError::Other(e.to_string()))?;
@@ -942,6 +963,7 @@ fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
         "settings": settings,
         "range": {"start": range.start.0, "duration": range.duration.0, "seconds": range.duration.seconds()},
         "frames": f1 - f0,
+        "warnings": warnings,
         "output": {"width": r.width, "height": r.height, "fps": r.rate.label(), "sampleRate": r.sample_rate, "channels": r.channels,
                    "targetKbps": r.target_kbps, "maxKbps": r.max_kbps, "keyframeDistance": r.keyint},
         "summary": summary,

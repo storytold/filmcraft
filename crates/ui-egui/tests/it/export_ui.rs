@@ -126,6 +126,30 @@ impl Drop for Driver {
 }
 
 #[test]
+fn single_frame_in_out_warning_updates_with_range_and_marks() {
+    let mut d = Driver::new("single-frame-warning");
+    d.exec("markers.markIn", json!({"frame":12}));
+    d.exec("markers.markOut", json!({"frame":12}));
+    d.ok("ui.set", json!({"mode":"export", "export":{"range":"inOut"}}));
+    d.frames(3);
+    assert!(d.has("export.range.warning"));
+    let duration = d.ok("ui.elements", json!({"prefix":"export.range.duration"}));
+    assert!(duration[0]["label"].as_str().unwrap().starts_with("1 frame ("), "{duration}");
+    d.snapshot("export-single-frame-warning");
+    for range in ["entire", "custom"] {
+        d.ok("ui.set", json!({"export":{"range":range,"customStart":0.0,"customEnd":0.04}}));
+        d.frames(2);
+        assert!(!d.has("export.range.warning"));
+    }
+    d.ok("ui.set", json!({"export":{"range":"inOut"}}));
+    d.exec("markers.markOut", json!({"frame":13}));
+    d.frames(2);
+    assert!(!d.has("export.range.warning"));
+    let duration = d.ok("ui.elements", json!({"prefix":"export.range.duration"}));
+    assert!(duration[0]["label"].as_str().unwrap().starts_with("2 frames ("), "{duration}");
+}
+
+#[test]
 fn export_mode_settings_and_summary() {
     let mut d = Driver::new("settings");
     d.ok("ui.set", json!({"mode": "export"}));
