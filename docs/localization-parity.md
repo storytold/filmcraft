@@ -1,5 +1,22 @@
 # Localization parity
 
+## Taiwan Traditional Chinese draft (2026-10-26)
+
+The `zh-tw` catalog adds 3,590 entries for interface text, menus, settings and registry labels.
+Edit ▸ Language and Settings ▸ General offer 繁體中文; the language action and `prefs.set` with
+`general.interfaceLanguage = "zh-tw"` reach the same persisted preference. System tags `zh-TW`,
+`zh-HK`, `zh-MO` and `zh-Hant` select this Taiwan terminology catalog. Other Traditional Chinese
+regions currently share this fallback rather than a separately reviewed regional translation.
+
+This is a machine-assisted draft derived from the project's `zh-cn.tsv` with OpenCC s2twp
+(Apache-2.0 tool and dictionaries) and Taiwan terminology corrections. Native-speaker review is
+pending. Quality is 品質; physical mass remains 質量. No proprietary translation resources are used.
+Missing future translations show English and do not fail the build. The optional Python sync
+tool is not a build or CI prerequisite. Engine-generated errors, CLI and MCP output stay English.
+Chinese still requires the existing CJK font availability checks.
+
+Older measurements below predate this addition.
+
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (German covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Per-language status of FilmCraft's interface. Premiere 26.5.2 ships 10 interface languages (the
