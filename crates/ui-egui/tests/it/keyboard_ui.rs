@@ -71,6 +71,32 @@ impl Driver {
     }
 }
 
+/// Rejected pointer counts must preserve the editor and allow later MCP-default and double clicks.
+#[test]
+fn rejected_pointer_counts_leave_the_ui_usable() {
+    let mut d = Driver::new();
+    let project = d.app().session.project.clone();
+    for (method, params) in [
+        ("ui.click", json!({"id": "tools.Razor", "count": u64::MAX})),
+        ("ui.drag", json!({"from": {"id": "tools.Razor"}, "to": {"id": "tools.Selection"}, "steps": u64::MAX})),
+    ] {
+        let (req, reply) = ControlRequest::new(method, params);
+        d.tx.send(req).unwrap();
+        d.frames(3);
+        let response = reply.try_recv().expect("invalid counts must be answered without queuing input");
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Selection);
+        assert_eq!(*d.app().session.project, *project);
+    }
+    d.ok("ui.click", json!({"id": "tools.Razor", "count": null}));
+    d.frames(3);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Razor);
+    d.ok("ui.click", json!({"id": "tools.Selection", "count": 2}));
+    d.frames(3);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Selection);
+    assert_eq!(*d.app().session.project, *project);
+}
+
 /// Ids added for keyboard parity (engine + UI).
 fn new_ids() -> Vec<String> {
     let mut v: Vec<String> = filmcraft_engine::keyboard::commands().iter().map(|c| c.id.to_string()).collect();
@@ -99,7 +125,15 @@ fn premiere_table_has_no_dangling_ids_or_new_conflicts() {
         }
     }
     // the Premiere preset binds every new command that Premiere has a key for
-    for id in ["timeline.selectClipAtPlayhead", "file.exportFrame", "window.maximizeFrame", "timeline.nudgeRight", "clip.volumeUp"] {
+    for id in [
+        "timeline.selectClipAtPlayhead",
+        "file.exportFrame",
+        "window.maximizeFrame",
+        "timeline.nudgeRight",
+        "clip.volumeUp",
+        "mixer.showHideTracks",
+        "mixer.meterInputOnly",
+    ] {
         assert!(!s.shortcuts.for_command(id).is_empty(), "{id} has no key in the Premiere preset");
     }
 }
@@ -178,6 +212,35 @@ fn new_keys_work_in_the_app() {
     assert_eq!(d.app().ui.program.zoom, Some(1.0));
     d.key("Cmd+Shift+0");
     assert_eq!(d.app().ui.program.zoom, None);
+}
+
+/// The Audio Track Mixer's Show/Hide Tracks (Cmd+Alt+T) and Meter Input(s) Only (Ctrl+Shift+I)
+/// keys with the mixer focused, and the two commands run from another panel.
+#[test]
+fn audio_track_mixer_keys_open_show_hide_and_toggle_meter_input_only() {
+    let mut d = Driver::new();
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.focus("AudioTrackMixer");
+    let dialog = |d: &mut Driver| !d.ok("ui.elements", json!({"prefix": "mixer.showHide.A1"})).as_array().unwrap().is_empty();
+    assert!(!dialog(&mut d));
+    d.key("Cmd+Alt+T");
+    assert!(dialog(&mut d), "Cmd+Alt+T opens Show/Hide Tracks");
+    d.ok("ui.click", json!({"id": "mixer.showHide.ok"}));
+    d.frames(2);
+    assert!(!dialog(&mut d), "OK closes it");
+    assert!(!d.app().ui.mixer_meter_input_only);
+    d.key("Ctrl+Shift+I");
+    assert!(d.app().ui.mixer_meter_input_only, "Ctrl+Shift+I turns Meter Input(s) Only on");
+    d.key("Ctrl+Shift+I");
+    assert!(!d.app().ui.mixer_meter_input_only, "and off again");
+    // the commands, from anywhere: Show/Hide Tracks brings the mixer forward
+    d.focus("Timeline");
+    let r = d.ok("ui.menu.invoke", json!({"id": "mixer.meterInputOnly", "params": {"on": true}}));
+    assert_eq!(r, json!({"meterInputOnly": true}));
+    d.ok("ui.menu.invoke", json!({"id": "mixer.showHideTracks"}));
+    d.frames(2);
+    assert!(dialog(&mut d), "mixer.showHideTracks opens the dialog");
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::AudioTrackMixer);
 }
 
 /// Off macOS the menus show `Ctrl+…`, so that is what agents send: a `Ctrl` chord through

@@ -7,7 +7,9 @@
 
 use std::sync::mpsc::{Sender, channel};
 
+use egui::accesskit::Role;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
@@ -151,6 +153,93 @@ fn type_tool_edit_style_and_move() {
     d.exec("graphics.arrangeLayer", json!({"clip": clip, "layer": 1, "to": "back"}));
     d.ok("ui.set", json!({"tool": "Selection"}));
     d.shot("shape-layer");
+}
+
+/// Properties-panel choice and stroke-width accessible names follow the interface language, while
+/// the automation ids and the values shown stay those of the property.
+#[test]
+fn choice_and_stroke_width_accessible_names_follow_language() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let clip = d.exec("graphics.newShape", json!({"shape": "rectangle", "position": [800, 500], "size": [500, 300]}))["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(4);
+
+    assert_eq!(d.harness.get_by_role_and_label(Role::ComboBox, "Shape").value().as_deref(), Some("Rectangle"));
+
+    d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": "es"}));
+    d.frames(4);
+    let es = filmcraft_ui_egui::i18n::Language::Es;
+    for (label, value) in [("Shape", "Rectangle"), ("Fill Type", "Solid"), ("Stroke Type", "Outer"), ("Stroke 2 Type", "Outer")] {
+        assert_eq!(
+            d.harness.get_by_role_and_label(Role::ComboBox, es.tr(label)).value().as_deref(),
+            Some(es.tr(value)),
+            "{label} keeps its translated name and selected value"
+        );
+    }
+
+    // The widget still writes the property it names, and its automation id does not change.
+    d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"shape": "ellipse", "stroke2_type": "center"}}));
+    d.frames(4);
+    assert_eq!(d.harness.get_by_role_and_label(Role::ComboBox, es.tr("Shape")).value().as_deref(), Some(es.tr("Ellipse")));
+    assert_eq!(d.harness.get_by_role_and_label(Role::ComboBox, es.tr("Stroke 2 Type")).value().as_deref(), Some(es.tr("Center")));
+    let ids: Vec<String> =
+        d.ok("ui.elements", json!({"prefix": "graphics.prop."})).as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect();
+    for id in ["graphics.prop.shape", "graphics.prop.fill_kind", "graphics.prop.stroke_type", "graphics.prop.stroke2_type"] {
+        assert!(ids.iter().any(|i| i == id), "{id} is still registered: {ids:?}");
+    }
+
+    // Each stroke width opens its editor under the complete translated catalog entry, not an
+    // English " width" suffix appended to a translated label.
+    for _ in 0..20 {
+        if d.rect("graphics.prop.stroke_width")[1] < 900.0 {
+            break;
+        }
+        d.ok("ui.scroll", json!({"id": "graphics.prop.shape", "dy": -200.0}));
+        d.frames(2);
+    }
+    d.ok("ui.click", json!({"id": "graphics.prop.stroke_width"}));
+    d.frames(3);
+    assert_eq!(
+        d.harness.get_by_role_and_label(Role::TextInput, es.tr("Stroke Width")).value().as_deref(),
+        Some("4.0"),
+        "the first stroke width editor has the translated label"
+    );
+    d.ok("ui.click", json!({"id": "graphics.prop.stroke2_width"}));
+    d.frames(3);
+    assert_eq!(
+        d.harness.get_by_role_and_label(Role::TextInput, es.tr("Stroke 2 Width")).value().as_deref(),
+        Some("10.0"),
+        "the second stroke width editor has its own translated label"
+    );
+    filmcraft_ui_egui::i18n::set_current(filmcraft_ui_egui::i18n::Language::En);
+}
+
+/// Effect Controls' Text parameter (graphic layers' Source Text / name / font fields) names its
+/// text editor with the translated parameter label, like the boolean and choice arms.
+#[test]
+fn effect_controls_text_accessible_name_follows_language() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let clip = d.exec("graphics.newText", json!({"text": "Night Drive"}))["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
+    d.frames(4);
+
+    d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": "es"}));
+    d.frames(4);
+    let es = filmcraft_ui_egui::i18n::Language::Es;
+    assert_eq!(
+        d.harness.get_by_role_and_label(Role::TextInput, es.tr("Source Text")).value().as_deref(),
+        Some("Night Drive"),
+        "the translated accessible name and the same value"
+    );
+    let elements = d.ok("ui.elements", json!({"prefix": "effectControls.text."}));
+    assert!(
+        elements.as_array().unwrap().iter().any(|e| e["id"].as_str().is_some_and(|id| id.ends_with(".text"))),
+        "the Source Text automation id is unchanged: {elements}"
+    );
+    filmcraft_ui_egui::i18n::set_current(filmcraft_ui_egui::i18n::Language::En);
 }
 
 /// The value of `param` on the text layer of graphic clip `clip`, at its first frame.

@@ -32,6 +32,7 @@ macro_rules! tlf {
 pub mod automation;
 pub mod brand;
 pub mod calc;
+pub mod capture;
 mod cjk;
 pub mod control;
 pub mod crash;
@@ -47,6 +48,7 @@ pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
 pub mod icons;
+mod ime_reset;
 pub mod links;
 pub mod menus;
 pub mod native_dialogs;
@@ -61,12 +63,14 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod updates_ui;
 pub mod widgets;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
+use egui::ime_context::{ImeContextTracker, ImeTarget};
 use egui::{TextureHandle, TextureOptions};
 use filmcraft_engine::{Services, Session};
 use filmcraft_time::Tick;
@@ -203,7 +207,7 @@ pub enum Dialog {
     NewSequence,
     /// Settings (Preferences window; page in `UiState::settings`).
     Preferences,
-    /// "Recover unsaved changes from <time>?" (shown at startup when a dead session left some).
+    /// "Recover unsaved changes from `<time>`?" (shown at startup when a dead session left some).
     Recovery,
     /// "Are you sure you want to discard your changes?" (File ▸ Revert).
     RevertConfirm,
@@ -224,16 +228,16 @@ pub struct Playback {
     pub playing: bool,
     pub speed: f64,
     pub looping: bool,
-    /// Wall-clock (egui time, s) and timeline tick when playback (re)started.
+    /// Monotonic host time (s) and timeline tick when playback (re)started.
     anchor_time: f64,
     anchor_tick: Tick,
     /// Audio frames played at anchor (when the audio clock drives).
     pub audio_clock: bool,
-    /// The audio clock's last reading and when (egui time, s) it last moved: a device that stops
+    /// The audio clock's last reading and when (monotonic host s) it last moved: a device that stops
     /// consuming samples hands the clock back to the wall clock (see [`AUDIO_STALL_S`]).
     audio_seen: (u64, f64),
     /// When playback lost its output (a failed open or a dead stream), when it is opened again
-    /// (egui time, s; 0 = not retrying). Pause/play proves a fresh stream works, so a stream the
+    /// (monotonic host s; 0 = not retrying). Pause/play proves a fresh stream works, so a stream the
     /// device keeps dropping is reopened on a timer (see [`AUDIO_RETRY_S`]).
     audio_retry_at: f64,
     /// Audio underruns for the current (or last) play (desktop: sound is mixed ahead).
@@ -241,7 +245,7 @@ pub struct Playback {
     pub audio_stats: std::sync::Arc<play_ahead::AudioStats>,
     /// Shown / dropped frame accounting for the current (or last) play.
     pub meter: frames::PlaybackMeter,
-    /// Waiting for the first frames before starting the clock: when the wait began (egui time,
+    /// Waiting for the first frames before starting the clock: when the wait began (monotonic host time,
     /// s; negative = not yet stamped), and whether the Program monitor has them ready.
     pub preroll: Option<f64>,
     pub preroll_ready: bool,
@@ -265,12 +269,6 @@ pub const AUDIO_STALL_S: f64 = 1.0;
 /// timer brings the sound back when the device recovers (#2503).
 pub const AUDIO_RETRY_S: f64 = 2.0;
 
-/// How long `ui.screenshot` waits for the window to present the frame.
-const SCREENSHOT_TIMEOUT_S: f64 = 10.0;
-/// How long `ui.screenshot` waits for the UI to settle (monitors showing their exact frames, the
-/// timeline zoom animation finished) before capturing what is there.
-const SCREENSHOT_SETTLE_MAX_S: f64 = 5.0;
-
 /// Export entries that run from the menus through the save panel: command, filter label,
 /// extension.
 pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
@@ -282,6 +280,16 @@ pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
     ("file.exportAle", "Avid Log Exchange", "ale"),
     ("file.exportSelectionProject", "FilmCraft Project", "fcproj"),
 ];
+
+/// Incoming composition identity for the Program monitor. Interrupted compositions remain
+/// Stale until the matching opaque native reset fence; output or old terminal input is not
+/// acknowledgement. The retired origin and current destination live in the UI reset adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImeComposition {
+    Active(ImeTarget),
+    TerminalPending(ImeTarget),
+    Stale,
+}
 
 pub struct FilmcraftApp {
     pub session: Session,
@@ -295,10 +303,33 @@ pub struct FilmcraftApp {
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
+    pub(crate) updates_rt: updates_ui::Runtime,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
     native_dialog: Option<native_dialogs::PendingDialog>,
     pub auto: automation::Registry,
+    /// IME owner/generation/cause state for the custom editors on the Program monitor. State is
+    /// kept per egui viewport; a closed viewport is released in [`eframe::App::on_exit`].
+    pub(crate) ime_context: ImeContextTracker,
+    /// Bumped when the custom text edit target is (re)created, a sequence/document context
+    /// changes, or a control request replaces `gfxEdit`. It is the replacement epoch of the
+    /// otherwise stable sequence/clip/component owner.
+    pub(crate) ime_replacement_epoch: u64,
+    /// The (viewport, cumulative pass) whose one IME observation has already been made.
+    ime_observed_pass: Option<(egui::ViewportId, u64)>,
+    /// The composition in flight (including an empty preedit awaiting its terminal event), or a
+    /// tombstone for a composition whose target was replaced or caret/focus was interrupted.
+    pub(crate) ime_composition: Option<ImeComposition>,
+    ime_reset: ime_reset::State,
+    ime_composition_viewport: Option<egui::ViewportId>,
+    /// The editor drawn in this pass; the final observation runs after control drain.
+    pub(crate) ime_drawn_editor: Option<panels::graphics::DrawnImeEditor>,
+    /// Project document generation last seen by the UI (the engine bumps it on replacement).
+    ime_document_epoch: u64,
+    /// Active sequence last seen by the UI; `sequence.close` need not emit `OpenSequence`.
+    ime_active_sequence: Option<filmcraft_project::ItemId>,
+    /// Viewports this app's custom IME producer has observed, released when the app exits.
+    ime_viewports: Vec<egui::ViewportId>,
     /// Named textures (monitors, thumbnails) with the key they show.
     textures: HashMap<String, (FrameKey, TextureHandle)>,
     /// The UI pass each thumbnail texture was last used in: thumbnails beyond
@@ -315,8 +346,38 @@ pub struct FilmcraftApp {
     synthetic_modifiers: egui::Modifiers,
     /// Requests waiting for the UI to show an element: (request, give-up time).
     deferred: Vec<(ControlRequest, f64)>,
+    /// Control requests that need a fresh layout/response; processed only in a real UI pass.
+    ui_requests: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// One synthetic step handed to `raw_input_hook` but not yet consumed by a real UI pass.
+    /// Hidden `run_logic` callbacks do not process raw input: the same step is offered again until
+    /// an actual pass consumes it, rather than being dropped or advancing the queue.
+    synthetic_pending_step: Option<Vec<egui::Event>>,
+    /// The pending step is already present in the `RawInput` the eframe integration preserves
+    /// across hidden logic ticks. Appending it again on the next hook would duplicate it.
+    synthetic_step_offered: bool,
+    /// Same for the `ModifiersChanged`/focus boundary events, which hidden ticks would otherwise
+    /// accumulate without bound.
+    synthetic_modifiers_offered: bool,
+    /// An image delivered by `Event::PasteImage` for the paste action this frame. Native and web
+    /// hosts deliver the bytes in the event; re-reading the OS clipboard can see a different image
+    /// (or none, on the web), so the menu path consumes this payload first.
+    pub(crate) pasted_image: Option<std::sync::Arc<egui::ColorImage>>,
+    /// Monotonic host clock for playback, deadlines and hidden work. Never `ctx.input(i.time)`.
+    clock_start: web_time::Instant,
+    /// The latest time egui itself reported for a layout pass. Native and web hosts supply a
+    /// monotonic wall clock; deterministic harnesses supply their own stepped clock. Taking the
+    /// later of this and the host clock keeps simulated tests on their clock while a hidden
+    /// logic tick (whose `InputState::time` is stale) still advances by host time.
+    ui_clock: f64,
+    /// Non-negative `ui_clock - host_elapsed`, captured on the first real UI pass. Native eframe
+    /// starts its `RawInput::time` at its own integration beginning, which can precede
+    /// `clock_start`; without this offset, `max` would hold `now()` at the stale UI time during
+    /// hidden logic and then jump by the startup offset when the next UI pass arrives.
+    ui_clock_offset: Option<f64>,
+    #[cfg(test)]
+    test_now: Option<f64>,
     /// macOS: a Control+Click already translated to a secondary (context) click, so its release is
     /// translated too even if Control is let go mid-click. AppKit delivers Control+Click to the
     /// view as a *primary* press with the Control modifier (`rightMouseDown:` only fires for a
@@ -326,13 +387,18 @@ pub struct FilmcraftApp {
     /// The mouse press in progress (its start time) and the undo history when it began, for Escape
     /// to take back what the press changed (#580).
     value_press: Option<(f64, filmcraft_engine::UndoMark)>,
+    /// Escape was pressed during the current press in pass 0; apply the rollback after the final
+    /// non-discarded UI pass (pass 1+ has no key event to re-read).
+    escape_cancel: bool,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
     status_seen: (String, f64),
-    /// Screenshots waiting for their frame: (token, path, crop, reply, give-up time).
-    pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<Value>, f64)>,
-    queued_screenshots: Vec<(u64, f64, u32)>,
+    /// Admitted `ui.screenshot` requests and their completion slots.
+    pub(crate) shots: capture::Shots,
+    /// Fresh raw-input surface geometry, refreshed in `raw_input_hook` for UI and logic callbacks.
+    pub(crate) capture_geometry: Option<capture::CaptureGeometry>,
+    pub(crate) capture_epoch: u64,
     /// A paused monitor drew a stand-in (nearest cached) picture last frame: its exact frame is
     /// still decoding.
     pub(crate) monitor_inexact: bool,
@@ -345,7 +411,6 @@ pub struct FilmcraftApp {
     /// the frame before the last one, so its timeline rects are final from 2 on.
     pub(crate) timeline_still: u32,
     input_waiters: Vec<Sender<Value>>,
-    next_token: u64,
     styled: bool,
     /// A panic in the UI pass, shown in an error window until dismissed (see [`crash`]).
     pub ui_error: Option<String>,
@@ -545,6 +610,8 @@ impl FilmcraftApp {
 }
 
 impl FilmcraftApp {
+    /// Build the app around one shared `FrameServer`, falling back to the default language on an unparsable preference, loading workspaces from the prefs
+    /// directory and seeding IME epoch/sequence identity.
     pub fn new(mut session: Session) -> Self {
         session.shortcuts.register_external(menus::external_commands());
         let recovery = !session.recovery_candidates().is_empty();
@@ -552,6 +619,8 @@ impl FilmcraftApp {
         let workspaces =
             session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| dock::WorkspacePrefs::load(&d.join(dock::WORKSPACES_FILE))).unwrap_or_default();
         let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
+        let ime_document_epoch = session.document_epoch;
+        let ime_active_sequence = session.state.active_sequence;
         Self {
             session,
             ui: UiState { language, ..UiState::default() },
@@ -564,9 +633,20 @@ impl FilmcraftApp {
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
+            updates_rt: Default::default(),
             file_dialogs: Default::default(),
             native_dialog: None,
             auto: Default::default(),
+            ime_context: ImeContextTracker::new(),
+            ime_replacement_epoch: 0,
+            ime_observed_pass: None,
+            ime_composition: None,
+            ime_reset: Default::default(),
+            ime_composition_viewport: None,
+            ime_drawn_editor: None,
+            ime_document_epoch,
+            ime_active_sequence,
+            ime_viewports: Vec::new(),
             textures: HashMap::new(),
             thumb_used: HashMap::new(),
             control_rx: None,
@@ -575,20 +655,31 @@ impl FilmcraftApp {
             native_window_focused: None,
             synthetic_modifiers: egui::Modifiers::NONE,
             deferred: Vec::new(),
+            ui_requests: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
+            synthetic_pending_step: None,
+            synthetic_step_offered: false,
+            synthetic_modifiers_offered: false,
+            pasted_image: None,
+            clock_start: web_time::Instant::now(),
+            ui_clock: 0.0,
+            ui_clock_offset: None,
+            #[cfg(test)]
+            test_now: None,
             mac_ctrl_click_armed: false,
             value_press: None,
+            escape_cancel: false,
             loudness: None,
             status_seen: (String::new(), 0.0),
-            pending_screenshots: Vec::new(),
-            queued_screenshots: Vec::new(),
+            shots: capture::Shots::default(),
+            capture_geometry: None,
+            capture_epoch: 0,
             monitor_inexact: false,
             monitor_asked: HashMap::new(),
             program_shown: None,
             timeline_still: 0,
             input_waiters: Vec::new(),
-            next_token: 1,
             styled: false,
             ui_error: None,
             panic_next_frame: false,
@@ -628,6 +719,164 @@ impl FilmcraftApp {
         self
     }
 
+    /// Start a new replacement epoch for the Program monitor's text edit target.
+    ///
+    /// The owner key names the sequence, clip and component. A recreated edit session on the
+    /// same key (or a document/sequence replacement) must not inherit the previous IME context,
+    /// so the app advances this epoch and the tracker resets the generation once.
+    pub(crate) fn restart_ime_target(&mut self) {
+        self.ime_replacement_epoch = self.ime_replacement_epoch.wrapping_add(1);
+        self.invalidate_ime_composition();
+    }
+
+    /// Context-less commands block immediately and retire the prior request on a real change.
+    /// The next Context-bearing local event boundary requests its current destination's fence.
+    pub(crate) fn invalidate_ime_composition(&mut self) {
+        let origin = match self.ime_composition {
+            Some(ImeComposition::Active(target) | ImeComposition::TerminalPending(target))
+                if self.ime_composition_viewport == Some(self.ime_reset.viewport) =>
+            {
+                Some(target)
+            }
+            _ => self.ime_reset.origin(self.ime_reset.viewport),
+        };
+        let Some(origin) = origin else { return };
+        let destination = panels::graphics::current_reset_destination(self);
+        self.ime_reset.interrupt(origin, destination);
+        self.ime_composition = Some(ImeComposition::Stale);
+        self.ime_composition_viewport = Some(self.ime_reset.viewport);
+    }
+
+    /// Feed the live local edit destination to the reset reducer before each raw event. When an
+    /// origin exists, a changed destination retires the old composition token and marks the
+    /// composition stale; an unchanged destination only re-arms a pending `NeedsRequest`. Call
+    /// with the editor's actual text, never a staged engine copy.
+    pub(crate) fn sync_live_ime_destination(&mut self, ctx: &egui::Context, destination: ime_reset::Destination) {
+        let viewport = ctx.viewport_id();
+        self.ime_reset.viewport = viewport;
+        if self.ime_reset.incoming_changed(viewport, destination) {
+            let origin = match self.ime_composition {
+                Some(ImeComposition::Active(target) | ImeComposition::TerminalPending(target)) if self.ime_composition_viewport == Some(viewport) => {
+                    Some(target)
+                }
+                _ => self.ime_reset.origin(viewport),
+            };
+            if let Some(origin) = origin {
+                self.ime_reset.interrupt(origin, Some(destination));
+                self.ime_composition = Some(ImeComposition::Stale);
+                self.ime_composition_viewport = Some(viewport);
+            }
+        }
+        self.ime_reset.sync(ctx, destination);
+    }
+
+    /// Retire the current composition and suspend this viewport's IME fence. UI paths that lose
+    /// the editor route through this; context-less control commands call
+    /// `invalidate_ime_composition` directly. Only an eligible final descriptor can re-arm the guard.
+    pub(crate) fn suspend_ime_input(&mut self, ctx: &egui::Context) {
+        self.ime_reset.viewport = ctx.viewport_id();
+        self.invalidate_ime_composition();
+        self.ime_reset.suspend(ctx.viewport_id());
+    }
+
+    /// The editor did not own this raw route. Controls stay inert after suspension; stock
+    /// text/key events remain available to their widgets. Never use this before a live loop.
+    fn suspended_ime_controls(&mut self, ctx: &egui::Context) {
+        self.suspend_ime_input(ctx);
+        ctx.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::ImeResetCompleted { .. })));
+    }
+
+    /// An actual modal owns input: the in-app `dialog` (Recovery, Revert, About, …) or a
+    /// host-shown `native_dialog` picker. `file_dialogs` is only dialog-local state (the recovery
+    /// choice); it is not an open modal on its own, so it must not block an otherwise eligible
+    /// editor between frames.
+    pub(crate) fn ime_modal_blocks_input(&self) -> bool {
+        self.dialog.is_some() || self.native_dialog_open()
+    }
+
+    /// Hosts with post-logic application work call this at their actual outer return.
+    pub fn finish_ime_reset_logic(&mut self, ctx: &egui::Context) {
+        self.ime_reset.viewport = ctx.viewport_id();
+        self.sync_ime_target_context(ctx);
+        if !ime_reset::in_ui_pass(ctx) {
+            self.suspend_ime_input(ctx);
+        }
+    }
+
+    /// End-of-UI-pass reconciliation. Suspend and finish as ineligible when the custom output is
+    /// absent, the window is unfocused, a modal owns input, or the text edit lacks focus;
+    /// otherwise sync the live destination and let `finish` bind or allocate only for actual
+    /// custom eligibility.
+    fn finish_ime_reset_ui(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
+        let eligible = self.ime_reset.owns_output(ctx)
+            && focused
+            && !self.ime_modal_blocks_input()
+            && ctx.memory(|memory| memory.has_focus(egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
+        if !eligible {
+            self.suspend_ime_input(ctx);
+            let destination = panels::graphics::current_reset_destination(self);
+            self.ime_reset.finish(ctx, destination, false);
+            return;
+        }
+        let destination = panels::graphics::current_reset_destination(self);
+        if let Some(destination) = destination {
+            // Same-pass control work can change only the caret after the overlay drew. Do
+            // not allocate until actual custom eligibility has been established above.
+            self.sync_live_ime_destination(ctx, destination);
+        }
+        self.ime_reset.finish(ctx, destination, self.ime_reset.owns_output(ctx));
+    }
+
+    /// Notice a document replacement or an active-sequence change that did not emit
+    /// `OpenSequence` (`file.newProject`, a project with no sequence, `sequence.close`). The
+    /// edit target and any in-flight composition belong to the old context.
+    fn sync_ime_target_context(&mut self, ctx: &egui::Context) {
+        let document = self.session.document_epoch;
+        let sequence = self.session.state.active_sequence;
+        let replaced = document != self.ime_document_epoch;
+        if !replaced && sequence == self.ime_active_sequence {
+            return;
+        }
+        self.ime_document_epoch = document;
+        self.ime_active_sequence = sequence;
+        self.restart_ime_target();
+        self.ui.gfx_edit = None;
+        self.ime_drawn_editor = None;
+        let text_edit = egui::Id::unique(panels::graphics::TEXT_EDIT_ID);
+        ctx.memory_mut(|memory| memory.surrender_focus(text_edit));
+        ctx.data_mut(|data| data.remove::<PanelKind>(text_edit.with("panel")));
+    }
+
+    /// Mark this viewport/pass as observed by the custom producer, so the end-of-pass fallback
+    /// does not observe it a second time.
+    pub(crate) fn note_ime_observed(&mut self, viewport: egui::ViewportId, pass_nr: u64) {
+        self.ime_observed_pass = Some((viewport, pass_nr));
+        if !self.ime_viewports.contains(&viewport) {
+            self.ime_viewports.push(viewport);
+        }
+    }
+
+    /// Observe `None` once for a pass where no visible, focused custom IME owner drew a
+    /// descriptor. This is the explicit hidden/unfocused signal the tracker needs; a gap alone
+    /// is a fallback, not a replacement for it.
+    pub(crate) fn finish_ime_pass(&mut self, ctx: &egui::Context) {
+        let viewport = ctx.viewport_id();
+        let pass_nr = ctx.cumulative_pass_nr_for(viewport);
+        // The Program monitor deferred its observation until all control requests for this pass
+        // have run. It reports `true` even when it observed an explicit `None` for a hidden or
+        // replaced editor.
+        if panels::graphics::finish_graphics_ime(self, ctx) {
+            return;
+        }
+        if self.ime_observed_pass == Some((viewport, pass_nr)) {
+            return;
+        }
+        // Availability retirement belongs to the unconditional outer reset finalizer.
+        self.ime_context.observe(viewport, None);
+        self.note_ime_observed(viewport, pass_nr);
+    }
+
     /// Isolate an automation-owned app from native keyboard, pointer, drop and menu input.
     /// Window close/quit and screenshot delivery remain available.
     pub fn with_control_input_only(mut self, rx: Receiver<ControlRequest>) -> Self {
@@ -637,6 +886,28 @@ impl FilmcraftApp {
 
     pub fn services(&self) -> Arc<dyn Services> {
         self.session.services.clone()
+    }
+
+    /// Time used by logic-only ticks, playback and deadlines.
+    ///
+    /// The host clock is authoritative (egui's `InputState::time` is stale during
+    /// `Context::run_logic`), but an egui pass's reported time can be ahead of it: deterministic
+    /// harnesses step a simulated clock without sleeping. Taking the later value keeps those
+    /// runs deterministic while a hidden tick still moves on the monotonic host clock.
+    pub(crate) fn now(&self) -> f64 {
+        #[cfg(test)]
+        if let Some(now) = self.test_now {
+            return now;
+        }
+        let host = self.clock_start.elapsed().as_secs_f64();
+        let host = self.ui_clock_offset.map_or(host, |offset| host + offset);
+        host.max(self.ui_clock)
+    }
+
+    /// Override `now()` with a deterministic value for tests; compiled only under `cfg(test)`.
+    #[cfg(test)]
+    pub(crate) fn set_now_for_test(&mut self, now: f64) {
+        self.test_now = Some(now);
     }
 
     /// Rebuild the frame server if the session's media pool was replaced (e.g. project opened).
@@ -759,6 +1030,7 @@ impl FilmcraftApp {
                 self.ui.language = language;
             }
             i18n::set_current(self.ui.language);
+            ctx.set_language(Some(self.ui.language.bcp47().to_owned()));
         }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
         self.ui.play_after_render = p.timeline.play_after_rendering;
@@ -776,7 +1048,7 @@ impl FilmcraftApp {
         }
         if (hardware_changed || pitch_changed) && self.playback.playing && self.playback.preroll.is_none() {
             self.playback.anchor_tick = self.session.playhead();
-            let now = ctx.input(|i| i.time);
+            let now = self.now();
             self.playback.anchor_time = now;
             self.playback.audio_seen = (0, now);
             self.start_audio(now);
@@ -1039,7 +1311,7 @@ impl FilmcraftApp {
         if self.playback.playing {
             self.stop();
         }
-        let a = self.audio.as_mut().ok_or("no audio output (check Settings ▸ Audio Hardware)")?;
+        let a = self.audio.as_mut().ok_or("no audio output (check Settings > Audio Hardware)")?;
         let sr = a.sample_rate().max(1);
         a.stop();
         let step = f64::from(audio.sample_rate.max(1)) / f64::from(sr);
@@ -1125,11 +1397,13 @@ impl FilmcraftApp {
         }
     }
 
+    /// Advance the Program playhead only while playing; owns preroll completion, audio-clock anchoring, output retry and the fallback to wall time when audio
+    /// is lost or stalls.
     fn advance_playback(&mut self, ctx: &egui::Context) {
         if !self.playback.playing {
             return;
         }
-        let now = ctx.input(|i| i.time);
+        let now = self.now();
         if let Some(since) = self.playback.preroll {
             let since = if since < 0.0 { now } else { since };
             self.playback.preroll = Some(since);
@@ -1170,7 +1444,7 @@ impl FilmcraftApp {
                 audio.stop();
             }
             log::warn!("audio output lost its playback clock; playing without sound");
-            self.ui.status = tl!("Audio output failed: playing without sound (check Settings ▸ Audio Hardware)").into();
+            self.ui.status = tl!("Audio output failed: playing without sound (check Settings > Audio Hardware)").into();
         }
         if let Some((f, sr)) = reading {
             if f != self.playback.audio_seen.0 {
@@ -1186,7 +1460,7 @@ impl FilmcraftApp {
                     a.stop();
                 }
                 log::warn!("audio output stalled (no samples consumed for {AUDIO_STALL_S} s); playing without sound");
-                self.ui.status = tl!("Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)").into();
+                self.ui.status = tl!("Audio output is not responding: playing without sound (check Settings > Audio Hardware)").into();
             }
         }
         let elapsed = match reading {
@@ -1224,16 +1498,30 @@ impl FilmcraftApp {
 
     // ---------------------------------------------------------------- textures
 
-    /// Upload a rendered frame into a named texture (only when the key changed).
+    /// Upload a rendered frame into a named texture (only when the key changed), opaque: the
+    /// picture over black.
     pub fn texture_for(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba) -> egui::TextureId {
+        self.upload_frame(ctx, name, key, img, false)
+    }
+
+    /// Like [`Self::texture_for`], keeping the frame's alpha, so what is painted under the
+    /// texture (the monitors' Transparency Grid) shows through its transparent areas.
+    pub fn texture_with_alpha(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba) -> egui::TextureId {
+        self.upload_frame(ctx, name, key, img, true)
+    }
+
+    /// Fetch or create the named texture and upload only when `key` changed; `alpha` selects
+    /// transparent or opaque conversion. Returns the texture's stable id.
+    fn upload_frame(&mut self, ctx: &egui::Context, name: &str, key: FrameKey, img: &frames::Rgba, alpha: bool) -> egui::TextureId {
+        let image = || img.color_image(alpha);
         if let Some((k, tex)) = self.textures.get_mut(name) {
             if *k != key {
-                tex.set(egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.px), TextureOptions::LINEAR);
+                tex.set(image(), TextureOptions::LINEAR);
                 *k = key;
             }
             return tex.id();
         }
-        let tex = ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &img.px), TextureOptions::LINEAR);
+        let tex = ctx.load_texture(name, image(), TextureOptions::LINEAR);
         let id = tex.id();
         self.textures.insert(name.to_string(), (key, tex));
         id
@@ -1538,12 +1826,16 @@ impl FilmcraftApp {
     fn divider_focused(&self, ctx: &egui::Context) -> bool {
         let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
         self.auto
-            .previous
+            .all()
             .iter()
             .any(|e| e.response_id == Some(focused) && (e.id.starts_with("dock.gutter.") || (e.id.starts_with("panel.float.") && e.id.ends_with(".resize"))))
     }
 
+    /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys
+    /// to a focused text field except dock dividers.
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // A paste image payload belongs to the paste event in this pass only.
+        self.pasted_image = None;
         let workspaces = (dock::names(&self.workspaces), self.ui.workspace.clone());
         if self.bindings_rev != self.session.shortcuts.revision || workspaces != self.menu_workspaces {
             self.menu_workspaces = workspaces;
@@ -1585,6 +1877,14 @@ impl FilmcraftApp {
                             swallowed = Some(*m);
                         }
                         self.v_down = *pressed;
+                    }
+                    egui::Event::PasteImage(image) => {
+                        // Keep the delivered pixels; re-reading the OS clipboard later is racy and
+                        // the web host has no clipboard-media hook at all.
+                        self.pasted_image = Some(image.clone());
+                        if modifiers.command {
+                            self.v_down = true;
+                        }
                     }
                     egui::Event::Paste(_) if modifiers.command => self.v_down = true,
                     _ => {}
@@ -1657,6 +1957,8 @@ impl FilmcraftApp {
                 self.ui.status = e;
             }
         }
+        // Only the paste action of this pass may consume the event's image.
+        self.pasted_image = None;
     }
 
     // ---------------------------------------------------------------- control channel
@@ -1669,19 +1971,29 @@ impl FilmcraftApp {
         ctx.request_repaint();
     }
 
+    /// Drain queued control requests without blocking: UI requests wait for a layout pass with a 3 s deadline (except screenshots), non-UI requests run now,
+    /// and hidden windows are raised and repainted.
     fn drain_control(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.control_rx.take() else { return };
-        let now = ctx.input(|i| i.time);
+        let now = self.now();
         let mut reqs: Vec<(ControlRequest, f64)> = std::mem::take(&mut self.deferred);
         while let Ok(req) = rx.try_recv() {
             // UI requests need rendered frames: raise the window if `ui` hasn't run recently
             // (occluded macOS windows stop running `ui`).
             if req.method.starts_with("ui.") && now - self.last_ui_time > 0.25 {
                 self.raise_for_control(ctx);
+                // A hidden native window still needs a real UI pass for widget state/geometry.
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
             }
             reqs.push((req, now + 3.0));
         }
         for (req, deadline) in reqs {
+            if req.method.starts_with("ui.") && req.method != "ui.screenshot" {
+                self.ui_requests.push((req, deadline));
+                ctx.request_repaint();
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+                continue;
+            }
             let reply = req.reply.clone();
             match control::handle(self, ctx, &req) {
                 control::Outcome::Done(v) => {
@@ -1697,72 +2009,56 @@ impl FilmcraftApp {
                 }
                 control::Outcome::AfterInput => self.input_waiters.push(reply),
                 control::Outcome::Screenshot { path, crop } => {
-                    let token = self.next_token;
-                    self.next_token += 1;
-                    let settle = ctx.input(|i| i.time) + 0.25;
-                    self.queued_screenshots.push((token, settle, 0));
-                    self.pending_screenshots.push((token, path, crop, reply, settle + SCREENSHOT_TIMEOUT_S));
+                    capture::admit(self, ctx, path, crop, reply);
                 }
             }
         }
         self.control_rx = Some(rx);
-    }
-
-    /// Capture once the UI shows the current state (`settled`): after a seek the monitor shows the
-    /// nearest cached picture until the exact frame is decoded, and an agent must not be handed
-    /// the stand-in.
-    fn issue_screenshots(&mut self, ctx: &egui::Context, settled: bool) {
-        let now = ctx.input(|i| i.time);
-        let mut any = false;
-        self.queued_screenshots.retain_mut(|(token, at, frames)| {
-            *frames += 1;
-            any = true;
-            if now >= *at && *frames >= 3 && (settled || now >= *at + SCREENSHOT_SETTLE_MAX_S) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(*token)));
-                false
-            } else {
-                true
-            }
-        });
-        // A hidden window (or a sleeping display) never presents, so its screenshot never
-        // arrives: give up instead of waiting (and repainting) forever.
-        self.pending_screenshots.retain(|(.., reply, deadline)| {
+        self.ui_requests.retain(|(req, deadline)| {
             if now > *deadline {
-                let _ = reply.send(json!({"ok": false, "error": "no frame was presented (window hidden or display asleep)"}));
+                let _ = req.reply.send(json!({"ok": false, "error": "no UI pass ran before the control request deadline"}));
                 false
             } else {
                 true
             }
         });
-        if any {
-            ctx.request_repaint();
-        } else if !self.pending_screenshots.is_empty() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
-        }
     }
 
-    fn collect_screenshots(&mut self, ctx: &egui::Context) {
-        if self.pending_screenshots.is_empty() {
-            return;
-        }
-        let events: Vec<_> = ctx.input(|i| {
-            i.raw
-                .events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Screenshot { user_data, image, .. } => {
-                        let token = user_data.data.as_ref().and_then(|d| d.downcast_ref::<u64>()).copied()?;
-                        Some((token, image.clone()))
+    /// Process control requests that need the current layout/response. Called at the end of a
+    /// final, non-discarded UI pass; `ui.click`/`ui.drag` queue synthetic input for the next pass.
+    fn drain_ui_requests(&mut self, ctx: &egui::Context) {
+        let reqs = std::mem::take(&mut self.ui_requests);
+        let now = self.now();
+        let mut pending = reqs.into_iter();
+        while let Some((req, deadline)) = pending.next() {
+            // A panel/dock/resize request changes the next layout. Anything after it in this
+            // batch (ui.click, ui.elements, ui.screenshot, …) must see the new geometry, so it
+            // waits for the next accepted pass rather than reading the layout drawn before it.
+            let changes_layout = matches!(req.method.as_str(), "ui.set" | "ui.panel.show" | "ui.panel.close" | "ui.resize");
+            let reply = req.reply.clone();
+            match control::handle(self, ctx, &req) {
+                control::Outcome::Done(v) => {
+                    let _ = reply.send(v);
+                }
+                control::Outcome::Retry(msg) => {
+                    if now < deadline {
+                        self.ui_requests.push((req, deadline));
+                        ctx.request_repaint();
+                    } else {
+                        let _ = reply.send(json!({"ok": false, "error": msg}));
                     }
-                    _ => None,
-                })
-                .collect()
-        });
-        for (token, image) in events {
-            if let Some(i) = self.pending_screenshots.iter().position(|(t, ..)| *t == token) {
-                let (_, path, crop, reply, _) = self.pending_screenshots.remove(i);
-                let r = control::save_screenshot(ctx, &image, path.as_deref(), crop);
-                let _ = reply.send(r);
+                }
+                control::Outcome::AfterInput => self.input_waiters.push(reply),
+                control::Outcome::Screenshot { path, crop } => capture::admit(self, ctx, path, crop, reply),
+            }
+            if changes_layout {
+                let rest: Vec<_> = pending.collect();
+                if !rest.is_empty() {
+                    self.ui_requests.extend(rest);
+                    ctx.request_repaint();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+                }
+                break;
             }
         }
     }
@@ -1774,22 +2070,21 @@ impl FilmcraftApp {
     /// stamp the project's media files on a worker thread and read the changed ones again
     /// ([`filmcraft_engine::media_watch`]).
     #[cfg(not(target_arch = "wasm32"))]
-    fn tick_media_refresh(&mut self, ctx: &egui::Context) {
+    fn tick_media_refresh(&mut self, ctx: &egui::Context, now: f64) {
         if let Some(r) = self.session.poll_media_scan() {
             match r {
                 Ok(r) => {
                     if let Some(n) = r["refreshed"].as_array().map(Vec::len).filter(|n| *n > 0) {
-                        self.toast = Some((format!("Refreshed {n} media item(s) changed on disk"), ctx.input(|i| i.time)));
+                        self.toast = Some((format!("Refreshed {n} media item(s) changed on disk"), now));
                     }
                 }
-                Err(e) => self.toast = Some((e.to_string(), ctx.input(|i| i.time))),
+                Err(e) => self.toast = Some((e.to_string(), now)),
             }
         }
         let media = &self.session.prefs.media;
         let (on, every) = (media.refresh_growing_files, f64::from(media.growing_refresh_seconds.max(1)));
-        let (last_key, focus_key) = (egui::Id::new("mediaWatch.lastScan"), egui::Id::new("mediaWatch.focused"));
-        let now = ctx.input(|i| i.time);
-        let focused = ctx.input(|i| i.focused);
+        let (last_key, focus_key) = (egui::Id::unique("mediaWatch.lastScan"), egui::Id::unique("mediaWatch.focused"));
+        let focused = self.native_window_focused.unwrap_or(false);
         let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
         ctx.data_mut(|d| d.insert_temp(focus_key, focused));
         if !on || filmcraft_engine::media_watch::media_files(&self.session.project, &self.session.media).is_empty() {
@@ -1804,64 +2099,15 @@ impl FilmcraftApp {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
     }
 
+    /// Top-level UI pass: set the language, honor the injected panic test hook, lay out header, body and status bar, and dispatch the active mode.
     fn frame(&mut self, ui: &mut egui::Ui) {
         i18n::set_current(self.ui.language);
         if std::mem::take(&mut self.panic_next_frame) {
             crash::injected_fault("injected UI fault");
         }
         let ctx = ui.ctx().clone();
-        self.auto.begin_frame();
-        panels::metadata::follow_selection(self);
-        self.frames.set_context(&ctx);
-        self.session.poll_persistence();
-        panels::trim_monitor::advance(self, &ctx);
-        if self.session.persistence.is_some() && self.session.is_dirty() {
-            // Keep polling the auto-save worker (status, "also save the project" results).
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
-        }
-        self.sync_pool();
-        self.apply_prefs(&ctx);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.tick_media_refresh(&ctx);
-        for ev in self.session.drain_events() {
-            match ev {
-                filmcraft_engine::Event::OpenSequence(_) => {
-                    // show the sequence with its own view (or fitted, the first time)
-                    self.timeline_view_of = None;
-                    if !self.ui.floating.iter().any(|group| group.panels.contains(&PanelKind::Timeline)) {
-                        self.ui.dock.restore_timeline();
-                    }
-                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
-                }
-                filmcraft_engine::Event::OpenSource(_) => {
-                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
-                }
-                filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
-                filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, ctx.input(|i| i.time))),
-                filmcraft_engine::Event::ProjectChanged { .. } => {}
-            }
-        }
-        self.sync_timeline_view();
-        self.handle_drops(&ctx);
-        if let Some(rx) = self.command_inbox.take() {
-            while let Ok(id) = rx.try_recv() {
-                // control-only mode ignores native menu commands, but Quit stays available (#1943)
-                if self.control_input_only && id != "app.quit" {
-                    continue;
-                }
-                if let Err(e) = menus::invoke(self, &ctx, &id, json!({})) {
-                    self.ui.status = e;
-                }
-            }
-            self.command_inbox = Some(rx);
-        }
-        self.begin_press(&ctx);
-        self.handle_shortcuts(&ctx);
-        self.sync_native_menu();
-        self.advance_playback(&ctx);
-        self.advance_source_playback(&ctx);
-        self.scrub_audio(&ctx);
-        // Text to Speech: a selected narration clip loads into the panel
+        // Text to Speech panel selection and its repaint cadence are presentation state; they do
+        // not poll a background queue.
         panels::tts::follow_selection(self);
         if self.ui.tts.pending.is_some() || self.ui.tts.download_job.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -1884,9 +2130,8 @@ impl FilmcraftApp {
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
+        updates_ui::show(self, &ctx);
         if !self.ui.show_status_bar {
-            // no bar to draw the job in, but a finished preview render still plays
-            self.watch_jobs(ui.ctx());
             return;
         }
         // Status / hint bar
@@ -1904,7 +2149,7 @@ impl FilmcraftApp {
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
-        let resp = ui.interact(sb, egui::Id::new("status-bar"), egui::Sense::click());
+        let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {
             self.ui.status.clear();
         }
@@ -1913,7 +2158,7 @@ impl FilmcraftApp {
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
     /// render completes. Runs every frame, with or without the status bar.
-    fn watch_jobs(&mut self, ctx: &egui::Context) -> Option<filmcraft_engine::Job> {
+    fn poll_jobs(&mut self, ctx: &egui::Context) -> Option<filmcraft_engine::Job> {
         use std::sync::atomic::Ordering;
         let running = self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned();
         // Play after rendering previews.
@@ -1937,11 +2182,17 @@ impl FilmcraftApp {
         Some(job)
     }
 
+    /// The running job for drawing only; polling/play-after-render stays in logic.
+    fn running_job(&self) -> Option<filmcraft_engine::Job> {
+        use std::sync::atomic::Ordering;
+        self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned()
+    }
+
     /// Right side of the status bar: the running job (export / render previews) with a progress
     /// bar and a cancel button.
     fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) {
         use std::sync::atomic::Ordering;
-        let Some(job) = self.watch_jobs(ui.ctx()) else { return };
+        let Some(job) = self.running_job() else { return };
         let f = job.progress.fraction().clamp(0.0, 1.0);
         let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
         let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
@@ -1957,7 +2208,7 @@ impl FilmcraftApp {
             Tokens::ui(11.0),
             t.text_dim,
         );
-        let resp = ui.interact(cancel, egui::Id::new(("job-cancel", job.id)), egui::Sense::click());
+        let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());
         let c = if resp.hovered() { t.hot_text } else { t.text_dim };
         let k = 3.5;
         p.line_segment([cancel.center() - egui::vec2(k, k), cancel.center() + egui::vec2(k, k)], egui::Stroke::new(1.4, c));
@@ -2005,13 +2256,23 @@ impl FilmcraftApp {
         }
     }
 
+    /// Latch Escape during pass 0, where the key event is fresh.
+    fn latch_escape_cancel(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.pointer.any_down() && i.key_pressed(egui::Key::Escape)) {
+            self.escape_cancel = true;
+        }
+    }
+
     /// Escape while a mouse button is held takes back every edit this press made (#580): value
     /// drags (one merged step or one step per change), color picks, anything committed on the
-    /// Escape frame. Run after the panels, so a value sent on the Escape frame goes with it.
-    fn cancel_value_drag(&mut self, ctx: &egui::Context) {
-        let escape = ctx.input(|i| i.pointer.any_down() && i.key_pressed(egui::Key::Escape));
+    /// Escape frame. Called once after the final non-discarded UI pass; the latch outlives a
+    /// discarded pass, and pass 1+ has no Escape key event to re-read.
+    fn cancel_value_drag(&mut self, _ctx: &egui::Context) {
+        if !self.escape_cancel {
+            return;
+        }
+        self.escape_cancel = false;
         if let Some((press, mark)) = self.value_press
-            && escape
             && self.session.revert_to(mark) > 0
         {
             self.value_press = Some((press, self.session.undo_mark()));
@@ -2026,7 +2287,7 @@ impl FilmcraftApp {
         let Some(msg) = self.ui_error.clone() else { return };
         let mut close = false;
         egui::Window::new(tl!("FilmCraft hit an error"))
-            .id(egui::Id::new("FilmCraft hit an error"))
+            .id(egui::Id::unique("FilmCraft hit an error"))
             .collapsible(false)
             .resizable(false)
             .pivot(egui::Align2::CENTER_CENTER)
@@ -2088,51 +2349,15 @@ fn synthesize_mac_ctrl_click(armed: &mut bool, raw_input: &mut egui::RawInput) {
     }
 }
 
-impl eframe::App for FilmcraftApp {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        self.native_window_focused = Some(raw_input.focused);
-        #[cfg(target_os = "macos")]
-        if !self.control_input_only {
-            synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
-        }
-        if self.control_input_only {
-            // Preserve screenshot responses and all viewport lifecycle/geometry metadata.
-            raw_input.events.retain(|event| matches!(event, egui::Event::Screenshot { .. }));
-            raw_input.hovered_files.clear();
-            raw_input.dropped_files.clear();
-        }
-        if self.control_input_only || !self.synthetic.is_empty() {
-            // Native modifiers cannot replace those requested by a control gesture. A queued
-            // reset runs in the frame after release, so clicked() still sees Shift/Alt.
-            raw_input.events.push(egui::Event::ModifiersChanged(self.synthetic_modifiers));
-            // Widget keyboard handling requires effective egui focus. Control input must work
-            // in a background window without activating it or taking the user's OS keyboard.
-            raw_input.focused = true;
-        }
-        if !self.synthetic.is_empty() {
-            // Pointer events go one per frame so egui sees press → moves → release as a real drag
-            // (all in one frame reads as a click); key/text runs go together up to a key release.
-            let pointer = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
-            let n = if pointer(&self.synthetic[0]) {
-                1
-            } else {
-                self.synthetic
-                    .iter()
-                    .position(|e| pointer(e) || matches!(e, egui::Event::Key { pressed: false, .. }))
-                    .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
-            };
-            for event in self.synthetic.drain(..n) {
-                if let egui::Event::ModifiersChanged(modifiers) = event {
-                    self.synthetic_modifiers = modifiers;
-                }
-                raw_input.events.push(event);
-            }
-        }
-    }
+/// Install once in each native/web/harness Context creator, before the first UI pass.
+pub fn install_ime_reset_callbacks(ctx: &egui::Context) {
+    ime_reset::install(ctx);
+}
 
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // a native file dialog's answer first, so the panels draw what it chose (#260)
-        self.poll_native_dialog(ctx);
+impl FilmcraftApp {
+    /// Install the theme once, then keep fonts ready; a saved language without its system face
+    /// falls back to English as before.
+    fn logic_theme(&mut self, ctx: &egui::Context) {
         if !self.styled {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
@@ -2150,9 +2375,16 @@ impl eframe::App for FilmcraftApp {
         } else {
             self.fonts_ready = true;
         }
-        let now = ctx.input(|i| i.time);
+    }
+
+    /// Advance the monotonic host clock and the smoothed frame rate, returning the pass time.
+    /// Hidden playback is marked so a hidden window's skipped frames are not counted as drops.
+    fn logic_clock(&mut self, ctx: &egui::Context) -> f64 {
+        // Monotonic host time. Native and web both call logic once per layout pass and through
+        // `run_logic` while hidden; `ctx.input(i.time)` is stale in that second case.
+        let now = self.now();
         let dt = (now - self.last_time) as f32;
-        if dt > 0.0 {
+        if dt > 0.0 && dt.is_finite() {
             self.fps = self.fps * 0.9 + (1.0 / dt).min(480.0) * 0.1;
         }
         self.last_time = now;
@@ -2160,68 +2392,308 @@ impl eframe::App for FilmcraftApp {
             // Nothing is shown while the window is hidden: not a dropped frame.
             self.playback.hidden = true;
         }
-        self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
+        now
+    }
+
+    /// Close-request handling and control-driven synthetic input, in the original order.
+    fn logic_control(&mut self, ctx: &egui::Context) {
         // Quitting with unsaved changes asks to save them first.
         if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
-        let had_synthetic = !self.synthetic.is_empty();
+        let had_synthetic = !self.synthetic.is_empty() || self.synthetic_pending_step.is_some();
         self.drain_control(ctx);
-        if !self.synthetic.is_empty() && !had_synthetic {
+        if (!self.synthetic.is_empty() || self.synthetic_pending_step.is_some()) && !had_synthetic {
             // Occluded macOS windows stop running `ui`; bring the window forward (without taking
             // keyboard focus) so the input is processed.
             self.raise_for_control(ctx);
         }
-        if !self.synthetic.is_empty() {
+        if !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
             ctx.request_repaint();
-        } else if !self.input_waiters.is_empty() {
-            for w in self.input_waiters.drain(..) {
-                let _ = w.send(json!({"ok": true, "result": null}));
+            // The next step is consumed by a UI pass, not by another logic tick. Native eframe
+            // honours this; the pinned web runner logs it as unhandled (a recorded fork gap).
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+        }
+    }
+
+    /// Background queues and idempotent deadlines that are safe on every logic call.
+    fn logic_background(&mut self, ctx: &egui::Context, now: f64) {
+        self.frames.set_context(ctx);
+        self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
+        self.session.poll_persistence();
+        panels::trim_monitor::advance_at(self, now);
+        if self.session.trim_play.active() {
+            ctx.request_repaint();
+        }
+        if self.session.persistence.is_some() && self.session.is_dirty() {
+            // Keep polling the auto-save worker (status, "also save the project" results) while hidden.
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
+        self.sync_pool();
+        updates_ui::tick(self, ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_media_refresh(ctx, now);
+    }
+
+    /// Apply engine events that change the active sequence/view, IME target, toast or project.
+    fn logic_session_events(&mut self, now: f64) {
+        for ev in self.session.drain_events() {
+            match ev {
+                filmcraft_engine::Event::OpenSequence(_) => {
+                    // A sequence switch (including opening/reverting/recovering a project, which
+                    // emits this event for the newly active sequence) is a new IME owner context.
+                    self.restart_ime_target();
+                    // show the sequence with its own view (or fitted, the first time)
+                    self.timeline_view_of = None;
+                    if !self.ui.floating.iter().any(|group| group.panels.contains(&PanelKind::Timeline)) {
+                        self.ui.dock.restore_timeline();
+                    }
+                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
+                }
+                filmcraft_engine::Event::OpenSource(_) => {
+                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
+                }
+                filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
+                filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
+                filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
-        let settled = !std::mem::take(&mut self.monitor_inexact) && self.timeline_still > 0;
-        self.issue_screenshots(ctx, settled);
-        self.collect_screenshots(ctx);
     }
 
-    fn on_exit(&mut self) {
-        // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
-        // removes its journal, one with unsaved changes keeps it for the next launch.
-        self.session.shutdown();
+    /// Drain native menu/control command ids, preserving the control-only Quit exception.
+    fn logic_command_inbox(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = self.command_inbox.take() {
+            while let Ok(id) = rx.try_recv() {
+                // control-only mode ignores native menu commands, but Quit stays available (#1943)
+                if self.control_input_only && id != "app.quit" {
+                    continue;
+                }
+                if let Err(e) = menus::invoke(self, ctx, &id, json!({})) {
+                    self.ui.status = e;
+                }
+            }
+            self.command_inbox = Some(rx);
+        }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// Run one logic pass in order: retain the later UI clock, poll the native dialog, apply the
+    /// logic subsystems, advance playback, poll jobs, then drain completed screenshots and ask
+    /// for hidden paints. Safe on hidden logic-only callbacks.
+    pub fn logic_inner(&mut self, ctx: &egui::Context) {
+        // Remember the pass's clock before anything reads `now()`. A hidden logic-only tick keeps
+        // the last UI time (which is stale there), so `now()` never runs behind the host clock.
+        self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
+        // a native file dialog's answer first, so the panels draw what it chose (#260)
+        self.poll_native_dialog(ctx);
+        self.logic_theme(ctx);
+        let now = self.logic_clock(ctx);
+        self.logic_control(ctx);
+        self.logic_background(ctx, now);
+        self.logic_session_events(now);
+        self.logic_command_inbox(ctx);
+        self.advance_playback(ctx);
+        self.advance_source_playback(ctx);
+        self.poll_jobs(ctx);
+        capture::drain(self, ctx);
+        capture::request_hidden_paint(self, ctx);
+    }
+
+    /// Draw one real UI pass. Establish the UI clock offset once, run first-pass input handling,
+    /// draw panels under a panic guard, drain UI requests and observe the IME editor only after
+    /// this pass's commands ran. Screenshots are offered to `capture::issue`, which issues only
+    /// on an accepted pass.
+    fn ui_inner(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if self.ui_clock_offset.is_none() {
+            let egui_time = ui.ctx().input(|input| input.time);
+            if egui_time.is_finite() {
+                let host = self.clock_start.elapsed().as_secs_f64();
+                // Never move host time backwards when a harness clock starts behind it; the host
+                // clock stays authoritative in that case.
+                self.ui_clock_offset = Some((egui_time - host).max(0.0));
+            }
+        }
         if !self.fonts_ready {
+            // This pass did not consume the pending synthetic input; the next hook must offer it
+            // again (the UI path does not preserve raw input across this early return).
+            self.synthetic_step_offered = false;
+            self.synthetic_modifiers_offered = false;
+            self.finish_ime_pass(ui.ctx());
             ui.ctx().request_repaint();
             return;
         }
-        // No frame worker threads on the web: render queued frames here, within a time budget
-        // that leaves room for the UI pass (a no-op where workers run).
-        self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
+        frame.set_ui_language(Some(self.ui.language.bcp47()));
+        let ctx = ui.ctx().clone();
+        // A project/sequence replacement may have happened in the previous pass's control drain.
+        // Drop the old edit and IME composition before shortcuts or the frame see them.
+        self.sync_ime_target_context(&ctx);
+        // Each pass draws at most one editor; a stale entry from a previous pass must not be
+        // observed as this pass's editor.
+        self.ime_drawn_editor = None;
+        // Only an actual pass counts toward screenshot settlement; hidden logic ticks do not draw.
+        self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
+        // This is a real UI pass: the one synthetic step offered to raw_input_hook has been fed to
+        // egui now. A hidden logic tick never reaches this point and keeps it pending.
+        self.synthetic_pending_step = None;
+        self.synthetic_step_offered = false;
+        self.synthetic_modifiers_offered = false;
+        let first_pass = ctx.current_pass_index() == 0;
+        if first_pass {
+            // Setup and fresh-input handling happen where `RawInput::events` are available. Pass 1+
+            // has no new events and must not re-run a click, shortcut or drop.
+            self.auto.begin_frame();
+            self.apply_prefs(&ctx);
+            self.sync_timeline_view();
+            panels::metadata::follow_selection(self);
+            self.handle_drops(&ctx);
+            self.begin_press(&ctx);
+            self.latch_escape_cancel(&ctx);
+            self.handle_shortcuts(&ctx);
+            self.sync_native_menu();
+            self.scrub_audio(&ctx);
+        } else {
+            // Pass 1+ redraws the same frame; drop the discarded pass's registrations so lookups
+            // and `ui.elements` see one entry per widget, from the layout that is accepted.
+            self.auto.elements.clear();
+        }
         // A panic in one panel must not close the app (losing unsaved work) or leave a blank
         // window: catch it, keep the session, and say what happened.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.frame(ui))).is_err() {
             self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
             self.playback.playing = false;
         }
+        if !ctx.will_discard() {
+            self.cancel_value_drag(&ctx);
+        }
         self.error_window(ui.ctx());
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
         }
-        let ctx = ui.ctx().clone();
-        self.last_ui_time = ctx.input(|i| i.time);
-        if !self.synthetic.is_empty() {
+        self.last_ui_time = self.now();
+        if !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
             ctx.request_repaint();
-        } else if !self.input_waiters.is_empty() {
-            ctx.request_repaint();
-            for w in self.input_waiters.drain(..) {
-                let _ = w.send(json!({"ok": true, "result": null}));
-            }
         }
         if self.frames.queue_len() > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        if !ctx.will_discard() {
+            self.drain_ui_requests(&ctx);
+        }
+        // Observe only after this pass's control requests ran: `ui.menu.invoke`/`engine.execute`
+        // may have edited the text or replaced the target. Every other pass (hidden editor, focus
+        // in another panel, no editor at all) reports an explicit `None`.
+        self.finish_ime_pass(&ctx);
+        // Ack `ui.*` waiters once the action had a final, non-discarded UI pass to apply in. Holding
+        // them through a discard avoids reporting success for a pass egui threw away.
+        if !ctx.will_discard() && self.synthetic.is_empty() && self.synthetic_pending_step.is_none() && !self.input_waiters.is_empty() {
+            for w in self.input_waiters.drain(..) {
+                let _ = w.send(json!({"ok": true, "result": null}));
+            }
+        }
+        // Only a real, accepted UI pass may issue a capture: it observes the final layout for this
+        // pass and `screenshot` itself forces the paint needed when the window is hidden.
+        capture::issue(self, &ctx);
+    }
+}
+
+impl eframe::App for FilmcraftApp {
+    /// Snapshot this callback's fresh surface geometry, optionally synthesize macOS ctrl-click
+    /// and agent input, and offer at most one queued synthetic step. A step already preserved by
+    /// hidden logic callbacks is not appended twice; a real UI pass clears it.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.native_window_focused = Some(raw_input.focused);
+        capture::note_raw_geometry(self, ctx, raw_input);
+        #[cfg(target_os = "macos")]
+        if !self.control_input_only {
+            synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
+        }
+        if self.control_input_only {
+            // Screenshot results arrive through `ScreenshotCallback`, not raw input. Preserve all
+            // viewport lifecycle/geometry metadata and drop native input only.
+            raw_input.events.clear();
+            raw_input.hovered_files.clear();
+            raw_input.dropped_files.clear();
+        }
+        if self.control_input_only || !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
+            // Native modifiers cannot replace those requested by a control gesture. A queued
+            // reset runs in the frame after release, so clicked() still sees Shift/Alt.
+            if !self.synthetic_modifiers_offered {
+                raw_input.events.push(egui::Event::ModifiersChanged(self.synthetic_modifiers));
+                self.synthetic_modifiers_offered = true;
+            }
+            // Widget keyboard handling requires effective egui focus. Control input must work
+            // in a background window without activating it or taking the user's OS keyboard.
+            raw_input.focused = true;
+        }
+        if self.synthetic_pending_step.is_none() && !self.synthetic.is_empty() {
+            // Pointer events go one per frame so egui sees press → moves → release as a real drag
+            // (all in one frame reads as a click); key/text runs go together up to a key release.
+            let pointer = |e: &egui::Event| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. });
+            let n = if pointer(&self.synthetic[0]) {
+                1
+            } else {
+                self.synthetic
+                    .iter()
+                    .position(|e| pointer(e) || matches!(e, egui::Event::Key { pressed: false, .. }))
+                    .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
+            };
+            let step: Vec<egui::Event> = self.synthetic.drain(..n).collect();
+            for event in &step {
+                if let egui::Event::ModifiersChanged(modifiers) = event {
+                    self.synthetic_modifiers = *modifiers;
+                }
+            }
+            self.synthetic_pending_step = Some(step);
+            self.synthetic_step_offered = false;
+        }
+        if let Some(step) = &self.synthetic_pending_step {
+            // `raw_input_hook` also runs before hidden `run_logic` ticks, whose raw input egui does
+            // not feed to widgets. Keep the exact same one-step batch pending and offer it again
+            // on the next callback; a real UI pass clears it at `ui()` start. Never coalesce a
+            // press with its release and, crucially, never append a step that the integration
+            // already preserved in its pending raw input: the UI pass would then see two copies.
+            if !self.synthetic_step_offered {
+                raw_input.events.extend(step.iter().cloned());
+                self.synthetic_step_offered = true;
+            }
+        }
+    }
+
+    /// Eframe's hidden logic callback: run the logic pass, sync the IME target context, then
+    /// suspend reset state because a logic-only callback is never a UI pass.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.logic_inner(ctx);
+        self.finish_ime_reset_logic(ctx);
+    }
+
+    /// Cancel outstanding screenshots with one error reply each, end per-viewport IME tracker and
+    /// reset state, and shut the session down so its recovery journal is flushed or removed.
+    fn on_exit(&mut self) {
+        // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
+        capture::cancel_all(self);
+        for viewport in self.ime_viewports.drain(..) {
+            self.ime_context.end_viewport(viewport);
+            self.ime_reset.end_viewport(viewport);
+        }
+        self.ime_observed_pass = None;
+        // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
+        // removes its journal, one with unsaved changes keeps it for the next launch.
+        self.session.shutdown();
+    }
+
+    /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no
+    /// eligible editor owns input, draw `ui_inner`, then run end-of-pass IME reconciliation.
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.ime_reset.begin_pass(&ctx);
+        self.ime_drawn_editor = None;
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
+        let another_field = ctx.memory(|memory| memory.focused().is_some_and(|id| id != egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
+        if !self.fonts_ready || self.ui.gfx_edit.is_none() || self.ime_modal_blocks_input() || !focused || another_field {
+            self.suspended_ime_controls(&ctx);
+        }
+        self.ui_inner(ui, frame);
+        self.finish_ime_reset_ui(&ctx);
     }
 }
 
@@ -2315,9 +2787,9 @@ fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modi
             Event::Cut if modifiers.command => Some(Key::X),
             Event::Cut if modifiers.shift => Some(Key::Delete),
             Event::Cut => Some(Key::Cut),
-            Event::Paste(_) if modifiers.command => Some(Key::V),
-            Event::Paste(_) if modifiers.shift => Some(Key::Insert),
-            Event::Paste(_) => Some(Key::Paste),
+            Event::Paste(_) | Event::PasteImage(_) if modifiers.command => Some(Key::V),
+            Event::Paste(_) | Event::PasteImage(_) if modifiers.shift => Some(Key::Insert),
+            Event::Paste(_) | Event::PasteImage(_) => Some(Key::Paste),
             _ => None,
         })
         .collect();
@@ -2334,12 +2806,17 @@ mod clipboard_key_tests {
         events.into_iter().filter_map(|e| if let Event::Key { key, modifiers, pressed: true, .. } = e { Some((key, modifiers)) } else { None }).collect()
     }
 
+    /// Clipboard Copy/Cut/Paste events become C/X/V key presses so they match the shortcut bindings.
     #[test]
     fn ctrl_c_x_v_become_key_presses() {
         let c = Modifiers::COMMAND;
         assert_eq!(keys(vec![Event::Copy], c), vec![(Key::C, c)]);
         assert_eq!(keys(vec![Event::Cut], c), vec![(Key::X, c)]);
         assert_eq!(keys(vec![Event::Paste("x".into())], c), vec![(Key::V, c)]);
+        let image = || Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled([1, 1], egui::Color32::RED)));
+        assert_eq!(keys(vec![image()], c), vec![(Key::V, c)]);
+        assert_eq!(keys(vec![image()], Modifiers::SHIFT), vec![(Key::Insert, Modifiers::SHIFT)]);
+        assert_eq!(keys(vec![image()], Modifiers::NONE), vec![(Key::Paste, Modifiers::NONE)]);
     }
 
     #[test]
@@ -2408,7 +2885,7 @@ mod mac_ctrl_click_tests {
         let mut secondary = false;
         // No renderer here: drop the pass output, clearing its texture deltas so epaint's drop
         // guard does not panic on the font texture.
-        let mut out = ctx.run_ui(raw, |ctx| secondary = ctx.input(|i| i.pointer.secondary_clicked()));
+        let mut out = ctx.run_ui(raw, |ui| secondary = ui.ctx().input(|i| i.pointer.secondary_clicked()));
         out.textures_delta.clear();
         assert!(secondary);
     }
@@ -2498,6 +2975,26 @@ mod gpu_fallback_tests {
 }
 
 #[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    /// The egui clock starts at the integration's beginning, which can precede `clock_start`.
+    /// Applying the captured offset to host time keeps hidden logic moving instead of freezing at
+    /// the last UI time and then jumping when the next UI pass arrives.
+    #[test]
+    fn now_applies_the_ui_clock_offset_and_keeps_the_test_override_first() {
+        let mut app = FilmcraftApp::new(Session::default());
+        app.ui_clock = 123.0;
+        app.ui_clock_offset = Some(1_000.0);
+        assert!(app.now() >= 1_000.0, "the captured offset moves the host clock to egui time");
+        app.ui_clock = 2_000.0;
+        assert_eq!(app.now(), 2_000.0, "an egui clock ahead of host+offset still wins");
+        app.set_now_for_test(7.0);
+        assert_eq!(app.now(), 7.0, "the deterministic test override keeps precedence");
+    }
+}
+
+#[cfg(test)]
 mod audio_recovery_tests {
     use super::*;
     use std::sync::{
@@ -2573,15 +3070,26 @@ mod audio_recovery_tests {
                 Some(4_800)
             }
         }
-        let amplitude = |samples: &[f32], ch: usize, hz: f64| {
-            let (mut re, mut im) = (0.0, 0.0);
-            for (i, frame) in samples.as_chunks::<2>().0.iter().enumerate() {
-                let phase = std::f64::consts::TAU * hz * i as f64 / 48_000.0;
-                re += f64::from(frame[ch]) * phase.cos();
-                im += f64::from(frame[ch]) * phase.sin();
+        fn assert_shuttle_tones(buf: &[f32], maintain: bool, speed: f64) {
+            let amplitude = |samples: &[f32], ch: usize, hz: f64| {
+                let (mut re, mut im) = (0.0, 0.0);
+                for (i, frame) in samples.as_chunks::<2>().0.iter().enumerate() {
+                    let phase = std::f64::consts::TAU * hz * i as f64 / 48_000.0;
+                    re += f64::from(frame[ch]) * phase.cos();
+                    im += f64::from(frame[ch]) * phase.sin();
+                }
+                2.0 * re.hypot(im) / (samples.len() / 2) as f64
+            };
+            for (ch, tone) in [440.0, 660.0].into_iter().enumerate() {
+                let hz = if maintain { tone } else { tone * speed };
+                let level = amplitude(buf, ch, hz);
+                assert!(level > 0.08, "maintain={maintain}, speed={speed}, channel={ch}: {hz} Hz level={level}");
+                if speed != 1.0 {
+                    let wrong = if maintain { tone * speed } else { tone };
+                    assert!(amplitude(buf, ch, wrong) < level * 0.3, "wrong pitch {wrong} Hz at {speed}x, maintain={maintain}");
+                }
             }
-            2.0 * re.hypot(im) / (samples.len() / 2) as f64
-        };
+        }
         let mut session = Session::default();
         session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
         let inter: Vec<f32> =
@@ -2602,15 +3110,7 @@ mod audio_recovery_tests {
                 app.end_preroll(0.0);
                 assert!(app.playback.audio_clock);
                 let buf = samples.lock().unwrap();
-                for (ch, tone) in [440.0, 660.0].into_iter().enumerate() {
-                    let hz = if maintain { tone } else { tone * speed };
-                    let level = amplitude(&buf, ch, hz);
-                    assert!(level > 0.08, "maintain={maintain}, speed={speed}, channel={ch}: {hz} Hz level={level}");
-                    if speed != 1.0 {
-                        let wrong = if maintain { tone * speed } else { tone };
-                        assert!(amplitude(&buf, ch, wrong) < level * 0.3, "wrong pitch {wrong} Hz at {speed}x, maintain={maintain}");
-                    }
-                }
+                assert_shuttle_tones(&buf, maintain, speed);
                 if speed == 1.0 {
                     if let Some(previous) = &normal {
                         assert_eq!(&*buf, previous, "1x must bypass pitch processing");
@@ -2682,6 +3182,7 @@ mod audio_recovery_tests {
         app.stop();
     }
 
+    /// A device that loses its playback clock resumes from the displayed frame and reports a status message.
     #[test]
     fn a_failed_device_clock_resumes_from_the_displayed_frame() {
         let mut session = Session::default();
@@ -2695,6 +3196,7 @@ mod audio_recovery_tests {
         app.playback.audio_clock = true;
         app.playback.anchor_tick = Tick::ZERO;
         app.playback.anchor_time = 0.0;
+        app.set_now_for_test(10.0);
         let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
         output.textures_delta.clear();
         assert!(!app.playback.audio_clock);
@@ -2725,6 +3227,7 @@ mod audio_recovery_tests {
         }
     }
 
+    /// A recovered stream keeps the device clock and the sound keeps playing.
     #[test]
     fn a_restarted_stream_keeps_the_device_clock_and_the_sound() {
         let mut session = Session::default();
@@ -2737,6 +3240,7 @@ mod audio_recovery_tests {
         app.playback.anchor_tick = Tick::ZERO;
         app.playback.anchor_time = 0.0;
         app.playback.audio_seen = (0, 10.0);
+        app.set_now_for_test(10.0);
         let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
         output.textures_delta.clear();
         assert!(app.playback.audio_clock, "the restarted stream is still the master clock");
@@ -2771,6 +3275,7 @@ mod audio_recovery_tests {
         }
     }
 
+    /// A lost output is reopened on retry and the sound returns without pause/play.
     #[test]
     fn a_lost_output_is_reopened_and_the_sound_returns() {
         let mut session = Session::default();
@@ -2785,11 +3290,13 @@ mod audio_recovery_tests {
         assert!(app.playback.audio_clock && starts.load(Ordering::Relaxed) == 1);
         // the stream dies: the device stops reporting a playback clock
         ticking.store(false, Ordering::Relaxed);
+        app.set_now_for_test(10.0);
         let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
         output.textures_delta.clear();
         assert!(!app.playback.audio_clock);
         // the device recovers before the next retry: playback reopens it itself
         ticking.store(true, Ordering::Relaxed);
+        app.set_now_for_test(10.0 + AUDIO_RETRY_S + 0.5);
         let mut output = ctx.run_ui(egui::RawInput { time: Some(10.0 + AUDIO_RETRY_S + 0.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
         output.textures_delta.clear();
         assert_eq!(starts.load(Ordering::Relaxed), 2, "the output is reopened without pause/play");
@@ -2797,6 +3304,7 @@ mod audio_recovery_tests {
         app.stop();
     }
 
+    /// A device that becomes available mid-playback starts sounding on the next retry.
     #[test]
     fn a_device_that_appears_mid_playback_starts_sounding() {
         let mut session = Session::default();
@@ -2811,6 +3319,7 @@ mod audio_recovery_tests {
         assert!(!app.playback.audio_clock, "no device yet: playing on the wall clock");
         // headphones plug in while playing: the next retry opens them
         opens.store(true, Ordering::Relaxed);
+        app.set_now_for_test(AUDIO_RETRY_S + 0.5);
         let mut output = ctx.run_ui(egui::RawInput { time: Some(AUDIO_RETRY_S + 0.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
         output.textures_delta.clear();
         assert_eq!(starts.load(Ordering::Relaxed), 2, "the output is retried without pause/play");
@@ -2877,6 +3386,7 @@ mod text_focus_shortcut_tests {
 mod voiceover_playback_tests {
     use super::*;
 
+    /// A voice-over take into an empty timeline past the end keeps playing and recording.
     #[test]
     fn a_voice_over_take_records_into_the_empty_timeline_past_the_end() {
         let mut session = Session::default();
@@ -2895,6 +3405,7 @@ mod voiceover_playback_tests {
         assert_eq!(app.session.playhead(), from);
         app.end_preroll(0.0);
         // and one second later the take is still playing and recording, not stopped at the end
+        app.set_now_for_test(1.0);
         let mut output = ctx.run_ui(egui::RawInput { time: Some(1.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
         output.textures_delta.clear();
         assert!(app.playback.playing);
@@ -2970,5 +3481,82 @@ mod native_menu_tests {
         app.sync_native_menu();
         assert_eq!(last(&sent, "edit.undo"), Some(false));
         assert_eq!(last(&sent, "edit.redo"), Some(true), "the undone edit can be redone");
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_synthetic_tests {
+    use egui::{Event, Modifiers, PointerButton, pos2};
+    use filmcraft_engine::Session;
+
+    use super::FilmcraftApp;
+
+    /// Extract the pointer-moved positions from a raw event batch, for synthetic-input tests.
+    fn pointer_events(events: &[Event]) -> Vec<egui::Pos2> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::PointerMoved(pos) => Some(*pos),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `raw_input_hook` runs before hidden logic ticks too, but those raw events are not fed to
+    /// widgets. The same one-step batch must remain pending, instead of advancing to the next
+    /// step or being silently lost; a real UI pass consumes it.
+    #[test]
+    fn one_synthetic_step_survives_hidden_logic_callbacks() {
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(Session::default());
+        app.synthetic = vec![
+            Event::PointerMoved(pos2(10.0, 10.0)),
+            Event::PointerMoved(pos2(20.0, 20.0)),
+            Event::PointerButton { pos: pos2(20.0, 20.0), button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+            Event::PointerButton { pos: pos2(20.0, 20.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+        ];
+        let mut first = egui::RawInput::default();
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut first);
+        assert_eq!(pointer_events(&first.events), vec![pos2(10.0, 10.0)]);
+        assert_eq!(app.synthetic.len(), 3, "only one step was popped");
+        assert_eq!(app.synthetic_pending_step.as_ref().map(Vec::len), Some(1));
+
+        // The integration keeps the raw input that did not reach widgets (native
+        // `pending_raw_input`, web `input.raw`) and replays it through the hook.
+        let mut hidden = first.clone();
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut hidden);
+        assert_eq!(pointer_events(&hidden.events), vec![pos2(10.0, 10.0)], "the preserved step is not appended twice");
+        assert_eq!(app.synthetic.len(), 3, "a hidden callback must not advance the queue");
+
+        // A real UI pass consumes the pending step (App::ui clears it at its start).
+        app.synthetic_pending_step = None;
+        app.synthetic_step_offered = false;
+        app.synthetic_modifiers_offered = false;
+        let mut next = egui::RawInput::default();
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut next);
+        assert_eq!(pointer_events(&next.events), vec![pos2(20.0, 20.0)]);
+        assert_eq!(app.synthetic.len(), 2);
+    }
+
+    /// eframe's hidden `run_logic` path saves the raw input (including our step) and hands it to
+    /// `raw_input_hook` again on the next hidden callback. The hook must not append the same step
+    /// a second time, or the eventual UI pass inserts text / clicks / runs a command more than once.
+    #[test]
+    fn hidden_callbacks_do_not_duplicate_a_step_preserved_in_raw_input() {
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(Session::default());
+        app.synthetic =
+            vec![Event::Text("once".into()), Event::Key { key: egui::Key::F35, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE }];
+        let mut first = egui::RawInput::default();
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut first);
+        let texts = |events: &[Event]| events.iter().filter(|e| matches!(e, Event::Text(t) if t == "once")).count();
+        assert_eq!(texts(&first.events), 1);
+
+        // What the integration preserves as pending_raw_input, then replays through the hook on
+        // the next hidden logic tick.
+        let mut preserved = first.clone();
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut preserved);
+        assert_eq!(texts(&preserved.events), 1, "the preserved raw input must keep exactly one copy");
+        assert_eq!(app.synthetic_pending_step.as_ref().map(Vec::len), Some(2), "the queue did not advance");
     }
 }

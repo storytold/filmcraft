@@ -94,9 +94,11 @@ impl Driver {
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered (frames render on worker threads).
+    /// Step frames until `id` is registered (frames render on worker threads), for at most two
+    /// minutes of wall-clock time.
     fn wait_for(&mut self, id: &str) {
-        for _ in 0..400 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if self.has(id) {
                 return;
             }
@@ -210,6 +212,48 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
     assert!(d.has("panel.tab.Program") && d.has("panel.tab.Timeline"));
 }
 
+/// The History panel menu: Delete Redoable Actions asks for OK and then forgets the dimmed steps
+/// (Backspace in the History panel asks the same), and Clear History forgets every step. The
+/// project stays as it is.
+#[test]
+fn history_panel_menu_deletes_redoable_actions_and_clears_the_history() {
+    let mut d = Driver::demo();
+    for name in ["A", "B", "C"] {
+        d.exec("file.newBin", json!({"name": name}));
+    }
+    d.exec("edit.undo", json!({}));
+    d.exec("edit.undo", json!({}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.History"}));
+    d.frames(3);
+    let redo = |d: &mut Driver| d.exec("history.list", json!({}))["redo"].as_array().unwrap().len();
+    assert_eq!(redo(&mut d), 2);
+    let project = d.app().session.project.clone();
+
+    d.click("panel.menu.History");
+    assert_eq!(d.label("panel.menu.History.deleteRedoable"), "Delete Redoable Actions");
+    assert_eq!(d.label("panel.menu.History.clear"), "Clear History");
+    d.click("panel.menu.History.deleteRedoable");
+    assert!(d.has("history.deleteRedoable.ok"), "Delete Redoable Actions asks first");
+    assert_eq!(redo(&mut d), 2, "nothing is deleted before OK");
+    d.click("history.deleteRedoable.cancel");
+    assert!(!d.has("history.deleteRedoable.ok"));
+    assert_eq!(redo(&mut d), 2, "Cancel keeps the steps");
+
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(2);
+    assert!(d.has("history.deleteRedoable.ok"), "Backspace in the History panel asks too");
+    d.click("history.deleteRedoable.ok");
+    assert!(!d.has("history.deleteRedoable.ok"));
+    assert_eq!(redo(&mut d), 0);
+    assert_eq!(*d.app().session.project, *project, "the project does not change");
+
+    d.click("panel.menu.History");
+    d.click("panel.menu.History.clear");
+    assert_eq!(d.exec("history.list", json!({})), json!({"undo": [], "redo": []}));
+    assert_eq!(*d.app().session.project, *project, "the project does not change");
+    assert!(!d.app().session.is_enabled("history.clear"), "an empty history has nothing to clear");
+}
+
 /// The wheel over a tab strip switches that group's tab: down = next, up = previous, one tab per
 /// notch, smaller trackpad steps adding up to a notch, stopping at the ends. Over the panel's
 /// content the wheel leaves the tabs alone.
@@ -248,6 +292,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
     for step in 0..5 {
         d.harness.input_mut().events.push(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Wheel,
             delta: egui::vec2(0.0, -10.0),
             modifiers: egui::Modifiers::NONE,
             phase: egui::TouchPhase::Move,

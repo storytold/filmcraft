@@ -336,13 +336,29 @@ fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options
     chosen
 }
 
+/// Why a format cannot be exported on this machine, or None when it can. H.265 and AV1 have no
+/// software encoder: without a hardware one (NVENC on NVIDIA, VideoToolbox on macOS) they are
+/// greyed out with the reason, instead of failing at export time.
+fn unavailable_why(format: Format) -> Option<&'static str> {
+    if filmcraft_engine::export::available(format) {
+        return None;
+    }
+    Some(match format {
+        Format::Hevc => tl!(
+            "H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead."
+        ),
+        Format::Av1 => tl!("AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet."),
+        _ => tl!("Not supported by FilmCraft's encoders yet"),
+    })
+}
+
 fn opts(labels: &[&str]) -> Vec<(String, bool)> {
     labels.iter().map(|l| (l.to_string(), true)).collect()
 }
 
 fn section(ui: &mut egui::Ui, reg: &mut Reg, open: &mut Vec<String>, key: &str, title: &str, t: &Tokens) -> bool {
     let is_open = open.iter().any(|k| k == key);
-    let (r, now) = crate::widgets::section_header(ui, egui::Id::new(("export-sec", key)), title, is_open, t, true);
+    let (r, now) = crate::widgets::section_header(ui, egui::Id::unique(("export-sec", key)), title, is_open, t, true);
     reg.add(format!("export.section.{key}"), r.rect, title);
     if now != is_open {
         if now {
@@ -380,7 +396,7 @@ fn check(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut bool, label: &str) 
 }
 
 fn text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut String, hint: &str) {
-    let r = ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(f32::INFINITY));
+    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(f32::INFINITY)), hint);
     reg.add(id, r.rect, hint);
 }
 
@@ -389,9 +405,9 @@ fn text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut String, hint: &str) 
 /// when that is not usable yet (emptied to retype, a half-typed path); each non-empty value is
 /// returned as it comes. Leaving shows the stored value again.
 fn draft_text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, stored: &str, hint: &str) -> Option<String> {
-    let draft_id = egui::Id::new(("export-draft", id));
+    let draft_id = egui::Id::unique(("export-draft", id));
     let mut v = ui.data(|m| m.get_temp::<String>(draft_id)).unwrap_or_else(|| stored.to_string());
-    let r = ui.add(egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(f32::INFINITY));
+    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(f32::INFINITY)), hint);
     reg.add(id, r.rect, hint);
     if r.has_focus() {
         ui.data_mut(|m| m.insert_temp(draft_id, v.clone()));
@@ -552,8 +568,9 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         });
         row(ui, &t, tl!("Format"), |ui| {
-            let labels: Vec<(String, bool)> = Format::ALL.iter().map(|f| (f.label().to_string(), filmcraft_engine::export::available(*f))).collect();
-            if let Some(i) = combo(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
+            // a format without an encoder here says why: H.265 and AV1 have hardware encoders only
+            let labels: Vec<(String, Option<&str>)> = Format::ALL.iter().map(|f| (f.label().to_string(), unavailable_why(*f))).collect();
+            if let Some(i) = combo_why(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
                 let f = Format::ALL[i];
                 if f != ex.settings.format {
                     // a format switch starts from that format's defaults (keeping size / rate / range)
@@ -569,6 +586,12 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
         });
+        // a preset can name a format this machine cannot encode (an H.265 preset without a hardware
+        // encoder): say so where the format is chosen, before the export fails
+        if let Some(why) = unavailable_why(ex.settings.format) {
+            let r = ui.label(egui::RichText::new(why).color(t.danger).small());
+            reg.add("export.format.unavailable", r.rect, why);
+        }
         ui.add_space(8.0);
         let s = &mut ex.settings;
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
@@ -1172,11 +1195,11 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
-    let qresp = ui.interact(queue, egui::Id::new("export-queue-send"), Sense::click());
+    let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), Sense::click());
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
     ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), t.text);
     reg.add("export.sendToQueue", queue, "Send to Queue");
-    let resp = ui.interact(go, egui::Id::new("export-go"), Sense::click());
+    let resp = ui.interact(go, egui::Id::unique("export-go"), Sense::click());
     ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
     ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
     reg.add("export.button", go, "Export");
@@ -1233,8 +1256,8 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
     let q = m.query.to_lowercase();
     egui::Window::new(tl!("Preset Manager"))
-        .id(egui::Id::new("Preset Manager"))
-        .id(egui::Id::new("preset-manager"))
+        .id(egui::Id::unique("Preset Manager"))
+        .id(egui::Id::unique("preset-manager"))
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
@@ -1292,7 +1315,10 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.horizontal(|ui| {
                 ui.label(tl!("Save current settings as:"));
-                let r = ui.add(egui::TextEdit::singleline(&mut m.save_name).hint_text(tl!("Preset name")).desired_width(200.0));
+                let r = crate::widgets::accessible_name(
+                    ui.add(egui::TextEdit::singleline(&mut m.save_name).hint_text(tl!("Preset name")).desired_width(200.0)),
+                    "Preset name",
+                );
                 reg.add("presetManager.saveName", r.rect, "Preset name");
                 let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new(tl!("Save")));
                 reg.add("presetManager.save", r.rect, "Save");
@@ -1408,8 +1434,8 @@ fn quick_file(app: &FilmcraftApp, path: &str, seq_name: &str, ext: &str) -> Opti
     let p = std::path::Path::new(path);
     let folder = path.ends_with(['/', '\\']);
     let dir = if folder { Some(p) } else { p.parent() }.filter(|d| !d.as_os_str().is_empty());
-    let name = if folder { None } else { p.file_name().and_then(|n| n.to_str()) }.filter(|n| !n.trim().is_empty());
-    let cur = name.and_then(|n| std::path::Path::new(n).extension()).and_then(|e| e.to_str()).unwrap_or("");
+    let name = if folder { None } else { p.file_name().and_then(std::ffi::OsStr::to_str) }.filter(|n| !n.trim().is_empty());
+    let cur = name.and_then(|n| std::path::Path::new(n).extension()).and_then(std::ffi::OsStr::to_str).unwrap_or("");
     if dir.is_some() && name.is_some() && cur.eq_ignore_ascii_case(ext) {
         return None;
     }
@@ -1463,7 +1489,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     let mut browse = false;
     let mut typed: Option<String> = None;
     let q = &mut app.ui.export;
-    let area = egui::Area::new(egui::Id::new("quick-export")).order(egui::Order::Foreground).fixed_pos(anchor).show(ctx, |ui| {
+    let area = egui::Area::new(egui::Id::unique("quick-export")).order(egui::Order::Foreground).fixed_pos(anchor).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_width(340.0);
             ui.horizontal(|ui| {
@@ -1503,7 +1529,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     });
     let clicked_elsewhere = area.response.clicked_elsewhere();
     // the header click that opened the popup is not a click elsewhere
-    let toggled = ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("quick-export-toggled")).unwrap_or(false));
+    let toggled = ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("quick-export-toggled")).unwrap_or(false));
     reg.flush(app);
     if let Some(v) = typed {
         // a file name goes in the shown folder; a typed or pasted path replaces both

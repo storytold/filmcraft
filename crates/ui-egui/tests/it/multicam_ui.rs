@@ -114,9 +114,11 @@ impl Driver {
         }
     }
 
-    /// Run frames (with short sleeps so frame workers finish) until `done`.
+    /// Run frames (with short sleeps so frame workers finish) until `done`, for at most two
+    /// minutes of wall-clock time.
     fn until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        for _ in 0..600 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if done(self) {
                 return;
             }

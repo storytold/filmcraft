@@ -219,17 +219,20 @@ impl PreviewStore {
         self.bump();
     }
 
-    /// Move to `dir`, taking this store's preview files along (first save of a project).
+    /// Move to `dir`, taking this store's preview files along (first save of a project). The folder is
+    /// created only when there are files to take along: a render creates it when it needs it (#2343).
     pub fn move_to(&self, dir: PathBuf) {
         let old = self.dir();
         if old.as_deref() == Some(dir.as_path()) {
             return;
         }
+        let files = self.files.read().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(old) = &old
+            && !files.is_empty()
             && (old.starts_with(crate::temp_dir()) || self.temp_root().is_some_and(|r| old.starts_with(r)))
         {
             let _ = std::fs::create_dir_all(&dir);
-            for name in self.files.read().unwrap_or_else(|e| e.into_inner()).iter() {
+            for name in &files {
                 let (a, b) = (old.join(name), dir.join(name));
                 if !b.exists() && std::fs::rename(&a, &b).is_err() {
                     let _ = std::fs::copy(&a, &b).map(|_| std::fs::remove_file(&a));

@@ -17,6 +17,7 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
+use crate::widgets::HotNumberOptions;
 
 type Actions = Vec<Value>;
 
@@ -127,7 +128,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         if open_section(ui, app, &e, "Curves", "curves_on", "curves", &mut sections) {
             sub(ui, &t, tl!("RGB Curves"));
-            let key = egui::Id::new("lumetri-curve-channel");
+            let key = egui::Id::unique("lumetri-curve-channel");
             let mut ch: usize = ui.data(|d| d.get_temp(key)).unwrap_or(0);
             ui.horizontal(|ui| {
                 for (i, c) in
@@ -345,7 +346,7 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, on: bool) -> (
     ui.painter().text(pos2(r.min.x + 20.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(name), Tokens::semibold(13.0), t.text);
     // enable switch (section bypass)
     let sw = Rect::from_center_size(pos2(r.max.x - 18.0, r.center().y), vec2(26.0, 14.0));
-    let sw_resp = ui.interact(sw.expand(3.0), egui::Id::new(("lumetri-switch", name)), Sense::click());
+    let sw_resp = ui.interact(sw.expand(3.0), egui::Id::unique(("lumetri-switch", name)), Sense::click());
     ui.painter().rect_filled(sw, 7.0, if on { t.accent } else { Color32::from_rgb(0x55, 0x55, 0x55) });
     ui.painter().circle_filled(pos2(if on { sw.max.x - 7.0 } else { sw.min.x + 7.0 }, sw.center().y), 5.0, Color32::WHITE);
     app.auto.add(&format!("lumetri.switch.{name}"), sw.expand(3.0), &format!("{name} on/off"));
@@ -421,7 +422,7 @@ fn slider(
     let f = ((v - soft_min) / (soft_max - soft_min)).clamp(0.0, 1.0) as f32;
     let kx = track.min.x + f * track.width();
     let hit = Rect::from_min_max(pos2(track.min.x - 6.0, row.min.y), pos2(track.max.x + 6.0, row.max.y));
-    let resp = ui.interact(hit, egui::Id::new(("lslider", clip.0, id)), Sense::click_and_drag());
+    let resp = ui.interact(hit, egui::Id::unique(("lslider", clip.0, id)), Sense::click_and_drag());
     ui.painter().circle_filled(pos2(kx, track.center().y), 5.0, t.panel_bg);
     ui.painter().circle_stroke(
         pos2(kx, track.center().y),
@@ -443,8 +444,13 @@ fn slider(
             .max_rect(Rect::from_min_max(pos2(row.max.x - 52.0, row.min.y + 3.0), pos2(row.max.x, row.max.y - 3.0)))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    let (_, nv) =
-        crate::widgets::hot_number(&mut vui, egui::Id::new(("lval", clip.0, id)), v, (soft_max - soft_min) / 300.0, (min, max), decimals as usize, "", t);
+    let (_, nv) = crate::widgets::hot_number(
+        &mut vui,
+        label,
+        egui::Id::unique(("lval", clip.0, id)),
+        v,
+        HotNumberOptions::new((soft_max - soft_min) / 300.0, (min, max), decimals as usize, "", t),
+    );
     if let Some(nv) = out.or(nv) {
         actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": (nv * 10f64.powi(decimals as i32)).round() / 10f64.powi(decimals as i32)}));
     }
@@ -510,7 +516,7 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     };
     let line: Vec<Pos2> = lut.iter().enumerate().map(|(i, y)| to_screen([i as f32 / 127.0, y.clamp(0.0, 1.0)])).collect();
     p.add(egui::Shape::line(line, Stroke::new(1.5, col)));
-    let drag_key = egui::Id::new(("curve-drag", clip.0, id));
+    let drag_key = egui::Id::unique(("curve-drag", clip.0, id));
     let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_key));
     let mut new_pts = pts.clone();
     let mut changed = false;
@@ -612,7 +618,7 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
     p.rect_filled(track, 2.0, Color32::from_rgb(0x4b, 0x4b, 0x4b));
     let ky = track.center().y - l / 100.0 * track.height() / 2.0;
     p.circle_stroke(pos2(track.center().x, ky), 4.0, Stroke::new(1.5, Color32::from_rgb(0xb0, 0xb0, 0xb0)));
-    let lr = ui.interact(track.expand2(vec2(6.0, 0.0)), egui::Id::new(("wl", clip.0, lid)), Sense::click_and_drag());
+    let lr = ui.interact(track.expand2(vec2(6.0, 0.0)), egui::Id::unique(("wl", clip.0, lid)), Sense::click_and_drag());
     if (lr.dragged() || lr.clicked())
         && let Some(pos) = lr.interact_pointer_pos()
     {
@@ -627,8 +633,8 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
 fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'static str, Value)>) {
     let t = app.tokens;
     sub(ui, &t, tl!("Color Match"));
-    let key = egui::Id::new("lumetri-match-ref");
-    let fd_key = egui::Id::new("lumetri-match-face");
+    let key = egui::Id::unique("lumetri-match-ref");
+    let fd_key = egui::Id::unique("lumetri-match-face");
     let mut tc: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| "00:00:00:00".to_string());
     let mut face: bool = ui.data(|d| d.get_temp(fd_key)).unwrap_or(true);
     // Comparison View: the Program monitor shows the reference frame next to the current one, and
@@ -645,7 +651,7 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
     }
     ui.horizontal(|ui| {
         ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Reference")).color(t.text_dim)));
-        let r = ui.add(egui::TextEdit::singleline(&mut tc).desired_width(96.0));
+        let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut tc).desired_width(96.0)), "Reference timecode");
         app.auto.add("lumetri.match.reference", r.rect, "Reference timecode");
     });
     let r = ui.checkbox(&mut face, tl!("Face Detection (protect skin tones)"));
