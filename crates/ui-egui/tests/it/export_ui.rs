@@ -657,11 +657,20 @@ fn export_mode_controls_are_tall_click_targets_and_audio_has_a_header_switch() {
     assert!(!d.app().ui.export.open_sections.iter().any(|k| k == "audio"));
     let (sw, header) = (rect_of(&mut d, "export.audio.include"), rect_of(&mut d, "export.section.audio"));
     assert!(sw[1] >= header[1] && sw[1] + sw[3] <= header[1] + header[3], "{sw:?} in {header:?}");
+    // it tells a screen reader it is a switch, and whether it is on
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let state = |d: &Driver| {
+        let node = d.harness.get_by_label("Export Audio").accesskit_node();
+        (node.role(), node.toggled())
+    };
+    assert_eq!(state(&d), (egui::accesskit::Role::Switch, Some(egui::accesskit::Toggled::True)));
     d.click("export.audio.include");
     assert!(!d.app().ui.export.settings.include_audio);
     assert!(!d.app().ui.export.open_sections.iter().any(|k| k == "audio"), "the switch does not expand the section");
+    assert_eq!(state(&d), (egui::accesskit::Role::Switch, Some(egui::accesskit::Toggled::False)));
     d.click("export.audio.include");
     assert!(d.app().ui.export.settings.include_audio);
+    assert_eq!(state(&d), (egui::accesskit::Role::Switch, Some(egui::accesskit::Toggled::True)));
     d.snapshot("export-mode-roomy");
 }
 

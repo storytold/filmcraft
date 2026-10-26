@@ -117,6 +117,7 @@ fn section(ui: &mut egui::Ui, reg: &mut Reg, open: &mut Vec<String>, key: &str, 
         if sresp.clicked() {
             *on = !*on;
         }
+        sresp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, sresp.enabled(), *on, label));
     }
     let now = if resp.clicked() { !is_open } else { is_open };
     if now {
