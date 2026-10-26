@@ -429,7 +429,7 @@ impl DragCheckbox for Ui {
     fn checkbox_drag_enabled(&mut self, enabled: bool, checked: &mut bool, text: impl Into<egui::WidgetText>) -> Response {
         let was = *checked;
         let mut resp = self.add_enabled(enabled, egui::Checkbox::new(checked, text));
-        if !enabled {
+        if !resp.enabled() {
             return resp;
         }
         let key = egui::Id::unique("checkbox-sweep");
@@ -438,7 +438,9 @@ impl DragCheckbox for Ui {
         // over this checkbox and not under a menu, popup or window drawn above it
         let inside = resp.contains_pointer();
         let mut sweep = self.ctx().data(|d| d.get_temp::<CheckboxSweep>(key));
-        if (!down && !released) || sweep.is_some_and(|sw| sw.press != press) {
+        // the release frame has no press time any more, and still belongs to the sweep it ends
+        let ends_sweep = released && !pressed;
+        if (!down && !released) || sweep.is_some_and(|sw| sw.press != press && !ends_sweep) {
             self.ctx().data_mut(|d| d.remove::<CheckboxSweep>(key));
             sweep = None;
         }
@@ -453,7 +455,7 @@ impl DragCheckbox for Ui {
                 sw.left |= !inside && (down || released);
                 sw.left
             } else {
-                down && inside
+                (down || released) && inside
             };
             if set && *checked != sw.state {
                 *checked = sw.state;
@@ -814,6 +816,63 @@ mod tests {
         four_checkboxes(&ctx, &mut state, vec![primary(at(3), false)]);
         four_checkboxes(&ctx, &mut state, vec![]);
         assert_eq!(state, [true, true, true, false], "the old sweep's state did not reach option 3");
+    }
+
+    /// A move onto the next checkbox and the release arrive in one frame, as at a low frame rate: the
+    /// checkbox the pointer came to takes the state as well.
+    #[test]
+    fn a_move_and_the_release_in_one_frame_still_set_the_checkbox_under_the_pointer() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        four_checkboxes(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut state, vec![]);
+        let at = |i: usize| rects[i].center();
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))]);
+        four_checkboxes(&ctx, &mut state, vec![primary(at(0), true)]);
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(1)), primary(at(1), false)]);
+        four_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true, true, false, false]);
+        // and the sweep ended with that release: the next press on another checkbox is its own
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(3)), primary(at(3), true), primary(at(3), false)]);
+        four_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true, true, false, true], "a click after a sweep toggles just its own checkbox");
+    }
+
+    /// The four checkboxes with the second one inside a Ui that is disabled by its parent.
+    fn checkboxes_with_one_disabled_by_its_parent(ctx: &egui::Context, state: &mut [bool; 4], events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            for (i, v) in state.iter_mut().enumerate() {
+                ui.add_enabled_ui(i != 1, |ui| ui.checkbox_drag(v, format!("option {i}")));
+            }
+        });
+        out.textures_delta.clear();
+    }
+
+    /// A checkbox disabled by the Ui it sits in neither starts a sweep nor takes one.
+    #[test]
+    fn a_checkbox_disabled_by_its_parent_is_not_swept() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut [false; 4], vec![]);
+        let at = |i: usize| rects[i].center();
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![primary(at(0), true)]);
+        for i in 1..=2 {
+            checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![egui::Event::PointerMoved(at(i))]);
+        }
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![primary(at(2), false)]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true, false, true, false], "the sweep passed over the disabled one");
+        // a press that begins on the disabled one sweeps nothing either
+        let mut state = [false; 4];
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![egui::Event::PointerMoved(at(1))]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![primary(at(1), true)]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![egui::Event::PointerMoved(at(2))]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![primary(at(2), false)]);
+        checkboxes_with_one_disabled_by_its_parent(&ctx, &mut state, vec![]);
+        assert_eq!(state, [false; 4]);
     }
 
     #[test]
