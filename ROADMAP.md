@@ -8,6 +8,7 @@
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (web host bridge for embedding pages) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -112,6 +113,8 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 ## Progress log
 
+- **2026-10-26 (web host bridge):** the web build can be embedded: `?host=parent` (a same-origin `<iframe>`, `postMessage`) or `data-host="page"` on the canvas (the host document itself, DOM `CustomEvent`s) — the same five messages as the other Craft apps' bridges (`filmcraft:ready/open/save/dirty/failed`). A file the host sends opens like the app's own File › Open (`.fcproj`) or drop (media); every file the app would otherwise download — saves, exports, captions, interchange — goes to the host instead, with a `saveAs` flag saying whether it becomes the document's file; the host hears when unsaved changes appear or go away. Host sessions start without the demo project and without recovering an earlier visit. Not a Premiere-parity item: it exists for the Craft family's embedders (a Nextcloud app, a web desktop, an agent dashboard).
+
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 
 - **2026-10-20:** the on/off items of the Sequence and Markers menus (Snap in Timeline, Linked Selection, Selection Follows Playhead, Show Through Edits, Ripple Sequence Markers, Copy Paste Includes Sequence Markers) show their checkmark, so choosing one visibly turns it on or off (#2623)
@@ -174,6 +177,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | Web host bridge: `?host=parent` / `data-host="page"` embedding protocol (`filmcraft:ready/open/save/dirty/failed`); saves, exports and opens go to the embedding page instead of downloads |
 | 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |
 | 2026-10-19 | minor | Language table: Czech (#1156, 100%) |
 | 2026-10-20 | trivial | Progress log: checkmarks on the Sequence and Markers menu toggles (#2623) |
