@@ -91,6 +91,11 @@ impl Driver {
         a.pop().unwrap()
     }
 
+    fn has(&mut self, id: &str) -> bool {
+        let all = self.ok("ui.elements", json!({}));
+        all.as_array().is_some_and(|a| a.iter().any(|e| e["id"] == id))
+    }
+
     fn items(&mut self) -> usize {
         self.app().session.project.items.len()
     }
@@ -218,4 +223,46 @@ fn export_location_browse_works_with_the_runner_and_with_synchronous_pickers() {
     d.click("export.location.browse");
     assert_eq!(d.app().ui.export.location, "/tmp/exports-b");
     assert!(!d.app().native_dialog_open());
+}
+
+/// Home's New Project on an untitled project with changes, answered Save, with the runner: the
+/// Save dialog answers on a later frame, and the new project starts once the project is saved
+/// there. Cancelling the Save dialog brings the prompt back and replaces nothing.
+#[test]
+fn home_new_project_waits_for_the_save_dialog_then_starts() {
+    use filmcraft_ui_egui::state::Mode;
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-dialogs-home");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Saved.fcproj").to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&path);
+    let mut d = Driver::new(true);
+    d.ok("engine.execute", json!({"command": "file.newSequence", "params": {"name": "Unsaved", "width": 1920, "height": 1080}}));
+    d.frames(30); // the timeline fits the new sequence
+    assert!(d.app().session.path.is_none() && d.app().session.is_dirty());
+    d.click("header.home");
+    d.click("home.new");
+    // Save: the dialog is open, the prompt is gone and nothing is replaced yet
+    d.click("closeProject.save");
+    let (dialog, answer) = d.asked();
+    assert!(matches!(dialog, FileDialog::SaveProject { .. }), "{dialog:?}");
+    assert!(!d.has("closeProject.save"));
+    d.frames(5);
+    assert!(d.app().session.project.items.values().any(|i| i.name == "Unsaved"), "not replaced while the dialog is open");
+    // cancelled: back to the prompt
+    answer.send(vec![]).unwrap();
+    d.frames(3);
+    assert!(d.has("closeProject.save"), "the prompt is back");
+    assert!(d.app().session.is_dirty());
+    // Save again, and this time choose a file: saved, then the new project starts
+    d.click("closeProject.save");
+    let (_, answer) = d.asked();
+    answer.send(vec![path.clone()]).unwrap();
+    d.frames(3);
+    assert!(!d.has("closeProject.save"));
+    assert_eq!(d.app().session.path, None, "a new project");
+    assert!(!d.app().session.project.items.values().any(|i| i.name == "Unsaved"));
+    assert_eq!(d.app().ui.mode, Mode::Edit);
+    let mut o = Session::default();
+    o.execute("file.open", json!({"path": path})).unwrap();
+    assert!(o.project.items.values().any(|i| i.name == "Unsaved"), "the changes were saved");
 }

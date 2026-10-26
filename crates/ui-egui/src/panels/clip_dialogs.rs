@@ -36,6 +36,7 @@ use filmcraft_project::{AudioChannelMap, AudioChannels, ItemKind, TrackKind};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
+use crate::native_dialogs::FileDialog;
 use crate::state::ClipDialogDraft;
 
 type Elems = Vec<(String, egui::Rect, String)>;
@@ -327,7 +328,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
     // a never-saved project is saved through the Save dialog
-    let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some();
+    let can_save = app.session.path.is_some() || FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
@@ -622,53 +623,71 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 Err(e) => d.error = e.to_string(),
             }
         }
-        Some("dontSave") | Some("save") => {
-            if action == Some("save") {
-                let saved = if app.session.path.is_some() {
-                    app.session.execute("file.save", json!({})).map(|_| ()).map_err(|e| e.to_string())
-                } else {
-                    app.file_dialog("file.save", &json!({})).map(|_| ())
-                };
-                if let Err(e) = saved {
-                    app.ui.status = e;
-                    app.ui.clip_dialog = None;
-                    return;
-                }
-                // the Save dialog was cancelled: back to the prompt
-                if app.session.is_dirty() {
+        Some("save") if app.session.path.is_none() => {
+            // An untitled project: ask where to save it and go on once it is saved. With a host
+            // that shows dialogs without blocking the answer comes on a later frame, so the rest
+            // runs from the dialog's continuation, not here.
+            app.ui.clip_dialog = None;
+            let name = format!("{}.fcproj", app.session.project.name);
+            let ctx = ctx.clone();
+            let picked = app.pick(FileDialog::SaveProject { name }, move |app, paths| {
+                let Some(path) = paths.into_iter().next() else {
+                    // the Save dialog was cancelled: back to the prompt
                     app.ui.clip_dialog = Some(d);
-                    return;
-                }
+                    return Ok(Value::Null);
+                };
+                app.session.execute("file.saveAs", json!({"path": path})).map_err(|e| e.to_string())?;
+                after_answer(app, &ctx, &d);
+                Ok(Value::Null)
+            });
+            if let Err(e) = picked {
+                app.ui.status = e;
             }
-            // Asked before another project replaces this one (Home's Open, Recent Projects and New
-            // Project): that command closes it instead
-            let then = d.params.get("then").filter(|_| d.command == "file.closeProject");
-            if let Some(then) = then {
-                let command = then["command"].as_str().unwrap_or_default().to_string();
-                if let Err(e) = crate::menus::invoke(app, ctx, &command, then["params"].clone()) {
-                    app.ui.status = e;
-                }
-                if app.ui.clip_dialog.as_ref().is_some_and(|c| c.command == "file.closeProject") {
-                    app.ui.clip_dialog = None;
-                }
+            return;
+        }
+        Some("dontSave") | Some("save") => {
+            if action == Some("save")
+                && let Err(e) = app.session.execute("file.save", json!({}))
+            {
+                app.ui.status = e.to_string();
+                app.ui.clip_dialog = None;
                 return;
             }
-            // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
-            // snapshot, so the next launch doesn't offer them back
-            let close = d.command != "app.quit" || app.session.is_dirty();
-            if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
-                app.ui.status = e.to_string();
-            }
-            if d.command == "app.quit" {
-                app.quit_confirmed = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            app.ui.clip_dialog = None;
+            after_answer(app, ctx, &d);
             return;
         }
         _ => {}
     }
     app.ui.clip_dialog = Some(d);
+}
+
+/// Save / Don't Save answered (and the save, if any, done): close the project or carry on with
+/// what was asked for.
+fn after_answer(app: &mut FilmcraftApp, ctx: &egui::Context, d: &ClipDialogDraft) {
+    // Asked before another project replaces this one (Home's Open, Recent Projects and New
+    // Project): that command closes it instead
+    let then = d.params.get("then").filter(|_| d.command == "file.closeProject");
+    if let Some(then) = then {
+        let command = then["command"].as_str().unwrap_or_default().to_string();
+        if let Err(e) = crate::menus::invoke(app, ctx, &command, then["params"].clone()) {
+            app.ui.status = e;
+        }
+        if app.ui.clip_dialog.as_ref().is_some_and(|c| c.command == "file.closeProject") {
+            app.ui.clip_dialog = None;
+        }
+        return;
+    }
+    // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
+    // snapshot, so the next launch doesn't offer them back
+    let close = d.command != "app.quit" || app.session.is_dirty();
+    if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
+        app.ui.status = e.to_string();
+    }
+    if d.command == "app.quit" {
+        app.quit_confirmed = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+    app.ui.clip_dialog = None;
 }
 
 /// The parameters sent on OK (dialog-only fields dropped or converted).
