@@ -140,6 +140,39 @@ fn single_frame_in_out_warning_follows_the_selected_range() {
 }
 
 #[test]
+fn single_frame_in_out_queue_add_retains_warnings_and_ranges() {
+    let mut s = demo();
+    let dir = Scratch::new("queue-range-warning");
+    s.execute("markers.markIn", json!({"frame":12})).unwrap();
+    s.execute("markers.markOut", json!({"frame":12})).unwrap();
+    let expected = s.execute("export.resolve", json!({})).unwrap()["warnings"].clone();
+    let v = s.execute("export.queue.add", json!({"path":dir.path("default.wav"),"format":"wav"})).unwrap();
+    assert_eq!(v["warnings"], expected);
+    assert_eq!(v["added"].as_array().unwrap().len(), 1);
+    assert_eq!(v["items"].as_array().unwrap().len(), 1);
+    assert_eq!(v["items"][0]["id"], v["added"][0]);
+    assert_eq!(v["items"][0]["status"], "ready");
+    assert_eq!(v["items"][0]["range"], Value::Null, "default range is still resolved from the snapshot's marks");
+    s.execute("export.queue.clear", json!({"all":true})).unwrap();
+
+    // Each marked range contributes its advisory; later explicit ranges must not overwrite it.
+    let ranges = json!(["inOut", {"mode":"inOut"}, {"startFrame":12,"endFrame":13}, "entire"]);
+    let v = s.execute("export.queue.add", json!({"path":dir.path("ranges.wav"),"format":"wav","ranges":ranges})).unwrap();
+    assert_eq!(v["warnings"], json!([expected[0], expected[0]]));
+    assert_eq!(v["added"].as_array().unwrap().len(), 4);
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    for (i, range) in ranges.as_array().unwrap().iter().enumerate() {
+        let resolved = s.execute("export.resolve", json!({"range":range})).unwrap();
+        assert_eq!(items[i]["id"], v["added"][i]);
+        assert_eq!(items[i]["range"]["start"], resolved["range"]["start"]);
+        assert_eq!(items[i]["range"]["duration"], resolved["range"]["duration"]);
+    }
+    let quiet = s.execute("export.queue.add", json!({"path":dir.path("custom.wav"),"format":"wav","startFrame":12,"endFrame":13})).unwrap();
+    assert_eq!(quiet["warnings"], json!([]), "warnings describe this addition, not previously queued items");
+}
+
+#[test]
 fn single_frame_in_out_exports_warn_without_changing_the_output() {
     let mut s = demo();
     let dir = Scratch::new("single-frame-warning");

@@ -178,7 +178,12 @@ fn single_frame_in_out_export_warns_in_json_and_stderr() {
     std::fs::write(&script, "{\"id\":\"markers.markIn\",\"params\":{\"frame\":12}}\n{\"id\":\"markers.markOut\",\"params\":{\"frame\":12}}\n").unwrap();
     let setup = cli(&["--demo", "--save-as", project.to_str().unwrap(), "run", script.to_str().unwrap()]);
     assert!(setup.status.success(), "{}", String::from_utf8_lossy(&setup.stderr));
-    for (name, bounds, warned) in [("marked.wav", vec![], true), ("explicit.wav", vec!["--start", "0", "--end", "0.04"], false)] {
+    for (name, bounds, warned) in [
+        ("marked.wav", vec![], true),
+        ("explicit.wav", vec!["--start", "0", "--end", "0.04"], false),
+        ("queued.wav", vec!["--queue"], true),
+        ("queued-explicit.wav", vec!["--queue", "--start", "0", "--end", "0.04"], false),
+    ] {
         let path = dir.join(name);
         let mut args = vec!["--project", project.to_str().unwrap(), "export", path.to_str().unwrap()];
         args.extend(bounds);

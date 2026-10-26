@@ -138,11 +138,12 @@ progress and stop it:
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
-- `file.exportMedia`, `export.quick` and `export.resolve` also return `warnings` (an array of
+- `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
   strings, empty when none). If the default or explicitly selected In/Out range covers one
   sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
   The export still succeeds, including with `wait: true` over MCP or the bridge. Explicit custom,
-  work-area and entire-sequence ranges are unchanged and do not warn. `filmcraft-cli export`
+  work-area and entire-sequence ranges are unchanged and do not warn. Queue additions collect
+  warnings from the newly added ranges. `filmcraft-cli export` (including `--queue`)
   also prints the warning on stderr and suggests `--range entire`; the warning does not change
   the exit status. Frame counts here use the sequence rate, even when the export rate differs.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
