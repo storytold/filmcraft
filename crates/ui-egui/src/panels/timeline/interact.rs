@@ -562,7 +562,10 @@ fn start_drag(
                 let default =
                     if audio { app.session.prefs.timeline.audio_transition_duration(rate) } else { app.session.prefs.timeline.video_transition_duration(rate) };
                 let most = seq.find_item(clip).map(|(track, it)| fade_most(seq, rate, track, it, edge));
-                run_fade(app, clip, edge, audio, most.filter(|m| rate.frame_at(default) > *m));
+                // a clip too short for any fade gets none, as a drag of no length makes none
+                if most != Some(0) {
+                    run_fade(app, clip, edge, audio, most.filter(|m| rate.frame_at(default) > *m));
+                }
                 None
             } else {
                 Some(Drag::Fade { clip, edge, audio, frames: 0 })

@@ -256,3 +256,25 @@ fn the_fade_handles_of_a_hovered_clip_have_automation_ids() {
         assert!(centre.distance(at) < 1.0, "{id} is at {centre:?}, the handle at {at:?}");
     }
 }
+
+/// A one-frame clip has no room for a fade: a click on its handle applies none.
+#[test]
+fn a_click_on_a_one_frame_clip_applies_no_fade() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let one = d.app().session.sequence_rate().frame_duration().0;
+    let start = d.app().session.active_sequence().unwrap().find_item(ClipId(city)).unwrap().1.start.0;
+    d.exec("timeline.razor", json!({"track": "V1", "clip": city, "time": start + one}));
+    // zoomed in so the one frame is wide enough to show its handles
+    let seconds = start as f64 / 254_016_000_000.0;
+    d.ok("ui.set", json!({"timeline": {"pps": 2400.0, "scroll": seconds - 0.05}}));
+    d.frames(4);
+    let at = handle_at(&mut d, city, false);
+    d.hover(at);
+    for pressed in [true, false] {
+        d.harness.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        d.frames(1);
+    }
+    d.frames(2);
+    assert!(transitions_to(&d, city).is_empty(), "no fade on a one-frame clip");
+}
