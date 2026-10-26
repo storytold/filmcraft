@@ -130,7 +130,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         (video_area, None)
     };
     if let (Some(wa), Some(item)) = (wave_area, source_item) {
-        monitor_view::waveform(app, ui, wa, item, time, duration, mark_in, mark_out);
+        let shown = ruler_shown(mv.time_zoom, origin, duration);
+        monitor_view::waveform(app, ui, wa, item, time, shown, mark_in, mark_out);
     }
     let show_picture = has_video && !wave_only && !grid_only;
     // Rulers along the top and left of the picture area.
@@ -173,7 +174,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let saved_clip = ui.clip_rect();
     ui.set_clip_rect(saved_clip.intersect(if mv.zoom.is_some() && !compare { video_area } else { picture_area.expand(12.0) }));
     if show_picture {
-        ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
+        if mv.transparency_grid {
+            monitor_view::transparency_grid(ui.painter(), pic, ui.clip_rect());
+        } else {
+            ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
+        }
         let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
         let res = mv.effective_res(playing);
         // frame pixels per screen pixel along the axis that needs the most of them
@@ -186,10 +191,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         };
         let size_key = (scale * 1000.0) as u32;
         let channel = display.is_channel();
-        let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !crate::panels::menu_dialogs::software_renderer(app);
+        // the GPU compositor's output is opaque, so the Transparency Grid takes the CPU frames
+        let grid = mv.transparency_grid && !channel;
+        let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !grid && !crate::panels::menu_dialogs::software_renderer(app);
+        // render previews are opaque, so the grid and Display Mode ▸ Alpha take live renders
+        let live = grid || display == DisplayMode::Alpha;
         let cpu_target = target;
         let target = match (use_gpu, target) {
             (true, Target::Sequence(s)) => Target::SequencePlan(s),
+            (false, Target::Sequence(s)) if live => Target::SequenceLive(s),
             (_, t) => t,
         };
         // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
@@ -207,7 +217,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
         }
         let asked = asked_before(app, prefix, key, playing);
-        let tex_name = if channel { format!("monitor-{prefix}-{display:?}") } else { format!("monitor-{prefix}") };
+        let tex_name = if channel {
+            format!("monitor-{prefix}-{display:?}")
+        } else if grid {
+            format!("monitor-{prefix}-grid")
+        } else {
+            format!("monitor-{prefix}")
+        };
         let (shown, on_screen) = if use_gpu {
             let found = app
                 .frames
@@ -219,6 +235,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
                 None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
             }
+        } else if grid {
+            cpu_texture_as(app, &ctx, &tex_name, key, &asked, display, true)
         } else {
             cpu_texture(app, &ctx, &tex_name, key, &asked, display)
         };
@@ -243,11 +261,24 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         if let Some(ra) = ref_area {
             // the reference frame (CPU path)
             let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
-            let rkey = FrameKey { target: cpu_target, frame: rf, size: size_key, revision: rev, draft: false };
+            let rtarget = match cpu_target {
+                Target::Sequence(s) if mv.transparency_grid => Target::SequenceLive(s),
+                t => t,
+            };
+            let rkey = FrameKey { target: rtarget, frame: rf, size: size_key, revision: rev, draft: false };
             app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
             let rpic = fit(ra, display_w, frame_size.1 as f32);
-            ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
-            if let (Some(tex), _) = cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite) {
+            if mv.transparency_grid {
+                monitor_view::transparency_grid(ui.painter(), rpic, ui.clip_rect());
+            } else {
+                ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
+            }
+            let (reference, _) = if mv.transparency_grid {
+                cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], DisplayMode::Composite, true)
+            } else {
+                cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite)
+            };
+            if let Some(tex) = reference {
                 ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             }
             app.auto.add("program.compare.reference", rpic, "reference frame");
@@ -284,11 +315,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
     // A click on the Program monitor around the picture lets go of what is selected on it (#683;
     // in the picture the overlays do that). Under the picture and the overlays, so they come first.
-    if which == Which::Program && show_picture && ui.interact(video_area, egui::Id::new((prefix, "background")), Sense::click()).clicked() {
+    if which == Which::Program && show_picture && ui.interact(video_area, egui::Id::unique((prefix, "background")), Sense::click()).clicked() {
         crate::panels::graphics::deselect_on_monitor(app, ui);
     }
     // Click/drag in the picture: the Hand tool pans a magnified picture, otherwise focus.
-    let pic_resp = ui.interact(pic, egui::Id::new((prefix, "pic")), if show_picture { Sense::click_and_drag() } else { Sense::hover() });
+    let pic_resp = ui.interact(pic, egui::Id::unique((prefix, "pic")), if show_picture { Sense::click_and_drag() } else { Sense::hover() });
     app.auto.add(&format!("{prefix}.picture"), pic.intersect(video_area), "picture");
     // (Comparison View always fits both frames)
     if show_picture && !compare {
@@ -325,7 +356,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let tc = format_time(time, rate, drop_frame, TimeDisplay::Timecode, 48000);
     let tc_rect = Rect::from_min_size(row1.min, vec2(110.0, row1.height()));
     let min = if which == Which::Program { Tick::ZERO } else { origin };
-    match crate::widgets::timecode_field(ui, egui::Id::new((prefix, "timecode")), tc_rect, &tc, time, min, rate, drop_frame, t.timecode) {
+    match crate::widgets::timecode_field(ui, egui::Id::unique((prefix, "timecode")), tc_rect, &tc, time, min, rate, drop_frame, t.timecode) {
         Some(Ok(to)) => {
             let cmd = if which == Which::Program { "playhead.set" } else { "source.setPlayhead" };
             if let Err(e) = app.session.execute(cmd, json!({"time": to.0})) {
@@ -352,7 +383,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         None => tl!("Fit").to_string(),
         Some(z) => format!("{}%", (z * 100.0).round() as i32),
     };
-    let zresp = crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::new((prefix, "zoom")));
+    let zresp = crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::unique((prefix, "zoom")));
     app.auto.add(&format!("{prefix}.zoom"), zr, "Select Zoom Level");
     monitor_view::zoom_menu(app, &zresp, which);
     let res = mv.res;
@@ -370,7 +401,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     if separate_source_drag {
         crate::panels::source_drag::controls(app, ui, Rect::from_min_size(pos2(row1.center().x - 52.0, settings_y + 26.0), vec2(104.0, 24.0)));
     }
-    let rresp = crate::widgets::dropdown_text(ui, rr, crate::i18n::t(res.label()), &t, egui::Id::new((prefix, "res")));
+    let rresp = crate::widgets::dropdown_text(ui, rr, crate::i18n::t(res.label()), &t, egui::Id::unique((prefix, "res")));
     app.auto.add(&format!("{prefix}.resolution"), rr, "Select Playback Resolution");
     egui::Popup::menu(&rresp).show(|ui| {
         for r in PlaybackRes::ALL {
@@ -380,7 +411,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         }
     });
     let wr = Rect::from_min_size(pos2(rr.max.x + 6.0, settings_y + 1.0), vec2(22.0, 22.0));
-    let wresp = ui.interact(wr, egui::Id::new((prefix, "wrench")), Sense::click());
+    let wresp = ui.interact(wr, egui::Id::unique((prefix, "wrench")), Sense::click());
     icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add(&format!("{prefix}.settings"), wr, "Settings");
     egui::Popup::menu(&wresp).show(|ui| {
@@ -486,6 +517,19 @@ fn cpu_texture(
     asked: &[FrameKey],
     mode: DisplayMode,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
+    cpu_texture_as(app, ctx, name, key, asked, mode, false)
+}
+
+/// [`cpu_texture`], keeping the frame's alpha when `alpha` is set (the Transparency Grid).
+fn cpu_texture_as(
+    app: &mut FilmcraftApp,
+    ctx: &egui::Context,
+    name: &str,
+    key: FrameKey,
+    asked: &[FrameKey],
+    mode: DisplayMode,
+    alpha: bool,
+) -> (Option<egui::TextureId>, Option<FrameKey>) {
     let found = app
         .frames
         .get(&key)
@@ -496,6 +540,8 @@ fn cpu_texture(
         Some((k, img)) => {
             let tex = if mode.is_channel() {
                 app.texture_for_mapped(ctx, name, k, &img, |i| monitor_view::channel_view(i, mode))
+            } else if alpha {
+                app.texture_with_alpha(ctx, name, k, &img)
             } else {
                 app.texture_for(ctx, name, k, &img)
             };
@@ -526,7 +572,7 @@ const EYEDROPPER_SCALE: f32 = 0.5;
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
-    let pending_id = egui::Id::new("eyedropper-pending");
+    let pending_id = egui::Id::unique("eyedropper-pending");
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.ui.eyedropper = None;
         ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
@@ -683,7 +729,7 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     }
     app.auto.add(&format!("{prefix}.zoomBar"), thumb, "zoom scroll bar");
     app.auto.add(&format!("{prefix}.zoomBar.track"), bar, "zoom scroll bar track");
-    let resp = ui.interact(bar, egui::Id::new((prefix, "zoomBar")), Sense::click_and_drag());
+    let resp = ui.interact(bar, egui::Id::unique((prefix, "zoomBar")), Sense::click_and_drag());
     // the start that brings the thumb's middle under `x`
     let jump = |x: f32| ((x - bar.min.x - w / 2.0) as f64 * per_point).clamp(0.0, range);
     let mut set = None;
@@ -695,7 +741,7 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     }
     // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
     // under the pointer when the button went down)
-    let drag_id = egui::Id::new((prefix, "zoomBar-drag"));
+    let drag_id = egui::Id::unique((prefix, "zoomBar-drag"));
     if resp.drag_started()
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
@@ -762,7 +808,7 @@ fn mini_timeline(
     let xof = |tk: Tick| bar.min.x + (((tk - shown.0).0 as f64 / dur) as f32).clamp(0.0, 1.0) * bar.width();
     // a time off a zoomed ruler is not drawn (past either end of it all, it sits at that end)
     let shows = |tk: Tick| (tk >= shown.0 || shown.0 <= origin) && (tk <= shown.1 || shown.1 >= end);
-    let resp = ui.interact(bar, egui::Id::new((which as u8, "scrub")), Sense::click_and_drag());
+    let resp = ui.interact(bar, egui::Id::unique((which as u8, "scrub")), Sense::click_and_drag());
     app.auto.add(if which == Which::Program { "program.scrubBar" } else { "source.scrubBar" }, bar, "scrub bar");
     let interaction = crate::panels::source_range::interact(app, ui, bar, which, shown);
     let p = ui.painter();
@@ -898,6 +944,7 @@ fn set_transport_visible(hidden: &mut Vec<String>, command: &str, visible: bool)
 /// Width and height of a transport button.
 const TRANSPORT_BUTTON: f32 = 28.0;
 
+/// Draw a monitor's Source or Program transport. Row buttons use `transport_button`; overflow-menu entries call `invoke_transport` directly.
 fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which) {
     let t = app.tokens;
     let src = which == Which::Source;
@@ -944,7 +991,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
         // Keep the existing button-editor affordance only when it has its own space.
         // Customize this monitor's transport separately from the other monitor.
         let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 5.0), vec2(22.0, 22.0));
-        let resp = ui.interact(r, egui::Id::new((prefix, "btn-editor")), Sense::click()).on_hover_text(tl!("Button Editor"));
+        let resp = ui.interact(r, egui::Id::unique((prefix, "btn-editor")), Sense::click()).on_hover_text(tl!("Button Editor"));
         app.auto.add(&format!("{prefix}.transport.editor"), r, "Button Editor");
         icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
         let mut edited_hidden = hidden.clone();
@@ -1008,8 +1055,8 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     }
     if !fit.overflow.is_empty() {
         let rect = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(TRANSPORT_BUTTON, TRANSPORT_BUTTON));
-        let response = ui.interact(rect, egui::Id::new((prefix, "transport-more")), Sense::click()).on_hover_text(tl!("More transport controls"));
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("More transport controls")));
+        let response = ui.interact(rect, egui::Id::unique((prefix, "transport-more")), Sense::click()).on_hover_text(tl!("More transport controls"));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("More transport controls")));
         if response.hovered() {
             ui.painter().rect_filled(rect, 4.0, t.hover);
         }
@@ -1040,9 +1087,10 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     }
 }
 
+/// Draw one transport button with a unique id, automation registration, hover fill, proxy accent and a larger play icon; returns whether it was clicked.
 fn transport_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, prefix: &str, icon: Icon, command: &str, label: &str) -> bool {
     let t = app.tokens;
-    let response = ui.interact(rect, egui::Id::new((prefix, command)), Sense::click()).on_hover_text(label);
+    let response = ui.interact(rect, egui::Id::unique((prefix, command)), Sense::click()).on_hover_text(label);
     app.auto.add_response(&format!("{prefix}.transport.{command}"), &response, label);
     if response.hovered() {
         ui.painter().rect_filled(rect, 4.0, t.hover);

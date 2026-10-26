@@ -50,6 +50,76 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
+/// Egui memory key of the open Delete Redoable Actions confirmation.
+const CONFIRM_DELETE_REDOABLE: &str = "history-delete-redoable";
+
+/// The History panel's ≡ menu: Delete Redoable Actions and Clear History (automation ids
+/// `panel.menu.History.deleteRedoable` and `panel.menu.History.clear`). Returns true to close it.
+pub fn history_panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
+    let ctx = ui.ctx().clone();
+    let mut close = false;
+    for (id, label, command) in [("deleteRedoable", tl!("Delete Redoable Actions"), "history.deleteRedoable"), ("clear", tl!("Clear History"), "history.clear")]
+    {
+        let r = ui.add_enabled(app.session.is_enabled(command), egui::Button::new(label));
+        app.auto.add_response(&format!("panel.menu.History.{id}"), &r, label);
+        if r.clicked() {
+            if let Err(e) = crate::menus::invoke(app, &ctx, command, serde_json::json!({})) {
+                app.ui.status = e;
+            }
+            close = true;
+        }
+    }
+    close
+}
+
+/// Delete Redoable Actions from the panel menu or a key (no parameters) asks for OK first, as in
+/// Premiere. Returns None for other ids, and for calls with parameters, which run the command.
+pub fn route_history(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &serde_json::Value) -> Option<Result<serde_json::Value, String>> {
+    if id != "history.deleteRedoable" || !params.as_object().is_none_or(|m| m.is_empty()) {
+        return None;
+    }
+    if !app.session.history.can_redo() {
+        return Some(Err("nothing to redo".into()));
+    }
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CONFIRM_DELETE_REDOABLE), true));
+    Some(Ok(serde_json::json!({"dialog": "deleteRedoable"})))
+}
+
+/// The Delete Redoable Actions confirmation (automation ids `history.deleteRedoable.cancel` and
+/// `history.deleteRedoable.ok`). It closes by itself when nothing is left to redo.
+pub fn history_dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let key = egui::Id::unique(CONFIRM_DELETE_REDOABLE);
+    if !ctx.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) {
+        return;
+    }
+    let mut close = !app.session.history.can_redo();
+    egui::Window::new(tl!("Delete Redoable Actions"))
+        .id(key.with("window"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| {
+            ui.label(tl!("Delete the dimmed actions after the current state? They cannot be redone."));
+            ui.horizontal(|ui| {
+                let r = ui.button(tl!("Cancel"));
+                app.auto.add("history.deleteRedoable.cancel", r.rect, "Cancel");
+                close |= r.clicked();
+                let r = ui.button(tl!("OK"));
+                app.auto.add("history.deleteRedoable.ok", r.rect, "OK");
+                if r.clicked() {
+                    if let Err(e) = app.session.execute("history.deleteRedoable", serde_json::json!({})) {
+                        app.ui.status = e.to_string();
+                    }
+                    close = true;
+                }
+            });
+        });
+    if close || crate::widgets::escape_closes(ctx) {
+        ctx.data_mut(|d| d.remove::<bool>(key));
+    }
+}
+
 /// The marker colours of the Markers panel filter (each chip stands for the labels that share its
 /// marker colour).
 pub const MARKER_FILTER: [filmcraft_project::Label; 7] = {

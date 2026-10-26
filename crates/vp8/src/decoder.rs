@@ -9,12 +9,22 @@ use crate::error::{Error, Result, ensure};
 use crate::header::{EntropyContext, FrameHeader, FrameTag, LfDeltas, Segmentation, read_header};
 use crate::loopfilter::{self, Kind, Params};
 use crate::predict::{self, RefPlane};
-use crate::spec_tables::*;
-use crate::tables::*;
+use crate::spec_tables::{
+    AC_QLOOKUP, BILINEAR_FILTERS, BMODE_PROBS, COEFF_BANDS, DC_QLOOKUP, KF_BMODE_PROBS, KF_UV_MODE_PROBS, KF_YMODE_PROBS, MODE_CONTEXTS, MVPARTITION_PROBS,
+    SIXTAP_FILTERS, SUB_MV_REF_PROBS,
+};
+use crate::tables::{
+    ABOVE_4X4, B_DC_PRED, B_HE_PRED, B_PRED, B_TM_PRED, B_VE_PRED, BMODE_TREE, CAT_BASE, COEFF_TREE, DC_PRED, DCT_0, DCT_4, DCT_CAT1, DCT_EOB, H_PRED,
+    KF_YMODE_TREE, LEFT_4X4, MV_NEAR, MV_NEAREST, MV_NEW, MV_REF_TREE, MV_SPLIT, MV_ZERO, MVP_BITS, MVP_IS_SHORT, MVP_SHORT, MVP_SIGN, MVPARTITION_TREE, PCAT,
+    SEGMENT_TREE, SMALL_MV_TREE, SPLIT_COUNTS, SPLIT_MAPS, SUB_MV_REF_TREE, TM_PRED, UV_MODE_TREE, V_PRED, YMODE_TREE, ZERO_4X4, ZIGZAG,
+};
 use crate::transform;
 
 /// Largest frame dimension in macroblocks (14-bit sizes).
 const MAX_MBS: usize = 16384 / 16 + 1;
+/// Maximum padded luma samples retained by one VP8 reference picture (about 8K UHD).
+/// 2^26 luma samples: 8192x8192, above every VP8 frame a camera or encoder writes (8192x4320 is 35M).
+const MAX_LUMA_SAMPLES: usize = 1 << 26;
 
 /// A reconstructed frame: planes sized to whole macroblocks.
 #[derive(Clone)]
@@ -162,14 +172,18 @@ impl Decoder {
     /// (`show_frame`), `None` for a hidden frame (an altref).
     pub fn decode(&mut self, data: &[u8], pts: i64) -> Result<Option<Picture>> {
         let tag = FrameTag::parse(data)?;
+        ensure!(tag.first_part_size > 0, "empty first partition");
         if tag.key_frame {
             ensure!(tag.width > 0 && tag.height > 0, "key frame of size {}x{}", tag.width, tag.height);
             let (w, h) = (usize::from(tag.width), usize::from(tag.height));
+            let (mb_w, mb_h) = (w.div_ceil(16), h.div_ceil(16));
+            let samples = mb_w.checked_mul(16).and_then(|w| w.checked_mul(mb_h)).and_then(|h| h.checked_mul(16));
+            ensure!(samples.is_some_and(|n| n <= MAX_LUMA_SAMPLES), "frame size {}x{} exceeds the decoder memory limit", tag.width, tag.height);
             if w != self.width || h != self.height {
                 self.width = w;
                 self.height = h;
-                self.mb_w = w.div_ceil(16);
-                self.mb_h = h.div_ceil(16);
+                self.mb_w = mb_w;
+                self.mb_h = mb_h;
                 self.seg_map = vec![0; self.mb_w * self.mb_h];
             }
             // key frame defaults (9.3, 9.4, 9.7, 13.4, 16.1, 17.2)
@@ -373,7 +387,7 @@ impl Decoder {
                     predict::predict_block(&mut frame.u, cs, px / 2, py / 2, 8, uv_mode);
                     predict::predict_block(&mut frame.v, cs, px / 2, py / 2, 8, uv_mode);
                 } else {
-                    let Some(r) = refs.get(usize::from(info.ref_frame) - 1).and_then(|r| r.as_deref()) else {
+                    let Some(r) = refs.get(usize::from(info.ref_frame) - 1).and_then(Option::as_deref) else {
                         return Err(Error::MissingReference(format!("reference frame {}", info.ref_frame)));
                     };
                     predict_inter_mb(r, &mut frame, mb_x, mb_y, &info, filters, full_pixel);

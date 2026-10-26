@@ -27,6 +27,10 @@ pub const MAX_CHUNK_CHARS: usize = 400;
 const MAX_DICT_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum number of dictionary entries.
 const MAX_DICT_ENTRIES: usize = 500_000;
+/// Most ARPAbet symbols retained for one dictionary pronunciation.
+const MAX_PRONUNCIATION_PHONES: usize = 256;
+/// Long unknown words are not useful narration and can make suffix fallback recurse repeatedly.
+const MAX_LETTER_TO_SOUND_CHARS: usize = 512;
 /// Maximum number of overrides honoured (excess ignored, not an error).
 const MAX_OVERRIDES: usize = 1_000;
 /// Maximum length of one override value (longer ones ignored).
@@ -98,11 +102,15 @@ impl Lexicon {
                 skipped += 1;
                 continue;
             };
-            let phones: Vec<&str> = parts.collect();
+            let phones: Vec<&str> = parts.by_ref().take(MAX_PRONUNCIATION_PHONES + 1).collect();
             if phones.is_empty() {
                 if had_comment {
                     continue;
                 }
+                skipped += 1;
+                continue;
+            }
+            if phones.len() > MAX_PRONUNCIATION_PHONES {
                 skipped += 1;
                 continue;
             }
@@ -298,19 +306,34 @@ fn flush_sentence(sentence: &mut Vec<Token>, chunks: &mut Vec<Chunk>, lex: &Lexi
 /// Split a phoneme string longer than [`MAX_CHUNK_CHARS`] at the last `,` `;` `:`
 /// before the limit, else at the last space, else hard-split at the limit.
 fn split_long_chunk(s: String) -> Vec<String> {
-    if s.chars().count() <= MAX_CHUNK_CHARS {
-        return vec![s];
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while start < s.len() {
+        let rest = &s[start..];
+        let Some((limit, _)) = rest.char_indices().nth(MAX_CHUNK_CHARS) else {
+            let piece = rest.trim().to_string();
+            if !piece.is_empty() {
+                out.push(piece);
+            }
+            break;
+        };
+        let head = &rest[..limit];
+        let cut = head
+            .char_indices()
+            .rev()
+            .find(|&(_, c)| matches!(c, ',' | ';' | ':'))
+            .map(|(i, _)| i + 1)
+            .or_else(|| head.rfind(' ').map(|i| i + 1))
+            .unwrap_or(limit);
+        let piece = head[..cut].trim_end();
+        if !piece.is_empty() {
+            out.push(piece.to_string());
+        }
+        start += cut;
+        while s.get(start..).and_then(|rest| rest.chars().next()).is_some_and(char::is_whitespace) {
+            start += s[start..].chars().next().map(char::len_utf8).unwrap_or(0);
+        }
     }
-    let limit = s.char_indices().map(|(i, _)| i).nth(MAX_CHUNK_CHARS).unwrap_or(s.len());
-    let head_boundary = s.get(..limit).and_then(|head| {
-        head.char_indices().rev().find(|&(_, c)| matches!(c, ',' | ';' | ':')).map(|(i, _)| i + 1).or_else(|| head.rfind(' ').map(|i| i + 1)).or(Some(limit))
-    });
-    let Some(cut) = head_boundary else { return vec![s] };
-    let head = s.get(..cut).unwrap_or("").trim_end().to_string();
-    let tail = s.get(cut..).unwrap_or("").trim_start().to_string();
-    let mut out = vec![head];
-    out.extend(split_long_chunk(tail));
-    out.retain(|p| !p.is_empty());
     out
 }
 
@@ -604,7 +627,7 @@ fn morphology(word: &str, lex: &Lexicon) -> Option<String> {
         }
     }
     // -ing (stem may need its silent e back: making → make).
-    let ing_stems: [Option<String>; 2] = [strip_suffix(word, "ing").map(|s| s.to_string()), strip_suffix(word, "ing").map(|s| format!("{s}e"))];
+    let ing_stems: [Option<String>; 2] = [strip_suffix(word, "ing").map(ToString::to_string), strip_suffix(word, "ing").map(|s| format!("{s}e"))];
     for stem in ing_stems.into_iter().flatten() {
         let stem = stem.as_str();
         if let Some(pron) = lex.pronunciations(&stem.to_uppercase())
@@ -697,8 +720,8 @@ fn past_ed(last: &Phone) -> &'static str {
 /// doubled consonants, soft c/g, `y` as vowel; primary stress on the first
 /// syllable (on the vowel before -tion/-sion). Always pronounceable.
 fn letter_to_sound(word: &str) -> Option<String> {
-    let letters: Vec<char> = word.chars().filter(|c| c.is_ascii_alphabetic()).collect();
-    if letters.is_empty() {
+    let letters: Vec<char> = word.chars().filter(char::is_ascii_alphabetic).collect();
+    if letters.is_empty() || letters.len() > MAX_LETTER_TO_SOUND_CHARS {
         return None;
     }
     // -ture / -sure endings (nature, measure): the e belongs to the suffix, so it
@@ -741,10 +764,9 @@ fn letter_to_sound(word: &str) -> Option<String> {
     let mut i = 0usize;
     while i < n {
         let Some(rest) = chars.get(i..) else { break };
-        let rest_str: String = rest.iter().collect();
         let at_start = i == 0;
         // Multi-letter rules first (longest match wins).
-        if rest_str.ends_with("tion") && rest_str.len() == 4 {
+        if rest.len() == 4 && rest.iter().copied().eq("tion".chars()) {
             // The vowel before the suffix takes the primary stress.
             if let Some(&last) = vowel_positions.last()
                 && let Some(v) = out.get_mut(last)
@@ -756,7 +778,7 @@ fn letter_to_sound(word: &str) -> Option<String> {
             out.push("n".into());
             break;
         }
-        if rest_str.ends_with("sion") && rest_str.len() == 4 {
+        if rest.len() == 4 && rest.iter().copied().eq("sion".chars()) {
             if let Some(&last) = vowel_positions.last()
                 && let Some(v) = out.get_mut(last)
             {
@@ -767,35 +789,35 @@ fn letter_to_sound(word: &str) -> Option<String> {
             out.push("n".into());
             break;
         }
-        if rest_str.starts_with("sch") {
+        if rest.starts_with(&['s', 'c', 'h']) {
             out.push("s".into());
             out.push("k".into());
             i += 3;
             continue;
         }
-        if rest_str == "sten" {
+        if rest == ['s', 't', 'e', 'n'] {
             // listen
             out.push("s".into());
             out.push("ə".into());
             out.push("n".into());
             break;
         }
-        if rest_str == "gue" {
+        if rest == ['g', 'u', 'e'] {
             out.push("ɡ".into());
             break;
         }
-        if rest_str == "que" {
+        if rest == ['q', 'u', 'e'] {
             out.push("k".into());
             break;
         }
-        if rest_str.starts_with("ough") {
+        if rest.starts_with(&['o', 'u', 'g', 'h']) {
             // A famously irregular group; pick the "thought" vowel, f when final.
             out.push("ɔ".into());
-            if rest_str == "ough" {
+            if rest == ['o', 'u', 'g', 'h'] {
                 out.push("f".into());
                 break;
             }
-            if rest_str.starts_with("ought") {
+            if rest.starts_with(&['o', 'u', 'g', 'h', 't']) {
                 out.push("t".into());
                 i += 5;
                 continue;
@@ -803,13 +825,13 @@ fn letter_to_sound(word: &str) -> Option<String> {
             i += 3;
             continue;
         }
-        if rest_str.starts_with("gu") && rest_str.len() > 2 {
+        if rest.starts_with(&['g', 'u']) && rest.len() > 2 {
             // The u is silent before a vowel (guard, guess).
             out.push("ɡ".into());
             i += 2;
             continue;
         }
-        if rest_str.starts_with("ps") && at_start {
+        if rest.starts_with(&['p', 's']) && at_start {
             out.push("s".into());
             i += 2;
             continue;
@@ -1171,6 +1193,18 @@ PERCENT  P ER0 S EH1 N T
     }
 
     #[test]
+    fn skips_an_unreasonably_long_dictionary_pronunciation() {
+        let mut input = String::from("GOOD  AE1\nTOO_LONG");
+        for _ in 0..=MAX_PRONUNCIATION_PHONES {
+            input.push_str(" AE1");
+        }
+        input.push('\n');
+        let lex = Lexicon::parse_cmudict(input.as_bytes()).unwrap();
+        assert_eq!(lex.len(), 1);
+        assert_eq!(lex.skipped(), 1);
+    }
+
+    #[test]
     fn refuses_oversized_dictionaries() {
         let oversized = vec![b'a'; MAX_DICT_BYTES + 1];
         assert!(matches!(Lexicon::parse_cmudict(&oversized), Err(LexError::TooLarge)));
@@ -1332,6 +1366,29 @@ PERCENT  P ER0 S EH1 N T
                 p.ends_with(',') || p.ends_with(';') || p.ends_with(':') || p.ends_with('w') || p.ends_with("ʌn") || p.ends_with("tˈu"),
                 "bad split: {p:?}"
             );
+        }
+    }
+
+    #[test]
+    fn chunk_splitting_is_iterative_for_many_chunks() {
+        let input = "a".repeat(MAX_CHUNK_CHARS * 2_000);
+        let chunks = split_long_chunk(input);
+        assert_eq!(chunks.len(), 2_000);
+        assert!(chunks.iter().all(|chunk| chunk.len() == MAX_CHUNK_CHARS));
+    }
+
+    #[test]
+    fn letter_to_sound_refuses_an_absurdly_long_unknown_word() {
+        assert!(letter_to_sound(&"ture".repeat(MAX_LETTER_TO_SOUND_CHARS)).is_none());
+    }
+
+    #[test]
+    fn am_reads_the_letter_name_not_the_article() {
+        for text in ["At 9:00 a.m.", "At 9:00am"] {
+            let chunks = phonemize(text, Lang::EnUs, &test_lex(), &Overrides::default()).unwrap();
+            let joined = format!("{chunks:?}");
+            assert!(joined.contains("ˈA"), "{text}: {joined}");
+            assert!(!joined.contains('ə'), "{text}: {joined}");
         }
     }
 

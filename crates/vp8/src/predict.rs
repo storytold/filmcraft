@@ -6,7 +6,7 @@
 //! row and 129 below it). Inter prediction reads a reference plane extended infinitely by
 //! repeating its edge pixels.
 
-use crate::tables::*;
+use crate::tables::{B_HD_PRED, B_HE_PRED, B_HU_PRED, B_LD_PRED, B_RD_PRED, B_TM_PRED, B_VE_PRED, B_VL_PRED, B_VR_PRED, H_PRED, TM_PRED, V_PRED};
 
 /// A pixel of the current frame for intra prediction, with the out-of-frame values of section 12.
 #[inline]

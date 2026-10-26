@@ -329,7 +329,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             actions.push(Action::Run("tts.preview", json!({"sample": true, "voice": d.voice, "pitch": d.pitch.id(), "pace": d.pace}), true));
         }
         ui.add_space(8.0);
-        let (hr, open) = crate::widgets::section_header(ui, egui::Id::new("tts-advanced"), "Advanced", d.advanced_open, &t, true);
+        let (hr, open) = crate::widgets::section_header(ui, egui::Id::unique("tts-advanced"), "Advanced", d.advanced_open, &t, true);
         auto.add("tts.advanced", visible(ui, hr.rect), "Advanced");
         d.advanced_open = open;
         if open {
@@ -378,7 +378,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             .desired_width(w)
             .desired_rows(8)
             .char_limit(filmcraft_tts::MAX_TEXT_BYTES);
-        let r = ui.add(te);
+        let r = crate::widgets::accessible_name(ui.add(te), "Text");
         auto.add("tts.text", visible(ui, r.rect), "Text");
     });
 
@@ -445,7 +445,7 @@ fn label(ui: &mut egui::Ui, t: &Tokens, text: &str) {
 
 #[allow(clippy::too_many_arguments)]
 fn button(ui: &mut egui::Ui, t: &Tokens, r: Rect, icon: Icon, text: &str, primary: bool, active: bool, id: &str) -> egui::Response {
-    let resp = ui.interact(r, egui::Id::new(id), Sense::click());
+    let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
     let p = ui.painter();
     let (bg, fg) = match (primary, active) {
         (true, true) => (if resp.hovered() { t.accent_hover } else { t.accent }, egui::Color32::WHITE),

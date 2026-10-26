@@ -17,8 +17,9 @@ fn floating_rect(group: &dock::Floating, screen: Rect) -> Rect {
     ))
 }
 
+/// The single stable id holding an in-flight docked-panel drag across frames.
 fn drag_id() -> egui::Id {
-    egui::Id::new("dock-panel-drag")
+    egui::Id::unique("dock-panel-drag")
 }
 
 pub(crate) fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
@@ -97,12 +98,23 @@ impl FilmcraftApp {
             Action::Activate { panel } => Some(*panel),
             _ => None,
         };
+        // a panel closed while floating remembers where; closed while docked, it forgets (#1985)
+        let closing = match &action {
+            Action::Close { panel } => Some((*panel, self.ui.floating.iter().find(|g| g.panels.contains(panel)).map(|g| g.rect))),
+            _ => None,
+        };
         self.commit_dock(|shared| {
             crate::dock_shared::check_last_docked(shared, &action)?;
             shared.apply(action).map_err(|error| error.to_string())
         })?;
         if let Some(panel) = reveal {
             self.pending_panel_raise = Some(panel);
+        }
+        if let Some((panel, rect)) = closing {
+            self.ui.closed_floating.retain(|(p, _)| *p != panel);
+            if let Some(rect) = rect {
+                self.ui.closed_floating.push((panel, rect));
+            }
         }
         if relocating
             || self.ui.keys.maximized.is_some_and(|panel| !self.ui.dock.contains(panel) && !self.ui.floating.iter().any(|group| group.panels.contains(&panel)))
@@ -159,6 +171,7 @@ impl FilmcraftApp {
         true
     }
 
+    /// Floating group indexes in layer z-order; groups without a layer sort last.
     fn floating_order(&self, ctx: &egui::Context) -> Vec<usize> {
         let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
         let mut order: Vec<_> = (0..self.ui.floating.len()).collect();
@@ -168,7 +181,7 @@ impl FilmcraftApp {
                 .get(*index)
                 .and_then(|group| group.panels.first())
                 .and_then(|panel| {
-                    let id = egui::Id::new(("floating-panel", panel.id()));
+                    let id = egui::Id::unique(("floating-panel", panel.id()));
                     layers.iter().position(|layer| layer.id == id)
                 })
                 .unwrap_or(usize::MAX)
@@ -176,13 +189,15 @@ impl FilmcraftApp {
         order
     }
 
+    /// Lay out the dock area and floating groups; while a panel is maximized a temporary one-panel tree is drawn and the saved dock is left untouched, and a
+    /// pending panel raise moves its floating layer to the top.
     pub(crate) fn dock_area(&mut self, ui: &mut egui::Ui, body: Rect) {
         let t = self.tokens;
         let ctx = ui.ctx().clone();
         if let Some(panel) = self.pending_panel_raise.take()
             && let Some(owner) = self.ui.floating.iter().find(|group| group.panels.contains(&panel)).and_then(|group| group.panels.first())
         {
-            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating-panel", owner.id()))));
+            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::unique(("floating-panel", owner.id()))));
         }
         let maximized =
             self.ui.keys.maximized.filter(|panel| self.ui.dock.contains(*panel) || self.ui.floating.iter().any(|group| group.panels.contains(panel)));
@@ -271,23 +286,24 @@ impl FilmcraftApp {
                 DockAction::PanelMenu(panel, pos) => {
                     let frame = ctx.cumulative_frame_nr();
                     ctx.data_mut(|data| {
-                        data.insert_temp(egui::Id::new("panel-menu"), (panel, pos));
-                        data.insert_temp(egui::Id::new("panel-menu-opened"), frame);
+                        data.insert_temp(egui::Id::unique("panel-menu"), (panel, pos));
+                        data.insert_temp(egui::Id::unique("panel-menu-opened"), frame);
                     });
                 }
             }
         }
         self.panel_drag(&ctx, body, &targets);
         panels::panel_menu_popup(self, ui);
-        self.cancel_value_drag(ui.ctx());
     }
 
+    /// Draw one floating group on the middle layer, clamped on-screen with a minimum size; register its move/resize automation ids and submit `MoveFloating`
+    /// for a drag or resize.
     fn floating_group(&mut self, ctx: &egui::Context, index: usize, seqs: &dock::SeqTabs, actions: &mut Vec<DockAction>) -> Option<DropTarget<PanelKind>> {
         let floating = self.ui.floating.get(index)?.clone();
         let panel = *floating.panels.first()?;
         let rect = floating_rect(&floating, ctx.content_rect());
         let t = self.tokens;
-        let id = egui::Id::new(("floating-panel", panel.id()));
+        let id = egui::Id::unique(("floating-panel", panel.id()));
         let mut output = None;
         egui::Area::new(id).order(egui::Order::Middle).fixed_pos(rect.min).constrain(false).interactable(true).show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
@@ -312,7 +328,7 @@ impl FilmcraftApp {
             ui.painter().rect_stroke(rect, t.radius, Stroke::new(1.0, t.focus), StrokeKind::Outside);
             let grip = Rect::from_min_max(rect.max - vec2(14.0, 14.0), rect.max);
             let response = ui.interact(grip, id.with("resize"), Sense::click_and_drag());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), tl!("Resize floating panel")));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), tl!("Resize floating panel")));
             self.auto.add_response(&format!("panel.float.{index}.resize"), &response, "Resize floating panel");
             for step in 0..3 {
                 let offset = 4.0 + step as f32 * 4.0;
@@ -338,6 +354,8 @@ impl FilmcraftApp {
         output
     }
 
+    /// Continue a docked panel drag: cancel on Escape, focus loss or an absent press/release, discard stale panel ids, prefer workspace-edge drops, and treat
+    /// Command as force-float.
     fn panel_drag(&mut self, ctx: &egui::Context, body: Rect, targets: &[DropTarget<PanelKind>]) {
         let Some(panel) = ctx.data(|data| data.get_temp::<PanelKind>(drag_id())) else { return };
         let canceled =
@@ -350,7 +368,7 @@ impl FilmcraftApp {
         let force_float = ctx.input(|input| input.modifiers.command);
         let edge = (!force_float).then(|| workspace_edge(body, pos, targets)).flatten();
         let proposal = (!force_float && edge.is_none()).then(|| resolve_drop(&panel, pos, targets)).flatten();
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("dock-drop")));
         let t = self.tokens;
         if let Some((_, _, preview)) = edge {
             painter.rect_filled(preview.shrink(2.0), t.radius, t.focus.gamma_multiply(0.2));

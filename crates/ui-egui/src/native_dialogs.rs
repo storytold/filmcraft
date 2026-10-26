@@ -5,7 +5,7 @@
 //! the desktop app on Linux, where the XDG portal call would otherwise hold the UI thread until the
 //! user chooses, and GNOME offers to force-quit the window after about five seconds) gets the
 //! dialog and answers on a channel; the frame loop keeps running, and the continuation runs on the
-//! frame the answer arrives ([`FilmcraftApp::poll_native_dialog`]). Without it the host's
+//! frame the answer arrives (`FilmcraftApp::poll_native_dialog`). Without it the host's
 //! synchronous pickers (`pick_files`, `pick_save_as`, …) are called and the continuation runs at
 //! once, as before: headless tests, the control channel's stand-ins and other hosts are unchanged.
 //!

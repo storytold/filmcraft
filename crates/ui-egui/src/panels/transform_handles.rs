@@ -277,7 +277,7 @@ fn changes(d: &Drag, effect: &str, cur: Pos2) -> Vec<(&'static str, Value)> {
 }
 
 /// The resize cursor for a handle in direction `v` from the box's centre.
-fn resize_cursor(v: egui::Vec2) -> CursorIcon {
+pub(crate) fn resize_cursor(v: egui::Vec2) -> CursorIcon {
     let deg = v.y.atan2(v.x).to_degrees().rem_euclid(180.0);
     if !(22.5..157.5).contains(&deg) {
         CursorIcon::ResizeHorizontal
@@ -398,7 +398,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         return;
     }
     let mut actions: Vec<(String, Value)> = Vec::new();
-    let id = egui::Id::new("program-transform");
+    let id = egui::Id::unique("program-transform");
     let drag_id = id.with("drag");
     let double = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
     // the monitor around the picture as well as on it (its clip reaches past the picture area)

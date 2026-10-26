@@ -84,7 +84,11 @@ impl Default for RenderOptions {
 }
 
 /// Output size for a sequence at a scale.
+///
+/// A non-finite or non-positive scale is invalid and falls back to 1.0 rather than being cast to a
+/// zero pixel count (which would silently collapse the frame to 1x1).
 pub fn output_size(seq: &Sequence, scale: f32) -> (usize, usize) {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     (((seq.settings.width as f32 * scale).round() as usize).max(1), ((seq.settings.height as f32 * scale).round() as usize).max(1))
 }
 

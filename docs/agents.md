@@ -23,6 +23,7 @@ and write wherever the user can.
 
 ```sh
 cargo build --release -p filmcraft-cli -p filmcraft
+export FILMCRAFT_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 ./target/release/filmcraft --control 9876 &      # only for the bridge server
 claude                                           # approve the project MCP servers when asked
 ```
@@ -36,6 +37,16 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 ```json
 { "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
 ```
+
+### Effect parameter replies
+
+`effects.setParam` returns `{"keyframes": n, "param": id, "value": value}` on success.
+The keyframe count is zero for a static parameter: this is a successful static edit,
+not a failure. `param` identifies the edited parameter and `value` reports the accepted
+value; a choice supplied by name is returned as its numeric option index. An animated
+edit reports the value written at the requested time, rather than the static fallback.
+For example, setting opacity `blend` to `"Screen"` returns
+`{"keyframes": 0, "param": "blend", "value": 8}`.
 
 ### From an installed release
 
@@ -123,8 +134,9 @@ progress and stop it:
 - `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
   deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
   no response, as the MCP cancellation utility asks.
-- Without `wait` the command returns `{job, path}` at once, as before: poll `jobs.list` and stop it
-  with `jobs.cancel`. Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
+- Without `wait` the command returns `{job, path, poll: "jobs.list", cancel: "jobs.cancel"}` at
+  once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
+  with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
@@ -133,29 +145,31 @@ progress and stop it:
 ## 2. Control channel
 
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one
-JSON request per line and get one JSON reply per line. Full method table:
+JSON request per line and get one JSON reply per line. Set a fresh `FILMCRAFT_CONTROL_TOKEN` for the
+desktop session as above; the CLI / MCP bridge must inherit the same variable. Raw requests must
+include it as `token` on every line (replace the placeholders below). Full setup and method table:
 [control-protocol.md](control-protocol.md).
 
 ```jsonc
-{"id":1,"method":"engine.commands"}
-{"id":2,"method":"engine.execute","params":{"command":"file.openDemoProject"}}
-{"id":3,"method":"engine.execute","params":{"command":"playhead.set","params":{"seconds":2}}}
-{"id":4,"method":"engine.execute","params":{"command":"sequence.addEdit"}}
-{"id":5,"method":"engine.execute","params":{"command":"effects.apply","params":{"effect":"Gaussian Blur"}}}
-{"id":6,"method":"ui.elements","params":{"prefix":"tools."}}
-{"id":7,"method":"ui.click","params":{"id":"tools.Razor"}}
-{"id":8,"method":"ui.key","params":{"key":"Cmd+Z"}}
-{"id":9,"method":"ui.screenshot","params":{"path":"/tmp/timeline.png","panel":"Timeline"}}
+{"id":1,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.commands"}
+{"id":2,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.execute","params":{"command":"file.openDemoProject"}}
+{"id":3,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.execute","params":{"command":"playhead.set","params":{"seconds":2}}}
+{"id":4,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.execute","params":{"command":"sequence.addEdit"}}
+{"id":5,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.execute","params":{"command":"effects.apply","params":{"effect":"Gaussian Blur"}}}
+{"id":6,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"ui.elements","params":{"prefix":"tools."}}
+{"id":7,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"ui.click","params":{"id":"tools.Razor"}}
+{"id":8,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"ui.key","params":{"key":"Cmd+Z"}}
+{"id":9,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"ui.screenshot","params":{"path":"/tmp/timeline.png","panel":"Timeline"}}
 ```
 
 Replies look like `{"id":4,"ok":true,"result":{"cuts":2}}` or `{"id":7,"ok":false,"error":"…"}`.
 Minimal client:
 
 ```python
-import json, socket
+import json, os, socket
 s = socket.create_connection(("127.0.0.1", 9876)); f = s.makefile("rw")
 def call(method, **params):
-    f.write(json.dumps({"id": 1, "method": method, "params": params}) + "\n"); f.flush()
+    f.write(json.dumps({"id": 1, "token": os.environ["FILMCRAFT_CONTROL_TOKEN"], "method": method, "params": params}) + "\n"); f.flush()
     return json.loads(f.readline())
 print(call("engine.execute", command="sequence.inspect"))
 ```

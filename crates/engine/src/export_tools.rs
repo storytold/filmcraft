@@ -235,6 +235,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.bitrate_kbps = v;
         settings.adaptive_bitrate = None;
     }
+    if let Some(v) = crate::commands::checked_u32_p(p, "maxThreads", cmd)? {
+        settings.max_threads = v;
+    }
     if let Some(v) = crate::commands::checked_u32_p(p, "maxBitrateKbps", cmd)? {
         settings.max_bitrate_kbps = Some(v);
     }
@@ -385,10 +388,11 @@ pub fn default_export_dir(s: &Session) -> PathBuf {
     crate::temp_dir()
 }
 
-fn file_safe(n: &str) -> String {
+/// Convert project-derived display text into exactly one safe output filename component.
+pub fn file_safe(n: &str) -> String {
     let s: String = n.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
     let s = s.trim().to_string();
-    if s.is_empty() { "Export".into() } else { s }
+    if s.is_empty() || matches!(s.as_str(), "." | "..") { "Export".into() } else { s }
 }
 
 /// `path` with the settings' extension (added when missing; image sequences keep theirs).
@@ -548,6 +552,12 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out = json!({"job": id, "path": path});
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
+    }
+    if !wait {
+        // where the job can be followed (#1544: it is not in `export.queue.list`, which only lists
+        // the Export Queue, so agents looked there and found nothing)
+        out["poll"] = json!("jobs.list");
+        out["cancel"] = json!("jobs.cancel");
     }
     if wait && let Some(j) = s.jobs.iter().find(|j| j.id == id) {
         let v = j.to_json();

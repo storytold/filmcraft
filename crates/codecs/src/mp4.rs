@@ -21,10 +21,15 @@ use crate::{CodecError, make_video_decoder};
 /// Most bytes read from one AAC access unit when probing for HE-AAC at open (8 channels × 6144 bits).
 const MAX_AAC_PROBE_UNIT: usize = 8 * 6144 / 8;
 
+struct DecodedAudioPacket {
+    samples: Vec<Vec<f32>>,
+    failed: bool,
+}
+
 struct AudioState {
     decoder: Option<PacketDecoder>,
     /// Decoded packets by sample index.
-    packets: HashMap<usize, Arc<Vec<Vec<f32>>>>,
+    packets: HashMap<usize, Arc<DecodedAudioPacket>>,
     order: Vec<usize>,
     last_decoded: Option<usize>,
 }
@@ -90,6 +95,20 @@ fn audio_starts(file: &Mp4File, bytes: &crate::Src, ti: usize, rate: u32) -> Vec
     let unit = i64::try_from((i128::from(rate) + ts - 1) / ts).unwrap_or(i64::MAX);
     let packets = stamps.iter().map(|&stamp| PacketTime { stamp, stamped: true, samples: Some(frame) });
     contiguous_starts(packets, (frame / 2).max(unit.saturating_mul(2).saturating_add(1)))
+}
+
+/// Return source-rate buffer indices overlapped by a failed packet's concealment span.
+/// Packet positions are audio frames, but duration is raw track-timescale ticks
+/// treated as a frame count here; the span is clipped to the request.
+fn failed_audio_span(packet_start: i64, request_start: i64, duration: u32, request_len: usize) -> std::ops::Range<usize> {
+    let begin = usize::try_from(packet_start.saturating_sub(request_start).max(0)).unwrap_or(usize::MAX).min(request_len);
+    let end = if duration == 0 {
+        begin
+    } else {
+        let last = packet_start.saturating_add(i64::from(duration) - 1).saturating_sub(request_start);
+        usize::try_from((i128::from(last) + 1).max(0)).unwrap_or(usize::MAX).min(request_len)
+    };
+    begin..end
 }
 
 /// HDR static metadata from the sample entry's `mdcv` / `clli` boxes (0 = unknown).
@@ -366,18 +385,18 @@ impl Mp4Source {
     }
 
     /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).
-    fn audio_packet(&self, a: &Mp4Audio, ainfo: &AudioStreamInfo, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
+    fn audio_packet(&self, a: &Mp4Audio, ainfo: &AudioStreamInfo, st: &mut AudioState, i: usize) -> crate::Result<Arc<DecodedAudioPacket>> {
         if let Some(p) = st.packets.get(&i) {
             return Ok(p.clone());
         }
         let ti = a.track;
         let track = self.file.tracks.get(ti).ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
         let entry = track.entries.first().ok_or_else(|| CodecError::Container("audio track without a sample description".into()))?;
-        let sample = track.samples.get(i).ok_or_else(|| CodecError::Container("audio packet out of range".into()))?;
+        track.samples.get(i).ok_or_else(|| CodecError::Container("audio packet out of range".into()))?;
         let pk_start = a.starts.get(i).copied().unwrap_or(0);
         let data = self.read(ti, i)?;
-        let decoded = match &entry.codec {
-            CodecConfig::Pcm(p) => decode_pcm(&data, p),
+        let (samples, failed) = match &entry.codec {
+            CodecConfig::Pcm(p) => (decode_pcm(&data, p), false),
             c => {
                 if st.decoder.is_none() {
                     st.decoder = Some(PacketDecoder::for_isobmff(c, ainfo.sample_rate)?);
@@ -398,15 +417,15 @@ impl Mp4Source {
                         }
                     }
                 }
-                let r = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, pk_start.max(0) as u64);
+                let result = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?.decode(&data, pk_start.max(0) as u64);
                 st.last_decoded = Some(i);
-                match r {
-                    Ok(v) => v,
-                    Err(_) => vec![vec![0.0; sample.duration as usize]; ainfo.channels.max(1) as usize],
+                match result {
+                    Ok(samples) => (samples, false),
+                    Err(_) => (Vec::new(), true),
                 }
             }
         };
-        let p = Arc::new(decoded);
+        let p = Arc::new(DecodedAudioPacket { samples, failed });
         st.packets.insert(i, p.clone());
         st.order.push(i);
         if st.order.len() > 4096 {
@@ -465,25 +484,39 @@ impl MediaSource for Mp4Source {
         let ainfo = self.info.audio_streams.get(stream).ok_or(MediaError::NoStream("audio"))?;
         let src_rate = ainfo.sample_rate;
         let ch = ainfo.channels.max(1) as usize;
+        let source_frames = filmcraft_media::resample_source_frames(frames, src_rate, sample_rate)?;
+        let need = source_frames.checked_add(2).ok_or_else(|| MediaError::Decode("audio source window overflows".into()))?;
+        filmcraft_media::validate_audio_buffer_shape(ch, need)?;
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
         // Map the requested window to source samples (edit list offset applied: presentation = pts + edit_offset).
         let ratio = src_rate as f64 / sample_rate as f64;
         let p0 = (start as f64 * ratio).floor() as i64;
         // (in i128: a hostile edit list can make the offset large enough to overflow i64)
         let offset = i128::from(a.offset) * i128::from(src_rate) / i128::from(track.timescale.max(1));
         let s0 = i64::try_from(i128::from(p0) - offset).unwrap_or(if offset > 0 { i64::MIN } else { i64::MAX });
-        let need = (frames as f64 * ratio).ceil() as i64 + 2;
-        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
+        let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
+        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
         let first = a.starts.partition_point(|&x| x <= s0.max(0)).saturating_sub(1);
         let mut i = first;
-        while i < track.samples.len() {
+        while let Some(sample) = track.samples.get(i) {
             let Some(&pk_start) = a.starts.get(i) else { break };
-            if pk_start >= s0.saturating_add(need) {
+            if pk_start >= s0.saturating_add(need_i64) {
                 break;
             }
             let pk = self.audio_packet(a, ainfo, &mut st, i)?;
+            if pk.failed {
+                let range = failed_audio_span(pk_start, s0, sample.duration, src.first().map_or(0, Vec::len));
+                for dst in &mut src {
+                    if let Some(span) = dst.get_mut(range.clone()) {
+                        span.fill(0.0);
+                    }
+                }
+                i += 1;
+                continue;
+            }
             for (c, dst) in src.iter_mut().enumerate() {
-                let Some(chan) = pk.get(c.min(pk.len().saturating_sub(1))) else { continue };
+                let Some(chan) = pk.samples.get(c.min(pk.samples.len().saturating_sub(1))) else { continue };
                 for (k, v) in chan.iter().enumerate() {
                     let pos = pk_start.saturating_add(k as i64).saturating_sub(s0);
                     if pos >= 0 && (pos as usize) < dst.len() {
@@ -560,7 +593,8 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
         }
         c => codec_label(c),
     };
-    Some(AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec, bits_per_sample: bits })
+    let (rate, ch) = filmcraft_media::bounded_audio_dimensions(rate, ch).ok()?;
+    Some(AudioStreamInfo { sample_rate: rate, channels: ch, codec, bits_per_sample: bits })
 }
 
 fn codec_label(c: &CodecConfig) -> String {
@@ -580,6 +614,9 @@ fn codec_label(c: &CodecConfig) -> String {
         CodecConfig::Hevc(_) => "HEVC".into(),
         CodecConfig::Vp9(c) => format!("VP9 (Profile {})", c.profile),
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"vp08" => "VP8".into(),
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"raw " => "Uncompressed RGB".into(),
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"2vuy" => "Uncompressed YUV 4:2:2".into(),
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"v210" => "Uncompressed YUV 4:2:2 10-bit".into(),
         CodecConfig::Av1(c) => format!("AV1 ({} Profile)", ["Main", "High", "Professional"].get(c.seq_profile as usize).unwrap_or(&"Main")),
         CodecConfig::Apv(a) => match filmcraft_apv::Profile::from_idc(a.profile_idc) {
             Some(p) => p.name().into(),
@@ -620,10 +657,16 @@ fn yuv_label(chroma_format_idc: u32, bits: u32) -> String {
     format!("YUV {sub} {bits}-bit")
 }
 
-/// `chroma_format_idc` and luma bit depth of an H.264 track: from the `avcC` High-profile extension
-/// (ISO/IEC 14496-15 §5.3.3), else from its first SPS. The profile alone can't say (High 4:2:2 is
-/// 8 or 10-bit, High 10 can be 8-bit).
+/// `chroma_format_idc` and luma bit depth of an H.264 track: from its first SPS, which is what the
+/// decoder decodes, else from the `avcC` High-profile extension (ISO/IEC 14496-15 §5.3.3). The
+/// extension is not trusted over the SPS: muxers have been seen writing `chroma_format` 0 (4:0:0)
+/// into it for 4:2:0 files, which labelled them "4:0:0" (#1959). The profile alone can't say (High
+/// 4:2:2 is 8 or 10-bit, High 10 can be 8-bit).
 fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
+    let from_sps = a.sps.first().and_then(|n| n.get(1..)).and_then(|rbsp| filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    if let Some(sps) = from_sps {
+        return Some((sps.chroma_format_idc, sps.bit_depth_luma));
+    }
     // reserved bits set: '111111' chroma_format, '11111' bit_depth_luma_minus8 (else not an extension)
     if !matches!(a.profile, 66 | 77 | 88)
         && let &[chroma, depth, ..] = a.ext.as_slice()
@@ -632,14 +675,26 @@ fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
     {
         return Some(((chroma & 3) as u32, (depth & 7) as u32 + 8));
     }
-    let sps = filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(a.sps.first()?.get(1..)?)).ok()?;
-    Some((sps.chroma_format_idc, sps.bit_depth_luma))
+    None
+}
+
+/// `chroma_format_idc` and luma bit depth of an HEVC track: from its first SPS, which is what the
+/// decoder decodes, else the `hvcC` record's own fields (which a muxer may leave at 0, i.e. "4:0:0").
+fn hevc_format(h: &filmcraft_isobmff::HevcConfig) -> (u32, u32) {
+    let from_sps = h.sps().first().and_then(|n| n.get(2..)).and_then(|rbsp| filmcraft_hevc::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    match from_sps {
+        Some(sps) => (sps.chroma_format_idc, sps.bit_depth_luma),
+        None => (h.chroma_format_idc as u32, h.bit_depth_luma as u32),
+    }
 }
 
 fn pixfmt_label(c: &CodecConfig) -> String {
     match c {
         CodecConfig::Avc(a) => avc_format(a).map(|(chroma, bits)| yuv_label(chroma, bits)).unwrap_or_default(),
-        CodecConfig::Hevc(h) => yuv_label(h.chroma_format_idc as u32, h.bit_depth_luma as u32),
+        CodecConfig::Hevc(h) => {
+            let (chroma, bits) = hevc_format(h);
+            yuv_label(chroma, bits)
+        }
         CodecConfig::Vp9(c) => {
             let sub = match c.chroma_subsampling {
                 2 => "4:2:2",
@@ -1061,6 +1116,84 @@ mod tests {
         assert_eq!(pixfmt_label(&avc(244, high_sps(244, 3, 10), Vec::new())), "YUV 4:4:4 10-bit");
         // an unreadable SPS and no extension: unknown, not a guess
         assert_eq!(pixfmt_label(&avc(122, vec![0x67, 122], Vec::new())), "");
+        // the SPS outranks the extension: an avcC claiming 4:0:0 for a 4:2:0 stream labels 4:2:0 (#1959)
+        assert_eq!(pixfmt_label(&avc(100, high_sps(100, 1, 8), vec![0xFC, 0xF8, 0xF8, 0])), "YUV 4:2:0 8-bit");
+        // only without a readable SPS does the extension speak for itself
+        assert_eq!(pixfmt_label(&avc(100, vec![0x67, 100], vec![0xFC, 0xF8, 0xF8, 0])), "YUV 4:0:0 8-bit");
+    }
+
+    /// An HEVC Main SPS NAL unit (ITU-T H.265 §7.3.2.2) with the given chroma format and bit depth, 64×64.
+    fn hevc_sps(chroma: u32, bits: u32) -> Vec<u8> {
+        let mut w = filmcraft_bitstream::BitWriter::new();
+        w.write_bits(0, 4); // vps id
+        w.write_bits(0, 3); // max_sub_layers_minus1
+        w.write_bits(1, 1); // temporal_id_nesting
+        // profile_tier_level: Main, level 3.1
+        w.write_bits(0, 2);
+        w.write_bits(0, 1);
+        w.write_bits(1, 5);
+        w.write_bits(0x6000_0000, 32);
+        w.write_bits(0b1001, 4);
+        w.write_bits(0, 32);
+        w.write_bits(0, 11);
+        w.write_bits(0, 1);
+        w.write_bits(93, 8);
+        w.write_ue(0); // sps id
+        w.write_ue(chroma);
+        if chroma == 3 {
+            w.write_bit(false); // separate_colour_plane
+        }
+        w.write_ue(64);
+        w.write_ue(64);
+        w.write_bits(0, 1); // conformance window
+        w.write_ue(bits - 8); // luma
+        w.write_ue(bits - 8); // chroma
+        w.write_ue(4); // log2_max_poc_lsb_minus4
+        w.write_bits(1, 1); // sub_layer_ordering_info_present
+        w.write_ue(4);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(0); // min CB 8
+        w.write_ue(1); // CTB 16
+        w.write_ue(0); // min TB 4
+        w.write_ue(2); // max TB 16
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_bits(0, 1); // scaling lists
+        w.write_bits(0, 1); // amp
+        w.write_bits(0, 1); // sao
+        w.write_bits(0, 1); // pcm
+        w.write_ue(0); // num_short_term_ref_pic_sets
+        w.write_bits(0, 1); // long_term_ref_pics_present
+        w.write_bits(0, 1); // temporal mvp
+        w.write_bits(0, 1); // strong intra smoothing
+        w.write_bits(0, 1); // vui
+        w.write_bits(0, 1); // extensions
+        w.rbsp_trailing();
+        let mut nal = vec![33 << 1, 1];
+        nal.extend(filmcraft_bitstream::escape_rbsp(&w.finish()));
+        nal
+    }
+
+    /// The hvcC's own chroma/bit-depth fields can be left at 0 by a muxer: the SPS it carries says.
+    #[test]
+    fn hevc_pixel_format_prefers_the_sps_over_the_hvcc_fields() {
+        let with_sps = |chroma: u32, bits: u32, field_chroma: u8, field_bits: u8| {
+            let arrays = vec![filmcraft_isobmff::HevcNalArray { completeness: true, nal_type: 33, nalus: vec![hevc_sps(chroma, bits)] }];
+            CodecConfig::Hevc(filmcraft_isobmff::HevcConfig {
+                general_profile_idc: 1,
+                chroma_format_idc: field_chroma,
+                bit_depth_luma: field_bits,
+                arrays,
+                ..Default::default()
+            })
+        };
+        assert_eq!(pixfmt_label(&with_sps(1, 8, 0, 0)), "YUV 4:2:0 8-bit", "hvcC fields at 0, SPS 4:2:0");
+        assert_eq!(pixfmt_label(&with_sps(2, 10, 1, 8)), "YUV 4:2:2 10-bit", "the SPS outranks the fields");
+        assert_eq!(pixfmt_label(&with_sps(3, 12, 3, 12)), "YUV 4:4:4 12-bit");
+        // no SPS in the record: its fields
+        let bare = CodecConfig::Hevc(filmcraft_isobmff::HevcConfig { general_profile_idc: 1, chroma_format_idc: 1, bit_depth_luma: 10, ..Default::default() });
+        assert_eq!(pixfmt_label(&bare), "YUV 4:2:0 10-bit");
     }
 
     /// A one-frame 32×16 ProRes MOV with the given profile, chroma format and fourcc.
@@ -1220,5 +1353,83 @@ mod he_aac_tests {
             let buf = src.audio(0, 4800, 48_000).unwrap();
             assert!(buf.channels.iter().flatten().all(|v| v.is_finite() && v.abs() <= 1.0), "media_time {media_time}");
         }
+    }
+}
+
+#[cfg(test)]
+mod corrupt_audio_tests {
+    use filmcraft_isobmff::{Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+    use filmcraft_media::MediaSource;
+
+    #[test]
+    fn failed_packet_span_matches_per_sample_silence_at_extreme_timestamps() {
+        let min = i64::MIN;
+        let max = i64::MAX;
+        for start in [min, min + 1, min + 2, -10, -1, 0, 1, 10, max - 2, max - 1, max] {
+            for request in [min, min + 1, min + 2, -10, -1, 0, 1, 10, max - 2, max - 1, max] {
+                for duration in [0, 1, 2, 5, 128] {
+                    let old: Vec<_> = (0..duration)
+                        .map(|k| start.saturating_add(i64::from(k)).saturating_sub(request))
+                        .filter(|&position| (0..8).contains(&position))
+                        .map(|position| position as usize)
+                        .collect();
+                    let range = super::failed_audio_span(start, request, duration, 8);
+                    let actual: Vec<_> = (0..8).filter(|position| range.contains(position)).collect();
+                    let expected: Vec<_> = old.into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                    assert_eq!(actual, expected, "start={start}, request={request}, duration={duration}");
+                }
+            }
+        }
+        assert_eq!(super::failed_audio_span(0, 0, u32::MAX, 128), 0..128);
+    }
+
+    #[test]
+    fn failed_aac_packet_does_not_materialize_its_hostile_duration() {
+        // AAC-LC, 48 kHz stereo. The empty access unit cannot decode.
+        let asc = vec![0x11, 0x90];
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        let track = mux.add_track(TrackConfig::new(SampleEntry::aac(asc, 2, 48_000), 48_000)).unwrap();
+        mux.write_sample(track, WriteSample { data: &[], duration: 1_000_000, composition_offset: 0, is_sync: true }).unwrap();
+        let source = super::Mp4Source::open("damaged.m4a", mux.finish().unwrap().into_inner().into()).unwrap();
+        let audio = &source.audios[0];
+        let info = &source.info.audio_streams[0];
+        let mut state = audio.state.lock().unwrap();
+        let packet = source.audio_packet(audio, info, &mut state, 0).unwrap();
+        assert!(packet.failed);
+        assert!(packet.samples.is_empty(), "failed packet must not allocate from its untrusted duration");
+        drop(state);
+
+        let window = source.audio(0, 128, 48_000).unwrap();
+        assert_eq!(window.channels.len(), 2);
+        assert!(window.channels.iter().all(|ch| ch.len() == 128 && ch.iter().all(|&v| v == 0.0)));
+    }
+
+    #[test]
+    fn failed_aac_packet_silences_overlap_independent_of_request_boundary() {
+        let rate = 48_000u32;
+        let tone: Vec<f32> = (0..8192).map(|i| 0.3 * (i as f32 * 0.13).sin()).collect();
+        let mut encoder = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 1, 64_000)).unwrap();
+        let mut units = encoder.encode(&[&tone]);
+        units.extend(encoder.flush());
+        assert!(units.len() >= 2);
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
+        let track = mux.add_track(TrackConfig::new(SampleEntry::aac(vec![0x11, 0x88], 1, rate), rate)).unwrap();
+        mux.write_sample(track, WriteSample { data: &units[0], duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        mux.write_sample(track, WriteSample { data: &units[1], duration: 400, composition_offset: 0, is_sync: true }).unwrap();
+        mux.write_sample(track, WriteSample { data: &[], duration: 1024, composition_offset: 0, is_sync: true }).unwrap();
+        let source = super::Mp4Source::open("overlap.m4a", mux.finish().unwrap().into_inner().into()).unwrap();
+        // The failed packet starts at 1024 + 400 = 1424, after 124 frames of the crossing read.
+        let crossing = source.audio(1300, 256, rate).unwrap();
+        let isolated = source.audio(1424, 132, rate).unwrap();
+        let prior_packet_len = {
+            let audio = &source.audios[0];
+            let info = &source.info.audio_streams[0];
+            let mut state = audio.state.lock().unwrap();
+            source.audio_packet(audio, info, &mut state, 1).unwrap().samples.first().map_or(0, Vec::len)
+        };
+        assert!(prior_packet_len > 400, "valid packet must overlap the failed packet");
+        assert!(crossing.channels[0][..124].iter().any(|v| v.abs() > 0.001));
+        assert!(isolated.channels[0].iter().all(|&v| v == 0.0));
+        assert_eq!(&crossing.channels[0][124..], &isolated.channels[0]);
     }
 }

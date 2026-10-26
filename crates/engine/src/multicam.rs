@@ -163,8 +163,8 @@ fn base_commands() -> Vec<CommandSpec> {
             create_multicam,
             true,
         ),
-        spec("clip.multicamEnable", "Enable", &["Clip", "Multi-Camera"], r#"{"clips":[id]?,"enabled":bool?}"#, has_selection, enable, true),
-        spec("clip.multicamFlatten", "Flatten", &["Clip", "Multi-Camera"], r#"{"clips":[id]?}"#, has_selection, flatten, true),
+        spec("clip.multicamEnable", "Enable", &["Clip", "Multi-Camera"], r#"{"clips":[id]?,"enabled":bool?}"#, has_nested_selection, enable, true),
+        spec("clip.multicamFlatten", "Flatten", &["Clip", "Multi-Camera"], r#"{"clips":[id]?}"#, has_multicam_selection, flatten, true),
         spec(
             "multicam.switchAngle",
             "Switch Multi-Camera Angle",
@@ -243,17 +243,19 @@ fn can_synchronize(s: &Session) -> std::result::Result<(), String> {
     if sel.len() < 2 { Err("select at least two clips to synchronize".into()) } else { Ok(()) }
 }
 fn has_items(s: &Session) -> std::result::Result<(), String> {
-    if s.state.project_selection.iter().any(|i| sync::project_clip(&s.project, *i).is_some()) {
+    if selected_items(s).iter().any(|i| sync::project_clip(&s.project, *i).is_some()) {
         Ok(())
     } else {
-        Err("select clips in the Project panel".into())
+        Err("select clips in the Project panel or the Timeline".into())
     }
 }
+/// Two clips or more: Merge Clips then opens its dialog, which says what is wrong with a
+/// selection it can't merge (two video clips, no audio clip) instead of a greyed-out menu item.
 fn has_two_items(s: &Session) -> std::result::Result<(), String> {
-    if s.state.project_selection.iter().filter(|i| sync::project_clip(&s.project, **i).is_some()).count() >= 2 {
+    if selected_items(s).iter().filter(|i| sync::project_clip(&s.project, **i).is_some()).count() >= 2 {
         Ok(())
     } else {
-        Err("select a video clip and audio clips in the Project panel".into())
+        Err("select a video clip and audio clips in the Project panel or the Timeline".into())
     }
 }
 
@@ -262,8 +264,28 @@ fn has_two_items(s: &Session) -> std::result::Result<(), String> {
 fn items_p(s: &Session, p: &Value) -> Vec<ItemId> {
     match p.get("items").and_then(Value::as_array) {
         Some(a) => a.iter().filter_map(|v| v.as_u64().map(ItemId)).collect(),
-        None => s.state.project_selection.clone(),
+        None => selected_items(s),
     }
+}
+
+/// The items Merge Clips and Create Multi-Camera Source Sequence work on without `items`: the
+/// clips selected in the Project panel, or, with none there, the media of the clips selected in
+/// the Timeline (with their linked partners), once each in selection order (#1362).
+pub fn selected_items(s: &Session) -> Vec<ItemId> {
+    if s.state.project_selection.iter().any(|i| sync::project_clip(&s.project, *i).is_some()) {
+        return s.state.project_selection.clone();
+    }
+    let Some(q) = s.active_sequence() else { return Vec::new() };
+    let mut out = Vec::new();
+    for c in with_links(s, &s.state.selection) {
+        if let Some((_, it)) = q.find_item(c)
+            && sync::project_clip(&s.project, it.item).is_some()
+            && !out.contains(&it.item)
+        {
+            out.push(it.item);
+        }
+    }
+    out
 }
 
 fn method_p(p: &Value, cmd: &str) -> Result<Method> {
@@ -743,6 +765,24 @@ fn switch_angle(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let n = s.edit_sequence("Switch Multi-Camera Angle", |seq, _, _| Ok(edit::multicam::set_angle(seq, &targets, angle)))?;
     Ok(json!({"angle": angle, "changed": n}))
+}
+
+/// Clip ▸ Multi-Camera ▸ Enable: the selection (with its linked clips) holds a nested sequence
+/// clip, as [`enable`] needs; the menu item is greyed out otherwise instead of failing when chosen.
+fn has_nested_selection(s: &Session) -> std::result::Result<(), String> {
+    has_selection(s)?;
+    let q = s.active_sequence().ok_or("no sequence")?;
+    let nested = with_links(s, &s.state.selection).iter().any(|c| q.find_item(*c).is_some_and(|(_, i)| s.project.sequence(i.item).is_some()));
+    if nested { Ok(()) } else { Err("select nested sequence or multi-camera clips".into()) }
+}
+
+/// Clip ▸ Multi-Camera ▸ Flatten: the selection (with its linked clips) holds an enabled
+/// multi-camera clip, as [`flatten`] needs.
+fn has_multicam_selection(s: &Session) -> std::result::Result<(), String> {
+    has_selection(s)?;
+    let q = s.active_sequence().ok_or("no sequence")?;
+    let multicam = with_links(s, &s.state.selection).iter().any(|c| q.find_item(*c).is_some_and(|(_, i)| i.multicam.is_some_and(|m| m.enabled)));
+    if multicam { Ok(()) } else { Err("select multi-camera clips to flatten".into()) }
 }
 
 fn enable(s: &mut Session, p: &Value) -> Result<Value> {

@@ -43,6 +43,8 @@ const N_FRAMES: usize = 3000;
 const FRAMES_PER_TS: usize = 2;
 const SAMPLES_PER_FRAME: usize = crate::mel::HOP;
 const MAX_TOKENS: usize = 224;
+/// More than the total alignment heads in any published Whisper architecture.
+const MAX_ALIGNMENT_HEADS: usize = 4_096;
 
 fn merr(e: candle_core::Error) -> SpeechError {
     SpeechError::Model(e.to_string())
@@ -66,11 +68,7 @@ impl Whisper {
         let gen_cfg: serde_json::Value = serde_json::from_slice(&read("generation_config.json")?).unwrap_or_default();
         let tok = Tokenizer::from_json(&String::from_utf8_lossy(&read("tokenizer.json")?))?;
         let weights = read("model.safetensors")?;
-        let alignment_heads = gen_cfg["alignment_heads"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|p| Some((p[0].as_u64()? as usize, p[1].as_u64()? as usize))).collect::<Vec<_>>())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| (cfg.decoder_layers / 2..cfg.decoder_layers).flat_map(|l| (0..cfg.decoder_attention_heads).map(move |h| (l, h))).collect());
+        let alignment_heads = alignment_heads(&cfg, &gen_cfg)?;
         let mut suppress: Vec<u32> =
             gen_cfg["suppress_tokens"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|v| v as u32)).collect()).unwrap_or_default();
         suppress.extend(tok.non_text_specials());
@@ -191,6 +189,34 @@ impl Whisper {
         let avg = sum_lp / (seq.len() + 1) as f32;
         Ok((seq, avg, no_speech))
     }
+}
+
+fn alignment_heads(cfg: &Config, generation: &serde_json::Value) -> Result<Vec<(usize, usize)>, SpeechError> {
+    let bad = |message: &str| SpeechError::Model(format!("generation_config.json: {message}"));
+    if let Some(values) = generation["alignment_heads"].as_array().filter(|values| !values.is_empty()) {
+        if values.len() > MAX_ALIGNMENT_HEADS {
+            return Err(bad("too many alignment heads"));
+        }
+        return values
+            .iter()
+            .map(|pair| {
+                let layer =
+                    pair.get(0).and_then(serde_json::Value::as_u64).and_then(|v| usize::try_from(v).ok()).ok_or_else(|| bad("invalid alignment head"))?;
+                let head =
+                    pair.get(1).and_then(serde_json::Value::as_u64).and_then(|v| usize::try_from(v).ok()).ok_or_else(|| bad("invalid alignment head"))?;
+                if layer >= cfg.decoder_layers || head >= cfg.decoder_attention_heads {
+                    return Err(bad("alignment head is outside the decoder architecture"));
+                }
+                Ok((layer, head))
+            })
+            .collect();
+    }
+    let first_layer = cfg.decoder_layers / 2;
+    let count = cfg.decoder_layers.saturating_sub(first_layer).checked_mul(cfg.decoder_attention_heads).ok_or_else(|| bad("alignment-head count overflow"))?;
+    if count > MAX_ALIGNMENT_HEADS {
+        return Err(bad("alignment-head fallback is too large"));
+    }
+    Ok((first_layer..cfg.decoder_layers).flat_map(|layer| (0..cfg.decoder_attention_heads).map(move |head| (layer, head))).collect())
 }
 
 fn softmax_at(x: &[f32], i: usize) -> f32 {
@@ -334,6 +360,27 @@ impl Transcriber for Whisper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config(layers: usize, heads: usize) -> Config {
+        Config {
+            num_mel_bins: 80,
+            d_model: 384,
+            encoder_layers: 4,
+            encoder_attention_heads: 6,
+            decoder_layers: layers,
+            decoder_attention_heads: heads,
+            max_source_positions: 1_500,
+            max_target_positions: 448,
+            vocab_size: 51_865,
+        }
+    }
+
+    #[test]
+    fn fallback_alignment_heads_are_bounded_before_collection() {
+        let error = alignment_heads(&config(usize::MAX, usize::MAX), &serde_json::Value::Null).unwrap_err();
+        assert!(error.to_string().contains("alignment-head"));
+        assert_eq!(alignment_heads(&config(4, 6), &serde_json::Value::Null).unwrap().len(), 12);
+    }
 
     #[test]
     fn repetition_guard() {

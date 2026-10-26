@@ -394,6 +394,10 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     fn decode_block(&mut self, r: usize, c: usize, sub_size: usize) -> Result<()> {
         let (ssx, ssy) = (self.fs.ssx, self.fs.ssy);
         let num_planes = self.fs.num_planes;
+        // Conformance requirement (4:2:2 has no chroma size for 4x16 and similar blocks); indexing the size tables with BLOCK_INVALID would panic.
+        if num_planes > 1 && self.fs.plane_residual_size(sub_size, 1) == BLOCK_INVALID {
+            return Err(crate::Error::Invalid("block size has no chroma size at this subsampling"));
+        }
         let mut b = Block { mi_row: r, mi_col: c, mi_size: sub_size, ..Default::default() };
         b.bw4 = NUM_4X4_BLOCKS_WIDE[sub_size] as usize;
         b.bh4 = NUM_4X4_BLOCKS_HIGH[sub_size] as usize;
