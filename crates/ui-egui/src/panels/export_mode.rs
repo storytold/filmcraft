@@ -746,8 +746,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         });
         if s.format == Format::Gif {
             row(ui, t, "", |ui| {
-                let hint = tl!("GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.");
-                let r = ui.label(hint);
+                let hint = tl!("When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.");
+                let r = ui.add(egui::Label::new(hint).wrap());
                 reg.add("export.video.alpha.hint", r.rect, hint);
             });
         }
