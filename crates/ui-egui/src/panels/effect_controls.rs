@@ -649,6 +649,38 @@ pub(crate) fn can_paste_for_shortcut(app: &FilmcraftApp) -> bool {
         }
 }
 
+/// Whether Ctrl+C has something to copy in Effect Controls: a selected keyframe, or an effect the
+/// panel would copy. The panel claims Copy only while this holds, so a pointer resting on an empty
+/// panel leaves the chord to the Timeline selection.
+pub(crate) fn can_copy_for_shortcut(app: &FilmcraftApp) -> bool {
+    if !app.ui.keyframe_selection.is_empty() {
+        return true;
+    }
+    let Some((clip, item, _)) = selected_clip(app) else { return false };
+    !selected_effect_indices(app, clip, &item.effects).is_empty()
+        || app.session.state.selected_effect.as_ref().is_some_and(|selection| selection.clip == clip && selection.index(&item.effects).is_some())
+}
+
+/// Whether Del or Clear has something to remove in Effect Controls: a selected keyframe, or a
+/// removable (non-intrinsic) effect on a clip the panel shows. Delete is bound application-wide, so
+/// claiming it with nothing to remove would swallow the edit the user meant.
+pub(crate) fn can_delete_for_shortcut(app: &FilmcraftApp) -> bool {
+    if !app.ui.keyframe_selection.is_empty() {
+        return true;
+    }
+    selected_clips(app).iter().any(|(clip, item, _)| {
+        !removable_effect_indices(app, *clip, &item.effects, None).is_empty()
+            || app
+                .session
+                .state
+                .selected_effect
+                .as_ref()
+                .filter(|selection| selection.clip == *clip)
+                .and_then(|selection| selection.index(&item.effects))
+                .is_some_and(|index| !removable_effect_indices(app, *clip, &item.effects, Some(index)).is_empty())
+    })
+}
+
 /// Del or Clear in Effect Controls: remove the selected keyframes, else the selected effects of
 /// every selected clip.
 pub(crate) fn delete_for_shortcut(app: &mut FilmcraftApp, ctx: &egui::Context) {
@@ -701,6 +733,43 @@ mod delete_shortcut_tests {
         let sequence = app.session.active_sequence().unwrap();
         assert!(sequence.find_item(audio).unwrap().1.effects.iter().all(|effect| effect.effect != "amplify"));
         assert!(sequence.find_item(video).unwrap().1.effects.iter().all(|effect| effect.effect != "amplify"));
+    }
+
+    /// The panel owns Delete, Copy and Paste only while it has something to act on: with an empty
+    /// panel, a pointer resting on it leaves those chords to the Timeline selection (`edit.clear`
+    /// and `edit.copy` are bound application-wide).
+    #[test]
+    fn the_panel_claims_the_shortcuts_only_with_something_to_act_on() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = session.active_sequence().unwrap().video_tracks[0].items[0].id;
+        session.execute("timeline.select", json!({"clips": [clip.0]})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+
+        assert!(!can_copy_for_shortcut(&app), "nothing selected in the panel");
+        assert!(!can_delete_for_shortcut(&app), "no keyframe and no effect selected");
+        assert!(!can_paste_for_shortcut(&app), "the panel's clipboard is empty");
+
+        // An effect selected in the panel gives Copy and Delete something to work on.
+        app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).unwrap();
+        app.session.execute("effects.select", json!({"clip": clip.0, "effect": "gaussian_blur"})).unwrap();
+        assert!(can_copy_for_shortcut(&app));
+        assert!(can_delete_for_shortcut(&app));
+
+        // A keyframe selection stands on its own, without a selected effect.
+        app.session.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+        app.session.execute("effects.addKeyframe", json!({"clip": clip.0, "effect": "motion", "param": "scale"})).unwrap();
+        app.ui.selected_effects.clear();
+        app.ui.focused = crate::dock::PanelKind::EffectControls;
+        assert!(select_all_keyframes(&mut app), "the clip's keyframe is selectable");
+        assert!(can_copy_for_shortcut(&app));
+        assert!(can_delete_for_shortcut(&app));
+
+        // Motion is intrinsic: it can be copied, but Del never removes it.
+        app.ui.keyframe_selection.clear();
+        app.session.execute("effects.select", json!({"clip": clip.0, "effect": "motion"})).unwrap();
+        assert!(can_copy_for_shortcut(&app), "Motion can still be copied");
+        assert!(!can_delete_for_shortcut(&app), "Motion is intrinsic");
     }
 }
 

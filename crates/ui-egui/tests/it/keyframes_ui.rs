@@ -671,6 +671,45 @@ fn effect_controls_copy_paste_keyframes_uses_playhead_anchor() {
     assert_eq!(d.parameter(&clip, "motion", "scale").keyframes.len(), 2);
 }
 
+/// The panel takes Copy, Paste and Delete only while it has something to act on: with an empty
+/// panel, a pointer resting on it must leave those chords to the Timeline selection (`edit.copy`
+/// and `edit.clear` are bound application-wide), instead of swallowing them.
+#[test]
+fn a_pointer_over_the_panel_does_not_swallow_the_timeline_shortcuts() {
+    let (mut d, clip) = Driver::demo();
+    // the panel's lane is under the pointer, while the Timeline keeps the keyboard focus
+    let lane = d.rect("effectControls.lane");
+    d.ok("ui.move", json!({"x": lane[0] + lane[2] / 2.0, "y": lane[1] + lane[3] / 2.0}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.frames(2);
+
+    // An effect selected in the panel: the panel under the pointer owns Copy, and the clip
+    // clipboard stays empty (this is the panel's own claim, not the application one).
+    d.exec("effects.apply", json!({"clips": [clip.id], "effect": "tint"}));
+    d.ok("ui.set", json!({"effectSelection": [{"clip": clip.id, "effect": "tint", "instance": 0}]}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    d.frames(2);
+    assert!(!d.harness.state().ui.effect_clipboard.effects.is_empty(), "the panel under the pointer takes Copy for its selection");
+    assert!(d.harness.state().session.state.clipboard.is_empty(), "…and the Timeline's clip clipboard stays empty");
+
+    // Nothing selected in the panel: Copy and Del belong to the Timeline selection again.
+    d.exec("effects.select", json!({"none": true}));
+    d.ok("ui.set", json!({"effectSelection": [], "keyframeSelection": []}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    d.frames(2);
+    assert!(!d.harness.state().session.state.clipboard.is_empty(), "Ctrl+C over the empty panel copies the Timeline selection");
+
+    let video_clips =
+        |d: &mut Driver| d.harness.state().session.active_sequence().map_or(0, |q| q.video_tracks.iter().map(|track| track.items.len()).sum::<usize>());
+    let before = video_clips(&mut d);
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.frames(3);
+    let (after, status) = (video_clips(&mut d), d.harness.state().ui.status.clone());
+    assert_eq!(after, before - 1, "Del over the empty panel clears the Timeline selection: status={status}");
+}
+
 #[test]
 /// The keyframe panel's context menu copies and pastes the selected effects.
 fn keyframe_context_menu_copies_and_pastes_selected_effects() {

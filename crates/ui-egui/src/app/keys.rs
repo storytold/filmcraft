@@ -127,8 +127,15 @@ impl FilmcraftApp {
         }
         clipboard_events_as_keys(&mut i.events, modifiers, label_selected);
         // Del with the pointer over Effect Controls removes the panel's keyframes or effects, not
-        // the Timeline's clip, so take it before the bindings see it.
-        if !text_focused && effect_controls_pointer && i.modifiers == egui::Modifiers::NONE && i.key_pressed(egui::Key::Delete) {
+        // the Timeline's clip, so take it before the bindings see it — but only while the panel has
+        // something to remove: Delete is bound application-wide, and an empty panel must not
+        // swallow the edit the user meant.
+        if !text_focused
+            && effect_controls_pointer
+            && panels::effect_controls::can_delete_for_shortcut(self)
+            && i.modifiers == egui::Modifiers::NONE
+            && i.key_pressed(egui::Key::Delete)
+        {
             claimed.effect_controls_delete = true;
             i.consume_key(egui::Modifiers::NONE, egui::Key::Delete);
         }
@@ -154,14 +161,15 @@ impl FilmcraftApp {
             let fires = if repeats_when_held(id) { i.consume_key(*m, *k) } else { consume_fresh_press(i, *m, *k) };
             if fires {
                 // Effect Controls takes Copy and Paste for its own selection — the selected
-                // keyframes, else the selected effect — instead of the app-wide clip commands.
-                // Paste also serves the Timeline while the pointer is there, when the panel's
-                // clipboard has something to paste onto the selected clips.
-                if !text_focused && effect_controls_pointer && id == "edit.copy" {
+                // keyframes, else the selected effect — instead of the app-wide clip commands, but
+                // only while it has something to copy or to paste: otherwise the chord belongs to
+                // the Timeline selection (Copy of the clips, Paste of the clip clipboard).
+                if !text_focused && effect_controls_pointer && id == "edit.copy" && panels::effect_controls::can_copy_for_shortcut(self) {
                     claimed.effect_controls_copy = true;
                 } else if !text_focused
                     && id == "edit.paste"
-                    && (effect_controls_pointer || (timeline_pointer && panels::effect_controls::can_paste_for_shortcut(self)))
+                    && panels::effect_controls::can_paste_for_shortcut(self)
+                    && (effect_controls_pointer || timeline_pointer)
                 {
                     claimed.effect_controls_paste = true;
                 } else {
