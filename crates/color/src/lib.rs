@@ -253,6 +253,13 @@ pub fn luma709(r: f32, g: f32, b: f32) -> f32 {
     0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
+/// Rec.601 luma of an encoded (gamma) RGB triple: the weighting Premiere's Tint and Black & White
+/// use, measured against Premiere 26.5.2 renders (`Y' = 0.299 R' + 0.587 G' + 0.114 B'`).
+#[inline]
+pub fn luma601(r: f32, g: f32, b: f32) -> f32 {
+    0.299 * r + 0.587 * g + 0.114 * b
+}
+
 /// RGB (0..1) → HSL (h in 0..1).
 pub fn rgb_to_hsl(r: f32, g: f32, b: f32) -> [f32; 3] {
     let max = r.max(g).max(b);

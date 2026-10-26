@@ -253,7 +253,7 @@ fn neutral_parameters_are_identity() {
         ("track_matte", vec![]),
         ("noise", vec![]),
         ("noise_legacy", vec![]),
-        ("gaussian_blur_legacy", vec![]),
+        ("gaussian_blur_legacy", vec![("blurriness", ParamValue::Float(0.0))]),
         ("directional_blur_legacy", vec![]),
         ("video_limiter", vec![("compression", ParamValue::Choice(0))]),
         ("cineon_converter", vec![("conversion", ParamValue::Choice(2)), ("black10", ParamValue::Float(95.0)), ("white10", ParamValue::Float(685.0))]),
