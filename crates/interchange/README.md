@@ -60,8 +60,18 @@ Premiere Pro does not write FCPXML.
 | AAF | a composition mob of its own (not tagged top-level); the nest's clips are source clips that point at it, at its first track of their kind. With embedded or consolidated audio the media inside the nest is prepared too (`NestNeeds::Inside`) | a sequence the clips use, read once however many clips use it |
 | OMF | the nested sequence's sound, mixed by the engine with what is on the clip (`NestNeeds::Render`), as one clip named after the sequence. Without that essence: a gap, and the report names the sequence | media in the document |
 
-A sequence that claims to be inside itself (a damaged project or file) is a gap with a report
-entry in both directions; nothing recurses without a bound.
+A project sequence that claims to be inside itself is exported as a gap with a report entry.
+The AAF importer likewise reports recursive nested compositions as gaps.
+
+OMF import rejects cycles in sequence/effect inputs and in master/file-source segment lookups
+with an OMF parse error. Segment nesting is limited to 32 edges (64 during reference discovery).
+Discovery, composition slots, expansion and source-segment lookups share a 65,536-visit budget
+for the whole document. Materialised lists in early-exit source lookups, effect slots and gain
+points also consume that budget.
+Repeated references consume that budget even when they produce no clips. References on the
+current recursion path detect cycles; reusing a segment elsewhere still preserves every edit
+in its original order. Exceeding a depth or work limit returns an error rather than a partial
+import. These limits bound graph traversal; Bento/AAF value-size amplification is a separate concern.
 
 The AAF reader also accepts Premiere Pro's layout of a composition: all video tracks in ONE slot
 (a nested scope with a segment per track, lowest first), and "top-level" tagged on nested
@@ -108,3 +118,7 @@ OMF carries no video at all.
   nested compositions tagged top-level) reads back as the same edit.
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.
+- `src/omf/traversal_tests.rs`: synthetic Bento graphs exercise cyclic sequences/effects and
+  source lookups, repeated-reference/automation-point expansion, shared budgets across tracks/compositions,
+  the depth boundary, preserved repeated edits, and truncation/bit-flip mutations under
+  `catch_unwind`. The master-source cycle regression aborts with stack overflow before the fix.
