@@ -640,6 +640,15 @@ pub struct MediaAnalysisPrefs {
     pub default_language: String,
     /// Speech model (`transcript.models`).
     pub whisper_model: String,
+    // PLACEHOLDER: the Media Analysis settings split (pending) introduces its own
+    // `SpeechModel`/`VoiceAnalysis` prefs struct; until then these pause fields live
+    // here next to `whisper_model`. They are the defaults the transcript engine reads.
+    /// Shortest pause shown in the Text panel, ms.
+    pub pause_min_ms: u32,
+    /// Pause margin kept after a word when removing pauses, ms.
+    pub pause_keep_after_ms: u32,
+    /// Pause margin kept before the next word when removing pauses, ms.
+    pub pause_keep_before_ms: u32,
 }
 
 impl Default for MediaAnalysisPrefs {
@@ -653,6 +662,10 @@ impl Default for MediaAnalysisPrefs {
             language_auto_detect: false,
             default_language: "en".into(),
             whisper_model: filmcraft_speech::models::DEFAULT_MODEL.into(),
+            // PLACEHOLDER defaults for the pause fields above (see the struct comment).
+            pause_min_ms: 250,
+            pause_keep_after_ms: 10,
+            pause_keep_before_ms: 10,
         }
     }
 }
@@ -954,7 +967,9 @@ const ANALYSIS_CACHE: &[(&str, &str)] = &[("mediaCache", "In the Media Cache"), 
 const TRANSCRIBE_SCOPE: &[(&str, &str)] =
     &[("sequenceClips", "Auto-transcribe only clips in sequences"), ("allImported", "Auto-transcribe all imported clips")];
 const SPEAKERS: &[(&str, &str)] = &[("on", "Label speakers"), ("off", "Don't label speakers")];
-const LANGUAGES: &[(&str, &str)] = &[
+/// Languages offered for transcription: (ISO 639-1 code, name). (The TTS module has its own
+/// `tts::LANGUAGES`; this one is for speech-to-text — `transcript.generate`'s `language`.)
+pub const LANGUAGES: &[(&str, &str)] = &[
     ("en", "English"),
     ("es", "Spanish"),
     ("fr", "French"),
