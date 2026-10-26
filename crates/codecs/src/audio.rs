@@ -29,6 +29,9 @@ fn audio_panic(operation: &str) -> CodecError {
     CodecError::Decode(format!("audio decoder panicked while {operation}; reopen the media to retry"))
 }
 
+/// Converts decoder panics to `CodecError::Decode` only when built with `panic = "unwind"`.
+/// The default `wasm32-unknown-unknown` target uses `panic = "abort"`, so decoder panics cannot
+/// be caught or converted. Process aborts and allocation failures that abort remain unrecoverable.
 fn guard_audio<T>(operation: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| audio_panic(operation))?
 }

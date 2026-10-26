@@ -8,9 +8,10 @@ and standalone audio imports. See the crate-level API documentation in `src/lib.
 ## Symphonia audio failure handling (#2798)
 
 Symphonia remains an unmodified MPL-2.0 dependency. Its decoder construction, packet decoding,
-sample conversion and reset calls are guarded against unwinding. A panic becomes a
-`CodecError::Decode` asking the caller to reopen the media. A packet decoder that panicked is
-quarantined: later decode calls fail, and reset never calls into its potentially damaged state.
+sample conversion and reset calls are guarded against unwinding. On targets built with
+`panic = "unwind"`, a panic becomes a `CodecError::Decode` asking the caller to reopen the media.
+A packet decoder that panicked is quarantined: later decode calls fail, and reset never calls
+into its potentially damaged state.
 Because `PacketDecoder::reset` has no error return, a panic during reset is logged and reported
 by the next decode. A newly constructed decoder can be used to retry.
 
@@ -21,8 +22,10 @@ retain the existing behavior: packet decoding returns an error without quarantin
 decoder, and standalone imports skip corrupt packets. This change does not change that
 pre-existing damaged-file policy or harden the separate H.264/HEVC worker paths in #2798.
 
-The guard handles Rust unwinding; it cannot recover from a process abort or an allocation
-failure that aborts. It does not replace input validation or repair bugs inside a dependency.
+The default `wasm32-unknown-unknown` target uses `panic = "abort"`, so decoder panics cannot be
+caught or converted to `CodecError::Decode` there. The guard handles Rust unwinding; it cannot
+recover from a process abort or an allocation failure that aborts. It does not replace input
+validation or repair bugs inside a dependency.
 
 ## Tests
 
