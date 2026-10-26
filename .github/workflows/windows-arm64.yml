@@ -4,19 +4,18 @@
 # out for now: PdfCraft saw an intermittent access violation in egui UI tests there.)
 name: Windows ARM64
 
+# The package build takes about 15 minutes, so it runs nightly on main and on pushes to `release`
+# rather than on every push to main: a dependency or runner-image change still shows up within a
+# day. PRs that change the Windows packaging itself still run it.
 on:
+  schedule:
+    - cron: "41 4 * * *"
   push:
-    branches: [main]
+    branches: [release]
   pull_request:
     paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "**/Cargo.toml"
-      - "**/build.rs"
       - .github/workflows/windows-arm64.yml
       - packaging/windows/**
-  schedule:
-    - cron: "41 4 * * 1" # weekly, so drift in the runner images shows up
   workflow_dispatch:
 
 concurrency:

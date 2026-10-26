@@ -888,7 +888,7 @@ impl<'a> SliceDecoder<'a> {
         let stride = self.pic.planes.width;
         let px = self.mb_x * 16 + (raster & 3) * 4;
         let py = self.mb_y * 16 + (raster >> 2) * 4;
-        let Some(blk) = self.s.coef.get_mut(raster * 16..).and_then(|c| c.first_chunk_mut::<16>()) else {
+        let Some(blk) = self.s.coef.get_mut(raster * 16..).and_then(<[i32]>::first_chunk_mut::<16>) else {
             return;
         };
         transform::idct4_add(blk, &mut self.pic.planes.y[py * stride + px..], stride);
@@ -902,7 +902,7 @@ impl<'a> SliceDecoder<'a> {
         let stride = self.pic.planes.width;
         let px = self.mb_x * 16 + (b8 & 1) * 8;
         let py = self.mb_y * 16 + (b8 >> 1) * 8;
-        let Some(blk) = self.s.coef.get_mut(b8 * 64..).and_then(|c| c.first_chunk_mut::<64>()) else {
+        let Some(blk) = self.s.coef.get_mut(b8 * 64..).and_then(<[i32]>::first_chunk_mut::<64>) else {
             return;
         };
         transform::idct8_add(blk, &mut self.pic.planes.y[py * stride + px..], stride);
@@ -921,7 +921,7 @@ impl<'a> SliceDecoder<'a> {
                 }
                 let px = self.mb_x * 8 + (b & 1) * 4;
                 let py = self.mb_y * 8 + (b >> 1) * 4;
-                let Some(blk) = self.s.coef_c[c].get_mut(b * 16..).and_then(|c| c.first_chunk_mut::<16>()) else {
+                let Some(blk) = self.s.coef_c[c].get_mut(b * 16..).and_then(<[i32]>::first_chunk_mut::<16>) else {
                     continue;
                 };
                 let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };

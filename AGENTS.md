@@ -124,8 +124,18 @@ See [§0](#0-never-crash). It outranks every other engineering rule.
 
 ### 3.2 The rest
 
+**Invariant — move identity uniqueness:** A move plan lists each clip identity at most once.
+The core move operation rejects repeated ids before mutation or id allocation; placing one identity
+on multiple tracks makes selection and later identity-based editing ambiguous. Copies receive new ids
+and retain each entry's requested destination. Destination track creation and the edit commit together.
+In an idle session, a rejected duplicate move retains the project and its undo and redo history.
+Selection-derived edit plans keep each identity once in first-occurrence order before expanding
+linked partners; explicit move requests with repeated identities are still rejected.
+
 See `CLAUDE.md`: pure Rust, dependency layering (`cargo xtask layers`), exact `Tick` time, everything is
 a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`) before every commit.
+
+- **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
 
 
 Shared real-file test corpora (Photoshop-authored PSDs, etc.) live in

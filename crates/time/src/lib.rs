@@ -121,6 +121,7 @@ impl SubAssign for Tick {
 }
 
 /// A half-open time range `[start, start + duration)`.
+/// Zero or negative durations are empty and never overlap another range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TimeRange {
     pub start: Tick,
@@ -141,7 +142,7 @@ impl TimeRange {
         t >= self.start && t < self.end()
     }
     pub fn overlaps(&self, o: &TimeRange) -> bool {
-        self.start < o.end() && o.start < self.end()
+        !self.is_empty() && !o.is_empty() && self.start < o.end() && o.start < self.end()
     }
     pub fn intersect(&self, o: &TimeRange) -> Option<TimeRange> {
         let s = self.start.max(o.start);
@@ -480,7 +481,15 @@ pub fn parse_timecode(input: &str, rate: FrameRate, drop_frame: bool, current: i
     } else {
         parts
             .iter()
-            .map(|p| if p.is_empty() { Ok(0) } else { p.parse::<i64>().map_err(|_| ParseError(format!("bad field `{p}`"))) })
+            .map(|p| {
+                if p.is_empty() {
+                    Ok(0)
+                } else if !p.bytes().all(|b| b.is_ascii_digit()) {
+                    Err(ParseError(format!("bad field `{p}`")))
+                } else {
+                    p.parse::<i64>().map_err(|_| ParseError(format!("bad field `{p}`")))
+                }
+            })
             .collect::<Result<_, _>>()?
     };
     if nums.len() > 4 {
@@ -513,6 +522,28 @@ pub const SAMPLE_RATES: [i64; 6] = [32_000, 44_100, 48_000, 88_200, 96_000, 192_
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn empty_time_ranges_never_overlap() {
+        let clip = TimeRange::new(Tick(0), Tick(10));
+        for duration in [0, -1, -5] {
+            let empty = TimeRange::new(Tick(5), Tick(duration));
+            assert!(empty.is_empty());
+            assert_eq!(empty.intersect(&clip), None);
+            assert!(!empty.overlaps(&clip), "duration {duration}");
+            assert!(!clip.overlaps(&empty), "duration {duration}");
+        }
+    }
+
+    #[test]
+    fn time_range_overlap_respects_half_open_boundaries() {
+        let clip = TimeRange::new(Tick(0), Tick(10));
+        for (start, duration, expected) in [(-5, 5, false), (10, 5, false), (-5, 6, true), (9, 5, true), (2, 3, true)] {
+            let other = TimeRange::new(Tick(start), Tick(duration));
+            assert_eq!(clip.overlaps(&other), expected);
+            assert_eq!(other.overlaps(&clip), expected);
+        }
+    }
 
     #[test]
     fn seconds_display_has_no_negative_zero() {
@@ -718,6 +749,14 @@ mod tests {
         assert_eq!(parse_timecode("-1.00", r, false, 100).unwrap(), 75);
         assert_eq!(parse_timecode("00;01;00;02", FrameRate::FPS_29_97, true, 0).unwrap(), 1800);
         assert!(parse_timecode("abc", r, false, 0).is_err());
+    }
+
+    #[test]
+    fn signed_field_rejected() {
+        let r = FrameRate::FPS_25;
+        assert!(parse_timecode("00:00:-5:00", r, false, 0).is_err());
+        assert!(parse_timecode("00:+1:00:00", r, false, 0).is_err());
+        assert_eq!(parse_timecode("00:00:10:00", r, false, 0).unwrap(), 250);
     }
 
     #[test]

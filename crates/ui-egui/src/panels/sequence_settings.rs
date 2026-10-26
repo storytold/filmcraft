@@ -299,7 +299,7 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
         .fold(0.0, f32::max);
     let list_w = 260.0;
     row(ui, label_w, "Sequence Name:", true, |ui| {
-        let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(list_w));
+        let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(list_w)), "Sequence Name");
         elems.push(("sequenceSettings.name".into(), r.rect, d.name.clone()));
     });
     row(ui, label_w, "Editing Mode:", false, |ui| fixed_combo(ui, elems, "editingMode", "Custom", list_w, NOT_YET));
@@ -475,7 +475,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let audio_samples = app.session.project.settings.audio_display_samples;
     let accent = app.tokens.accent;
     let mut d = app.ui.sequence_settings.clone();
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("sequence-settings-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("sequence-settings-before-drag"), &mut d);
     let mut keep = true;
     let mut apply = false;
     let mut elems: Elems = Vec::new();
@@ -487,7 +487,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         &[("general", "General"), ("color", "Color Management"), ("vr", "VR Properties")]
     };
     egui::Window::new(title)
-        .id(egui::Id::new("Sequence Settings"))
+        .id(egui::Id::unique("Sequence Settings"))
         .collapsible(false)
         .resizable(false)
         .default_width(620.0)

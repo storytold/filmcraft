@@ -123,8 +123,9 @@ enum DragPayload {
     Template(String, String),
 }
 
+/// Single egui temp slot holding the active drag payload: a project item or bin, a source, an effect or a graphics template.
 fn payload_id() -> egui::Id {
-    egui::Id::new("filmcraft-drag-payload")
+    egui::Id::unique("filmcraft-drag-payload")
 }
 
 pub fn start_drag_source(ui: &egui::Ui, source: source_drag::SourceDrag) {
@@ -170,6 +171,11 @@ pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
 #[derive(Clone, Debug)]
 struct DragPayloadBox(DragPayload);
 
+/// Whether one of FilmCraft's own drags (an item, bin, source range, effect or template) is under way.
+pub(crate) fn dragging(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().is_some()
+}
+
 fn payload(ui: &egui::Ui) -> Option<DragPayload> {
     ui.ctx().data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map(|b| b.0)
 }
@@ -177,6 +183,14 @@ pub fn dragged_project_item(ui: &egui::Ui) -> Option<ItemId> {
     match payload(ui) {
         Some(DragPayload::Item(i)) => Some(i),
         Some(DragPayload::Source(s)) => Some(s.item),
+        _ => None,
+    }
+}
+/// An item dragged from the Project panel (or the Media Browser), but not a Source Monitor drag,
+/// whose In/Out range and video/audio choice only a timeline drop keeps.
+pub fn dragged_panel_item(ui: &egui::Ui) -> Option<ItemId> {
+    match payload(ui) {
+        Some(DragPayload::Item(i)) => Some(i),
         _ => None,
     }
 }
@@ -197,8 +211,9 @@ pub fn clear_drag(ui: &egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp::<Option<DragPayloadBox>>(payload_id(), None));
 }
 
+/// Temp-store key marking a cancelled drag until the button is released, so it cannot restart immediately.
 fn cancelled_id() -> egui::Id {
-    egui::Id::new("filmcraft-drag-cancelled")
+    egui::Id::unique("filmcraft-drag-cancelled")
 }
 
 /// Abandon the drag in progress (Escape, #580): nothing is dropped, and nothing restarts it until
@@ -247,7 +262,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
                 _ => filmcraft_project::find_effect(e).map(|d| d.name.to_string()).unwrap_or_default(),
             },
         };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag-ghost")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("drag-ghost")));
         let r = Rect::from_min_size(p + egui::vec2(12.0, 8.0), egui::vec2(label.len() as f32 * 7.0 + 16.0, 20.0));
         painter.rect_filled(r, 4.0, Color32::from_black_alpha(200));
         painter.text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.5), Color32::WHITE);
@@ -255,7 +270,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     if ctx.input(|i| i.pointer.any_released()) {
         // cleared next frame so drop targets see the release this frame
         let f = ctx.cumulative_frame_nr();
-        let k = egui::Id::new("drag-release-frame");
+        let k = egui::Id::unique("drag-release-frame");
         match ctx.data(|d| d.get_temp::<u64>(k)) {
             Some(prev) if prev < f => {
                 clear_drag(ui);
@@ -276,7 +291,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     drag_ghost(app, ui);
     // bins opened in new windows (Project panel)
     project::floating(app, ui.ctx());
-    let id = egui::Id::new("panel-menu");
+    let id = egui::Id::unique("panel-menu");
     let Some((p, pos)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2)>(id)) else { return };
     let mut close = false;
     let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
@@ -309,7 +324,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         let _ = crate::menus::invoke(app, ui.ctx(), "window.floatPanel", serde_json::json!({"panel": p.id()}));
                         close = true;
                     }
-                    let maximized = app.ui.keys.maximized.is_some_and(|q| app.ui.dock.contains(q) || app.ui.floating.iter().any(|g| g.panels.contains(&q)));
+                    let maximized = app.ui.keys.maximized.is_some_and(|q| crate::dock::LayoutExt::is_docked(&app.ui.dock, q));
                     let r = ui.button(if maximized { tl!("Restore Frame") } else { tl!("Maximize Frame") });
                     app.auto.add(&format!("panel.menu.{}.maximize", p.id()), r.rect, if maximized { "Restore Frame" } else { "Maximize Frame" });
                     if r.clicked() {
@@ -321,39 +336,60 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         app.set_workspace(&w);
                         close = true;
                     }
-                    if p == PanelKind::Timeline {
-                        ui.separator();
-                        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Button::new(tl!("Reveal Sequence in Project")));
-                        app.auto.add("panel.menu.Timeline.revealSequence", r.rect, "Reveal Sequence in Project");
-                        if r.clicked() {
-                            let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
-                            close = true;
-                        }
-                        ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
-                        ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
-                    }
-                    if p == PanelKind::Project {
-                        ui.separator();
-                        close |= project::panel_menu(app, ui);
-                    }
-                    if p == PanelKind::MediaBrowser {
-                        ui.separator();
-                        close |= media_browser::panel_menu(app, ui);
-                    }
-                    if p == PanelKind::Source {
-                        ui.separator();
-                        close |= monitor::source_panel_menu(app, ui);
-                    }
+                    close |= panel_items(app, ui, p);
                 });
             app.auto.add("panel.menu.scroll", scroll.inner_rect, "Panel menu");
         });
     });
     // A click elsewhere or Escape closes the menu. The click that opened it is over the tab, not
     // the menu, and must not close it again in the same frame.
-    let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::new("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
+    let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::unique("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
     if close || (!fresh && area.response.clicked_elsewhere()) || crate::widgets::escape_closes(ui.ctx()) {
         ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
     }
+}
+
+/// The panel's own items, each section after a separator: the Timeline's sequence and track
+/// display items, and the Project, Media Browser and Source menus. Shared by the ≡ menu and the
+/// tab's context menu. True when an item asks the menu to close.
+pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind) -> bool {
+    let mut close = false;
+    if p == PanelKind::Timeline {
+        ui.separator();
+        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Button::new(tl!("Reveal Sequence in Project")));
+        app.auto.add("panel.menu.Timeline.revealSequence", r.rect, "Reveal Sequence in Project");
+        if r.clicked() {
+            let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
+            close = true;
+        }
+        ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
+        ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+        let mut work_area = app.session.active_sequence().is_some_and(|q| q.work_area.is_some());
+        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Checkbox::new(&mut work_area, tl!("Work Area Bar")));
+        app.auto.add("panel.menu.Timeline.workAreaBar", r.rect, "Work Area Bar");
+        if r.changed()
+            && let Err(e) = app.session.execute("sequence.workAreaBar", serde_json::json!({"show": work_area}))
+        {
+            app.ui.status = e.to_string();
+        }
+    }
+    if p == PanelKind::Project {
+        ui.separator();
+        close |= project::panel_menu(app, ui);
+    }
+    if p == PanelKind::MediaBrowser {
+        ui.separator();
+        close |= media_browser::panel_menu(app, ui);
+    }
+    if p == PanelKind::Source {
+        ui.separator();
+        close |= monitor::source_panel_menu(app, ui);
+    }
+    if p == PanelKind::History {
+        ui.separator();
+        close |= misc::history_panel_menu(app, ui);
+    }
+    close
 }
 
 pub(crate) mod transcript_cache;

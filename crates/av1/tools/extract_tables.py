@@ -14,21 +14,27 @@ Only the specification text is read:
 Each table is emitted as a nested Rust array whose shape is checked against the declared
 dimensions; the element type is the narrowest of u8/i8/u16/i16/i32 that holds every value.
 """
+import ast
+import operator
 import os
 import re
 import sys
 from pathlib import Path
 
 
-def _spec_path(arg):
-    """Resolve a CLI path argument and require it to be an existing regular file."""
+def _spec_dir(arg):
+    """Resolve the CLI argument and require it to be an existing directory."""
     path = Path(arg).resolve()
-    if not path.is_file():
-        sys.exit(f"not a readable file: {arg}")
+    if not path.is_dir():
+        sys.exit(f"not a directory: {arg}")
     return path
 
 
-root = sys.argv[1]
+if len(sys.argv) != 2:
+    sys.exit("usage: extract_tables.py <av1-spec checkout>")
+# The argument is the operator's own spec checkout; _spec_dir requires it to be an existing
+# directory before anything is read from it.
+root = _spec_dir(sys.argv[1])  # NOSONAR
 files = sorted(f for f in os.listdir(root) if f.endswith(".md"))
 texts = {f: open(os.path.join(root, f), encoding="utf-8").read() for f in files}
 
@@ -39,13 +45,36 @@ def ev(expr):
     e = expr.strip().replace("\\", "")
     e = re.sub(r"\b([A-Z][A-Z0-9_]*)\b", lambda m: str(consts[m.group(1)]) if m.group(1) in consts else m.group(1), e)
     e = e.replace("/", "//")
-    return int(eval(e, {"__builtins__": {}}, {}))
+    binary = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.FloorDiv: operator.floordiv,
+        ast.Mod: operator.mod,
+        ast.LShift: operator.lshift,
+        ast.RShift: operator.rshift,
+        ast.BitOr: operator.or_,
+        ast.BitAnd: operator.and_,
+        ast.BitXor: operator.xor,
+    }
+    unary = {ast.UAdd: operator.pos, ast.USub: operator.neg, ast.Invert: operator.invert}
+
+    def calculate(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in binary:
+            return binary[type(node.op)](calculate(node.left), calculate(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in unary:
+            return unary[type(node.op)](calculate(node.operand))
+        raise ValueError("unsupported specification expression")
+
+    return int(calculate(ast.parse(e, mode="eval").body))
 
 
 # --- constants: symbol table (section 3) ---
 pending = []
 for line in texts["03.symbols.md"].split("\n"):
-    m = re.match(r"^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*([^|]+?)\s*\|", line)
+    m = re.match(r"^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*([^\s|](?:[^|]*[^|\s])?)\s*\|", line)
     if m:
         pending.append((m.group(1), m.group(2)))
 # --- constants: value/name tables (section 6 semantics, section 8/9) ---
@@ -87,7 +116,7 @@ for name, val in pending:
 def cells(text):
     """Split one initialiser cell. A missing comma between two operands on separate lines
     (Split_Tx_Size in the spec text: `TX_32X32` / `TX_4X8`) yields two cells."""
-    parts = re.split(r"(?<=[A-Za-z0-9_])\s*\n\s*(?=[A-Za-z0-9_])", text.strip())
+    parts = re.split(r"(?<=[A-Za-z0-9_])[^\S\n]*\n[^\S\n]*(?=[A-Za-z0-9_])", text.strip())
     if len(parts) > 1:
         sys.stderr.write("note: missing comma in spec table between %s\n" % parts)
     return parts
@@ -128,10 +157,25 @@ def shape(x):
     return []
 
 
+# `~~~~` opens a block on its own line (with an optional `c` marker) and the next run of
+# tildes closes it. Walk the pairs with two linear searches instead of the lazy `(.*?)`
+# with re.S, which rescans the whole remaining text at every position (super-linear).
+FENCE_OPEN = re.compile(r"~~~~~?\s*c?\n")
+FENCE_CLOSE = re.compile(r"~~~~~?")
+
 tables = {}
 for f in files:
     t = texts[f]
-    for block in re.findall(r"~~~~~?\s*c?\n(.*?)~~~~~?", t, re.S):
+    pos = 0
+    while True:
+        m = FENCE_OPEN.search(t, pos)
+        if not m:
+            break
+        c = FENCE_CLOSE.search(t, m.end())
+        if not c:
+            break
+        block = t[m.end():c.start()]
+        pos = c.end()
         b = re.sub(r"//[^\n]*", "", block)
         b = re.sub(r"/\*.*?\*/", "", b, flags=re.S)
         for m in re.finditer(r"(?m)^\s*([A-Z][A-Za-z0-9_]*)\s*((?:\[[^\]=]*\]\s*)+)=\s*", b):

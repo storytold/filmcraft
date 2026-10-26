@@ -1324,6 +1324,9 @@ impl ProjectView {
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
+/// Largest embedded LUT source accepted from a project or import (8 MiB).
+pub const MAX_LUT_TEXT_BYTES: usize = 8 << 20;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectLut {
     pub id: String,
@@ -1344,6 +1347,11 @@ impl Default for Project {
 }
 
 impl Project {
+    /// The highest `next_id` a loaded project may carry. Ids are handed out one at a time, so no
+    /// amount of editing gets near it; a file past it is damaged, and refusing it keeps
+    /// `alloc_id` from overflowing.
+    pub const MAX_NEXT_ID: u64 = u64::MAX / 2;
+
     pub fn new(name: &str) -> Self {
         Self {
             name: name.into(),
@@ -1364,6 +1372,72 @@ impl Project {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    /// The largest id in use, of any kind. They all come from `next_id`, so a project read from a
+    /// file must have its `next_id` past this. Ids that are only referenced count too (a clip whose
+    /// item is gone): a new item taking that id would be picked up by the reference. The root bin
+    /// counts, so there is always one.
+    pub fn max_id(&self) -> u64 {
+        let mut max = 0;
+        let mut see = |id: u64| max = max.max(id);
+        let mut bins = vec![&self.root];
+        while let Some(bin) = bins.pop() {
+            see(bin.id.0);
+            for c in &bin.children {
+                match c {
+                    BinEntry::Item(i) => see(i.0),
+                    BinEntry::Bin(sub) => bins.push(sub),
+                }
+            }
+        }
+        self.search_bins.iter().for_each(|b| see(b.id.0));
+        // deleting an item leaves these entries behind: a new item taking that id would inherit them
+        self.transcripts.keys().chain(self.source_graphics.keys()).chain(self.narrations.keys()).for_each(|i| see(i.0));
+        // `lut.import` names LUTs `lut<id>`
+        self.luts.iter().filter_map(|l| l.id.strip_prefix("lut")?.parse().ok()).for_each(&mut see);
+        fn mixer(m: &MixerStrip) -> impl Iterator<Item = u64> + '_ {
+            m.sends.iter().map(|s| s.target.0).chain(m.output.map(|t| t.0))
+        }
+        for (id, item) in &self.items {
+            see(id.0);
+            see(item.id.0);
+            match &item.kind {
+                ItemKind::Media(m) => m.markers.iter().for_each(|mk| see(mk.id.0)),
+                ItemKind::Subclip { parent, .. } => see(parent.0),
+                ItemKind::Sequence(s) => {
+                    s.markers.iter().for_each(|mk| see(mk.id.0));
+                    mixer(&s.master_mixer).for_each(&mut see);
+                    for t in s.all_tracks().chain(&s.submix_tracks) {
+                        see(t.id.0);
+                        mixer(&t.mixer).for_each(&mut see);
+                        for c in &t.items {
+                            see(c.id.0);
+                            see(c.item.0);
+                            c.link.into_iter().chain(c.group).for_each(&mut see);
+                            c.markers.iter().for_each(|mk| see(mk.id.0));
+                        }
+                        for tr in &t.transitions {
+                            see(tr.id.0);
+                            tr.from.into_iter().chain(tr.to).for_each(|c| see(c.0));
+                        }
+                    }
+                    for t in &s.caption_tracks {
+                        see(t.id.0);
+                        t.captions.iter().for_each(|c| see(c.id.0));
+                    }
+                    for cam in s.multicam.iter().flat_map(|m| &m.cameras) {
+                        cam.video_track.iter().chain(&cam.audio_tracks).for_each(|t| see(t.0));
+                        cam.source.iter().for_each(|i| see(i.0));
+                    }
+                    if let Some(m) = &s.merged {
+                        m.video.iter().chain(&m.audio).for_each(|i| see(i.0));
+                    }
+                }
+                _ => {}
+            }
+        }
+        max
     }
 
     /// Add an item to a bin (root when None / not found).
@@ -1676,6 +1750,32 @@ fn resolve_auto_points_sized(e: &mut EffectInstance, frame: (u32, u32), source: 
 }
 
 impl Project {
+    /// Lazy upgrade for graphic layers written before they had stable uids: assign a unique
+    /// [`crate::graphic_design::LayerExtra::uid`] to every uid-less or duplicated graphic layer
+    /// in sequences and source graphics.
+    ///
+    /// Called when a project file is opened, before undo history starts, so every later undo
+    /// snapshot carries the same identity. The field is already optional in the file schema, so
+    /// this changes no schema version and older builds still read the file. Returns whether any
+    /// layer changed.
+    pub fn ensure_graphic_layer_uids(&mut self) -> bool {
+        let mut changed = false;
+        for item in self.items.values_mut() {
+            if let ItemKind::Sequence(seq) = &mut item.kind {
+                let seq = std::sync::Arc::make_mut(seq);
+                for track in seq.video_tracks.iter_mut().chain(seq.audio_tracks.iter_mut()) {
+                    for it in &mut track.items {
+                        changed |= crate::graphic::ensure_layer_uids(&mut it.effects);
+                    }
+                }
+            }
+        }
+        for graphic in self.source_graphics.values_mut() {
+            changed |= crate::graphic::ensure_layer_uids(&mut graphic.layers);
+        }
+        changed
+    }
+
     /// Available picture and sound, resolving a subclip to its parent media. Missing parents,
     /// cycles and overly deep subclip chains carry neither stream.
     pub fn source_streams(&self, item: ItemId) -> (bool, bool) {

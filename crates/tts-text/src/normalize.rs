@@ -44,6 +44,8 @@ const MAX_INPUT: usize = 1_048_576;
 const MAX_PAUSE_MS: u32 = 10_000;
 /// Numbers with more than this many digits are read digit by digit (never overflow).
 const MAX_CARDINAL_DIGITS: usize = 12;
+/// A malformed pause marker is only inspected within this bounded prefix.
+const MAX_PAUSE_MARKER_BYTES: usize = 64;
 
 /// Normalize `text` into spoken-word tokens for `lang`.
 ///
@@ -95,6 +97,24 @@ pub fn normalize(text: &str, lang: Lang) -> Result<Vec<Token>, NormalizeError> {
                     out.push(Token::Punct(c));
                 }
             }
+            '-' if matches!(peek(rest, 1), Some('$' | '€' | '£'))
+                && !text
+                    .get(..pos)
+                    .and_then(|before| before.chars().next_back())
+                    .is_some_and(|b| b.is_alphanumeric() || matches!(b, '$' | '€' | '£' | '-')) =>
+            {
+                // A negative amount ("-$5"): keep the sign so a loss is not read as a gain.
+                // A hyphen right after a word or amount ("$10-$20") is a range, not a sign.
+                pos += 1;
+                match parse_money(rest.get(1..).unwrap_or(""), lang) {
+                    Some((words, used)) => {
+                        pos += used;
+                        out.push(Token::Word("minus".into()));
+                        push_words(&mut out, &words);
+                    }
+                    None => out.push(Token::Punct(c)),
+                }
+            }
             _ if c.is_ascii_digit() => match parse_number_cluster(rest, lang) {
                 Some((tokens, used)) => {
                     pos += used;
@@ -139,7 +159,9 @@ pub fn normalize(text: &str, lang: Lang) -> Result<Vec<Token>, NormalizeError> {
                     out.push(terminator);
                 }
             }
-            _ if is_word_char(c) => match parse_wordish(rest, lang) {
+            // Apostrophes can occur inside a word, but an apostrophe-only run must not repeatedly
+            // scan the whole remaining script looking for a word.
+            _ if c.is_alphabetic() => match parse_wordish(rest, lang) {
                 Some((tokens, used)) => {
                     pos += used;
                     out.extend(tokens);
@@ -184,7 +206,8 @@ fn peek(s: &str, i: usize) -> Option<char> {
 /// `[pause 1s]`, `[pause 500ms]`, `[pause 1.5s]` → a capped pause. Malformed markers
 /// return `None` and fall through to plain text (never an error).
 fn parse_pause(rest: &str) -> Option<(u32, usize)> {
-    let close = rest.find(']')?;
+    // search bytes: the 64-byte cut may fall inside a multi-byte character that follows the marker
+    let close = rest.as_bytes().iter().take(MAX_PAUSE_MARKER_BYTES).position(|&b| b == b']')?;
     let inner = rest.get(1..close)?.trim();
     let value = inner.strip_prefix("pause")?;
     let value = value.trim_start();
@@ -269,7 +292,7 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
     let (value, digits, used, minor, had_minor) = parse_amount(rest.get(skip..)?, lang)?;
     if digits > MAX_CARDINAL_DIGITS || has_leading_zero(&value, digits) {
         // Oversized amounts: every digit, unit-free, no overflow.
-        let all = rest.get(skip..skip + used)?.chars().filter(|c| c.is_ascii_digit()).collect::<String>();
+        let all = rest.get(skip..skip + used)?.chars().filter(char::is_ascii_digit).collect::<String>();
         let (words, _) = digit_run_as_words(&all);
         return Some((words, used + skip));
     }
@@ -362,7 +385,7 @@ fn parse_amount(rest: &str, _lang: Lang) -> Option<(u64, usize, usize, u32, bool
 /// A grouping mark is valid only when exactly three digits follow it.
 fn grouping_followed_by_3(rest: &str, sep_index: usize) -> bool {
     let after = rest.get(sep_index + 1..).unwrap_or("");
-    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     let boundary = after.get(digits.len()..).and_then(|r| r.chars().next()).is_none_or(|c| !c.is_ascii_digit());
     digits.len() == 3 && boundary
 }
@@ -413,6 +436,8 @@ fn parse_time(rest: &str) -> Option<(Vec<Token>, usize)> {
     for (lit, letter_pair) in [("am", ['a', 'm']), ("pm", ['p', 'm'])] {
         if after.get(..2).is_some_and(|s| s.eq_ignore_ascii_case(lit)) {
             for letter in letter_pair {
+                // Uppercase "A" so it is read as a letter name, not the article.
+                let letter = if letter == 'a' { 'A' } else { letter };
                 tokens.push(Token::Word(letter.into()));
             }
             used += 2;
@@ -433,7 +458,7 @@ fn digit_run(s: &str, start: usize, max: usize) -> Option<usize> {
 fn time_words(h: u32, m: u32) -> Vec<Token> {
     let mut out = vec![Token::Word(english_cardinal(u64::from(h)).join(" "))];
     if m == 0 {
-        out.push(Token::Word("zero".into()));
+        // On the hour: the hour alone ("nine p m"), no minutes spoken.
     } else if m < 10 {
         out.push(Token::Word("oh".into()));
         out.push(Token::Word(english_digit_word(digit_char(m)).into()));
@@ -634,7 +659,7 @@ fn parse_continuation(rest: &str, used: usize, value: u64, digits: &str) -> Opti
     match peek(after, 0) {
         Some('s' | 'S' | 't' | 'T' | 'n' | 'N' | 'd' | 'D' | 'r' | 'R') => {
             let suffix = after.get(..2)?;
-            if is_ordinal_suffix(suffix) && !peek(after, 2).is_some_and(|c| c.is_alphabetic()) {
+            if is_ordinal_suffix(suffix) && !peek(after, 2).is_some_and(char::is_alphabetic) {
                 return Some((vec![Token::Word(english_ordinal(value))], used + 2));
             }
             None
@@ -755,7 +780,7 @@ fn is_ordinal_suffix(suffix: &str) -> bool {
 /// own parser before this check, so a leftover `.`/`,`/`:`/`/` — or a sentence
 /// terminator or closing bracket — is fine.
 fn year_is_standalone(rest: &str, used: usize) -> bool {
-    !peek(rest, used).is_some_and(|c| c.is_alphanumeric())
+    !peek(rest, used).is_some_and(char::is_alphanumeric)
 }
 
 /// A digit run read digit by digit.
@@ -932,19 +957,20 @@ fn year_words(year: u64, _lang: Lang) -> Vec<Token> {
 
 /// Words, abbreviations, months, acronyms, a.m./p.m. and e.g./i.e.
 fn parse_wordish(rest: &str, _lang: Lang) -> Option<(Vec<Token>, usize)> {
-    let collected: String = rest.chars().take_while(|c| is_word_char(*c)).collect();
+    let end = rest.char_indices().find_map(|(i, c)| (!is_word_char(c)).then_some(i)).unwrap_or(rest.len());
+    let collected = rest.get(..end)?;
     let word = collected.trim_matches(|c| c == '\'' || c == '’');
     if word.is_empty() {
         return None;
     }
-    let used = word.len() + leading_apostrophes(rest);
+    let used = word.len();
     let lower = word.to_ascii_lowercase();
 
     // a.m. / p.m. — a single letter, a dot, "m", and a dot or boundary.
     if word.len() == 1 && matches!(lower.as_str(), "a" | "p") && peek(rest, used) == Some('.') && matches!(peek(rest, used + 1), Some('m') | Some('M')) {
         let after_m = used + 2;
         if peek(rest, after_m).is_none_or(|c| !c.is_alphanumeric()) {
-            let mut tokens = vec![Token::Word(word.to_ascii_lowercase())];
+            let mut tokens = vec![Token::Word(if lower == "a" { "A".into() } else { lower.clone() })];
             tokens.push(Token::Word("m".into()));
             let consumed = if peek(rest, after_m) == Some('.') { after_m + 1 } else { after_m };
             return Some((tokens, consumed));
@@ -979,10 +1005,6 @@ fn parse_wordish(rest: &str, _lang: Lang) -> Option<(Vec<Token>, usize)> {
     Some((vec![Token::Word(word.into())], used))
 }
 
-fn leading_apostrophes(rest: &str) -> usize {
-    rest.chars().take_while(|c| *c == '\'' || *c == '’').map(char::len_utf8).sum()
-}
-
 /// Expansions for `Mr.` etc.; the dot is consumed so it never ends a sentence.
 /// `St.` picks "saint" before a capitalised name and "street" otherwise.
 fn dotted_abbreviation(lower: &str, rest: &str, used: usize) -> Option<(Vec<Token>, usize)> {
@@ -996,10 +1018,10 @@ fn dotted_abbreviation(lower: &str, rest: &str, used: usize) -> Option<(Vec<Toke
         "mt" => vec![Token::Word("mount".into())],
         "st" => {
             let mut i = used + 1;
-            while peek(rest, i).is_some_and(|c| c.is_whitespace()) {
+            while peek(rest, i).is_some_and(char::is_whitespace) {
                 i += 1;
             }
-            let capitalised = peek(rest, i).is_some_and(|c| c.is_uppercase());
+            let capitalised = peek(rest, i).is_some_and(char::is_uppercase);
             vec![Token::Word(if capitalised { "saint".into() } else { "street".into() })]
         }
         "vs" => vec![Token::Word("versus".into())],
@@ -1032,7 +1054,7 @@ fn dotted_abbreviation(lower: &str, rest: &str, used: usize) -> Option<(Vec<Toke
 fn is_spellable_acronym(word: &str) -> bool {
     const KEEP_AS_WORDS: [&str; 8] = ["NASA", "UNESCO", "NATO", "UNICEF", "OPEC", "FIFA", "RADAR", "SONAR"];
     let letters: Vec<char> = word.chars().collect();
-    if letters.len() < 2 || letters.len() > 5 || !letters.iter().all(|c| c.is_ascii_uppercase()) {
+    if letters.len() < 2 || letters.len() > 5 || !letters.iter().all(char::is_ascii_uppercase) {
         return false;
     }
     if KEEP_AS_WORDS.contains(&word) {
@@ -1238,6 +1260,24 @@ mod tests {
     }
 
     #[test]
+    fn negative_money_keeps_its_sign() {
+        for lang in [Lang::EnUs, Lang::EnGb] {
+            assert_eq!(words("-$5", lang), "minus five dollars");
+            assert_eq!(words("-€3.50", lang), "minus three euros and fifty cents");
+            assert_eq!(words("-£2", lang), "minus two pounds");
+            assert_eq!(words("a refund of -$1.05", lang), "a refund of minus one dollar and five cents");
+            assert_eq!(words("(-$5)", lang), "( minus five dollars )");
+            // A hyphen between two amounts is a range, not a sign.
+            assert_eq!(words("$10-$20", lang), "ten dollars - twenty dollars");
+            assert_eq!(words("€5-€8", lang), "five euros - eight euros");
+            assert_eq!(words("$10.50-$20", lang), "ten dollars and fifty cents - twenty dollars");
+            // A hyphen after a word or before a non-amount stays punctuation.
+            assert_eq!(words("a-$5", lang), "a - five dollars");
+            assert!(!words("-$x", lang).contains("minus"));
+        }
+    }
+
+    #[test]
     fn money_fraction_beyond_two_digits_is_not_hundreds_of_cents() {
         for lang in [Lang::EnUs, Lang::EnGb] {
             assert_eq!(words("gas is $3.459 a gallon", lang), "gas is three dollars and forty-five cents a gallon");
@@ -1327,7 +1367,9 @@ mod tests {
         assert_eq!(words("23:59", Lang::EnUs), "twenty-three fifty-nine");
         assert_eq!(words("3:30pm", Lang::EnUs), "three thirty p m");
         assert_eq!(words("3:30 p.m.", Lang::EnUs), "three thirty p m");
-        assert_eq!(words("9:00 a.m.", Lang::EnUs), "nine zero a m");
+        assert_eq!(words("9:00 a.m.", Lang::EnUs), "nine A m");
+        assert_eq!(words("9:00 PM", Lang::EnUs), "nine p m");
+        assert_eq!(words("12:00", Lang::EnUs), "twelve");
     }
 
     #[test]
@@ -1455,6 +1497,9 @@ mod tests {
         assert_eq!(words("[pause 0.25s]", Lang::EnUs), "[pause 250]");
         assert_eq!(words("[pause 11s]", Lang::EnUs), "[pause 10000]");
         assert_eq!(words("[pause 999999999999s]", Lang::EnUs), "[pause 10000]");
+        // byte 64 falls inside an `é` after the marker: still a pause
+        let tokens = normalize(&format!("[pause 1s]x{}", "é".repeat(40)), Lang::EnUs).unwrap();
+        assert_eq!(tokens.first(), Some(&Token::Pause { millis: 1000 }));
         // Malformed markers stay plain text.
         assert_eq!(words("[pause", Lang::EnUs), "[ pause");
         assert_eq!(words("[pause x]", Lang::EnUs), "[ pause x ]");
@@ -1505,6 +1550,14 @@ mod tests {
     fn bad_grouping_falls_back() {
         assert_eq!(words("1,23", Lang::EnUs), "one , twenty-three");
         assert_eq!(words("1,2345", Lang::EnUs), "one , two thousand three hundred forty-five");
+    }
+
+    #[test]
+    fn malformed_marker_and_apostrophe_runs_make_linear_progress() {
+        let brackets = "[".repeat(20_000);
+        let apostrophes = "'".repeat(20_000);
+        assert_eq!(normalize(&brackets, Lang::EnUs).unwrap().len(), 20_000);
+        assert_eq!(normalize(&apostrophes, Lang::EnUs).unwrap().len(), 20_000);
     }
 
     #[test]

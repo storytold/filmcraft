@@ -108,7 +108,7 @@ pub struct ClickParams {
     /// left | right | middle
     #[serde(default)]
     pub button: Option<String>,
-    /// 2 for double-click.
+    /// Number of clicks (0–10; defaults to 1). Use 2 for double-click. Larger values are rejected.
     #[serde(default)]
     pub count: Option<u32>,
     /// {"shift":bool,"alt":bool,"command":bool,"ctrl":bool}
@@ -122,6 +122,7 @@ pub struct DragParams {
     pub from: Value,
     /// End point, same forms.
     pub to: Value,
+    /// Movement steps (0–1024; defaults to 12; 0 or 1 uses 2). Larger values are rejected.
     #[serde(default)]
     pub steps: Option<u32>,
     #[serde(default)]
@@ -497,6 +498,7 @@ impl FilmcraftMcp {
         self.ui("ui.elements", json!({"prefix": p.prefix.unwrap_or_default()})).await
     }
 
+    /// Forward a click to the live editor; an omitted count is sent as null and uses its default.
     #[tool(
         title = "Live app: click",
         description = "Live app: click an element by id or at x,y (points). Supports right/middle button, double-click (count=2) and modifiers.",
@@ -513,6 +515,7 @@ impl FilmcraftMcp {
         self.ui("ui.click", v).await
     }
 
+    /// Forward a drag to the live editor, which applies the step default and validates its bounds.
     #[tool(
         title = "Live app: drag",
         description = "Live app: press-drag-release from one point/element to another (move clips, trim edges, scrub, resize panels, drop project items onto tracks).",
@@ -564,7 +567,14 @@ impl FilmcraftMcp {
 
 impl FilmcraftMcp {
     async fn screenshot(&self, b: &BridgeClient, panel: Option<String>, max: u32) -> Result<CallToolResult, McpError> {
-        let path = std::env::temp_dir().join(format!("filmcraft-mcp-{}.png", std::process::id()));
+        // The desktop bridge needs a pathname, so use a freshly-created,
+        // owner-only directory rather than exposing image bytes at a
+        // predictable shared-temp filename.
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(e) => return Ok(fail(format!("screenshot: {e}"))),
+        };
+        let path = dir.path().join("screenshot.png");
         if let Err(e) = b.call("ui.screenshot", json!({"path": path.to_string_lossy(), "panel": panel})).await {
             return Ok(fail(e));
         }
@@ -572,7 +582,6 @@ impl FilmcraftMcp {
             Ok(b) => b,
             Err(e) => return Ok(fail(format!("screenshot: {e}"))),
         };
-        let _ = tokio::fs::remove_file(&path).await;
         let bytes = match image::load_from_memory(&bytes) {
             Ok(img) => {
                 let rgba = img.to_rgba8();

@@ -96,6 +96,41 @@ fn every_video_effect_applies_by_id_and_name_and_renders() {
     }
 }
 
+/// #1545: `effects.apply` reports each instance it added (clip, index, effect id), like
+/// `timeline.place` reports its clips, so agents need no `sequence_inspect` round trip.
+#[test]
+fn effects_apply_reports_where_each_instance_landed() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    let r = s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+    let applied = r["applied"].as_array().unwrap();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0]["clip"].as_u64(), Some(clip));
+    assert_eq!(applied[0]["effect"], "gaussian_blur");
+    let idx = applied[0]["index"].as_u64().unwrap() as usize;
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.clone();
+    assert_eq!(it.effects.get(idx).map(|e| e.effect.as_str()), Some("gaussian_blur"), "index addresses the new instance");
+    // the index is usable straight away
+    s.execute("effects.remove", json!({"clip": clip, "index": idx})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effects.iter().all(|e| e.effect != "gaussian_blur"));
+
+    // several clips: one entry per instance, each with its own clip id
+    let clips: Vec<u64> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id.0).collect();
+    assert!(clips.len() >= 2, "demo project has several V1 clips");
+    let r = s.execute("effects.apply", json!({"clips": clips, "effect": "invert"})).unwrap();
+    let got: Vec<u64> = r["applied"].as_array().unwrap().iter().map(|a| a["clip"].as_u64().unwrap()).collect();
+    assert_eq!(got, clips);
+
+    // audio effects report the (retargeted) audio clip, not the video clip that was passed
+    let video = first_v1_clip(&s);
+    let r = s.execute("effects.apply", json!({"clips": [video], "effect": "parametric_eq"})).unwrap();
+    let a = &r["applied"].as_array().unwrap()[0];
+    let target = a["clip"].as_u64().unwrap();
+    let (track, item) = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(target)).unwrap();
+    assert_eq!(s.active_sequence().unwrap().track(track).unwrap().kind, filmcraft_project::TrackKind::Audio);
+    assert_eq!(item.effects.get(a["index"].as_u64().unwrap() as usize).map(|e| e.effect.as_str()), Some("parametric_eq"));
+}
+
 #[test]
 fn new_effect_params_are_settable_and_keyframable() {
     let mut s = demo();
@@ -127,4 +162,28 @@ fn ultra_key_setting_writes_aggressive_parameters() {
     assert_eq!(e.param("pedestal").unwrap().value.as_f64(), Some(50.0));
     assert_eq!(e.param("choke").unwrap().value.as_f64(), Some(10.0));
     assert_eq!(e.param("contrast").unwrap().value.as_f64(), Some(10.0));
+}
+
+/// #2679: a value outside a parameter's range (the `min`/`max` `effects.list` publishes) is
+/// refused with the range, not saved: gamma 1.1 meant as a factor turned the frame black.
+#[test]
+fn set_param_refuses_values_outside_the_range() {
+    let mut s = demo();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "levels"})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "lumetri"})).unwrap();
+    let before = s.project.to_json();
+    let undo = s.history.undo.len();
+    for (effect, param, value) in
+        [("levels", "gamma", 1.1), ("lumetri", "saturation", 500.0), ("lumetri", "vibrance", -300.0), ("opacity", "opacity", 250.0), ("motion", "scale", -50.0)]
+    {
+        let e = s.execute("effects.setParam", json!({"clip": clip, "effect": effect, "param": param, "value": value})).unwrap_err().to_string();
+        assert!(e.contains("must be between"), "{effect}.{param} = {value}: {e}");
+    }
+    assert_eq!(s.project.to_json(), before, "nothing was saved");
+    assert_eq!(s.history.undo.len(), undo);
+    // the ends of the range and values inside it still go in
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "levels", "param": "gamma", "value": 110})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 100})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 0})).unwrap();
 }
