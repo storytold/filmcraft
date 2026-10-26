@@ -185,7 +185,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, p: &Value) -
     }
 }
 
-fn open_settings(app: &mut FilmcraftApp, ctx: &egui::Context) {
+pub(crate) fn open_settings(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let v = app.session.execute("audio.voiceover.settings", json!({})).unwrap_or_default();
     let d = Draft {
         prefs: app.session.prefs.voice_over.clone(),

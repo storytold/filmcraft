@@ -515,6 +515,36 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.dialog = Some(crate::Dialog::DeleteTracks);
             return Ok(json!({"dialog": "deleteTracks"}));
         }
+        "timeline.renameTrack" => {
+            let seq = app.session.active_sequence().ok_or("no active sequence")?;
+            let tr = match params.get("track") {
+                Some(v) => filmcraft_engine::mixer::strip_ref(seq, v).ok_or_else(|| format!("no track {v}"))?,
+                None => seq.video_tracks.first().map(|t| t.id).ok_or("no track")?,
+            };
+            let name = seq.track(tr).map(|t| t.name.clone()).unwrap_or_default();
+            app.ui.timeline.rename_track = Some(crate::state::RenameTrackDraft { track: tr, name });
+            return Ok(json!({"dialog": "renameTrack"}));
+        }
+        "timeline.trackOutputChannels" => {
+            let seq = app.session.active_sequence().ok_or("no active sequence")?;
+            let tr = match params.get("track") {
+                Some(v) => filmcraft_engine::mixer::strip_ref(seq, v).ok_or_else(|| format!("no track {v}"))?,
+                None => seq.audio_tracks.first().map(|t| t.id).ok_or("no track")?,
+            };
+            let track_obj = seq.track(tr).ok_or("no such track")?;
+            app.ui.timeline.output_channels_dialog = Some(crate::state::OutputChannelsDraft {
+                track: tr,
+                track_name: track_obj.name.clone(),
+                channels: track_obj.channels,
+                output: track_obj.mixer.output,
+                input_map: track_obj.mixer.input_map,
+            });
+            return Ok(json!({"dialog": "outputChannels"}));
+        }
+        "timeline.customizeHeader" => {
+            app.ui.timeline.customize_header_dialog = true;
+            return Ok(json!({"dialog": "customizeTrackHeader"}));
+        }
         // Sequence Settings… from the menu opens the dialog; with params the engine command applies
         // them directly.
         "sequence.settings" if params.as_object().is_none_or(|m| m.is_empty()) => {
@@ -604,7 +634,11 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     {
         return app.file_dialog(id, &params);
     }
-    let r = app.session.execute(id, params).map_err(|e| e.to_string());
+    let r = if matches!(id, "source.insert" | "source.overwrite" | "timeline.place") {
+        crate::panels::dialogs::place_with_mismatch(app, id, params)
+    } else {
+        app.session.execute(id, params).map_err(|e| e.to_string())
+    };
     if let Err(e) = &r {
         app.ui.status = e.clone();
     }

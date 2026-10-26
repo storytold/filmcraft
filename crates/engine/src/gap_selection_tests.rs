@@ -142,6 +142,35 @@ fn a_gap_on_a_locked_track_cannot_be_selected_or_closed() {
 }
 
 #[test]
+fn closing_a_gap_refuses_to_desynchronize_a_locked_linked_track() {
+    let mut s = Session::default();
+    let [_, (picture, sound)] = two_clips(&mut s, [0, 96]);
+    s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let result = s.execute("sequence.closeGap", json!({"track": "V1", "frame": 60}));
+    assert!(result.is_err());
+    assert_eq!(s.project, before);
+    assert_eq!(s.history.undo.len(), undo);
+    assert_eq!(range(&s, picture).0, range(&s, sound).0);
+}
+
+#[test]
+fn ripple_delete_refuses_to_leave_locked_linked_audio_behind() {
+    let mut s = Session::default();
+    let [(first_picture, _), (_, next_sound)] = two_clips(&mut s, [0, 96]);
+    s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let result = s.execute("edit.rippleDelete", json!({"clips": [first_picture.0]}));
+    assert!(result.is_err());
+    assert_eq!(s.project, before);
+    assert_eq!(s.history.undo.len(), undo);
+    assert_eq!(range(&s, next_sound).0, s.sequence_rate().tick_of(96));
+}
+
+#[test]
 fn hostile_select_gap_parameters_are_errors() {
     let mut s = Session::default();
     assert!(s.execute("timeline.selectGap", json!({"track": "V1", "frame": 1})).is_err(), "no sequence");

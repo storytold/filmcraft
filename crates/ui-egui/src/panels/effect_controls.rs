@@ -126,6 +126,17 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+fn selected_video_ids(app: &FilmcraftApp) -> Vec<ClipId> {
+    let Some(seq) = app.session.active_sequence() else { return Vec::new() };
+    let mut ids = Vec::new();
+    for id in &app.session.state.selection {
+        if !ids.contains(id) && seq.find_item(*id).is_some_and(|(track, _)| seq.video_tracks.iter().any(|t| t.id == track)) {
+            ids.push(*id);
+        }
+    }
+    ids
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
@@ -600,6 +611,27 @@ pub(crate) fn param_row(
     );
     let id = egui::Id::unique(("pv", clip.0, idx, pkey));
     let mut set: Option<Value> = None;
+    let mut component: Option<&str> = None;
+    if mask.is_none() && matches!(e.effect.as_str(), "motion" | "opacity") {
+        let videos = selected_video_ids(app);
+        if videos.len() > 1 {
+            let mixed = app.session.active_sequence().is_some_and(|seq| {
+                videos
+                    .iter()
+                    .filter_map(|id| seq.find_item(*id).map(|(_, item)| item))
+                    .filter_map(|item| {
+                        item.effect(&e.effect).and_then(|effect| effect.param(pd.id)).map(|param| {
+                            let at = app.session.playhead().clamp(item.start, (item.end() - Tick(1)).max(item.start));
+                            param.value_at(item.source_time_at(at))
+                        })
+                    })
+                    .any(|other| other != value)
+            });
+            if mixed {
+                vui.label(tl!("Mixed"));
+            }
+        }
+    }
     match (&pd.kind, &value) {
         (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
             let speed = ((soft_max - soft_min) / 400.0).max(0.01);
@@ -636,7 +668,17 @@ pub(crate) fn param_row(
                 HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, "", &t),
             );
             if nx.is_some() || ny.is_some() {
-                set = Some(json!([nx.unwrap_or(p.x), ny.unwrap_or(p.y)]));
+                match (nx, ny) {
+                    (Some(x), None) => {
+                        component = Some("x");
+                        set = Some(json!([x, p.y]));
+                    }
+                    (None, Some(y)) => {
+                        component = Some("y");
+                        set = Some(json!([p.x, y]));
+                    }
+                    (x, y) => set = Some(json!([x.unwrap_or(p.x), y.unwrap_or(p.y)])),
+                }
             }
         }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
@@ -698,7 +740,11 @@ pub(crate) fn param_row(
         }
     }
     if let Some(v) = set {
-        actions.push(("effects.setParam".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v}))));
+        let mut params = with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v}));
+        if let Some(component) = component {
+            params["component"] = json!(component);
+        }
+        actions.push(("effects.setParam".into(), params));
     }
     // keyframe navigator ◀ ◆ ▶ (when animated)
     let eff_json = json!(idx);
@@ -954,9 +1000,14 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 HotNumberOptions::new(speed, range, 0, " Y", &t),
                             );
                             if nx.is_some() || ny.is_some() {
+                                let component = match (nx, ny) {
+                                    (Some(_), None) => Some("x"),
+                                    (None, Some(_)) => Some("y"),
+                                    _ => None,
+                                };
                                 actions.push((
                                     "effects.setParam".into(),
-                                    json!({"clip": clip.0, "effect": "motion", "param": p, "value": [nx.unwrap_or(v.x), ny.unwrap_or(v.y)]}),
+                                    json!({"clip": clip.0, "effect": "motion", "param": p, "component": component, "value": [nx.unwrap_or(v.x), ny.unwrap_or(v.y)]}),
                                 ));
                             }
                         }
@@ -1095,8 +1146,23 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
     let key = egui::Id::unique("effect-controls-drag-step");
     let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
     let mut wrote = false;
-    for (cmd, mut p) in actions {
-        if cmd == "effects.setParam" && down {
+    for (mut cmd, mut p) in actions {
+        if cmd == "effects.setParam" && p.get("mask").is_none_or(Value::is_null) {
+            let videos = selected_video_ids(app);
+            if videos.len() > 1 {
+                let effect = p.get("effect").and_then(Value::as_str).map(str::to_owned).or_else(|| {
+                    let index = usize::try_from(p.get("effect")?.as_u64()?).ok()?;
+                    let clip = ClipId(p.get("clip")?.as_u64()?);
+                    app.session.active_sequence()?.find_item(clip)?.1.effects.get(index).map(|e| e.effect.clone())
+                });
+                if effect.as_deref().is_some_and(|e| matches!(e, "motion" | "opacity")) {
+                    p["clips"] = json!(videos.iter().map(|c| c.0).collect::<Vec<_>>());
+                    p["effect"] = json!(effect);
+                    cmd = "effects.setSelectionParam".into();
+                }
+            }
+        }
+        if matches!(cmd.as_str(), "effects.setParam" | "effects.setSelectionParam") && down {
             if p.get("merge").is_none() {
                 p["merge"] = json!(true);
             }
@@ -1366,6 +1432,41 @@ mod param_text_tests {
 #[cfg(test)]
 mod drag_undo_tests {
     use serde_json::json;
+
+    #[test]
+    fn effect_controls_dispatches_one_change_to_every_selected_video() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ids: Vec<_> = session.active_sequence().unwrap().video_tracks.iter().flat_map(|t| t.items.iter().map(|i| i.id)).take(2).collect();
+        assert_eq!(ids.len(), 2);
+        session.state.selection = ids.clone();
+        let before = session.project.clone();
+        let undo = session.history.undo.len();
+        let mut app = crate::FilmcraftApp::new(session);
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            super::run(
+                &mut app,
+                ui.ctx(),
+                vec![(
+                    "effects.setParam".into(),
+                    json!({
+                        "clip": ids[0].0, "effect": "motion", "param": "scale", "value": 120.0
+                    }),
+                )],
+            );
+        });
+        out.textures_delta.clear();
+        for id in ids {
+            assert_eq!(
+                app.session.active_sequence().unwrap().find_item(id).unwrap().1.effect("motion").unwrap().param("scale").unwrap().value.as_f64(),
+                Some(120.0)
+            );
+        }
+        assert_eq!(app.session.history.undo.len(), undo + 1);
+        app.session.undo();
+        assert_eq!(app.session.project, before);
+    }
 
     /// #201: a drag value changes only once the mouse moves, after the press frame; two drags of
     /// the same parameter are still two undo steps.

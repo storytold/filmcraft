@@ -696,14 +696,41 @@ pub(crate) fn default_seq_settings_for(media: &MediaClip) -> SequenceSettings {
     if let Some(v) = &info.video {
         st.width = v.width;
         st.height = v.height;
-        st.frame_rate = v.frame_rate;
+        st.frame_rate = media.frame_rate();
         st.par = media.pixel_aspect();
-        st.preset = format!("{}x{} {}", v.width, v.height, v.frame_rate.label());
+        st.preset = format!("{}x{} {}", v.width, v.height, st.frame_rate.label());
+        st.color.working = match v.color.transfer {
+            filmcraft_color::Transfer::Pq => filmcraft_color::WorkingSpace::Rec2100Pq,
+            filmcraft_color::Transfer::Hlg => filmcraft_color::WorkingSpace::Rec2100Hlg,
+            _ => filmcraft_color::WorkingSpace::Rec709,
+        };
+        st.working_space = st.color.working.label().into();
     }
     if let Some(a) = info.audio() {
         st.sample_rate = a.sample_rate.max(8000);
     }
     st
+}
+
+/// Settings offered when the first moving-picture clip differs from an empty sequence.
+/// The warning is a UI decision; this read-only check never changes the project.
+fn clip_mismatch(s: &Session, item: ItemId) -> Option<SequenceSettings> {
+    let q = s.active_sequence()?;
+    if q.all_tracks().any(|t| !t.items.is_empty()) || q.caption_tracks.iter().any(|t| !t.captions.is_empty()) {
+        return None;
+    }
+    let (_, media, _) = s.project.resolve_media(item)?;
+    if !matches!(media.info.kind, filmcraft_media::MediaKind::Movie | filmcraft_media::MediaKind::ImageSequence) {
+        return None;
+    }
+    let video = media.info.video.as_ref()?;
+    let candidate = default_seq_settings_for(media);
+    (video.width != q.settings.width
+        || video.height != q.settings.height
+        || media.frame_rate() != q.settings.frame_rate
+        || filmcraft_project::sane_par(candidate.par) != filmcraft_project::sane_par(q.settings.par)
+        || candidate.color.working != q.settings.color.working)
+        .then_some(candidate)
 }
 
 /// Import bytes as a media item (engine-level; the UI reads files through services).
@@ -1042,13 +1069,9 @@ pub(crate) fn place_item(
     if !has_v && !has_a {
         return Err(EngineError::Other("no destination track for this media (check source patching)".into()));
     }
-    let src_size = match &pi.kind {
-        ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
-        ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
-        ItemKind::AdjustmentLayer { width, height, .. } => Some((*width, *height)),
-        _ => None,
-    }
-    .unwrap_or((1920, 1080));
+    // Subclips and graphics also have a real source size. Using a fallback here centres their
+    // Motion anchor at the wrong point, so even a correctly computed frame fit appears cropped.
+    let src_size = s.project.source_size(item).unwrap_or((1920, 1080));
     // `None`: drawn in the pixels of the sequence it is placed in
     let src_par = s.project.source_par(item);
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
@@ -2062,12 +2085,36 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("clip.scaleToFrameSize", "Scale to Frame Size", ["Clip", "Video Options"], None, "{}", has_selection, |s, _| {
-            let sel = s.state.selection.clone();
+        cmd!("clip.scaleToFrameSize", "Scale to Frame Size", ["Clip", "Video Options"], None, r#"{"clips":[id]?}"#, has_selection, |s, p| {
+            let sel = clips_p(s, p);
+            let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+            let sizes: Vec<_> = sel
+                .into_iter()
+                .filter_map(|c| {
+                    let (track, item) = q.find_item(c)?;
+                    q.video_tracks.iter().any(|v| v.id == track).then(|| s.project.source_size(item.item).map(|size| (c, size))).flatten()
+                })
+                .collect();
+            if sizes.is_empty() {
+                return Err(bad("clip.scaleToFrameSize", "select a video clip"));
+            }
             s.edit_sequence("Scale to Frame Size", |q, _, _| {
-                for c in &sel {
+                let (width, height) = (f64::from(q.settings.width), f64::from(q.settings.height));
+                for (c, (source_width, source_height)) in &sizes {
                     if let Some((_, i)) = q.find_item_mut(*c) {
-                        i.scale_to_frame = !i.scale_to_frame;
+                        i.scale_to_frame = true;
+                        if let Some(motion) = i.effect_mut("motion") {
+                            for (param, value) in [
+                                ("position", ParamValue::Vec2(filmcraft_geom::Vec2::new(width / 2.0, height / 2.0))),
+                                ("anchor", ParamValue::Vec2(filmcraft_geom::Vec2::new(f64::from(*source_width) / 2.0, f64::from(*source_height) / 2.0))),
+                                ("scale", ParamValue::Float(100.0)),
+                                ("scale_width", ParamValue::Float(100.0)),
+                                ("uniform_scale", ParamValue::Bool(true)),
+                                ("rotation", ParamValue::Float(0.0)),
+                            ] {
+                                motion.params.insert(param.into(), filmcraft_project::Param::new(value));
+                            }
+                        }
                     }
                 }
                 Ok(())
@@ -2253,9 +2300,37 @@ fn build() -> Vec<CommandSpec> {
                 };
             }
             let tr = track_p(s, p, "track", "sequence.closeGap")?.ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
-            let t = time_p(s, p, "").unwrap_or(s.playhead());
+            let t = sequence_time_p(s, p, "", "sequence.closeGap")?.unwrap_or(s.playhead());
             close_gap(s, tr, t)?;
             Ok(Value::Null)
+        }),
+        query!("sequence.clipMismatch", "Clip Mismatch", r#"{"item":id}"#, |s, p| {
+            let item = item_p(p, "item").ok_or_else(|| bad("sequence.clipMismatch", "need `item`"))?;
+            s.project.item(item).ok_or_else(|| bad("sequence.clipMismatch", "no such item"))?;
+            let candidate = clip_mismatch(s, item);
+            Ok(json!({"mismatch": candidate.is_some(), "settings": candidate.map(|v| json!({
+                "width": v.width, "height": v.height, "fps": v.frame_rate.as_f64(), "par": [v.par.0, v.par.1], "sampleRate": v.sample_rate,
+                "workingSpace": v.color.working.id()
+            }))}))
+        }),
+        cmd!("sequence.matchClip", "Change Sequence Settings to Match Clip", [], None, r#"{"item":id}"#, has_seq, |s, p| {
+            let item = item_p(p, "item").ok_or_else(|| bad("sequence.matchClip", "need `item`"))?;
+            let proposed = clip_mismatch(s, item).ok_or_else(|| bad("sequence.matchClip", "the sequence is not empty or the clip already matches"))?;
+            proposed.validate().map_err(|e| bad("sequence.matchClip", e))?;
+            let out = json!({"width": proposed.width, "height": proposed.height, "fps": proposed.frame_rate.as_f64()});
+            s.edit_sequence("Change Sequence Settings to Match Clip", |q, _, _| {
+                q.settings.width = proposed.width;
+                q.settings.height = proposed.height;
+                q.settings.frame_rate = proposed.frame_rate;
+                q.settings.par = proposed.par;
+                q.settings.sample_rate = proposed.sample_rate;
+                q.settings.drop_frame = false;
+                q.settings.preset = proposed.preset.clone();
+                q.settings.color.working = proposed.color.working;
+                q.settings.working_space = proposed.working_space.clone();
+                Ok(())
+            })?;
+            Ok(out)
         }),
         cmd!("sequence.snap", "Snap in Timeline", ["Sequence"], Some("S"), r#"{"on":bool?}"#, always, |s, p| {
             s.state.snapping = bool_p(p, "on").unwrap_or(!s.state.snapping);
@@ -2281,12 +2356,64 @@ fn build() -> Vec<CommandSpec> {
         ),
         cmd!("sequence.deleteTrack", "Delete Track", [], None, r#"{"track":"V3"|id}"#, has_seq, |s, p| {
             let tr = track_p(s, p, "track", "sequence.deleteTrack")?.ok_or_else(|| bad("sequence.deleteTrack", "need `track`"))?;
-            s.edit_sequence("Delete Track", |q, _, _| {
+            let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+            let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+            let is_video = q.video_tracks.iter().any(|t| t.id == tr);
+            let is_audio = q.audio_tracks.iter().any(|t| t.id == tr);
+            if is_video && q.video_tracks.len() <= 1 {
+                return Err(bad("sequence.deleteTrack", "cannot delete the only video track"));
+            }
+            if is_audio && q.audio_tracks.len() <= 1 {
+                return Err(bad("sequence.deleteTrack", "cannot delete the only audio track"));
+            }
+            s.edit_sequence("Delete Track", |q, _, st| {
                 q.video_tracks.retain(|t| t.id != tr);
                 q.audio_tracks.retain(|t| t.id != tr);
+                st.selection.retain(|c| q.find_item(*c).is_some());
+                if let Some(tg) = st.targeting.get_mut(&seq_id) {
+                    tg.targeted.retain(|t| t != &tr);
+                    if tg.video_dest == Some(tr) {
+                        tg.video_dest = q.video_tracks.first().map(|t| t.id);
+                    }
+                    if tg.audio_dest == Some(tr) {
+                        tg.audio_dest = q.audio_tracks.first().map(|t| t.id);
+                    }
+                }
                 Ok(())
             })?;
             Ok(Value::Null)
+        }),
+        cmd!("sequence.duplicateTrack", "Duplicate Track", [], None, r#"{"track":"V1"|"A1"|id}"#, has_seq, |s, p| {
+            let source = track_p(s, p, "track", "sequence.duplicateTrack")?.ok_or_else(|| bad("sequence.duplicateTrack", "need `track`"))?;
+            let (track, clips) = s.edit_sequence("Duplicate Track", |q, ctx, st| {
+                let tracks = if q.video_tracks.iter().any(|t| t.id == source) { &mut q.video_tracks } else { &mut q.audio_tracks };
+                let index =
+                    tracks.iter().position(|t| t.id == source).ok_or_else(|| bad("sequence.duplicateTrack", "track must contain video or audio clips"))?;
+                let mut copy = tracks.get(index).ok_or_else(|| bad("sequence.duplicateTrack", "track disappeared"))?.clone();
+                copy.id = TrackId(ctx.alloc());
+                copy.name = format!("{} Copy", copy.name);
+                let mut ids = std::collections::HashMap::new();
+                for item in &mut copy.items {
+                    let original = item.id;
+                    item.id = ClipId(ctx.alloc());
+                    // Only this track is copied. A copied picture must not remain linked to the
+                    // original sound (or vice versa), since that would make later edits ambiguous.
+                    item.link = None;
+                    ids.insert(original, item.id);
+                }
+                copy.transitions.retain(|tr| [tr.from, tr.to].into_iter().flatten().all(|id| ids.contains_key(&id)));
+                for transition in &mut copy.transitions {
+                    transition.id = filmcraft_project::TransitionId(ctx.alloc());
+                    transition.from = transition.from.and_then(|id| ids.get(&id).copied());
+                    transition.to = transition.to.and_then(|id| ids.get(&id).copied());
+                }
+                let new_track = copy.id;
+                let new_clips = copy.items.iter().map(|item| item.id).collect::<Vec<_>>();
+                tracks.insert(index + 1, copy);
+                st.selection = new_clips.clone();
+                Ok((new_track, new_clips))
+            })?;
+            Ok(json!({"track": track.0, "clips": clips.iter().map(|id| id.0).collect::<Vec<_>>()}))
         }),
         cmd!(
             "sequence.settings",
@@ -2788,6 +2915,38 @@ fn build() -> Vec<CommandSpec> {
             has_seq,
             move_clips
         ),
+        cmd!("timeline.duplicate", "Duplicate Clip", [], None, r#"{"clips":[id]?}"#, has_selection, |s, p| {
+            let selected = with_links(s, &clips_p(s, p));
+            if selected.is_empty() {
+                return Err(bad("timeline.duplicate", "select a clip"));
+            }
+            let copies = s.edit_sequence("Duplicate Clip", |q, ctx, st| {
+                let mut source = Vec::new();
+                for id in &selected {
+                    let (track, it) = q.find_item(*id).ok_or(edit::EditError::NoItem(*id))?;
+                    if q.track(track).is_some_and(|t| t.locked) {
+                        return Err(edit::EditError::Locked.into());
+                    }
+                    source.push((*id, track, it.start, it.end()));
+                }
+                let first = source.iter().map(|s| s.2).min().ok_or(edit::EditError::Nothing)?;
+                let after = source.iter().map(|s| s.3).max().ok_or(edit::EditError::Nothing)?;
+                let mut placements = Vec::new();
+                for (id, track, start, _) in source {
+                    let next = i128::from(after.0) + i128::from(start.0) - i128::from(first.0);
+                    let at = i64::try_from(next)
+                        .ok()
+                        .map(Tick)
+                        .filter(|t| *t <= Tick::MAX)
+                        .ok_or_else(|| bad("timeline.duplicate", "the copy would exceed the timeline's time limit"))?;
+                    placements.push((id, track, at));
+                }
+                let ids = edit::copy_items(q, &placements, true, ctx)?;
+                st.selection = ids.clone();
+                Ok(ids)
+            })?;
+            Ok(json!({"copied": copies.iter().map(|c| c.0).collect::<Vec<_>>()}))
+        }),
         cmd!(
             "timeline.trim",
             "Trim Edit",
@@ -3023,7 +3182,13 @@ fn build() -> Vec<CommandSpec> {
                 };
                 let p = p.clone();
                 s.edit_sequence("Track Settings", |q, _, _| {
-                    let t = q.track_mut(tr).ok_or(filmcraft_edit::EditError::NoTrack(tr))?;
+                    let t = q
+                        .video_tracks
+                        .iter_mut()
+                        .chain(q.audio_tracks.iter_mut())
+                        .chain(q.submix_tracks.iter_mut())
+                        .find(|t| t.id == tr)
+                        .ok_or(filmcraft_edit::EditError::NoTrack(tr))?;
                     if let Some(v) = bool_p(&p, "locked") {
                         t.locked = v;
                     }
@@ -3277,6 +3442,15 @@ fn build() -> Vec<CommandSpec> {
                 // 0 keyframes: the value is static (`time` was not used)
                 Ok(json!({"keyframes": keyframes, "param": pid, "value": value}))
             }
+        ),
+        cmd!(
+            "effects.setSelectionParam",
+            "Set Selected Clips' Effect Parameter",
+            [],
+            None,
+            r#"{"clips":[id]?,"effect":"motion|opacity","param":str,"component":"x|y"?,"value":num|bool|[x,y],"merge":bool?,"begin":bool?}"#,
+            has_seq,
+            set_selection_param
         ),
         cmd!("effects.toggleAnimation", "Toggle Animation", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mask":n?}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.toggleAnimation", "need `clip`"))?;
@@ -3830,6 +4004,79 @@ pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamVal
             ParamValue::Curve(v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect())
         }
     })
+}
+
+/// One atomic value edit for all selected compatible picture clips. A component edit reads each
+/// clip's own other coordinate, so changing Position X never replaces its distinct Position Y.
+fn set_selection_param(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effects.setSelectionParam";
+    let effect = str_p(p, "effect").ok_or_else(|| bad(CMD, "need `effect`"))?;
+    if !matches!(effect, "motion" | "opacity") {
+        return Err(bad(CMD, "multi-clip editing supports Motion and Opacity"));
+    }
+    let param = str_p(p, "param").ok_or_else(|| bad(CMD, "need `param`"))?;
+    let value = p.get("value").ok_or_else(|| bad(CMD, "need `value`"))?;
+    let component = str_p(p, "component");
+    if component.is_some_and(|c| !matches!(c, "x" | "y")) {
+        return Err(bad(CMD, "`component` must be x or y"));
+    }
+    let mut clips = clips_p(s, p);
+    let mut seen = std::collections::HashSet::new();
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    clips.retain(|c| seen.insert(*c) && q.find_item(*c).is_some_and(|(track, _)| q.video_tracks.iter().any(|v| v.id == track)));
+    if clips.is_empty() {
+        return Err(bad(CMD, "select at least one clip"));
+    }
+    let playhead = s.playhead();
+    let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("selectionParam:{effect}:{param}:{}", component.unwrap_or("both")));
+    if bool_p(p, "begin").unwrap_or(false) {
+        s.history.merge_key = None;
+    }
+    let changed = s.edit_sequence_as("Change Selected Effect Parameter", merge.as_deref(), |q, _, _| {
+        let mut changed = 0;
+        for clip in &clips {
+            let Some((_, item)) = q.find_item_mut(*clip) else { continue };
+            // Intrinsic Motion and Opacity occur on picture clips. An audio clip has neither;
+            // checking the effect itself lets a mixed selection skip it safely.
+            let mt = item.source_time_at(playhead.clamp(item.start, (item.end() - Tick(1)).max(item.start)));
+            let Some(instance) = item.effect_mut(effect) else { continue };
+            let Some(def) = instance.def().and_then(|d| d.param(param)) else { continue };
+            let range = match &def.kind {
+                filmcraft_project::ParamKind::Float { min, max, .. } => Some((*min, *max)),
+                _ => None,
+            };
+            let Some(prm) = instance.param_mut(param) else { continue };
+            let input = match (component, prm.value_at(mt)) {
+                (Some("x"), ParamValue::Vec2(point)) => {
+                    json!([value.get(0).and_then(Value::as_f64).ok_or_else(|| bad(CMD, "X value must be a number"))?, point.y])
+                }
+                (Some("y"), ParamValue::Vec2(point)) => {
+                    json!([point.x, value.get(1).and_then(Value::as_f64).ok_or_else(|| bad(CMD, "Y value must be a number"))?])
+                }
+                (Some(_), _) => return Err(bad(CMD, "this parameter has no X/Y component")),
+                (None, _) => value.clone(),
+            };
+            let accepted = json_to_param(&prm.value, &input).ok_or_else(|| bad(CMD, "value has the wrong type"))?;
+            if let ParamValue::Float(v) = &accepted
+                && (!v.is_finite() || range.is_some_and(|(min, max)| *v < min || *v > max))
+            {
+                return Err(bad(CMD, "value is outside the parameter's range"));
+            }
+            if let ParamValue::Vec2(v) = &accepted
+                && (!v.x.is_finite() || !v.y.is_finite())
+            {
+                return Err(bad(CMD, "coordinates must be finite"));
+            }
+            prm.set_at(mt, accepted);
+            instance.enabled = true;
+            changed += 1;
+        }
+        if changed == 0 {
+            return Err(bad(CMD, "no selected clips have this property"));
+        }
+        Ok(changed)
+    })?;
+    Ok(json!({"changed": changed}))
 }
 
 /// Encode the accepted parameter value in the JSON shape returned to command callers.

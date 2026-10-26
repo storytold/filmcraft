@@ -142,6 +142,51 @@ fn clip_context_menu_offers_nest_and_make_subsequence() {
 }
 
 #[test]
+fn clip_context_menu_duplicates_without_replacing_the_original() {
+    let mut d = Driver::new();
+    let original = d.v1(0);
+    let before = d.app().session.project.clone();
+    d.ok("ui.click", json!({"id": format!("timeline.clip.{}", original.id.0), "button": "right"}));
+    d.frames(3);
+    for id in ["timeline.duplicate", "edit.copy", "edit.clear", "edit.rippleDelete", "clip.scaleToFrameSize", "clip.setToFrameSize", "properties"] {
+        assert!(d.has(&format!("timeline.clipMenu.{id}")), "{id}");
+    }
+    d.click("timeline.clipMenu.timeline.duplicate");
+    let selected = d.app().session.state.selection.clone();
+    let q = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!(q.find_item(original.id).unwrap().1, &original);
+    assert!(!selected.is_empty());
+    let copy =
+        selected.iter().filter_map(|id| q.find_item(*id)).find(|(track, _)| q.video_tracks.iter().any(|t| t.id == *track)).map(|(_, item)| item).unwrap();
+    assert_ne!(copy.id, original.id);
+    assert_eq!((copy.item, copy.source_in, copy.duration, &copy.effects), (original.item, original.source_in, original.duration, &original.effects));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project, before);
+}
+
+#[test]
+fn track_header_context_menu_duplicates_the_whole_layer() {
+    let mut d = Driver::new();
+    let original = d.v1(0);
+    let before = d.app().session.project.clone();
+    d.ok("ui.click", json!({"id": "timeline.track.V1.target", "button": "right"}));
+    d.frames(3);
+    assert!(d.has("timeline.track.V1.duplicate"));
+    d.click("timeline.track.V1.duplicate");
+    let q = d.app().session.active_sequence().unwrap();
+    assert!(q.video_tracks.len() >= 2);
+    assert_eq!(q.find_item(original.id).unwrap().1, &original);
+    let duplicate = q
+        .video_tracks
+        .iter()
+        .flat_map(|t| &t.items)
+        .find(|item| item.id != original.id && item.item == original.item && item.start == original.start && item.duration == original.duration);
+    assert!(duplicate.is_some(), "the new video layer must contain an independent clip at the same time");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project, before);
+}
+
+#[test]
 fn timeline_has_a_tab_per_open_sequence() {
     let mut d = Driver::new();
     let main = d.app().session.state.active_sequence.unwrap().0;

@@ -208,6 +208,79 @@ pub struct TimelineView {
     /// (`volume`, `pan`, `mute`, `send.<i>.level`, `fx.<slot>.<param>`).
     #[serde(default)]
     pub track_lanes: std::collections::BTreeMap<u64, String>,
+    /// Customized track header control visibility.
+    #[serde(default)]
+    pub header_customization: TrackHeaderCustomization,
+    /// Rename Track dialog draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename_track: Option<RenameTrackDraft>,
+    /// Delete Track confirmation draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_track_confirm: Option<DeleteTrackConfirm>,
+    /// Track Output Channel Assignments dialog draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_channels_dialog: Option<OutputChannelsDraft>,
+    /// Whether the Customize Track Header Controls dialog is open.
+    #[serde(default)]
+    pub customize_header_dialog: bool,
+}
+
+/// Visibility flags for controls on track headers (Timeline ▸ Customize…).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrackHeaderCustomization {
+    pub show_source_patch: bool,
+    pub show_lock: bool,
+    pub show_target: bool,
+    pub show_sync_lock: bool,
+    pub show_visibility: bool,
+    pub show_mute: bool,
+    pub show_solo: bool,
+    pub show_voiceover: bool,
+    pub show_automation: bool,
+    pub show_track_name: bool,
+}
+
+impl Default for TrackHeaderCustomization {
+    fn default() -> Self {
+        Self {
+            show_source_patch: true,
+            show_lock: true,
+            show_target: true,
+            show_sync_lock: true,
+            show_visibility: true,
+            show_mute: true,
+            show_solo: true,
+            show_voiceover: true,
+            show_automation: true,
+            show_track_name: true,
+        }
+    }
+}
+
+/// Draft for the Rename Track dialog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameTrackDraft {
+    pub track: filmcraft_project::TrackId,
+    pub name: String,
+}
+
+/// Draft for the Delete Track confirmation modal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteTrackConfirm {
+    pub track: filmcraft_project::TrackId,
+    pub name: String,
+    pub clip_count: usize,
+}
+
+/// Draft for the Track Output Channel Assignments dialog.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OutputChannelsDraft {
+    pub track: filmcraft_project::TrackId,
+    pub track_name: String,
+    pub channels: filmcraft_project::AudioChannels,
+    pub output: Option<filmcraft_project::TrackId>,
+    pub input_map: filmcraft_project::InputMap,
 }
 
 impl TimelineView {
@@ -238,6 +311,11 @@ impl Default for TimelineView {
             seen_playhead: None,
             fit_empty: None,
             track_lanes: Default::default(),
+            header_customization: Default::default(),
+            rename_track: None,
+            delete_track_confirm: None,
+            output_channels_dialog: None,
+            customize_header_dialog: false,
         }
     }
 }
