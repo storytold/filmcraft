@@ -104,6 +104,13 @@ impl FilmcraftApp {
                 }
             }
         }
+        // the bar goes under the text and the job's controls, so they get their own clicks
+        let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
+        if resp.clicked() {
+            self.ui.status.clear();
+        }
+        // an error that just expired or was clicked away is not drawn as one this frame
+        let is_error = is_error && self.ui.status_is_error();
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         let mut text_x = sb.min.x + 10.0;
         if is_error {
@@ -112,11 +119,6 @@ impl FilmcraftApp {
             ui.painter().circle_filled(dot.center(), 6.0, t.danger);
             ui.painter().text(dot.center(), egui::Align2::CENTER_CENTER, "!", Tokens::semibold(10.0), egui::Color32::WHITE);
             text_x += 20.0;
-        }
-        // the bar goes under the text and the job's controls, so they get their own clicks
-        let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
-        if resp.clicked() {
-            self.ui.status.clear();
         }
         let right = self.job_status(ui, sb, &t).unwrap_or(sb.max.x);
         // A label, not painted text, so a path or an error can be selected and copied (#2295);
