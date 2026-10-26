@@ -732,6 +732,8 @@ pub struct TimelinePrefs {
     pub add_tracks_automatically: bool,
     /// Files dropped onto the Timeline are placed directly on it.
     pub drop_import_to_timeline: bool,
+    /// Backend for Render Effects In to Out (Enter): `cpu` | `gpu`. Set from the status bar.
+    pub render_backend: String,
 }
 
 impl Default for TimelinePrefs {
@@ -758,6 +760,7 @@ impl Default for TimelinePrefs {
             match_frame_sets_in: false,
             restore_open_sequences: true,
             add_tracks_automatically: true,
+            render_backend: "cpu".into(),
             drop_import_to_timeline: true,
         }
     }
@@ -975,6 +978,7 @@ const CACHE_MGMT: &[(&str, &str)] = &[
     ("olderThan", "Automatically delete cache files older than"),
     ("exceedsSize", "Automatically delete oldest cache files when cache exceeds"),
 ];
+const RENDER_BACKEND: &[(&str, &str)] = &[("cpu", "CPU"), ("gpu", "GPU")];
 const AUTO_SCROLL: &[(&str, &str)] = &[("noScroll", "No Scroll"), ("pageScroll", "Page Scroll"), ("smoothScroll", "Smooth Scroll")];
 const MOUSE_SCROLL: &[(&str, &str)] = &[("vertical", "Vertical"), ("horizontal", "Horizontal")];
 const HW_DECODE: &[(&str, &str)] = &[("auto", "Auto"), ("off", "Off")];
@@ -1329,6 +1333,7 @@ static CATEGORIES: &[Category] = &[
             f("timeline.stillImageDuration", "Still Image Default Duration", Kind::Duration { unit_key: "timeline.stillImageUnit" }, true),
             f("timeline.autoScroll", "Timeline Playback Auto-Scrolling", Kind::Choice(AUTO_SCROLL), true),
             f("timeline.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), true),
+            f("timeline.renderBackend", "Enter render backend", Kind::Choice(RENDER_BACKEND), true),
             Row::Group(
                 "Default Audio Tracks",
                 &[

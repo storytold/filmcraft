@@ -27,7 +27,7 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
             opts: filmcraft_render::RenderOptions,
             sources: &dyn filmcraft_render::SourceProvider,
         ) -> Option<filmcraft_render::Image> {
-            self.0.render(project, seq, t, opts, sources)
+            self.0.render_cpu_compatible(project, seq, t, opts, sources)
         }
     }
     filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(R(r)) as Box<dyn filmcraft_export::FrameRenderer>)
@@ -470,9 +470,8 @@ pub fn export(o: &Opts) -> Vec<Value> {
         let mut frames = 0i64;
         let hw0 = filmcraft_engine::export::hw_encode_stats();
         let gpu0 = filmcraft_engine::export::gpu_render_stats();
-        // The engine's headless session does not register the app's GPU export renderer; the bench
-        // does it here so `--gpu-rendering auto` measures the GPU path (and the row reports the
-        // frames it actually rendered on the GPU).
+        // Register the renderer for diagnostics. Strict AMD export still requires host admission
+        // and same-node VA-API; a renderer alone does not make this benchmark eligible.
         filmcraft_engine::export::register_frame_renderer(gpu_export_frame_renderer_factory);
         for _ in 0..o.repeat {
             let mut s = Session::default();
@@ -500,9 +499,9 @@ pub fn export(o: &Opts) -> Vec<Value> {
             filmcraft_export::reset_export_lock_wait();
             filmcraft_gpu::export_renderer::timing::reset();
             let (t0, c0) = (Instant::now(), cpu_now());
-            // `--hw auto`: the hardware encoder too (NVENC H.264 on Windows); `--hw off`: ours
-            let hardware = if o.hw == "off" { "off" } else { "auto" };
-            let r = s.execute("file.exportMedia", json!({"path": out.to_string_lossy(), "format": format, "hardwareEncoding": hardware, "gpuRendering": if o.hw == "off" { "off" } else { "auto" }, "wait": true}));
+            // `--hw auto` requests strict AMD hardware export; unsupported hosts fail, with no CPU fallback.
+            let hardware_export = o.hw != "off";
+            let r = s.execute("file.exportMedia", json!({"path": out.to_string_lossy(), "format": format, "hardwareExport": hardware_export, "wait": true}));
             let dt = t0.elapsed().as_secs_f64();
             if let Err(e) = r {
                 eprintln!("export {format}: {e}");
@@ -541,9 +540,9 @@ pub fn export(o: &Opts) -> Vec<Value> {
             "scene": id, "format": label, "frames": frames, "seconds": best, "fps": frames as f64 / best,
             "realtime": frames as f64 / best / FrameRate::FPS_23_976.as_f64(), "cpu_ms_per_frame": median(&cpu),
             "mbytes": bytes as f64 / 1e6, "runs_s": runs, "load": load_avg(),
-            // pictures encoded by a hardware encoder during this row (zero with --hw off or where there is none)
+            // Pictures encoded by AMD VA-API during this row (zero with --hw off or where unavailable).
             "hw_frames": filmcraft_engine::export::hw_encode_stats().frames.saturating_sub(hw0.frames),
-            // frames composited by the GPU export renderer (zero with --gpu-rendering off or where there is no adapter)
+            // Frames composited by GPU export renderer (zero on failed/unavailable strict AMD export).
             "gpu_frames": filmcraft_engine::export::gpu_render_stats().frames.saturating_sub(gpu0.frames),
             "gpu_fallbacks": filmcraft_engine::export::gpu_render_stats().fallbacks.saturating_sub(gpu0.fallbacks),
         }));

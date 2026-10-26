@@ -93,6 +93,16 @@ pub struct PreviewStore {
     pub generation: AtomicU64,
     /// Live mixer state shared with playback: held controls, meters, newest project snapshot.
     pub live: Arc<filmcraft_render::mixer::LiveMix>,
+    /// GPU route for Enter's previews; None until one is registered (every part is then refused).
+    gpu_route: RwLock<Option<Arc<dyn GpuPreviewRoute>>>,
+}
+
+/// Admission of preview parts to a GPU route. A GPU frame renderer plugs in behind this trait;
+/// a refusal names the reason, and the caller never falls back to the CPU.
+pub trait GpuPreviewRoute: Send + Sync {
+    /// `Ok(())` when the route can render frames `first_frame..first_frame + frames` of `seg` on the
+    /// GPU; otherwise the reason.
+    fn admit(&self, seg: &Segment, first_frame: i64, frames: i64) -> std::result::Result<(), String>;
 }
 
 fn video_name(hash: &str) -> String {
@@ -450,6 +460,16 @@ impl PreviewStore {
         out
     }
 
+    /// The registered GPU route, if any.
+    pub fn gpu_route(&self) -> Option<Arc<dyn GpuPreviewRoute>> {
+        self.gpu_route.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Register (or clear, with None) the GPU route used by Enter's previews.
+    pub fn set_gpu_route(&self, route: Option<Arc<dyn GpuPreviewRoute>>) {
+        *self.gpu_route.write().unwrap_or_else(|e| e.into_inner()) = route;
+    }
+
     fn bump(&self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
@@ -614,11 +634,43 @@ struct Todo {
     len: i64,
 }
 
+/// Read the status-bar render backend (`timeline.renderBackend`): `Ok(true)` when Enter asks for
+/// the GPU route, `Ok(false)` for the CPU reference route, and an error for any other value.
+pub fn check_render_backend(backend: &str) -> Result<bool> {
+    match backend {
+        "cpu" => Ok(false),
+        "gpu" => Ok(true),
+        other => Err(EngineError::Other(format!("unknown render backend `{other}` (expected cpu or gpu)"))),
+    }
+}
+
+/// The first part of `todo` that the GPU route refuses, as a message naming its first frame.
+/// `None` when every part is admitted. With no route registered, every part is refused.
+fn gpu_refusal(route: Option<&dyn GpuPreviewRoute>, todo: &[Todo]) -> Option<String> {
+    for t in todo {
+        let reason = match route {
+            None => "no GPU renderer is registered for previews".to_string(),
+            Some(r) => match r.admit(&t.seg, t.seg.first_frame.saturating_add(t.off), t.len) {
+                Ok(()) => continue,
+                Err(reason) => reason,
+            },
+        };
+        let frame = t.seg.first_frame.saturating_add(t.off);
+        return Some(format!(
+            "GPU render refused for the part starting at frame {frame} ({} frames): {reason}. Nothing was rendered and no frame fell back to the CPU.",
+            t.len
+        ));
+    }
+    None
+}
+
 /// Start rendering previews as a background job. `{"wait": true}` renders synchronously.
 ///
 /// The In/Out modes render only the frames between In and Out (a segment that extends past them
 /// gets a partial preview), and every mode renders only frames that have no preview yet.
 pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
+    // The status-bar backend is for Enter (effects and transitions) only.
+    let gpu = mode == RenderMode::EffectsInToOut && check_render_backend(&s.prefs.timeline.render_backend)?;
     let (seq, range) = in_out(s)?;
     let rate = s.project.sequence(seq).ok_or(EngineError::NoSequence)?.settings.frame_rate;
     let store = s.previews.clone();
@@ -640,6 +692,12 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     if todo.is_empty() {
         s.toast("Nothing to render: previews are up to date");
         return Ok(json!({"job": null, "segments": 0}));
+    }
+    if gpu {
+        // Fail closed: refuse before any folder or job exists.
+        if let Some(msg) = gpu_refusal(store.gpu_route().as_deref(), &todo) {
+            return Err(EngineError::Other(msg));
+        }
     }
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("preview folder {}: {e}", dir.display())))?;
     let frames: i64 = todo.iter().map(|t| t.len).fold(0, i64::saturating_add);
@@ -671,6 +729,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             let part = dir.join(format!("{name}.part"));
             let first = t.seg.first_frame.saturating_add(t.off);
             let settings = filmcraft_export::ExportSettings {
+                // GPU route: frames come from the GPU only; a refused frame fails the part.
+                gpu_rendering: if gpu { filmcraft_export::GpuRendering::GpuRequired } else { filmcraft_export::GpuRendering::Off },
                 format: filmcraft_export::Format::ProRes,
                 path: part.to_string_lossy().to_string(),
                 range: Some(TimeRange::from_bounds(rate.tick_of(first), rate.tick_of(first.saturating_add(t.len)))),
@@ -910,4 +970,95 @@ pub fn bar_json(s: &Session) -> Result<Value> {
             "hash": g.hash,
         })).collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(test)]
+mod render_backend_tests {
+    use super::{GpuPreviewRoute, Todo, check_render_backend, gpu_refusal};
+    use filmcraft_render::preview::{Need, Segment};
+    use filmcraft_time::Tick;
+    use std::sync::Arc;
+
+    fn seg(first_frame: i64, frames: i64, hash: &str) -> Segment {
+        Segment { first_frame, frames, start: Tick::ZERO, end: Tick::ZERO, hash: hash.into(), need: Need::Render, cost_ms: 1.0, clips: Vec::new() }
+    }
+
+    fn part(seg: Segment, off: i64, len: i64) -> Todo {
+        Todo { seg, off, len }
+    }
+
+    /// Refuses one segment hash with a fixed reason; admits everything else.
+    struct RefuseHash(&'static str, &'static str);
+
+    impl GpuPreviewRoute for RefuseHash {
+        fn admit(&self, seg: &Segment, _first_frame: i64, _frames: i64) -> std::result::Result<(), String> {
+            if seg.hash == self.0 { Err(self.1.into()) } else { Ok(()) }
+        }
+    }
+
+    #[test]
+    fn cpu_is_the_reference_route_and_gpu_is_requested() {
+        assert_eq!(check_render_backend("cpu").ok(), Some(false));
+        assert_eq!(check_render_backend("gpu").ok(), Some(true));
+    }
+
+    #[test]
+    fn unknown_backend_is_an_error_not_a_default() {
+        assert!(check_render_backend("metal").is_err());
+        assert!(check_render_backend("").is_err());
+    }
+
+    #[test]
+    fn no_route_refuses_the_first_part_with_its_frame() {
+        let todo = [part(seg(100, 50, "aa"), 10, 20)];
+        let msg = gpu_refusal(None, &todo).unwrap_or_default();
+        assert!(msg.contains("frame 110"), "{msg}");
+        assert!(msg.contains("no GPU renderer"), "{msg}");
+        assert!(msg.contains("no frame fell back to the CPU"), "{msg}");
+    }
+
+    #[test]
+    fn admitted_parts_pass_the_gate() {
+        let route = RefuseHash("bad", "unused");
+        let todo = [part(seg(0, 30, "aa"), 0, 30), part(seg(40, 10, "cc"), 0, 10)];
+        assert!(gpu_refusal(Some(&route), &todo).is_none());
+    }
+
+    #[test]
+    fn a_refused_part_names_its_reason_and_frame_and_stops_the_batch() {
+        let route = RefuseHash("bad", "unsupported effect `posterize_time`");
+        let todo = [part(seg(0, 30, "aa"), 0, 30), part(seg(40, 10, "bad"), 0, 10), part(seg(90, 5, "bad"), 0, 5)];
+        let msg = gpu_refusal(Some(&route), &todo).unwrap_or_default();
+        assert!(msg.contains("frame 40"), "{msg}");
+        assert!(msg.contains("posterize_time"), "{msg}");
+        assert!(!msg.contains("frame 90"), "{msg}");
+    }
+
+    #[test]
+    fn enter_gpu_without_a_sequence_starts_no_job() {
+        // Only the sequence lookup is covered here; the gate's own logic is in the tests above.
+        let mut s = crate::Session::default();
+        s.prefs.timeline.render_backend = "gpu".into();
+        assert!(super::render(&mut s, super::RenderMode::EffectsInToOut, &serde_json::json!({})).is_err());
+        assert!(s.jobs.is_empty());
+    }
+
+    #[test]
+    fn other_render_commands_ignore_the_enter_backend() {
+        let mut s = crate::Session::default();
+        s.prefs.timeline.render_backend = "gpu".into();
+        // no sequence: fails for that reason, not because of the Enter backend
+        let err = super::render(&mut s, super::RenderMode::InToOut, &serde_json::json!({}));
+        assert!(matches!(err, Err(crate::EngineError::NoSequence)), "{err:?}");
+    }
+
+    #[test]
+    fn registered_route_is_returned_and_cleared() {
+        let store = super::PreviewStore::default();
+        assert!(store.gpu_route().is_none());
+        store.set_gpu_route(Some(Arc::new(RefuseHash("x", "y"))));
+        assert!(store.gpu_route().is_some());
+        store.set_gpu_route(None);
+        assert!(store.gpu_route().is_none());
+    }
 }

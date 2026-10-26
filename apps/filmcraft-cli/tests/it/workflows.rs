@@ -322,8 +322,10 @@ fn phone_vfr_clip_extract_gain_title_to_h264_mp4() {
 
     // picture: frame k of the export is frame k (before the cut) or k + 31 (after) of the source
     // as an editor plays it (CFR 30, a dropped frame holding the previous one)
-    let src_frames = frames(&ffmpeg, &src, Some("fps=30"), "gray");
-    let got = frames(&ffmpeg, &out, None, "gray");
+    // Compare both streams after decoding to RGB: their luma matrices differ (the untagged SD
+    // source defaults to BT.601; the MP4 export signals BT.709), so raw gray Y samples are not alike.
+    let src_frames = frames(&ffmpeg, &src, Some("fps=30"), "rgb24");
+    let got = frames(&ffmpeg, &out, None, "rgb24");
     assert!(src_frames.len() >= 120, "{} source frames", src_frames.len());
     assert_eq!(got.len(), 89);
     for k in [20, 32, 40, 44, 45, 50, 70, 88] {
@@ -343,10 +345,13 @@ fn phone_vfr_clip_extract_gain_title_to_h264_mp4() {
                 let mut d = 0.0;
                 for y in by..by + 10 {
                     for x in bx..bx + 10 {
-                        d += f64::from(got[k][y * FW + x].abs_diff(src_frames[k][y * FW + x]));
+                        let i = (y * FW + x) * 3;
+                        for c in 0..3 {
+                            d += f64::from(got[k][i + c].abs_diff(src_frames[k][i + c]));
+                        }
                     }
                 }
-                n += usize::from(d / 100.0 > 15.0);
+                n += usize::from(d / 300.0 > 15.0);
             }
         }
         n

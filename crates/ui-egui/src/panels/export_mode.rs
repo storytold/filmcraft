@@ -42,6 +42,14 @@ pub struct ExportUi {
     /// The preset the settings came from ("Custom" once edited).
     pub preset: String,
     pub settings: ExportSettings,
+    /// Export on the CPU (manual). Unchecked, the export uses the GPU where the format has a route.
+    pub cpu_export: bool,
+    /// On the GPU route, encode with NVIDIA NVENC instead of AMD VA-API. Ignored while `cpu_export`
+    /// is on. Missing from older files, it reads as false (AMD).
+    pub nvenc_export: bool,
+    /// Whether the AMD VA-API export admission is available (set by the panel each frame). Not saved.
+    #[serde(skip)]
+    pub amd_available: bool,
     /// File name without extension, and the folder.
     pub file_name: String,
     pub location: String,
@@ -67,6 +75,9 @@ impl Default for ExportUi {
         ExportUi {
             preset: DEFAULT_PRESET.into(),
             settings: preset,
+            cpu_export: false,
+            nvenc_export: false,
+            amd_available: true,
             file_name: String::new(),
             location: String::new(),
             range: "entire".into(),
@@ -94,6 +105,12 @@ pub struct PresetManager {
 
 pub const CUSTOM: &str = "Custom";
 
+/// The encoder choices of the Encoder selector (the labels are the combo's values; CPU is the
+/// existing manual-CPU label).
+const ENCODER_AMD: &str = "AMD (VA-API)";
+const ENCODER_NVENC: &str = "NVIDIA (NVENC)";
+const ENCODER_CPU: &str = "Export via CPU (manual)";
+
 /// Collected automation ids (registered after drawing, so widgets can borrow the app freely).
 #[derive(Default)]
 struct Reg(Vec<(String, Rect, String)>);
@@ -111,6 +128,27 @@ impl Reg {
 
 fn settings_json(s: &ExportSettings) -> Value {
     serde_json::to_value(s).unwrap_or_default()
+}
+
+/// Whether the format has a GPU route (VA-API H.264 or H.265).
+fn gpu_capable(s: &ExportSettings) -> bool {
+    matches!(s.format, Format::H264 | Format::Hevc)
+}
+
+/// The settings an export runs with: the GPU unless the CPU is picked by hand or the format has no GPU route.
+/// The GPU route is AMD VA-API (`set_hardware_export(true)`), or NVIDIA NVENC when picked: CPU reference
+/// rendering with `HardwareEncoding::NvencRequired`, which fails closed rather than falling back.
+pub fn effective_settings(ex: &ExportUi) -> ExportSettings {
+    let mut s = ex.settings.clone();
+    // Without AMD admission the default route falls back to CPU (never Auto); NVENC does not need it.
+    let gpu = !ex.cpu_export && gpu_capable(&s) && (ex.nvenc_export || ex.amd_available);
+    if gpu && ex.nvenc_export {
+        s.set_hardware_export(false);
+        s.hardware_encoding = HardwareEncoding::NvencRequired;
+    } else {
+        s.set_hardware_export(gpu);
+    }
+    s
 }
 
 /// Apply a preset by name (from the engine's library).
@@ -139,7 +177,7 @@ pub fn output_path(ex: &ExportUi) -> String {
 /// Engine params for the current settings (`file.exportMedia` / `export.queue.add`).
 pub fn export_params(app: &FilmcraftApp) -> Value {
     let ex = &app.ui.export;
-    let mut p = json!({"path": output_path(ex), "settings": settings_json(&ex.settings), "range": ex.range});
+    let mut p = json!({"path": output_path(ex), "settings": settings_json(&effective_settings(ex)), "range": ex.range});
     if ex.range == "custom" {
         p["startSeconds"] = json!(ex.custom_start);
         p["endSeconds"] = json!(ex.custom_end);
@@ -595,7 +633,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.add_space(8.0);
         let s = &mut ex.settings;
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
-            video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
+            video_section(ui, &mut reg, s, &mut ex.cpu_export, &mut ex.nvenc_export, &t, seq_w, seq_h, seq_hdr);
         }
         if (s.has_audio()
             || !s.has_video()
@@ -687,7 +725,17 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
+fn video_section(
+    ui: &mut egui::Ui,
+    reg: &mut Reg,
+    s: &mut ExportSettings,
+    cpu: &mut bool,
+    nvenc: &mut bool,
+    t: &Tokens,
+    seq_w: u32,
+    seq_h: u32,
+    seq_hdr: bool,
+) {
     // frame size
     let mut match_size = s.frame_size.is_none();
     row(ui, t, tl!("Frame Size"), |ui| {
@@ -833,18 +881,6 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     *k = v as u32;
                 }
             });
-            // The system's hardware encoder where there is one (VideoToolbox on macOS, NVENC on NVIDIA
-            // GPUs on Windows, VA-API on Linux); everything it does not take (two-pass, HDR, MXF) and
-            // every machine without one keeps the built-in encoder.
-            // H.265 and AV1 have only hardware encoders: choosing the format is the opt-in.
-            if !hevc {
-                row(ui, t, "Hardware Encoding", |ui| {
-                    let mut on = s.hardware_encoding == HardwareEncoding::Auto;
-                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
-                        s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
-                    }
-                });
-            }
         }
         Format::ProRes => {
             row(ui, t, tl!("Profile"), |ui| {
@@ -901,14 +937,39 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         _ => {}
     }
-    // Composite the picture on the GPU (filmcraft-gpu) instead of the CPU reference renderer;
-    // Auto falls back to the CPU wherever the GPU cannot render the frame.
-    row(ui, t, tl!("GPU Rendering"), |ui| {
-        let mut on = s.gpu_rendering == GpuRendering::Auto;
-        if check(ui, reg, "export.gpuRendering", &mut on, tl!("Composite on the GPU when available")) {
-            s.gpu_rendering = if on { GpuRendering::Auto } else { GpuRendering::Off };
+    row(ui, t, tl!("Encoder"), |ui| {
+        // a format without a GPU route (not H.264 or H.265) exports on the CPU whatever the choice says
+        let gpu = gpu_capable(s);
+        let current = if !gpu || *cpu {
+            ENCODER_CPU
+        } else if *nvenc {
+            ENCODER_NVENC
+        } else {
+            ENCODER_AMD
+        };
+        let labels = [(ENCODER_AMD.to_string(), true), (ENCODER_NVENC.to_string(), true), (ENCODER_CPU.to_string(), true)];
+        let mut chosen = None;
+        ui.add_enabled_ui(gpu, |ui| {
+            chosen = combo(ui, reg, "export.video.encoder", current, &labels, 220.0);
+        });
+        match chosen {
+            Some(0) => {
+                *cpu = false;
+                *nvenc = false;
+            }
+            Some(1) => {
+                *cpu = false;
+                *nvenc = true;
+            }
+            Some(2) => *cpu = true,
+            _ => {}
         }
     });
+    // NVENC H.265 is Windows-only; elsewhere it has no route
+    if gpu_capable(s) && !*cpu && *nvenc && s.format == Format::Hevc && !cfg!(target_os = "windows") {
+        // NVENC has no H.265 route on this platform: say so, and keep the choice (never switch silently)
+        row(ui, t, "", |ui| ui.label(egui::RichText::new(tl!("Not supported by FilmCraft's encoders yet")).color(t.danger).size(12.0)));
+    }
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, tl!("Render at Maximum Depth")));
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
 }
@@ -1084,6 +1145,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     let t = app.tokens;
     let mut reg = Reg::default();
     let Some(q) = app.session.active_sequence().cloned() else { return };
+    app.ui.export.amd_available = app.session.amd_export_provider.is_some();
     let rate = q.settings.frame_rate;
     // preview (aspect of the output frame)
     let r = app.ui.export.settings.resolve(q.settings.width, q.settings.height, rate, q.settings.sample_rate);
@@ -1092,12 +1154,36 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     ui.painter().rect_filled(pic, 0.0, Color32::BLACK);
     if app.ui.export.settings.has_video() {
         let frame = rate.frame_at(app.session.playhead());
-        let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 500, revision: app.session.revision, draft: false };
         let project = app.session.project.clone();
-        app.frames.request(key, rate.tick_of(frame), 0.5, &project, 0);
-        if let Some(img) = app.frames.get(&key) {
-            let ctx = ui.ctx().clone();
-            let tex = app.texture_for(&ctx, "export-preview", key, &img);
+        let mut notice: Option<String> = None;
+        let shown = if effective_settings(&app.ui.export).gpu_rendering == GpuRendering::Off {
+            let key = FrameKey { target: Target::Sequence(seq_id), frame, size: 500, revision: app.session.revision, draft: false };
+            app.frames.request(key, rate.tick_of(frame), 0.5, &project, 0);
+            let img = app.frames.get(&key);
+            img.map(|img| {
+                let ctx = ui.ctx().clone();
+                app.texture_for(&ctx, "export-preview", key, &img)
+            })
+        } else {
+            // same GPU route as the Program monitor: the sequence plan, presented by the GPU compositor
+            let key = FrameKey { target: Target::SequencePlan(seq_id), frame, size: 500, revision: app.session.revision, draft: false };
+            app.frames.request(key, rate.tick_of(frame), 0.5, &project, 0);
+            match app.frames.get_plan(&key) {
+                Some(plan) => {
+                    let old_status = app.ui.status.clone();
+                    let tex = app.gpu_present(key, &plan).map(|(id, _)| id);
+                    if tex.is_none() && app.ui.status != old_status {
+                        notice = Some(std::mem::replace(&mut app.ui.status, old_status));
+                    }
+                    tex
+                }
+                None => {
+                    notice = app.frames.plan_error(&key).or_else(|| app.gpu.is_none().then(|| tl!("GPU preview unavailable; CPU fallback is disabled").into()));
+                    None
+                }
+            }
+        };
+        if let Some(tex) = shown {
             let inner = match app.ui.export.settings.scaling {
                 Scaling::StretchToFill => pic,
                 Scaling::ScaleToFit => crate::panels::monitor::fit(pic, q.settings.width as f32, q.settings.height as f32),
@@ -1107,6 +1193,8 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
                 }
             };
             ui.painter().with_clip_rect(pic).image(tex, inner, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        } else if let Some(notice) = notice {
+            ui.painter().text(pic.center(), Align2::CENTER_CENTER, notice, Tokens::ui(12.0), t.text_dim);
         }
     } else {
         ui.painter().text(pic.center(), Align2::CENTER_CENTER, tl!("Audio only"), Tokens::ui(13.0), t.text_dim);
@@ -1323,7 +1411,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new(tl!("Save")));
                 reg.add("presetManager.save", r.rect, "Save");
                 if r.clicked() {
-                    cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&app.ui.export.settings)})));
+                    cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&effective_settings(&app.ui.export))})));
                     m.selected = m.save_name.trim().to_string();
                 }
             });

@@ -100,6 +100,19 @@ asserts name (H.264, HEVC and the HEVC picture parameters with their SEI payload
 Compare the numbers with the asserts (a difference is drift, which must be understood before
 anything is "fixed" to match) and add asserts for anything new.
 
+The VA-API encoder tests (`crates/platform/tests/vaapi_encode_session.rs` for the driver's H.264 encode
+capabilities and an encode session, `vaapi_export.rs` for Export with Hardware encoding through the
+export pipeline: against the software encoder, every profile and rate control with keyframes where
+asked, 1080p cropping, a long GOP, a short picture as an error, and what VA-API declines; Linux) skip,
+printing `SKIPPED`, without a VA-API driver with an H.264 `EncSlice` entrypoint. Where VA-API encodes,
+`nvenc_export.rs`'s decline-count test skips too (VA-API declines and counts the same requests), and
+its export test skips unless NVENC is there. `encode_layouts_match_the_header` in
+`crates/platform/src/vaapi/abi_tests.rs` was generated like the decode layouts: a C program printing
+`sizeof` / `offsetof` and the constants of the encode declarations, built with
+`cc $(pkg-config --cflags libva)` against libva 2.23's `va.h` and `va_enc_h264.h` (`libva-devel`); the
+bit-field positions of `seq_fields` / `vui_fields` / `pic_fields` it printed are checked in
+`vaapi/h264enc.rs`'s `bit_fields_match_the_header`.
+
 ### Pass criteria per codec
 
 | Crate | Oracle check | Criterion |

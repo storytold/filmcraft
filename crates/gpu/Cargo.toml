@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
+filmcraft-media = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
@@ -21,7 +22,12 @@ log = { workspace = true }
 pollster = "1"
 rayon = { workspace = true }
 
+# Vulkan backend for the strict AMD export; the web build (wasm32) has no Vulkan.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+
 [dev-dependencies]
+naga = "30"
 pollster = "1"
 filmcraft-export = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }

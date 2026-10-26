@@ -46,12 +46,14 @@ impl Card {
     /// Rotate about the vertical (y) axis through `c` by `a` radians (positive turns the right edge away).
     pub fn rot_y(self, c: V3, a: f32) -> Self {
         let (s, co) = a.sin_cos();
+        let co = if co.abs() < 1e-5 { 0.0 } else { co }; // edge-on: match the GPU snap, so front/back cannot flip on f32 noise
         let r = move |v: V3| [v[0] * co - v[2] * s, v[1], v[0] * s + v[2] * co];
         self.map(move |p| add(c, r(sub(p, c))), r)
     }
     /// Rotate about the horizontal (x) axis through `c` (positive turns the bottom edge away).
     pub fn rot_x(self, c: V3, a: f32) -> Self {
         let (s, co) = a.sin_cos();
+        let co = if co.abs() < 1e-5 { 0.0 } else { co }; // edge-on: match the GPU snap, so front/back cannot flip on f32 noise
         let r = move |v: V3| [v[0], v[1] * co - v[2] * s, v[1] * s + v[2] * co];
         self.map(move |p| add(c, r(sub(p, c))), r)
     }

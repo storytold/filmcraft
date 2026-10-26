@@ -193,11 +193,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         let channel = display.is_channel();
         // the GPU compositor's output is opaque, so the Transparency Grid takes the CPU frames
         let grid = mv.transparency_grid && !channel;
-        let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !grid && !crate::panels::menu_dialogs::software_renderer(app);
+        let gpu_preview = which == Which::Program && !grid && !crate::panels::menu_dialogs::software_renderer(app);
+        let gpu_available = app.gpu.as_ref().is_some_and(|gpu| !gpu.broken.load(std::sync::atomic::Ordering::Relaxed));
         // render previews are opaque, so the grid and Display Mode ▸ Alpha take live renders
         let live = grid || display == DisplayMode::Alpha;
         let cpu_target = target;
-        let target = match (use_gpu, target) {
+        let target = match (gpu_preview, target) {
             (true, Target::Sequence(s)) => Target::SequencePlan(s),
             (false, Target::Sequence(s)) if live => Target::SequenceLive(s),
             (_, t) => t,
@@ -206,7 +207,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
         let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
         let project = app.session.project.clone();
-        if playing {
+        let mut gpu_notice: Option<String> = None;
+        if gpu_preview && !gpu_available {
+            gpu_notice = Some(tl!("GPU preview unavailable; CPU fallback is disabled").into());
+            if which == Which::Program && app.playback.preroll.is_some() {
+                app.playback.preroll_ready = true;
+            }
+        } else if playing {
             let preroll = which == Which::Program && app.playback.preroll.is_some();
             let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
             app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
@@ -224,16 +231,39 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         } else {
             format!("monitor-{prefix}")
         };
-        let (shown, on_screen) = if use_gpu {
-            let found = app
-                .frames
-                .get_plan(&key)
-                .map(|p| (key, p))
-                .or_else(|| app.frames.nearest_plan(key, 6))
-                .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))));
-            match found {
-                Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
-                None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
+        let (shown, on_screen) = if gpu_preview {
+            if !gpu_available {
+                (None, None)
+            } else if channel {
+                gpu_notice = Some(tl!("GPU channel display is unsupported; CPU fallback is disabled").into());
+                (None, None)
+            } else {
+                let ready = app.frames.get_plan(&key);
+                let error = app.frames.plan_error(&key);
+                // the exact plan is still rendering: keep the nearest cached one on screen (no blink)
+                match plan_stand_in(key, ready, error.is_some(), || app.frames.nearest_plan(key, 6)) {
+                    Some((shown_key, plan)) => {
+                        let old_status = app.ui.status.clone();
+                        match app.gpu_present(shown_key, &plan) {
+                            Some((id, _)) => (Some(id), Some(shown_key)),
+                            None => {
+                                if app.ui.status != old_status {
+                                    gpu_notice = Some(app.ui.status.clone());
+                                    app.ui.status = old_status;
+                                }
+                                (None, None)
+                            }
+                        }
+                    }
+                    None => {
+                        if let Some(error) = error {
+                            gpu_notice = Some(error);
+                        } else if app.gpu.is_none() {
+                            gpu_notice = Some(tl!("GPU preview unavailable; CPU fallback is disabled").into());
+                        }
+                        (None, None)
+                    }
+                }
             }
         } else if grid {
             cpu_texture_as(app, &ctx, &tex_name, key, &asked, display, true)
@@ -257,29 +287,40 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         }
         if let Some(tex) = shown {
             ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        } else if let Some(notice) = gpu_notice {
+            ui.painter().text(pic.center(), Align2::CENTER_CENTER, notice, Tokens::ui(12.0), t.text_dim);
         }
         if let Some(ra) = ref_area {
-            // the reference frame (CPU path)
-            let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
-            let rtarget = match cpu_target {
-                Target::Sequence(s) if mv.transparency_grid => Target::SequenceLive(s),
-                t => t,
-            };
-            let rkey = FrameKey { target: rtarget, frame: rf, size: size_key, revision: rev, draft: false };
-            app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
             let rpic = fit(ra, display_w, frame_size.1 as f32);
             if mv.transparency_grid {
                 monitor_view::transparency_grid(ui.painter(), rpic, ui.clip_rect());
             } else {
                 ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
             }
-            let (reference, _) = if mv.transparency_grid {
-                cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], DisplayMode::Composite, true)
+            if gpu_preview {
+                ui.painter().text(
+                    rpic.center(),
+                    Align2::CENTER_CENTER,
+                    tl!("Reference view unavailable in GPU-only preview; CPU fallback is disabled"),
+                    Tokens::ui(12.0),
+                    t.text_dim,
+                );
             } else {
-                cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite)
-            };
-            if let Some(tex) = reference {
-                ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
+                let rtarget = match cpu_target {
+                    Target::Sequence(s) if mv.transparency_grid => Target::SequenceLive(s),
+                    t => t,
+                };
+                let rkey = FrameKey { target: rtarget, frame: rf, size: size_key, revision: rev, draft: false };
+                app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
+                let (reference, _) = if mv.transparency_grid {
+                    cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], DisplayMode::Composite, true)
+                } else {
+                    cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite)
+                };
+                if let Some(tex) = reference {
+                    ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                }
             }
             app.auto.add("program.compare.reference", rpic, "reference frame");
             let bar = Rect::from_min_max(pos2(ra.min.x, ra.max.y + 2.0), pos2(video_area.max.x, ra.max.y + 22.0));
@@ -504,6 +545,19 @@ fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bo
         asked.pop_front();
     }
     before
+}
+
+/// The GPU plan a Program monitor shows: the exact one, else the nearest cached one before it (so
+/// the picture stays up while the exact frame renders). A plan error for the exact frame is shown
+/// as an error, never covered by a stand-in.
+fn plan_stand_in<T>(key: FrameKey, exact: Option<T>, error: bool, nearest: impl FnOnce() -> Option<(FrameKey, T)>) -> Option<(FrameKey, T)> {
+    if let Some(plan) = exact {
+        return Some((key, plan));
+    }
+    if error {
+        return None;
+    }
+    nearest()
 }
 
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
@@ -1217,5 +1271,20 @@ mod tests {
     fn eyedropper_rejects_empty_and_truncated_frames() {
         assert_eq!(sample_rgb(&Rgba { w: 0, h: 0, px: vec![] }, (0.5, 0.5)), None);
         assert_eq!(sample_rgb(&Rgba { w: 4, h: 4, px: vec![0; 10] }, (0.5, 0.5)), None);
+    }
+
+    #[test]
+    fn plan_stand_in_keeps_the_picture_while_the_exact_plan_renders() {
+        use filmcraft_project::ItemId;
+        let key = FrameKey { target: Target::SequencePlan(ItemId(1)), frame: 10, size: 1000, revision: 1, draft: false };
+        let behind = FrameKey { frame: 8, ..key };
+        // exact ready: shown as itself
+        assert_eq!(plan_stand_in(key, Some(1u32), false, || Some((behind, 9))), Some((key, 1)));
+        // exact rendering: the nearest cached plan stands in
+        assert_eq!(plan_stand_in(key, None, false, || Some((behind, 9))), Some((behind, 9)));
+        // exact rendering, nothing cached nearby: nothing to show
+        assert_eq!(plan_stand_in::<u32>(key, None, false, || None), None);
+        // an error for the exact frame is not covered by an older plan
+        assert_eq!(plan_stand_in(key, None, true, || Some((behind, 9))), None);
     }
 }

@@ -78,6 +78,18 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
+- **Linux: VA-API H.264 encoding** (`vaapi/h264enc.rs`), 8-bit SDR 4:2:0 for Export, on AMD, Intel
+  and other drivers with an H.264 `EncSlice` entrypoint. It runs on the decoders' shared display
+  (`vaapi/va.rs`: `encode_caps`, `EncodeSession`) and is registered behind NVENC, so NVIDIA machines
+  keep NVENC. The stream is IDR + P pictures (no B-frames), one slice per picture, POC type 0, CABAC
+  for Main / High and no 8×8 transform (AMD's encoders never use it); the SPS and PPS come from
+  `filmcraft_h264enc`'s own writers (`nal`) and go into `avcC`, and slice NAL header bytes a driver
+  leaves zero (Mesa radeonsi) are set, and SPS / PPS / AUD / SEI a driver writes are dropped. The export's RGBA is converted to BT.709 limited 4:2:0 on the
+  CPU (`rgba_to_yuv420_8`) and uploaded as NV12, edges replicated into the macroblock padding.
+  Export ▸ Hardware encoding (off by default) selects it. It declines two-pass VBR, CRF, HDR, MXF,
+  interlaced output and sizes above the driver's limit (4096×4096 when the driver does not say), and
+  the next encoder runs; a failure during an export ends it with an error. Ported from #408's encoder
+  (Manuel Camacho).
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
@@ -294,11 +306,13 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
 | `tests/setting.rs` | Hardware decoding Off gives the software decoder through `make_video_decoder` and the media stack (no hardware frames); Auto gives VideoToolbox where available |
 | `tests/it/hardware_encode.rs` (macOS) | what the hardware path takes and declines; round trip through our software decoder (every picture, in order, luma PSNR above 30 dB, keyframes no further apart than asked, no composition offsets); an export through `filmcraft_export` that decodes in our decoder and in ffmpeg / ffprobe (profile, size, frame count, BT.709); the built-in encoder still exporting everything hardware declines; exact output size at sizes that are not multiples of 16; hostile configurations (zero, huge, odd sizes, frame rates, bitrates, keyframe intervals, wrong planes) give errors and never panic; encoders dropped at any point do not crash or hang. The same for **HEVC**: Main profile, 8-bit 4:2:0, `hvc1` entry with VPS / SPS / PPS and 4-byte lengths, MP4 and QuickTime, AAC audio, two-pass refused, the format list agreeing with the probe, ffprobe reading `codec_name=hevc`, `profile=Main`, `codec_tag_string=hvc1`, `pix_fmt=yuv420p`, BT.709 |
 | `tests/it/nvenc.rs` (Windows / Linux, NVIDIA) | H.264 from NVENC (1280×720, 6 Mbps, 72 frames) decodes with our decoder at worst 46.9 dB luma PSNR; IDR at 0, 24 and 48; dts / pts right |
-| `tests/it/nvenc_export.rs` (Windows / Linux; fallback also tested without NVIDIA) | Export with hardware encoding against the software encoder through the export pipeline: the two decoded files at worst 54.8 dB luma PSNR; ffmpeg decodes the file without errors; declined cases go to the software encoder; the counters |
+| `tests/it/nvenc_export.rs` (Windows / Linux; fallback also tested without NVIDIA; skipped where VA-API is the hardware encoder) | Export with hardware encoding against the software encoder through the export pipeline: the two decoded files at worst 54.8 dB luma PSNR; ffmpeg decodes the file without errors; declined cases go to the software encoder; the counters |
 | `tests/it/nvenc_hevc.rs` (Windows, NVIDIA with HEVC) | HEVC from NVENC (1280×720, 6 Mbps, 72 frames, keyframe every 24) decodes with our HEVC decoder at worst 48.9 dB luma / 51.0 dB chroma PSNR; IDR at 0, 24, 48; dts strictly increasing, pts a permutation, `sps_max_num_reorder_pics` within the dts shift; no parameter sets in the samples; the `hvcC`'s profile / tier / level bytes are the SPS's own; VUI BT.709 limited and timing `(1, 24)`; hostile configurations, sizes, planes and encoders dropped mid-stream give errors, never panics; keyframes every 1–2 pictures without B-frames |
 | `tests/it/nvenc_hevc_export.rs` (Windows, NVIDIA with HEVC) | H.265 export through the real pipeline, MP4 and QuickTime, toggle Auto and Off: counters (72 frames, 1 session, 0 declined), our decoder against the software H.264 export at worst 54.8 dB luma PSNR, ffprobe `codec_name=hevc`, `profile=Main`, `codec_tag_string=hvc1`, `pix_fmt=yuv420p`, BT.709 limited, 72 frames, 24/1, keyframes at 0 and 48, start 0, `ffmpeg -xerror` clean; with AAC audio; 1920×1080 and 642×362 cropped back from the coded size; every decline (HDR, analysis pass, two-pass, interlaced, non-square pixels, MXF, sizes over 65535, odd sizes, sizes outside the GPU's limits) an error naming NVENC, counted once; H.264 with hardware encoding Off never touches NVENC |
 | `tests/it/nvenc_rgba_input.rs` (Windows, NVIDIA) | RGBA input, HEVC Main and H.264 High, 1280×720: solid red, green, blue, white, black and grey decode (our decoder) to the exact BT.709 limited codes of `rgba_to_yuv420_8`, within 2; a moving picture at worst 47.7 dB luma / 50.7 dB chroma PSNR against that conversion; Main 10 has no RGBA input; short pictures and planar / RGBA pictures for the other kind of encoder are errors |
 | `tests/it/nvenc_hevc_probe.rs` (Windows) | the HEVC probe in a fresh process: its cost, the cached answer, `available(Hevc)` following it after `register()` (twice) |
+| `tests/it/vaapi_encode_session.rs` (Linux, VA-API encoder) | The driver's H.264 encode capabilities (CBR / VBR, max size); a 1918×1078 session opens at the 1920×1088 coded size with two reconstructed-picture surfaces, takes an NV12 upload and refuses a picture wider than itself |
+| `tests/it/vaapi_export.rs` (Linux, VA-API encoder) | Export with hardware encoding through the export pipeline against the software encoder: one session, every picture through VA-API, the decoded files at worst 30 dB luma PSNR apart, ffmpeg decodes without errors; Constrained Baseline / Main / High × CBR / VBR each with an IDR exactly every keyframe distance and the right profile (ffprobe); 1080p cropped from the 1088-row coded picture; a 300-frame GOP (frame_num and POC wrap) decodes in full; a picture with too few bytes is an export error, not a panic; two-pass, CRF, MXF and Off go to the software encoder |
 | `tests/nvenc_hevc_warm.rs` (Windows) | `register()` answers the HEVC and the Main 10 questions on a thread of its own, before anyone asks; the answers are kept and `hdr_available(Hevc)` follows the Main 10 probe |
 | `tests/it/nvenc_hevc_main10.rs` (Windows, NVIDIA with 10-bit HEVC) | HEVC Main 10 in process, PQ and HLG: a float picture (grey ramp to peak white, a moving box, saturated BT.2020 bars) is converted with `rgbf_to_yuv420_10`, encoded and decoded with our HEVC decoder (`Yuv16`, 10 bits, codes below 1024): worst 71.1 dB luma / 70.6 dB chroma PSNR on the 10-bit scale, 803 distinct luma levels on a ramp row, peak code 940 survives; IDR at 0 and 24; the VUI is BT.2020 / 16 or 18 / BT.2020 NCL / limited; the IDR samples carry two prefix SEI NAL units whose messages are byte-for-byte the expected 137 / 144 payloads (HLG: none; other pictures: none); Main and Main 10 refuse each other's pictures; hostile sizes, bitrates, signals, huge or empty SEI payloads, encoders dropped with SEI in flight |
 | `tests/nvenc_hevc_hdr_export.rs` (Windows, NVIDIA with 10-bit HEVC) | HDR sequences through the real export job (PQ MP4, HLG MP4, PQ QuickTime): 24 frames, 1 session, 0 declined; ffprobe `hevc` / `Main 10` / `hvc1` / `yuv420p10le`, `bt2020` / `smpte2084` or `arib-std-b67` / `bt2020nc` / `tv`; PQ first-frame side data Mastering display (max 10000000/10000, min 1/10000) and Content light level, HLG none; `ffmpeg -xerror` clean; ffmpeg's yuv420p10le picture equals our decoder's, code for code; our importer reads PQ / HLG, BT.2020, 10-bit, and the `colr` / `mdcv` / `clli` boxes; luma PSNR against a ProRes HDR export of the same sequence 62.6 dB (PQ) / 61.8 dB (HLG); `settings.sdr` and SDR sequences stay Main 8-bit BT.709 with no HDR boxes; the factory rejects mismatched or wrong-length pictures and clamps NaN / infinity |
@@ -342,9 +356,9 @@ Details in [docs/performance.md](../../docs/performance.md).
 
 Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on macOS, Direct3D 11
 textures on Windows); B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
-VideoToolbox; VP9 and AV1 through VA-API (Linux), and VA-API encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
+VideoToolbox; VP9 and AV1 through VA-API (Linux), and VA-API HEVC Main 10 / HDR and AV1 encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
 H.264 with NVENC (HDR H.264 stays with the software encoder), HDR10 MaxCLL / MaxFALL measured from
-the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 with the other Windows vendors and on Linux, and encoders
+the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 with the other Windows vendors, and encoders
 from other vendors on Windows (through Media Foundation); VP9 / AV1 4:4:4 and 12-bit on Windows.
 
 ### Linux NVENC sources and limits
@@ -357,3 +371,35 @@ Linux registers the export factory even without a driver; `register()`'s return 
 `registered()` still describe hardware **decoding**, which this backend does not provide.
 Absent / old drivers decline once per export, with an informational log and
 `perf.stats` → `export.hardware.declined`; hardware encoding Off never opens the driver.
+
+
+### Linux VA-API HEVC Main export
+
+`vaapi::hevcenc` implements the existing `VideoEncoder` contract on the shared VA display.
+HEVC Main is 8-bit 4:2:0 SDR, progressive, square-pixel, single-pass CBR/VBR, with IDR/P pictures
+and no B pictures. Main 10/HDR and AV1 encoding are not advertised. Choosing HEVC requests hardware
+encoding even when the H.264 hardware toggle is off; there is no software HEVC encoder.
+
+The parameter and slice-header writers follow **ITU-T H.265 (09/2023), §§7.3.2, 7.3.6 and E.2.1**.
+They use FilmCraft's existing bit writer. libva's MIT `va_enc_hevc.h` (2.22.0) supplies only the
+FFI declarations; sizes, alignments and every field offset are checked against a C compiler.
+Packed sequence, picture and slice headers are negotiated with the driver. The emitted VPS/SPS/PPS
+are validated as Main 8-bit at the requested visible size, then used for `hvcC`; later parameter-set
+changes are errors. Reconstructed/input surfaces align to 64-pixel CTUs and the SPS conformance
+window restores arbitrary even dimensions, including 1920×1080 and 642×362.
+
+Encoding is synchronous: one input frame is in flight, plus two reconstruction/reference surfaces.
+RGBA conversion and NV12 upload are CPU operations; this is **not a zero-copy implementation**.
+Where supported, `vaSyncSurface2` waits at most five seconds. Older libva/driver implementations
+retain legacy `vaSyncSurface`, which has no timeout. A failed submission/synchronization quarantines
+the session against further uploads/submissions; libva object/context teardown releases its resources
+and may itself wait for the driver. No timed-out frame is resubmitted.
+
+A startup worker probes an actual small encode, and format availability reads only the cached result.
+Headless startup can call `wait_encoder_probes(Duration)` before querying available formats. The VA
+factory is registered before NVENC, preserving the registry's last-registered-first priority.
+
+`tests/vaapi_hevc_export.rs` exercises real hardware, MP4 and QuickTime, CBR/VBR, 1080p padding,
+arbitrary even cropping, a 301-frame GOP crossing POC wrap, exact timestamps/keyframes, full external
+FFmpeg decoding and independent BT.709 primary-color/geometry checks. It reports an explicit skip
+only when the driver has no HEVC encode capabilities. The existing H.264 regression tests remain.

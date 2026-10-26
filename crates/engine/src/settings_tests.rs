@@ -710,6 +710,24 @@ fn favorite_themes_validate_and_persist_without_changing_other_settings() {
     assert_eq!(repaired.appearance.dark_theme, s.prefs.appearance.dark_theme);
 }
 
+#[test]
+fn render_backend_defaults_to_cpu_validates_and_persists() {
+    let dir = tmp_dir("render-backend");
+    let path = dir.join("preferences.json");
+    assert_eq!(Preferences::default().timeline.render_backend, "cpu");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    set(&mut s, "timeline.renderBackend", json!("gpu"));
+    assert_eq!(Preferences::load(&path).timeline.render_backend, "gpu");
+    for value in [json!("metal"), json!(""), json!(3), json!(null)] {
+        assert!(s.execute("prefs.set", json!({"key": "timeline.renderBackend", "value": value})).is_err());
+        assert_eq!(s.prefs.timeline.render_backend, "gpu");
+    }
+    // a file written before the setting existed keeps the CPU reference route
+    let mut old = s.prefs.to_value();
+    old["timeline"].as_object_mut().map(|m| m.remove("renderBackend"));
+    assert_eq!(Preferences::from_value(old).timeline.render_backend, "cpu");
+}
+
 fn preset_json(name: &str, n: usize, color: &str) -> Vec<u8> {
     let labels: Vec<Value> = (0..n).map(|i| json!({"name": format!(" Label {i} "), "color": color})).collect();
     serde_json::to_vec(&json!({"name": name, "labels": labels})).unwrap()

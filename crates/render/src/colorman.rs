@@ -24,12 +24,20 @@ pub fn override_of(project: &Project, item: ItemId) -> Option<ColorSpace> {
 
 /// The colour space a frame of `item` is interpreted in.
 pub fn source_space(project: &Project, item: ItemId, frame: &VideoFrame) -> ColorSpace {
-    override_of(project, item).unwrap_or_else(|| ColorSpace::from_info(&frame.color))
+    source_space_from_info(project, item, frame.color)
+}
+
+pub fn source_space_from_info(project: &Project, item: ItemId, info: filmcraft_color::ColorInfo) -> ColorSpace {
+    override_of(project, item).unwrap_or_else(|| ColorSpace::from_info(&info))
 }
 
 /// Whether the frame needs more than the default (transfer-only) decode.
 pub fn needs_management(pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> bool {
-    let default_decode = cs == ColorSpace::from_info(&frame.color) && matches!(cs, ColorSpace::Rec709 | ColorSpace::Srgb | ColorSpace::Linear709);
+    needs_management_from_info(pipe, cs, frame.color)
+}
+
+pub fn needs_management_from_info(pipe: &ColorPipeline, cs: ColorSpace, info: filmcraft_color::ColorInfo) -> bool {
+    let default_decode = cs == ColorSpace::from_info(&info) && matches!(cs, ColorSpace::Rec709 | ColorSpace::Srgb | ColorSpace::Linear709);
     !(pipe.is_plain() && default_decode)
 }
 
@@ -62,7 +70,14 @@ pub fn gpu_input(project: &Project, item: ItemId, pipe: &ColorPipeline, cs: Colo
     if !pipe.is_plain() || !matches!(frame.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. }) {
         return None;
     }
-    let t = input_transform(cs, frame.color.range, pipe, source_peak_nits(project, item));
+    gpu_input_nv12(project, item, pipe, cs, frame.color)
+}
+
+pub fn gpu_input_nv12(project: &Project, item: ItemId, pipe: &ColorPipeline, cs: ColorSpace, info: filmcraft_color::ColorInfo) -> Option<Arc<InputTransform>> {
+    if !pipe.is_plain() {
+        return None;
+    }
+    let t = input_transform(cs, info.range, pipe, source_peak_nits(project, item));
     t.gpu_params().map(|_| t)
 }
 

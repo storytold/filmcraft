@@ -176,21 +176,38 @@ pub fn turbulent_displace(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
-/// 3D Rotate: rotates the layer about its centre in 3-D (X, then Y, then Z) with perspective.
-pub fn rotate_3d(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+/// A plane seen through a pinhole camera: the plane's normal `n` and in-plane axes `u`, `v`, the focal
+/// length and the plane's distance `cz` along the optical axis. Shared by the CPU effects and the GPU plan.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Plane3d {
+    pub f: f64,
+    pub cz: f64,
+    pub n: [f64; 3],
+    pub u: [f64; 3],
+    pub v: [f64; 3],
+}
+
+/// What 3D Rotate does to a layer of this size.
+pub(crate) enum Rotate3d {
+    /// No rotation and no Z offset: the layer is untouched.
+    Identity,
+    /// Hide Backside is on and the layer faces away: it is cleared.
+    Hidden,
+    Plane(Plane3d),
+}
+
+/// The geometry of 3D Rotate: R = Rz · Ry · Rx (screen y down; positive Z is clockwise like Rotation).
+pub(crate) fn rotate_3d_plane(e: &EffectInstance, cx: &FxCtx, w: f64, h: f64) -> Rotate3d {
     let (ax, ay, az) = ((fv(e, "rot_x", cx) as f64).to_radians(), (fv(e, "rot_y", cx) as f64).to_radians(), (fv(e, "rot_z", cx) as f64).to_radians());
     let z = fv(e, "z", cx) as f64 * cx.px_scale as f64;
     if ax.abs() < 1e-9 && ay.abs() < 1e-9 && az.abs() < 1e-9 && z.abs() < 1e-9 {
-        return;
+        return Rotate3d::Identity;
     }
     let persp = fv(e, "perspective", cx).clamp(0.0, 100.0) as f64;
-    let (w, h) = (img.w as f64, img.h as f64);
     let f = if persp <= 0.0 { 1e7 } else { w.max(h) * (0.6 + (100.0 - persp) / 100.0 * 4.0) };
-    let hide = bv(e, "hide_back");
     let (sx, cxr) = ax.sin_cos();
     let (sy, cy) = ay.sin_cos();
     let (sz, cz) = az.sin_cos();
-    // R = Rz · Ry · Rx (screen y down; positive Z is clockwise like Rotation)
     let rx = [[1.0, 0.0, 0.0], [0.0, cxr, -sx], [0.0, sx, cxr]];
     let ry = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
     let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
@@ -204,15 +221,32 @@ pub fn rotate_3d(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         o
     };
     let r = mul(rz, mul(ry, rx));
-    let u = [r[0][0], r[1][0], r[2][0]];
-    let v = [r[0][1], r[1][1], r[2][1]];
     let n = [r[0][2], r[1][2], r[2][2]];
-    let back = n[2] < 0.0;
-    if hide && back {
-        img.px.fill(0.0);
-        return;
+    if bv(e, "hide_back") && n[2] < 0.0 {
+        return Rotate3d::Hidden;
     }
-    let c = [0.0, 0.0, f + z];
+    Rotate3d::Plane(Plane3d { f, cz: f + z, n, u: [r[0][0], r[1][0], r[2][0]], v: [r[0][1], r[1][1], r[2][1]] })
+}
+
+/// 3D Rotate: rotates the layer about its centre in 3-D (X, then Y, then Z) with perspective.
+pub fn rotate_3d(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let (w, h) = (img.w as f64, img.h as f64);
+    let p = match rotate_3d_plane(e, cx, w, h) {
+        Rotate3d::Identity => return,
+        Rotate3d::Hidden => {
+            img.px.fill(0.0);
+            return;
+        }
+        Rotate3d::Plane(p) => p,
+    };
+    warp_plane(img, &p);
+}
+
+/// Resample `img` as the plane `p` seen through the camera (inverse mapping, `None` behind the camera).
+pub(crate) fn warp_plane(img: &mut Image, p: &Plane3d) {
+    let (w, h) = (img.w as f64, img.h as f64);
+    let Plane3d { f, cz, n, u, v } = *p;
+    let c = [0.0, 0.0, cz];
     let nc = n[0] * c[0] + n[1] * c[1] + n[2] * c[2];
     warp_opt(img, |x, y| {
         let d = [x - w / 2.0, y - h / 2.0, f];
@@ -328,8 +362,9 @@ pub fn spin(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     place(img, c, Vec2::ZERO, s.max(1e-4), ang);
 }
 
-/// Wiggle: smooth random position / rotation / scale jitter.
-pub fn wiggle(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+/// Offset, scale and rotation (degrees) that Wiggle applies at this time. The CPU effect and the GPU
+/// plan both call it, so the noise is computed once, in one place.
+pub(crate) fn wiggle_place(e: &EffectInstance, cx: &FxCtx) -> (Vec2, f64, f64) {
     let t = cx.seconds * fv(e, "frequency", cx) as f64;
     let seed = fv(e, "seed", cx).max(0.0) as u64;
     let amt = (fv(e, "amount", cx) * cx.px_scale) as f64;
@@ -338,20 +373,25 @@ pub fn wiggle(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let oy = if dims == 1 { 0.0 } else { noise1(t, 1, seed) as f64 * amt * 1.6 };
     let rot = noise1(t, 2, seed) as f64 * fv(e, "rotation", cx) as f64 * 1.6;
     let sc = 1.0 + noise1(t, 3, seed) as f64 * fv(e, "scale", cx) as f64 / 100.0 * 1.6;
-    let c = Vec2::new(img.w as f64 / 2.0, img.h as f64 / 2.0);
-    place(img, c, Vec2::new(ox, oy), sc.max(1e-3), rot);
+    (Vec2::new(ox, oy), sc.max(1e-3), rot)
 }
 
-/// Camera Shake: layered smooth noise on position, rotation and zoom, with optional motion blur.
-pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+/// Wiggle: smooth random position / rotation / scale jitter.
+pub fn wiggle(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let (off, sc, rot) = wiggle_place(e, cx);
+    let c = Vec2::new(img.w as f64 / 2.0, img.h as f64 / 2.0);
+    place(img, c, off, sc, rot);
+}
+
+/// Offset, scale and rotation (degrees) of one Camera Shake sample at time `t` (seconds), shared by
+/// the CPU effect and the GPU plan.
+pub(crate) fn camera_shake_place(e: &EffectInstance, cx: &FxCtx, t: f64) -> (Vec2, f64, f64) {
     let freq = fv(e, "frequency", cx) as f64;
     let seed = fv(e, "seed", cx).max(0.0) as u64;
     let amt = (fv(e, "amount", cx) * cx.px_scale) as f64;
     let rot = fv(e, "rotation", cx) as f64;
     let zoom = fv(e, "zoom", cx) as f64 / 100.0;
     let octaves = fv(e, "complexity", cx).clamp(1.0, 6.0) as usize;
-    let blur = fv(e, "motion_blur", cx) as f64 / 100.0;
-    let fps = cx.env.map_or(30.0, |env| env.frame_rate());
     let shake = |t: f64, ch: u64| -> f64 {
         let (mut s, mut a, mut f, mut norm) = (0.0, 1.0, 1.0, 0.0);
         for o in 0..octaves {
@@ -362,15 +402,21 @@ pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         s / norm * 1.6
     };
+    let off = Vec2::new(shake(t, 0) * amt, shake(t, 1) * amt);
+    // zoom in a little with the shake so edges stay covered
+    (off, 1.0 + zoom * (0.5 + 0.5 * shake(t, 3)), shake(t, 2) * rot)
+}
+
+/// Camera Shake: layered smooth noise on position, rotation and zoom, with optional motion blur.
+pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    let blur = fv(e, "motion_blur", cx) as f64 / 100.0;
+    let fps = cx.env.map_or(30.0, |env| env.frame_rate());
     let c = Vec2::new(img.w as f64 / 2.0, img.h as f64 / 2.0);
     let t0 = cx.seconds;
     let n = if blur > 0.0 { 5 } else { 1 };
     motion_blurred(img, n, |im, k| {
-        let t = t0 + k * blur / fps;
-        let off = Vec2::new(shake(t, 0) * amt, shake(t, 1) * amt);
-        // zoom in a little with the shake so edges stay covered
-        let s = 1.0 + zoom * (0.5 + 0.5 * shake(t, 3));
-        place(im, c, off, s, shake(t, 2) * rot);
+        let (off, s, rot) = camera_shake_place(e, cx, t0 + k * blur / fps);
+        place(im, c, off, s, rot);
     });
 }
 

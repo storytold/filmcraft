@@ -116,16 +116,21 @@ compositor's savings are a larger part of the export.
 What is left in a frame without overlays is the Y'CbCr → linear float conversion of the camera
 picture (4.5 ms in the synthetic case) and the conversion to 8 bits (2 ms).
 
-## Results (GPU3: GPU export rendering, Off → Auto, #30)
+## Historical results (GPU3: GPU export rendering, Off → Auto, #30)
 
-Export ▸ GPU Rendering composites the exported frames on the GPU (`filmcraft-gpu`'s off-screen
-compositor, a pool of up to four renderers) instead of the CPU reference renderer, which stays the
-fallback for anything the GPU stage does not run. Linux, Ryzen 7 9700X (16 threads) + Radeon
+**Historical behavior, recorded 2026-10-08/09:** these measurements predate the 2026-10-19
+user override that made GPU Rendering Auto fail closed and the 2026-10-20 paired hardware-export
+control. Current `--hw auto` export benchmarks request strict AMD GPU rendering plus same-node
+VA-API; they fail when admission or resident rendering is incomplete. Rows below describe only
+the earlier readback-based renderer, not current export capability.
+
+Export ▸ GPU Rendering previously composited the exported frames on the GPU (`filmcraft-gpu`'s off-screen
+compositor, a pool of up to four renderers) instead of the CPU reference renderer. Linux, Ryzen 7 9700X (16 threads) + Radeon
 RX 7900 (Mesa 26.2.2), 2026-10-08 / 09, same build, `cargo xtask bench --sections export --only
 <scene> --hw off|auto`: 191 frames to H.264 + AAC with the built-in encoder. `h264` is one 1080p
 clip; `h264_fx` the same clip on V1 with Proc Amp, Gaussian Blur and Vignette, plus two
 picture-in-picture copies (50 % with Brightness & Contrast, 33 % at 70 % opacity with Sharpen).
-Every Auto row rendered all its frames on the GPU, without fallbacks.
+Every historical Auto row rendered all its frames on the GPU, without fallbacks.
 
 | scene | Off: s / CPU ms per frame | **Auto**: s / CPU ms per frame |
 |---|---|---|
@@ -133,11 +138,11 @@ Every Auto row rendered all its frames on the GPU, without fallbacks.
 | `h264_fx`, 1080p (load 12–33) | 13.00, 12.67 / 737 | **5.63, 5.00 / 238** |
 | `h264_fx`, 4K sequence and clip (load 2–19) | 38.74, 39.34 / 2955 | **11.99 / 775** |
 
-On a plain clip the export is decoding- and encoding-bound and both take the same time; with
-layers and effects the GPU is 2.4× (1080p) to 3.2× (4K) faster, with a third to a quarter of the
-CPU. GPU rendering is nevertheless **Off by default** (opt-in per export) until it has been
-measured on Windows and macOS: the GPU result matches the CPU within the compositor's parity
-tolerance, not bit for bit, and Off keeps exports byte-reproducible on every machine. (The 4K row used the same scene with the sequence, clip and positions scaled to 4K.)
+On a plain clip the historical export is decoding- and encoding-bound and both take the same time; with
+layers and effects the GPU was 2.4× (1080p) to 3.2× (4K) faster. GPU Rendering Auto currently fails
+closed until resident GPU frames reach the encoder. Off remains the explicit CPU reference mode
+and keeps exports byte-reproducible on every machine. (The 4K row used the same scene with the
+sequence, clip and positions scaled to 4K.)
 
 ### Memory after an export
 
@@ -220,7 +225,8 @@ next step (issue #30).
 ## Results (HW2: VideoToolbox hardware H.264 encoding, built-in → hardware)
 
 Apple M1 (8 cores, 16 GB), 2026-10-06, single runs on an otherwise idle machine, release build.
-Hardware encoding is opt-in per export (`hardware_encoding: auto`); the built-in encoder is unchanged.
+Historical measurement used the former `hardware_encoding: auto` setting. Current hardware export
+uses one strict AMD opt-in and does not select NVENC, VideoToolbox, or software fallback.
 
 ### The encoder alone (100 frames of 1920×1080 25 fps camera footage, High, one-pass VBR, keyframe every 50)
 
@@ -303,6 +309,8 @@ Wall time is about `max(render, encode + audio + mux)` instead of the sum. What 
   frames are freed as soon as they are encoded. A first try with a 1 GiB budget (16 + 16 frames of 4K SDR,
   5 + 5 of 4K HDR) raised the peak RSS of the 4K SDR exports by 80-700 MB over the old code; 512 MiB
   brings it under the old peak (table below). `Exporter::set_overlap(false)` gives the old behaviour.
+  The budget only sets the batch size: it is not a resolution limit, and export has no resolution cap
+  for 4K and above (only the project's frame-size sanity bound applies).
 - **Known web issue, not changed here.** `AudioOut::pull` moves its position before the pending check, so
   when a web export retries a batch after a pending audio source, that group of audio is lost. It is
   independent of the overlap (the web never overlaps); TODO: fix separately.
@@ -433,8 +441,10 @@ as on macOS, because the hardware ignores draft mode.
 Same machine as the HW2 results (Xeon E5-2680 v4, 28 threads, RTX 5060, driver 617.14, idle,
 2026-10-07). `cargo xtask bench --sections export --only h264 --hw off|auto --repeat 3`: the export
 of 8 s of a 1080p23.976 H.264 clip (191 frames) to H.264 with the default preset, VBR one pass.
-`--hw off` runs the software encoder; `--hw auto` sets `hardwareEncoding` to auto and runs NVENC
-(preset P5, high-quality tuning). Every NVENC row had `hw frames` = 573 = 191 × 3 repeats.
+These are historical measurements from the former `--hw auto` behavior, which selected NVENC
+(preset P5, high-quality tuning) without strict AMD rendering. Current `--hw auto` maps to
+`hardwareExport: true` and requires supported AMD GPU rendering plus same-node VA-API; this RTX
+benchmark no longer qualifies. Historical NVENC rows had `hw frames` = 573 = 191 × 3 repeats.
 
 | encoder | fps | CPU ms/frame | MB |
 |---|---|---|---|
@@ -905,3 +915,34 @@ decode 2642 / 2925 → 2506 / 2064; playback 5246 / 7903 → 3379 / 3121; scrub 
 Not feasible / not done: reduced-resolution decode for H.264 / HEVC (inter prediction needs
 full-resolution references, so it cannot be bit-exact; ½/¼ playback already decimates after
 decode); AV1 internals untouched (measured only); export encoders not optimised.
+
+## Export on GPUs: AMD (VA-API) and NVIDIA (NVENC), no artificial resolution cap
+
+**What changed.** Export ▸ Encoder now chooses one hardware route explicitly:
+
+- **AMD (VA-API)**: `hardwareEncoding: amdRequired` with GPU rendering `amdRequired` (frames stay on the GPU
+  and reach the VA-API encoder through DMA-BUF). Never NVENC, never software.
+- **NVIDIA (NVENC)**: `hardwareEncoding: nvencRequired` with GPU rendering off (CPU reference render, NVENC
+  encodes). Never VA-API, never software. A refusal is an error. H.264 only on Linux; H.265 NVENC is Windows-only.
+- **CPU**: the reference route, as before.
+
+`hardwareEncoding: gpuRequired` takes whichever GPU encoder accepts the export (NVENC H.264, or VA-API), and
+fails with an error when none does; the legacy `hardwareEncoding: auto` maps to it. The CLI gains
+`--hardware-encoding off|auto|gpuRequired|nvencRequired`; AMD-only export is `--hardware-export`.
+
+Resolution caps removed or derived from the device:
+
+- The wgpu devices in the export renderer and the AMD resident session request `adapter.limits()` instead of
+  wgpu's defaults (which capped textures at 8192 px and storage bindings at 128 MiB).
+- Transition blur and light multipass budgets come from the adapter's `max_buffer_size`, not a fixed 512 MiB.
+- VA-API H.264 and HEVC use the driver's declared maximum; without one, the format ceiling (16384) applies and
+  the driver refuses with an error if it cannot encode.
+
+**Measured.** Nothing on hardware in this change. The tests run without a GPU: the encoder matrix
+(`export::job::tests::encoder_matrix_selects_expected_backend`, `nvidia_required_never_uses_vaapi_or_software`),
+the VA-API and NVENC configuration gates with declared caps (`vaapi::h264enc`, `vaapi::hevcenc`, `amd_admission_size_follows_the_driver_declared_maximum`),
+the blur and light budget checks, and the UI and CLI parsing. How to measure 1080p and 4K on your own machine:
+[`TESTE-EXPORT-GPU.md`](../TESTE-EXPORT-GPU.md).
+
+**Not measured.** Throughput and memory at 4K and 8K on AMD or NVIDIA; the driver's real 8K limit; H.265 8K
+through VA-API (the CTU-aligned height, 4352 for 4320, must be accepted by the driver).

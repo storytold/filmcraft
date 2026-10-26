@@ -84,10 +84,10 @@ mod tests {
         let _ = super::take_last();
         let r = std::thread::Builder::new().name("filmcraft-test-worker".into()).spawn(|| panic!("boom in a worker")).unwrap().join();
         assert!(r.is_err());
-        let last = super::take_last().expect("recorded");
-        assert!(last.contains("boom in a worker") && last.contains("filmcraft-test-worker"), "{last}");
+        // Read the crash log, not `take_last`: the last-panic slot is process-wide, so a panic on another
+        // test's thread can overwrite it before this test reads it. The log is append-only and keeps this entry.
         let log = std::fs::read_to_string(super::log_path().unwrap()).unwrap();
-        assert!(log.contains("boom in a worker"));
+        assert!(log.contains("boom in a worker") && log.contains("thread filmcraft-test-worker"), "{log}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
