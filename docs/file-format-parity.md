@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** major (new file: every file type Premiere Pro 26.5.2 reads or writes, against ours) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (GIF export binary transparency) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -52,7 +52,7 @@ only). "Tested" names the evidence.
 
 | Format | Premiere | Read | Write (frame / sequence) | % |
 |---|---|---|---|---|
-| PNG, JPEG, TIFF, BMP, GIF | read + write | yes | PNG / TIFF / BMP / JPEG sequences, GIF | 90% |
+| PNG, JPEG, TIFF, BMP, GIF | read + write | yes | PNG / TIFF / BMP / JPEG sequences; GIF with optional binary transparency (alpha 0–127 transparent, 128–255 opaque, #3396) | 90% |
 | WebP | — | yes | no | ahead |
 | **PSD** (layers as sequence) | read (layered) | no | — | 0% |
 | **OpenEXR** | read + write | stills and sequences: scan-line, none / RLE / ZIPS / ZIP / PXR24, half / float / uint, RGB(A) or Y, kept as linear float (#828); no PIZ, B44, DWA, tiled, multi-part or deep | sequences (half float, linear RGB / premultiplied RGBA; uncompressed, RLE, ZIPS or ZIP; #806, #874) | 70% |
@@ -93,3 +93,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
+| 2026-10-26 | minor | GIF exports preserve binary transparency when requested; synthetic decode tests cover alpha threshold and animation disposal (#3396); estimates unchanged |

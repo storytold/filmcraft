@@ -351,7 +351,8 @@ pub struct ExportSettings {
     pub sdr: bool,
     /// Keep the alpha channel in PNG, TIFF, Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ
     /// QuickTime movies (straight alpha, Premiere's "Include Alpha Channel"; OpenEXR stores it
-    /// premultiplied, as the format defines). Off, every frame is flattened over black (#160).
+    /// premultiplied, as the format defines). GIF keeps binary transparency: RGBA8 alpha below
+    /// 128 becomes transparent, otherwise opaque. Off, every frame is flattened over black (#160).
     /// Other formats ignore it.
     #[serde(default)]
     pub alpha: bool,
@@ -2004,7 +2005,18 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
                 let end = (f + batch).min(f1);
                 if let Some(enc) = gif.as_mut() {
                     let frames: Vec<Vec<u8>> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources).0).collect();
-                    for (fi, rgba) in (f..end).zip(frames) {
+                    for (fi, mut rgba) in (f..end).zip(frames) {
+                        // GIF89a has one transparent palette index, not partial alpha. Decide
+                        // coverage before quantization and keep the straight colour of visible pixels.
+                        if settings.keeps_alpha() {
+                            for px in rgba.as_chunks_mut::<4>().0 {
+                                if px[3] < 128 {
+                                    *px = [0; 4];
+                                } else {
+                                    px[3] = 255;
+                                }
+                            }
+                        }
                         let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| ExportError::Encode("frame".into()))?;
                         let delay = image::Delay::from_numer_denom_ms(u32::from(gif_delay_cs(pipe.rate, fi - f0)) * 10, 1);
                         enc.encode_frame(image::Frame::from_parts(img, 0, 0, delay)).map_err(|e| ExportError::Encode(e.to_string()))?;

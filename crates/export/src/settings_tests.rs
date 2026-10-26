@@ -270,6 +270,94 @@ fn image_sequences_keep_alpha_when_asked() {
     assert_eq!(png(false) * 4, png(true) * 3, "PNG estimate: {} RGB vs {} RGBA", png(false), png(true));
 }
 
+/// Four blue stripes with alpha 0, 127, 128 and 255. Reverse them on frame two, then
+/// clear the whole picture: a decoder must not retain opaque pixels from earlier frames.
+struct GifAlphaSource(filmcraft_media::SharedSource);
+
+impl MediaSource for GifAlphaSource {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        self.0.info()
+    }
+
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let frame = FrameRate::FPS_24.frame_at(req.time);
+        let mut rgba = Vec::with_capacity(64 * 36 * 4);
+        for _ in 0..36 {
+            for x in 0..64 {
+                let stripe = if frame == 1 { 3 - x / 16 } else { x / 16 };
+                let alpha = if frame >= 2 { 0 } else { [0, 127, 128, 255][stripe] };
+                rgba.extend_from_slice(&[0, 0, 255, alpha]);
+            }
+        }
+        Ok(Arc::new(filmcraft_frame::VideoFrame::rgba8(64, 36, rgba)))
+    }
+
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.0.audio(start, frames, sample_rate)
+    }
+}
+
+#[test]
+fn gif_alpha_threshold_and_disposal_roundtrip() {
+    use image::AnimationDecoder;
+    let (p, seq, mut sources) = matte([0.0, 0.0, 1.0, 1.0], 64, 36, None);
+    for source in sources.0.values_mut() {
+        *source = Arc::new(GifAlphaSource(source.clone()));
+    }
+    for alpha in [false, true] {
+        let dir = Scratch::new(&format!("gif-alpha-{alpha}"));
+        let settings = ExportSettings {
+            format: Format::Gif,
+            path: dir.path("alpha.gif"),
+            alpha,
+            range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(3))),
+            ..Default::default()
+        };
+        let result = export(&p, seq, &settings, &sources, &Progress::default()).unwrap();
+        assert_eq!(result.frames, 3);
+        let bytes = std::fs::read(&settings.path).unwrap();
+        let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).unwrap();
+        let frames = decoder.into_frames().collect_frames().unwrap();
+        assert_eq!(frames.len(), 3);
+        for (i, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.buffer().dimensions(), (64, 36));
+            assert_eq!(frame.delay().numer_denom_ms(), (u32::from(gif_delay_cs(FrameRate::FPS_24, i as i64)) * 10, 1));
+            for stripe in 0..4 {
+                let source_alpha = if i == 2 { 0 } else { [0, 127, 128, 255][if i == 1 { 3 - stripe } else { stripe }] };
+                let px = frame.buffer().get_pixel(stripe as u32 * 16 + 8, 18).0;
+                let expected_alpha = if alpha && source_alpha < 128 { 0 } else { 255 };
+                assert_eq!(px[3], expected_alpha, "alpha={alpha}, frame={i}, stripe={stripe}: {px:?}");
+                if expected_alpha != 0 {
+                    assert!(px[0] < 15 && px[1] < 15, "blue: {px:?}");
+                    if source_alpha == 0 {
+                        assert!(px[2] < 15, "flattened transparent pixel: {px:?}");
+                    } else if alpha || source_alpha == 255 {
+                        assert!(px[2] > 240, "straight blue survives palette quantization: {px:?}");
+                    } else {
+                        assert!((100..240).contains(&px[2]), "partial alpha flattened over black: {px:?}");
+                    }
+                }
+            }
+        }
+        if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("GIF transparency") {
+            let decoded = std::process::Command::new(ffmpeg)
+                .args(["-v", "error", "-i", &settings.path, "-frames:v", "3", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+                .output()
+                .unwrap();
+            assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
+            assert_eq!(decoded.stdout.len(), 3 * 64 * 36 * 4);
+            for (actual, expected) in decoded.stdout.as_chunks::<{ 64 * 36 * 4 }>().0.iter().zip(&frames) {
+                for (actual, expected) in actual.as_chunks::<4>().0.iter().zip(expected.buffer().pixels()) {
+                    assert_eq!(actual[3], expected.0[3], "ffmpeg alpha, alpha={alpha}");
+                    if actual[3] == 255 {
+                        assert_eq!(*actual, expected.0, "ffmpeg opaque color, alpha={alpha}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Thumbnails (`encode_png`) and an 8-bit PNG Export Frame keep the alpha they are given: only the
 /// sequence's `alpha` switch drops it (#1863).
 #[test]

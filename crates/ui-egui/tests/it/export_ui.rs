@@ -180,6 +180,24 @@ fn export_mode_settings_and_summary() {
 }
 
 #[test]
+fn gif_export_exposes_binary_alpha_option() {
+    use filmcraft_engine::export::Format;
+    let mut d = Driver::new("gif-alpha");
+    d.ok("ui.set", json!({"mode": "export", "export": {"settings": {"format": "gif"}}}));
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.format, Format::Gif);
+    assert!(d.has("export.video.alpha"));
+    assert!(!d.app().ui.export.settings.alpha);
+    d.click("export.video.alpha");
+    assert!(d.app().ui.export.settings.keeps_alpha());
+    let hint = d.ok("ui.elements", json!({"prefix": "export.video.alpha.hint"}));
+    assert!(hint[0]["label"].as_str().unwrap().contains("128"), "{hint}");
+    d.snapshot("export-gif-alpha");
+    d.click("export.video.alpha");
+    assert!(!d.app().ui.export.settings.keeps_alpha());
+}
+
+#[test]
 fn the_status_bar_and_the_queue_show_the_time_left() {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
