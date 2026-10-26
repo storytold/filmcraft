@@ -54,6 +54,7 @@ fn clip(id: u64, start: f64, dur: f64, src_in: f64) -> TrackItem {
         essential: None,
         multicam: None,
         time_interpolation: Default::default(),
+        maintain_pitch: false,
         hold_filters: false,
         field_options: None,
         source_channels: Vec::new(),
