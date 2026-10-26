@@ -2227,7 +2227,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-mp3enc"
-version = "0.7.2"
+version = "0.13.0"
 dependencies = [
  "filmcraft-bitstream",
  "filmcraft-testkit",
