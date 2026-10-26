@@ -63,6 +63,8 @@ pub(crate) struct Interaction {
     cancelled: bool,
 }
 
+/// The timeline range, in ticks, the selected keyframes can move by — `None` when a clip cannot
+/// carry a keyframe at all.
 fn limits(app: &FilmcraftApp, keys: &[KeyframeRef]) -> Option<(i64, i64)> {
     let q = app.session.active_sequence()?;
     let frame = q.settings.frame_rate.frame_duration();
@@ -143,6 +145,7 @@ impl Interaction {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Handle one keyframe's click and drag: select it, then start or continue the group gesture.
     pub(crate) fn key(
         &mut self,
         app: &mut FilmcraftApp,
@@ -218,6 +221,8 @@ impl Interaction {
         rect
     }
 
+    /// End the interaction: paint the marquee or the dragged group, run the move or duplicate it
+    /// ended on, and keep the state for the next frame.
     pub(crate) fn finish(mut self, app: &mut FilmcraftApp, ui: &egui::Ui) {
         if let Some(Gesture::Marquee { origin, end, base }) = &self.state.gesture {
             let rect = Rect::from_two_pos(*origin, *end).intersect(self.area);
@@ -282,6 +287,7 @@ pub(crate) fn paint(painter: &egui::Painter, rect: Rect, interp: Interpolation, 
 mod tests {
     use super::*;
     #[test]
+    /// Keyframe timeline coordinates follow a clip's trim, speed and reverse.
     fn keyframe_timeline_coordinates_follow_trim_speed_and_reverse() {
         let mut session = filmcraft_engine::Session::default();
         session.execute("file.openDemoProject", json!({})).unwrap();
@@ -301,6 +307,8 @@ mod tests {
     }
 
     #[test]
+    /// A snap is offered only when the move is reachable: the screen-space threshold tests the
+    /// destination, not the clamped position.
     fn clip_clamping_does_not_extend_the_screen_space_snap_threshold() {
         let key = KeyframeRef { clip: 1, effect: 0, param: "scale".into(), mask: None, time: Tick::ZERO };
         let other = KeyframeRef { param: "rotation".into(), time: Tick::from_seconds_f64(0.95), ..key.clone() };

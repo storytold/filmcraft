@@ -25,11 +25,13 @@ fn clean(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The clean paths of a `text/uri-list` given as raw lines.
     fn paths(list: &[&str]) -> Vec<String> {
         paste_paths(&list.iter().map(PathBuf::from).collect::<Vec<_>>())
     }
 
     #[test]
+    /// A CRLF `text/uri-list` pastes as the paths it names — no trailing `\r`, no blank entry.
     fn a_crlf_uri_list_pastes_as_paths() {
         // `arboard` keeps the `\r` of the CRLF separators (RFC 2483 §5) on every line but the last.
         assert_eq!(

@@ -572,31 +572,37 @@ pub struct NumberDrag<'a> {
 }
 
 impl<'a> NumberDrag<'a> {
+    /// The value range the drag accepts.
     pub fn range<Num: egui::emath::Numeric>(mut self, range: std::ops::RangeInclusive<Num>) -> Self {
         self.inner = self.inner.range(range);
         self
     }
 
+    /// How far the value moves per point of drag.
     pub fn speed(mut self, speed: impl Into<f64>) -> Self {
         self.inner = self.inner.speed(speed);
         self
     }
 
+    /// Text painted before the value.
     pub fn prefix(mut self, prefix: impl egui::IntoAtoms<'a>) -> Self {
         self.inner = self.inner.prefix(prefix);
         self
     }
 
+    /// Text painted after the value.
     pub fn suffix(mut self, suffix: impl egui::IntoAtoms<'a>) -> Self {
         self.inner = self.inner.suffix(suffix);
         self
     }
 
+    /// The most decimals shown while dragging.
     pub fn max_decimals(mut self, decimals: usize) -> Self {
         self.inner = self.inner.max_decimals(decimals);
         self
     }
 
+    /// The number of decimals always shown.
     pub fn fixed_decimals(mut self, decimals: usize) -> Self {
         self.inner = self.inner.fixed_decimals(decimals);
         self
@@ -604,6 +610,7 @@ impl<'a> NumberDrag<'a> {
 }
 
 impl egui::Widget for NumberDrag<'_> {
+    /// Draw the field, confining the pointer while it is dragged.
     fn ui(self, ui: &mut Ui) -> Response {
         let response = ui.add(self.inner);
         confine_pointer_while_dragging(ui, &response);
@@ -831,6 +838,7 @@ mod tests {
         }
     }
 
+    /// Clicking a `hot_number` selects its whole value, ready to be typed over.
     #[test]
     fn clicking_a_hot_number_selects_its_whole_value() {
         let ctx = egui::Context::default();
@@ -895,6 +903,7 @@ mod tests {
     }
 
     #[test]
+    /// Scrubbing a `hot_number` locks and hides the cursor, and gives it back when the drag ends.
     fn dragging_a_hot_number_locks_and_releases_the_cursor() {
         let ctx = egui::Context::default();
         let id = egui::Id::unique("captured-hot-number");
@@ -926,6 +935,8 @@ mod tests {
     }
 
     #[test]
+    /// A locked cursor keeps reporting relative motion, so the value keeps changing past the window
+    /// edge.
     fn hot_number_keeps_changing_from_relative_motion_with_a_locked_cursor() {
         let ctx = egui::Context::default();
         let id = egui::Id::unique("relative-hot-number");

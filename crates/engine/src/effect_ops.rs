@@ -21,10 +21,14 @@ const MAX_PASTE_VERTICES: usize = 65_536;
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 
+/// One Effect Controls command spec: no menu entry or shortcut, enabled while a sequence is open,
+/// journaled, dispatched to `run`.
 fn spec(id: &'static str, label: &'static str, params: &'static str, run: Run) -> CommandSpec {
     CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: crate::commands::has_seq, run, journal: true }
 }
 
+/// The `effects.*` commands this module adds. Each one edits a whole set of effects or keyframes,
+/// so one call is one undo step.
 pub(crate) fn commands() -> Vec<CommandSpec> {
     vec![
         spec("effects.removeMany", "Remove Effects", r#"{"clip":id,"indices":[index]}"#, remove_effects),
@@ -63,6 +67,8 @@ struct KeyRef {
     time: Tick,
 }
 
+/// The parameter a keyframe reference names: `mask` picks a mask parameter, `None` an effect
+/// parameter.
 fn key_param_mut<'a>(sequence: &'a mut Sequence, k: &KeyRef) -> Result<&'a mut Param> {
     let (_, item) = sequence.find_item_mut(ClipId(k.clip)).ok_or_else(|| bad("effects.keyframes", "clip does not exist"))?;
     let effect = item.effects.get_mut(k.effect).ok_or_else(|| bad("effects.keyframes", "effect does not exist"))?;
@@ -73,6 +79,7 @@ fn key_param_mut<'a>(sequence: &'a mut Sequence, k: &KeyRef) -> Result<&'a mut P
     .ok_or_else(|| bad("effects.keyframes", "parameter does not exist"))
 }
 
+/// The interpolation a command parameter names (case-insensitive), or `None` for an unknown one.
 fn interpolation(s: &str) -> Option<Interpolation> {
     match s.to_ascii_lowercase().as_str() {
         "linear" => Some(Interpolation::Linear),
@@ -86,6 +93,8 @@ fn interpolation(s: &str) -> Option<Interpolation> {
     }
 }
 
+/// `effects.removeMany`: remove the given effect indices from one clip — duplicates, intrinsic
+/// effects and out-of-range indices are refused, and the panel's selection follows.
 fn remove_effects(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "effects.removeMany";
     let clip = p.get("clip").and_then(Value::as_u64).map(ClipId).ok_or_else(|| bad(CMD, "need `clip`"))?;
@@ -129,6 +138,8 @@ fn remove_effects(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"removed": indices.len()}))
 }
 
+/// `effects.deleteKeyframes`: remove the named keyframes, validating every reference before the
+/// edit so a stale one changes nothing.
 fn delete_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "effects.deleteKeyframes";
     let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need `keyframes`"))?;
@@ -166,6 +177,7 @@ fn delete_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"deleted": keys.len()}))
 }
 
+/// `effects.setInterpolations`: set the interpolation of every named keyframe as one edit.
 fn set_interpolations(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "effects.setInterpolations";
     let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need `keyframes`"))?;
@@ -202,6 +214,8 @@ fn set_interpolations(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"changed": keys.len()}))
 }
 
+/// Whether a chain keeps its required order: intrinsic effects last on a video track, first on an
+/// audio track.
 fn ordered_effects(items: &[EffectInstance], kind: TrackKind) -> bool {
     let mut intrinsic_seen = false;
     let mut standard_seen = false;
@@ -223,6 +237,7 @@ fn ordered_effects(items: &[EffectInstance], kind: TrackKind) -> bool {
     true
 }
 
+/// `effects.move`: move an effect within one clip's chain, never across the intrinsic boundary.
 fn move_effect(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "effects.move";
     let clip = p.get("clip").and_then(Value::as_u64).map(ClipId).ok_or_else(|| bad(CMD, "need `clip`"))?;
@@ -261,6 +276,8 @@ fn move_effect(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"from": from, "to": to}))
 }
 
+/// Whether a value is finite and within its size caps, so a clipboard cannot hand the renderer a
+/// NaN or an unbounded path.
 fn finite_value(v: &ParamValue) -> bool {
     match v {
         ParamValue::Float(x) => x.is_finite(),
@@ -282,6 +299,7 @@ fn finite_value(v: &ParamValue) -> bool {
     }
 }
 
+/// The path vertices a value holds; every other kind holds none.
 fn path_vertices(v: &ParamValue) -> usize {
     match v {
         ParamValue::Path(path) => path.vertices.len(),
@@ -289,6 +307,8 @@ fn path_vertices(v: &ParamValue) -> usize {
     }
 }
 
+/// The keyframe and path-vertex counts of an effect, saturating — the paste commands use them to
+/// bound what a clipboard would add to the project.
 fn snapshot_counts(effect: &EffectInstance) -> (usize, usize) {
     let mut keys = 0usize;
     let mut vertices = 0usize;
@@ -304,6 +324,9 @@ fn snapshot_counts(effect: &EffectInstance) -> (usize, usize) {
     (keys, vertices)
 }
 
+/// Reject an effect that arrived in a clipboard and this app cannot apply: unknown definitions,
+/// transitions, layers, essential or intrinsic instances (unless `allow_intrinsic`), oversized
+/// parameter sets, non-finite values and invalid influences.
 fn validate_effect(effect: &EffectInstance, command: &str, allow_intrinsic: bool) -> Result<()> {
     let def = effect.def().ok_or_else(|| bad(command, "unknown effect in clipboard"))?;
     if (def.intrinsic && !allow_intrinsic)
@@ -338,14 +361,17 @@ fn validate_effect(effect: &EffectInstance, command: &str, allow_intrinsic: bool
 }
 
 trait ValidInfluence {
+    /// Whether both influence handles are finite.
     fn influence_is_valid(&self) -> bool;
 }
 impl ValidInfluence for Keyframe {
+    /// Whether both influence handles are finite.
     fn influence_is_valid(&self) -> bool {
         self.in_influence.is_finite() && self.out_influence.is_finite()
     }
 }
 
+/// Retime every keyframe of an effect by `delta`, refusing overflow and collisions.
 fn shift_effect(effect: &mut EffectInstance, delta: Tick) -> Result<()> {
     for param in effect.params.values_mut().chain(effect.masks.iter_mut().flat_map(|m| m.params_mut())) {
         for key in &mut param.keyframes {
@@ -359,6 +385,8 @@ fn shift_effect(effect: &mut EffectInstance, delta: Tick) -> Result<()> {
     Ok(())
 }
 
+/// `effects.paste`: apply a clipboard of effects to each target clip, retiming their keyframes to
+/// the target's source time.
 fn paste_effects(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "effects.paste";
     let source_in = p.get("sourceIn").and_then(Value::as_i64).map(Tick).ok_or_else(|| bad(CMD, "need sourceIn"))?;
@@ -438,6 +466,8 @@ fn paste_effects(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"inserted": inserted}))
 }
 
+/// The saved state of every keyframe reference — the keyframe plus the clip speed that positions
+/// it — after checking that each one can move on its clip.
 fn validated_key_snapshot(q: &Sequence, keys: &[KeyRef], command: &str) -> Result<Vec<(KeyRef, Keyframe, f64)>> {
     if keys.is_empty() || keys.len() > MAX_KEYS {
         return Err(bad(command, format!("keyframe count must be between 1 and {MAX_KEYS}")));
@@ -471,6 +501,7 @@ fn validated_key_snapshot(q: &Sequence, keys: &[KeyRef], command: &str) -> Resul
     Ok(saved)
 }
 
+/// A movement in ticks that fits an `i64`, or an error for a delta that cannot.
 fn bounded_delta(value: f64, command: &str) -> Result<i64> {
     if !value.is_finite() || value < i64::MIN as f64 || value >= i64::MAX as f64 {
         return Err(bad(command, "keyframe movement range overflows"));
@@ -478,6 +509,8 @@ fn bounded_delta(value: f64, command: &str) -> Result<i64> {
     Ok(value as i64)
 }
 
+/// `effects.duplicateKeyframes`: copy the named keyframes by a timeline delta, clamped to the
+/// range every one of them can reach.
 fn duplicate_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "effects.duplicateKeyframes";
     let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(CMD, "need keyframes"))?;
@@ -566,6 +599,7 @@ struct EffectTemplate {
     template: EffectInstance,
 }
 
+/// Whether a value holds the variant a parameter kind expects.
 fn value_matches_kind(kind: &ParamKind, value: &ParamValue) -> bool {
     matches!(
         (kind, value),
@@ -579,6 +613,7 @@ fn value_matches_kind(kind: &ParamKind, value: &ParamValue) -> bool {
     )
 }
 
+/// Whether a value is finite, of the kind's variant, and inside the parameter's own range.
 fn value_allowed(kind: &ParamKind, value: &ParamValue) -> bool {
     if !finite_value(value) || !value_matches_kind(kind, value) {
         return false;
@@ -590,6 +625,7 @@ fn value_allowed(kind: &ParamKind, value: &ParamValue) -> bool {
     }
 }
 
+/// Whether two values hold the same variant.
 fn same_value_type(left: &ParamValue, right: &ParamValue) -> bool {
     matches!(
         (left, right),
@@ -603,10 +639,13 @@ fn same_value_type(left: &ParamValue, right: &ParamValue) -> bool {
     )
 }
 
+/// The index of the `occurrence`-th instance of effect `id` on a clip.
 fn effect_index(item: &TrackItem, id: &str, occurrence: usize) -> Option<usize> {
     item.effects.iter().enumerate().filter(|(_, effect)| effect.effect == id).nth(occurrence).map(|(index, _)| index)
 }
 
+/// `effects.pasteKeyframes`: paste copied keyframes into a clip, placed relative to the playhead,
+/// creating an effect or mask the clipboard needs first.
 fn paste_keyframes(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "effects.pasteKeyframes";
     let clip = p.get("clip").and_then(Value::as_u64).map(ClipId).ok_or_else(|| bad(CMD, "need target clip"))?;
@@ -768,6 +807,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// A session on the demo project, with the id of its first video clip.
     fn fixture() -> (Session, ClipId) {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
@@ -776,6 +816,7 @@ mod tests {
         (session, clip)
     }
 
+    /// Add a Motion keyframe to the demo clip at `seconds` and return its reference.
     fn add_key(session: &mut Session, clip: ClipId, param: &str, seconds: f64) -> KeyRef {
         session.execute("playhead.set", json!({"seconds": seconds})).expect("seek");
         session.execute("effects.addKeyframe", json!({"clip": clip.0, "effect": "motion", "param": param})).expect("add keyframe");
@@ -786,6 +827,8 @@ mod tests {
     }
 
     #[test]
+    /// Setting the interpolation of several selected keyframes is one undo step, and a stale
+    /// reference in the set rejects the whole call.
     fn selected_interpolation_is_one_atomic_edit_and_rejects_stale_refs() {
         let (mut session, clip) = fixture();
         let first = add_key(&mut session, clip, "scale", 0.8);
@@ -818,6 +861,7 @@ mod tests {
     }
 
     #[test]
+    /// The selected keyframes delete as one edit, and a stale reference in the set deletes nothing.
     fn selected_keyframes_delete_together_and_reject_stale_refs_atomically() {
         let (mut session, clip) = fixture();
         let scale = add_key(&mut session, clip, "scale", 0.8);
@@ -845,6 +889,8 @@ mod tests {
     }
 
     #[test]
+    /// Several selected effects delete as one edit; intrinsic effects and duplicate indices are
+    /// refused.
     fn selected_effects_delete_together_and_refuse_intrinsic_or_duplicate_indices() {
         let (mut session, clip) = fixture();
         session.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).expect("apply blur");
@@ -876,6 +922,7 @@ mod tests {
     }
 
     #[test]
+    /// A duplicate keeps the original keyframe and adds one full copy at the destination.
     fn alt_drag_duplicate_preserves_original_and_copies_full_keyframe_once() {
         let (mut session, clip) = fixture();
         let reference = add_key(&mut session, clip, "scale", 0.8);
@@ -904,6 +951,7 @@ mod tests {
     }
 
     #[test]
+    /// Reordering and pasting keep the chain's intrinsic/standard order, and each undoes in one step.
     fn effects_reorder_and_paste_keep_chain_order_and_support_undo() {
         let (mut session, clip) = fixture();
         session.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).expect("apply blur");
@@ -970,6 +1018,8 @@ mod tests {
     }
 
     #[test]
+    /// Pasting a keyframe whose effect is missing applies the effect once and touches only the
+    /// requested parameter lane.
     fn keyframe_paste_creates_missing_effect_and_only_adds_the_requested_lane() {
         let (mut session, clip) = fixture();
         let template = filmcraft_project::find_effect("gaussian_blur").expect("blur def").instance();

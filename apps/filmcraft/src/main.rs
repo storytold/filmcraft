@@ -82,6 +82,9 @@ fn tell(text: &str, error: bool) {
     }
 }
 
+/// Start FilmCraft: parse the launch, register the platform and export hooks, then run the eframe
+/// loop — retrying on the session's own display server when an opted-in XWayland cannot open a
+/// window.
 fn main() -> eframe::Result {
     // Windows: the update helper is a copy of this program started with `--finish-update`.
     #[cfg(windows)]
@@ -454,6 +457,7 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
 struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
 
 impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
+    /// Composite one frame on the GPU, or answer `None` to leave it to the CPU reference renderer.
     fn render(
         &mut self,
         project: &filmcraft_project::Project,

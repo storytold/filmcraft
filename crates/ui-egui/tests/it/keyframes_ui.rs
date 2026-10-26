@@ -392,6 +392,8 @@ fn effect_controls_zoom_bar_scales_keyframes_and_ruler() {
 }
 
 #[test]
+/// Alt+wheel zooms around the playhead rather than the mouse, and the zoom bar sits at the
+/// bottom of the lane.
 fn alt_wheel_zoom_keeps_the_playhead_anchored_and_zoom_bar_sits_at_lane_bottom() {
     let (mut d, clip) = Driver::demo();
     d.ok("ui.set", json!({"effectControls": {"timeZoom": null}}));
@@ -453,6 +455,7 @@ fn alt_wheel_zoom_keeps_the_playhead_anchored_and_zoom_bar_sits_at_lane_bottom()
 }
 
 #[test]
+/// The context menu sets the interpolation of the whole selection, and Alt+drag duplicates it.
 fn selected_keyframes_change_interpolation_together_and_alt_drag_duplicates() {
     let (mut d, clip) = Driver::demo();
     let keys = lane_keys(&mut d, &clip, &[("scale", 0.8), ("rotation", 1.1)]);
@@ -487,6 +490,7 @@ fn selected_keyframes_change_interpolation_together_and_alt_drag_duplicates() {
 }
 
 #[test]
+/// Del removes every selected keyframe as one undo step.
 fn delete_removes_selected_keyframes_together_with_one_undo() {
     let (mut d, clip) = Driver::demo();
     let keys = lane_keys(&mut d, &clip, &[("scale", 0.8), ("rotation", 1.2)]);
@@ -505,6 +509,7 @@ fn delete_removes_selected_keyframes_together_with_one_undo() {
 }
 
 #[test]
+/// Clear in the keyframe context menu removes the selected group as one edit.
 fn clear_from_keyframe_context_menu_deletes_the_selected_group() {
     let (mut d, clip) = Driver::demo();
     let keys = lane_keys(&mut d, &clip, &[("scale", 0.8), ("rotation", 1.2)]);
@@ -519,6 +524,7 @@ fn clear_from_keyframe_context_menu_deletes_the_selected_group() {
 }
 
 #[test]
+/// Del removes every selected effect in one edit.
 fn delete_removes_all_selected_effects_together() {
     let (mut d, clip) = Driver::demo();
     for effect in ["gaussian_blur", "tint"] {
@@ -546,6 +552,7 @@ fn delete_removes_all_selected_effects_together() {
 }
 
 #[test]
+/// Clear in the effect context menu removes the selected effects together.
 fn clear_from_effect_context_menu_removes_the_selected_effect_group() {
     let (mut d, clip) = Driver::demo();
     for effect in ["gaussian_blur", "tint"] {
@@ -568,6 +575,8 @@ fn clear_from_effect_context_menu_removes_the_selected_effect_group() {
 }
 
 #[test]
+/// Shift-click selects several effects, and the selection can be saved to a preset, copied,
+/// pasted and reordered.
 fn effect_controls_shift_selection_save_preset_copy_paste_and_reorder() {
     let (mut d, clip) = Driver::demo();
     for effect in ["gaussian_blur", "tint"] {
@@ -630,6 +639,7 @@ fn effect_controls_shift_selection_save_preset_copy_paste_and_reorder() {
 }
 
 #[test]
+/// Copied keyframes land relative to the playhead of the clip they are pasted into.
 fn effect_controls_copy_paste_keyframes_uses_playhead_anchor() {
     let (mut d, clip) = Driver::demo();
     let key = lane_keys(&mut d, &clip, &[("scale", 1.0)])[0].clone();
@@ -662,6 +672,7 @@ fn effect_controls_copy_paste_keyframes_uses_playhead_anchor() {
 }
 
 #[test]
+/// The keyframe panel's context menu copies and pastes the selected effects.
 fn keyframe_context_menu_copies_and_pastes_selected_effects() {
     let (mut d, clip) = Driver::demo();
     for effect in ["gaussian_blur", "tint"] {
@@ -687,6 +698,7 @@ fn keyframe_context_menu_copies_and_pastes_selected_effects() {
 }
 
 #[test]
+/// The colour picker takes pasted HEX text and shows the value as text.
 fn effect_color_picker_accepts_and_exposes_hex_text() {
     let (mut d, clip) = Driver::demo();
     d.exec("effects.apply", json!({"clips": [clip.id], "effect": "tint"}));
@@ -709,6 +721,7 @@ fn effect_color_picker_accepts_and_exposes_hex_text() {
 }
 
 #[test]
+/// Copied effects paste onto the clip selected on the Timeline, not the panel's own clip.
 fn copied_effects_paste_to_the_timeline_selected_clip() {
     let (mut d, source) = Driver::demo();
     for effect in ["gaussian_blur", "tint"] {
@@ -739,6 +752,7 @@ fn copied_effects_paste_to_the_timeline_selected_clip() {
 }
 
 #[test]
+/// Copied keyframes paste into the clip selected on the Timeline.
 fn copied_keyframes_paste_to_the_timeline_selected_clip() {
     let (mut d, source) = Driver::demo();
     let key = lane_keys(&mut d, &source, &[("scale", 1.0)])[0].clone();
@@ -1085,6 +1099,7 @@ fn escape_cancels_a_group_preview_without_editing_the_project() {
 }
 
 #[test]
+/// Effect and mask keyframes move as one group and never cross a parameter boundary.
 fn effect_and_mask_keyframes_move_together_without_crossing_parameters() {
     let (mut d, clip) = Driver::demo();
     d.click("effectControls.effect.motion");

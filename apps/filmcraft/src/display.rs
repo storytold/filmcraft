@@ -35,12 +35,14 @@ pub fn prefer_x11(get: impl Fn(&str) -> Option<String>) -> bool {
 mod tests {
     use super::*;
 
+    /// A lookup over a fixed environment, in the shape `prefer_x11` reads.
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: std::collections::HashMap<String, String> = pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect();
         move |k: &str| map.get(k).cloned()
     }
 
     #[test]
+    /// Only `FILMCRAFT_XWAYLAND` moves a Wayland session to XWayland, and only when XWayland is there.
     fn xwayland_is_opted_in_on_a_wayland_session() {
         // A Wayland session opens natively by default.
         assert!(!prefer_x11(env(&[("WAYLAND_DISPLAY", "wayland-0"), ("DISPLAY", ":0")])));
