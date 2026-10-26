@@ -3,9 +3,9 @@ use super::layout::{Layout, Row, max_scroll, min_pps, new_track_at};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
 use super::snap::{snap, snap_playhead};
 use super::{
-    Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
-    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
-    selection_trim_kind, vec2,
+    Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, FrameRate, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense,
+    Sequence, Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer,
+    pos2, selection_trim_kind, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -222,7 +222,7 @@ fn run_fade(app: &mut FilmcraftApp, clip: ClipId, edge: filmcraft_edit::Edge, au
 }
 
 /// The fade handles on the hovered and the selected clips, and the fade being dragged (#1385).
-fn fade_overlay(app: &FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, pos: Option<Pos2>) {
+fn fade_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, pos: Option<Pos2>) {
     let ctx = ui.ctx().clone();
     let mods = ctx.input(|i| i.modifiers);
     // with a selection modifier held, a press on a handle selects the clip as anywhere else on it
@@ -244,8 +244,14 @@ fn fade_overlay(app: &FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 for row in &layout.rows {
                     let Some(track) = seq.track(row.track) else { continue };
                     for it in track.items.iter().filter(|i| over == Some(i.id) || app.session.state.selection.contains(&i.id)) {
-                        for (c, _) in fade_handles(seq, layout, row, it) {
+                        for (c, edge) in fade_handles(seq, layout, row, it) {
                             ring(c, !selecting && pos.is_some_and(|p| c.distance(p) <= FADE_HANDLE_R));
+                            let (side, label) = if edge == filmcraft_edit::Edge::In { ("in", "Fade In Handle") } else { ("out", "Fade Out Handle") };
+                            app.auto.add(
+                                &format!("timeline.clip.{}.fade.{side}", it.id.0),
+                                Rect::from_center_size(c, vec2(2.0 * FADE_HANDLE_R, 2.0 * FADE_HANDLE_R)),
+                                label,
+                            );
                         }
                     }
                 }
@@ -284,6 +290,19 @@ fn fade_overlay(app: &FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             _ => {}
         }
     }
+}
+
+/// The most frames a fade at `edge` of `it` on `track` may be: half the clip, and at a cut, as the
+/// dissolve is centred on it, twice as long as the neighbour it must not run past.
+fn fade_most(seq: &Sequence, rate: FrameRate, track: TrackId, it: &TrackItem, edge: filmcraft_edit::Edge) -> i64 {
+    let neighbour = seq
+        .track(track)
+        .and_then(|t| t.items.iter().find(|n| n.id != it.id && if edge == filmcraft_edit::Edge::In { n.end() == it.start } else { n.start == it.end() }));
+    let mut most = rate.frame_at(it.duration) / 2;
+    if let Some(n) = neighbour {
+        most = most.min(rate.frame_at(n.duration).saturating_mul(2));
+    }
+    most.max(0)
 }
 
 fn shift_track(seq: &Sequence, tid: TrackId, delta: i32) -> Option<TrackId> {
@@ -539,7 +558,11 @@ fn start_drag(
         // a fade handle: a click applies the default transition at that edge, a drag sets its length
         (Tool::Selection, _) if fade.is_some() => fade.and_then(|(clip, edge, audio)| {
             if resp.clicked() {
-                run_fade(app, clip, edge, audio, None);
+                // the default length, held to what a drag could make at this edge
+                let default =
+                    if audio { app.session.prefs.timeline.audio_transition_duration(rate) } else { app.session.prefs.timeline.video_transition_duration(rate) };
+                let most = seq.find_item(clip).map(|(track, it)| fade_most(seq, rate, track, it, edge));
+                run_fade(app, clip, edge, audio, most.filter(|m| rate.frame_at(default) > *m));
                 None
             } else {
                 Some(Drag::Fade { clip, edge, audio, frames: 0 })
@@ -892,14 +915,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 let frames = seq.find_item(clip).map_or(0, |(track, it)| {
                     let frame_px = (layout.x_of(it.start + rate.frame_duration()) - layout.x_of(it.start)).max(0.001);
                     let along = if edge == filmcraft_edit::Edge::In { p.x - layout.x_of(it.start) } else { layout.x_of(it.end()) - p.x };
-                    let neighbour = seq.track(track).and_then(|t| {
-                        t.items.iter().find(|n| n.id != it.id && if edge == filmcraft_edit::Edge::In { n.end() == it.start } else { n.start == it.end() })
-                    });
-                    let mut most = rate.frame_at(it.duration) / 2;
-                    if let Some(n) = neighbour {
-                        most = most.min(rate.frame_at(n.duration).saturating_mul(2));
-                    }
-                    ((along / frame_px).round() as i64).clamp(0, most.max(0))
+                    ((along / frame_px).round() as i64).clamp(0, fade_most(seq, rate, track, it, edge))
                 });
                 Some(Drag::Fade { clip, edge, audio, frames })
             }
