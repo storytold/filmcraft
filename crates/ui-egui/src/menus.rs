@@ -620,6 +620,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if filled_clipboard {
         remember_stale_clipboard_media(app);
         put_clip_names_on_system_clipboard(app, ctx);
+    } else if matches!(id, "effects.copy" | "effects.copyKeyframes") && r.is_ok() {
+        // An Effect Controls copy shares the one clipboard, so it folds the media that was already
+        // on the system clipboard in the same way: a Paste of the effects must not import it.
+        remember_stale_clipboard_media(app);
     }
     r
 }

@@ -175,6 +175,8 @@ pub fn copy(s: &mut Session) -> usize {
     s.state.caption_clipboard = picked.into_iter().map(|(ti, c)| (ti, filmcraft_project::Caption { start: c.start - min, ..c })).collect();
     s.state.clipboard.clear();
     s.state.clipboard_markers.clear();
+    s.state.effect_clipboard = None;
+    s.state.keyframe_clipboard = None;
     s.state.caption_clipboard.len()
 }
 

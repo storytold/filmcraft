@@ -42,6 +42,7 @@ cargo xtask web --serve 8765                          # the web app on http://12
 | `FILMCRAFT_CONTROL_TOKEN` | Required for `--control`: 64 random hex characters, inherited by authorized clients; [setup](control-protocol.md) |
 | `FILMCRAFT_CPU_COMPOSITE=1` | Disables the GPU compositor |
 | `FILMCRAFT_DEV_DESKTOP_ENTRY=1` | Linux, opt-in: a run from a source tree installs a user-level desktop entry (and the icons from `assets/app-icon`) so the taskbar shows the FilmCraft icon. Nothing is written without it; packaged runs never write one |
+| `FILMCRAFT_XWAYLAND=1` | Linux, opt-in: open the window through the X11 (XWayland) backend on a Wayland session. A Wayland session opens natively by default, where the pinned winit fork delivers file drag-and-drop; reach for this when Wayland drag-and-drop misbehaves |
 | `FILMCRAFT_DATA_DIR` | Same as `--data-dir <dir>`: auto-save, crash recovery, settings and logs |
 | `RUST_LOG` | Log levels for standard error and the log file (see [Logs](#logs)) |
 

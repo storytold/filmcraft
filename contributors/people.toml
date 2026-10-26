@@ -39,6 +39,9 @@ sync_github_name = false
 [people.swillunderscore]
 display_name = "Swill Software"
 
+[people.illoprin]
+real_name = "Ilya Kuntsevich"
+display_name = "illoprin"
 
 [people.IppSec]
 sync_github_name = true

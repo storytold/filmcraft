@@ -14,10 +14,12 @@ pub mod aaf_omf;
 pub mod autosave;
 pub mod captions;
 pub mod clip_ops;
+pub mod clipboard;
 pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod doc_path;
+mod effect_ops;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -406,6 +408,15 @@ pub struct EditorState {
     /// places whichever was copied last.
     #[serde(skip)]
     pub caption_clipboard: Vec<(usize, filmcraft_project::Caption)>,
+    /// Effects copied from Effect Controls ([`clipboard::EffectClipboard`]), or `None` unless they
+    /// were the last Copy: See [`clipboard`] — the application holds one clipboard, so a copy of
+    /// clips, captions or keyframes empties this one.
+    #[serde(skip)]
+    pub effect_clipboard: Option<clipboard::EffectClipboard>,
+    /// Keyframes copied from the Effect Controls lane ([`clipboard::EffectKeyframeClipboard`]), or
+    /// `None` unless they were the last Copy.
+    #[serde(skip)]
+    pub keyframe_clipboard: Option<clipboard::EffectKeyframeClipboard>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,

@@ -12,6 +12,7 @@ use crate::icons::{self, Icon};
 use crate::state::KeyframeRef;
 use crate::theme::Tokens;
 use crate::widgets::HotNumberOptions;
+use filmcraft_engine::clipboard::{EffectKeyframeClipboard, EffectKeyframeClipboardEntry, EffectKeyframeTemplate};
 
 #[path = "effect_controls_selection.rs"]
 mod selection;
@@ -22,9 +23,12 @@ const ROW_H: f32 = 22.0;
 /// laid out for at least 260 points (values from 150 points in, the reset button at the end).
 const MIN_LIST_W: f32 = 260.0;
 const MIN_LANE_W: f32 = 60.0;
+const MIN_ZOOM_THUMB_W: f32 = 34.0;
+const MIN_ZOOM_FRAMES: i64 = 5;
 /// Keyframe lane header: the time ruler (beside the Source / Sequence pills) and the clip's bar.
 const RULER_H: f32 = 24.0;
 const CLIP_BAR_H: f32 = 18.0;
+const ZOOM_BAR_H: f32 = 10.0;
 /// Distance between the keyframe navigator's buttons (◀ ◆ ▶).
 const NAV_STEP: f32 = 16.0;
 /// The Y curve of a point parameter's value graph (X uses the accent colour).
@@ -35,10 +39,253 @@ const PROPS_NAV_X: f32 = 26.0;
 /// Properties panel: where a row's value fields end, left of the navigator.
 const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
 
+#[derive(Clone)]
+struct EffectDrag {
+    clip: u64,
+    from: usize,
+    target: Option<usize>,
+    name: String,
+}
+
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
     let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
     it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
+}
+
+/// A possibly UI-supplied range, clamped to the clip. Invalid / stale ranges show the full clip.
+fn time_zoom_range(zoom: Option<[f64; 2]>) -> (f64, f64) {
+    let Some([start, end]) = zoom.filter(|[start, end]| start.is_finite() && end.is_finite()) else { return (0.0, 1.0) };
+    let (start, end) = (start.clamp(0.0, 1.0), end.clamp(0.0, 1.0));
+    if start < end { (start, end) } else { (0.0, 1.0) }
+}
+
+/// Keep the minimum view width at five frames, including ranges supplied through UI automation or
+/// restored from an older UI-state snapshot.
+fn constrained_time_zoom(zoom: Option<[f64; 2]>, duration: Tick, rate: filmcraft_time::FrameRate) -> Option<[f64; 2]> {
+    let (start, end) = time_zoom_range(zoom);
+    let duration = duration.0.max(1);
+    let min_span = (rate.frame_duration().0.max(1).saturating_mul(MIN_ZOOM_FRAMES) as f64 / duration as f64).clamp(0.0, 1.0);
+    let span = (end - start).max(min_span).min(1.0);
+    let start = start.min(1.0 - span);
+    let end = start + span;
+    (start > 0.0 || end < 1.0).then_some([start, end])
+}
+
+/// The part of the clip the keyframe lane shows, in timeline ticks, for a zoom range.
+fn shown_range(start: Tick, duration: Tick, zoom: Option<[f64; 2]>) -> (Tick, Tick) {
+    let (from, to) = time_zoom_range(zoom);
+    let duration = duration.0.max(1);
+    let at = |fraction: f64| Tick(start.0.saturating_add((fraction * duration as f64).round().clamp(0.0, duration as f64) as i64));
+    let shown_start = at(from);
+    let shown_end = at(to).max(Tick(shown_start.0.saturating_add(1)));
+    (shown_start, shown_end)
+}
+
+/// The overview bar under the clip. Its thumb is the part of the clip shown in the lane: drag the
+/// middle to scroll and either handle to change the zoom. A full-width thumb shows the whole clip.
+fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, duration: Tick, rate: filmcraft_time::FrameRate) {
+    let t = app.tokens;
+    let clip_duration = duration;
+    let duration = duration.0.max(1);
+    let frame = rate.frame_duration().0.max(1);
+    let min_span = (frame.saturating_mul(MIN_ZOOM_FRAMES) as f64 / duration as f64).clamp(0.0, 1.0);
+    let (start, end) = time_zoom_range(constrained_time_zoom(app.ui.effect_controls_time_zoom, clip_duration, rate));
+    let span = end - start;
+    let w = (span as f32 * bar.width()).clamp(MIN_ZOOM_THUMB_W.min(bar.width()), bar.width());
+    let travel = (bar.width() - w).max(0.0);
+    let range = (1.0 - span).max(0.0);
+    let left = bar.min.x + if range > 0.0 { (start / range).clamp(0.0, 1.0) as f32 * travel } else { 0.0 };
+    let per_point = if travel > 0.5 { range / travel as f64 } else { 0.0 };
+    let thumb = Rect::from_min_max(pos2(left, bar.min.y), pos2(left + w, bar.max.y));
+    let p = ui.painter();
+    p.rect_filled(bar, bar.height() / 2.0, t.separator);
+    p.rect_filled(thumb, thumb.height() / 2.0, if ui.rect_contains_pointer(thumb) { t.scroll_thumb_hover } else { t.scroll_thumb });
+    for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
+        p.circle_filled(pos2(x, thumb.center().y), 3.5, t.panel_bg);
+        p.circle_stroke(pos2(x, thumb.center().y), 3.5, Stroke::new(1.25, t.icon_active));
+    }
+    app.auto.add("effectControls.zoomBar", thumb, "keyframe zoom range");
+    app.auto.add("effectControls.zoomBar.track", bar, "keyframe zoom track");
+    let response = ui.interact(bar, egui::Id::unique("effect-controls-zoom-bar"), Sense::click_and_drag());
+    let jump = |x: f32| ((x - bar.min.x - w / 2.0) as f64 * per_point).clamp(0.0, range);
+    let mut next = None;
+    if response.clicked()
+        && per_point > 0.0
+        && let Some(pos) = response.interact_pointer_pos().filter(|pos| !thumb.contains(*pos))
+    {
+        let start = jump(pos.x);
+        next = Some((start, start + span));
+    }
+    let drag_id = egui::Id::unique("effect-controls-zoom-drag");
+    if response.drag_started()
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos())
+    {
+        let mut drag_start = start;
+        let mode = if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+            if per_point > 0.0 {
+                drag_start = jump(pos.x);
+                next = Some((drag_start, drag_start + span));
+            }
+            0u8
+        } else if (pos.x - thumb.min.x).abs() < 9.0 {
+            1
+        } else if (pos.x - thumb.max.x).abs() < 9.0 {
+            2
+        } else {
+            0
+        };
+        ui.data_mut(|d| d.insert_temp(drag_id, (pos.x, drag_start, mode)));
+    }
+    if response.dragged()
+        && let Some((grab, drag_start, mode)) = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id))
+    {
+        match mode {
+            0 => {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let next_start = (drag_start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
+                    next = Some((next_start, next_start + span));
+                }
+            }
+            1 => {
+                let dx = response.drag_delta().x as f64 / bar.width().max(1.0) as f64;
+                next = Some(((start + dx).clamp(0.0, (end - min_span).max(0.0)), end));
+            }
+            _ => {
+                let dx = response.drag_delta().x as f64 / bar.width().max(1.0) as f64;
+                next = Some((start, (end + dx).clamp((start + min_span).min(1.0), 1.0)));
+            }
+        }
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<(f32, f64, u8)>(drag_id));
+    }
+    if let Some((start, end)) = next {
+        app.ui.effect_controls_time_zoom = (start > 0.0 || end < 1.0).then_some([start, end.min(1.0)]);
+    }
+}
+
+/// UI-data key for the wheel gesture under way: set while Alt+wheel keeps zooming the lane, so the
+/// smoothed tail of that gesture is still treated as a zoom after the events themselves stop.
+fn zoom_gesture_id() -> egui::Id {
+    egui::Id::unique("effect-controls-zoom-gesture")
+}
+
+/// A wheel delta in points, whatever unit the platform reports it in.
+fn wheel_points(unit: egui::MouseWheelUnit) -> f32 {
+    match unit {
+        egui::MouseWheelUnit::Point => 1.0,
+        egui::MouseWheelUnit::Line => 40.0,
+        egui::MouseWheelUnit::Page => 400.0,
+    }
+}
+
+/// Alt+wheel scales the lane around the playback cursor. The gesture is consumed here so it cannot
+/// also scroll the effect rows or the surrounding view.
+///
+/// egui smooths one wheel notch over several frames, so the frames after the events stop carrying a
+/// wheel event still hold a leftover `smooth_scroll_delta`. Keying the guard on a wheel event alone
+/// (as before) left those frames to the shared ScrollArea, which scrolled the rows while zooming.
+/// The guard therefore follows the held Alt state and the settling gesture it began, not just the
+/// frames that carry an event.
+#[allow(clippy::too_many_arguments)]
+fn zoom_at_playhead(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    lane: Rect,
+    clip_start: Tick,
+    duration: Tick,
+    playhead: Tick,
+    rate: filmcraft_time::FrameRate,
+) -> bool {
+    let (hovering, alt, scrolling) = ui.input(|i| (i.pointer.hover_pos().is_some_and(|p| lane.contains(p)), i.modifiers.alt, i.is_scrolling()));
+    if !hovering {
+        ui.data_mut(|d| d.remove::<bool>(zoom_gesture_id()));
+        return false;
+    }
+    let (delta, alt_wheel) = ui.input(|input| {
+        let mut delta = 0.0f32;
+        let mut alt_wheel = false;
+        for event in &input.events {
+            if let egui::Event::MouseWheel { unit, delta: d, modifiers, .. } = event
+                && modifiers.alt
+                && d.y.is_finite()
+                && d.x.is_finite()
+            {
+                alt_wheel = true;
+                delta += d.y * wheel_points(*unit);
+            }
+        }
+        (delta, alt_wheel)
+    });
+    // A gesture keeps its zoom meaning only while its smoothing tail lasts; a fresh scroll that is
+    // not Alt+wheel is left to the ScrollArea.
+    let stored = ui.data(|d| d.get_temp::<bool>(zoom_gesture_id()).unwrap_or(false));
+    let gesture = alt_wheel || (stored && scrolling);
+    if !(alt || gesture) {
+        ui.data_mut(|d| d.remove::<bool>(zoom_gesture_id()));
+        return false;
+    }
+    // Remember an actual Alt+wheel (and its settling tail), never a bare Alt hover: a later
+    // ordinary scroll must not be mistaken for a zoom.
+    ui.data_mut(|d| {
+        if gesture {
+            d.insert_temp(zoom_gesture_id(), true);
+        } else {
+            d.remove::<bool>(zoom_gesture_id());
+        }
+    });
+    // Consume the gesture: drop the Alt+wheel events so no other view acts on them, and zero the
+    // smoothed delta the shared ScrollArea would otherwise apply as a vertical scroll.
+    ui.input_mut(|input| {
+        input.events.retain(|event| !matches!(event, egui::Event::MouseWheel { modifiers, .. } if modifiers.alt));
+        input.raw.events.retain(|event| !matches!(event, egui::Event::MouseWheel { modifiers, .. } if modifiers.alt));
+        input.smooth_scroll_delta = egui::Vec2::ZERO;
+    });
+    // The keyframe lane shares a vertical ScrollArea with the effect rows. An Alt-wheel gesture
+    // belongs to zooming, not that ScrollArea; disable its mouse-wheel source below even for tiny
+    // high-resolution wheel deltas which do not yet change the zoom range.
+    if delta.abs() < 0.01 {
+        return true;
+    }
+    let (start, end) = time_zoom_range(app.ui.effect_controls_time_zoom);
+    let span = end - start;
+    let clip_ticks = duration.0.max(1);
+    // Keep the playback cursor at its current screen position. When it is just outside the zoomed
+    // range, it is already drawn against the nearest edge, so anchor it there rather than jumping
+    // the view to a different point.
+    let cursor_time = playhead.0.saturating_sub(clip_start.0) as f64 / clip_ticks as f64;
+    let cursor_time = cursor_time.clamp(0.0, 1.0);
+    let cursor_x = ((cursor_time - start) / span).clamp(0.0, 1.0);
+    let anchor = start + cursor_x * span;
+    // A positive wheel delta is content moving down: this is a wheel-down gesture, so it widens
+    // the view; wheel-up has a negative delta and narrows it (zooms in).
+    let factor = f64::from(-delta / 300.0).exp().clamp(0.1, 10.0);
+    let min_span = (rate.frame_duration().0.max(1).saturating_mul(MIN_ZOOM_FRAMES) as f64 / clip_ticks as f64).clamp(0.0, 1.0);
+    let new_span = (span * factor).clamp(min_span, 1.0);
+    let new_start = (anchor - cursor_x * new_span).clamp(0.0, 1.0 - new_span);
+    app.ui.effect_controls_time_zoom = (new_start > 0.0 || new_start + new_span < 1.0).then_some([new_start, new_start + new_span]);
+    true
+}
+
+/// Show the effect's name below-right of the pointer while its row is being reordered, using the
+/// same translucent blue plate and white label as the "reordering tabs" ghost.
+fn paint_effect_drag_label(ui: &egui::Ui, drag: Option<&EffectDrag>, t: &Tokens) -> Option<Rect> {
+    let drag = drag?;
+    let pointer = ui.input(|i| i.pointer.latest_pos())?;
+    let ctx = ui.ctx();
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("effect-drag-label")));
+    let galley = painter.layout_no_wrap(drag.name.clone(), Tokens::ui(12.0), Color32::WHITE);
+    let size = galley.size() + vec2(16.0, 8.0);
+    let desired = pointer + vec2(12.0, 14.0);
+    let screen = ctx.content_rect();
+    let max_x = (screen.max.x - size.x).max(screen.min.x);
+    let max_y = (screen.max.y - size.y).max(screen.min.y);
+    let min = pos2(desired.x.clamp(screen.min.x, max_x), desired.y.clamp(screen.min.y, max_y));
+    let rect = Rect::from_min_size(min, size);
+    painter.rect_filled(rect, 4.0, t.focus.gamma_multiply(0.85));
+    painter.galley(min + vec2(8.0, 4.0), galley, Color32::WHITE);
+    Some(rect)
 }
 
 // The press frame can include movement before the button went down. Start from the press
@@ -126,9 +373,302 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+/// The indices, in `effects`, of the effects selected in this panel.
+fn selected_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectInstance]) -> Vec<usize> {
+    let mut indices: Vec<usize> =
+        app.ui.selected_effects.iter().filter(|selection| selection.clip == clip).filter_map(|selection| selection.index(effects)).collect();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// The indices to remove: the selection — or `clicked` alone when it is outside it — without
+/// intrinsic effects.
+fn removable_effect_indices(app: &FilmcraftApp, clip: ClipId, effects: &[EffectInstance], clicked: Option<usize>) -> Vec<usize> {
+    let mut indices = selected_effect_indices(app, clip, effects);
+    if let Some(clicked) = clicked
+        && !indices.contains(&clicked)
+    {
+        indices = vec![clicked];
+    }
+    indices.retain(|index| effects.get(*index).is_some_and(|effect| effect.def().is_some_and(|definition| !definition.intrinsic)));
+    indices
+}
+
+/// Copy the selected effects (or `clicked` alone) to the application clipboard, which holds
+/// whatever was copied last, wherever from (see [`filmcraft_engine::clipboard`]).
+fn copy_effects(app: &mut FilmcraftApp, clip: ClipId, item: &TrackItem, clicked: usize) {
+    let mut indices = selected_effect_indices(app, clip, &item.effects);
+    if !indices.contains(&clicked) {
+        indices = vec![clicked];
+    }
+    let effects: Vec<EffectInstance> = indices.iter().filter_map(|index| item.effects.get(*index)).cloned().collect();
+    match app.session.execute("effects.copy", json!({"sourceClip": clip.0, "sourceIn": item.source_in.0, "effects": effects})) {
+        Ok(value) => app.ui.status = tlf!("Copied {count} effect(s)", count = value["copied"].as_u64().unwrap_or(0)),
+        Err(error) => app.ui.status = error.to_string(),
+    }
+}
+
+/// Paste the effect clipboard onto the selected clips that accept it; audio and video chains do
+/// not mix.
+fn paste_effects(app: &mut FilmcraftApp, current_clip: ClipId) {
+    let Some(clipboard) = app.session.state.effect_clipboard.clone() else {
+        app.ui.status = tl!("No effects have been copied").to_string();
+        return;
+    };
+    let Some(first) = clipboard.effects.first().and_then(EffectInstance::def) else {
+        app.ui.status = tl!("The copied effects are unavailable").to_string();
+        return;
+    };
+    let audio = first.kind == filmcraft_project::EffectKind::Audio;
+    if clipboard.effects.iter().any(|effect| effect.def().is_none_or(|def| (def.kind == filmcraft_project::EffectKind::Audio) != audio)) {
+        app.ui.status = tl!("Audio and video effects cannot be pasted as one chain").to_string();
+        return;
+    }
+    let candidates: Vec<ClipId> = if app.session.state.selection.is_empty() { vec![current_clip] } else { app.session.state.selection.clone() };
+    let clips: Vec<u64> = app
+        .session
+        .active_sequence()
+        .into_iter()
+        .flat_map(|sequence| {
+            candidates.iter().filter_map(move |clip| {
+                let (track, _) = sequence.find_item(*clip)?;
+                let kind = sequence.track(track)?.kind;
+                ((kind == TrackKind::Audio) == audio).then_some(clip.0)
+            })
+        })
+        .collect();
+    if clips.is_empty() {
+        app.ui.status = tl!("No selected clips match the copied effects").to_string();
+        return;
+    }
+    let result = app.session.execute(
+        "effects.paste",
+        json!({"sourceClip": clipboard.source_clip, "sourceIn": clipboard.source_in.0, "effects": clipboard.effects, "clips": clips}),
+    );
+    match result {
+        Ok(value) => app.ui.status = tlf!("Pasted {count} effect(s)", count = value["inserted"].as_u64().unwrap_or(0)),
+        Err(error) => app.ui.status = error.to_string(),
+    }
+}
+
+/// Copy the selected keyframes into the keyframe clipboard, with one effect template per instance,
+/// each keyframe offset from the playhead.
+fn copy_keyframes(app: &mut FilmcraftApp) -> Result<(), String> {
+    let selected = app.ui.keyframe_selection.clone();
+    if selected.is_empty() {
+        return Err(tl!("Select keyframes to copy").to_string());
+    }
+    if selected.len() > 4096 {
+        return Err(tl!("Too many keyframes to copy").to_string());
+    }
+    let sequence = app.session.active_sequence().ok_or_else(|| tl!("No active sequence").to_string())?;
+    let playhead = app.session.playhead();
+    let mut clipboard = EffectKeyframeClipboard::default();
+    let mut path_vertices = 0usize;
+    for key in selected {
+        let (_, item) = sequence.find_item(ClipId(key.clip)).ok_or_else(|| tl!("A selected clip no longer exists").to_string())?;
+        let effect = item.effects.get(key.effect).ok_or_else(|| tl!("A selected effect no longer exists").to_string())?;
+        let param = match key.mask {
+            Some(mask) => effect.masks.get(mask).and_then(|mask| mask.param(&key.param)),
+            None => effect.params.get(&key.param),
+        }
+        .ok_or_else(|| tl!("A selected parameter no longer exists").to_string())?;
+        let keyframe = param.keyframes.iter().find(|kf| kf.time == key.time).cloned().ok_or_else(|| tl!("A selected keyframe no longer exists").to_string())?;
+        if let ParamValue::Path(path) = &keyframe.value {
+            path_vertices = path_vertices.saturating_add(path.vertices.len());
+            if path_vertices > 16_384 {
+                return Err(tl!("The selected keys contain too much path data to copy").to_string());
+            }
+        }
+        let timeline = timeline_time_of(item, key.time);
+        let offset = Tick(timeline.0.checked_sub(playhead.0).ok_or_else(|| tl!("Keyframe offset overflows").to_string())?);
+        let instance = item.effects.iter().take(key.effect).filter(|previous| previous.effect == effect.effect).count();
+        if !clipboard.effects.iter().any(|template| template.effect == effect.effect && template.instance == instance) {
+            let mut template = effect.def().ok_or_else(|| tl!("The selected effect is unavailable").to_string())?.instance();
+            template.enabled = effect.enabled;
+            template.masks = effect
+                .masks
+                .iter()
+                .map(|source| {
+                    let mut mask = source.clone();
+                    mask.path.keyframes.clear();
+                    mask.feather = filmcraft_project::Param::new(ParamValue::Float(10.0));
+                    mask.opacity = filmcraft_project::Param::new(ParamValue::Float(100.0));
+                    mask.expansion = filmcraft_project::Param::new(ParamValue::Float(0.0));
+                    mask
+                })
+                .collect();
+            path_vertices = template.masks.iter().fold(path_vertices, |total, mask| match &mask.path.value {
+                ParamValue::Path(path) => total.saturating_add(path.vertices.len()),
+                _ => total,
+            });
+            if path_vertices > 16_384 {
+                return Err(tl!("The selected keys contain too much path data to copy").to_string());
+            }
+            clipboard.effects.push(EffectKeyframeTemplate { effect: effect.effect.clone(), instance, template });
+        }
+        clipboard.entries.push(EffectKeyframeClipboardEntry { effect: effect.effect.clone(), instance, param: key.param, mask: key.mask, offset, keyframe });
+    }
+    let count = clipboard.entries.len();
+    app.session.execute("effects.copyKeyframes", json!({"keyframes": clipboard.entries, "effects": clipboard.effects})).map_err(|error| error.to_string())?;
+    app.ui.status = tlf!("Copied {count} keyframe(s)", count = count);
+    Ok(())
+}
+
+/// Ctrl+C in Effect Controls: the selected keyframes, else the selected effects.
+pub(crate) fn copy_for_shortcut(app: &mut FilmcraftApp) {
+    if !app.ui.keyframe_selection.is_empty() {
+        if let Err(error) = copy_keyframes(app) {
+            app.ui.status = error;
+        }
+        return;
+    }
+    copy_selected_effects(app);
+}
+
+/// Copy the panel's selection, or the effect it has selected or clicked.
+pub(crate) fn copy_selected_effects(app: &mut FilmcraftApp) {
+    let Some((clip, item, _)) = selected_clip(app) else { return };
+    let selected = selected_effect_indices(app, clip, &item.effects);
+    let fallback = app.session.state.selected_effect.as_ref().filter(|selection| selection.clip == clip).and_then(|selection| selection.index(&item.effects));
+    if let Some(index) = selected.first().copied().or(fallback) {
+        copy_effects(app, clip, &item, index);
+    }
+}
+
+/// Whether Ctrl+V has something to paste onto the Timeline selection.
+/// Whether Ctrl+C has something to copy in Effect Controls: a selected keyframe, or an effect the
+/// panel would copy. The panel claims Copy only while this holds, so a pointer resting on an empty
+/// panel leaves the chord to the Timeline selection.
+pub(crate) fn can_copy_for_shortcut(app: &FilmcraftApp) -> bool {
+    if !app.ui.keyframe_selection.is_empty() {
+        return true;
+    }
+    let Some((clip, item, _)) = selected_clip(app) else { return false };
+    !selected_effect_indices(app, clip, &item.effects).is_empty()
+        || app.session.state.selected_effect.as_ref().is_some_and(|selection| selection.clip == clip && selection.index(&item.effects).is_some())
+}
+
+/// Whether Del or Clear has something to remove in Effect Controls: a selected keyframe, or a
+/// removable (non-intrinsic) effect on a clip the panel shows. Delete is bound application-wide, so
+/// claiming it with nothing to remove would swallow the edit the user meant.
+pub(crate) fn can_delete_for_shortcut(app: &FilmcraftApp) -> bool {
+    if !app.ui.keyframe_selection.is_empty() {
+        return true;
+    }
+    selected_clips(app).iter().any(|(clip, item, _)| {
+        !removable_effect_indices(app, *clip, &item.effects, None).is_empty()
+            || app
+                .session
+                .state
+                .selected_effect
+                .as_ref()
+                .filter(|selection| selection.clip == *clip)
+                .and_then(|selection| selection.index(&item.effects))
+                .is_some_and(|index| !removable_effect_indices(app, *clip, &item.effects, Some(index)).is_empty())
+    })
+}
+
+/// Del or Clear in Effect Controls: remove the selected keyframes, else the selected effects of
+/// every selected clip.
+pub(crate) fn delete_for_shortcut(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if !app.ui.keyframe_selection.is_empty() {
+        run(app, ctx, vec![("effects.deleteKeyframes".into(), json!({"keyframes": app.ui.keyframe_selection}))]);
+        return;
+    }
+    let mut actions = Vec::new();
+    for (clip, item, _) in selected_clips(app) {
+        let mut indices = removable_effect_indices(app, clip, &item.effects, None);
+        if indices.is_empty()
+            && let Some(index) =
+                app.session.state.selected_effect.as_ref().filter(|selection| selection.clip == clip).and_then(|selection| selection.index(&item.effects))
+        {
+            indices = removable_effect_indices(app, clip, &item.effects, Some(index));
+        }
+        if !indices.is_empty() {
+            actions.push(("effects.removeMany".into(), json!({"clip": clip.0, "indices": indices})));
+        }
+    }
+    if !actions.is_empty() {
+        run(app, ctx, actions);
+    }
+}
+
+#[cfg(test)]
+mod delete_shortcut_tests {
+    use super::*;
+
+    #[test]
+    /// An effect selected on a linked audio clip is removed from that clip, not from the video one.
+    fn deleting_a_selected_audio_effect_uses_the_linked_audio_clip() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let (video, audio) = {
+            let sequence = session.active_sequence().unwrap();
+            (sequence.video_tracks[0].items[0].id, sequence.audio_tracks[0].items[0].id)
+        };
+        session.execute("timeline.select", json!({"clips": [audio.0]})).unwrap();
+        session.execute("effects.apply", json!({"clips": [audio.0], "effect": "amplify"})).unwrap();
+        session.execute("effects.select", json!({"clip": audio.0, "effect": "amplify"})).unwrap();
+        let audio_effects = &session.active_sequence().unwrap().find_item(audio).unwrap().1.effects;
+        let selected =
+            filmcraft_engine::EffectSel::of(audio, audio_effects, audio_effects.iter().position(|effect| effect.effect == "amplify").unwrap()).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.selected_effects = vec![selected];
+
+        delete_for_shortcut(&mut app, &egui::Context::default());
+
+        let sequence = app.session.active_sequence().unwrap();
+        assert!(sequence.find_item(audio).unwrap().1.effects.iter().all(|effect| effect.effect != "amplify"));
+        assert!(sequence.find_item(video).unwrap().1.effects.iter().all(|effect| effect.effect != "amplify"));
+    }
+
+    /// The panel owns Delete, Copy and Paste only while it has something to act on: with an empty
+    /// panel, a pointer resting on it leaves those chords to the Timeline selection (`edit.clear`
+    /// and `edit.copy` are bound application-wide).
+    #[test]
+    fn the_panel_claims_the_shortcuts_only_with_something_to_act_on() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = session.active_sequence().unwrap().video_tracks[0].items[0].id;
+        session.execute("timeline.select", json!({"clips": [clip.0]})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+
+        assert!(!can_copy_for_shortcut(&app), "nothing selected in the panel");
+        assert!(!can_delete_for_shortcut(&app), "no keyframe and no effect selected");
+        assert!(app.session.state.effect_clipboard.is_none() && app.session.state.keyframe_clipboard.is_none(), "the clipboard is empty");
+
+        // An effect selected in the panel gives Copy and Delete something to work on.
+        app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "gaussian_blur"})).unwrap();
+        app.session.execute("effects.select", json!({"clip": clip.0, "effect": "gaussian_blur"})).unwrap();
+        assert!(can_copy_for_shortcut(&app));
+        assert!(can_delete_for_shortcut(&app));
+
+        // A keyframe selection stands on its own, without a selected effect.
+        app.session.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+        app.session.execute("effects.addKeyframe", json!({"clip": clip.0, "effect": "motion", "param": "scale"})).unwrap();
+        app.ui.selected_effects.clear();
+        app.ui.focused = crate::dock::PanelKind::EffectControls;
+        assert!(select_all_keyframes(&mut app), "the clip's keyframe is selectable");
+        assert!(can_copy_for_shortcut(&app));
+        assert!(can_delete_for_shortcut(&app));
+
+        // Motion is intrinsic: it can be copied, but Del never removes it.
+        app.ui.keyframe_selection.clear();
+        app.session.execute("effects.select", json!({"clip": clip.0, "effect": "motion"})).unwrap();
+        assert!(can_copy_for_shortcut(&app), "Motion can still be copied");
+        assert!(!can_delete_for_shortcut(&app), "Motion is intrinsic");
+    }
+}
+
+/// Ctrl+V in Effect Controls: paste keyframes or effects, whichever the clipboard holds.
+/// Effect Controls for the selected clip — or for the selected transition. Draws the effect chain,
+/// its parameters and the keyframe lane.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
+    app.ui.selected_effects.retain(|selected| clips.iter().any(|(clip, item, _)| selected.clip == *clip && selected.index(&item.effects).is_some()));
     // keep only selected keyframes that still exist on a clip shown here
     app.ui.keyframe_selection.retain(|k| clips.iter().any(|(c, it, _)| c.0 == k.clip && keyframe_exists(it, k)));
     let Some((clip, it, _)) = clips.first().cloned() else {
@@ -150,11 +690,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // the divider between the effect list and the keyframe area; dragging it sets the list's width
     // (#643), each side keeping a minimum width
     // (the keyframe area has 4 points of margin left of it and 6 right)
-    let max_list = (rect.width() - MIN_LANE_W - 10.0).max(MIN_LIST_W);
-    let list_w = if app.ui.effect_controls_split > 0.0 { app.ui.effect_controls_split } else { (rect.width() * 0.58).max(260.0) };
-    let list_w = list_w.clamp(MIN_LIST_W, max_list);
+    let panel_width = rect.width().max(0.0);
+    let max_list = (panel_width - MIN_LANE_W - 10.0).max(MIN_LIST_W);
+    let list_w = if panel_width >= MIN_LIST_W + MIN_LANE_W + 10.0 {
+        let preferred = if app.ui.effect_controls_split > 0.0 { app.ui.effect_controls_split } else { (panel_width * 0.58).max(MIN_LIST_W) };
+        preferred.clamp(MIN_LIST_W, max_list)
+    } else {
+        panel_width * 0.58
+    };
     let split = rect.min.x + list_w;
-    let head = Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2(split - rect.min.x - 12.0, 24.0));
+    let head = Rect::from_min_size(rect.min + vec2(8.0, 4.0), vec2((split - rect.min.x - 12.0).max(0.0), 24.0));
     // Premiere: two pill tabs — "Source · clip" and "Sequence · clip" (active)
     let pill = |ui: &mut egui::Ui, r: Rect, text: &str, active: bool| {
         ui.painter().rect_filled(r, 4.0, if active { t.pill_active_bg } else { t.panel_bg });
@@ -164,31 +709,53 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let cp = ui.painter().with_clip_rect(r.shrink(2.0));
         cp.text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.5), if active { t.text } else { t.text_dim });
     };
-    let half = (head.width() - 6.0) / 2.0;
+    let half = (head.width() - 6.0).max(0.0) / 2.0;
     pill(ui, Rect::from_min_size(head.min, vec2(half, 24.0)), &tlf!("Source · {name}", name = it.name), false);
     pill(ui, Rect::from_min_size(head.min + vec2(half + 6.0, 0.0), vec2(half, 24.0)), &format!("{} · {}", seq_name(app), it.name), true);
     // keyframe lane header, as Premiere's: a time ruler over the clip's stretch of the sequence,
     // which the playhead's handle rides on, and the clip's bar under it
-    let lane = Rect::from_min_max(pos2(split + 4.0, rect.min.y + 4.0), pos2(rect.max.x - 6.0, rect.max.y - 26.0));
+    let lane_min = pos2((split + 4.0).min(rect.max.x), (rect.min.y + 4.0).min(rect.max.y));
+    let lane_max = pos2((rect.max.x - 6.0).max(lane_min.x), (rect.max.y - 26.0).max(lane_min.y));
+    let lane = Rect::from_min_max(lane_min, lane_max);
     ui.painter().rect_filled(lane, 0.0, t.tl_bg);
     let ph = app.session.playhead();
-    let dur = it.duration.0.max(1) as f64;
-    let lx = |tk: Tick| -> f32 { lane.min.x + (((tk - it.start).0 as f64 / dur) as f32).clamp(0.0, 1.0) * lane.width() };
     let rate = seq.settings.frame_rate;
-    let ruler = Rect::from_min_max(lane.min, pos2(lane.max.x, lane.min.y + RULER_H));
-    let bar = Rect::from_min_max(pos2(lane.min.x, ruler.max.y + 4.0), pos2(lane.max.x, ruler.max.y + 4.0 + CLIP_BAR_H));
+    app.ui.effect_controls_time_zoom = constrained_time_zoom(app.ui.effect_controls_time_zoom, it.duration, rate);
+    let zooming_at_pointer = zoom_at_playhead(app, ui, lane, it.start, it.duration, ph, rate);
+    let (shown_start, shown_end) = shown_range(it.start, it.duration, app.ui.effect_controls_time_zoom);
+    let shown_duration = shown_end.0.saturating_sub(shown_start.0).max(1) as f64;
+    let lx = |tk: Tick| -> f32 { lane.min.x + (((tk.0.saturating_sub(shown_start.0) as f64 / shown_duration) as f32).clamp(0.0, 1.0)) * lane.width() };
+    let ruler = Rect::from_min_max(lane.min, pos2(lane.max.x, (lane.min.y + RULER_H).min(lane.max.y)));
+    let bar_top = (ruler.max.y + 4.0).min(lane.max.y);
+    let bar = Rect::from_min_max(pos2(lane.min.x, bar_top), pos2(lane.max.x, (bar_top + CLIP_BAR_H).min(lane.max.y)));
+    // Keep navigation controls below the keyframe rows; only the ruler and clip overview remain
+    // fixed at the top of the lane.
+    let zoom_bar_bottom = (lane.max.y - 1.0).max(lane.min.y);
+    let zoom_bar_top = (zoom_bar_bottom - ZOOM_BAR_H).max(lane.min.y);
+    let zoom_bar = Rect::from_min_max(pos2(lane.min.x, zoom_bar_top), pos2(lane.max.x, zoom_bar_bottom));
     let scrub = Rect::from_min_max(ruler.min, bar.max);
     app.auto.add("effectControls.lane", lane, "keyframe lane");
     app.auto.add("effectControls.ruler", scrub, "time ruler");
-    let body = Rect::from_min_max(pos2(rect.min.x, head.max.y + 4.0), pos2(split, rect.max.y - 26.0));
+    let body_min = pos2(rect.min.x, (head.max.y + 4.0).min(rect.max.y));
+    let body_max = pos2(split.max(rect.min.x).min(rect.max.x), (rect.max.y - 26.0).max(body_min.y).min(rect.max.y));
+    let body = Rect::from_min_max(body_min, body_max);
     let mut actions: Vec<(String, Value)> = Vec::new();
-    let selection_area = Rect::from_min_max(pos2(lane.min.x, bar.max.y), lane.max).intersect(ui.clip_rect());
-    let mut keys = Interaction::begin(app, ui, selection_area, clip.0);
+    let drag_id = egui::Id::unique("effect-controls-effect-drag");
+    let mut effect_drag = ui.data(|d| d.get_temp::<EffectDrag>(drag_id));
+    if let Some(drag) = effect_drag.as_mut() {
+        drag.target = None;
+    }
+    let mut reorder = None;
+    let selection_top = (bar.max.y + 2.0).min(zoom_bar.min.y);
+    let selection_area =
+        Rect::from_min_max(pos2(lane.min.x, selection_top), pos2(lane.max.x, (zoom_bar.min.y - 2.0).max(selection_top))).intersect(ui.clip_rect());
+    let mut keys = Interaction::begin(app, ui, selection_area, clip.0, (shown_start, shown_end));
     // the rows span the list and the keyframe area: the wheel scrolls anywhere over them and the
     // scrollbar sits at the panel's right edge (#643)
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(body.min, pos2(lane.max.x, body.max.y))).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
-    let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).show(&mut bui, |bui| {
+    let scroll_source = egui::scroll_area::ScrollSource { mouse_wheel: !zooming_at_pointer, ..Default::default() };
+    let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).scroll_source(scroll_source).show(&mut bui, |bui| {
         for (clip, it, kind) in &clips {
             let clip = *clip;
             let (hr, _) = bui.allocate_exact_size(vec2(body.width(), 18.0), Sense::hover());
@@ -212,8 +779,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 };
                 let key = format!("{}:{}", clip.0, idx);
                 let open = !app.ui.collapsed_fx.contains(&key);
-                let selected = app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx));
-                let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());
+                let identity = filmcraft_engine::EffectSel::of(clip, &it.effects, idx);
+                let selected = app.ui.selected_effects.iter().any(|s| Some(s) == identity.as_ref())
+                    || (app.ui.selected_effects.is_empty()
+                        && app.session.state.selected_effect.as_ref().is_some_and(|s| s.clip == clip && s.index(&it.effects) == Some(idx)));
+                let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click_and_drag());
+                // The hand cursor appears only once the effect is actually being dragged, as with
+                // dragging a tab; hovering a row keeps the ordinary cursor.
                 if selected {
                     bui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.row_selected);
                 } else if resp.hovered() {
@@ -258,24 +830,97 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         app.ui.collapsed_fx.retain(|k| *k != key);
                     }
                 } else if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
+                    let reference = identity.clone();
+                    if bui.input(|i| i.modifiers.shift) {
+                        if let Some(reference) = reference {
+                            if let Some(at) = app.ui.selected_effects.iter().position(|s| *s == reference) {
+                                app.ui.selected_effects.remove(at);
+                            } else {
+                                app.ui.selected_effects.push(reference);
+                            }
+                        }
+                    } else {
+                        app.ui.selected_effects = reference.into_iter().collect();
+                    }
                     actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
                 }
+                if resp.drag_started() && !def.intrinsic {
+                    effect_drag = Some(EffectDrag { clip: clip.0, from: idx, target: Some(idx), name: crate::i18n::t(def.name).to_owned() });
+                    bui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
+                if let Some(drag) = effect_drag.as_mut() {
+                    if drag.clip == clip.0 && resp.hovered() && def.intrinsic {
+                        drag.target = None;
+                    } else if drag.clip == clip.0 && !def.intrinsic && resp.hovered() {
+                        let below = bui.input(|i| i.pointer.hover_pos().is_some_and(|p| p.y > r.center().y));
+                        let insertion = if below { idx.saturating_add(1) } else { idx };
+                        let to = if drag.from < insertion { insertion.saturating_sub(1) } else { insertion };
+                        drag.target = Some(to.min(it.effects.len().saturating_sub(1)));
+                        let y = if below { r.max.y } else { r.min.y };
+                        bui.painter().line_segment([pos2(r.min.x, y), pos2(r.max.x, y)], Stroke::new(2.0, t.accent));
+                    }
+                }
                 let mut save_preset = false;
+                let mut copy_effect = false;
+                let mut paste_effect = false;
                 let fx_id = e.effect.clone();
                 resp.context_menu(|ui| {
-                    let sp = ui.button(tl!("Save Preset…"));
-                    app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
-                    if sp.clicked() {
-                        save_preset = true;
+                    if !def.intrinsic && !filmcraft_project::graphic::is_layer(e) {
+                        let sp = ui.button(tl!("Save Preset…"));
+                        app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
+                        if sp.clicked() {
+                            save_preset = true;
+                            ui.close();
+                        }
+                        let cp = ui.button(tl!("Copy Effects"));
+                        app.auto.add(&format!("effectControls.effect.{fx_id}.copy"), cp.rect, "Copy Effects");
+                        if cp.clicked() {
+                            copy_effect = true;
+                            ui.close();
+                        }
+                    }
+                    let ps = ui.button(tl!("Paste Effects"));
+                    app.auto.add(&format!("effectControls.effect.{fx_id}.paste"), ps.rect, "Paste Effects");
+                    if ps.clicked() {
+                        paste_effect = true;
                         ui.close();
                     }
-                    if !def.intrinsic && ui.button(tl!("Clear")).clicked() {
-                        actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
-                        ui.close();
+                    if !def.intrinsic {
+                        let clear = ui.button(tl!("Clear"));
+                        app.auto.add(&format!("effectControls.effect.{fx_id}.clear"), clear.rect, "Clear");
+                        if clear.clicked() {
+                            let indices = removable_effect_indices(app, clip, &it.effects, Some(idx));
+                            if !indices.is_empty() {
+                                actions.push(("effects.removeMany".into(), json!({"clip": clip.0, "indices": indices})));
+                            }
+                            ui.close();
+                        }
                     }
                 });
                 if save_preset {
-                    crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
+                    let selected = selected_effect_indices(app, clip, &it.effects);
+                    let effects = if selected.contains(&idx) { selected } else { vec![idx] };
+                    let effects: Vec<usize> = effects
+                        .into_iter()
+                        .filter(|index| {
+                            it.effects.get(*index).is_some_and(|effect| {
+                                effect.def().is_some_and(|definition| !definition.intrinsic)
+                                    && !filmcraft_project::graphic::is_layer(effect)
+                                    && !effect.essential
+                            })
+                        })
+                        .collect();
+                    if effects.is_empty() {
+                        app.ui.status = tl!("No supported effects are selected").to_string();
+                    } else {
+                        crate::panels::presets::open_save(app, clip.0, effects, def.name);
+                    }
+                }
+                if copy_effect {
+                    copy_effects(app, clip, it, idx);
+                }
+                if paste_effect {
+                    paste_effects(app, clip);
                 }
                 if !open {
                     continue;
@@ -284,28 +929,97 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     custom_setup_row(app, bui, body, &lane, clip, idx, &e.effect);
                 }
                 for pd in &def.params {
-                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it, &mut keys);
+                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, (shown_start, shown_end), it, &mut keys);
                     if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
                         && let Some(param) = e.params.get(pd.id)
                         && param.is_animated()
                         && graphable(&param.value)
                     {
-                        graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, it, &mut actions);
+                        graph_rows(app, bui, body, clip, idx, None, pd, param, &lane, (shown_start, shown_end), it, &mut actions);
                     }
                 }
                 if crate::panels::masks::maskable(e) {
-                    crate::panels::masks::effect_rows(app, bui, body, clip, idx, e, mt_now, &mut actions, &lane, &lx, it, &mut keys);
+                    crate::panels::masks::effect_rows(app, bui, body, clip, idx, e, mt_now, &mut actions, &lane, &lx, (shown_start, shown_end), it, &mut keys);
                 }
             }
         }
     });
     let _ = scroll_out;
+    if ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary))
+        && let Some(drag) = effect_drag.take()
+        && let Some(to) = drag.target.filter(|to| *to != drag.from)
+    {
+        reorder = Some((drag.clip, drag.from, to));
+    }
+    if effect_drag.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
+    ui.data_mut(|d| {
+        if let Some(drag) = effect_drag.clone() {
+            d.insert_temp(drag_id, drag);
+        } else {
+            d.remove::<EffectDrag>(drag_id);
+        }
+    });
+    if let Some((clip_id, from, to)) = reorder {
+        let before = app.session.active_sequence().and_then(|q| q.find_item(ClipId(clip_id))).map(|(_, item)| item.effects.clone());
+        match app.session.execute("effects.move", json!({"clip": clip_id, "from": from, "to": to})) {
+            Ok(_) => {
+                if let (Some(before), Some((_, after))) = (before, app.session.active_sequence().and_then(|q| q.find_item(ClipId(clip_id)))) {
+                    let mut remapped: Vec<_> = app.ui.selected_effects.iter().filter(|selection| selection.clip != ClipId(clip_id)).cloned().collect();
+                    remapped.extend(
+                        app.ui
+                            .selected_effects
+                            .iter()
+                            .filter(|selection| selection.clip == ClipId(clip_id))
+                            .filter_map(|selection| selection.index(&before))
+                            .filter_map(|index| {
+                                let index = if index == from {
+                                    to
+                                } else if from < to && (from..=to).contains(&index) {
+                                    index.saturating_sub(1)
+                                } else if to < from && (to..=from).contains(&index) {
+                                    index.saturating_add(1)
+                                } else {
+                                    index
+                                };
+                                filmcraft_engine::EffectSel::of(ClipId(clip_id), &after.effects, index)
+                            }),
+                    );
+                    app.ui.selected_effects = remapped;
+                    app.ui.keyframe_selection.retain_mut(|key| {
+                        if key.clip != clip_id {
+                            return true;
+                        }
+                        key.effect = if key.effect == from {
+                            to
+                        } else if from < to && (from..=to).contains(&key.effect) {
+                            key.effect.saturating_sub(1)
+                        } else if to < from && (to..=from).contains(&key.effect) {
+                            key.effect.saturating_add(1)
+                        } else {
+                            key.effect
+                        };
+                        after.effects.get(key.effect).is_some_and(|effect| {
+                            match key.mask {
+                                Some(mask) => effect.masks.get(mask).and_then(|mask| mask.param(&key.param)),
+                                None => effect.params.get(&key.param),
+                            }
+                            .is_some_and(|param| param.keyframes.iter().any(|kf| kf.time == key.time))
+                        })
+                    });
+                }
+            }
+            Err(error) => app.ui.status = error.to_string(),
+        }
+    }
     // the ruler and the clip's bar, painted after the rows so rows scrolled up under them (their
     // lines and keyframes) stay hidden
     ui.painter().rect_filled(Rect::from_min_max(lane.min, pos2(lane.max.x, bar.max.y)), 0.0, t.tl_bg);
-    paint_ruler(ui.painter(), ruler, &it, rate, seq.settings.drop_frame, &t);
+    paint_ruler(ui.painter(), ruler, shown_start, shown_end, rate, seq.settings.drop_frame, &t);
     ui.painter().rect_filled(bar.shrink2(vec2(0.0, 2.0)), 2.0, t.clip_bar_bg);
     ui.painter().with_clip_rect(bar).text(pos2(bar.min.x + 4.0, bar.center().y), Align2::LEFT_CENTER, &it.name, Tokens::ui(10.0), t.text);
+    time_zoom_bar(app, ui, zoom_bar, it.duration, rate);
     // click or drag anywhere on the ruler (or the bar) to move the playhead (after the rows, which
     // reach under it, so it gets the pointer first)
     let sresp = ui.interact(scrub, egui::Id::unique(("ec-scrub", clip.0)), Sense::click_and_drag());
@@ -313,7 +1027,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some(pos) = sresp.interact_pointer_pos()
     {
         let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
-        let tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64));
+        let tk = rate.snap_nearest(shown_start + Tick((f * shown_duration) as i64));
         app.stop();
         app.session.set_playhead(tk);
     }
@@ -321,13 +1035,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let divider = Rect::from_min_max(pos2(split - 2.0, rect.min.y), pos2(split + 4.0, rect.max.y - 26.0));
     let dresp = ui.interact(divider, egui::Id::unique("ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
     if dresp.dragged() {
-        app.ui.effect_controls_split = (list_w + dresp.drag_delta().x).clamp(MIN_LIST_W, max_list);
+        app.ui.effect_controls_split = if panel_width >= MIN_LIST_W + MIN_LANE_W + 10.0 {
+            (list_w + dresp.drag_delta().x).clamp(MIN_LIST_W, max_list)
+        } else {
+            (list_w + dresp.drag_delta().x).clamp(0.0, panel_width)
+        };
     }
     let dcol = if dresp.hovered() || dresp.dragged() { t.accent } else { t.separator };
     ui.painter().line_segment([pos2(split + 1.5, rect.min.y), pos2(split + 1.5, rect.max.y - 26.0)], Stroke::new(1.0, dcol));
     app.auto.add("effectControls.divider", divider, "divider");
     // playhead: a handle on the ruler and a line down the lane, while it is on the clip
-    if ph >= it.start && ph <= it.end() {
+    if ph >= shown_start && ph <= shown_end {
         let px = lx(ph);
         let (top, tip) = (ruler.max.y - 13.0, ruler.max.y);
         let head = vec![pos2(px - 5.0, top), pos2(px + 5.0, top), pos2(px + 5.0, tip - 5.0), pos2(px, tip), pos2(px - 5.0, tip - 5.0)];
@@ -340,6 +1058,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.painter().text(pos2(rect.min.x + 10.0, rect.max.y - 13.0), Align2::LEFT_CENTER, tc, Tokens::mono(13.0), t.timecode);
     keys.finish(app, ui);
     run(app, ui.ctx(), actions);
+    paint_effect_drag_label(ui, effect_drag.as_ref(), &t);
 }
 
 /// The thin line under a row, across the names, the values and the keyframe lane, so a row can be
@@ -389,11 +1108,10 @@ fn seq_name(app: &FilmcraftApp) -> String {
     app.session.state.active_sequence.and_then(|s| app.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default()
 }
 
-/// The keyframe lane's time ruler: ticks and sequence timecode across the clip's stretch of the
-/// timeline (the lane shows exactly the clip, so the ruler starts at the clip's start).
-fn paint_ruler(p: &egui::Painter, ruler: Rect, it: &TrackItem, rate: filmcraft_time::FrameRate, drop_frame: bool, t: &Tokens) {
+/// The keyframe lane's time ruler: ticks and sequence timecode across the visible part of the clip.
+fn paint_ruler(p: &egui::Painter, ruler: Rect, start: Tick, end: Tick, rate: filmcraft_time::FrameRate, drop_frame: bool, t: &Tokens) {
     let p = p.with_clip_rect(ruler);
-    let dur = it.duration.0.max(1) as f64;
+    let dur = end.0.saturating_sub(start.0).max(1) as f64;
     let frame_px = ruler.width() as f64 * rate.frame_duration().0.max(1) as f64 / dur;
     let base = rate.timecode_base();
     let steps = [
@@ -418,21 +1136,26 @@ fn paint_ruler(p: &egui::Painter, ruler: Rect, it: &TrackItem, rate: filmcraft_t
     // labels far enough apart to read; the small ticks divide the labelled ones evenly
     let label_step = steps.iter().copied().find(|s| *s > 0 && *s as f64 * frame_px >= 80.0);
     let minor = steps.iter().copied().find(|s| *s > 0 && *s as f64 * frame_px >= 8.0 && label_step.is_none_or(|l| l % s == 0));
-    let (f0, f1) = (rate.frame_at(it.start), rate.frame_at(it.end()));
+    let (f0, f1) = (rate.frame_at(start), rate.frame_at(end));
     let base_y = ruler.max.y - 1.0;
     for (step, h, labelled) in [(minor, 3.0, false), (label_step, 7.0, true)] {
         let Some(step) = step else { continue };
         let mut f = f0.div_euclid(step).saturating_mul(step);
+        if f < f0 {
+            f = f.saturating_add(step);
+        }
         // a step is at least 8 px wide, so this covers any ruler; the cap is for damaged numbers
         for _ in 0..4096 {
             if f > f1 {
                 break;
             }
-            let x = ruler.min.x + ((rate.tick_of(f) - it.start).0 as f64 / dur) as f32 * ruler.width();
+            let x = ruler.min.x + (rate.tick_of(f).0.saturating_sub(start.0) as f64 / dur) as f32 * ruler.width();
             p.line_segment([pos2(x, base_y - h), pos2(x, base_y)], Stroke::new(1.0, t.tl_ruler_tick));
             if labelled {
                 let label = filmcraft_time::format_time(rate.tick_of(f), rate, drop_frame, filmcraft_time::TimeDisplay::Timecode, 48000);
-                p.text(pos2(x, ruler.min.y + 7.0), Align2::CENTER_CENTER, label, Tokens::ui(10.0), t.tl_ruler_text);
+                let half = p.layout_no_wrap(label.clone(), Tokens::ui(10.0), t.tl_ruler_text).size().x / 2.0;
+                let label_x = x.clamp(ruler.min.x + half, (ruler.max.x - half).max(ruler.min.x + half));
+                p.text(pos2(label_x, ruler.min.y + 7.0), Align2::CENTER_CENTER, label, Tokens::ui(10.0), t.tl_ruler_text);
             }
             f = f.saturating_add(step);
         }
@@ -522,6 +1245,8 @@ fn properties_nav(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One parameter row: its control, its keyframe diamond and its graph, plus the commands they
+/// emit.
 pub(crate) fn param_row(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
@@ -535,10 +1260,10 @@ pub(crate) fn param_row(
     actions: &mut Vec<(String, Value)>,
     lane: &Rect,
     lx: &dyn Fn(Tick) -> f32,
+    timeline_range: (Tick, Tick),
     it: &TrackItem,
     keys: &mut Interaction,
 ) {
-    let _ = lx;
     let t = app.tokens;
     let param = match mask {
         Some(k) => e.masks.get(k).and_then(|m| m.param(pd.id)),
@@ -561,6 +1286,7 @@ pub(crate) fn param_row(
     row_line(ui, r, lane, &t);
     // clicking one of an effect's properties selects the effect, as clicking its header does
     if row.clicked() {
+        app.ui.selected_effects = filmcraft_engine::EffectSel::of(clip, &it.effects, idx).into_iter().collect();
         actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": idx})));
     }
     let mut x = r.min.x + 26.0;
@@ -661,9 +1387,15 @@ pub(crate) fn param_row(
             crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
-            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if egui::color_picker::color_edit_button_rgba(&mut vui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+            let mut rgba = crate::widgets::param_to_rgba(*c);
+            let (color_response, changed, hex_rect) =
+                crate::widgets::color_edit_with_hex(&mut vui, id.with("color"), &mut rgba, egui::color_picker::Alpha::Opaque);
+            app.auto.add(&format!("effectControls.{}.{}.color", e.effect, pkey), color_response.rect, "Color picker");
+            if changed {
+                set = Some(json!(crate::widgets::rgba_to_param(rgba)));
+            }
+            if let Some(rect) = hex_rect {
+                app.auto.add(&format!("effectControls.{}.{}.hex", e.effect, pkey), rect, "HEX color");
             }
             // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
             let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
@@ -723,15 +1455,13 @@ pub(crate) fn param_row(
     // keyframes in the lane: draggable diamonds; right-click for interpolation
     if param.is_animated() {
         let y = r.center().y;
-        let dur = it.duration.0.max(1) as f64;
         for k in &param.keyframes {
             let tl = timeline_time_of(it, k.time);
-            let f = ((tl - it.start).0 as f64 / dur) as f32;
-            if !(-0.01..=1.01).contains(&f) {
+            if tl < timeline_range.0 || tl > timeline_range.1 {
                 continue;
             }
             let id = egui::Id::unique(("kf", clip.0, idx, pkey, k.time.0));
-            let original = Rect::from_center_size(pos2(lane.min.x + f * lane.width(), y), vec2(15.0, 15.0));
+            let original = Rect::from_center_size(pos2(lx(tl), y), vec2(15.0, 15.0));
             let resp = ui.interact(original.expand(2.0), id, Sense::click_and_drag());
             let reference = KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time };
             let kr = keys.key(app, ui, reference.clone(), it, *lane, original, &resp, k.interp);
@@ -768,17 +1498,36 @@ fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef,
         let response = ui.button(label);
         app.auto.add(&format!("effectControls.keyframeMenu.{key}"), response.rect, label);
         if response.clicked() {
-            let mut params = params.clone();
-            params["interpolation"] = json!(key);
-            actions.push(("effects.setInterpolation".into(), params));
+            if app.ui.keyframe_selection.len() > 1 && app.ui.keyframe_selection.contains(&target) {
+                actions.push(("effects.setInterpolations".into(), json!({"keyframes": app.ui.keyframe_selection, "interpolation": key})));
+            } else {
+                let mut params = params.clone();
+                params["interpolation"] = json!(key);
+                actions.push(("effects.setInterpolation".into(), params));
+            }
             ui.close();
         }
+    }
+    ui.separator();
+    let copy_effects = ui.button(tl!("Copy Effects"));
+    app.auto.add("effectControls.keyframeMenu.copyEffects", copy_effects.rect, "Copy Effects");
+    if copy_effects.clicked() {
+        actions.push(("ui.effectControls.copyEffects".into(), Value::Null));
+        ui.close();
+    }
+    let paste_effects = ui.button(tl!("Paste Effects"));
+    app.auto.add("effectControls.keyframeMenu.pasteEffects", paste_effects.rect, "Paste Effects");
+    if paste_effects.clicked() {
+        actions.push(("ui.effectControls.pasteEffects".into(), Value::Null));
+        ui.close();
     }
     ui.separator();
     let response = ui.button(tl!("Clear"));
     app.auto.add("effectControls.keyframeMenu.clear", response.rect, "Clear");
     if response.clicked() {
-        actions.push(("effects.deleteKeyframe".into(), params));
+        let selected = &app.ui.keyframe_selection;
+        let keyframes = if selected.len() > 1 && selected.contains(&target) { selected.clone() } else { vec![target] };
+        actions.push(("effects.deleteKeyframes".into(), json!({"keyframes": keyframes})));
         ui.close();
     }
 }
@@ -852,9 +1601,16 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": pd.default.as_f64().unwrap_or(0.0)}));
                         }
                     } else if let ParamValue::Color(c) = v {
-                        let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                        if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [rgba.r(), rgba.g(), rgba.b(), 1.0]}));
+                        let mut rgba = crate::widgets::param_to_rgba(c);
+                        let (color_response, changed, hex_rect) =
+                            crate::widgets::color_edit_with_hex(ui, egui::Id::unique(("lumetri-color", pd.id)), &mut rgba, egui::color_picker::Alpha::Opaque);
+                        app.auto.add(&format!("lumetri.{}.color", pd.id), color_response.rect, "Color picker");
+                        if changed {
+                            let [r, g, b, _] = crate::widgets::rgba_to_param(rgba);
+                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [r, g, b, 1.0]}));
+                        }
+                        if let Some(rect) = hex_rect {
+                            app.auto.add(&format!("lumetri.{}.hex", pd.id), rect, "HEX color");
                         }
                     }
                 });
@@ -1096,6 +1852,38 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
     let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
     let mut wrote = false;
     for (cmd, mut p) in actions {
+        if cmd == "ui.effectControls.copyEffects" {
+            copy_selected_effects(app);
+            continue;
+        }
+        if cmd == "ui.effectControls.pasteEffects" {
+            if let Some((clip, _, _)) = selected_clip(app) {
+                paste_effects(app, clip);
+            }
+            continue;
+        }
+        let removed: Option<(ClipId, Vec<usize>)> = match cmd.as_str() {
+            "effects.removeMany" => p
+                .get("clip")
+                .and_then(Value::as_u64)
+                .map(ClipId)
+                .zip(
+                    p.get("indices")
+                        .and_then(Value::as_array)
+                        .map(|indices| indices.iter().filter_map(Value::as_u64).filter_map(|index| usize::try_from(index).ok()).collect()),
+                )
+                .filter(|(_, indices): &(ClipId, Vec<usize>)| !indices.is_empty()),
+            "effects.remove" => p
+                .get("clip")
+                .and_then(Value::as_u64)
+                .map(ClipId)
+                .zip(p.get("index").and_then(Value::as_u64).and_then(|index| usize::try_from(index).ok()).map(|index| vec![index])),
+            _ => None,
+        };
+        let before =
+            removed.as_ref().and_then(|(clip, _)| app.session.active_sequence().and_then(|q| q.find_item(*clip)).map(|(_, item)| item.effects.clone()));
+        let deleted_keys: Option<Vec<KeyframeRef>> =
+            (cmd == "effects.deleteKeyframes").then(|| serde_json::from_value(p.get("keyframes").cloned().unwrap_or(Value::Null)).ok()).flatten();
         if cmd == "effects.setParam" && down {
             if p.get("merge").is_none() {
                 p["merge"] = json!(true);
@@ -1105,8 +1893,37 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
             p["begin"] = json!(begun != press && !wrote);
             wrote = true;
         }
-        if let Err(e) = app.session.execute(&cmd, p) {
-            app.ui.status = e.to_string();
+        match app.session.execute(&cmd, p) {
+            Ok(_) if let (Some((clip, indices)), Some(before)) = (&removed, before) => {
+                if let Some((_, after)) = app.session.active_sequence().and_then(|q| q.find_item(*clip)) {
+                    let mut remapped: Vec<_> = app.ui.selected_effects.iter().filter(|selection| selection.clip != *clip).cloned().collect();
+                    remapped.extend(app.ui.selected_effects.iter().filter(|selection| selection.clip == *clip).filter_map(|selection| {
+                        let old = selection.index(&before)?;
+                        if indices.contains(&old) {
+                            return None;
+                        }
+                        let shift = indices.iter().filter(|removed| **removed < old).count();
+                        filmcraft_engine::EffectSel::of(*clip, &after.effects, old.saturating_sub(shift))
+                    }));
+                    app.ui.selected_effects = remapped;
+                    app.ui.keyframe_selection.retain_mut(|key| {
+                        if key.clip != clip.0 {
+                            return true;
+                        }
+                        if indices.contains(&key.effect) {
+                            return false;
+                        }
+                        let shift = indices.iter().filter(|removed| **removed < key.effect).count();
+                        if shift > 0 {
+                            key.effect = key.effect.saturating_sub(shift);
+                        }
+                        true
+                    });
+                }
+            }
+            Ok(_) if let Some(deleted) = deleted_keys => app.ui.keyframe_selection.retain(|key| !deleted.contains(key)),
+            Err(error) => app.ui.status = error.to_string(),
+            _ => {}
         }
     }
     if down && (wrote || begun.is_some()) {
@@ -1148,6 +1965,7 @@ pub(crate) fn graph_rows(
     pd: &filmcraft_project::ParamDef,
     param: &filmcraft_project::Param,
     lane: &Rect,
+    timeline_range: (Tick, Tick),
     it: &TrackItem,
     actions: &mut Vec<(String, Value)>,
 ) {
@@ -1161,13 +1979,17 @@ pub(crate) fn graph_rows(
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
     let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
     row_line(ui, velr, lane, &t);
-    let speed = it.speed.abs().max(1e-6);
-    let dur = it.duration.0.max(1) as f64;
-    let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
-    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
+    let speed = if it.speed.is_finite() { it.speed.abs().max(1e-6) } else { 1.0 };
+    let shown_duration = timeline_range.1.0.saturating_sub(timeline_range.0.0).max(1);
+    let timeline_at = |f: f64| Tick(timeline_range.0.0.saturating_add((f * shown_duration as f64).round() as i64));
+    let to_media = |f: f64| it.source_time_at(timeline_at(f));
+    let to_f = |m: Tick| {
+        let time = timeline_time_of(it, m);
+        (time.0.saturating_sub(timeline_range.0.0) as f64 / shown_duration as f64) as f32
+    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
-    let n = (lane.width() / 2.0).max(8.0) as usize;
+    let n = ((lane.width() / 2.0).max(8.0) as usize).min(4096);
     let vals: Vec<Vec<f64>> = (0..=n).map(|i| graph_components(&param.value_at(to_media(i as f64 / n as f64)))).collect();
     let curves = graph_components(&param.value).len();
     let at_keys: Vec<Vec<f64>> = param.keyframes.iter().map(|k| graph_components(&k.value)).collect();
@@ -1220,7 +2042,7 @@ pub(crate) fn graph_rows(
         p.add(egui::Shape::line(line, Stroke::new(1.5, curve_color(c))));
     }
     // velocity (units per second, derivative of the sampled value; a point's speed along its path)
-    let secs = (dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
+    let secs = (shown_duration as f64 * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
     let vel: Vec<f64> = vals
         .windows(2)
         .map(|w| {
@@ -1459,6 +2281,99 @@ mod lane_tests {
         ctx
     }
 
+    #[test]
+    /// Alt+wheel zoom consumes the whole smoothed wheel gesture, so the panel's shared scroll area
+    /// never scrolls while zooming.
+    fn alt_wheel_zoom_does_not_scroll_the_effect_rows() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.effect_controls_time_zoom = Some([0.2, 0.8]);
+        let ctx = context();
+        let lane = Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 30.0));
+        let pointer = pos2(210.0, 15.0);
+        let rate = filmcraft_time::FrameRate { num: 30, den: 1 };
+        let clip_start = Tick::ZERO;
+        let duration = Tick(filmcraft_time::TICKS_PER_SECOND * 10);
+        let playhead = Tick(filmcraft_time::TICKS_PER_SECOND * 4);
+        let before = app.ui.effect_controls_time_zoom;
+        let mut time = 0.0;
+        // Returns (did the frame count as a zoom?, wheel delta on entry, wheel delta left for the
+        // ScrollArea). The delta left behind is what the shared ScrollArea would turn into a scroll.
+        let mut draw = |app: &mut FilmcraftApp, events: Vec<egui::Event>| {
+            time += 0.016;
+            let mut zooming = false;
+            let (mut incoming, mut leftover) = (egui::Vec2::ZERO, egui::Vec2::ZERO);
+            let mut output = ctx.run_ui(
+                egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 120.0))), events, ..Default::default() },
+                |ui| {
+                    incoming = ui.input(|i| i.smooth_scroll_delta);
+                    zooming = zoom_at_playhead(app, ui, lane, clip_start, duration, playhead, rate);
+                    leftover = ui.input(|i| i.smooth_scroll_delta);
+                    // the panel hands the same source to its shared vertical ScrollArea
+                    let source = egui::scroll_area::ScrollSource { mouse_wheel: !zooming, ..Default::default() };
+                    let _ =
+                        egui::ScrollArea::vertical().id_salt("alt-wheel-scroll-test").max_height(40.0).scroll_source(source).show(ui, |ui| ui.add_space(400.0));
+                },
+            );
+            output.textures_delta.clear();
+            (zooming, incoming, leftover)
+        };
+
+        draw(&mut app, vec![egui::Event::PointerMoved(pointer)]);
+        let (zooming, _incoming, leftover) = draw(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    source: egui::MouseWheelSource::Wheel,
+                    delta: vec2(0.0, -3.0),
+                    modifiers: egui::Modifiers::ALT,
+                    phase: egui::TouchPhase::Move,
+                },
+            ],
+        );
+        assert!(zooming);
+        assert_ne!(app.ui.effect_controls_time_zoom, before, "Alt-wheel still changes keyframe zoom");
+        assert_eq!(leftover, egui::Vec2::ZERO, "an Alt+wheel frame leaves nothing for the ScrollArea");
+        let Some([start, end]) = app.ui.effect_controls_time_zoom else { panic!("zoom range changed") };
+        let cursor_before = (0.4 - before.map_or(0.0, |range| range[0])) / before.map_or(1.0, |range| range[1] - range[0]);
+        let cursor_after = (0.4 - start) / (end - start);
+        assert!((cursor_after - cursor_before).abs() < 1e-9, "zoom keeps the playback cursor at the same lane position");
+        assert_ne!(cursor_after, (pointer.x - lane.min.x) as f64 / lane.width() as f64, "mouse position is not the zoom anchor");
+
+        // egui smooths one wheel notch over the next frames: those carry no wheel event, only the
+        // leftover smooth delta. Keying the guard on the event alone left them to the ScrollArea,
+        // which scrolled the rows while the user kept zooming.
+        let (zooming, incoming, leftover) = draw(&mut app, vec![egui::Event::PointerMoved(pointer)]);
+        assert!(incoming.y.abs() > 0.01, "the smoothed tail of the gesture is still pending: {incoming:?}");
+        assert!(zooming, "the smoothed tail of the Alt+wheel gesture is still part of the zoom");
+        assert_eq!(leftover, egui::Vec2::ZERO, "the smoothed tail is consumed, not scrolled");
+    }
+
+    #[test]
+    /// The drag ghost is painted below and right of the pointer and names the effect being moved.
+    fn effect_reorder_label_is_painted_below_and_right_of_the_pointer() {
+        let ctx = context();
+        let pointer = pos2(40.0, 30.0);
+        let drag = EffectDrag { clip: 1, from: 2, target: Some(2), name: "Gaussian Blur".to_owned() };
+        let t = Tokens::for_kind(Default::default());
+        let mut label_rect = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))),
+                events: vec![egui::Event::PointerMoved(pointer)],
+                ..Default::default()
+            },
+            |ui| {
+                label_rect = paint_effect_drag_label(ui, Some(&drag), &t);
+            },
+        );
+        output.textures_delta.clear();
+        let Some(label_rect) = label_rect else { panic!("drag label is painted while the pointer is present") };
+        assert!(label_rect.min.x > pointer.x && label_rect.min.y > pointer.y, "the label appears right and below the drag cursor");
+        assert!(output.shapes.iter().any(|clipped| matches!(&clipped.shape, egui::Shape::Text(text) if text.galley.text() == "Gaussian Blur")));
+    }
+
     /// A project file is only checked for overflow, so a damaged one can carry a clip with no
     /// (or a negative) duration. Selecting it must still draw both panels, ruler, playhead and
     /// keyframe navigators included.
@@ -1505,7 +2420,7 @@ mod lane_tests {
                             it.start = Tick(start);
                             it.duration = Tick(duration);
                             let ruler = Rect::from_min_size(pos2(10.0, 10.0), vec2(width, RULER_H));
-                            paint_ruler(ui.painter(), ruler, &it, filmcraft_time::FrameRate { num, den }, false, &t);
+                            paint_ruler(ui.painter(), ruler, it.start, it.end(), filmcraft_time::FrameRate { num, den }, false, &t);
                         }
                     }
                 }
@@ -1526,7 +2441,7 @@ mod lane_tests {
         let ctx = context();
         let t = Tokens::for_kind(Default::default());
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            paint_ruler(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, RULER_H)), &it, rate, false, &t);
+            paint_ruler(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, RULER_H)), it.start, it.end(), rate, false, &t);
         });
         out.textures_delta.clear();
         fn texts(s: egui::Shape, out: &mut Vec<String>) {
@@ -1539,6 +2454,18 @@ mod lane_tests {
         let mut labels = Vec::new();
         out.shapes.into_iter().for_each(|c| texts(c.shape, &mut labels));
         assert_eq!(labels, ["00:01:00:00", "00:01:02:00", "00:01:04:00"]);
+
+        // A zoomed view starts between ruler ticks: its first label must be a tick inside the
+        // visible range, not the previous timecode clamped onto the left edge.
+        let zoom_start = rate.tick_of(24 * 60 + 7);
+        let zoom_end = rate.tick_of(24 * 65);
+        let mut zoomed = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint_ruler(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, RULER_H)), zoom_start, zoom_end, rate, false, &t);
+        });
+        zoomed.textures_delta.clear();
+        let mut labels = Vec::new();
+        zoomed.shapes.into_iter().for_each(|c| texts(c.shape, &mut labels));
+        assert_eq!(labels.first().map(String::as_str), Some("00:01:02:00"));
     }
 }
 
@@ -1560,6 +2487,7 @@ mod graph_drag_tests {
             Self::with("scale", ParamValue::Float(40.0), ParamValue::Float(80.0))
         }
 
+        /// A driver whose demo clip animates `param` from `from` to `to`.
         fn with(param: &'static str, from: ParamValue, to: ParamValue) -> Self {
             let mut session = filmcraft_engine::Session::default();
             session.execute("file.openDemoProject", json!({})).unwrap();
@@ -1587,6 +2515,7 @@ mod graph_drag_tests {
 
         // Draw the actual scalar graph and execute its emitted command, as the panel does.
         // Current paint shapes give a real held-frame position rather than previous telemetry.
+        /// Draw one frame with the given events and return the keyframe and influence positions painted.
         fn frame(&mut self, events: Vec<egui::Event>) -> [Pos2; 2] {
             self.time += 0.1;
             self.app.auto.begin_frame();
@@ -1598,7 +2527,7 @@ mod graph_drag_tests {
                 let body = Rect::from_min_size(pos2(8.0, 8.0), vec2(320.0, 200.0));
                 let lane = Rect::from_min_max(pos2(360.0, 8.0), pos2(760.0, 220.0));
                 let mut actions = Vec::new();
-                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, &it, &mut actions);
+                graph_rows(&mut self.app, ui, body, self.clip, index, None, pd, &effect.params[self.param], &lane, (it.start, it.end()), &it, &mut actions);
                 run(&mut self.app, ui.ctx(), actions);
             });
             out.textures_delta.clear();

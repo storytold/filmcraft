@@ -41,6 +41,7 @@ pub(crate) fn effect_rows(
     actions: &mut Vec<(String, Value)>,
     lane: &Rect,
     lx: &dyn Fn(Tick) -> f32,
+    timeline_range: (Tick, Tick),
     it: &TrackItem,
     keys: &mut crate::panels::effect_controls::Interaction,
 ) {
@@ -152,13 +153,13 @@ pub(crate) fn effect_rows(
             continue;
         }
         for pd in defs {
-            crate::panels::effect_controls::param_row(app, ui, body, clip, idx, e, Some(k), pd, mt, actions, lane, lx, it, keys);
+            crate::panels::effect_controls::param_row(app, ui, body, clip, idx, e, Some(k), pd, mt, actions, lane, lx, timeline_range, it, keys);
             if pd.id != "path"
                 && app.ui.expanded_fx.contains(&crate::panels::effect_controls::graph_key(clip, idx, &format!("mask{k}.{}", pd.id)))
                 && let Some(param) = m.param(pd.id)
                 && param.is_animated()
             {
-                crate::panels::effect_controls::graph_rows(app, ui, body, clip, idx, Some(k), pd, param, lane, it, actions);
+                crate::panels::effect_controls::graph_rows(app, ui, body, clip, idx, Some(k), pd, param, lane, timeline_range, it, actions);
             }
         }
         // Inverted

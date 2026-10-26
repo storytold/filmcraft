@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (G8: Effect Controls keyframe zoom bar implemented; readiness figures unchanged) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -111,7 +111,7 @@ agent-hours to close the area to Premiere, sequential.
 | Effects and transitions | 12% | 100% (measured) | ~60% | 80–140 | Every effect exists; Warp Stabilizer is 2-D, Auto Reframe approximate, Morph Cut morphs with optical flow but without face tracking (#805); Optical Flow time interpolation is motion compensated on the CPU (#780). 34 effect ids run on the GPU against ~82 of Premiere's ~92 marked Accelerated. No Object Mask (26.0, AI). | [hardware-parity.md](hardware-parity.md) |
 | Media import and codecs | 12% | ~75% | ~60% | 150–250 | Own bit-exact decoders for H.264, HEVC, VP9, AV1, ProRes, DNx, APV, MPEG-2, AAC, AC-3, Opus. But H.264 only 8-bit 4:2:0 and HEVC no 4:2:2 in software (most 10-bit cameras, #626); no camera RAW (R3D, ARRIRAW, BRAW, Sony RAW, Canon RAW, ProRes RAW, #345, #383); no E-AC-3 (#647), AVI (#598), WMV, DV, XAVC / P2 metadata; Sony start timecode (#460); WebM black (#432) | [codec-parity.md](codec-parity.md), [file-format-parity.md](file-format-parity.md) |
 | Audio | 10% | ~88% | ~65% | 50–90 | Mixer graph, automation, all 53 effects, Essential Sound, 5.1, voice-over, Remix, multi-stream container audio (#361). Device and playback reports: crackle / cut-outs (#336, #410, #602, #605, #617); Enhance Speech is DSP, not a model; ALSA fallback fixed (#254) | |
-| Panels and UI fidelity | 10% | ~88% | ~60% | 120–200 | All main panels. Missing: on-screen transform handles in the Program monitor (#639), Effect Controls keyframe zoom / divider / row lines (#640–#645), docking rearrangement (#493), multi-monitor windows (#466), filmstrip thumbnails (#614), marquee in Project panel (#578) | [ui-parity.md](ui-parity.md) |
+| Panels and UI fidelity | 10% | ~88% | ~60% | 120–200 | All main panels. Effect Controls now has its zoomable keyframe ruler/lane/graphs, divider, row lines and Position curves. Missing: on-screen transform handles in the Program monitor (#639), transition editing controls (#577), docking rearrangement (#493), multi-monitor windows (#466), filmstrip thumbnails (#614), marquee in Project panel (#578) | [ui-parity.md](ui-parity.md) |
 | Colour | 8% | ~90% | ~70% | 40–70 | Lumetri complete incl. scopes, LUTs, colour management, HDR export. Lumetri on the GPU covers basic, creative and vignette only; HDR-aware Lumetri maths, macOS EDR display, D-Log M; a Lumetri report (#628) | |
 | Graphics, titles, captions | 8% | ~85% | ~65% | 50–90 | Text engine with shaping and bidi, shapes, gradients (#514), our `.fcgt` templates (`.mogrt` refused by design), rolls / crawls, all caption formats. Arabic titles reported broken (#395); no 608/708 embedding in the video stream; speech-to-text off in release builds | |
 | Export and delivery | 8% | ~80% | ~65% | 60–110 | H.264 (own encoder), HEVC through hardware only, ProRes, DNxHR, APV, MXF OP1a / OP-Atom, image sequences, GIF, WAV / AIFF, presets, queue, GPU export rendering (#421). Missing: AV1, MPEG-2 / DVD / Blu-ray, DCP, JPEG 2000 / XS MXF, AS-10 / AS-11, XDCAM HD, EXR / DPX / Targa sequences, MP3, AAC-only audio, ProRes 4444 in the UI (#342), interlaced, smart render; bitrate target missed (#371) | [file-format-parity.md](file-format-parity.md) |
@@ -224,7 +224,7 @@ full-area depth (e.g. the ~20 common effects rather than all 93 and their approx
 Discounts for what still stops real work:
 
 - **Interaction fidelity ×0.90:** about 40 open UI issues; no transform handles in the Program
-  monitor (#639); Effect Controls keyframe zoom / divider (#640–#645); docking (#493).
+  monitor (#639); transition editing controls (#577); docking (#493).
 - **Stability on real machines ×0.92:** current macOS on Apple silicon is solid, but launch
   crashes on macOS 12, Intel UHD and Windows 11 (#468, #512, #380, #582, #687), and no CI runs the
   tests on pull requests.
@@ -354,6 +354,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-23 | minor | G8: Effect Controls keyframe zoom bar, zoom-aware ruler/lane/graphs and automation; readiness scores unchanged |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |

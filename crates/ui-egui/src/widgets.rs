@@ -110,13 +110,16 @@ fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberO
     }
     let mut out = None;
     if resp.dragged() {
-        let dx = resp.drag_delta().x as f64;
+        // Locked-cursor integrations keep the pointer position fixed and report raw relative
+        // movement instead. Use it so long scrubs do not stop at the viewport edge.
+        let dx = resp.drag_motion().x as f64;
         let mult = hot_number_drag_multiplier(ui);
         let nv = (value + dx * speed * mult).clamp(range.0, range.1);
         if (nv - value).abs() > f64::EPSILON {
             out = Some(nv);
         }
     }
+    lock_pointer_while_dragging(ui, &resp);
     if resp.clicked() {
         ui.data_mut(|d| {
             d.insert_temp(id.with("editing"), format!("{value:.decimals$}"));
@@ -138,6 +141,90 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
             1.0
         }
     })
+}
+
+/// Keep a numeric drag inside the application window. Egui still receives ordinary pointer
+/// movement, but the operating system no longer lets the cursor leave the viewport mid-edit.
+fn confine_pointer_while_dragging(ui: &Ui, response: &Response) {
+    if response.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Confined));
+    }
+    if response.drag_stopped() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+    }
+}
+
+/// Lock and hide the pointer during hot-number scrubs; relative mouse motion still drives the value
+/// when the pointer reaches the edge of the window.
+fn lock_pointer_while_dragging(ui: &Ui, response: &Response) {
+    if response.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+    }
+    if response.drag_stopped() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+    }
+}
+
+/// A colour parameter as the linear [`egui::Rgba`] a picker edits.
+///
+/// A colour parameter holds its value sRGB-encoded: it is what `effects.setParam` stores for a
+/// `#rrggbb` string, and what the renderer reads (a `fill`/`tint` colour comes out as the same
+/// colour on screen). `egui::Rgba` is linear, so convert on the way in, and the swatch then shows
+/// the colour the Program monitor renders.
+pub(crate) fn param_to_rgba(c: [f32; 4]) -> egui::Rgba {
+    let lin = |v: f32| filmcraft_color::srgb_to_linear(v.clamp(0.0, 1.0));
+    egui::Rgba::from_rgba_unmultiplied(lin(c[0]), lin(c[1]), lin(c[2]), c[3].clamp(0.0, 1.0))
+}
+
+/// The sRGB-encoded parameter value of a colour a picker edited — the inverse of [`param_to_rgba`].
+pub(crate) fn rgba_to_param(rgba: egui::Rgba) -> [f32; 4] {
+    let [r, g, b, a] = rgba.to_rgba_unmultiplied();
+    [filmcraft_color::linear_to_srgb(r.max(0.0)), filmcraft_color::linear_to_srgb(g.max(0.0)), filmcraft_color::linear_to_srgb(b.max(0.0)), a.clamp(0.0, 1.0)]
+}
+
+/// A compact colour swatch whose popup includes a copyable/pastable hex text field.
+/// Returns (swatch response, changed, hex field rect while the popup is open).
+pub(crate) fn color_edit_with_hex(ui: &mut Ui, id: egui::Id, rgba: &mut egui::Rgba, alpha: egui::color_picker::Alpha) -> (Response, bool, Option<Rect>) {
+    let popup_id = id.with("popup");
+    let hex_id = id.with("hex-input");
+    let mut hsva = egui::ecolor::Hsva::from(*rgba);
+    let [sr, sg, sb, sa] = hsva.to_srgba_unmultiplied();
+    let shown = Color32::from_rgba_unmultiplied(sr, sg, sb, sa);
+    let swatch = ui
+        .add_sized(vec2(26.0, 18.0), egui::Button::new("").fill(shown).stroke(Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color)))
+        .on_hover_text(tl!("Click to edit color"));
+    let mut changed = false;
+    let mut hex_rect = None;
+    egui::Popup::menu(&swatch).id(popup_id).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.spacing_mut().slider_width = 275.0;
+        changed |= egui::color_picker::color_picker_hsva_2d(ui, &mut hsva, alpha);
+        ui.horizontal(|ui| {
+            ui.label(tl!("HEX"));
+            let [r, g, b, a] = hsva.to_srgba_unmultiplied();
+            let initial = filmcraft_color::to_hex([f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, f32::from(a) / 255.0]);
+            let mut text = ui.data(|data| data.get_temp::<String>(hex_id)).unwrap_or(initial);
+            let response = ui.add(egui::TextEdit::singleline(&mut text).id(hex_id).desired_width(86.0).char_limit(9));
+            hex_rect = Some(response.rect);
+            if response.changed()
+                && let Some(c) = filmcraft_color::parse_hex(&text)
+            {
+                // the typed hex is the sRGB colour of the parameter, like the value beside it
+                hsva = egui::ecolor::Hsva::from(param_to_rgba(c));
+                changed = true;
+            }
+            if response.has_focus() {
+                ui.data_mut(|data| data.insert_temp(hex_id, text));
+            } else {
+                ui.data_mut(|data| data.remove::<String>(hex_id));
+            }
+        });
+    });
+    if changed {
+        *rgba = egui::Rgba::from(hsva);
+    }
+    (swatch, changed, hex_rect)
 }
 
 /// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
@@ -411,17 +498,100 @@ pub fn meter_bar(painter: &egui::Painter, rect: Rect, db: f32, peak_db: f32, t: 
     );
 }
 
+/// A drag value that confines the cursor while scrubbing and accepts calculations such as `100*2`
+/// or `*2` to double the value.
+pub struct NumberDrag<'a> {
+    inner: egui::DragValue<'a>,
+}
+
+impl<'a> NumberDrag<'a> {
+    /// The value range the drag accepts.
+    pub fn range<Num: egui::emath::Numeric>(mut self, range: std::ops::RangeInclusive<Num>) -> Self {
+        self.inner = self.inner.range(range);
+        self
+    }
+
+    /// How far the value moves per point of drag.
+    pub fn speed(mut self, speed: impl Into<f64>) -> Self {
+        self.inner = self.inner.speed(speed);
+        self
+    }
+
+    /// Text painted before the value.
+    pub fn prefix(mut self, prefix: impl egui::IntoAtoms<'a>) -> Self {
+        self.inner = self.inner.prefix(prefix);
+        self
+    }
+
+    /// Text painted after the value.
+    pub fn suffix(mut self, suffix: impl egui::IntoAtoms<'a>) -> Self {
+        self.inner = self.inner.suffix(suffix);
+        self
+    }
+
+    /// The most decimals shown while dragging.
+    pub fn max_decimals(mut self, decimals: usize) -> Self {
+        self.inner = self.inner.max_decimals(decimals);
+        self
+    }
+
+    /// The number of decimals always shown.
+    pub fn fixed_decimals(mut self, decimals: usize) -> Self {
+        self.inner = self.inner.fixed_decimals(decimals);
+        self
+    }
+}
+
+impl egui::Widget for NumberDrag<'_> {
+    /// Draw the field, confining the pointer while it is dragged.
+    fn ui(self, ui: &mut Ui) -> Response {
+        let response = ui.add(self.inner);
+        confine_pointer_while_dragging(ui, &response);
+        response
+    }
+}
+
 /// An egui `DragValue` (the number fields of dialogs and Settings) that also takes a calculation
 /// ([`crate::calc`]) applied to the value it holds: `100*2`, or `*2` to double it.
-pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> egui::DragValue<'_> {
+pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> NumberDrag<'_> {
     let current = value.to_f64();
-    egui::DragValue::new(value).custom_parser(move |s| crate::calc::eval(s, current))
+    NumberDrag { inner: egui::DragValue::new(value).custom_parser(move |s| crate::calc::eval(s, current)) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    /// The sRGB bytes a colour parameter's float value stands for (what the renderer draws).
+    fn param_bytes(c: [f32; 4]) -> [u8; 4] {
+        c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+    }
+
+    /// A parameter's swatch paints the parameter's own colour: the value is sRGB-encoded, so
+    /// `#e27d38` stays `#e27d38` in the panel. It used to be shown as the sRGB encoding of that
+    /// value read as linear — a lighter colour no render of the parameter ever produced.
+    #[test]
+    fn a_colour_swatch_shows_the_parameter_colour() {
+        for hex in ["#e27d38", "#123456", "#808080", "#ffffff", "#000000"] {
+            let c = filmcraft_color::parse_hex(hex).expect("hex");
+            assert_eq!(param_to_rgba(c).to_srgba_unmultiplied(), param_bytes(c), "{hex} is drawn as its own colour");
+        }
+    }
+
+    /// What the picker stores is what the swatch showed, so reopening it does not shift the
+    /// colour: the round trip through the linear `egui::Rgba` the popup works in is exact.
+    #[test]
+    fn a_picked_colour_is_stored_as_the_colour_it_showed() {
+        for hex in ["#e27d38", "#123456", "#808080", "#010203"] {
+            let c = filmcraft_color::parse_hex(hex).expect("hex");
+            let stored = rgba_to_param(param_to_rgba(c));
+            for (got, want) in stored.iter().zip(c) {
+                assert!((got - want).abs() < 1e-4, "{hex}: stored {stored:?}, typed {c:?}");
+            }
+            assert_eq!(param_to_rgba(stored).to_srgba_unmultiplied(), param_bytes(c), "{hex} circles back");
+        }
+    }
 
     fn frame(ctx: &egui::Context, events: Vec<egui::Event>, id: egui::Id) {
         let t = Tokens::for_kind(ThemeKind::Dark);
@@ -458,6 +628,7 @@ mod tests {
         assert!(harness.query_by_label("Value").is_none(), "the generic label is gone");
     }
 
+    /// Clicking a `hot_number` selects its whole value, ready to be typed over.
     #[test]
     fn clicking_a_hot_number_selects_its_whole_value() {
         let ctx = egui::Context::default();
@@ -473,6 +644,76 @@ mod tests {
         let st = egui::text_edit::TextEditState::load(&ctx, id.with("edit")).unwrap_or_default();
         let range = st.cursor.char_range().map(|c| c.sorted_cursors());
         assert_eq!(range, Some([egui::text::CCursor::new(0), egui::text::CCursor::new(5)]));
+    }
+
+    #[test]
+    /// Scrubbing a `hot_number` locks and hides the cursor, and gives it back when the drag ends.
+    fn dragging_a_hot_number_locks_and_releases_the_cursor() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("captured-hot-number");
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let mut value = 123.5;
+        let mut rect = Rect::NOTHING;
+        let frame = |events: Vec<egui::Event>, value: &mut f64, rect: &mut Rect| {
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))), events, ..Default::default() }, |ui| {
+                    *rect = hot_number(ui, "Value", id, *value, HotNumberOptions::new(1.0, (0.0, 1000.0), 1, "", &t)).0.rect;
+                });
+            let commands = output.viewport_output.get(&egui::ViewportId::ROOT).map(|viewport| viewport.commands.clone()).unwrap_or_default();
+            output.textures_delta.clear();
+            commands
+        };
+
+        frame(vec![], &mut value, &mut rect);
+        let start = rect.center();
+        let button = |pressed, pos| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(vec![egui::Event::PointerMoved(start)], &mut value, &mut rect);
+        frame(vec![button(true, start)], &mut value, &mut rect);
+        let commands = frame(vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0))], &mut value, &mut rect);
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked))));
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorVisible(false))));
+
+        let commands = frame(vec![button(false, start + vec2(20.0, 0.0))], &mut value, &mut rect);
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorGrab(egui::CursorGrab::None))));
+        assert!(commands.iter().any(|command| matches!(command, egui::ViewportCommand::CursorVisible(true))));
+    }
+
+    #[test]
+    /// A locked cursor keeps reporting relative motion, so the value keeps changing past the window
+    /// edge.
+    fn hot_number_keeps_changing_from_relative_motion_with_a_locked_cursor() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("relative-hot-number");
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let mut value = 100.0;
+        let mut rect = Rect::NOTHING;
+        let frame = |events: Vec<egui::Event>, value: &mut f64, rect: &mut Rect| {
+            let mut changed = false;
+            let mut output =
+                ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))), events, ..Default::default() }, |ui| {
+                    let (response, next) = hot_number(ui, "Value", id, *value, HotNumberOptions::new(1.0, (0.0, 1000.0), 1, "", &t));
+                    *rect = response.rect;
+                    if let Some(next) = next {
+                        *value = next;
+                        changed = true;
+                    }
+                });
+            output.textures_delta.clear();
+            changed
+        };
+
+        frame(vec![], &mut value, &mut rect);
+        let start = rect.center();
+        let button = |pressed, pos| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(vec![egui::Event::PointerMoved(start)], &mut value, &mut rect);
+        frame(vec![button(true, start)], &mut value, &mut rect);
+        frame(vec![egui::Event::PointerMoved(start + vec2(8.0, 0.0))], &mut value, &mut rect);
+        let before_relative_motion = value;
+
+        // Once locked, the cursor position stays put; the relative event still advances the value.
+        assert!(frame(vec![egui::Event::MouseMoved(vec2(40.0, 0.0))], &mut value, &mut rect));
+        assert!(value > before_relative_motion, "relative motion keeps scrubbing after the cursor reaches an edge");
+        frame(vec![button(false, start + vec2(8.0, 0.0))], &mut value, &mut rect);
     }
 
     /// Dialogs open centred and can be dragged by their title bar (anchored ones could not).
