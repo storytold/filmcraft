@@ -110,6 +110,69 @@ fn changed_in_band_parameter_sets_switch_to_software() {
     assert_same("changed SPS", &out, &decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), &changed));
 }
 
+/// Decodes like the software decoder, but its flush loses some of the pictures it returns from
+/// presentation time `from` on (`lose` picks them by index among those) and says so through
+/// `take_flush_losses`, as Media Foundation's VP9 decoder does when it drops a picture while
+/// draining. (A lost picture from before the replay's restart point cannot be decoded again.)
+struct LosingAtFlush {
+    inner: Box<dyn VideoDecoder>,
+    from: i64,
+    lose: fn(usize) -> Vec<usize>,
+    lost: usize,
+}
+
+impl VideoDecoder for LosingAtFlush {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        self.inner.decode(sample, pts)
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        let all = self.inner.flush();
+        let later: Vec<i64> = all.iter().map(|f| f.pts).filter(|&p| p >= self.from).collect();
+        let lose: Vec<i64> = (self.lose)(later.len()).into_iter().filter_map(|i| later.get(i).copied()).collect();
+        self.lost = lose.len();
+        all.into_iter().filter(|f| !lose.contains(&f.pts)).collect()
+    }
+    fn take_flush_losses(&mut self) -> usize {
+        std::mem::take(&mut self.lost)
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn name(&self) -> &str {
+        "stand-in hardware"
+    }
+}
+
+#[test]
+fn pictures_lost_while_flushing_come_from_the_software_decoder() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let patterns: [(&str, fn(usize) -> Vec<usize>); 4] =
+        [("nothing", |_| Vec::new()), ("the first", |_| vec![0]), ("the last", |n| vec![n.saturating_sub(1)]), ("all", |n| (0..n).collect())];
+    for (name, _) in FIXTURES {
+        let Some(path) = named(&ff, name) else { continue };
+        let s = read_stream(&path);
+        let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+        let syncs: Vec<usize> = (0..s.samples.len()).filter(|&i| s.sync[i]).collect();
+        let [_, k, ..] = syncs[..] else { panic!("{name}: two GOPs or more") };
+        // a run ending a few samples into the second GOP: pictures are held for reordering
+        let run = &s.samples[..k + 6];
+        let from = s.samples[k].1;
+        let reference = decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), run);
+        for (what, lose) in patterns {
+            let inner = filmcraft_codecs::software_video_decoder(&s.entry).unwrap();
+            let mut d = HybridDecoder::new(Box::new(LosingAtFlush { inner, from, lose, lost: 0 }), s.entry.clone(), info.clone());
+            let out = decode_all(&mut d, run);
+            assert_eq!(d.is_hardware(), what == "nothing", "{name}: losing {what}");
+            assert_same(&format!("{name} losing {what} while flushing"), &out, &reference);
+            // and decoding goes on after a seek
+            d.reset();
+            let tail = &s.samples[k..];
+            let expect = decode_all(filmcraft_codecs::software_video_decoder(&s.entry).unwrap().as_mut(), tail);
+            assert_same(&format!("{name} after losing {what}"), &decode_all(&mut d, tail), &expect);
+        }
+    }
+}
+
 /// Like [`Failing`], but tolerant of one damaged sample the way a GPU can be: at `damaged_at` it
 /// decodes the intact sample instead of the one it is given (which the software decoder rejects).
 struct Tolerant {

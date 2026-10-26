@@ -216,9 +216,27 @@ impl VideoDecoder for HybridDecoder {
     fn flush(&mut self) -> Vec<DecodedFrame> {
         if let Some(hw) = self.hw.as_mut() {
             let out = hw.flush();
+            let lost = hw.take_flush_losses();
             filmcraft_codecs::hw::note_hw_frames(out.len());
-            self.note_emitted(&out);
-            return out;
+            if lost == 0 || self.log.is_none() {
+                // (too far from a restart point to replay: the pictures that did come out)
+                self.note_emitted(&out);
+                return out;
+            }
+            // The hardware lost pictures while draining: keep the ones it returned, decode the run
+            // again in software for the rest, and drain that. (A lost picture from before the last
+            // restart point is not in the replay log; it stays lost.)
+            for f in out {
+                if !self.emitted.contains(&f.pts) {
+                    self.carry.insert(f.pts, f);
+                }
+            }
+            let mut frames = self.fall_back(CodecError::Decode(format!("lost {lost} pictures while flushing"))).unwrap_or_else(|e| {
+                log::warn!("software replay after the hardware decoder lost pictures: {e}");
+                Vec::new()
+            });
+            frames.extend(self.flush());
+            return frames;
         }
         let frames = self.sw.as_mut().map(|d| d.flush()).unwrap_or_default();
         let mut out = self.merge(frames);

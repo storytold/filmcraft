@@ -82,6 +82,14 @@ pub fn keyframe_info(chunk: &[u8]) -> Option<KeyframeInfo> {
 pub fn is_keyframe(chunk: &[u8]) -> bool {
     keyframe_info(chunk).is_some()
 }
+
+/// Whether decoding `chunk` (a frame or a superframe) shows a picture: a chunk can also hold only a
+/// hidden frame (an alt-ref frame outside a superframe). A frame whose header does not parse counts
+/// as showing one, since a decoder reports an error for it rather than skipping it.
+pub fn shows_picture(chunk: &[u8]) -> bool {
+    header::split_superframe(chunk).into_iter().filter(|f| !f.is_empty()).any(|f| header::shows_picture(f) != Some(false))
+}
+
 pub use error::{Error, Result};
 
 /// Colour information from the uncompressed header.

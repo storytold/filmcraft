@@ -35,10 +35,31 @@ fn software(s: &Stream) -> Box<dyn VideoDecoder> {
     filmcraft_codecs::software_video_decoder(&s.entry).unwrap()
 }
 
+/// [`parity_once`], again when an attempt fails after a decoder MFT dropped a picture: Microsoft's
+/// VP9 decoder sometimes skips one without an error while other tests keep the GPU busy. The
+/// decoder reports that as an error (the hybrid decoder then continues in software, see
+/// `media_foundation::dropped_pictures`), which these comparisons of the hardware's own output
+/// cannot tell from a wrong picture. Any other failure fails at once.
+fn parity(name: &str, s: &Stream) {
+    const ATTEMPTS: usize = 3;
+    for attempt in 1..=ATTEMPTS {
+        let dropped = filmcraft_platform::media_foundation::dropped_pictures();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parity_once(name, s)));
+        match r {
+            Ok(()) => return,
+            Err(e) if attempt < ATTEMPTS && filmcraft_platform::media_foundation::dropped_pictures() > dropped => {
+                eprintln!("{name}: the decoder MFT dropped a picture (attempt {attempt}); trying again");
+                drop(e);
+            }
+            Err(e) => std::panic::resume_unwind(e),
+        }
+    }
+}
+
 /// Every picture of `s` from the hardware decoder equals the software decoder's: whole stream,
 /// after `reset` + reseek to each later sync sample, after a mid-stream `flush`, and a full pass
 /// after all the resets.
-fn parity(name: &str, s: &Stream) {
+fn parity_once(name: &str, s: &Stream) {
     let Some(mut hw) = hardware(s) else { return };
     let mut sw = software(s);
     let a = decode_all(hw.as_mut(), &s.samples);

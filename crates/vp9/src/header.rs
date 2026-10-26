@@ -598,6 +598,25 @@ pub fn parse_compressed(data: &[u8], h: &mut FrameHeader, fc: &mut FrameContext)
     Ok(())
 }
 
+/// Whether a frame shows a picture (`show_frame`, or a `show_existing_frame`), read from the start
+/// of its uncompressed header, which needs no decoder state; `None` when that start is malformed.
+pub fn shows_picture(data: &[u8]) -> Option<bool> {
+    let mut r = BitReader::new(data);
+    if r.read_bits(2).ok()? != 2 {
+        return None;
+    }
+    let lo = r.read_bits(1).ok()?;
+    let hi = r.read_bits(1).ok()?;
+    if (hi << 1) | lo == 3 && r.read_bits(1).ok()? != 0 {
+        return None;
+    }
+    if r.read_flag().ok()? {
+        return Some(true);
+    }
+    r.read_bits(1).ok()?; // frame_type
+    r.read_flag().ok()
+}
+
 /// Superframe index parsing (Annex B): the frames of a chunk.
 pub fn split_superframe(data: &[u8]) -> Vec<&[u8]> {
     if let Some(&last) = data.last()
@@ -645,6 +664,22 @@ mod tests {
         // Not a superframe: last byte is a marker but the first index byte does not match.
         let d2 = vec![9u8, 9, 0xc1];
         assert_eq!(split_superframe(&d2), vec![&d2[..]]);
+    }
+
+    #[test]
+    fn shown_and_hidden_frames() {
+        // frame_marker 2, profile 0, then show_existing_frame / frame_type / show_frame
+        assert_eq!(shows_picture(&[0b1000_1000]), Some(true), "show_existing_frame");
+        assert_eq!(shows_picture(&[0b1000_0010]), Some(true), "key frame, shown");
+        assert_eq!(shows_picture(&[0b1000_0000]), Some(false), "key frame, hidden");
+        assert_eq!(shows_picture(&[0b1000_0110]), Some(true), "inter frame, shown");
+        assert_eq!(shows_picture(&[0b1000_0100]), Some(false), "inter frame, hidden");
+        // profile 3 has a reserved bit before show_existing_frame
+        assert_eq!(shows_picture(&[0b1011_0001]), Some(true), "profile 3, shown");
+        assert_eq!(shows_picture(&[0b1011_0000]), Some(false), "profile 3, hidden");
+        assert_eq!(shows_picture(&[0b1011_1000]), None, "profile 3, reserved bit set");
+        assert_eq!(shows_picture(&[0b0100_0000]), None, "bad frame marker");
+        assert_eq!(shows_picture(&[]), None, "empty");
     }
 
     #[test]

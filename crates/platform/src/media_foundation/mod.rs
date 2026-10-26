@@ -33,6 +33,7 @@ mod mft;
 mod stream;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use filmcraft_codecs::hw::{NalCodec, StreamInfo};
@@ -47,6 +48,16 @@ use crate::biplanar::{self, Geometry};
 const MAX_IN_FLIGHT: usize = 64;
 /// Upper bound on the outputs taken per call: a misbehaving MFT cannot make a decode call loop.
 const MAX_OUTPUTS_PER_CALL: usize = 4096;
+
+/// Pictures a VP9 / AV1 decoder MFT accepted and never returned, in this process.
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// How many pictures decoder MFTs dropped in this process (diagnostics and tests). Microsoft's VP9
+/// decoder occasionally skips a picture without an error when the GPU is busy; the decoder notices
+/// it and fails, so the hybrid decoder replays the run in software.
+pub fn dropped_pictures() -> u64 {
+    DROPPED.load(Ordering::Relaxed)
+}
 
 /// The stream description of a sample entry this backend could take (`avcC` / `hvcC` / `vpcC` /
 /// `av1C`), or `None` for other codecs and unreadable configuration records.
@@ -137,6 +148,8 @@ pub struct MfDecoder {
     /// Test hook: fail every decode once this many samples were fed.
     fail_after: Option<u64>,
     fed: u64,
+    /// Pictures the last flush lost ([`VideoDecoder::take_flush_losses`]).
+    flush_losses: usize,
     name: &'static str,
     timings: Timings,
 }
@@ -172,6 +185,7 @@ impl MfDecoder {
             drained: false,
             fail_after: None,
             fed: 0,
+            flush_losses: 0,
             timings: Timings::default(),
         })
     }
@@ -203,6 +217,15 @@ impl MfDecoder {
         }
     }
 
+    /// A VP9 / AV1 picture still in flight that was submitted before the one stamped `t`: frame-coded
+    /// streams come out in the order they go in, so the decoder dropped it.
+    fn skipped_before(&self, t: i64) -> Option<i64> {
+        if !matches!(self.stream, Stream::Frame(_)) {
+            return None;
+        }
+        overtaken(&self.in_flight, t)
+    }
+
     /// A VP9 / AV1 decoder must output the picture size the bitstream declares (H.264 / HEVC
     /// decoders report coded or cropped sizes, which the cropping handles).
     fn check_size(&mut self) -> std::result::Result<(), String> {
@@ -214,14 +237,32 @@ impl MfDecoder {
         }
     }
 
-    /// Take every picture the decoder has ready (presentation order).
-    fn collect(&mut self, out: &mut Vec<DecodedFrame>) -> std::result::Result<(), String> {
+    /// Take every picture the decoder has ready (presentation order). A picture overtaken by a
+    /// later one was dropped: while decoding that is an error (the hybrid decoder replays the run in
+    /// software); while `draining`, the pictures still held are taken and the loss is counted in
+    /// `flush_losses`, which the hybrid decoder asks for after the flush.
+    fn collect(&mut self, out: &mut Vec<DecodedFrame>, draining: bool) -> std::result::Result<(), String> {
         for _ in 0..MAX_OUTPUTS_PER_CALL {
             let Some(mft) = self.mft.as_ref() else { return Ok(()) };
             match mft.poll()? {
                 Poll::NeedInput => return Ok(()),
                 Poll::FormatChanged => self.size_checked = false,
                 Poll::Frame(sample, t) => {
+                    if let Some(skipped) = self.skipped_before(t) {
+                        let before = self.in_flight.len();
+                        if draining {
+                            self.in_flight.retain(|&p| p >= t);
+                            let lost = before.saturating_sub(self.in_flight.len());
+                            DROPPED.fetch_add(lost as u64, Ordering::Relaxed);
+                            self.flush_losses = self.flush_losses.saturating_add(lost);
+                        } else {
+                            // forget the dropped pictures and this one (not returned either), so
+                            // a flush after the error does not count them again
+                            self.in_flight.retain(|&p| p > t);
+                            DROPPED.fetch_add(before.saturating_sub(self.in_flight.len() + 1) as u64, Ordering::Relaxed);
+                            return Err(format!("the decoder dropped the picture at {skipped}"));
+                        }
+                    }
                     if !self.size_checked {
                         self.check_size()?;
                     }
@@ -244,14 +285,17 @@ impl MfDecoder {
         Err("the decoder keeps producing output".into())
     }
 
-    fn feed(&mut self, annex_b: &[u8], pts: i64) -> std::result::Result<Vec<DecodedFrame>, String> {
+    /// Feed one sample; `shows` is false for a sample that decodes to no picture (a VP9 hidden frame).
+    fn feed(&mut self, annex_b: &[u8], pts: i64, shows: bool) -> std::result::Result<Vec<DecodedFrame>, String> {
         let mut out = Vec::new();
         for attempt in 0..2 {
             let Some(mft) = self.mft.as_ref() else { return Err("no decoder".into()) };
             if mft.input(self.api, annex_b, pts)? {
-                self.in_flight.push(pts);
+                if shows {
+                    self.in_flight.push(pts);
+                }
                 self.need_headers = false;
-                self.collect(&mut out)?;
+                self.collect(&mut out, false)?;
                 // a decoder holds back a DPB's worth of pictures at most
                 if self.in_flight.len() > MAX_IN_FLIGHT {
                     return Err(format!("the decoder holds {} pictures back", self.in_flight.len()));
@@ -259,7 +303,7 @@ impl MfDecoder {
                 return Ok(out);
             }
             // full: take what it has ready, then offer the sample again
-            self.collect(&mut out)?;
+            self.collect(&mut out, false)?;
             if attempt == 1 {
                 break;
             }
@@ -302,6 +346,10 @@ impl VideoDecoder for MfDecoder {
         if let Some(g) = self.stream.declared_picture(sample) {
             self.geometry = g;
         }
+        let shows = match &self.stream {
+            Stream::Frame(info) => info.shows_picture(sample),
+            Stream::Nal(_) => true,
+        };
         let annex_b = self.stream.input(sample, self.need_headers).map_err(CodecError::Decode)?;
         if self.mft.is_none() {
             let mft = Mft::new(self.api, &self.gpu, &self.stream.spec(self.format)).map_err(CodecError::Decode)?;
@@ -310,7 +358,7 @@ impl VideoDecoder for MfDecoder {
             self.need_headers = true;
         }
         let (t0, spent) = (Instant::now(), self.timings.readback + self.timings.convert);
-        let r = self.feed(&annex_b, pts).map_err(|e| {
+        let r = self.feed(&annex_b, pts, shows).map_err(|e| {
             self.gpu.note_failure();
             CodecError::Decode(e)
         });
@@ -324,15 +372,27 @@ impl VideoDecoder for MfDecoder {
         if gpu::ensure_com().is_err() {
             return out;
         }
-        let drained = self.mft.as_ref().map(Mft::drain).transpose().and_then(|_| self.collect(&mut out));
+        self.flush_losses = 0;
+        let drained = self.mft.as_ref().map(Mft::drain).transpose().and_then(|_| self.collect(&mut out, true));
         if let Err(e) = drained {
             log::warn!("{}: {e} while flushing", self.name);
+        } else if matches!(self.stream, Stream::Frame(_)) && !self.in_flight.is_empty() {
+            // drained, yet some pictures never came out
+            DROPPED.fetch_add(self.in_flight.len() as u64, Ordering::Relaxed);
+            self.flush_losses = self.flush_losses.saturating_add(self.in_flight.len());
+        }
+        if self.flush_losses > 0 {
+            log::warn!("{}: the decoder dropped {} pictures while flushing", self.name, self.flush_losses);
         }
         self.in_flight.clear();
         // what follows a drain starts like a new run: the decoder is given the headers again
         self.need_headers = true;
         self.drained = true;
         out
+    }
+
+    fn take_flush_losses(&mut self) -> usize {
+        std::mem::take(&mut self.flush_losses)
     }
 
     fn reset(&mut self) {
@@ -361,9 +421,34 @@ impl VideoDecoder for MfDecoder {
     }
 }
 
+/// The earliest of `in_flight` that a picture stamped `t` came out ahead of, when `t` is one of them
+/// (an output the decoder restamped says nothing about order).
+fn overtaken(in_flight: &[i64], t: i64) -> Option<i64> {
+    if !in_flight.contains(&t) {
+        return None;
+    }
+    in_flight.iter().copied().filter(|&p| p < t).min()
+}
+
 impl Drop for MfDecoder {
     fn drop(&mut self) {
         // the decoder MFT is released on whichever thread drops the decoder: it needs COM
         let _ = gpu::ensure_com();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overtaken;
+
+    #[test]
+    fn a_picture_overtaken_by_a_later_one_was_dropped() {
+        assert_eq!(overtaken(&[512], 512), None, "in order");
+        assert_eq!(overtaken(&[512, 1024], 512), None, "the next one is still coming");
+        // the trace of a real drop: 21504 accepted, never returned, 22016 came out
+        assert_eq!(overtaken(&[21504, 22016], 22016), Some(21504));
+        assert_eq!(overtaken(&[1536, 512, 1024], 1536), Some(512), "the earliest");
+        assert_eq!(overtaken(&[512, 1024], 700), None, "restamped: no evidence");
+        assert_eq!(overtaken(&[], 0), None);
     }
 }

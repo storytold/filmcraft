@@ -20,6 +20,12 @@ pub trait VideoDecoder: Send {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>>;
     /// Drain pictures held for reordering (end of stream / before a seek).
     fn flush(&mut self) -> Vec<DecodedFrame>;
+    /// How many pictures the last [`flush`](Self::flush) should have returned but lost (a hardware
+    /// decoder that dropped them), which `flush` itself cannot report; taking the count clears it.
+    /// A wrapper with a second decoder for the stream decodes the run again. Zero by default.
+    fn take_flush_losses(&mut self) -> usize {
+        0
+    }
     /// Forget all state (called after seeking to a sync sample).
     fn reset(&mut self);
     fn name(&self) -> &str;

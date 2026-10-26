@@ -224,6 +224,15 @@ impl FrameStreamInfo {
         }
     }
 
+    /// Whether decoding `sample` shows a picture. A VP9 sample can hold only a hidden frame; an AV1
+    /// temporal unit always shows exactly one.
+    pub fn shows_picture(&self, sample: &[u8]) -> bool {
+        match self.codec {
+            FrameCodec::Vp9 => filmcraft_vp9::shows_picture(sample),
+            FrameCodec::Av1 => true,
+        }
+    }
+
     /// The picture parameters a random-access `sample` declares (a VP9 key frame header; an AV1
     /// sample carrying a sequence header), or `None`.
     pub fn picture_params(&self, sample: &[u8]) -> Option<PictureParams> {
