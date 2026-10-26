@@ -72,7 +72,7 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   the encode thread, where it competed with the render of the next frames for the thread pool and
   held NVENC back. The encoder runs preset P5 with high-quality tuning, CABAC (CAVLC
   for Baseline), one B-frame when the profile and GPU allow it, and an IDR at every keyframe
-  distance; the parameter sets go into `avcC`. Export ▸ Hardware encoding (off by default) selects it.
+  distance; the parameter sets go into `avcC`. Export ▸ Hardware encoding (Auto by default) selects it.
   It declines two-pass VBR, HDR, MXF, interlaced output, sizes outside NVENC's limits and systems
   without an NVIDIA GPU or driver, and the software encoder runs instead. A failure during an export
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
@@ -137,8 +137,8 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
 *required*; `hardware_encode.rs` (safe code) is the `VideoEncoder` adapter and the factory that
 `register()` puts in front of the built-in encoders (`filmcraft_export::register_encoder`).
 
-- **Opt-in per export:** `ExportSettings::hardware_encoding` (`Off` | `Auto`; Export ▸ Video ▸
-  Hardware Encoding, `"hardwareEncoding": "off|auto"` in `file.exportMedia`), off by default. The built-in encoder's
+- **On by default:** `ExportSettings::hardware_encoding` (`Off` | `Auto`; Export ▸ Video ▸
+  Hardware Encoding, `"hardwareEncoding": "off|auto"` in `file.exportMedia`), Auto unless turned off. The built-in encoder's
   output is byte-identical on every machine; a hardware encoder's depends on the machine.
 - **What it takes:** H.264 in MP4 / MOV, 8-bit SDR, even picture sizes up to 8192, Baseline / Main /
   High (the level is chosen by the OS), constant or one-pass variable bitrate with the settings'

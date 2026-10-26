@@ -377,8 +377,8 @@ pub struct ExportSettings {
     #[serde(default = "default_crf")]
     pub crf: f32,
     /// May H.264 be encoded by the system's hardware encoder (VideoToolbox on macOS, NVENC on
-    /// Windows)? Off unless asked for: hardware output depends on the machine, so it is not
-    /// byte-reproducible like the built-in encoder's (`determinism_tests`).
+    /// Windows and Linux)? Auto unless turned off; hardware output depends on the machine, so only
+    /// Off is byte-reproducible like the built-in encoder's (`determinism_tests`).
     #[serde(default)]
     pub hardware_encoding: HardwareEncoding,
     /// Composite the exported frames on the GPU instead of the CPU reference renderer (Export ▸

@@ -1,8 +1,8 @@
 //! The VideoToolbox H.264 and HEVC encoders behind `filmcraft_export::VideoEncoder` (macOS; safe code
 //! around [`crate::videotoolbox_encode`]).
 //!
-//! H.264 hardware encoding is opt-in per export (`ExportSettings::hardware_encoding`, `Auto`): its output
-//! depends on the machine, while the built-in encoder's is byte-identical everywhere. The factory
+//! H.264 hardware encoding is on by default (`ExportSettings::hardware_encoding` = `Auto`; Off turns
+//! it off): its output depends on the machine, while the built-in encoder's is byte-identical everywhere. The factory
 //! declines, so the built-in encoder is used, for everything the hardware path does not take: other
 //! formats, MXF (Annex B), two-pass VBR, HDR, odd picture sizes, non-square pixels, and any
 //! configuration VideoToolbox cannot create a hardware session for. A hardware encoder that fails in
