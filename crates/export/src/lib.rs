@@ -1714,6 +1714,10 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     cfg.aud = s.format.is_mxf();
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     cfg.slices = h264_slices(h);
+    // the slices do not depend on the threads, so a cap leaves the bytes as they are
+    if s.max_threads > 0 {
+        cfg.threads = s.max_threads as usize;
+    }
     let kbps = s.bitrate_kbps.max(100);
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
     cfg.rate = match s.bitrate_mode {
@@ -1872,23 +1876,32 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
     Ok(out.into_inner())
 }
 
-/// A pool of `max_threads` threads to run an export on, or `None` when it should run where it is:
-/// no cap (0), a cap that is not below the pool the caller is in already, or no threads to spare
-/// (the browser).
+/// A pool to run an export with a `max_threads` cap on: that many threads, or as many as the pool the
+/// caller is in when that has fewer (a cap never adds threads), each carrying the cap to the decoders
+/// it starts. `None` when it should run where it is: no cap (0), or no threads to spare (the browser).
 fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
     let cap = max_threads as usize;
-    if cap == 0 || cap >= rayon::current_num_threads() || cfg!(target_arch = "wasm32") {
+    if cap == 0 || cfg!(target_arch = "wasm32") {
         return None;
     }
-    rayon::ThreadPoolBuilder::new().num_threads(cap).thread_name(|i| format!("filmcraft-export-{i}")).build().ok()
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(cap.min(rayon::current_num_threads()))
+        .thread_name(|i| format!("filmcraft-export-{i}"))
+        // the pool only ever runs this export: its threads carry the cap to the decoders they start
+        .start_handler(move |_| filmcraft_media::cancel::set_thread_cap(cap))
+        .build()
+        .ok()
 }
 
 /// Run an export (blocking; call from a worker thread). With `settings.max_threads` set it runs on
-/// a pool of that many threads, so its rendering and software encoding use at most that many cores.
+/// a pool of that many threads, so its rendering and software encoding use at most that many cores,
+/// and the decoders it starts and the H.264 encoder are held to as many threads
+/// ([`filmcraft_media::cancel::with_thread_cap`]).
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
+    let run = || filmcraft_media::cancel::with_thread_cap(settings.max_threads as usize, || export_here(project, seq, settings, sources, progress));
     match capped_pool(settings.max_threads) {
-        Some(pool) => pool.install(|| export_here(project, seq, settings, sources, progress)),
-        None => export_here(project, seq, settings, sources, progress),
+        Some(pool) => pool.install(run),
+        None => run(),
     }
 }
 

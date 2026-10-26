@@ -311,16 +311,18 @@ fn a_panic_while_rendering_ahead_is_an_error() {
 
 // ------------------------------------------------------------------ max_threads
 
-/// A provider that notes how many threads the pool it is asked on has, and which threads ask.
+/// A provider that notes how many threads the pool it is asked on has, and which threads ask, and
+/// under which thread cap hint.
 struct Noting<'a> {
     inner: &'a SourceMap,
     most: AtomicUsize,
     threads: std::sync::Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+    caps: std::sync::Mutex<std::collections::HashSet<Option<usize>>>,
 }
 
 impl<'a> Noting<'a> {
     fn new(inner: &'a SourceMap) -> Self {
-        Self { inner, most: AtomicUsize::new(0), threads: Default::default() }
+        Self { inner, most: AtomicUsize::new(0), threads: Default::default(), caps: Default::default() }
     }
 }
 
@@ -328,6 +330,7 @@ impl SourceProvider for Noting<'_> {
     fn source(&self, item: ItemId) -> Option<SharedSource> {
         self.most.fetch_max(rayon::current_num_threads(), Ordering::SeqCst);
         self.threads.lock().unwrap().insert(std::thread::current().id());
+        self.caps.lock().unwrap().insert(filmcraft_media::cancel::thread_cap());
         self.inner.source(item)
     }
 }
@@ -354,6 +357,24 @@ fn max_threads_caps_the_threads_an_export_runs_on() {
         assert_eq!(most, cap as usize, "cap {cap}");
         assert!(threads <= cap as usize, "cap {cap}: {threads} threads asked for frames");
     }
+}
+
+/// The decoders an export starts see its cap (#1216): every frame is asked for under it, on the
+/// capped pool's own threads as on the thread that called the export, and an uncapped export has none.
+#[test]
+fn max_threads_reaches_the_sources_as_a_thread_cap_hint() {
+    let caps = |outer: usize, max_threads: u32, name: &str| {
+        let (p, seq, m) = project();
+        let noting = Noting::new(&m);
+        let settings = ExportSettings { format: Format::Mjpeg, path: tmp(name), include_audio: false, max_threads, ..Default::default() };
+        pool(outer).install(|| export(&p, seq, &settings, &noting, &Progress::default())).unwrap();
+        noting.caps.lock().unwrap().clone()
+    };
+    assert_eq!(caps(8, 0, "hint-0.mov"), [None].into());
+    assert_eq!(caps(8, 3, "hint-3.mov"), [Some(3)].into());
+    // a cap the export does not need a pool for still holds the decoders to it
+    assert_eq!(caps(4, 6, "hint-6.mov"), [Some(6)].into());
+    assert_eq!(filmcraft_media::cancel::thread_cap(), None, "the caller is left as it was");
 }
 
 #[test]
