@@ -79,10 +79,11 @@ impl FilmcraftApp {
         let now = ui.input(|i| i.time);
         // an error stays longer than a note, and is drawn larger in the danger colour so it is not missed
         let is_error = self.ui.status_is_error();
-        if self.ui.status != self.status_seen.0 {
-            self.status_seen = (self.ui.status.clone(), now);
+        // an error shown again restarts its time, though its text is the same
+        if self.ui.status != self.status_seen.0 || self.ui.status_errors != self.status_seen.1 {
+            self.status_seen = (self.ui.status.clone(), self.ui.status_errors, now);
         } else if !self.ui.status.is_empty() {
-            if now - self.status_seen.1 > if is_error { 20.0 } else { 8.0 } {
+            if now - self.status_seen.2 > if is_error { 20.0 } else { 8.0 } {
                 self.ui.status.clear();
             } else {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
@@ -125,6 +126,9 @@ impl FilmcraftApp {
         let mut row = ui.new_child(egui::UiBuilder::new().max_rect(text).id_salt("status-text").layout(egui::Layout::left_to_right(egui::Align::Center)));
         let shown = row.add(egui::Label::new(egui::RichText::new(&hint).font(font).color(color)).selectable(true).truncate());
         self.auto.add(if is_error { "status.error" } else { "status.text" }, shown.rect, &hint);
+        if !self.ui.status_is_error() {
+            self.ui.status_error = None;
+        }
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
