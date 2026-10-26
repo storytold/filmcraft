@@ -48,6 +48,12 @@ edit reports the value written at the requested time, rather than the static fal
 For example, setting opacity `blend` to `"Screen"` returns
 `{"keyframes": 0, "param": "blend", "value": 8}`.
 
+`effects.addKeyframe` toggles: it returns `{"added": true, "mediaTime": t}` when it added a keyframe and
+`{"added": false, "mediaTime": t}` when it removed the one already there; `mediaTime` is where the keyframe
+is, to find it again. An explicit `time` keeps its place, outside the clip too, as in `effects.setParam`;
+only the playhead (when no `time` is given) is held to the clip's last tick. `effects.deleteKeyframe`
+returns `{"removed": true}` or `{"removed": false}` (no keyframe sat exactly at `mediaTime`).
+
 ### From an installed release
 
 The release packages ship `filmcraft-cli` alongside the desktop app, so no build is needed:

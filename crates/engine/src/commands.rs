@@ -3675,11 +3675,17 @@ fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, f
     any
 }
 
+/// `effects.addKeyframe` / `deleteKeyframe` / `moveKeyframe` / `setKeyframe` / `setKeyframeInterpolation`.
+/// An explicit `time` keeps its place, outside the clip too (#1055, as in `effects.setParam`); only
+/// the playhead fallback is pinned to the clip's last tick. `add` replies `{added, mediaTime}`:
+/// whether it added the keyframe or (it is a toggle) removed the one there, and the media time of
+/// that keyframe. `delete` replies `{removed}`: whether a keyframe sat exactly at `mediaTime`.
 fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     let c = clip_p(p, "clip").ok_or_else(|| bad("keyframe", "need `clip`"))?;
     let pid = str_p(p, "param").ok_or_else(|| bad("keyframe", "need `param`"))?.to_string();
     let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
-    let ph = time_p(s, p, "").unwrap_or(s.playhead());
+    let at = time_p(s, p, "");
+    let playhead = s.playhead();
     let mtime = p.get("mediaTime").and_then(Value::as_i64).map(Tick);
     let to = p.get("to").and_then(Value::as_i64).map(Tick);
     let interp = str_p(p, "interpolation").map(str::to_string);
@@ -3696,8 +3702,9 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         s.history.merge_key = None;
     }
     s.edit_sequence_as(label, merge.as_deref(), |q, _, _| {
+        let mut reply = Value::Null;
         let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-        let mt_now = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+        let mt_now = it.source_time_at(at.unwrap_or_else(|| playhead.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
         let e = match &eff {
             Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
             Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -3708,12 +3715,15 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         match op {
             "add" => {
                 // toggle: remove if a keyframe sits at the playhead, else add
-                if !prm.remove_keyframe_at(mt_now) {
+                let added = !prm.remove_keyframe_at(mt_now);
+                if added {
                     prm.add_keyframe(mt_now);
                 }
+                reply = json!({"added": added, "mediaTime": mt_now.0});
             }
             "delete" => {
-                prm.remove_keyframe_at(mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?);
+                let removed = prm.remove_keyframe_at(mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?);
+                reply = json!({"removed": removed});
             }
             "move" => {
                 let from = mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?;
@@ -3757,9 +3767,8 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 k.interp = kind;
             }
         }
-        Ok(())
-    })?;
-    Ok(Value::Null)
+        Ok(reply)
+    })
 }
 
 fn in_out_range(s: &Session) -> Result<TimeRange> {
