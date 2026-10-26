@@ -19,6 +19,28 @@ const PREFERRED: &[&str] = &[
     "Microsoft JhengHei",
 ];
 
+const TAIWAN_PREFERRED: &[&str] = &["Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC", "Noto Sans TC", "Source Han Sans TW"];
+
+/// Added before Japanese and Simplified Chinese fallback faces in a Taiwan UI.
+pub(crate) fn install_taiwan(fonts: &mut FontDefinitions) {
+    static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+    let font = FONT.get_or_init(|| {
+        craft_fonts()
+            .find(|face| face.scripts.contains(&"Hant") && face.style == "Regular" && face.family.contains("Sans"))
+            .map(|face| Arc::new(FontData::from_static(face.bytes)))
+            .or_else(|| find_system_font("繁體中文檔案圖層儲存設定", TAIWAN_PREFERRED))
+            .or_else(|| {
+                craft_fonts().find(|face| face.scripts.contains(&"Hant") && face.style == "Regular").map(|face| Arc::new(FontData::from_static(face.bytes)))
+            })
+    });
+    if let Some(font) = font {
+        fonts.font_data.insert("taiwan-chinese".into(), font.clone());
+        for stack in fonts.families.values_mut() {
+            stack.push("taiwan-chinese".into());
+        }
+    }
+}
+
 pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fonts::CraftFont> {
     filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| matches!(*s, "Hans" | "Hant")))
 }

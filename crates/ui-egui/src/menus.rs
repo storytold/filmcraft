@@ -32,6 +32,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
     uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
     uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
+    uic!("app.language.chinese.traditional", "繁體中文", ["Edit", "Language"], None),
     uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
     uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
     uic!("app.language.french", "Français", ["Edit", "Language"], None),
@@ -197,6 +198,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             | "app.language.portuguese"
             | "app.language.ukrainian"
             | "app.language.chinese"
+            | "app.language.chinese.traditional"
             | "app.language.german"
             | "app.language.russian"
             | "app.language.french"
@@ -209,7 +211,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Err("no Japanese font is installed on this system (for example Noto Sans CJK JP); the interface stays in English".into());
         }
         // Chinese needs the Chinese fallback theme::install adds (craft-fonts or a system face)
-        if id == "app.language.chinese" && !crate::i18n::chinese_font_available() {
+        if matches!(id, "app.language.chinese" | "app.language.chinese.traditional") && !crate::i18n::chinese_font_available() {
             return Err("no Chinese font is installed on this system (for example Noto Sans CJK SC or Microsoft YaHei); the interface stays in English".into());
         }
         // Korean needs an installed Hangul font (none is bundled; see cjk.rs)
@@ -222,6 +224,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             "app.language.portuguese" => crate::i18n::Language::PtBr,
             "app.language.ukrainian" => crate::i18n::Language::Uk,
             "app.language.chinese" => crate::i18n::Language::ZhCn,
+            "app.language.chinese.traditional" => crate::i18n::Language::ZhTw,
             "app.language.german" => crate::i18n::Language::De,
             "app.language.russian" => crate::i18n::Language::Ru,
             "app.language.french" => crate::i18n::Language::Fr,
@@ -233,8 +236,16 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         // The preference is updated in memory before it is written, so a failed write (read-only
         // or full disk) still switches the interface; it only can't be remembered for next time.
         let saved = app.session.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": language.code()}));
+        let taiwan_transition = app.ui.language == crate::i18n::Language::ZhTw || language == crate::i18n::Language::ZhTw;
         app.ui.language = language;
         crate::i18n::set_current(language);
+        if taiwan_transition {
+            crate::theme::install(ctx, &app.tokens);
+            if language == crate::i18n::Language::Ja {
+                crate::i18n::install_japanese_font(ctx);
+            }
+            ctx.request_discard("interface font order changed");
+        }
         if let Err(e) = saved {
             app.ui.status = tlf!("The language changed but could not be saved: {e}", e);
         }
@@ -812,6 +823,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.portuguese" => it.checked = Some(app.ui.language == crate::i18n::Language::PtBr),
             "app.language.ukrainian" => it.checked = Some(app.ui.language == crate::i18n::Language::Uk),
             "app.language.chinese" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhCn),
+            "app.language.chinese.traditional" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhTw),
             "app.language.german" => it.checked = Some(app.ui.language == crate::i18n::Language::De),
             "app.language.russian" => it.checked = Some(app.ui.language == crate::i18n::Language::Ru),
             "app.language.french" => it.checked = Some(app.ui.language == crate::i18n::Language::Fr),

@@ -1029,6 +1029,7 @@ impl FilmcraftApp {
             self.set_theme(ctx, k);
         }
         if prev.as_ref().is_none_or(|q| q.general.interface_language != p.general.interface_language) {
+            let previous_language = self.ui.language;
             let language = match i18n::Language::parse(&p.general.interface_language) {
                 Some(l) => l,
                 None if p.general.interface_language == "system" => {
@@ -1039,7 +1040,7 @@ impl FilmcraftApp {
             if language == i18n::Language::Ja && !i18n::install_japanese_font(ctx) {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Japanese font is installed on this system; the interface stays in English").into();
-            } else if language == i18n::Language::ZhCn && !i18n::chinese_font_available() {
+            } else if matches!(language, i18n::Language::ZhCn | i18n::Language::ZhTw) && !i18n::chinese_font_available() {
                 self.ui.language = i18n::Language::En;
                 self.ui.status = tl!("no Chinese font is installed on this system; the interface stays in English").into();
             } else if language == i18n::Language::Ko && !i18n::korean_font_available() {
@@ -1049,6 +1050,13 @@ impl FilmcraftApp {
                 self.ui.language = language;
             }
             i18n::set_current(self.ui.language);
+            if previous_language == i18n::Language::ZhTw || self.ui.language == i18n::Language::ZhTw {
+                theme::install(ctx, &self.tokens);
+                if self.ui.language == i18n::Language::Ja {
+                    i18n::install_japanese_font(ctx);
+                }
+                ctx.request_discard("interface font order changed");
+            }
             ctx.set_language(Some(self.ui.language.bcp47().to_owned()));
         }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
@@ -2472,7 +2480,7 @@ impl FilmcraftApp {
             // (likewise Chinese without a Chinese face, Korean without a Hangul one)
             let japanese_missing = self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx);
             if japanese_missing
-                || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available())
+                || (matches!(self.ui.language, i18n::Language::ZhCn | i18n::Language::ZhTw) && !i18n::chinese_font_available())
                 || (self.ui.language == i18n::Language::Ko && !i18n::korean_font_available())
             {
                 self.ui.language = i18n::Language::En;

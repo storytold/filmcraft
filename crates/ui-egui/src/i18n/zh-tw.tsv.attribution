@@ -1,0 +1,8 @@
+asset:        zh-tw.tsv
+title:        Taiwan Traditional Chinese interface catalog (draft)
+author:       FilmCraft contributors
+source:       Derived from FilmCraft crates/ui-egui/src/i18n/zh-cn.tsv
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-10-26 by yenkuei1980tw-cmyk
+notes:        Machine-converted with OpenCC s2twp (Apache-2.0 tool and dictionaries), followed by Taiwan terminology corrections. Native-speaker review is pending. No proprietary product resources used.

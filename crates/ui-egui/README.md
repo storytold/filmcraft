@@ -28,20 +28,25 @@ the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screensho
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
-Chinese, German, Russian, French, Indonesian, Korean and Italian (all but Ukrainian and Russian cover
+Chinese, Taiwan Traditional Chinese, German, Russian, French, Indonesian, Korean and Italian (all but Ukrainian and Russian cover
 the whole interface; those two cover the core menus). The language is stored in the engine's `general.interfaceLanguage` preference,
 restored on startup, and also available in Settings > General.
 Its default, System Language (`system`), follows the operating system: the first of the user's
 preferred languages that the interface has (the host supplies them through
 `HostHooks::system_languages`: `sys-locale` on the desktop, `navigator.languages` on the web),
-otherwise English.
+including Traditional Chinese for `zh-TW`, `zh-HK`, `zh-MO` and `zh-Hant`; otherwise English.
 The `app.language.*` UI commands and `prefs.set` reach it through the control channel.
 Japanese requires a craft-fonts build or a suitable installed font.
 
 English source strings are lookup keys in `src/i18n/<code>.tsv`. `tl!` translates literals, `tlf!`
 fills translated templates, and `i18n::t` translates names from registries. Placeholder values
 (including user filenames containing braces) are inserted literally. Catalog translations are
-original work using ordinary language, without proprietary localisation resources.
+derived from the project catalog, without proprietary localisation resources.
+The Taiwan catalog is a machine-assisted draft converted from the project's `zh-cn.tsv` using
+OpenCC s2twp (Apache-2.0), with Taiwan terminology corrections; native review is pending.
+`tools/sync_zh_tw.py` is an optional maintainer aid. Normal builds, tests and changes to other
+catalogs do not require Python or OpenCC. Missing translations fall back to English, just as in
+other languages. The catalog is embedded in desktop and web builds; no download is required.
 
 Spanish, Japanese, Simplified Chinese, French, Brazilian Portuguese and German cover menus, panels, dialogs, settings and registry labels. Searches accept both the
 translated label and its English source, including Unicode capitals. Project content, command ids

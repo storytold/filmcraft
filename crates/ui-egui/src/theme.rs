@@ -380,9 +380,11 @@ impl Tokens {
         FontId::new(size, FontFamily::Monospace)
     }
     pub fn ui(size: f32) -> FontId {
+        let size = if crate::i18n::current() == crate::i18n::Language::ZhTw { size.max(13.0) } else { size };
         FontId::new(size, FontFamily::Proportional)
     }
     pub fn semibold(size: f32) -> FontId {
+        let size = if crate::i18n::current() == crate::i18n::Language::ZhTw { size.max(13.0) } else { size };
         FontId::new(size, FontFamily::Name("semibold".into()))
     }
     /// The big blue timecode over the timeline and under the monitors: regular weight, as in
@@ -429,6 +431,9 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["inter-medium".into(), "inter".into()]);
     // Japanese before Chinese: the two share code points, and Japanese text must keep Japanese
     // glyph forms; Chinese faces still cover the hanzi Japanese fonts lack
+    if crate::i18n::current() == crate::i18n::Language::ZhTw {
+        crate::cjk::install_taiwan(&mut fonts);
+    }
     add_craft_fonts(&mut fonts);
     crate::cjk::install(&mut fonts);
     crate::rtl::install(&mut fonts);
@@ -502,9 +507,10 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
         s.spacing.button_padding = egui::vec2(8.0, 3.0);
         s.spacing.interact_size.y = 24.0;
         s.spacing.menu_margin = egui::Margin::same(4);
-        s.text_styles.insert(TextStyle::Body, FontId::new(12.0, FontFamily::Proportional));
-        s.text_styles.insert(TextStyle::Button, FontId::new(12.0, FontFamily::Proportional));
-        s.text_styles.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
+        let taiwan = crate::i18n::current() == crate::i18n::Language::ZhTw;
+        s.text_styles.insert(TextStyle::Body, FontId::new(if taiwan { 13.0 } else { 12.0 }, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Button, FontId::new(if taiwan { 13.0 } else { 12.0 }, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Small, FontId::new(if taiwan { 12.0 } else { 11.0 }, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Heading, FontId::new(15.0, FontFamily::Name("semibold".into())));
         s.text_styles.insert(TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace));
         s.animation_time = ANIMATION_TIME;
