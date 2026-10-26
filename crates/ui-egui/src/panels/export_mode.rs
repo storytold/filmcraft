@@ -1434,8 +1434,8 @@ fn quick_file(app: &FilmcraftApp, path: &str, seq_name: &str, ext: &str) -> Opti
     let p = std::path::Path::new(path);
     let folder = path.ends_with(['/', '\\']);
     let dir = if folder { Some(p) } else { p.parent() }.filter(|d| !d.as_os_str().is_empty());
-    let name = if folder { None } else { p.file_name().and_then(|n| n.to_str()) }.filter(|n| !n.trim().is_empty());
-    let cur = name.and_then(|n| std::path::Path::new(n).extension()).and_then(|e| e.to_str()).unwrap_or("");
+    let name = if folder { None } else { p.file_name().and_then(std::ffi::OsStr::to_str) }.filter(|n| !n.trim().is_empty());
+    let cur = name.and_then(|n| std::path::Path::new(n).extension()).and_then(std::ffi::OsStr::to_str).unwrap_or("");
     if dir.is_some() && name.is_some() && cur.eq_ignore_ascii_case(ext) {
         return None;
     }

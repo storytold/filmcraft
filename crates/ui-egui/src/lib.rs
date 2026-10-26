@@ -3070,15 +3070,26 @@ mod audio_recovery_tests {
                 Some(4_800)
             }
         }
-        let amplitude = |samples: &[f32], ch: usize, hz: f64| {
-            let (mut re, mut im) = (0.0, 0.0);
-            for (i, frame) in samples.as_chunks::<2>().0.iter().enumerate() {
-                let phase = std::f64::consts::TAU * hz * i as f64 / 48_000.0;
-                re += f64::from(frame[ch]) * phase.cos();
-                im += f64::from(frame[ch]) * phase.sin();
+        fn assert_shuttle_tones(buf: &[f32], maintain: bool, speed: f64) {
+            let amplitude = |samples: &[f32], ch: usize, hz: f64| {
+                let (mut re, mut im) = (0.0, 0.0);
+                for (i, frame) in samples.as_chunks::<2>().0.iter().enumerate() {
+                    let phase = std::f64::consts::TAU * hz * i as f64 / 48_000.0;
+                    re += f64::from(frame[ch]) * phase.cos();
+                    im += f64::from(frame[ch]) * phase.sin();
+                }
+                2.0 * re.hypot(im) / (samples.len() / 2) as f64
+            };
+            for (ch, tone) in [440.0, 660.0].into_iter().enumerate() {
+                let hz = if maintain { tone } else { tone * speed };
+                let level = amplitude(buf, ch, hz);
+                assert!(level > 0.08, "maintain={maintain}, speed={speed}, channel={ch}: {hz} Hz level={level}");
+                if speed != 1.0 {
+                    let wrong = if maintain { tone * speed } else { tone };
+                    assert!(amplitude(buf, ch, wrong) < level * 0.3, "wrong pitch {wrong} Hz at {speed}x, maintain={maintain}");
+                }
             }
-            2.0 * re.hypot(im) / (samples.len() / 2) as f64
-        };
+        }
         let mut session = Session::default();
         session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
         let inter: Vec<f32> =
@@ -3099,15 +3110,7 @@ mod audio_recovery_tests {
                 app.end_preroll(0.0);
                 assert!(app.playback.audio_clock);
                 let buf = samples.lock().unwrap();
-                for (ch, tone) in [440.0, 660.0].into_iter().enumerate() {
-                    let hz = if maintain { tone } else { tone * speed };
-                    let level = amplitude(&buf, ch, hz);
-                    assert!(level > 0.08, "maintain={maintain}, speed={speed}, channel={ch}: {hz} Hz level={level}");
-                    if speed != 1.0 {
-                        let wrong = if maintain { tone * speed } else { tone };
-                        assert!(amplitude(&buf, ch, wrong) < level * 0.3, "wrong pitch {wrong} Hz at {speed}x, maintain={maintain}");
-                    }
-                }
+                assert_shuttle_tones(&buf, maintain, speed);
                 if speed == 1.0 {
                     if let Some(previous) = &normal {
                         assert_eq!(&*buf, previous, "1x must bypass pitch processing");
