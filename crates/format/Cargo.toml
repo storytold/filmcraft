@@ -10,7 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 filmcraft-project = { workspace = true }
 filmcraft-media = { workspace = true }
 log = { workspace = true }

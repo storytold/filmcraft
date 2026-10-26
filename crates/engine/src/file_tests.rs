@@ -190,6 +190,31 @@ fn save_without_an_active_sequence_keeps_the_previous_thumbnail() {
     assert_eq!((img.width, img.height), (kept.width, kept.height));
 }
 
+/// Save a Copy writes the current frame into the copy but leaves the open project's thumbnail
+/// alone (its own file still has the old one), and a save that fails changes nothing.
+#[test]
+fn save_a_copy_or_a_failed_save_keeps_the_open_projects_thumbnail() {
+    let d = temp_dir("thumb-copy");
+    let path = d.join("p.fcproj").to_string_lossy().to_string();
+    let copy = d.join("copy.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let saved = s.thumbnail.clone().unwrap();
+    s.state.playheads.insert(seq, crate::commands::secs(4.0));
+    let r = s.execute("file.saveCopy", json!({"path": copy})).unwrap();
+    let in_copy = filmcraft_format::read_thumbnail(std::path::Path::new(&copy)).unwrap().unwrap();
+    assert_ne!(in_copy.rgba, saved.decode_rgba().unwrap().rgba, "the copy has the frame at the new playhead");
+    assert_eq!(r["thumbnail"]["bytes"].as_u64().unwrap(), filmcraft_format::scan_thumbnail(&std::fs::read(&copy).unwrap()).unwrap().data.len() as u64);
+    assert_eq!(s.thumbnail.as_ref(), Some(&saved), "Save a Copy leaves the open project's thumbnail");
+    // the folder is a file: the write fails
+    std::fs::write(d.join("not a folder"), b"x").unwrap();
+    let bad = d.join("not a folder").join("p.fcproj").to_string_lossy().to_string();
+    assert!(s.execute("file.saveAs", json!({"path": bad})).is_err());
+    assert_eq!(s.thumbnail.as_ref(), Some(&saved), "a failed save leaves the thumbnail");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// A thumbnail belongs to its project: after File ▸ Close Project or New Project, a Save As
 /// (with no sequence open to render a new one) writes none, and the file opens without one.
 #[test]

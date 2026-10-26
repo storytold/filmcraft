@@ -4632,13 +4632,14 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
     // and a thumbnail of what the Program Monitor shows; without one (nothing open, nothing could
-    // be rendered) the file keeps the thumbnail it was opened with
+    // be rendered) the file keeps the thumbnail it was opened with. The open project takes the new
+    // one only once its own file is written (not for Save a Copy, not when the write fails).
     let t_thumb = web_time::Instant::now();
-    if let Some(thumb) = project_thumbnail(s) {
-        s.thumbnail = Some(thumb);
-    }
+    let rendered = project_thumbnail(s);
     let thumb_ms = t_thumb.elapsed().as_secs_f64() * 1000.0;
-    let bytes = filmcraft_format::encode_with_view_and_thumbnail(&s.project, Some(&view), s.thumbnail.as_ref(), false);
+    let thumb = rendered.as_ref().or(s.thumbnail.as_ref());
+    let bytes = filmcraft_format::encode_with_view_and_thumbnail(&s.project, Some(&view), thumb, false);
+    let thumbnail = thumb.map(|t| json!({"width": t.width, "height": t.height, "bytes": t.data.len(), "ms": thumb_ms}));
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -4651,13 +4652,15 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     }
     s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     if adopt {
+        if rendered.is_some() {
+            s.thumbnail = rendered;
+        }
         s.path = Some(path.to_string());
         s.previews_follow_path();
         s.note_recent_project();
         s.saved_revision = s.revision;
         s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     }
-    let thumbnail = s.thumbnail.as_ref().map(|t| json!({"width": t.width, "height": t.height, "bytes": t.data.len(), "ms": thumb_ms}));
     Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup, "thumbnail": thumbnail}))
 }
 
@@ -4756,7 +4759,11 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let c = per.candidates[idx].clone();
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
+    // the recovery snapshot has no thumbnail: keep the one in the project's file, which an auto-save
+    // of the current project would otherwise write over with none
+    let thumbnail = c.meta.project_path.as_deref().and_then(|p| s.services.read_file(p).ok()).and_then(|b| filmcraft_format::scan_thumbnail(&b));
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    s.thumbnail = thumbnail;
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }

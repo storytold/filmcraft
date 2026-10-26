@@ -2137,7 +2137,7 @@ dependencies = [
 name = "filmcraft-format"
 version = "0.13.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "chrono",
  "filmcraft-media",
  "filmcraft-project",
