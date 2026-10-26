@@ -499,7 +499,10 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<T
         let locked = affected.iter().all(|t| seq.track(*t).is_some_and(|tr| tr.locked));
         return Err(if locked { EditError::Locked } else { EditError::Other("no gap can close: other clips on these tracks cover the deleted time".into()) });
     }
-    if spans.iter().any(|span| seq.all_tracks().any(|tr| tr.locked && tr.items.iter().any(|i| i.start >= span.end()))) {
+    if spans
+        .iter()
+        .any(|span| seq.all_tracks().any(|tr| tr.locked && (affected.contains(&tr.id) || tr.sync_lock) && tr.items.iter().any(|i| i.start >= span.end())))
+    {
         return Err(EditError::Locked);
     }
     let mut work = seq.clone();
@@ -539,7 +542,7 @@ pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
     let gap = TimeRange::from_bounds(prev_end, next_start);
     // A locked track with downstream material cannot follow the ripple. Refuse the whole edit
     // instead of silently separating linked picture and sound across tracks.
-    if seq.all_tracks().any(|other| other.locked && other.items.iter().any(|i| i.start >= gap.end())) {
+    if seq.all_tracks().any(|other| other.locked && other.sync_lock && other.items.iter().any(|i| i.start >= gap.end())) {
         return Err(EditError::Locked);
     }
     let mut work = seq.clone();

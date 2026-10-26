@@ -156,6 +156,22 @@ fn closing_a_gap_refuses_to_desynchronize_a_locked_linked_track() {
 }
 
 #[test]
+fn unrelated_locked_track_without_sync_lock_does_not_block_ripple_edits() {
+    let mut s = Session::default();
+    let [(first_picture, _), (next_picture, next_sound)] = two_clips(&mut s, [0, 96]);
+    s.execute("timeline.setTrack", json!({"track": "A1", "locked": true, "syncLock": false})).unwrap();
+    s.execute("sequence.closeGap", json!({"track": "V1", "frame": 60})).unwrap();
+    assert_eq!(range(&s, next_picture).0, s.sequence_rate().tick_of(48));
+    assert_eq!(range(&s, next_sound).0, s.sequence_rate().tick_of(96));
+
+    s.undo();
+    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("edit.rippleDelete", json!({"clips": [first_picture.0]})).unwrap();
+    assert_eq!(range(&s, next_picture).0, s.sequence_rate().tick_of(48));
+    assert_eq!(range(&s, next_sound).0, s.sequence_rate().tick_of(96));
+}
+
+#[test]
 fn ripple_delete_refuses_to_leave_locked_linked_audio_behind() {
     let mut s = Session::default();
     let [(first_picture, _), (_, next_sound)] = two_clips(&mut s, [0, 96]);

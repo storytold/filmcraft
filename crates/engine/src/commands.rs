@@ -2389,6 +2389,9 @@ fn build() -> Vec<CommandSpec> {
                 let tracks = if q.video_tracks.iter().any(|t| t.id == source) { &mut q.video_tracks } else { &mut q.audio_tracks };
                 let index =
                     tracks.iter().position(|t| t.id == source).ok_or_else(|| bad("sequence.duplicateTrack", "track must contain video or audio clips"))?;
+                if tracks.len() >= crate::sequence_tools::MAX_TRACKS {
+                    return Err(bad("sequence.duplicateTrack", "the sequence has reached the track limit"));
+                }
                 let mut copy = tracks.get(index).ok_or_else(|| bad("sequence.duplicateTrack", "track disappeared"))?.clone();
                 copy.id = TrackId(ctx.alloc());
                 copy.name = format!("{} Copy", copy.name);

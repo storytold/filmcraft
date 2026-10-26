@@ -331,6 +331,23 @@ fn duplicate_track_remaps_transitions_and_rejects_unknown_tracks() {
     s.active_sequence().unwrap().check().unwrap();
 }
 
+#[test]
+fn duplicate_track_respects_the_track_limit_without_mutation() {
+    let mut s = demo();
+    s.edit_sequence("Limit fixture", |q, ctx, _| {
+        while q.video_tracks.len() < crate::sequence_tools::MAX_TRACKS {
+            q.video_tracks.push(filmcraft_project::Track::new(TrackId(ctx.alloc()), filmcraft_project::TrackKind::Video, "Limit".into()));
+        }
+        Ok(())
+    })
+    .unwrap();
+    let before = s.project.clone();
+    let history = s.execute("history.list", json!({})).unwrap();
+    assert!(s.execute("sequence.duplicateTrack", json!({"track": "V1"})).is_err());
+    assert_eq!(*s.project, *before);
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+}
+
 fn reject_duplicate_new_track_move(s: &mut Session, clip: ClipId, insert: bool, linked: bool, new_first: bool) {
     s.state.selection = vec![clip];
     let before = s.project.clone();

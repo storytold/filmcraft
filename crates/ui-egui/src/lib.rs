@@ -229,6 +229,8 @@ pub(crate) struct PendingClipMismatch {
     pub command: String,
     pub params: serde_json::Value,
     pub item: filmcraft_project::ItemId,
+    pub sequence: filmcraft_project::ItemId,
+    pub source_item: Option<filmcraft_project::ItemId>,
     pub settings: serde_json::Value,
 }
 

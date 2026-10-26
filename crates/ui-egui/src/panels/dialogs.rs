@@ -21,13 +21,26 @@ pub(crate) fn place_with_mismatch(app: &mut FilmcraftApp, command: &str, params:
     {
         let check = app.session.execute("sequence.clipMismatch", json!({"item": item})).map_err(|e| e.to_string())?;
         if check["mismatch"] == true {
-            app.pending_clip_mismatch =
-                Some(PendingClipMismatch { command: command.into(), params, item: filmcraft_project::ItemId(item), settings: check["settings"].clone() });
+            let sequence = app.session.state.active_sequence.ok_or("no active sequence")?;
+            let source_item = matches!(command, "source.insert" | "source.overwrite").then_some(app.session.state.source_item).flatten();
+            app.pending_clip_mismatch = Some(PendingClipMismatch {
+                command: command.into(),
+                params,
+                item: filmcraft_project::ItemId(item),
+                sequence,
+                source_item,
+                settings: check["settings"].clone(),
+            });
             app.dialog = Some(Dialog::ClipMismatch);
             return Ok(json!({"dialog": "clipMismatch"}));
         }
     }
     app.session.execute(command, params).map_err(|e| e.to_string())
+}
+
+/// A deferred placement is valid only in the sequence (and source context) that opened it.
+fn pending_context_changed(session: &filmcraft_engine::Session, pending: &PendingClipMismatch) -> bool {
+    session.state.active_sequence != Some(pending.sequence) || pending.source_item.is_some_and(|item| session.state.source_item != Some(item))
 }
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
@@ -147,7 +160,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if let Some(change) = choice {
                 app.dialog = None;
                 app.pending_clip_mismatch = None;
-                let result = if change {
+                let result = if pending_context_changed(&app.session, &pending) {
+                    Err("the sequence or source clip changed; place the clip again".to_string())
+                } else if change {
                     app.session
                         .edit_group("Match Sequence and Place Clip", |s| {
                             s.execute("sequence.matchClip", json!({"item": pending.item.0}))?;
@@ -876,4 +891,32 @@ fn customize_header_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         open = false;
     }
     app.ui.timeline.customize_header_dialog = open;
+}
+
+#[cfg(test)]
+mod pending_context_tests {
+    use super::{PendingClipMismatch, pending_context_changed};
+    use filmcraft_project::ItemId;
+    use serde_json::json;
+
+    #[test]
+    fn deferred_placement_rejects_a_different_sequence_or_source() {
+        let mut session = filmcraft_engine::Session::default();
+        session.state.active_sequence = Some(ItemId(1));
+        session.state.source_item = Some(ItemId(3));
+        let pending = PendingClipMismatch {
+            command: "source.overwrite".into(),
+            params: json!({}),
+            item: ItemId(3),
+            sequence: ItemId(1),
+            source_item: Some(ItemId(3)),
+            settings: json!({}),
+        };
+        assert!(!pending_context_changed(&session, &pending));
+        session.state.active_sequence = Some(ItemId(2));
+        assert!(pending_context_changed(&session, &pending));
+        session.state.active_sequence = Some(ItemId(1));
+        session.state.source_item = Some(ItemId(4));
+        assert!(pending_context_changed(&session, &pending));
+    }
 }

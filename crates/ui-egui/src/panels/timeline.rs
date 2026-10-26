@@ -1608,6 +1608,10 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             egui::Id::unique(("hdr", r.track.0)),
             Sense::click(),
         );
+        if resp.double_clicked() {
+            let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
+            *h = if *h < 50.0 { 64.0 } else { 30.0 };
+        }
         track_header_context_menu(&resp, app, &label, r, tr, seq, &mut actions);
     }
     // column separator
