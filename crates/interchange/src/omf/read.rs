@@ -371,7 +371,7 @@ impl R<'_, '_> {
 
     fn resolve(&mut self, id: Uid, track: u32, start: Tick, master: Option<String>, depth: usize) -> Result<Option<(usize, Tick)>> {
         if depth > 16 {
-            return Ok(None);
+            return Err(traversal_error("source chain exceeds depth limit (16 edges)"));
         }
         let Some(&mob) = self.mobs.get(&id) else {
             self.report.warn("a clip references a mob that is not in the file (imported as a gap)");

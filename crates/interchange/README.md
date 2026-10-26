@@ -65,6 +65,7 @@ The AAF importer likewise reports recursive nested compositions as gaps.
 
 OMF import rejects cycles in sequence/effect inputs and in master/file-source segment lookups
 with an OMF parse error. Segment nesting is limited to 32 edges (64 during reference discovery).
+Source-mob chains exceeding 16 edges, including cycles, likewise return an error instead of audio gaps.
 Discovery, composition slots, expansion and source-segment lookups share a 65,536-visit budget
 for the whole document. Materialised lists in early-exit source lookups, effect slots and gain
 points also consume that budget.

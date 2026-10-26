@@ -194,6 +194,44 @@ fn source_lookup_expansion_is_bounded() {
 }
 
 #[test]
+fn source_chain_depth_limit_preserves_audio_or_returns_an_error() {
+    for depth in [16, 17] {
+        let mut g = Graph::new();
+        let filler = g.component(b"FILL");
+        let mut clip = g.source_clip(b"SMOB", filler);
+        for _ in 0..depth {
+            clip = g.source_clip(b"MMOB", clip);
+        }
+        let bytes = g.finish(clip);
+        if depth == 16 {
+            let doc = read::read(&bytes, &mut Report::default()).unwrap();
+            assert_eq!(doc.sources.len(), 1);
+            assert!(matches!(doc.compositions[0].tracks[0].items.as_slice(), [CItem::Clip(c)] if c.source == 0));
+        } else {
+            rejected(&bytes, "source chain exceeds depth limit");
+        }
+    }
+}
+
+#[test]
+fn source_chain_cycles_return_an_error_instead_of_filler() {
+    for length in [1, 2] {
+        let mut g = Graph::new();
+        let start = g.component(b"SCLP");
+        let mut clip = start;
+        for _ in 0..length {
+            clip = g.source_clip(b"MMOB", clip);
+        }
+        // Close the chain by pointing its innermost clip back to the outermost master mob.
+        let mut uid = [0; 12];
+        uid[..4].copy_from_slice(&g.mobs.last().unwrap().to_be_bytes());
+        g.w.set(start, "OMFI:SCLP:SourceID", "omfi:UID", &uid);
+        g.w.set(start, "OMFI:SCLP:SourceTrackID", "omfi:UInt32", &1u32.to_be_bytes());
+        rejected(&g.finish(clip), "source chain exceeds depth limit");
+    }
+}
+
+#[test]
 fn budget_is_shared_across_tracks_and_compositions() {
     for compositions in [false, true] {
         let mut g = Graph::new();
