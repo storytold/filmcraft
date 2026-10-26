@@ -483,11 +483,70 @@ impl Preferences {
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        let file = prefs_file(path);
+        let _writing = file.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        file.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self::write(path, &serde_json::to_vec_pretty(self).unwrap_or_default())
+    }
+
+    fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         if let Some(d) = path.parent() {
             fs::create_dir_all(d)?;
         }
-        filmcraft_format::atomic_write(path, &serde_json::to_vec_pretty(self).unwrap_or_default())
+        filmcraft_format::atomic_write(path, bytes)
     }
+
+    /// [`Self::save`] on a thread of its own, for a change nobody waits on (the recent projects
+    /// list on File ▸ Open): the write is synced to disk, which took 454 ms on a busy disk and
+    /// froze the window. A newer save, in the background or not, wins over this one. Failures
+    /// are logged. On the web it saves at once.
+    pub fn save_in_background(&self, path: &Path) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = self.save(path);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let bytes = serde_json::to_vec_pretty(self).unwrap_or_default();
+            let path = path.to_path_buf();
+            // Counting this save never waits for a write in progress (of this file or another).
+            let file = prefs_file(&path);
+            let mine = file.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst).wrapping_add(1);
+            let write = move || {
+                let saved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _writing = file.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if file.generation.load(std::sync::atomic::Ordering::SeqCst) != mine {
+                        return Ok(()); // a newer save of this file has been or is being written
+                    }
+                    Self::write(&path, &bytes)
+                }));
+                match saved {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => log::warn!("preferences not saved ({}): {e}", path.display()),
+                    Err(_) => log::error!("preferences not saved ({}): the save failed unexpectedly", path.display()),
+                }
+            };
+            if let Err(e) = std::thread::Builder::new().name("filmcraft-prefs".into()).spawn(write) {
+                log::warn!("preferences not saved: {e}");
+            }
+        }
+    }
+}
+
+/// One preferences file's saves: how many there have been, and a lock held while one is written,
+/// so saves of the file never interleave and a background save that a newer save of the same
+/// file overtook is skipped. Saves of other files neither wait for nor overtake it.
+#[derive(Default)]
+pub(crate) struct PrefsFile {
+    generation: std::sync::atomic::AtomicU64,
+    pub(crate) writing: std::sync::Mutex<()>,
+}
+
+pub(crate) fn prefs_file(path: &Path) -> std::sync::Arc<PrefsFile> {
+    type Files = std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<PrefsFile>>>;
+    static FILES: std::sync::OnceLock<Files> = std::sync::OnceLock::new();
+    let mut files = FILES.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    files.entry(path.to_path_buf()).or_default().clone()
 }
 
 /// A file with this name next to the executable makes the install portable: its data directory is
@@ -649,6 +708,13 @@ enum Msg {
     Prefs(AutoSavePrefs),
     AutoSaveNow(Sender<Result<PathBuf, String>>),
     Flush(Sender<()>),
+    /// Write any pending journal, then delete this folder (a recovered session's old journal:
+    /// ours must hold the recovered state before the old one goes).
+    FlushThenRemove(PathBuf),
+    /// Tests: the worker waits until this is answered (or dropped), so a test can show what is
+    /// done without it.
+    #[cfg(test)]
+    Hold(Receiver<()>),
     Stop,
 }
 
@@ -742,6 +808,7 @@ impl Persistence {
             last_change: Instant::now(),
             next_autosave: Instant::now(),
             meta: JournalMeta { pid, started_unix: started, generator: filmcraft_format::generator(), ..Default::default() },
+            remove_once_journaled: Vec::new(),
         };
         w.next_autosave = Instant::now() + w.autosave_interval();
         let thread = std::thread::Builder::new().name("filmcraft-autosave".into()).spawn(move || w.run(rx))?;
@@ -776,6 +843,22 @@ impl Persistence {
         let (tx, rx) = channel();
         if self.tx.send(Msg::Flush(tx)).is_ok() {
             let _ = rx.recv_timeout(Duration::from_secs(30));
+        }
+    }
+
+    /// Delete `dir` once any pending journal is written, without waiting for either (the
+    /// worker does them in order). File ▸ Recover waited for both on the UI thread (1.3 s).
+    /// Tests: hold the worker (it handles nothing else) until the returned sender is dropped.
+    #[cfg(test)]
+    pub(crate) fn hold_worker(&self) -> Sender<()> {
+        let (release, held) = channel();
+        let _ = self.tx.send(Msg::Hold(held));
+        release
+    }
+
+    pub fn remove_after_journal(&self, dir: PathBuf) {
+        if let Err(e) = self.tx.send(Msg::FlushThenRemove(dir)) {
+            log::warn!("auto-save worker stopped; the old journal stays: {e}");
         }
     }
 
@@ -888,6 +971,8 @@ struct Worker {
     last_change: Instant,
     next_autosave: Instant,
     meta: JournalMeta,
+    /// Old journals of recovered sessions, deleted after the next journal write or save.
+    remove_once_journaled: Vec<PathBuf>,
 }
 
 impl Worker {
@@ -929,6 +1014,7 @@ impl Worker {
                     self.latest = None;
                     self.first_pending = None;
                     self.clear_journal();
+                    self.remove_old_journals();
                 }
                 Some(Msg::Prefs(p)) => {
                     let was = self.autosave_interval();
@@ -950,6 +1036,23 @@ impl Worker {
                         self.write_journal();
                     }
                     let _ = ack.send(());
+                }
+                Some(Msg::FlushThenRemove(dir)) => {
+                    // The old journal may be the only copy on disk of what was recovered: it
+                    // goes once ours holds that state (or a save does), never before.
+                    self.remove_once_journaled.push(dir);
+                    if self.journal_due().is_some() {
+                        self.write_journal();
+                    } else if self.latest.as_ref().is_none_or(|s| s.revision == self.journaled) {
+                        self.remove_old_journals();
+                    }
+                    if !self.remove_once_journaled.is_empty() {
+                        log::info!("recovered session's old journal kept until the recovered changes are journaled or saved");
+                    }
+                }
+                #[cfg(test)]
+                Some(Msg::Hold(held)) => {
+                    let _ = held.recv();
                 }
                 Some(Msg::Stop) => return,
                 None => {}
@@ -994,12 +1097,24 @@ impl Worker {
                 self.journaled = s.revision;
                 self.first_pending = None;
                 let _ = self.events.send(WorkerEvent::Journaled { revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
+                self.remove_old_journals();
             }
             Err(e) => {
                 // Try again at the next interval rather than spinning.
                 self.first_pending = Some(Instant::now());
                 self.last_change = Instant::now();
                 self.error(format!("recovery journal: {e}"));
+            }
+        }
+    }
+
+    /// Delete the recovered sessions' old journals: ours now holds what they held, or a save does.
+    fn remove_old_journals(&mut self) {
+        for dir in self.remove_once_journaled.drain(..) {
+            if let Err(e) = fs::remove_dir_all(&dir)
+                && e.kind() != io::ErrorKind::NotFound
+            {
+                log::warn!("recovered session's old journal not removed ({}): {e}", dir.display());
             }
         }
     }

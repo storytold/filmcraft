@@ -125,7 +125,9 @@ impl FilmcraftApp {
             self.native_dialog = Some(PendingDialog { answer: run(dialog), then: Box::new(then) });
             return Ok(json!({"dialog": "open"}));
         }
+        let shown = web_time::Instant::now();
         let paths = dialog.run_now(&mut self.hooks);
+        self.ui_timing.exclude(shown.elapsed());
         then(self, paths)
     }
 
@@ -142,8 +144,10 @@ impl FilmcraftApp {
             Some(run) => run(dialog),
             None => {
                 let (tx, rx) = std::sync::mpsc::channel();
+                let shown = web_time::Instant::now();
                 // the receiver is alive (held here): sending can't fail
                 let _ = tx.send(dialog.run_now(&mut self.hooks));
+                self.ui_timing.exclude(shown.elapsed());
                 rx
             }
         };
@@ -152,6 +156,15 @@ impl FilmcraftApp {
             Ok(Value::Null)
         });
         self.native_dialog = Some(PendingDialog { answer, then });
+    }
+
+    /// Run `f`, a host picker that blocks the UI thread while the user chooses, without counting
+    /// the time it was open as a slow frame (see [`crate::ui_timing::UiTiming::exclude`]).
+    pub fn while_modal<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let shown = web_time::Instant::now();
+        let r = f(self);
+        self.ui_timing.exclude(shown.elapsed());
+        r
     }
 
     /// Whether a file dialog is open (one the host shows without blocking).

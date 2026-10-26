@@ -56,8 +56,21 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static CraftFont> {
 
 /// Installed faces for the scripts craft-fonts does not cover, looked up once per process (native
 /// builds only). A face that covers several scripts (Segoe UI) is added once.
+static FONTS: OnceLock<Vec<(String, Arc<FontData>)>> = OnceLock::new();
+
+/// Look for the installed right-to-left faces now (on a thread of its own at start-up, see
+/// [`crate::theme::warm_system_fonts`]). Native builds only.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn warm_up() {
+    let _ = system_fonts();
+}
+
+/// [`system_fonts`] if [`warm_up`] has found them, without waiting for the scan (unit tests wait).
+fn system_fonts_now() -> &'static [(String, Arc<FontData>)] {
+    if cfg!(test) { system_fonts() } else { FONTS.get().map_or(&[], Vec::as_slice) }
+}
+
 fn system_fonts() -> &'static [(String, Arc<FontData>)] {
-    static FONTS: OnceLock<Vec<(String, Arc<FontData>)>> = OnceLock::new();
     FONTS.get_or_init(|| {
         if cfg!(target_arch = "wasm32") {
             return Vec::new();
@@ -104,7 +117,7 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
         fonts.font_data.insert(name.clone(), Arc::new(FontData::from_static(f.bytes)));
         names.push(name);
     }
-    for (name, font) in system_fonts() {
+    for (name, font) in system_fonts_now() {
         fonts.font_data.insert(name.clone(), font.clone());
         names.push(name.clone());
     }

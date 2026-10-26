@@ -35,7 +35,9 @@ fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: b
 
 pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let t = app.tokens;
-    let list = app.session.execute("file.recoveryList", json!({})).unwrap_or_default();
+    // the candidates the session holds (no file I/O), read directly: through `file.recoveryList`
+    // the dialog logged a command every frame it was asked about
+    let list = app.session.persistence.as_ref().map(|p| p.candidates_json()).unwrap_or_default();
     let items = list.as_array().cloned().unwrap_or_default();
     if items.is_empty() {
         return false;

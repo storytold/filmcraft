@@ -186,14 +186,24 @@ fn crash_recovery_end_to_end() {
     assert_eq!(list[0]["projectPath"], proj.as_str());
     assert_eq!(list[0]["cleanExit"], false);
     assert_eq!(list[0]["savedAt"].as_str().unwrap().len(), 19);
+    let old_dir = c.recovery_candidates()[0].dir.clone();
+    // The worker is held: a recovery that waited for it (File > Recover did, 1.3 s on the UI
+    // thread) would never return before the release, nor could the old journal be gone.
+    let release = c.persistence.as_ref().unwrap().hold_worker();
     c.execute("file.recover", json!({})).unwrap();
+    assert!(old_dir.join("snapshot.fcproj").exists(), "the old journal stays until ours is written");
+    assert_ne!(journaled(&mut c), c.revision, "the journal is written meanwhile, not waited for");
+    drop(release);
     assert_eq!(*c.project, edited);
     assert!(c.is_dirty(), "recovered changes are unsaved");
     assert_eq!(c.path.as_deref(), Some(proj.as_str()));
     assert!(c.recovery_candidates().is_empty());
     assert!(!c.is_enabled("file.recover"));
-    // The recovered state is already in C's own journal (a crash now loses nothing).
-    assert_eq!(journaled(&mut c), c.revision);
+    // The recovered state goes into C's own journal (a crash then loses nothing), and only then
+    // does the old session's journal go.
+    let rev = c.revision;
+    wait_for("the recovered state journaled", || journaled(&mut c) == rev);
+    wait_for("the old journal removed", || !old_dir.exists());
     c.execute("file.save", json!({})).unwrap();
     wait_for("journal cleared", || {
         c.poll_persistence();
@@ -206,6 +216,59 @@ fn crash_recovery_end_to_end() {
     start(&mut e, &d);
     assert!(e.recovery_candidates().is_empty());
     e.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A session crashed with unsaved edits; the next one (`c`) lists them for recovery.
+fn crashed_session_and_next_launch(d: &std::path::Path) -> (Session, std::path::PathBuf) {
+    let mut a = demo();
+    start(&mut a, d);
+    a.execute("sequence.addEdit", json!({"seconds": 1.5})).unwrap();
+    let rev = a.revision;
+    wait_for("journal", || journaled(&mut a) == rev);
+    a.persistence.take().unwrap().simulate_crash();
+    let mut c = Session::default();
+    start(&mut c, d);
+    assert_eq!(c.recovery_candidates().len(), 1);
+    let old_dir = c.recovery_candidates()[0].dir.clone();
+    (c, old_dir)
+}
+
+#[test]
+fn recovery_keeps_the_old_journal_while_ours_cannot_be_written() {
+    // The old journal was deleted after a failed write of ours: the only copy on disk was lost.
+    let d = temp_dir("recover-unwritable");
+    let (mut c, old_dir) = crashed_session_and_next_launch(&d);
+    // our snapshot cannot be written: a folder is in its place
+    let snapshot = c.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj");
+    std::fs::create_dir_all(snapshot.join("in-the-way")).unwrap();
+    c.execute("file.recover", json!({})).unwrap();
+    c.persistence.as_ref().unwrap().flush();
+    c.poll_persistence();
+    assert!(c.persistence.as_ref().unwrap().status.last_error.is_some(), "the journal write failed");
+    assert!(old_dir.join("snapshot.fcproj").exists(), "the recovered changes stay on disk");
+    // once ours is written, the old one goes
+    std::fs::remove_dir_all(&snapshot).unwrap();
+    c.execute("sequence.addEdit", json!({"seconds": 3.0})).unwrap();
+    let rev = c.revision;
+    wait_for("the recovered state journaled", || journaled(&mut c) == rev);
+    wait_for("the old journal removed", || !old_dir.exists());
+    c.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn recovery_without_a_journal_keeps_the_old_one_until_saved() {
+    let d = temp_dir("recover-nojournal");
+    let (mut c, old_dir) = crashed_session_and_next_launch(&d);
+    c.execute("prefs.set", json!({"key": "autoSave.recoveryJournal", "value": false})).unwrap();
+    c.execute("file.recover", json!({})).unwrap();
+    c.persistence.as_ref().unwrap().flush();
+    assert!(old_dir.join("snapshot.fcproj").exists(), "nothing else holds the recovered changes on disk");
+    let proj = d.join("film.fcproj").to_string_lossy().to_string();
+    c.execute("file.saveAs", json!({"path": proj})).unwrap();
+    wait_for("the old journal removed once saved", || !old_dir.exists());
+    c.shutdown();
     let _ = std::fs::remove_dir_all(&d);
 }
 

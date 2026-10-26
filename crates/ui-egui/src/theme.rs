@@ -414,6 +414,51 @@ pub fn font_families() -> Vec<FontFamily> {
     vec![FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("semibold".into()), FontFamily::Name("medium".into())]
 }
 
+static SYSTEM_FONTS_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Scan the installed fonts for the fallback faces (Chinese, Korean, right-to-left scripts) on a
+/// thread of its own, once per process. The scan reads and parses every system font: on Windows
+/// it was ~1.7 s of the first frame in a field report, the window blank meanwhile. [`install`] adds
+/// the faces found so far; once [`system_fonts_done`] the app installs the fonts again.
+pub fn warm_system_fonts() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        #[cfg(target_arch = "wasm32")]
+        SYSTEM_FONTS_DONE.store(true, std::sync::atomic::Ordering::Release);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let spawned = std::thread::Builder::new().name("filmcraft-fonts".into()).spawn(|| {
+                run_font_scans(&[("Chinese and Korean", crate::cjk::warm_up), ("right-to-left", crate::rtl::warm_up)]);
+                SYSTEM_FONTS_DONE.store(true, std::sync::atomic::Ordering::Release);
+            });
+            if spawned.is_err() {
+                SYSTEM_FONTS_DONE.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+    });
+}
+
+/// Run each font scan on its own, so one that fails still leaves the others' faces; a failure is
+/// logged. Returns how many failed. (Public for its test, which panics on purpose and so has a
+/// test binary of its own: `tests/font_scans.rs`.)
+#[doc(hidden)]
+pub fn run_font_scans(scans: &[(&str, fn())]) -> usize {
+    let mut failed = 0usize;
+    for (what, scan) in scans {
+        if std::panic::catch_unwind(*scan).is_err() {
+            failed = failed.saturating_add(1);
+            log::error!("the scan of the installed {what} fonts failed; the interface goes on without them");
+        }
+    }
+    failed
+}
+
+/// Whether [`warm_system_fonts`] has finished. Always in unit tests, where the font lookups do
+/// not wait for the scan but look the faces up at once (`cjk`, `rtl`).
+pub fn system_fonts_done() -> bool {
+    cfg!(test) || SYSTEM_FONTS_DONE.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Install the Latin UI fonts, Chinese fallback (craft-fonts or an installed face), Japanese
 /// craft-fonts, Arabic and Hebrew fallbacks (craft-fonts or installed faces, `crate::rtl`) and
 /// egui visuals. Document names keep their glyphs in every interface language.

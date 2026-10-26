@@ -28,17 +28,35 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fon
 const KOREAN_SAMPLE: &str = "한국어입력테스트";
 const KOREAN_PREFERRED: &[&str] = &["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Source Han Sans K", "NanumGothic"];
 
+static CHINESE: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+static KOREAN: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+
 fn system_font() -> Option<Arc<FontData>> {
-    static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
-    FONT.get_or_init(|| find_system_font(SAMPLE, PREFERRED)).clone()
+    CHINESE.get_or_init(|| find_system_font(SAMPLE, PREFERRED)).clone()
 }
 
 /// The font-data name of the installed Hangul face [`install`] appends to every family.
 pub(crate) const KOREAN_FACE: &str = "system-korean";
 
 fn korean_font() -> Option<Arc<FontData>> {
-    static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
-    FONT.get_or_init(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)).clone()
+    KOREAN.get_or_init(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)).clone()
+}
+
+/// Look for the installed Chinese and Korean faces now (on a thread of its own at start-up:
+/// scanning the system fonts took ~1.7 s of the first frame on Windows). Native builds only.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn warm_up() {
+    let _ = system_font();
+    let _ = korean_font();
+}
+
+/// The installed faces if [`warm_up`] has found them, without waiting for the scan (unit tests wait).
+fn system_font_now() -> Option<Arc<FontData>> {
+    if cfg!(test) { system_font() } else { CHINESE.get().cloned().flatten() }
+}
+
+fn korean_font_now() -> Option<Arc<FontData>> {
+    if cfg!(test) { korean_font() } else { KOREAN.get().cloned().flatten() }
 }
 
 /// A font collection's face index matters: Windows CJK UI fonts commonly live in TTC files.
@@ -73,7 +91,7 @@ pub(crate) fn available() -> bool {
 /// traditional hanzi in media and track names that Japanese fonts lack.
 pub(crate) fn install(fonts: &mut FontDefinitions) {
     install_chinese(fonts);
-    if let Some(font) = korean_font() {
+    if let Some(font) = korean_font_now() {
         fonts.font_data.insert(KOREAN_FACE.into(), font);
         for stack in fonts.families.values_mut() {
             stack.push(KOREAN_FACE.into());
@@ -84,7 +102,7 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
 fn install_chinese(fonts: &mut FontDefinitions) {
     let chinese: Vec<_> = craft_fonts().collect();
     if chinese.is_empty() {
-        if let Some(font) = system_font() {
+        if let Some(font) = system_font_now() {
             fonts.font_data.insert("system-chinese".into(), font);
             for stack in fonts.families.values_mut() {
                 stack.push("system-chinese".into());

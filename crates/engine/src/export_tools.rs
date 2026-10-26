@@ -786,7 +786,9 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"added": ids, "items": queue_list_json(s)}))
 }
 
-fn queue_list_json(s: &Session) -> Value {
+/// The Export Queue's items as `export.queue.list` reports them (read directly by the Export
+/// mode panel, which shows them every frame).
+pub fn queue_list_json(s: &Session) -> Value {
     Value::Array(s.export_queue.items.iter().map(|i| item_json(s, i)).collect())
 }
 
