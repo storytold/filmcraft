@@ -336,11 +336,11 @@ fn the_folder_link_opens_the_save_dialog_and_the_choice_sets_folder_and_name() {
     let rect = |h: &Harness<'static, FilmcraftApp>, id: &str| h.state().auto.elements.iter().find(|e| e.id == id).map(|e| e.rect);
     assert!(rect(&h, "exportFrame.path").is_some());
     assert_eq!(rect(&h, "exportFrame.path"), rect(&h, "exportFrame.browse"));
-    let folder = std::env::temp_dir().join(format!("fc-frame-link-ui-{}", std::process::id()));
-    std::fs::create_dir_all(&folder).unwrap();
+    // a fresh folder: a still left by an earlier run would open the Replace prompt and pass without exporting
+    let folder = tempfile::tempdir().unwrap();
     let asked = Arc::new(Mutex::new(Vec::<(Vec<String>, String)>::new()));
     let log = asked.clone();
-    let chosen = folder.join("Picked still.png");
+    let chosen = folder.path().join("Picked still.png");
     let answer = chosen.to_string_lossy().into_owned();
     h.state_mut().hooks.pick_save_as = Some(Box::new(move |_, exts, suggested| {
         log.lock().unwrap().push((exts.iter().map(|e| e.to_string()).collect(), suggested.to_string()));
@@ -354,7 +354,4 @@ fn the_folder_link_opens_the_save_dialog_and_the_choice_sets_folder_and_name() {
     assert!(has(&h, "exportFrame.name"), "the dialog stays open");
     click(&mut h, "exportFrame.export");
     assert!(chosen.exists(), "{}", h.state().ui.status);
-    drop(h);
-    std::fs::remove_file(chosen).unwrap();
-    std::fs::remove_dir(folder).unwrap();
 }
