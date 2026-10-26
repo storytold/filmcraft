@@ -1834,7 +1834,8 @@ fn build() -> Vec<CommandSpec> {
                 let mut out = Vec::new();
                 for id in sel {
                     if let Some(it) = p.item(id).cloned() {
-                        let nid = p.add_item(&format!("{} Copy", it.name), it.label, it.kind.clone(), None);
+                        let bin = p.root.parent_of(id);
+                        let nid = p.add_item(&format!("{} Copy", it.name), it.label, it.kind.clone(), bin);
                         out.push(nid);
                     }
                 }
