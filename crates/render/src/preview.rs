@@ -29,8 +29,8 @@
 //!   fast path and pays 10 ms (1080p) for linear conversion, transform and compositing;
 //! * **effects**: per enabled standard effect, a measured tier cost at 1080p (6 / 20 / 50 ms, see
 //!   [`effect_cost_ms`]), scaled by sequence pixels / 1080p pixels;
-//! * **transitions**: dissolves/dips 1 ms (GPU), any other transition renders both sides on the
-//!   CPU: 12 ms plus the CPU path of both layers;
+//! * **transitions**: GPU transitions cost 1 ms; others render both sides on the CPU: 12 ms plus
+//!   the CPU path of both layers;
 //! * **adjustment layers**: whole-frame CPU render (10 ms) plus their effects.
 //!
 //! A segment is **red** when the estimate exceeds [`REALTIME_BUDGET`] × the frame duration,
@@ -505,9 +505,9 @@ fn estimate_cost(project: &Project, seq: &Sequence, layers: &[Layer]) -> f64 {
         total += match l {
             Layer::Item(_, it) => layer_cost(project, it, px, false),
             Layer::Transition(_, x, a, b) => {
-                let simple = matches!(x.effect.effect.as_str(), "cross_dissolve" | "dip_to_black" | "dip_to_white" | "non_additive_dissolve");
-                let sides: f64 = [a, b].iter().filter_map(|s| s.map(|it| layer_cost(project, it, px, !simple))).sum();
-                sides + if simple { 1.0 } else { 12.0 * px }
+                let gpu = crate::plan::transition_uses_gpu(&x.effect.effect);
+                let sides: f64 = [a, b].iter().filter_map(|s| s.map(|it| layer_cost(project, it, px, !gpu))).sum();
+                sides + if gpu { 1.0 } else { 12.0 * px }
             }
         };
     }
