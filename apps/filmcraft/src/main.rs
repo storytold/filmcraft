@@ -171,9 +171,10 @@ fn main() -> eframe::Result {
                 log::warn!("graphics start failed: {e}");
                 continue;
             }
-            // XWayland could not open the window (no X11 libraries, a stale `DISPLAY`): keep the
-            // session's own display server rather than refuse to start.
-            Err(eframe::Error::WinitEventLoop(_)) if !app_created && force_x11 && !x11_start_failed => {
+            // XWayland could not open the window (no X11 libraries, a stale `DISPLAY`, a server
+            // that refused it): keep the session's own display server rather than refuse to start.
+            // `WinitEventLoop` is the event loop failing to start, `Winit` the window itself.
+            Err(e) if !app_created && force_x11 && !x11_start_failed && matches!(e, eframe::Error::WinitEventLoop(_) | eframe::Error::Winit(_)) => {
                 log::warn!("could not open the window through XWayland; using native Wayland");
                 force_x11 = false;
                 x11_start_failed = true;
