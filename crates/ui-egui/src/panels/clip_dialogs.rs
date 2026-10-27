@@ -299,6 +299,41 @@ fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
     });
 }
 
+/// Timecode input field for duration in speed/duration dialog. Parses user-entered timecode
+/// and calculates the required speed percentage from the new duration.
+fn timecode_duration(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, fps: f64, original_duration_frames: i64, original_speed: f64) {
+    use filmcraft_time::{FrameRate, parse_timecode};
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let rate = FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
+        let current_frames = p.get("speed").and_then(Value::as_f64).map(|spd| {
+            let speed_ratio = spd / 100.0;
+            if speed_ratio > 0.0 {
+                (original_duration_frames as f64 * original_speed / speed_ratio).round() as i64
+            } else {
+                original_duration_frames
+            }
+        }).unwrap_or(original_duration_frames);
+        let mut v = p.get(key).and_then(Value::as_str).unwrap_or(&filmcraft_time::format_timecode_frames(current_frames, rate, false)).to_string();
+        let r = ui.add(egui::TextEdit::singleline(&mut v).desired_width(120.0));
+        push(elems, format!("{pre}.{key}"), &r, label);
+        if r.changed() {
+            // Parse the timecode to frames
+            if let Ok(frames) = parse_timecode(&v, rate, false, current_frames) {
+                if frames > 0 {
+                    // Calculate new speed: original_duration * original_speed / new_duration
+                    let new_speed = (original_duration_frames as f64 * original_speed / frames as f64) * 100.0;
+                    let clamped = new_speed.clamp(0.01, 100_000.0);
+                    p["speed"] = json!(clamped);
+                }
+            }
+            p[key] = json!(v);
+        }
+        // Also show the frame count for reference
+        ui.label(RichText::new(format!("({current_frames} fr)")).monospace().weak());
+    });
+}
+
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.clip_dialog.clone() else { return };
@@ -518,17 +553,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             "clip.speedDuration" => {
                 number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), 0.01..=100_000.0, " %");
-                // Duration follows the speed: the media shown stays the same
+                // Duration: editable timecode that calculates speed when changed.
                 let (dur, was, fps) =
                     (d.info["duration"].as_i64().unwrap_or(0), d.info["speed"].as_f64().unwrap_or(1.0), d.info["fps"].as_f64().unwrap_or(24.0));
-                let now = p["speed"].as_f64().unwrap_or(100.0) / 100.0;
-                if dur > 0 && now > 0.0 {
-                    let rate = filmcraft_time::FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
-                    let ticks = filmcraft_time::Tick((dur as f64 * was / now).round() as i64);
-                    ui.horizontal(|ui| {
-                        ui.label(tl!("Duration:"));
-                        ui.label(RichText::new(filmcraft_time::format_timecode_frames(rate.frame_at(ticks), rate, false)).monospace());
-                    });
+                if dur > 0 {
+                    timecode_duration(ui, &mut elems, pre, p, "duration", tl!("Duration:"), fps, dur, was);
                 }
                 check(ui, &mut elems, pre, p, "reverse", tl!("Reverse Speed"), true);
                 check(ui, &mut elems, pre, p, "ripple", tl!("Ripple Edit, Shifting Trailing Clips"), true);
