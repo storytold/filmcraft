@@ -3,14 +3,46 @@
 use serde_json::{Value, json};
 
 use filmcraft_interchange::{ExportOptions, Format, ImportOptions};
-use filmcraft_project::{ItemId, ItemKind, MediaRef};
+use filmcraft_project::{BinId, ItemId, ItemKind, MediaRef};
 
 use crate::{EngineError, Result, Session};
+
+/// Read a Premiere project through the host with a cap before allocating its contents. A range
+/// read stays bounded even if a file grows between its metadata and content reads.
+pub fn read_premiere(s: &Session, path: &str) -> std::io::Result<Vec<u8>> {
+    let size = s.services.file_size(path)?;
+    if size > filmcraft_interchange::prproj::MAX_INPUT_BYTES as u64 {
+        return Err(std::io::Error::other("Premiere project exceeds the 64 MiB input limit"));
+    }
+    let size = usize::try_from(size).map_err(|_| std::io::Error::other("Premiere project size is unsupported"))?;
+    s.services.read_range(path, 0, size)
+}
+
+pub fn import_premiere(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "file.importPremiereProject";
+    let path = p
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty() && path.len() <= 32768)
+        .ok_or_else(|| crate::commands::bad(CMD, "need a non-empty `path` of at most 32768 bytes"))?;
+    if !std::path::Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("prproj")) {
+        return Err(crate::commands::bad(CMD, "choose a .prproj file"));
+    }
+    let mut params = json!({"paths": [path]});
+    if let Some(bin) = p.get("bin") {
+        let id = bin.as_u64().ok_or_else(|| crate::commands::bad(CMD, "`bin` must be a non-negative integer"))?;
+        if s.project.root.find_bin(BinId(id)).is_none() {
+            return Err(crate::commands::bad(CMD, "the destination bin does not exist"));
+        }
+        params["bin"] = bin.clone();
+    }
+    s.execute("file.import", params)
+}
 
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi")) {
+    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi" | "prproj")) {
         return None;
     }
     filmcraft_interchange::detect(bytes, ext.as_deref())
@@ -46,16 +78,23 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
     Err(EngineError::Other(format!("{path}: no unused embedded-audio filename after 1000 attempts")))
 }
 
-/// Import a document: merge its bins, media and sequences into the project (one undo step), then
-/// link each media file that exists on disk. Returns the new sequences.
-pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Result<Value> {
+/// Import a document and link its media. Premiere imports group the merge and links into one
+/// undo step; existing interchange formats retain their separate link undo steps.
+pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Option<BinId>) -> Result<Value> {
     let p = std::path::Path::new(path);
     let opts = ImportOptions {
         base_dir: p.parent().map(|d| d.to_string_lossy().to_string()),
         name: p.file_stem().map(|n| n.to_string_lossy().to_string()),
         ..Default::default()
     };
+    let mut preferred_sequence_index = None;
     let (fragment, report) = match format {
+        Format::Premiere => {
+            let (fragment, view, report) =
+                filmcraft_interchange::prproj::import_with_view(bytes, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            preferred_sequence_index = fragment.sequences.iter().position(|id| Some(*id) == view.active_sequence);
+            (fragment, report)
+        }
         // AAF / OMF may embed audio: write it next to the document (the media items point there)
         Format::Aaf | Format::Omf => {
             let r = if format == Format::Aaf { filmcraft_interchange::aaf::import(bytes, &opts) } else { filmcraft_interchange::omf::import(bytes, &opts) };
@@ -80,85 +119,113 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
             sequence.settings.validate().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence settings: {e}")))?;
         }
     }
-    let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
-    let seqs = s.edit(&format!("Import {name}"), |proj, _| {
-        let seqs = filmcraft_interchange::merge_into(proj, fragment, None);
-        // A document that sets only some Motion parameters leaves the others at their "auto"
-        // (NaN) defaults. Resolve them as placing a clip does, for every format. A media file's
-        // picture size is only what the document says so far (an EDL says nothing: the importer
-        // assumes the sequence size), so its clips' anchors wait for Link Media below.
-        proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |source| !is_file_media(source));
-        Ok(seqs)
-    })?;
-    // Link media: probe each new file-backed item that exists, through the host's reader as a
-    // direct import does (only the container index is read now, not the whole file: #461).
-    let new_media: Vec<(ItemId, String)> = s
-        .project
-        .items
-        .values()
-        .filter(|i| !before.contains(&i.id))
-        .filter_map(|i| match &i.kind {
-            ItemKind::Media(m) => match &m.media {
-                MediaRef::File { path } => Some((i.id, path.clone())),
+    // Parsing must succeed before the undo group starts: malformed input leaves even the
+    // revision untouched. Merge and media links then form one undoable import.
+    let label = format!("Import {name}");
+    let apply = |s: &mut Session| {
+        let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
+        let seqs = s.edit(&format!("Import {name}"), |proj, _| {
+            let seqs = filmcraft_interchange::merge_into(proj, fragment, bin);
+            // A document that sets only some Motion parameters leaves the others at their "auto"
+            // (NaN) defaults. Resolve them as placing a clip does, for every format. A media file's
+            // picture size is only what the document says so far (an EDL says nothing: the importer
+            // assumes the sequence size), so its clips' anchors wait for Link Media below.
+            proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |source| !is_file_media(source));
+            Ok(seqs)
+        })?;
+        // Link media: probe each new file-backed item that exists, through the host's reader as a
+        // direct import does (only the container index is read now, not the whole file: #461).
+        let new_media: Vec<(ItemId, String)> = s
+            .project
+            .items
+            .values()
+            .filter(|i| !before.contains(&i.id))
+            .filter_map(|i| match &i.kind {
+                ItemKind::Media(m) => match &m.media {
+                    MediaRef::File { path } => Some((i.id, path.clone())),
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
-        })
-        .collect();
-    // The document's media paths are opened as stored paths of the document.
-    s.media.add_stored_paths(new_media.iter().map(|(_, p)| p.clone()), Some(path));
-    let mut linked = 0;
-    let mut offline = Vec::new();
-    for (id, mpath) in new_media {
-        let file = match s.media.follow(&mpath) {
-            Ok(file) => file,
-            Err(why) => {
-                log::warn!("{mpath} is not opened: {why}");
-                offline.push(mpath);
-                continue;
-            }
-        };
-        match s.media.open_file(&file, &*s.services).ok() {
-            Some(src) => {
-                let info = src.info().clone();
-                let identity = crate::relink::identity_of(&*s.services, &file).ok();
-                let rebase = (format == Format::Edl).then_some(info.start_timecode).flatten();
-                s.edit("Link Media", |proj, _| {
-                    if let Some(item) = proj.items.get_mut(&id)
-                        && let ItemKind::Media(m) = &mut item.kind
-                    {
-                        let rate = info.video.as_ref().map(|v| v.frame_rate);
-                        m.info = info.clone();
-                        m.offline = false;
-                        m.identity = identity;
-                        if let (Some(tc), Some(rate)) = (rebase, rate) {
-                            filmcraft_interchange::rebase_source_timecode(proj, id, tc, rate);
+            })
+            .collect();
+        // The document's media paths are opened as stored paths of the document.
+        s.media.add_stored_paths(new_media.iter().map(|(_, p)| p.clone()), Some(path));
+        let mut linked = 0;
+        let mut offline = Vec::new();
+        for (id, mpath) in new_media {
+            let file = match s.media.follow(&mpath) {
+                Ok(file) => file,
+                Err(why) => {
+                    log::warn!("{mpath} is not opened: {why}");
+                    offline.push(mpath);
+                    continue;
+                }
+            };
+            match s.media.open_file(&file, &*s.services).ok() {
+                Some(src) => {
+                    let info = src.info().clone();
+                    let identity = crate::relink::identity_of(&*s.services, &file).ok();
+                    let rebase = (format == Format::Edl).then_some(info.start_timecode).flatten();
+                    s.edit("Link Media", |proj, _| {
+                        if let Some(item) = proj.items.get_mut(&id)
+                            && let ItemKind::Media(m) = &mut item.kind
+                        {
+                            let rate = info.video.as_ref().map(|v| v.frame_rate);
+                            m.info = info.clone();
+                            m.offline = false;
+                            m.identity = identity;
+                            if let (Some(tc), Some(rate)) = (rebase, rate) {
+                                filmcraft_interchange::rebase_source_timecode(proj, id, tc, rate);
+                            }
                         }
-                    }
-                    // the picture size is now the file's own: centre the anchors of its clips in it
-                    proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |source| source.id == id);
-                    Ok(())
-                })?;
-                s.media.insert_file(id, &mpath, src);
-                linked += 1;
+                        // the picture size is now the file's own: centre the anchors of its clips in it
+                        proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |source| source.id == id);
+                        Ok(())
+                    })?;
+                    s.media.insert_file(id, &mpath, src);
+                    linked += 1;
+                }
+                None => offline.push(mpath),
             }
-            None => offline.push(mpath),
         }
-    }
-    if let Some(&first) = seqs.first() {
-        s.state.active_sequence = Some(first);
-        if !s.state.open_sequences.contains(&first) {
-            s.state.open_sequences.push(first);
+        if let Some(&first) = seqs.get(preferred_sequence_index.unwrap_or(0)) {
+            s.state.active_sequence = Some(first);
+            if !s.state.open_sequences.contains(&first) {
+                s.state.open_sequences.push(first);
+            }
+            s.events.push(crate::Event::OpenSequence(first));
         }
-    }
-    Ok(json!({
-        "format": format.name(),
-        "sequences": seqs.iter().map(|i| i.0).collect::<Vec<_>>(),
-        "linkedMedia": linked,
-        "offlineMedia": offline,
-        "report": report_json(&report),
-    }))
+        let mut result = json!({
+            "format": format.name(),
+            "sequences": seqs.iter().map(|i| i.0).collect::<Vec<_>>(),
+            "linkedMedia": linked,
+            "offlineMedia": offline,
+            "report": report_json(&report),
+        });
+        if format == Format::Premiere {
+            result["documentEpoch"] = json!(s.document_epoch);
+            result["sourcePath"] = json!(path);
+            result["activeSequence"] = json!(s.state.active_sequence.map(|id| id.0));
+            result["sequenceSummaries"] = json!(
+                seqs.iter()
+                    .filter_map(|id| {
+                        let item = s.project.item(*id)?;
+                        let seq = item.as_sequence()?;
+                        Some(json!({"id": id.0, "name": item.name,
+                "videoClips": seq.video_tracks.iter().map(|t| t.items.len()).sum::<usize>(),
+                "audioClips": seq.audio_tracks.iter().map(|t| t.items.len()).sum::<usize>()}))
+                    })
+                    .collect::<Vec<_>>()
+            );
+            for entry in report_json(&report) {
+                s.log.push(crate::panels::Level::Warning, "Premiere import", entry);
+            }
+            s.events.push(crate::Event::ImportReport(result.clone()));
+        }
+        Ok(result)
+    };
+    if format == Format::Premiere { s.edit_group(&label, apply) } else { apply(s) }
 }
 
 /// `file.exportInterchange {format: "edl"|"xml"|"fcpxml"|"otio"|"aaf"|"omf" = "xml", path, sequence?}`

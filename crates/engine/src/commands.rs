@@ -1428,7 +1428,14 @@ fn build() -> Vec<CommandSpec> {
                 }
                 // Media files through the host's reader (no whole-file read) when it has one.
                 let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
-                let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
+                let premiere = std::path::Path::new(&path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("prproj"));
+                let read = if premiere {
+                    crate::interchange::read_premiere(s, &path)
+                } else if streamed {
+                    Ok(Vec::new())
+                } else {
+                    s.services.read_file(&path)
+                };
                 match read {
                     Ok(_) if streamed => match import_streamed(s, &path, bin) {
                         Ok(id) => ids.push(id.0),
@@ -1441,7 +1448,7 @@ fn build() -> Vec<CommandSpec> {
                                 Err(e) => errors.push(format!("{path}: {e}")),
                             }
                         } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt) {
+                            match crate::interchange::import(s, &path, &b, fmt, bin) {
                                 Ok(r) => {
                                     sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
                                     reports.push(r);
@@ -1552,6 +1559,15 @@ fn build() -> Vec<CommandSpec> {
             r#"{"path":str,"sequence":id?,"title":str?,"audio":"embedded|separate"?,"audioFormat":"wav|aiff"?,"sampleRate":int?,"bitDepth":"16|24"?,"trimAudio":bool?,"handles":frames?,"renderAudioEffects":bool?,"breakoutToMono":bool?}"#,
             has_seq,
             |s, p| crate::aaf_omf::export_omf(s, p)
+        ),
+        cmd!(
+            "file.importPremiereProject",
+            "Premiere Pro Project…",
+            ["File", "Import From"],
+            None,
+            r#"{"path":str,"bin":binId?}"#,
+            always,
+            crate::interchange::import_premiere
         ),
         cmd!("file.importAaf", "Import AAF…", [], None, r#"{"path":str}"#, always, |s, p| crate::aaf_omf::import_document(s, p, "file.importAaf")),
         cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {

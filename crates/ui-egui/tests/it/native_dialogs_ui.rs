@@ -123,6 +123,66 @@ fn wav() -> PathBuf {
 }
 
 #[test]
+fn premiere_picker_imports_separate_cuts_shows_warnings_and_saves_a_native_project() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("premiere-import-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("edit.prproj");
+    let native = dir.join("converted.fcproj");
+    // Original synthetic XML: two separate cuts, an earlier unrelated trailer, saved main tab,
+    // and one absent source. No real project, artwork or media fixture is shipped.
+    let xml = r#"<PremiereData Version="3">
+<Project ObjectID="p"><Node><Properties><MZ.PrefixKey.OpenSequenceGuidList.1>main</MZ.PrefixKey.OpenSequenceGuidList.1></Properties></Node></Project>
+<Sequence ObjectUID="trailer"><Name>Trailer</Name><TrackGroups><TrackGroup Index="0"><Second ObjectRef="empty"/></TrackGroup></TrackGroups></Sequence>
+<Sequence ObjectUID="main"><Name>Main edit</Name><TrackGroups><TrackGroup Index="0"><Second ObjectRef="group"/></TrackGroup></TrackGroups></Sequence>
+<VideoTrackGroup ObjectID="empty"><FrameRect>0,0,1920,1080</FrameRect><TrackGroup><FrameRate>10594584000</FrameRate><Tracks/></TrackGroup></VideoTrackGroup>
+<VideoTrackGroup ObjectID="group"><FrameRect>0,0,1920,1080</FrameRect><TrackGroup><FrameRate>10594584000</FrameRate><Tracks><Track Index="0" ObjectURef="track"/></Tracks></TrackGroup></VideoTrackGroup>
+<VideoClipTrack ObjectUID="track"><ClipTrack><Track/><ClipItems><TrackItems><TrackItem Index="0" ObjectRef="cut1"/><TrackItem Index="1" ObjectRef="cut2"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack>
+<VideoClipTrackItem ObjectID="cut1"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="sub"/></ClipTrackItem></VideoClipTrackItem>
+<VideoClipTrackItem ObjectID="cut2"><ClipTrackItem><TrackItem><Start>508032000000</Start><End>762048000000</End></TrackItem><SubClip ObjectRef="sub"/></ClipTrackItem></VideoClipTrackItem>
+<SubClip ObjectID="sub"><Name>Cut</Name><Clip ObjectRef="clip"/></SubClip>
+<VideoClip ObjectID="clip"><Clip><Source ObjectRef="source"/><InPoint>0</InPoint></Clip></VideoClip>
+<VideoMediaSource ObjectID="source"><MediaSource><Media ObjectURef="media"/></MediaSource></VideoMediaSource>
+<Media ObjectUID="media"><FilePath>missing-for-premiere-ui-test.mov</FilePath><VideoStream ObjectRef="stream"/></Media>
+<VideoStream ObjectID="stream"><FrameRate>10594584000</FrameRate><FrameRect>0,0,1920,1080</FrameRect><Duration>2540160000000</Duration></VideoStream>
+</PremiereData>"#;
+    std::fs::write(&path, xml).unwrap();
+    let mut d = Driver::new(true);
+    let before = d.items();
+    // Cancel is harmless, and the single-file filter is specific to Premiere projects.
+    d.ok("ui.menu.invoke", json!({"id": "file.importPremiereProject"}));
+    let (dialog, answer) = d.asked();
+    assert!(matches!(dialog, FileDialog::OpenFile { exts, .. } if exts == ["prproj"]));
+    answer.send(Vec::new()).unwrap();
+    d.frames(4);
+    assert_eq!(d.items(), before);
+    assert!(d.app().ui.import_report.is_none());
+    d.ok("ui.menu.invoke", json!({"id": "file.importPremiereProject"}));
+    let (_, answer) = d.asked();
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    d.frames(8);
+    let active = d.app().session.state.active_sequence.unwrap();
+    assert_eq!(d.app().session.project.item(active).unwrap().name, "Main edit");
+    assert_eq!(d.app().session.project.sequence(active).unwrap().video_tracks[0].items.len(), 2);
+    let report = d.app().ui.import_report.as_ref().unwrap();
+    assert_eq!(report["offlineMedia"].as_array().unwrap().len(), 1);
+    assert!(report["report"].as_array().unwrap().iter().any(|s| s.as_str().unwrap().contains("subset")));
+    let inspect = d.ok("ui.inspect", json!({}));
+    assert!(inspect["ui"]["import_report"].is_object());
+    d.click("importReport.saveAs");
+    let (dialog, answer) = d.asked();
+    assert!(matches!(dialog, FileDialog::SaveProject { .. }));
+    answer.send(vec![native.to_string_lossy().into_owned()]).unwrap();
+    d.frames(4);
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": native})).unwrap();
+    let active = reopened.state.active_sequence.unwrap();
+    assert_eq!(reopened.project.item(active).unwrap().name, "Main edit");
+    assert_eq!(reopened.project.sequence(active).unwrap().video_tracks[0].items.len(), 2);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), xml);
+    assert!(d.app().ui.import_report.is_none());
+}
+
+#[test]
 fn the_app_keeps_running_while_the_import_dialog_is_open_and_imports_when_it_answers() {
     let mut d = Driver::new(true);
     let before = d.items();

@@ -1,5 +1,25 @@
 # Project files
 
+## Import a Premiere project
+
+Choose **File > Import From > Premiere Pro Project…** and select a `.prproj` file.
+FilmCraft imports its sequences as editable timelines and opens the first sequence tab saved by
+Premiere. Other sequences are available by double-clicking their items in the Project panel.
+The conversion report shows clip counts, unsupported features and missing media. Use
+**Save As FilmCraft Project…** to save the edit as a native `.fcproj`, and Link Media for offline
+sources. The source project and media are never written by import.
+
+File > Import and dropping a `.prproj` into the Project panel use the same importer. Agents and
+the CLI use `file.importPremiereProject {"path":"Edit.prproj","bin":0}` or the existing
+`file.import {"paths":["Edit.prproj"]}`; the result contains sequence ids, clip counts, linked and
+offline media, and warnings. The frontend report is readable through `ui.inspect` at
+`ui.import_report`, with `importReport.saveAs` and `importReport.close` automation targets.
+
+This is an import-only subset, not visual or audio equivalence: bins, markers, graphics,
+captions, animation and plugin settings still have gaps. Third-party transitions are substituted
+with reported FilmCraft equivalents. Compare playback with Premiere before continuing a production
+edit. See [the supported subset](../crates/interchange/README.md#premiere-projects-import-only).
+
 FilmCraft projects are `.fcproj` files: UTF-8 JSON with an explicit schema version. Reading and
 writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` commands use it.
 

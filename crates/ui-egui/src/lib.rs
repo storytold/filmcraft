@@ -56,6 +56,7 @@ pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
+mod premiere_import;
 mod rtl;
 pub mod scrub;
 mod shuttle;
@@ -1669,7 +1670,7 @@ impl FilmcraftApp {
                     .iter()
                     .chain(filmcraft_media::AUDIO_EXTENSIONS)
                     .chain(filmcraft_media::STILL_EXTENSIONS)
-                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf"])
+                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "prproj"])
                     .copied()
                     .collect();
                 let bin = params.get("bin").cloned();
@@ -1686,6 +1687,18 @@ impl FilmcraftApp {
                         app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
                     }
                     r
+                })
+            }
+            "file.importPremiereProject" => {
+                let bin = params.get("bin").cloned();
+                self.pick(FileDialog::open_file("Premiere Pro project", &["prproj"]), move |app, paths| {
+                    let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                    let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
+                    let result = app.session.execute("file.importPremiereProject", json!({"path": path, "bin": bin})).map_err(|e| e.to_string())?;
+                    if let Some(errors) = result.get("errors").and_then(Value::as_array).filter(|errors| !errors.is_empty()) {
+                        app.ui.status = errors.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                    }
+                    Ok(result)
                 })
             }
             // File ▸ Import with Image Sequence: choose the first numbered still
@@ -2212,6 +2225,7 @@ impl FilmcraftApp {
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
+        premiere_import::show(self, &ctx);
         updates_ui::show(self, &ctx);
         if !self.ui.show_status_bar {
             return;
@@ -2559,6 +2573,7 @@ impl FilmcraftApp {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
+                filmcraft_engine::Event::ImportReport(report) => self.ui.import_report = Some(report),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }

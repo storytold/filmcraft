@@ -422,6 +422,8 @@ pub enum Event {
         error: bool,
     },
     OpenSequence(ItemId),
+    /// An imported project's fidelity and missing-media report for frontends.
+    ImportReport(Value),
     OpenSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),

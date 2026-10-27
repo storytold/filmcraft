@@ -20,6 +20,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 roxmltree = { workspace = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+quick-xml = "0.41"
 
 [dev-dependencies]
 proptest = { workspace = true }

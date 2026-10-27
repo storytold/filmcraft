@@ -3628,3 +3628,15 @@
 	No matching text.	Ningún texto coincide.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
+	Premiere Pro Project…	Proyecto de Premiere Pro…
+	Premiere project imported	Proyecto de Premiere importado
+	The sequences are ready to edit. Save as a FilmCraft project to keep the conversion.	Las secuencias están listas para editar. Guarda un proyecto de FilmCraft para conservar la conversión.
+	Your Premiere project and source media have not been changed.	Tu proyecto de Premiere y los archivos multimedia originales no se han modificado.
+	{name}: {video} video clips, {audio} audio clips	{name}: {video} clips de vídeo, {audio} clips de audio
+	Open timeline: {sequence}	Línea de tiempo abierta: {sequence}
+	Additional sequences are available in the Project panel.	Hay más secuencias en el panel Proyecto.
+	Double-click a sequence in the Project panel to open another timeline.	Haz doble clic en una secuencia del panel Proyecto para abrir otra línea de tiempo.
+	Review the conversion	Revisa la conversión
+	{count} media files could not be linked. Use Link Media to locate them.	No se pudieron vincular {count} archivos multimedia. Usa Vincular medios para localizarlos.
+	Save As FilmCraft Project…	Guardar como proyecto de FilmCraft…
+	Continue Editing	Continuar editando

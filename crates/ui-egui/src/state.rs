@@ -546,6 +546,9 @@ pub struct UiState {
     /// Link Media dialog (open when Some).
     #[serde(default)]
     pub link_media: Option<LinkMediaDraft>,
+    /// Latest Premiere conversion report, including unsupported features and offline media.
+    #[serde(default)]
+    pub import_report: Option<serde_json::Value>,
     /// Create Proxies dialog (open when Some).
     #[serde(default)]
     pub create_proxies: Option<ProxyDraft>,
@@ -1015,6 +1018,7 @@ impl Default for UiState {
             gfx_edit: None,
             pen_points: vec![],
             link_media: None,
+            import_report: None,
             create_proxies: None,
             project_manager: None,
             make_offline: None,

@@ -4,6 +4,65 @@ Timeline interchange for FilmCraft: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), F
 OpenTimelineIO, AAF and OMF import and export, plus Avid ALE. Layer L2: no file I/O; media
 references are strings and audio essence is supplied by the caller (the engine).
 
+## Premiere projects (import only)
+
+`prproj::import`, `import_with(..., Format::Premiere, ...)`, and the existing engine command
+`file.import {"paths":["Edit.prproj"]}` read gzip-compressed or plain UTF-8
+`<PremiereData Version="3">` documents. The desktop Import picker includes `.prproj`.
+The native menu **File > Import From > Premiere Pro Project…** uses this parser directly.
+The in-app report shows separate video/audio clip counts, missing media and conversion warnings;
+its Save As button writes a native project through the normal atomic-save workflow.
+No separate converter executable is needed. Import and all media links are one undo step.
+
+
+There is no published complete `.prproj` schema. This is a clean-room, explicitly partial mapping
+from contributor-supplied project documents, observed on 2026-10-17. No application code, bundled
+artwork, presets, or third-party importer/decoder implementations were consulted. Gzip follows
+[RFC 1952 (May 1996)](https://www.rfc-editor.org/rfc/rfc1952) using flate2's pure-Rust backend;
+XML follows XML 1.0 via quick-xml and roxmltree. Project format exports remain unsupported;
+`Format::ALL` lists the six formats supported in both directions.
+
+Supported: all sequences and their ordered video/audio tracks (including empty tracks), file media
+with stream descriptions and Unicode/relative paths, exact integer start/end/source-in times,
+positive constant playback speeds, clip links, nested sequence references, work areas, static
+Motion (position, scale, width, uniform scale, rotation, anchor, anti-flicker), static Volume and
+stereo Channel Volume. Premiere frame/sample durations and edit times use the same
+254016000000 ticks/second as FilmCraft; no frame/second float conversion is used for placement.
+Transition alignment is an integer offset from the transition's start, also in ticks.
+
+Recognized standard transitions use FilmCraft effects. Third-party transitions are explicitly
+reported and substituted with Cross Dissolve (video) or Constant Power (audio), retaining the
+transition interval and neighbouring clips. Their appearance, easing and private settings differ.
+Animated supported parameters retain their initial value and report missing animation. Unknown
+clip effects are named in the report. Unsupported source types fail conversion with an actionable
+error rather than silently removing the clip.
+
+Not transferred: original bin layout, labels, markers, captions/data tracks, generated graphics,
+colour-management metadata, mixer automation, source/master effects, export settings, transition
+parameter animation, reverse playback, speed ramps and third-party plugin settings. A summary
+warning is always returned: this is not a promise of visual/audio equivalence. Negative/zero
+speeds and unsupported source objects are refused. Compare playback against the original.
+Native import probes linked media, but full codec and playback compatibility still requires
+checking playback in the editor.
+
+Hostile inputs: 64 MiB compressed/plain input, 128 MiB decompressed XML, bounded node/attribute
+capacity, a streaming XML depth check **before** the recursive DOM parser (128 levels), 4096
+sequences, 1024 tracks per group, no DTD/entities, checked frame sizes, finite parameters and
+bounded integer times. Object definitions are indexed separately by ObjectID/ObjectUID;
+duplicates and dangling references fail. Sequence cycles and nesting beyond 64 levels fail via
+an iterative graph walk. No recursive object-reference resolution is used.
+Global budgets additionally cap object-reference visits (100000), constructed model objects
+(50000), imported text (32 MiB, charged conservatively), and report entries (4096). Text fields,
+paths, identifiers and channel-layout JSON have individual limits. Shared object references cannot
+amplify a small XML document into an unbounded import; exceeding a budget returns an error.
+
+Validation: synthetic tests cover gzip/plain equivalence, 29.97 sequence vs 23.976 source timing,
+48 kHz audio, source trims, 150% speed, links, Motion, transition substitution and exact alignment,
+import-only detection/export refusal, saved timeline selection across conversion/native reopening,
+ordered/stale/hostile saved tabs, corrupt numbers/references, nested cycles, 5000-level XML,
+and every truncation and bit flip of a small project and its gzip representation under
+`catch_unwind`. User projects stay outside the repository; no real project/media fixture ships.
+
 ## Specifications
 
 Clean-room: written from public specifications only. The AAF SDK, pyaaf2, the OMF Toolkit and

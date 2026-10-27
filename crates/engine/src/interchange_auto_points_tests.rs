@@ -13,6 +13,123 @@ use crate::media_test_util::{make_movie, tmp_dir};
 
 const RATE: &str = "<rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>";
 
+#[test]
+fn premiere_project_import_is_a_command_and_can_undo_redo_and_save() {
+    let d = tmp_dir("prproj-command");
+    let path = d.join("edit.prproj");
+    let xml = r#"<PremiereData Version="3"><Sequence ObjectUID="seq"><Name>Cut</Name><TrackGroups><TrackGroup Index="0"><Second ObjectRef="v"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="v"><FrameRect>0,0,1920,1080</FrameRect><TrackGroup><FrameRate>10160640000</FrameRate><Tracks/></TrackGroup></VideoTrackGroup></PremiereData>"#;
+    std::fs::write(&path, xml).unwrap();
+    let mut session = Session::default();
+    let before = filmcraft_format::encode(&session.project, false);
+    let result = session.execute("file.import", json!({"paths": [path]})).unwrap();
+    assert_eq!(result["sequences"].as_array().unwrap().len(), 1);
+    assert_eq!(result["documents"][0]["format"], "Premiere Pro Project");
+    let after = filmcraft_format::encode(&session.project, false);
+    session.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&session.project, false), before);
+    session.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&session.project, false), after);
+    let native = d.join("edit.fcproj");
+    session.execute("file.saveAs", json!({"path": native})).unwrap();
+    let loaded = filmcraft_format::decode(&std::fs::read(native).unwrap()).unwrap();
+    assert_eq!(loaded.project.sequences().count(), 1);
+    let saved = filmcraft_format::encode(&session.project, false);
+    let revision = session.revision;
+    std::fs::write(&path, b"bad gzip/XML").unwrap();
+    assert!(session.execute("file.import", json!({"paths": [path]})).is_err());
+    assert_eq!(filmcraft_format::encode(&session.project, false), saved);
+    assert_eq!(session.revision, revision);
+}
+
+#[test]
+fn premiere_import_and_all_media_links_are_one_undo_step() {
+    let d = tmp_dir("prproj-linked-undo");
+    let media = d.join("shot.mov");
+    make_movie(&media, DemoScene::Forest, 320, 180, 24);
+    let xml = format!(
+        r#"<PremiereData Version="3"><Sequence ObjectUID="seq"><Name>Cut</Name><TrackGroups><TrackGroup Index="0"><Second ObjectRef="v"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="v"><FrameRect>0,0,320,180</FrameRect><TrackGroup><FrameRate>10594584000</FrameRate><Tracks/></TrackGroup></VideoTrackGroup><Media ObjectUID="m1"><FilePath>{path}</FilePath><VideoStream ObjectRef="vs"/></Media><Media ObjectUID="m2"><FilePath>{path}</FilePath><VideoStream ObjectRef="vs"/></Media><VideoStream ObjectID="vs"><FrameRate>10594584000</FrameRate><FrameRect>0,0,320,180</FrameRect><Duration>254016000000</Duration></VideoStream></PremiereData>"#,
+        path = media.to_string_lossy()
+    );
+    let path = d.join("edit.prproj");
+    std::fs::write(&path, xml).unwrap();
+    let mut s = Session::default();
+    let before = filmcraft_format::encode(&s.project, false);
+    let r = s.execute("file.importPremiereProject", json!({"path": path})).unwrap();
+    assert_eq!(r["documents"][0]["linkedMedia"], 2);
+    assert_eq!(s.history.undo.len(), 1);
+    let imported = filmcraft_format::encode(&s.project, false);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&s.project, false), before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&s.project, false), imported);
+}
+
+#[test]
+fn premiere_import_opens_its_saved_edit_and_native_save_preserves_it() {
+    let d = tmp_dir("prproj-saved-timeline");
+    let path = d.join("edit.prproj");
+    let xml = r#"<PremiereData Version="3"><Project ObjectID="project"><Node><Properties><MZ.PrefixKey.OpenSequenceGuidList.1>edit</MZ.PrefixKey.OpenSequenceGuidList.1></Properties></Node></Project><Sequence ObjectUID="trailer"><Name>Trailer</Name><TrackGroups><TrackGroup Index="0"><Second ObjectRef="v"/></TrackGroup></TrackGroups></Sequence><Sequence ObjectUID="edit"><Name>Main edit</Name><TrackGroups><TrackGroup Index="0"><Second ObjectRef="v"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="v"><FrameRect>0,0,1920,1080</FrameRect><TrackGroup><FrameRate>10160640000</FrameRate><Tracks/></TrackGroup></VideoTrackGroup></PremiereData>"#;
+    std::fs::write(&path, xml).unwrap();
+    let mut s = Session::default();
+    let bin = s.execute("file.newBin", json!({"name": "Imported projects"})).unwrap()["bin"].as_u64().unwrap();
+    let r = s.execute("file.importPremiereProject", json!({"path": path, "bin": bin})).unwrap();
+    assert_eq!(r["sequences"].as_array().unwrap().len(), 2);
+    let active = s.state.active_sequence.unwrap();
+    assert_eq!(s.project.item(active).unwrap().name, "Main edit");
+    assert_eq!(s.project.root.parent_of(active), Some(filmcraft_project::BinId(bin)));
+    assert!(
+        s.drain_events().iter().any(|event| matches!(event, crate::Event::ImportReport(report) if report["sequenceSummaries"].as_array().unwrap().len() == 2))
+    );
+    let native = d.join("main.fcproj");
+    s.execute("file.saveAs", json!({"path": native})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": native})).unwrap();
+    assert_eq!(reopened.state.active_sequence, Some(active));
+    assert_eq!(reopened.project.sequences().count(), 2);
+}
+
+#[test]
+fn premiere_import_rejects_hostile_parameters_without_mutation() {
+    let mut s = Session::default();
+    let before = filmcraft_format::encode(&s.project, false);
+    for params in [
+        json!({}),
+        json!({"path": null}),
+        json!({"path": -1}),
+        json!({"path": []}),
+        json!({"path": ""}),
+        json!({"path": "movie.mp4"}),
+        json!({"path": "x".repeat(32769)}),
+        json!({"path": "cut.prproj", "bin": -1}),
+        json!({"path": "cut.prproj", "bin": "root"}),
+        json!({"path": "cut.prproj", "bin": 99999}),
+    ] {
+        assert!(s.execute("file.importPremiereProject", params).is_err());
+        assert_eq!(filmcraft_format::encode(&s.project, false), before);
+        assert!(s.history.undo.is_empty());
+    }
+}
+
+#[test]
+fn oversized_premiere_files_are_rejected_before_reading() {
+    struct Oversized;
+    impl crate::Services for Oversized {
+        fn file_size(&self, _: &str) -> std::io::Result<u64> {
+            Ok(filmcraft_interchange::prproj::MAX_INPUT_BYTES as u64 + 1)
+        }
+        fn read_file(&self, _: &str) -> std::io::Result<Vec<u8>> {
+            panic!("must not read an oversized project");
+        }
+        fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            panic!("import must never write the source project");
+        }
+    }
+    let mut s = Session::new(std::sync::Arc::new(Oversized));
+    let before = filmcraft_format::encode(&s.project, false);
+    assert!(s.execute("file.importPremiereProject", json!({"path": "huge.prproj"})).unwrap_err().to_string().contains("64 MiB"));
+    assert_eq!(filmcraft_format::encode(&s.project, false), before);
+}
+
 /// A 1920×1080 FCP7 XML sequence with one clip of `media/shot.mov` (declared 3840×2160) whose
 /// Basic Motion filter sets only `scale`.
 fn xml_with_a_scale_only_motion_filter() -> String {
