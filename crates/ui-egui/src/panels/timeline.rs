@@ -2465,11 +2465,35 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     //   Option + wheel   zoom about the pointer
     // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two. A sideways
     // gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls sideways; a pinch zooms.
+    // Over the track headers, Shift + wheel makes every track taller or shorter, Option + wheel
+    // the tracks of the kind under the pointer (heights are per kind), and Cmd / Ctrl + wheel
+    // scrolls those tracks up and down (#2046).
     if ui.rect_contains_pointer(rect)
         && let Some(p) = ctx.pointer_hover_pos()
     {
         let w = wheel_input(&ctx);
-        if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
+        let header_row = (p.x < layout.content.min.x).then(|| layout.row_at(p.y)).flatten().map(|r| r.kind);
+        // a platform may turn Shift + wheel into a sideways wheel
+        let header_dy = if w.delta.y != 0.0 {
+            w.delta.y
+        } else if w.shift {
+            w.delta.x
+        } else {
+            0.0
+        };
+        if let Some(kind) = header_row
+            && (w.alt || w.shift)
+            && header_dy != 0.0
+        {
+            let f = (1.0 + header_dy * 0.01).clamp(0.5, 2.0);
+            let v = &mut app.ui.timeline;
+            if w.shift || kind == TrackKind::Video {
+                v.video_track_h = (v.video_track_h * f).clamp(22.0, 220.0);
+            }
+            if w.shift || kind == TrackKind::Audio {
+                v.audio_track_h = (v.audio_track_h * f).clamp(22.0, 220.0);
+            }
+        } else if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
             let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
             let anchor_t = layout.tick_at(p.x).seconds();
             let v = &mut app.ui.timeline;
@@ -2477,7 +2501,11 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
             let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
-            let sideways = if w.delta.x.abs() > w.delta.y.abs() {
+            // Ctrl / Cmd + wheel over the track headers scrolls the video or the audio tracks
+            // (whichever the pointer is over) up and down, whatever the scrolling setting (#2046)
+            let sideways = if header_row.is_some() && w.command && w.delta.y != 0.0 {
+                None
+            } else if w.delta.x.abs() > w.delta.y.abs() {
                 Some(w.delta.x)
             } else if wheel_sideways || w.shift {
                 Some(w.delta.y)
