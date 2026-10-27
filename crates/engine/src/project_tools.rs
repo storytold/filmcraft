@@ -1414,5 +1414,4 @@ pub fn system_report() -> Value {
 }
 
 #[cfg(test)]
-#[path = "project_tools_tests.rs"]
 mod tests;

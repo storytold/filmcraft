@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use super::*;
 use egui::{Context, IMEPurpose, Id, ImeResetId, ImeTarget, ViewportId, ViewportIdMap};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -284,6 +285,11 @@ pub(crate) fn install(ctx: &Context) {
         }),
     );
     ctx.data_mut(|data| data.insert_temp(installed, true));
+}
+
+/// Install once in each native/web/harness Context creator, before the first UI pass.
+pub fn install_ime_reset_callbacks(ctx: &egui::Context) {
+    ime_reset::install(ctx);
 }
 
 #[cfg(test)]
