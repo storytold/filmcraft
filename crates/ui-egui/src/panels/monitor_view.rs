@@ -3,8 +3,9 @@
 //! Multi-Camera, Audio Waveform, Comparison View, Video and Audio Waveform Split), Magnification
 //! (Fit, 10%…1600%, the wheel zooming about the pointer, middle-button or Hand-tool panning),
 //! rulers, guides (dragged out of the rulers, Add
-//! Guide…, Clear Guides, Lock Guides, templates saved in the user preferences) and Snap in Program
-//! Monitor (graphic drags snap to guides, the frame edges and centre).
+//! Guide…, Clear Guides, Lock Guides, templates saved in the user preferences), Snap in Program
+//! Monitor (graphic drags snap to guides, the frame edges and center) and Transparency Grid (a
+//! checkerboard behind the picture shows its transparent areas).
 //!
 //! Everything is [`MonitorView`] state (serde: `ui.inspect`, `ui.set {"program": {…}}`) changed
 //! through the `view.*` UI commands, which [`route`] handles for `menus::invoke`. Commands act on
@@ -144,6 +145,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             let v = view_mut(app, w);
             v.safe_margins = toggled(v.safe_margins, params);
             Ok(json!({"monitor": pfx, "safeMargins": v.safe_margins}))
+        }
+        "transparencyGrid" => {
+            let v = view_mut(app, w);
+            v.transparency_grid = toggled(v.transparency_grid, params);
+            Ok(json!({"monitor": pfx, "transparencyGrid": v.transparency_grid}))
         }
         "showRulers" => {
             let v = view_mut(app, w);
@@ -304,6 +310,7 @@ pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
     match rest {
         "highQualityPlayback" => Some(v.high_quality),
         "safeMargins" => Some(v.safe_margins),
+        "transparencyGrid" => Some(v.transparency_grid),
         "showRulers" => Some(v.show_rulers),
         "showGuides" => Some(v.show_guides),
         "lockGuides" => Some(v.lock_guides),
@@ -321,17 +328,17 @@ pub fn enabled(app: &FilmcraftApp, id: &str) -> bool {
     }
 }
 
-/// A channel of a frame as greyscale (Alpha, Red, Green, Blue display modes); colour channels are
-/// shown premultiplied, so transparent areas are black.
+/// A channel of a frame as grayscale (Alpha, Red, Green, Blue display modes). The frame's color
+/// is already premultiplied (the picture over black), so transparent areas are black in the
+/// color channels.
 pub fn channel_view(img: &Rgba, mode: DisplayMode) -> Rgba {
     let mut px = Vec::with_capacity(img.px.len());
     for p in img.px.as_chunks::<4>().0 {
-        let a = p[3] as u32;
         let v = match mode {
             DisplayMode::Alpha => p[3],
-            DisplayMode::Red => (p[0] as u32 * a / 255) as u8,
-            DisplayMode::Green => (p[1] as u32 * a / 255) as u8,
-            DisplayMode::Blue => (p[2] as u32 * a / 255) as u8,
+            DisplayMode::Red => p[0],
+            DisplayMode::Green => p[1],
+            DisplayMode::Blue => p[2],
             _ => {
                 px.extend_from_slice(p);
                 continue;
@@ -340,6 +347,58 @@ pub fn channel_view(img: &Rgba, mode: DisplayMode) -> Rgba {
         px.extend_from_slice(&[v, v, v, 255]);
     }
     Rgba { w: img.w, h: img.h, px }
+}
+
+/// The Transparency Grid's square size (points) and its two grays.
+pub const GRID_CELL: f32 = 8.0;
+pub const GRID_LIGHT: Color32 = Color32::from_gray(0xff);
+pub const GRID_DARK: Color32 = Color32::from_gray(0xcc);
+
+/// The dark squares of the Transparency Grid behind `pic` that overlap `area`, cut to `area`. The
+/// squares start at the picture's top-left corner, which is light.
+pub fn grid_cells(pic: Rect, area: Rect) -> Vec<Rect> {
+    let area = pic.intersect(area);
+    let mut out = Vec::new();
+    if !area.is_positive() || !pic.min.is_finite() || !pic.max.is_finite() {
+        return out;
+    }
+    let first = |lo: f32, origin: f32| ((lo - origin) / GRID_CELL).floor() as i64;
+    let (c0, c1) = (first(area.min.x, pic.min.x), first(area.max.x, pic.min.x));
+    let (r0, r1) = (first(area.min.y, pic.min.y), first(area.max.y, pic.min.y));
+    // no screen holds more squares than this across or down
+    const MAX_SQUARES: i64 = 4096;
+    if c1.saturating_sub(c0) > MAX_SQUARES || r1.saturating_sub(r0) > MAX_SQUARES {
+        return out;
+    }
+    for row in r0..=r1 {
+        for col in c0..=c1 {
+            // light where row + col is even (`^` gives the parity without an overflowing sum)
+            if (row ^ col) & 1 == 0 {
+                continue;
+            }
+            let min = pos2(pic.min.x + col as f32 * GRID_CELL, pic.min.y + row as f32 * GRID_CELL);
+            let cell = Rect::from_min_size(min, vec2(GRID_CELL, GRID_CELL)).intersect(area);
+            if cell.is_positive() {
+                out.push(cell);
+            }
+        }
+    }
+    out
+}
+
+/// Paint the Transparency Grid behind the picture `pic`, where it overlaps `visible`: light
+/// squares as one rectangle, the dark ones as one mesh.
+pub fn transparency_grid(p: &egui::Painter, pic: Rect, visible: Rect) {
+    let area = pic.intersect(visible);
+    if !area.is_positive() {
+        return;
+    }
+    p.rect_filled(area, 0.0, GRID_LIGHT);
+    let mut mesh = egui::Mesh::default();
+    for cell in grid_cells(pic, area) {
+        mesh.add_colored_rect(cell, GRID_DARK);
+    }
+    p.add(egui::Shape::mesh(mesh));
 }
 
 /// The on-screen picture rect: fitted, or magnified about the area centre plus the (clamped) pan.
@@ -385,7 +444,7 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
     }
     let mut d = Vec2::ZERO;
     // a middle-button drag that began over the picture pans it, whatever the tool
-    let held = egui::Id::new((prefix(w), "middle-pan"));
+    let held = egui::Id::unique((prefix(w), "middle-pan"));
     let (pressed, down, moved) = ui.input(|i| (i.pointer.button_pressed(egui::PointerButton::Middle), i.pointer.middle_down(), i.pointer.delta()));
     let panning = down && (ui.data(|m| m.get_temp::<bool>(held)).unwrap_or(false) || (pressed && ui.rect_contains_pointer(area)));
     ui.data_mut(|m| m.insert_temp(held, panning));
@@ -394,7 +453,7 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
         d += moved;
     }
     if app.ui.tool == Tool::Hand {
-        let resp = ui.interact(area, egui::Id::new((prefix(w), "pan")), Sense::drag());
+        let resp = ui.interact(area, egui::Id::unique((prefix(w), "pan")), Sense::drag());
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         }
@@ -506,9 +565,9 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
             }
         }
     }
-    let drag_id = egui::Id::new((pfx, "new-guide"));
+    let drag_id = egui::Id::unique((pfx, "new-guide"));
     for (r, name, vertical) in [(top, "top", false), (left, "left", true)] {
-        let resp = ui.interact(r, egui::Id::new((pfx, "ruler", name)), Sense::drag());
+        let resp = ui.interact(r, egui::Id::unique((pfx, "ruler", name)), Sense::drag());
         app.auto.add(&format!("{pfx}.ruler.{name}"), r, if vertical { "left ruler" } else { "top ruler" });
         if resp.hovered() {
             ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
@@ -560,13 +619,13 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
         if v.lock_guides {
             continue;
         }
-        let resp = ui.interact(hit, egui::Id::new((pfx, "guide", i)), Sense::drag());
+        let resp = ui.interact(hit, egui::Id::unique((pfx, "guide", i)), Sense::drag());
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if g.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
         let left = egui::PointerButton::Primary;
         // egui ends a drag on Escape: that stop puts the guide back where it was (#580)
-        let before_id = egui::Id::new((pfx, "guide-before-drag", i));
+        let before_id = egui::Id::unique((pfx, "guide-before-drag", i));
         if resp.drag_started_by(left) {
             ui.data_mut(|d| d.insert_temp(before_id, g.position));
         }
@@ -599,7 +658,8 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
 }
 
 /// The Source Monitor's audio waveform (Audio Waveform display mode, audio-only clips and the
-/// split view): click to move the source playhead.
+/// split view) over `shown`, the part of the clip the time ruler shows: click to move the source
+/// playhead.
 #[allow(clippy::too_many_arguments)]
 pub fn waveform(
     app: &mut FilmcraftApp,
@@ -607,17 +667,17 @@ pub fn waveform(
     area: Rect,
     item: ItemId,
     time: Tick,
-    duration: Tick,
+    shown: (Tick, Tick),
     mark_in: Option<Tick>,
     mark_out: Option<Tick>,
 ) {
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(area);
     p.rect_filled(area, 0.0, t.monitor_bg);
-    let dur = duration.0.max(1) as f64;
-    let xof = |tk: Tick| area.min.x + ((tk.0 as f64 / dur) as f32).clamp(0.0, 1.0) * area.width();
+    let dur = (shown.1 - shown.0).0.max(1) as f64;
+    let xof = |tk: Tick| area.min.x + (((tk - shown.0).0 as f64 / dur) as f32).clamp(0.0, 1.0) * area.width();
     if mark_in.is_some() || mark_out.is_some() {
-        let (a, b) = (xof(mark_in.unwrap_or(Tick::ZERO)), xof(mark_out.unwrap_or(duration)));
+        let (a, b) = (xof(mark_in.unwrap_or(shown.0)), xof(mark_out.unwrap_or(shown.1)));
         p.rect_filled(Rect::from_min_max(pos2(a, area.min.y), pos2(b, area.max.y)), 0.0, Color32::from_white_alpha(14));
     }
     let mid = area.center().y;
@@ -625,15 +685,12 @@ pub fn waveform(
     match crate::panels::timeline::request_peaks(app, item, 0) {
         Some(peaks) if !peaks.is_empty() => {
             let half = area.height() * 0.45;
-            let spp = 256.0 * TICKS_PER_SAMPLE_48K;
             let mut mesh = egui::Mesh::default();
             let col = Color32::from_rgb(0x4f, 0xc3, 0x7a);
             for x in (area.min.x.floor() as i32)..(area.max.x.ceil() as i32) {
                 let f0 = (x as f32 - area.min.x) / area.width();
                 let f1 = (x as f32 + 1.0 - area.min.x) / area.width();
-                let s0 = (dur * f0 as f64 / spp) as usize;
-                let s1 = ((dur * f1 as f64 / spp) as usize).max(s0 + 1);
-                let (lo, hi) = peaks.iter().skip(s0).take(s1 - s0).fold((0f32, 0f32), |(l, h), (a, b)| (l.min(*a), h.max(*b)));
+                let (lo, hi) = column_peak(&peaks, shown, f0 as f64, f1 as f64);
                 if hi - lo > 0.002 {
                     mesh.add_colored_rect(
                         Rect::from_min_max(pos2(x as f32, mid - hi.min(1.0) * half), pos2(x as f32 + 1.0, mid - lo.max(-1.0) * half + 1.0)),
@@ -653,7 +710,7 @@ pub fn waveform(
     }
     let x = xof(time);
     p.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], Stroke::new(1.0, t.playhead));
-    let resp = ui.interact(area, egui::Id::new("source-waveform"), Sense::click_and_drag());
+    let resp = ui.interact(area, egui::Id::unique("source-waveform"), Sense::click_and_drag());
     app.auto.add("source.waveform", area, "audio waveform");
     // Horizontal waveform drags scrub; dragging vertically lifts the marked audio to the timeline.
     let delta = resp.drag_delta();
@@ -665,8 +722,18 @@ pub fn waveform(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let f = ((pos.x - area.min.x) / area.width()).clamp(0.0, 1.0) as f64;
-        let _ = app.session.execute("source.setPlayhead", json!({"time": (f * dur) as i64}));
+        let _ = app.session.execute("source.setPlayhead", json!({"time": shown.0.0.saturating_add((f * dur) as i64)}));
     }
+}
+
+/// The lowest and highest sample of `peaks` under the waveform column from `f0` to `f1` (fractions
+/// of the shown range `shown`): the narrower the range, the fewer peak buckets a column covers.
+fn column_peak(peaks: &[(f32, f32)], shown: (Tick, Tick), f0: f64, f1: f64) -> (f32, f32) {
+    let spp = 256.0 * TICKS_PER_SAMPLE_48K;
+    let (start, len) = (shown.0.0.max(0) as f64, (shown.1 - shown.0).0.max(1) as f64);
+    let s0 = ((start + len * f0) / spp) as usize;
+    let s1 = (((start + len * f1) / spp) as usize).max(s0 + 1);
+    peaks.iter().skip(s0).take(s1 - s0).fold((0f32, 0f32), |(l, h), (a, b)| (l.min(*a), h.max(*b)))
 }
 
 /// Ticks per 48 kHz sample (the waveform peaks are 256-sample min/max pairs at 48 kHz).
@@ -686,7 +753,7 @@ pub fn compare_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, rate: f
     ] {
         let r = Rect::from_min_max(pos2(x - 34.0, bar.min.y + 1.0), pos2(x - 2.0, bar.max.y - 1.0));
         x -= 34.0;
-        let resp = ui.interact(r, egui::Id::new(("compare", key)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(("compare", key)), Sense::click()).on_hover_text(tip);
         ui.painter().rect_filled(r, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
         ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(10.0), t.text);
         app.auto.add(&format!("program.compare.{key}"), r, tip);
@@ -753,6 +820,7 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
     if w == Which::Program {
         pick(ui, &mut out, "snapInProgramMonitor", tl!("Snap in Program Monitor"), v.snap);
     }
+    pick(ui, &mut out, "transparencyGrid", tl!("Transparency Grid"), v.transparency_grid);
     ui.separator();
     let pfx = prefix(w);
     for (key, r, label, clicked) in out {
@@ -793,7 +861,7 @@ fn push(e: &mut Elems, id: &str, r: &egui::Response, label: &str) {
 /// Add Guide… / Save Guides as Template… / Manage Guides… dialogs.
 pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.guide_dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("guide-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("guide-dialog-before-drag"), &mut d);
     let mut elems: Elems = Vec::new();
     let mut close = crate::widgets::escape_closes(ctx);
     let mut act: Option<(String, Value)> = None;
@@ -804,7 +872,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         GuideDialog::Manage { .. } => ("Manage Guides", tl!("Manage Guides")),
     };
     egui::Window::new(shown)
-        .id(egui::Id::new(title))
+        .id(egui::Id::unique(title))
         .collapsible(false)
         .resizable(false)
         .pivot(Align2::CENTER_CENTER)
@@ -926,11 +994,30 @@ mod tests {
     }
 
     #[test]
+    fn grid_cells_alternate_from_a_light_corner_and_stay_in_view() {
+        let pic = Rect::from_min_size(pos2(100.0, 50.0), vec2(4.0 * GRID_CELL, 2.0 * GRID_CELL));
+        let mins: Vec<_> = grid_cells(pic, Rect::EVERYTHING).iter().map(|r| ((r.min.x - 100.0) / GRID_CELL, (r.min.y - 50.0) / GRID_CELL)).collect();
+        assert_eq!(mins, [(1.0, 0.0), (3.0, 0.0), (0.0, 1.0), (2.0, 1.0)]);
+        // a magnified picture: only the squares in view, cut to it, keeping the picture's pattern
+        let big = Rect::from_min_size(pos2(-1000.0, -1000.0), vec2(4000.0, 4000.0));
+        let view = Rect::from_min_size(pos2(3.0, 0.0), vec2(20.0, 8.0));
+        let cells = grid_cells(big, view);
+        assert!(cells.iter().all(|c| view.contains_rect(*c)), "{cells:?}");
+        assert_eq!(cells, [Rect::from_min_max(pos2(8.0, 0.0), pos2(16.0, 8.0))]);
+        assert!(grid_cells(pic, Rect::from_min_size(pos2(0.0, 0.0), vec2(10.0, 10.0))).is_empty(), "nothing outside the picture");
+        // a picture magnified far past the zoom menu (`ui.set` takes any zoom) does not overflow
+        let huge = Rect::from_min_max(pos2(-1e20, -1e20), pos2(1e20, 1e20));
+        assert!(grid_cells(huge, view).len() <= 6);
+        assert!(grid_cells(Rect::from_min_max(pos2(f32::NEG_INFINITY, 0.0), pos2(f32::INFINITY, 1.0)), view).is_empty());
+    }
+
+    #[test]
     fn channel_view_greyscales() {
-        let img = Rgba { w: 2, h: 1, px: vec![200, 100, 50, 255, 255, 255, 255, 0] };
-        assert_eq!(channel_view(&img, DisplayMode::Red).px, vec![200, 200, 200, 255, 0, 0, 0, 255]);
+        // an opaque pixel, a transparent one and a half-transparent one (color premultiplied)
+        let img = Rgba { w: 3, h: 1, px: vec![200, 100, 50, 255, 0, 0, 0, 0, 90, 40, 20, 128] };
+        assert_eq!(channel_view(&img, DisplayMode::Red).px, vec![200, 200, 200, 255, 0, 0, 0, 255, 90, 90, 90, 255]);
         assert_eq!(channel_view(&img, DisplayMode::Green).px[..4], [100, 100, 100, 255]);
-        assert_eq!(channel_view(&img, DisplayMode::Alpha).px, vec![255, 255, 255, 255, 0, 0, 0, 255]);
+        assert_eq!(channel_view(&img, DisplayMode::Alpha).px, vec![255, 255, 255, 255, 0, 0, 0, 255, 128, 128, 128, 255]);
     }
 
     #[test]
@@ -959,5 +1046,22 @@ mod tests {
         v.paused_res = PlaybackRes::Quarter;
         assert_eq!(v.effective_res(true), PlaybackRes::Half);
         assert_eq!(v.effective_res(false), PlaybackRes::Quarter);
+    }
+
+    #[test]
+    fn zooming_in_resolves_the_waveform_in_finer_columns() {
+        // a square wave: four loud peak buckets, then four silent ones, 800 buckets in all
+        let peaks: Vec<(f32, f32)> = (0..800).map(|i| if (i / 4) % 2 == 0 { (-1.0, 1.0) } else { (0.0, 0.0) }).collect();
+        let bucket = 256.0 * TICKS_PER_SAMPLE_48K;
+        let at = |b: f64| Tick((b * bucket) as i64);
+        let silent = |shown: (Tick, Tick)| (0..100).filter(|x| column_peak(&peaks, shown, *x as f64 / 100.0, (*x + 1) as f64 / 100.0).1 == 0.0).count();
+        // the whole clip in 100 columns: 8 buckets each, every one with a loud part
+        assert_eq!(silent((at(0.0), at(800.0))), 0);
+        // an eighth of it: about one bucket a column (a column edge rounding down takes in its
+        // neighbour), and the silent half shows
+        let zoomed = silent((at(0.0), at(100.0)));
+        assert!((45..=50).contains(&zoomed), "{zoomed} silent columns");
+        // the zoomed part starts where the ruler does: a silent stretch is silent throughout
+        assert_eq!(silent((at(4.0), at(8.0))), 100);
     }
 }

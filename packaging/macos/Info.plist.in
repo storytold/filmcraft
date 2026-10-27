@@ -49,6 +49,24 @@
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the FilmCraft authors. MIT OR Apache-2.0.</string>
 
+  <!-- Finder opens a project by this claim. The exported type alone is not enough:
+       without it Launch Services reports that FilmCraft cannot open a FilmCraft Project (#1229). -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>FilmCraft Project</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>ai.storyteller.filmcraft.project</string>
+      </array>
+    </dict>
+  </array>
+
   <!-- Filmcraft's own format. -->
   <key>UTExportedTypeDeclarations</key>
   <array>

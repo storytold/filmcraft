@@ -238,7 +238,8 @@ fn openexr_sequences_compress() {
     }
 }
 
-/// `alpha` keeps straight alpha in PNG and TIFF sequences; off (the default) flattens over black (#160).
+/// `alpha` keeps straight alpha in PNG and TIFF sequences; off (the default) flattens over black (#160)
+/// and writes RGB files without an alpha channel (#1863).
 #[test]
 fn image_sequences_keep_alpha_when_asked() {
     let (p, seq, m) = matte([0.0, 0.0, 1.0, 0.5], 64, 36, None);
@@ -248,16 +249,36 @@ fn image_sequences_keep_alpha_when_asked() {
             let mut s = ExportSettings { format: fmt, path: dir.path(&format!("a.{ext}")), alpha, ..Default::default() };
             s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
             export(&p, seq, &s, &m, &Progress::default()).unwrap();
-            let img = image::open(dir.0.join(format!("a000.{ext}"))).unwrap();
+            let file = dir.0.join(format!("a000.{ext}"));
+            if fmt == Format::PngSequence {
+                let colour_type = std::fs::read(&file).unwrap()[25];
+                assert_eq!(colour_type, if alpha { 6 } else { 2 }, "PNG colour type, alpha={alpha}");
+            }
+            let img = image::open(&file).unwrap();
             let px = img.to_rgba8().get_pixel(32, 18).0;
+            assert_eq!(img.color().has_alpha(), alpha, "{fmt:?} alpha channel written, alpha={alpha}");
             if alpha {
-                assert!(img.color().has_alpha(), "{fmt:?} must be written with an alpha channel");
                 assert!((100..=160).contains(&px[3]) && px[2] > 200 && px[0] < 15, "{fmt:?} straight alpha: {px:?}");
             } else {
                 assert!(px[3] == 255 && px[2] > 100 && px[2] < 240 && px[0] < 15, "{fmt:?} flattened over black: {px:?}");
             }
         }
     }
+    // the PNG size estimate counts the channels actually written, as TIFF's does
+    let rate = FrameRate::FPS_24;
+    let png = |alpha| ExportSettings { format: Format::PngSequence, alpha, ..Default::default() }.estimate_bytes(320, 180, rate, 48_000, rate.tick_of(1));
+    assert_eq!(png(false) * 4, png(true) * 3, "PNG estimate: {} RGB vs {} RGBA", png(false), png(true));
+}
+
+/// Thumbnails (`encode_png`) and an 8-bit PNG Export Frame keep the alpha they are given: only the
+/// sequence's `alpha` switch drops it (#1863).
+#[test]
+fn png_stills_keep_their_alpha_channel() {
+    let half = filmcraft_render::Image::filled(4, 2, [0.0, 0.0, 0.5, 0.5]);
+    let thumb = encode_png(half.to_rgba8(), 4, 2).unwrap();
+    assert_eq!(thumb[25], 6, "encode_png colour type");
+    let frame = still::encode(&half, still::StillFormat::Png, 8).unwrap();
+    assert_eq!(frame[25], 6, "Export Frame PNG colour type");
 }
 
 #[test]
@@ -1134,4 +1155,203 @@ fn loudness_normalization_corrects_limiter_loss_and_bounds_impossible_targets() 
     assert!(matches!(audio.measure(&settings, &sources, &cancel), Err(ExportError::Cancelled)));
     assert_eq!(chunks.get(), 3);
     assert_eq!(reads_at_cancel.get(), Some(reads.load(Ordering::Relaxed)));
+}
+
+/// 32-bit integer and float audio in every container that takes them, read back by ffprobe (an
+/// external oracle) and, where FilmCraft imports the format, by FilmCraft's own readers.
+#[test]
+fn thirty_two_bit_audio_in_every_container() {
+    let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("pcm32");
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 2)));
+    let cases: [(Format, SampleFormat, &str, &str, &str); 8] = [
+        (Format::Wav, SampleFormat::Float32, "f.wav", "pcm_f32le", "32"),
+        (Format::Wav, SampleFormat::Int32, "i.wav", "pcm_s32le", "32"),
+        (Format::Aiff, SampleFormat::Float32, "f.aif", "pcm_f32be", "32"),
+        (Format::Aiff, SampleFormat::Int32, "i.aif", "pcm_s32be", "32"),
+        (Format::ProRes, SampleFormat::Float32, "f.mov", "pcm_f32le", "32"),
+        (Format::ProRes, SampleFormat::Int32, "i.mov", "pcm_s32le", "32"),
+        (Format::MxfOp1a, SampleFormat::Int32, "i.mxf", "pcm_s32le", "32"),
+        (Format::Flac, SampleFormat::Int32, "i.flac", "flac", "32"),
+    ];
+    for (format, sf, name, codec, bits) in cases {
+        let path = dir.path(name);
+        let mut s = ExportSettings { format, path: path.clone(), range, ..Default::default() };
+        s.audio.set_sample_format(sf);
+        assert!(s.supports_sample_format(sf), "{name}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let bytes = std::fs::read(&path).unwrap();
+        // FilmCraft's own importer: the -6 dB tone at a peak of 0.5
+        if !matches!(format, Format::MxfOp1a) {
+            let src = filmcraft_codecs::open_bytes(name, bytes.into()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let a = src.audio(0, 24_000, 48_000).unwrap();
+            let peak = a.channels[0].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!((peak - 0.5).abs() < 0.01, "{name}: peak {peak}");
+        }
+        if let Some(j) = ffprobe_json(&["-show_streams"], &path) {
+            let st = j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == "audio").unwrap().clone();
+            assert_eq!(st["codec_name"].as_str(), Some(codec), "{name}");
+            let depth = if codec == "flac" { &st["bits_per_raw_sample"] } else { &st["bits_per_sample"] };
+            assert_eq!(depth.as_str().map(str::to_string).or_else(|| depth.as_u64().map(|v| v.to_string())).as_deref(), Some(bits), "{name}");
+        }
+    }
+    // every 32-bit file holds the same samples (float exactly, integers within one step of 2^-31)
+    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("32-bit audio") {
+        let raw = |name: &str| {
+            let out = std::process::Command::new(&ffmpeg)
+                .args(["-v", "error", "-i", &dir.path(name), "-map", "0:a", "-f", "f32le", "-c:a", "pcm_f32le", "-"])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{name}: {}", String::from_utf8_lossy(&out.stderr));
+            out.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect::<Vec<f32>>()
+        };
+        let reference = raw("f.wav");
+        assert_eq!(reference.len(), 24_000 * 2);
+        for name in ["f.aif", "f.mov"] {
+            assert!(raw(name) == reference, "{name}: float samples differ from the WAV's");
+        }
+        for name in ["i.wav", "i.aif", "i.mov", "i.mxf", "i.flac"] {
+            let got = raw(name);
+            assert_eq!(got.len(), reference.len(), "{name}");
+            let worst = got.iter().zip(&reference).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-6, "{name}: differs by {worst}");
+        }
+    }
+}
+
+/// The mix is 32-bit float: 32-bit float export keeps a +6 dB tone's peaks of 2.0, integers clip
+/// them at full scale.
+#[test]
+fn float_export_keeps_peaks_above_full_scale() {
+    let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(6.0));
+    let dir = Scratch::new("pcm-hot");
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4)));
+    let peak = |sf: SampleFormat, name: &str| {
+        let path = dir.path(name);
+        let mut s = ExportSettings { format: Format::Wav, path: path.clone(), range, ..Default::default() };
+        s.audio.set_sample_format(sf);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let src = filmcraft_codecs::open_bytes(name, std::fs::read(&path).unwrap().into()).unwrap();
+        src.audio(0, 12_000, 48_000).unwrap().channels[0].iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    let float = peak(SampleFormat::Float32, "f.wav");
+    assert!((float - 2.0).abs() < 0.02, "float keeps +6 dBFS: {float}");
+    for (sf, name) in [(SampleFormat::Int32, "i32.wav"), (SampleFormat::Int24, "i24.wav"), (SampleFormat::Int16, "i16.wav")] {
+        let p = peak(sf, name);
+        assert!(p <= 1.0 && p > 0.99, "{name} clips at full scale: {p}");
+    }
+}
+
+#[test]
+fn sample_formats_each_codec_and_container_stores() {
+    use SampleFormat::*;
+    let supported = |format: Format, codec: AudioCodec| {
+        let s = ExportSettings { format, audio: AudioSettings { codec, ..Default::default() }, ..Default::default() };
+        SampleFormat::ALL.iter().filter(|&&f| s.supports_sample_format(f)).copied().collect::<Vec<_>>()
+    };
+    assert_eq!(supported(Format::Wav, AudioCodec::Auto), [Int16, Int24, Int32, Float32]);
+    assert_eq!(supported(Format::Aiff, AudioCodec::Auto), [Int16, Int24, Int32, Float32]);
+    assert_eq!(supported(Format::ProRes, AudioCodec::Pcm), [Int16, Int24, Int32, Float32]);
+    assert_eq!(supported(Format::MxfOp1a, AudioCodec::Auto), [Int16, Int24, Int32]);
+    assert_eq!(supported(Format::MxfOpAtom, AudioCodec::Auto), [Int16, Int24, Int32]);
+    assert_eq!(supported(Format::Flac, AudioCodec::Auto), [Int16, Int24, Int32]);
+    assert_eq!(supported(Format::ProRes, AudioCodec::Flac), [Int16, Int24, Int32]);
+    assert!(supported(Format::H264, AudioCodec::Auto).is_empty(), "MP4 is AAC");
+    // `bits` rounds down to a size; `float` only with 32
+    let fmt = |bits, float| AudioSettings { bits, float, ..Default::default() }.sample_format();
+    assert_eq!(
+        [fmt(0, false), fmt(20, false), fmt(24, false), fmt(31, false), fmt(32, false), fmt(64, false), fmt(32, true)],
+        [Int16, Int16, Int24, Int24, Int32, Int32, Float32]
+    );
+}
+
+/// Hostile or contradictory settings (CLI, control channel, MCP, old presets) are errors, never
+/// a panic or a silently different file.
+#[test]
+fn unsupported_sample_formats_are_refused() {
+    let refused = |format: Format, codec: AudioCodec, bits: u16, float: bool| {
+        let s = ExportSettings { format, path: "x".into(), audio: AudioSettings { codec, bits, float, ..Default::default() }, ..Default::default() };
+        s.validate().err().map(|e| e.to_string())
+    };
+    assert!(refused(Format::Wav, AudioCodec::Auto, 24, true).is_some_and(|e| e.contains("32")));
+    assert!(refused(Format::Flac, AudioCodec::Auto, 32, true).is_some_and(|e| e.contains("FLAC")));
+    assert!(refused(Format::ProRes, AudioCodec::Flac, 32, true).is_some_and(|e| e.contains("FLAC")));
+    assert!(refused(Format::MxfOp1a, AudioCodec::Auto, 32, true).is_some_and(|e| e.contains("MXF")));
+    for (format, codec) in [(Format::Wav, AudioCodec::Auto), (Format::Aiff, AudioCodec::Auto), (Format::ProRes, AudioCodec::Pcm)] {
+        assert_eq!(refused(format, codec, 32, true), None, "{format:?}");
+    }
+    assert_eq!(refused(Format::Flac, AudioCodec::Auto, 32, false), None);
+    assert_eq!(refused(Format::MxfOp1a, AudioCodec::Auto, 32, false), None);
+    // AAC has no sample size: the PCM / FLAC choice is ignored, as before
+    assert_eq!(refused(Format::H264, AudioCodec::Auto, 32, true), None);
+    // no audio, nothing to refuse
+    let s = ExportSettings {
+        format: Format::MxfOp1a,
+        include_audio: false,
+        audio: AudioSettings { bits: 32, float: true, ..Default::default() },
+        ..Default::default()
+    };
+    assert!(s.validate().is_ok());
+}
+
+#[test]
+fn sample_format_settings_round_trip_summary_and_estimate() {
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "wav", "audio": {"bits": 32, "float": true}})).unwrap();
+    assert_eq!(s.audio.sample_format(), SampleFormat::Float32);
+    let back: ExportSettings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(back.audio.sample_format(), SampleFormat::Float32);
+    // settings saved before 32-bit audio read integers
+    let old: AudioSettings = serde_json::from_value(serde_json::json!({"bits": 24})).unwrap();
+    assert_eq!((old.float, old.sample_format()), (false, SampleFormat::Int24));
+    let sum = |sf: SampleFormat, format: Format| {
+        let mut s = ExportSettings { format, ..Default::default() };
+        s.audio.set_sample_format(sf);
+        (
+            s.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio,
+            s.estimate_bytes(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)),
+        )
+    };
+    let (f, f_bytes) = sum(SampleFormat::Float32, Format::Wav);
+    assert!(f.starts_with("Uncompressed 32-bit float PCM, 48000 Hz"), "{f}");
+    let (i, _) = sum(SampleFormat::Int32, Format::Wav);
+    assert!(i.starts_with("Uncompressed 32-bit PCM"), "{i}");
+    let (_, i16_bytes) = sum(SampleFormat::Int16, Format::Wav);
+    assert!(f_bytes > i16_bytes * 19 / 10 && f_bytes < i16_bytes * 21 / 10, "{f_bytes} vs {i16_bytes}");
+    let (flac, _) = sum(SampleFormat::Int32, Format::Flac);
+    assert!(flac.starts_with("FLAC (lossless) 32-bit"), "{flac}");
+}
+
+/// FilmCraft imports its own 32-bit FLAC (symphonia rejected the frame header's 32-bit size code
+/// as reserved: "unsupported media"), at full scale and with noise, sample for sample.
+#[test]
+fn own_importer_reads_32_bit_flac_at_full_scale() {
+    let n = 20_000usize;
+    let mut seed = 7u64;
+    let noise: Vec<i32> = (0..n)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 32) as u32 as i32
+        })
+        .collect();
+    let extremes: Vec<i32> = (0..n).map(|i| if i % 3 == 0 { i32::MAX } else { i32::MIN + 1 }).collect();
+    for level in [0u8, 5, 8] {
+        let mut enc = filmcraft_flac::Encoder::new(filmcraft_flac::EncoderConfig { level, ..filmcraft_flac::EncoderConfig::new(48_000, 2, 32) }).unwrap();
+        let mut file = enc.header();
+        file.extend(enc.encode(&[&extremes, &noise]).unwrap());
+        file.extend(enc.finish());
+        let at = filmcraft_flac::STREAMINFO_OFFSET as usize;
+        file[at..at + 34].copy_from_slice(&enc.streaminfo());
+        let src = filmcraft_codecs::open_bytes("x.flac", file.into()).unwrap_or_else(|e| panic!("level {level}: {e}"));
+        let a = src.audio(0, n, 48_000).unwrap();
+        for (c, want) in [&extremes, &noise].iter().enumerate() {
+            let got = &a.channels[c];
+            assert_eq!(got.len(), n, "level {level} channel {c}");
+            for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+                let w = (f64::from(w) / 2_147_483_648.0) as f32;
+                assert!((g - w).abs() <= 1e-6, "level {level} channel {c} sample {i}: {g} vs {w}");
+            }
+        }
+    }
 }

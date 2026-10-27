@@ -69,7 +69,9 @@ USAGE
 SUBCOMMANDS
   exec <id> [key=value ...]     run one command; prints its result as JSON
   exec <id> '<json params>'     same, params as one JSON object
-  run <script.jsonl | ->        run commands, one {\"id\",\"params\"} per line (# comments ok)
+  run <script.jsonl | ->        run commands, one {\"id\",\"params\"} per line (# comments ok), in
+                                order: file.exportMedia waits for its file before the next line
+                                (and before exit) unless its params say \"wait\": false
   commands [filter] [--json]    list commands (id, label, shortcut, params)
   describe <id>                 one command as JSON (menu, shortcut, params, enabled now)
   inspect [project|sequence]    project tree or active sequence as JSON (default: both)
@@ -135,6 +137,25 @@ fn usage(msg: impl std::fmt::Display) -> ! {
     std::process::exit(2)
 }
 
+/// Read a file off the runtime thread: `cli` is async because MCP, bridge calls and control
+/// commands await, so a blocking `std::fs` read would stall every other task on that thread.
+async fn read_file(path: impl Into<std::path::PathBuf>) -> std::io::Result<Vec<u8>> {
+    let path = path.into();
+    tokio::task::spawn_blocking(move || std::fs::read(path)).await.map_err(std::io::Error::other)?
+}
+
+/// `read_file` for UTF-8 text.
+async fn read_text(path: impl Into<std::path::PathBuf>) -> std::io::Result<String> {
+    let path = path.into();
+    tokio::task::spawn_blocking(move || std::fs::read_to_string(path)).await.map_err(std::io::Error::other)?
+}
+
+/// Write a file off the runtime thread; see `read_file`.
+async fn write_file(path: impl Into<std::path::PathBuf>, data: Vec<u8>) -> std::io::Result<()> {
+    let path = path.into();
+    tokio::task::spawn_blocking(move || std::fs::write(path, data)).await.map_err(std::io::Error::other)?
+}
+
 fn fail(msg: impl std::fmt::Display) -> ! {
     diag(format_args!("filmcraft-cli: {msg}"));
     std::process::exit(1)
@@ -169,9 +190,21 @@ impl Backend {
         Backend::Local(Box::new(s))
     }
 
-    async fn exec(&mut self, id: &str, params: Value) -> Result<Value, String> {
+    async fn exec(&mut self, id: &str, mut params: Value) -> Result<Value, String> {
         match self {
-            Backend::Local(s) => s.execute(id, params).map_err(|e| e.to_string()),
+            // this process exits after the command, so a background export would never be written:
+            // long commands wait unless the caller says otherwise (#2342)
+            Backend::Local(s) => {
+                if filmcraft_automation::long_job::LONG_COMMANDS.contains(&id)
+                    && let Some(p) = params.as_object_mut()
+                {
+                    // anything but an explicit `false` (missing, null, a typo'd value) waits
+                    if p.get("wait").and_then(Value::as_bool) != Some(false) {
+                        p.insert("wait".into(), json!(true));
+                    }
+                }
+                s.execute(id, params).map_err(|e| e.to_string())
+            }
             // a blocking export runs as an app job polled by the client (#91, #92)
             Backend::Bridge(b) => b.execute(id, params).await.map_err(|e| e.to_string()),
         }
@@ -293,7 +326,7 @@ async fn cli() {
         "bench-decode" => {
             let path = a.pos(1).unwrap_or_else(|| usage("bench-decode <media>"));
             let n: i64 = a.opt("--frames").and_then(|v| v.parse().ok()).unwrap_or(120);
-            let src = filmcraft_codecs::open_bytes(path, std::fs::read(path).unwrap_or_else(|e| fail(e)).into()).unwrap_or_else(|e| fail(e));
+            let src = filmcraft_codecs::open_bytes(path, read_file(path).await.unwrap_or_else(|e| fail(e)).into()).unwrap_or_else(|e| fail(e));
             let rate = src.info().frame_rate();
             let t0 = std::time::Instant::now();
             for f in 0..n {
@@ -349,7 +382,7 @@ async fn cli() {
             let text = if script == "-" {
                 std::io::read_to_string(std::io::stdin()).unwrap_or_else(|e| fail(e))
             } else {
-                std::fs::read_to_string(script).unwrap_or_else(|e| fail(format!("{script}: {e}")))
+                read_text(script).await.unwrap_or_else(|e| fail(format!("{script}: {e}")))
             };
             let mut b = Backend::open(&a);
             let mut failed = 0;
@@ -465,15 +498,15 @@ async fn cli() {
                 usage("render is headless; with --bridge use the MCP `render_frame` tool or `exec` ui commands");
             }
             let Backend::Local(mut s) = Backend::open(&a) else { usage("render is headless") };
-            let secs: f64 = a.opt("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-            let scale: f32 = a.opt("--scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+            let secs: f64 = finite_opt(&a, "--seconds").unwrap_or(0.0);
+            let scale: f32 = finite_opt(&a, "--scale").unwrap_or(1.0);
             let out = a.opt("--out").unwrap_or("frame.png");
             s.set_playhead(filmcraft_time::Tick::from_seconds_f64(secs));
             let t0 = std::time::Instant::now();
             let (img, offline) = render_at_playhead(&s, scale).unwrap_or_else(|e| fail(e));
             let dt = t0.elapsed();
             let png = filmcraft_automation::png_rgba(img.w as u32, img.h as u32, img.over_black_rgba8(), 0).unwrap_or_else(|e| fail(e));
-            std::fs::write(out, png).unwrap_or_else(|e| fail(format!("{out}: {e}")));
+            write_file(out, png).await.unwrap_or_else(|e| fail(format!("{out}: {e}")));
             let offline: Vec<Value> = offline.iter().filter_map(|o| serde_json::to_value(o).ok()).collect();
             check_offline(&a, &offline, &format!("render: {out}"));
             diag(format_args!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0));
@@ -548,6 +581,16 @@ fn check_offline(a: &Args, offline: &[Value], what: &str) {
     diag(format_args!("{}", offline_warning(offline)));
     if !a.flag("--allow-offline") {
         fail(format!("{what} has placeholder frames for offline media; relink it (exec media.relink …) or pass --allow-offline"));
+    }
+}
+
+/// A numeric option, or a usage error when it is not a finite number (so a typo never silently
+/// falls back to a default).
+fn finite_opt<T: std::str::FromStr + Copy + Into<f64>>(a: &Args, name: &str) -> Option<T> {
+    let v = a.opt(name)?;
+    match v.parse::<T>() {
+        Ok(n) if n.into().is_finite() => Some(n),
+        _ => usage(format!("{name}: expected a finite number, got `{v}`")),
     }
 }
 

@@ -3,6 +3,185 @@
 use super::*;
 use serde_json::json;
 
+/// Two adjacent linked A/V clips with handles on both sides of their cut.
+fn linked_cut() -> (Session, [(ClipId, ClipId); 2]) {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Linked trim", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).unwrap().id;
+    for n in 0..2 {
+        s.execute("timeline.place", json!({"item": item.0, "frame": 48 * n, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0})).unwrap();
+    }
+    let q = s.active_sequence().unwrap();
+    let clips = [0, 1].map(|n| (q.video_tracks[0].items[n].id, q.audio_tracks[0].items[n].id));
+    (s, clips)
+}
+
+/// #3085: selecting either side of a picture cut also selects its linked sound edge.
+#[test]
+fn linked_edit_point_selection_and_shift_toggle() {
+    for kind in ["trim", "ripple", "roll"] {
+        for edge in ["in", "out"] {
+            let (mut s, clips) = linked_cut();
+            let (video, audio) = clips[usize::from(edge == "in")];
+            let p = json!({"clip": video.0, "edge": edge, "kind": kind});
+            s.execute("trim.selectEditPoint", p.clone()).unwrap();
+            assert_eq!(s.state.edit_points.iter().map(|e| e.clip).collect::<Vec<_>>(), vec![video, audio], "{kind} {edge}");
+            s.execute("trim.selectEditPoint", json!({"clip": audio.0, "edge": edge, "kind": kind, "add": true})).unwrap();
+            assert!(s.state.edit_points.is_empty(), "Shift-click removes the linked group");
+            s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+            s.execute("trim.selectEditPoint", p).unwrap();
+            assert_eq!(s.state.edit_points.len(), 1);
+        }
+    }
+}
+
+/// #3085: Trim Monitor rolls picture and sound once, with one undo/redo step.
+#[test]
+fn trim_mode_roll_moves_linked_audio_once() {
+    for edge in ["in", "out"] {
+        let (mut s, clips) = linked_cut();
+        let selected = clips[usize::from(edge == "in")].0;
+        s.execute("trim.selectEditPoint", json!({"clip": selected.0, "edge": edge, "kind": "roll"})).unwrap();
+        let before = s.project.clone();
+        let undo = s.history.undo.len();
+        s.execute("trim.nudge", json!({"frames": 3})).unwrap();
+        let q = s.active_sequence().unwrap();
+        for clip in [clips[0].0, clips[0].1] {
+            assert_eq!(q.find_item(clip).unwrap().1.end(), s.sequence_rate().tick_of(51));
+        }
+        for clip in [clips[1].0, clips[1].1] {
+            assert_eq!(q.find_item(clip).unwrap().1.start, s.sequence_rate().tick_of(51));
+        }
+        assert_eq!(s.history.undo.len(), undo + 1);
+        let after = s.project.clone();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*s.project, *before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(*s.project, *after);
+    }
+}
+
+/// Explicitly selected partners must not run the same linked trim twice, including ripple shifts.
+#[test]
+fn selected_linked_regular_and_ripple_edges_move_once() {
+    for kind in ["trim", "ripple"] {
+        for out in [false, true] {
+            let (mut s, clips) = linked_cut();
+            let pair = clips[usize::from(!out)];
+            s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+            for (n, clip) in [pair.0, pair.1].into_iter().enumerate() {
+                s.execute("trim.selectEditPoint", json!({"clip": clip.0, "edge": if out { "out" } else { "in" }, "kind": kind, "add": n != 0})).unwrap();
+            }
+            s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+            let before = s.project.clone();
+            s.execute("trim.nudge", json!({"frames": if out { -3 } else { 3 }})).unwrap();
+            let q = s.active_sequence().unwrap();
+            let f = |n| s.sequence_rate().tick_of(n);
+            for clip in [pair.0, pair.1] {
+                let it = q.find_item(clip).unwrap().1;
+                let expected = if out {
+                    (0, 45)
+                } else if kind == "ripple" {
+                    (48, 93)
+                } else {
+                    (51, 96)
+                };
+                assert_eq!((it.start, it.end()), (f(expected.0), f(expected.1)), "{kind} out={out}");
+            }
+            if out {
+                for clip in [clips[1].0, clips[1].1] {
+                    assert_eq!(q.find_item(clip).unwrap().1.start, f(if kind == "ripple" { 45 } else { 48 }), "{kind}");
+                }
+            }
+            let after = s.project.clone();
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(*s.project, *before);
+            s.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(*s.project, *after);
+        }
+    }
+}
+
+/// Nearest-edge selection follows links even when only the video track is targeted, without
+/// duplicating the sound when it is targeted too. Dynamic trimming uses the same grouped edit.
+#[test]
+fn nearest_linked_roll_and_dynamic_trim() {
+    let (mut s, clips) = linked_cut();
+    let rate = s.sequence_rate();
+    s.execute("timeline.setTargeting", json!({"track": "A1", "targeted": false})).unwrap();
+    s.execute("playhead.set", json!({"frame": 48})).unwrap();
+    s.execute("trim.selectNearest", json!({"kind": "roll"})).unwrap();
+    assert_eq!(s.state.edit_points.len(), 2);
+    assert!(s.state.edit_points.iter().any(|e| e.clip == clips[0].1));
+    s.execute("timeline.setTargeting", json!({"track": "A1", "targeted": true})).unwrap();
+    s.execute("trim.selectNearest", json!({"kind": "roll"})).unwrap();
+    assert_eq!(s.state.edit_points.len(), 2);
+    let before = s.project.clone();
+    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).unwrap();
+    s.execute("trim.shuttleStop", json!({"clock": 0.25})).unwrap();
+    let expected = rate.tick_of(48 + frames(&s, 0.25));
+    for clip in [clips[0].0, clips[0].1] {
+        assert_eq!(s.active_sequence().unwrap().find_item(clip).unwrap().1.end(), expected);
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before);
+}
+
+/// The shorter audio handle limits the picture too; separately applying the two cuts desyncs them.
+#[test]
+fn linked_trim_roll_uses_the_shortest_handle() {
+    let (mut s, clips) = linked_cut();
+    let rate = s.sequence_rate();
+    s.edit_sequence("Short audio handle", |q, _, _| {
+        q.find_item_mut(clips[1].1).unwrap().1.source_in = rate.tick_of(2);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": clips[0].0.0, "edge": "out", "kind": "roll"})).unwrap();
+    s.execute("trim.nudge", json!({"frames": -10})).unwrap();
+    for clip in [clips[0].0, clips[0].1] {
+        assert_eq!(s.active_sequence().unwrap().find_item(clip).unwrap().1.end(), rate.tick_of(46));
+    }
+}
+
+/// Locked partners are neither selected nor changed; directly trimming a locked primary fails.
+#[test]
+fn linked_trim_respects_locked_tracks() {
+    for kind in ["trim", "ripple", "roll"] {
+        let (mut s, clips) = linked_cut();
+        s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+        s.execute("trim.selectEditPoint", json!({"clip": clips[0].0.0, "edge": "out", "kind": kind})).unwrap();
+        assert_eq!(s.state.edit_points.len(), 1);
+        let audio = s.active_sequence().unwrap().audio_tracks[0].clone();
+        s.execute("trim.nudge", json!({"frames": -3})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().audio_tracks[0], audio);
+        s.execute("trim.selectEditPoint", json!({"clip": clips[0].1.0, "edge": "out", "kind": kind})).unwrap();
+        let before = s.project.clone();
+        assert!(s.execute("trim.nudge", json!({"frames": -3})).is_err());
+        assert_eq!(*s.project, *before);
+    }
+}
+
+/// A split audio cut stays separate from a picture roll; linked selection off also edits one cut.
+#[test]
+fn split_or_disabled_linked_roll_leaves_audio_alone() {
+    for split in [false, true] {
+        let (mut s, clips) = linked_cut();
+        s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+        if split {
+            s.execute("timeline.roll", json!({"left": clips[0].1.0, "right": clips[1].1.0, "deltaFrames": -4})).unwrap();
+            s.execute("sequence.linkedSelection", json!({"on": true})).unwrap();
+        }
+        let audio = s.active_sequence().unwrap().audio_tracks[0].clone();
+        s.execute("trim.selectEditPoint", json!({"clip": clips[0].0.0, "edge": "out", "kind": "roll"})).unwrap();
+        assert_eq!(s.state.edit_points.len(), 1);
+        s.execute("trim.nudge", json!({"frames": 3})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().audio_tracks[0], audio);
+        assert_eq!(s.active_sequence().unwrap().find_item(clips[0].0).unwrap().1.end(), s.sequence_rate().tick_of(51));
+    }
+}
+
 fn demo() -> Session {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
@@ -206,9 +385,10 @@ fn trim_monitor_sides_and_shift_counters() {
     assert_eq!(s.execute("trim.monitor", json!({})).unwrap()["inShift"], json!(0));
     // Apply Default Transitions to Selection at the edit point
     let r = s.execute("trim.applyDefaultTransition", json!({})).unwrap();
-    assert_eq!(r["transitions"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["transitions"].as_array().unwrap().len(), 2, "picture and linked sound: {r}");
     let seq = s.execute("sequence.inspect", json!({})).unwrap();
     assert!(!seq["video"][0]["transitions"].as_array().unwrap().is_empty());
+    assert!(!seq["audio"][0]["transitions"].as_array().unwrap().is_empty());
 }
 
 #[test]

@@ -318,3 +318,12 @@ fn probing_large_unstreamable_files_does_not_read_them_whole() {
     assert_eq!(r["items"].as_array().unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #1292: an Avid Log Exchange file is something FilmCraft writes (File ▸ Export), not a project
+/// it can import, so the browser doesn't list it with the project files.
+#[test]
+fn ale_logs_are_not_offered_for_import() {
+    assert_eq!(media_browser::kind_of("clips.ale"), None);
+    assert!(!media_browser::extensions().contains(&"ale"));
+    assert_eq!(media_browser::kind_of("cut.edl"), Some("project"));
+}

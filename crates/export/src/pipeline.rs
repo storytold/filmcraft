@@ -3,6 +3,7 @@
 //! apply the Export effects (image, name and timecode overlays, video limiter) and convert to the
 //! encoder's input (straight sRGB RGBA8, or encoded R'G'B' floats for HDR).
 
+use std::io::Cursor;
 use std::sync::Arc;
 
 use filmcraft_geom::Vec2;
@@ -13,6 +14,17 @@ use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
 use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+
+/// Image overlays originate outside the project and are expanded to f32 working images. This
+/// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
+const MAX_OVERLAY_PIXELS: usize = 16 << 20;
+
+fn bounded_overlay_dimensions(w: usize, h: usize) -> Result<()> {
+    if w == 0 || h == 0 || w.checked_mul(h).is_none_or(|pixels| pixels > MAX_OVERLAY_PIXELS) {
+        return Err(ExportError::Unsupported("image overlay exceeds the pixel budget".into()));
+    }
+    Ok(())
+}
 
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,6 +64,8 @@ impl Geometry {
 /// GPU renderers shared by the export workers: a worker takes a free one for a frame and puts it
 /// back (a single renderer behind a mutex made the workers queue, GPU export ~20 % slower than CPU).
 struct RendererPool {
+    /// Initial capacity, also the maximum number of frame tasks admitted at once.
+    capacity: usize,
     renderers: std::sync::Mutex<Vec<Box<dyn FrameRenderer>>>,
     available: std::sync::Condvar,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
@@ -62,13 +76,17 @@ impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
         (!renderers.is_empty()).then(|| Self {
+            capacity: renderers.len(),
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
             failed: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
-    /// Run `f` with a free renderer, waiting for one if all are busy. `None` once a renderer has
+    /// Run `f` with a free renderer. Frame batches must respect `Pipeline::render_batch_limit`:
+    /// a renderer can run nested Rayon work, which may steal another frame on the same thread.
+    /// Admitting more frame tasks than renderers could then deadlock this condition variable
+    /// against the suspended outer frame's renderer. `None` once a renderer has
     /// panicked: the panicking renderer is dropped (its state can't be trusted) and so are the
     /// others as they come back, so the caller falls back to the CPU for the rest of the export.
     fn with<R>(&self, f: impl FnOnce(&mut dyn FrameRenderer) -> R) -> Option<R> {
@@ -146,6 +164,16 @@ impl Drop for Pipeline {
 }
 
 impl Pipeline {
+    /// Bound outer frame tasks before spawning them, not inside a Rayon job. A renderer can
+    /// invoke nested parallel decoding/conversion; those joins may steal another frame task.
+    /// With at most one active batch and no more tasks than the initial renderer capacity,
+    /// every stolen frame can acquire a renderer without waiting for an ancestor to return it.
+    /// Keep the immutable capacity even after a failed renderer retires the pool.
+    pub(crate) fn render_batch_limit(&self, requested: i64) -> i64 {
+        let requested = requested.max(1);
+        self.renderer.as_ref().map_or(requested, |pool| requested.min(i64::try_from(pool.capacity).unwrap_or(i64::MAX)))
+    }
+
     pub fn new(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, hdr_out: bool) -> Result<Self> {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         q.settings.validate().map_err(ExportError::Unsupported)?;
@@ -376,8 +404,16 @@ fn composite(dst: &mut Image, src: &Image, x: i64, y: i64, opacity: f32) {
 /// Load a PNG / JPEG overlay as premultiplied linear light, `width` pixels wide.
 fn load_overlay(path: &str, width: f32) -> Result<Image> {
     let bytes = std::fs::read(path).map_err(|e| ExportError::Io(format!("image overlay {path}: {e}")))?;
-    let rgba = image::load_from_memory(&bytes).map_err(|e| ExportError::Unsupported(format!("image overlay {path}: {e}")))?.to_rgba8();
+    let mut reader = image::ImageReader::new(Cursor::new(bytes));
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some((MAX_OVERLAY_PIXELS * 4) as u64);
+    reader.limits(limits);
+    let reader = reader.with_guessed_format().map_err(|e| ExportError::Unsupported(format!("image overlay {path}: {e}")))?;
+    let rgba = reader.decode().map_err(|e| ExportError::Unsupported(format!("image overlay {path}: {e}")))?.to_rgba8();
     let (iw, ih) = (rgba.width() as usize, rgba.height() as usize);
+    bounded_overlay_dimensions(iw, ih)?;
     let mut img = Image::new(iw, ih);
     for (o, p) in img.px.as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_raw().as_chunks::<4>().0) {
         let a = p[3] as f32 / 255.0;
@@ -386,8 +422,12 @@ fn load_overlay(path: &str, width: f32) -> Result<Image> {
         }
         o[3] = a;
     }
+    if !width.is_finite() || width <= 0.0 {
+        return Err(ExportError::Unsupported("image overlay width is invalid".into()));
+    }
     let nw = width.round().max(1.0) as usize;
-    let nh = ((ih as f32 * nw as f32 / iw.max(1) as f32).round() as usize).max(1);
+    let nh = ((ih as f64 * nw as f64 / iw.max(1) as f64).round() as usize).max(1);
+    bounded_overlay_dimensions(nw, nh)?;
     Ok(if (nw, nh) == (iw, ih) { img } else { resample(&img, nw, nh) })
 }
 
@@ -481,4 +521,16 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
         c.iter_mut().for_each(|v| *v += d);
     }
     c.iter_mut().for_each(|v| *v = v.clamp(0.0, hi.max(lo)));
+}
+
+#[cfg(test)]
+mod overlay_budget_tests {
+    use super::*;
+
+    #[test]
+    fn overlay_pixel_budget_is_checked_without_overflow() {
+        assert!(bounded_overlay_dimensions(4096, 4096).is_ok());
+        assert!(bounded_overlay_dimensions(4097, 4096).is_err());
+        assert!(bounded_overlay_dimensions(usize::MAX, 2).is_err());
+    }
 }

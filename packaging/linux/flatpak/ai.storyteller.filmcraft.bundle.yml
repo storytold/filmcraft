@@ -48,8 +48,8 @@ modules:
       - install -Dm755 bin/filmcraft /app/bin/filmcraft
       - install -Dm755 bin/filmcraft-cli /app/bin/filmcraft-cli
       - install -Dm644 share/applications/ai.storyteller.filmcraft.desktop /app/share/applications/ai.storyteller.filmcraft.desktop
-      # The same MIME file the deb/rpm install (no types of its own yet; the runtime's
-      # shared-mime-info already knows the video and audio formats).
+      # The same MIME file the deb/rpm install: it defines the .fcproj project type (the
+      # runtime's shared-mime-info already knows the video and audio formats).
       - install -Dm644 share/mime/packages/ai.storyteller.filmcraft.xml /app/share/mime/packages/ai.storyteller.filmcraft.xml
       # Already has the release's version and date substituted by package.sh.
       - install -Dm644 share/metainfo/ai.storyteller.filmcraft.metainfo.xml /app/share/metainfo/ai.storyteller.filmcraft.metainfo.xml

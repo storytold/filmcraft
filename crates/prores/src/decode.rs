@@ -6,6 +6,10 @@ use crate::header::{FrameHeader, PictureHeader, row_slice_widths};
 use crate::tables::*;
 use crate::{AlphaType, ChromaFormat, Error, Frame, Interlace, Result};
 
+/// Maximum aggregate decoded plane storage for one ProRes frame (256 MiB).
+// 1 GiB: 8K ProRes 4444 with alpha is 283 MB of 16-bit planes
+const MAX_FRAME_BYTES: usize = 1 << 30;
+
 /// Decoder options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeOptions {
@@ -120,6 +124,15 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
     let width = hdr.width as usize;
     let height = hdr.height as usize;
     let cwidth = hdr.chroma.chroma_width(hdr.width as u32) as usize;
+    let luma = width.checked_mul(height).ok_or(Error::Invalid("frame dimensions overflow"))?;
+    let chroma = cwidth.checked_mul(height).ok_or(Error::Invalid("chroma dimensions overflow"))?;
+    let samples = luma
+        .checked_add(chroma.checked_mul(2).ok_or(Error::Invalid("chroma plane count overflows"))?)
+        .and_then(|n| if hdr.alpha == AlphaType::None { Some(n) } else { n.checked_add(luma) })
+        .ok_or(Error::Invalid("frame plane count overflows"))?;
+    if !samples.checked_mul(std::mem::size_of::<u16>()).is_some_and(|n| n <= MAX_FRAME_BYTES) {
+        return Err(Error::Invalid("frame dimensions exceed the decoder memory limit"));
+    }
     let interlaced = hdr.interlace != Interlace::Progressive;
     let mb_width = width.div_ceil(16);
     let mb_height = if interlaced { height.div_ceil(32) } else { height.div_ceil(16) };

@@ -5,7 +5,7 @@ use filmcraft_media::{DemoScene, Generator, MediaSource};
 use filmcraft_project::{ClipId, ItemId, ItemKind, Label, MediaClip, MediaRef, ParamValue, Project, SequenceSettings, TrackKind, find_effect};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
-use crate::preview::{Need, Segment, effect_cost_ms, segment_at, video_segments};
+use crate::preview::{Need, Segment, audio_segments, effect_cost_ms, segment_at, video_segments};
 
 fn add_gen(p: &mut Project, g: GeneratorSource) -> ItemId {
     let info = g.info().clone();
@@ -234,6 +234,7 @@ fn effect_costs() {
             clip_name: "x",
             project: None,
             env: None,
+            frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
         };
         apply(&mut img, &e, &cx);
@@ -247,4 +248,55 @@ fn effect_costs() {
     for (ms, id) in rows {
         println!("{ms:8.2} ms  {id:24} tier {:.0}", effect_cost_ms(id));
     }
+}
+
+/// Put `item` on track 0 of `kind` in `seq` from frame `start_f` for `dur_f` frames.
+fn place_kind(p: &mut Project, seq: ItemId, kind: TrackKind, item: ItemId, start_f: i64, dur_f: i64) -> ClipId {
+    let r = FrameRate::FPS_24;
+    let ti = p.make_track_item(item, kind, r.tick_of(start_f), TimeRange::new(Tick::ZERO, r.tick_of(dur_f)), r).unwrap();
+    let id = ti.id;
+    let t = &mut p.sequence_mut(seq).unwrap().tracks_mut(kind)[0];
+    t.items.push(ti);
+    t.sort();
+    id
+}
+
+fn audio_hashes(p: &Project, seq: ItemId) -> Vec<String> {
+    audio_segments(p, seq).into_iter().map(|g| g.hash).collect()
+}
+
+#[test]
+fn a_nests_audio_previews_follow_the_sound_of_its_sequence() {
+    // Inner has a picture clip and a sound clip; Outer nests Inner (picture and sound), and Top
+    // nests Outer's sound
+    let (mut p, matte, ocean, inner) = setup();
+    let pic = place_kind(&mut p, inner, TrackKind::Video, matte, 0, 48);
+    let snd = place_kind(&mut p, inner, TrackKind::Audio, ocean, 0, 48);
+    let settings = p.sequence(inner).unwrap().settings.clone();
+    let outer = p.new_sequence("outer", settings.clone(), 1, 1, None);
+    place_kind(&mut p, outer, TrackKind::Video, inner, 24, 48);
+    place_kind(&mut p, outer, TrackKind::Audio, inner, 24, 48);
+    let top = p.new_sequence("top", settings, 1, 1, None);
+    place_kind(&mut p, top, TrackKind::Audio, outer, 12, 72);
+    let (audio, picture, deep) = (audio_hashes(&p, outer), video_segments(&p, outer), audio_hashes(&p, top));
+    assert_eq!(audio.len(), 1);
+
+    // the sound inside the nest changes: the nest's audio preview is stale, its picture is not
+    p.sequence_mut(inner).unwrap().find_item_mut(snd).unwrap().1.gain_db = -12.0;
+    assert_ne!(audio_hashes(&p, outer), audio, "a clip's gain inside the nest");
+    assert_ne!(audio_hashes(&p, top), deep, "a clip's gain two nests down");
+    assert_eq!(bounds(&video_segments(&p, outer)), bounds(&picture));
+    assert_eq!(by_frame(&video_segments(&p, outer), 30), by_frame(&picture, 30), "the picture did not change");
+    let (audio, deep) = (audio_hashes(&p, outer), audio_hashes(&p, top));
+    // the nested sequence's track mix counts too
+    p.sequence_mut(inner).unwrap().audio_tracks[0].muted = true;
+    assert_ne!(audio_hashes(&p, outer), audio, "a muted track inside the nest");
+    p.sequence_mut(inner).unwrap().audio_tracks[0].muted = false;
+    assert_eq!(audio_hashes(&p, outer), audio);
+
+    // the picture inside the nest changes: its audio preview stays valid
+    add_fx(&mut p, inner, pic, "tint");
+    assert_ne!(by_frame(&video_segments(&p, outer), 30), by_frame(&picture, 30));
+    assert_eq!(audio_hashes(&p, outer), audio, "a video effect inside the nest");
+    assert_eq!(audio_hashes(&p, top), deep);
 }

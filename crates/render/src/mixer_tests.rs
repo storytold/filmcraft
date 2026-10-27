@@ -7,6 +7,7 @@ use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, Medi
 use filmcraft_project::mixer::{LANE_MUTE, LANE_PAN, LANE_VOLUME, send_lane};
 use filmcraft_project::{
     AudioChannels, AutomationMode, ItemId, ItemKind, Keyframe, Label, MediaClip, MediaRef, ParamValue, Project, SequenceSettings, TrackKind, TrackSend,
+    Transition, TransitionId,
 };
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
@@ -403,6 +404,49 @@ fn audio_transition_curves() {
         assert_eq!(audio_gains(k, 0.0), (1.0, 0.0), "{k} starts on A");
         let (a, b) = audio_gains(k, 1.0);
         assert!(a.abs() < 1e-6 && close(b, 1.0, 1e-6), "{k} ends on B");
+    }
+}
+
+/// A transition centred on a cut mixes both clips across its whole length: the outgoing clip plays
+/// on past its out point and the incoming one starts before its in point (their handles), as the
+/// picture does, so the two overlap instead of each just dipping at the cut. The incoming source is
+/// a ramp, so its handle must come from the media just before its in point.
+#[test]
+fn audio_transition_on_a_cut_crossfades_through_the_handles() {
+    fn ramp(i: i64, _: usize) -> f32 {
+        i as f32 * 1e-6
+    }
+    let mut r = Rig::new(&[dc1, ramp]);
+    let (a_src, b_src) = (r.track(0).items[0].item, r.track(1).items[0].item);
+    let sec = |s: f64| Tick::from_seconds_f64(s);
+    let a = r.p.make_track_item(a_src, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, sec(1.0)), FrameRate::FPS_24).unwrap();
+    let b = r.p.make_track_item(b_src, TrackKind::Audio, sec(1.0), TimeRange::new(sec(2.0), sec(1.0)), FrameRate::FPS_24).unwrap();
+    let effect = filmcraft_project::vtransition::find_transition("constant_gain", filmcraft_project::EffectKind::AudioTransition).unwrap().instance();
+    let tr = Transition {
+        id: TransitionId(1),
+        effect,
+        start: sec(0.75),
+        duration: sec(0.5),
+        from: Some(a.id),
+        to: Some(b.id),
+        align: Default::default(),
+        reverse: false,
+    };
+    r.track(1).items.clear();
+    let t0 = r.track(0);
+    t0.items = vec![a, b];
+    t0.transitions.push(tr);
+    // the incoming clip plays media sample 96 000 at the cut (sample 48 000)
+    let b_at = |s: i64| ramp(s + 48_000, 0);
+    // constant gain at p = 0.25, 0.5 (the cut), 0.75: (1 - p)·A + p·B
+    for (s, p) in [(42_000, 0.25), (48_000, 0.5), (54_000, 0.75)] {
+        let want = (1.0 - p) * 0.1 + p * b_at(s);
+        let [l, rr] = r.mix(s, 1);
+        assert!(close(l[0], want, 1e-5) && close(rr[0], want, 1e-5), "sample {s}: {} (want {want})", l[0]);
+    }
+    // outside the transition each clip plays alone, at full level
+    for (s, want) in [(35_000, 0.1), (61_000, b_at(61_000))] {
+        assert!(close(r.mix(s, 1)[0][0], want, 1e-6), "sample {s}");
     }
 }
 

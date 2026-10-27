@@ -223,15 +223,96 @@ pub struct AudioSettings {
     pub channels: u32,
     /// AAC bitrate.
     pub bitrate_kbps: u32,
-    /// PCM and FLAC sample size: 16 or 24.
+    /// PCM and FLAC sample size: 16, 24 or 32 (other values round down to one of them, 16 at least).
     pub bits: u16,
+    /// 32-bit floating-point PCM instead of integers (needs `bits` 32; WAV, AIFF and QuickTime).
+    pub float: bool,
     /// FLAC compression level, 0 (fastest) to 8 (smallest). Every level is lossless.
     pub flac_level: u8,
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        AudioSettings { codec: AudioCodec::Auto, sample_rate: None, channels: 2, bitrate_kbps: 320, bits: 16, flac_level: 5 }
+        AudioSettings { codec: AudioCodec::Auto, sample_rate: None, channels: 2, bitrate_kbps: 320, bits: 16, float: false, flac_level: 5 }
+    }
+}
+
+impl AudioSettings {
+    /// The sample format [`AudioSettings::bits`] and [`AudioSettings::float`] ask for.
+    pub fn sample_format(&self) -> SampleFormat {
+        match self.bits {
+            32.. if self.float => SampleFormat::Float32,
+            32.. => SampleFormat::Int32,
+            24.. => SampleFormat::Int24,
+            _ => SampleFormat::Int16,
+        }
+    }
+
+    /// Ask for `f` ([`AudioSettings::bits`] and [`AudioSettings::float`]).
+    pub fn set_sample_format(&mut self, f: SampleFormat) {
+        self.bits = f.bits();
+        self.float = f.is_float();
+    }
+}
+
+/// How PCM and FLAC audio stores its samples. The mix is 32-bit float: the integer formats
+/// clip it at full scale, 32-bit float keeps it as it is (peaks above 0 dBFS included).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleFormat {
+    Int16,
+    Int24,
+    Int32,
+    Float32,
+}
+
+impl SampleFormat {
+    pub const ALL: [SampleFormat; 4] = [SampleFormat::Int16, SampleFormat::Int24, SampleFormat::Int32, SampleFormat::Float32];
+
+    pub fn bits(self) -> u16 {
+        match self {
+            SampleFormat::Int16 => 16,
+            SampleFormat::Int24 => 24,
+            SampleFormat::Int32 | SampleFormat::Float32 => 32,
+        }
+    }
+
+    /// Bytes per sample.
+    pub fn bytes(self) -> usize {
+        usize::from(self.bits() / 8)
+    }
+
+    pub fn is_float(self) -> bool {
+        self == SampleFormat::Float32
+    }
+
+    /// The name the Export settings show.
+    pub fn label(self) -> &'static str {
+        match self {
+            SampleFormat::Int16 => "16 bit",
+            SampleFormat::Int24 => "24 bit",
+            SampleFormat::Int32 => "32 bit",
+            SampleFormat::Float32 => "32 bit float",
+        }
+    }
+
+    /// One mix sample as a signed integer of this size, clipped at full scale (0 for
+    /// [`SampleFormat::Float32`], which is never quantised). Not-a-number becomes silence.
+    pub fn quantise(self, s: f32) -> i32 {
+        // f32 products for 16 and 24 bit (the bytes every earlier export wrote); f64 for 32 bit,
+        // whose full scale 2^31 - 1 f32 cannot hold. NaN casts to 0, the casts saturate.
+        let s = s.clamp(-1.0, 1.0);
+        match self {
+            SampleFormat::Int16 => (s * 32_767.0).round() as i32,
+            SampleFormat::Int24 => (s * 8_388_607.0).round() as i32,
+            SampleFormat::Int32 => (f64::from(s) * 2_147_483_647.0).round() as i32,
+            SampleFormat::Float32 => 0,
+        }
+    }
+
+    /// One mix sample as stored by [`SampleFormat::Float32`]: as it is, NaN as silence and
+    /// infinities as the largest finite values.
+    pub fn float(s: f32) -> f32 {
+        if s.is_nan() { 0.0 } else { s.clamp(f32::MIN, f32::MAX) }
     }
 }
 
@@ -473,6 +554,16 @@ impl ExportSettings {
         Resolved { width: w, height: h, rate, sample_rate: self.audio.sample_rate.unwrap_or(seq_sr), channels, target_kbps: target, max_kbps: max, keyint }
     }
 
+    /// Whether the audio codec and container of this export store samples as `f`: PCM in WAV,
+    /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; AAC none.
+    pub fn supports_sample_format(&self, f: SampleFormat) -> bool {
+        match self.audio_codec() {
+            AudioCodec::Aac => false,
+            AudioCodec::Flac => !f.is_float(),
+            AudioCodec::Pcm | AudioCodec::Auto => !(f.is_float() && self.format.is_mxf()),
+        }
+    }
+
     /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
@@ -533,7 +624,7 @@ impl ExportSettings {
                 px * fps * bpp
             }
             Format::Mjpeg | Format::JpegSequence => px * 8.0 * (0.4 + self.quality as f64 / 100.0 * 2.0) * fps / 8.0,
-            Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
+            Format::PngSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 0.45 * 8.0 * fps,
             Format::BmpSequence => px * 3.0 * 8.0 * fps,
             Format::TiffSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 8.0 * fps,
             Format::TgaSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 8.0 * fps,
@@ -548,7 +639,7 @@ impl ExportSettings {
             Format::Wav | Format::Aiff | Format::Flac | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
         };
         let audio_bps = if self.has_audio() || self.format.is_audio_only() {
-            let pcm = r.sample_rate as f64 * r.channels as f64 * if self.audio.bits >= 24 { 24.0 } else { 16.0 };
+            let pcm = r.sample_rate as f64 * r.channels as f64 * f64::from(self.audio.sample_format().bits());
             match self.audio_codec() {
                 AudioCodec::Aac => self.audio.bitrate_kbps as f64 * 1000.0,
                 // typical of music and dialogue; noise compresses less, silence far more
@@ -649,13 +740,13 @@ impl ExportSettings {
             };
             match self.audio_codec() {
                 AudioCodec::Aac => format!("AAC, {} kbps, {} Hz, {ch}", self.audio.bitrate_kbps, r.sample_rate),
-                AudioCodec::Flac => format!(
-                    "FLAC (lossless) {}-bit, level {}, {} Hz, {ch}",
-                    if self.audio.bits >= 24 { 24 } else { 16 },
-                    self.audio.flac_level.min(8),
-                    r.sample_rate
-                ),
-                _ => format!("Uncompressed {}-bit PCM, {} Hz, {ch}", if self.audio.bits >= 24 { 24 } else { 16 }, r.sample_rate),
+                AudioCodec::Flac => {
+                    format!("FLAC (lossless) {}-bit, level {}, {} Hz, {ch}", self.audio.sample_format().bits(), self.audio.flac_level.min(8), r.sample_rate)
+                }
+                _ => {
+                    let f = self.audio.sample_format();
+                    format!("Uncompressed {}-bit{} PCM, {} Hz, {ch}", f.bits(), if f.is_float() { " float" } else { "" }, r.sample_rate)
+                }
             }
         } else {
             "No audio".to_string()

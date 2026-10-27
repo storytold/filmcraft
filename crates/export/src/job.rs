@@ -74,8 +74,8 @@ use crate::mxf_out::{MxfMux, MxfSetup};
 use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode};
 use crate::{
-    AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, Progress, Report, Result, Stage, VideoEncoder,
-    audio_factories, export_range, frame_span, note_stage, timed, video_factories,
+    AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, PrepareAhead, Progress, Report, Result, Stage,
+    VideoEncoder, audio_factories, export_range, frame_span, note_stage, timed, video_factories,
 };
 
 /// Output frames per interleaved group: the video packets of these frames, then the audio up to
@@ -113,7 +113,9 @@ struct Ahead {
 /// Render frames `f..end` in parallel. `None` when a source was not ready for one of them (the
 /// pending flag, taken after every frame because it is per thread): the batch is incomplete and
 /// must be rendered again.
-fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Option<Vec<Frame>> {
+/// `prepare` (the encoder's [`VideoEncoder::prepare_ahead`]) then works on each frame, numbered
+/// from `f0` like [`EncoderFrame::index`].
+fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider, prepare: Option<&PrepareAhead>, f0: i64) -> Option<Vec<Frame>> {
     let pending = AtomicBool::new(false);
     let frames: Vec<Frame> = (f..end)
         .into_par_iter()
@@ -121,6 +123,10 @@ fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider)
             let frame = pipe.frame(fi, sources);
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
+            }
+            if let Some(prepare) = prepare {
+                let index = u64::try_from(fi - f0).unwrap_or(u64::MAX);
+                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba: &frame.0, hdr: pipe.hdr_out.then_some(frame.1.as_slice()), index });
             }
             frame
         })
@@ -297,7 +303,8 @@ impl Exporter {
         (self.f1 - self.f0).max(0) as u64
     }
 
-    /// Frames per [`Self::step`] (default: one per core); 1 keeps web UI frames short.
+    /// Requested frames per [`Self::step`] (default: one per core), capped by GPU renderer
+    /// capacity and the overlap memory budget. 1 keeps web UI frames short.
     pub fn set_batch(&mut self, n: i64) {
         self.batch = n.max(1);
     }
@@ -333,9 +340,10 @@ impl Exporter {
         self.ahead.as_ref().map_or(0, |a| a.frames.len())
     }
 
-    /// Frames in the next batch: [`Self::set_batch`], lowered to the memory budget when overlapping.
+    /// Frames in the next batch, bounded before Rayon can steal nested frame tasks.
     fn batch_len(&self) -> i64 {
-        if self.overlapping() { overlap_batch(self.batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { self.batch }
+        let batch = self.pipe.render_batch_limit(self.batch);
+        if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch }
     }
 
     fn sample_at_frame(&self, f: i64, sr: u32) -> i64 {
@@ -363,18 +371,9 @@ impl Exporter {
                 }
             }
             None => {
-                let bps = if self.settings.audio.bits >= 24 { 3 } else { 2 };
-                let mut pcm = Vec::with_capacity(n * buf.len() * bps);
-                for i in 0..n {
-                    for c in &buf {
-                        let s = c[i].clamp(-1.0, 1.0);
-                        if bps == 3 {
-                            pcm.extend_from_slice(&((s * 8_388_607.0).round() as i32).to_le_bytes()[..3]);
-                        } else {
-                            pcm.extend_from_slice(&((s * 32767.0).round() as i16).to_le_bytes());
-                        }
-                    }
-                }
+                // little-endian, like the track's `lpcm` / `sowt` description says
+                let mut pcm = Vec::new();
+                crate::pcm::encode(crate::pcm::PcmContainer::Wav, &crate::audio_out::interleave(&buf), self.settings.audio.sample_format(), &mut pcm);
                 mux.write_sample(at, WriteSample { data: &pcm, duration: n as u32, composition_offset: 0, is_sync: true })
                     .map_err(|e| ExportError::Io(e.to_string()))?;
             }
@@ -428,8 +427,15 @@ impl Exporter {
                 Some(mux.add_track(c).map_err(|e| ExportError::Io(e.to_string()))?)
             }
             (Some(a), None) => {
-                let bits = if self.settings.audio.bits >= 24 { 24 } else { 16 };
-                let pcm = PcmConfig { bits, float: false, big_endian: false, signed: true, channels: a.channels as _, sample_rate: a.sr as f64 };
+                let f = self.settings.audio.sample_format();
+                let pcm = PcmConfig {
+                    bits: f.bits() as _,
+                    float: f.is_float(),
+                    big_endian: false,
+                    signed: true,
+                    channels: a.channels as _,
+                    sample_rate: a.sr as f64,
+                };
                 Some(mux.add_track(TrackConfig::new(SampleEntry::pcm(pcm), a.sr)).map_err(|e| ExportError::Io(e.to_string()))?)
             }
         };
@@ -527,12 +533,14 @@ impl Exporter {
 
     /// Encode (and mux) the batch starting at `self.next`, rendering the one after it meanwhile.
     fn step_batch(&mut self, sources: &dyn SourceProvider, progress: &Progress) -> Result<Step> {
+        let prepare = self.venc.prepare_ahead();
+        let f0 = self.f0;
         let (f, frames) = match self.ahead.take() {
             Some(a) if a.first == self.next => (a.first, a.frames),
             _ => {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
                 let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, f, end, sources)) {
+                match timed(Stage::Render, || render_batch(pipe, f, end, sources, prepare.as_ref(), f0)) {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -560,7 +568,7 @@ impl Exporter {
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
-                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources)))));
+                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources, prepare.as_ref(), f0)))));
             });
             let r = self.encode_batch(f, frames, sources);
             encode_done = Some(web_time::Instant::now());

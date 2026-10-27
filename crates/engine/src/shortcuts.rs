@@ -737,7 +737,8 @@ impl Shortcuts {
         let nb = Binding { command: command.into(), keys: chord.canonical(), panel: panel.map(str::to_string) };
         let before = self.snapshot();
         if !add {
-            self.bindings.retain(|b| !(same_shortcut_command(&b.command, command) && b.context() == nb.context()));
+            let copies = if nb.panel.is_none() { self.app_chords(command, None) } else { Vec::new() };
+            self.bindings.retain(|b| !(same_shortcut_command(&b.command, command) && (b.context() == nb.context() || is_copy(b, &copies))));
         }
         let mut reassigned = Vec::new();
         if !keep_conflicts {
@@ -769,6 +770,7 @@ impl Shortcuts {
         let before = self.snapshot();
         let n0 = self.bindings.len();
         let twins = shortcut_twins(command);
+        let copies = if panel == Some(None) { self.app_chords(command, chord.as_ref()) } else { Vec::new() };
         self.bindings.retain(|b| {
             let cmd = same_shortcut_command(&b.command, command);
             let key_ok = chord.as_ref().is_none_or(|c| b.chord().as_ref() == Some(c));
@@ -778,7 +780,7 @@ impl Shortcuts {
             let panel_ok = match &panel {
                 None => true,
                 Some(p) if p.is_none() && twins => true,
-                Some(p) => &b.panel == p,
+                Some(p) => &b.panel == p || is_copy(b, &copies),
             };
             !(cmd && key_ok && panel_ok)
         });
@@ -916,6 +918,16 @@ impl Shortcuts {
         Ok(name)
     }
 
+    /// The application-wide keys of `command` (only `key`, when given).
+    fn app_chords(&self, command: &str, key: Option<&Chord>) -> Vec<Chord> {
+        self.bindings
+            .iter()
+            .filter(|b| same_shortcut_command(&b.command, command) && b.panel.is_none())
+            .filter_map(Binding::chord)
+            .filter(|c| key.is_none_or(|k| k == c))
+            .collect()
+    }
+
     // ---------------------------------------------------------------- queries
 
     pub fn for_command(&self, id: &str) -> Vec<&Binding> {
@@ -1015,6 +1027,12 @@ fn shortcut_twins(id: &str) -> bool {
 
 fn same_shortcut_command(bound: &str, target: &str) -> bool {
     bound == target || (shortcut_twins(bound) && shortcut_twins(target))
+}
+
+/// A panel binding on one of the command's application keys (New Bin's Cmd+B in the Project
+/// panel) is a copy of that shortcut, so editing the application shortcut edits it too (#1333).
+fn is_copy(b: &Binding, app_chords: &[Chord]) -> bool {
+    b.panel.is_some() && b.chord().is_some_and(|c| app_chords.contains(&c))
 }
 
 fn check_panel(panel: Option<&str>) -> std::result::Result<Option<&'static str>, String> {

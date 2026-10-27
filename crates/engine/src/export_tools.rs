@@ -235,6 +235,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.bitrate_kbps = v;
         settings.adaptive_bitrate = None;
     }
+    if let Some(v) = crate::commands::checked_u32_p(p, "maxThreads", cmd)? {
+        settings.max_threads = v;
+    }
     if let Some(v) = crate::commands::checked_u32_p(p, "maxBitrateKbps", cmd)? {
         settings.max_bitrate_kbps = Some(v);
     }
@@ -385,10 +388,11 @@ pub fn default_export_dir(s: &Session) -> PathBuf {
     crate::temp_dir()
 }
 
-fn file_safe(n: &str) -> String {
+/// Convert project-derived display text into exactly one safe output filename component.
+pub fn file_safe(n: &str) -> String {
     let s: String = n.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
     let s = s.trim().to_string();
-    if s.is_empty() { "Export".into() } else { s }
+    if s.is_empty() || matches!(s.as_str(), "." | "..") { "Export".into() } else { s }
 }
 
 /// `path` with the settings' extension (added when missing; image sequences keep theirs).
@@ -449,7 +453,11 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     let Some(track) = q.caption_tracks.first() else { return Ok(None) };
     let format = filmcraft_captions::Format::from_name(kind).ok_or_else(|| bad("export", format!("caption sidecar `{kind}`: srt | vtt")))?;
     let range = filmcraft_export::export_range(project, seq, settings).map_err(|e| EngineError::Other(e.to_string()))?;
-    let doc = filmcraft_captions::document_from_track(track, range.start);
+    let mut doc = filmcraft_captions::document_from_track(track, range.start);
+    doc.cues.retain_mut(|cue| {
+        cue.end = cue.end.min(range.duration);
+        cue.start < cue.end
+    });
     let bytes =
         filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
@@ -544,6 +552,12 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out = json!({"job": id, "path": path});
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
+    }
+    if !wait {
+        // where the job can be followed (#1544: it is not in `export.queue.list`, which only lists
+        // the Export Queue, so agents looked there and found nothing)
+        out["poll"] = json!("jobs.list");
+        out["cancel"] = json!("jobs.cancel");
     }
     if wait && let Some(j) = s.jobs.iter().find(|j| j.id == id) {
         let v = j.to_json();
@@ -953,8 +967,14 @@ fn preset_json(s: &Session, pr: &ExportPreset, full: bool) -> Value {
     v
 }
 
+/// Lower-cased alphanumerics only, so `h264`, `h.264` and `H.264` compare equal.
+fn squash_alnum(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
 fn presets_list(s: &mut Session, p: &Value) -> Result<Value> {
     let query = str_p(p, "query").unwrap_or("").to_ascii_lowercase();
+    let squashed = squash_alnum(&query);
     let cat = str_p(p, "category").map(str::to_ascii_lowercase);
     let fav = bool_p(p, "favorites").unwrap_or(false);
     let fmt = str_p(p, "format").and_then(Format::from_name);
@@ -967,6 +987,10 @@ fn presets_list(s: &mut Session, p: &Value) -> Result<Value> {
                 || x.name.to_ascii_lowercase().contains(&query)
                 || x.description.to_ascii_lowercase().contains(&query)
                 || x.category.to_ascii_lowercase().contains(&query)
+                // The format id (`h264`) and label (`H.264`) are equivalent spellings.
+                || (!squashed.is_empty()
+                    && (squash_alnum(x.settings.format.id()).contains(&squashed)
+                        || squash_alnum(x.settings.format.label()).contains(&squashed)))
         })
         .filter(|x| cat.as_ref().is_none_or(|c| x.category.to_ascii_lowercase() == *c))
         .filter(|x| !fav || s.export_presets.is_favorite(&x.name))

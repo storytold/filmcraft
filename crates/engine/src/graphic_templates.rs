@@ -44,6 +44,7 @@ fn query(id: &'static str, label: &'static str, params: &'static str, run: Run) 
 }
 
 const G: &[&str] = &["Graphics and Titles"];
+const MAX_THUMBNAIL_DIMENSION: u32 = 1920;
 
 fn has_graphic(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -149,8 +150,7 @@ fn entry_json(e: &LibraryEntry) -> Value {
 /// Render a template's thumbnail (static: rolls are shown at rest) as straight sRGB RGBA8,
 /// `w` pixels wide with the template's aspect ratio. Returns (width, height, pixels).
 pub fn thumbnail(t: &GraphicsTemplate, w: u32) -> (u32, u32, Vec<u8>) {
-    let w = w.clamp(16, 1920);
-    let h = ((w as f64 * t.canvas[1] as f64 / t.canvas[0].max(1) as f64).round() as u32).max(1);
+    let (w, h) = thumbnail_dimensions(t.canvas, w);
     register_fonts(t);
     let mut meta = t.graphic.clone();
     meta.roll.mode = RollMode::Off;
@@ -171,9 +171,23 @@ pub fn thumbnail(t: &GraphicsTemplate, w: u32) -> (u32, u32, Vec<u8>) {
     // a moment into the clip, so intro animations have settled a little
     let at = Tick((t.duration.0 / 2).min(filmcraft_time::TICKS_PER_SECOND));
     let mut img = filmcraft_render::image::Image::new(w as usize, h as usize);
-    let k = w as f64 / t.canvas[0].max(1) as f64;
+    // fit both sides: a capped height leaves `w / canvas width` too large for a tall canvas
+    let k = (w as f64 / t.canvas[0].max(1) as f64).min(h as f64 / t.canvas[1].max(1) as f64);
     filmcraft_render::graphic_clip::render_graphic(&it, at, (t.canvas[0], t.canvas[1]), &Affine::scale(k, k), &mut img);
     (w, h, img.to_rgba8())
+}
+
+/// Fit a requested thumbnail width within a bounded rectangle without trusting the template's
+/// aspect ratio to derive an unbounded second dimension.
+fn thumbnail_dimensions(canvas: [u32; 2], requested_width: u32) -> (u32, u32) {
+    let mut w = requested_width.clamp(16, MAX_THUMBNAIL_DIMENSION);
+    let aspect = canvas[0].max(1) as f64 / canvas[1].max(1) as f64;
+    let mut h = (w as f64 / aspect).round().clamp(1.0, u32::MAX as f64) as u32;
+    if h > MAX_THUMBNAIL_DIMENSION {
+        h = MAX_THUMBNAIL_DIMENSION;
+        w = (h as f64 * aspect).round().clamp(1.0, MAX_THUMBNAIL_DIMENSION as f64) as u32;
+    }
+    (w, h)
 }
 
 /// Cached thumbnails by template id + content + width (the UI asks every frame).
@@ -775,7 +789,12 @@ fn set_char_style(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let tl = s.playhead();
     let (start, end) = (u64_p(p, "start").map(|v| v as usize), u64_p(p, "end").map(|v| v as usize));
-    let runs = s.edit_sequence("Character Style", move |q, _, _| {
+    // A pointer gesture shares one undo step only within the same clip, layer and range.
+    let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("graphics.setCharStyle:{}:{ei}:{start:?}:{end:?}", clip.0));
+    if bool_p(p, "begin").unwrap_or(false) {
+        s.history.merge_key = None;
+    }
+    let runs = s.edit_sequence_as("Character Style", merge.as_deref(), move |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         let e = &mut it.effects[ei];
@@ -1217,7 +1236,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "graphics.setCharStyle",
             "Character Style",
             &[],
-            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","bold":bool,"italic":bool,"underline":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range)}"##,
+            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","bold":bool,"italic":bool,"underline":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range),"merge":bool?,"begin":bool? (start a new undo gesture)}"##,
             has_graphic,
             set_char_style,
         ),
@@ -1243,5 +1262,4 @@ pub fn commands() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
-#[path = "graphic_templates_tests.rs"]
 mod tests;

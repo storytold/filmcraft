@@ -109,9 +109,11 @@ pub(crate) fn track_input_at(
         if !tr.range().overlaps(&range) {
             continue;
         }
-        // Re-mix: recompute the covered samples with crossfade gains.
-        let from = tr.from.and_then(|id| track.item(id));
-        let to = tr.to.and_then(|id| track.item(id));
+        // Re-mix: recompute the covered samples with crossfade gains. Both sides play over the
+        // whole transition, into their handles as the picture does, so a transition centred on a
+        // cut overlaps the two clips instead of only fading each on its own side of the cut.
+        let from = tr.from.and_then(|id| track.item(id)).map(|i| with_handles(i, tr.start, tr.end()));
+        let to = tr.to.and_then(|id| track.item(id)).map(|i| with_handles(i, tr.start, tr.end()));
         let s0 = tr.start.to_units_floor(sr as i64).max(start);
         let s1 = tr.end().to_units_floor(sr as i64).min(start + frames as i64);
         if s1 <= s0 {
@@ -124,10 +126,10 @@ pub(crate) fn track_input_at(
         }
         let mut a = AudioBuffer::silence(sr, w, n);
         let mut b = AudioBuffer::silence(sr, w, n);
-        if let Some(f) = from {
+        if let Some(f) = &from {
             mix_item(project, f, s0, n, sr, sources, &mut a, 1.0, &live);
         }
-        if let Some(tt) = to {
+        if let Some(tt) = &to {
             mix_item(project, tt, s0, n, sr, sources, &mut b, 1.0, &live);
         }
         let dur = (tr.end() - tr.start).to_units_floor(sr as i64).max(1) as f32;
@@ -141,6 +143,25 @@ pub(crate) fn track_input_at(
         }
     }
     tbuf
+}
+
+/// `item` lengthened to cover `[t0, t1)` with its media timing unchanged: the part before its in
+/// point and after its out point plays the source's handles (silent where the source has none).
+/// Remixed clips have no linear media to extend and stay as they are.
+fn with_handles(item: &TrackItem, t0: Tick, t1: Tick) -> TrackItem {
+    let mut ext = item.clone();
+    if crate::remix::is_remixed(item) {
+        return ext;
+    }
+    let head = (item.start - t0).max(Tick::ZERO);
+    let tail = (t1 - item.end()).max(Tick::ZERO);
+    ext.start = item.start - head;
+    ext.duration = item.duration + head + tail;
+    // forward media time is source_in + (t - start)·speed; reversed it counts down from the out
+    // point, so the extra head (forward) or tail (reverse) moves source_in back
+    let shift = if item.reverse { tail } else { head };
+    ext.source_in = item.source_in - Tick((shift.0 as f64 * item.speed.abs()).round() as i64);
+    ext
 }
 
 /// Held Clip Mixer controls of one track.

@@ -413,27 +413,8 @@ pub fn simplify_sequence(proj: &filmcraft_project::Project, q: &mut Sequence, o:
     // close gaps: spans where no track has anything
     let mut closed = Tick::ZERO;
     if o.close_gaps {
-        let mut spans: Vec<TimeRange> = q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.range())).collect();
-        spans.extend(q.caption_tracks.iter().flat_map(|t| t.captions.iter().map(|c| c.range())));
-        spans.sort_by_key(|r| r.start);
-        let mut gaps: Vec<TimeRange> = Vec::new();
-        let mut cursor = Tick::ZERO;
-        for r in &spans {
-            if r.start > cursor {
-                gaps.push(TimeRange::from_bounds(cursor, r.start));
-            }
-            cursor = cursor.max(r.end());
-        }
-        for g in gaps.iter().rev() {
-            for t in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
-                edit::shift_track_from(t, g.end(), Tick::ZERO - g.duration);
-            }
-            for t in &mut q.caption_tracks {
-                for c in t.captions.iter_mut().filter(|c| c.start >= g.end()) {
-                    c.start -= g.duration;
-                }
-            }
-            crate::sequence_tools::ripple_markers(&mut q.markers, g.end(), Tick::ZERO - g.duration);
+        for g in sequence_gaps(q, None).iter().rev() {
+            close_sequence_gap(q, *g, true);
             closed += g.duration;
         }
     }
@@ -454,6 +435,43 @@ pub fn simplify_sequence(proj: &filmcraft_project::Project, q: &mut Sequence, o:
         }
     }
     json!({"removedClips": removed_clips, "removedEffects": removed_effects, "movedClips": moved, "closedGaps": closed.0, "removedTracks": removed_tracks})
+}
+
+/// Spans where no track has anything (clips or captions), in time order: the gaps before, between
+/// and inside the material, never the open time after the last clip. With `within`, only the gaps
+/// that lie entirely inside it (Close Gap between In and Out).
+pub(crate) fn sequence_gaps(q: &Sequence, within: Option<TimeRange>) -> Vec<TimeRange> {
+    let mut spans: Vec<TimeRange> = q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.range())).collect();
+    spans.extend(q.caption_tracks.iter().flat_map(|t| t.captions.iter().map(|c| c.range())));
+    spans.sort_by_key(|r| r.start);
+    let mut gaps: Vec<TimeRange> = Vec::new();
+    let mut cursor = Tick::ZERO;
+    for r in &spans {
+        if r.start > cursor {
+            gaps.push(TimeRange::from_bounds(cursor, r.start));
+        }
+        cursor = cursor.max(r.end());
+    }
+    if let Some(w) = within {
+        gaps.retain(|g| g.start >= w.start && g.end() <= w.end());
+    }
+    gaps
+}
+
+/// Ripple one of [`sequence_gaps`] closed: everything after it, on every track, moves left by its
+/// length (it is empty on all of them, so nothing can collide). Close later gaps first.
+pub(crate) fn close_sequence_gap(q: &mut Sequence, g: TimeRange, markers: bool) {
+    for t in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
+        edit::shift_track_from(t, g.end(), Tick::ZERO - g.duration);
+    }
+    for t in &mut q.caption_tracks {
+        for c in t.captions.iter_mut().filter(|c| c.start >= g.end()) {
+            c.start -= g.duration;
+        }
+    }
+    if markers {
+        crate::sequence_tools::ripple_markers(&mut q.markers, g.end(), Tick::ZERO - g.duration);
+    }
 }
 
 fn simplify(s: &mut Session, p: &Value) -> Result<Value> {
@@ -538,5 +556,4 @@ fn add_flash_cue(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 #[cfg(test)]
-#[path = "sequence_extras_tests.rs"]
 mod tests;

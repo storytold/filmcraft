@@ -164,6 +164,9 @@
 	Hide All Caption Tracks	隐藏所有字幕轨道
 	High Quality Playback	高质量播放
 	History	历史记录
+	Delete Redoable Actions	删除可重做的操作
+	Clear History	清除历史记录
+	Delete the dimmed actions after the current state? They cannot be redone.	删除当前状态之后显示为灰色的操作？删除后将无法重做。
 	Import From	导入来源
 	Import Image Sequence…	导入图像序列…
 	Import from Media Browser	从媒体浏览器导入
@@ -225,6 +228,9 @@
 	Normalize Mix Track…	标准化混音轨道…
 	Offline File…	脱机文件…
 	Open Project…	打开项目…
+	Open Recent	打开最近文件
+	Clear Recent Files	清除最近文件
+	Recent	最近使用
 	Optical Flow	光流
 	Overwrite	覆盖
 	Paste	粘贴
@@ -277,6 +283,7 @@
 	Review	审阅
 	Right	右
 	Ripple Delete	波纹删除
+	Ripple Delete Head Frame	波纹删除头部帧
 	Ripple Sequence Markers	波纹序列标记
 	Rose	玫瑰红
 	Safe Margins	安全边距
@@ -310,6 +317,7 @@
 	Show Active Caption Tracks Only	仅显示活动字幕轨道
 	Show All Caption Tracks	显示所有字幕轨道
 	Show All Marker Colors	显示所有标记颜色
+	Show Duplicate Frame Markers	显示重复帧标记
 	Show Guides	显示参考线
 	Show Rulers	显示标尺
 	Show Through Edits	显示贯通编辑
@@ -335,6 +343,7 @@
 	Transcribe Sequence…	转录序列…
 	Transcribe…	转录…
 	Transcript	转录文稿
+	Transparency Grid	透明网格
 	Transparent Video…	透明视频…
 	Trim Edit	修剪编辑
 	Trim…	修剪…
@@ -495,6 +504,10 @@
 	Reveal Sequence in Project	在项目面板中显示序列
 	Video Thumbnails	视频缩略图
 	Audio Waveforms	音频波形
+	Work Area Bar	工作区域栏
+	Start: {tc}	开始：{tc}
+	End: {tc}	结束：{tc}
+	Duration: {tc}	持续时间：{tc}
 	Delete Preset	删除预设
 	Export Preset…	导出预设…
 	Import Presets…	导入预设…
@@ -1250,6 +1263,7 @@
 	59.94 fps Non Drop-Frame	59.94 fps 非掉帧
 	ASC CDL	ASC CDL
 	Accessible color contrast	无障碍颜色对比度
+	Animate zoom, scrolling and menus	缩放、滚动和菜单使用动画
 	Action-Safe Margin	动作安全边距
 	Active Monitor	活动监视器
 	Add	添加
@@ -2905,6 +2919,10 @@
 	Sample Size	采样大小
 	16 bit	16 位
 	24 bit	24 位
+	32 bit	32 位
+	32 bit float	32 位浮点
+	FLAC stores whole-number samples only	FLAC 只能存储整数采样
+	MXF export writes integer PCM only	MXF 导出仅写入整数 PCM
 	Size / Opacity	大小 / 不透明度
 	Image Overlay	图像叠加
 	PNG or JPEG file	PNG 或 JPEG 文件
@@ -3413,6 +3431,7 @@
 	in	入
 	The language changed but could not be saved: {e}	语言已更改但无法保存：{e}
 	no Chinese font is installed on this system; the interface stays in English	此系统未安装中文字体；界面保持英文
+	no Korean font is installed on this system; the interface stays in English	此系统未安装韩文字体；界面保持英文
 	no Japanese font is installed on this system; the interface stays in English	此系统未安装日语字体；界面保持英文
 	Show	显示
 	Sort	排序
@@ -3427,8 +3446,8 @@
 	Commits	提交
 	% of all commits	占全部提交的比例
 	Lines +/−	代码行 +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	音频输出失败：无声播放（请检查设置 ▸ 音频硬件）
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	音频输出无响应：无声播放（请检查设置 ▸ 音频硬件）
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	音频输出失败：无声播放（请检查设置 > 音频硬件）
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	音频输出无响应：无声播放（请检查设置 > 音频硬件）
 	Clip Speed / Duration	剪辑速度 / 时长
 	Speed:	速度：
 	Reverse Speed	反转速度
@@ -3570,3 +3589,17 @@
 	Export the labels to a preset file…	将标签导出为预设文件…
 	Show the presets folder	显示预设文件夹
 	Delete this preset	删除此预设
+	Opens in your web browser: {url}	在网页浏览器中打开：{url}
+	Saves this session's log and shows it in your file manager.	保存本次会话的日志并在文件管理器中显示。
+	Shows a report on this computer.	显示本机的报告。
+	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
+	Couldn't open your web browser	无法打开网页浏览器
+	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
+# View > Reset Interface Zoom (#2253).
+	Reset Interface Zoom	重置界面缩放
+	Track Color	轨道颜色
+	Open a sequence to search its graphics	打开序列以搜索其中的图形
+	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
+	No matching text.	没有匹配的文本。
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。

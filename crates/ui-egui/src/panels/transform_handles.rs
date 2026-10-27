@@ -43,6 +43,9 @@ const BADGE_ARM: f32 = 5.0;
 const ROTATE_REACH: f32 = 24.0;
 /// The `merge` key of a drag's changes: one undo step, whichever parameters the drag changes.
 const MERGE: &str = "programTransform";
+/// How far inside the monitor's clip (which reaches 12 points past the picture area) a handle
+/// that would be off the monitor stops, so that all of it shows and can be grabbed.
+const REACH_INSET: f32 = 12.0 + CORNER;
 
 /// What a press on the box takes hold of.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,6 +67,9 @@ struct Placement {
     to_screen: Affine,
     /// The picture's box: TL, TR, BR, BL.
     quad: [Pos2; 4],
+    /// Where the eight handles (see [`handle_points`]) are drawn and grabbed: on the box, or at
+    /// the monitor's edge for those beyond it (see [`within`]).
+    handles: [Pos2; 8],
     anchor_at: Pos2,
     position: Vec2,
     anchor: Vec2,
@@ -117,9 +123,19 @@ fn inside(quad: &[Pos2; 4], p: Pos2) -> bool {
     pos != neg
 }
 
+/// The handles at `points` pulled into `view`, the part of the monitor on screen: a picture moved
+/// past the monitor's edge keeps every handle in reach (#1393). The picture stays where it is;
+/// only the squares stop at the edge. A `view` with no room leaves them where they are.
+fn within(points: [Pos2; 8], view: Rect) -> [Pos2; 8] {
+    if !(view.is_finite() && view.is_positive()) {
+        return points;
+    }
+    points.map(|p| pos2(p.x.max(view.min.x).min(view.max.x), p.y.max(view.min.y).min(view.max.y)))
+}
+
 /// The box of effect `e` (Motion or Transform) of clip `it` at media time `mt`, on the monitor
-/// picture `pic` showing a `frame`-sized sequence.
-fn placement(app: &FilmcraftApp, it: &TrackItem, e: &EffectInstance, mt: Tick, pic: Rect, frame: (u32, u32)) -> Option<Placement> {
+/// picture `pic` showing a `frame`-sized sequence, with its handles kept inside `reach`.
+fn placement(app: &FilmcraftApp, it: &TrackItem, e: &EffectInstance, mt: Tick, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<Placement> {
     let seq = app.session.active_sequence()?;
     let project = &app.session.project;
     let size = filmcraft_render::source_size(project, it.item).unwrap_or(frame);
@@ -156,6 +172,7 @@ fn placement(app: &FilmcraftApp, it: &TrackItem, e: &EffectInstance, mt: Tick, p
         outer,
         to_screen,
         quad,
+        handles: within(handle_points(&quad), reach),
         anchor_at,
         position,
         anchor,
@@ -168,7 +185,7 @@ fn placement(app: &FilmcraftApp, it: &TrackItem, e: &EffectInstance, mt: Tick, p
 
 /// The selected effect (its clip and index) and its box, while it is Motion or Transform of a
 /// selected clip under the playhead.
-fn selected_placement(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Option<(Target, &'static EffectDef, Placement)> {
+fn selected_placement(app: &FilmcraftApp, pic: Rect, reach: Rect, frame: (u32, u32)) -> Option<(Target, &'static EffectDef, Placement)> {
     let sel = app.session.state.selected_effect.as_ref()?;
     if !app.session.state.selection.contains(&sel.clip) {
         return None;
@@ -182,7 +199,7 @@ fn selected_placement(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Optio
     let index = sel.index(&it.effects)?;
     let e = it.effects.get(index).filter(|e| e.enabled)?;
     let def = e.def().filter(|d| d.id == "motion" || d.id == "transform")?;
-    let pl = placement(app, it, e, it.source_time_at(ph), pic, frame)?;
+    let pl = placement(app, it, e, it.source_time_at(ph), pic, reach, frame)?;
     Some(((sel.clip, index), def, pl))
 }
 
@@ -190,7 +207,7 @@ fn grab_at(pl: &Placement, p: Pos2) -> Option<Grab> {
     if (pl.anchor_at - p).length() <= ANCHOR_GRAB {
         return Some(Grab::Anchor);
     }
-    if let Some(n) = handle_points(&pl.quad).iter().position(|h| (*h - p).length() <= GRAB) {
+    if let Some(n) = pl.handles.iter().position(|h| (*h - p).length() <= GRAB) {
         return Some(Grab::Handle(n));
     }
     if inside(&pl.quad, p) {
@@ -260,7 +277,7 @@ fn changes(d: &Drag, effect: &str, cur: Pos2) -> Vec<(&'static str, Value)> {
 }
 
 /// The resize cursor for a handle in direction `v` from the box's centre.
-fn resize_cursor(v: egui::Vec2) -> CursorIcon {
+pub(crate) fn resize_cursor(v: egui::Vec2) -> CursorIcon {
     let deg = v.y.atan2(v.x).to_degrees().rem_euclid(180.0);
     if !(22.5..157.5).contains(&deg) {
         CursorIcon::ResizeHorizontal
@@ -282,24 +299,26 @@ fn angle_deg(v: egui::Vec2) -> f64 {
     f64::from(v.y.atan2(v.x).to_degrees())
 }
 
-fn draw(app: &mut FilmcraftApp, ui: &egui::Ui, pl: &Placement, pic: Rect, name: &str) {
+/// Draws the box over the whole monitor (the ui's clip), not just the picture, so its handles show
+/// beside the frame as well as on it.
+fn draw(app: &mut FilmcraftApp, ui: &egui::Ui, pl: &Placement, name: &str) {
     let accent = app.tokens.accent;
-    let painter = ui.painter().with_clip_rect(pic.expand(12.0));
+    let painter = ui.painter();
     painter.add(egui::Shape::closed_line(pl.quad.to_vec(), Stroke::new(1.0, accent)));
     app.auto.add("program.transform.box", Rect::from_points(&pl.quad), name);
     let mid = centre(&pl.quad);
     // automation rects: the square inside the circle a press grabs in
     let grab = vec2(GRAB, GRAB) * std::f32::consts::SQRT_2;
-    for (n, c) in pl.quad.iter().enumerate() {
+    for (n, (q, c)) in pl.quad.iter().zip(&pl.handles).enumerate() {
         let hr = Rect::from_center_size(*c, vec2(CORNER, CORNER));
         painter.rect_filled(hr, 0.0, Color32::WHITE);
         painter.rect_stroke(hr, 0.0, Stroke::new(1.0, accent), StrokeKind::Middle);
         app.auto.add(&format!("program.transform.handle.{n}"), Rect::from_center_size(*c, grab), "scale handle");
         // just outside the corner, away from the box's centre
-        let out = (*c - mid).normalized();
-        app.auto.add(&format!("program.transform.rotate.{n}"), Rect::from_center_size(*c + out * 14.0, vec2(10.0, 10.0)), "rotate");
+        let out = (*q - mid).normalized();
+        app.auto.add(&format!("program.transform.rotate.{n}"), Rect::from_center_size(*q + out * 14.0, vec2(10.0, 10.0)), "rotate");
     }
-    for (n, m) in handle_points(&pl.quad).iter().enumerate().skip(4) {
+    for (n, m) in pl.handles.iter().enumerate().skip(4) {
         painter.rect_filled(Rect::from_center_size(*m, vec2(EDGE, EDGE)), 0.0, Color32::WHITE);
         app.auto.add(&format!("program.transform.handle.{n}"), Rect::from_center_size(*m, grab), "scale handle");
     }
@@ -379,13 +398,17 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         return;
     }
     let mut actions: Vec<(String, Value)> = Vec::new();
-    let id = egui::Id::new("program-transform");
+    let id = egui::Id::unique("program-transform");
     let drag_id = id.with("drag");
     let double = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
-    if let Some((sel, def, pl)) = selected_placement(app, pic, frame) {
-        draw(app, ui, &pl, pic, def.name);
-        // (as far again beyond the rotate zone, where a click lets go of the box)
-        let resp = ui.interact(Rect::from_points(&pl.quad).expand(ROTATE_REACH * 2.0), id, Sense::click_and_drag());
+    // the monitor around the picture as well as on it (its clip reaches past the picture area)
+    let reach = ui.clip_rect().shrink(REACH_INSET);
+    if let Some((sel, def, pl)) = selected_placement(app, pic, reach, frame) {
+        draw(app, ui, &pl, def.name);
+        // (as far again beyond the rotate zone, where a click lets go of the box; and the handles
+        // held at the monitor's edge)
+        let area = Rect::from_points(&pl.quad).union(Rect::from_points(&pl.handles));
+        let resp = ui.interact(area.expand(ROTATE_REACH * 2.0), id, Sense::click_and_drag());
         // the left button only: a middle or right drag leaves the picture alone
         let left = egui::PointerButton::Primary;
         if resp.drag_started_by(left) {
@@ -441,4 +464,28 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         actions.push(("effects.select".into(), json!({"clip": clip.0, "effect": "motion"})));
     }
     crate::panels::effect_controls::run(app, ui.ctx(), actions);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handles_past_the_monitor_stop_at_its_edge() {
+        let view = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 50.0));
+        // a box from the middle of the view to well past its bottom-right corner
+        let quad = [pos2(50.0, 25.0), pos2(150.0, 25.0), pos2(150.0, 75.0), pos2(50.0, 75.0)];
+        let h = within(handle_points(&quad), view);
+        assert_eq!(h[0], pos2(50.0, 25.0), "a handle on the monitor stays on the box");
+        assert_eq!(h[1], pos2(100.0, 25.0));
+        assert_eq!(h[2], pos2(100.0, 50.0));
+        assert_eq!(h[3], pos2(50.0, 50.0));
+        assert_eq!(h[5], pos2(100.0, 50.0));
+        assert!(h.iter().all(|p| view.contains(*p)));
+        // no room to keep them in: left where they are, without crossed bounds
+        let none = Rect::from_min_max(pos2(10.0, 10.0), pos2(0.0, 0.0));
+        assert_eq!(within(handle_points(&quad), none), handle_points(&quad));
+        let nan = Rect::from_min_max(pos2(f32::NAN, 0.0), pos2(100.0, 50.0));
+        assert_eq!(within(handle_points(&quad), nan), handle_points(&quad));
+    }
 }

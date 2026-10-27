@@ -355,7 +355,9 @@ impl FxOp {
                 }
             }
             "sharpen" => {
-                let r = cx.px_scale.max(0.35);
+                // below a sigma of ~0.58 the three boxes all round to radius 0 and the mask is a
+                // no-op, so Sharpen vanished at 1/2 playback resolution and below (#1351)
+                let r = cx.px_scale.max(0.6);
                 let (rx, ry) = gaussian_boxes(w, h, r, r);
                 FxOp::Unsharp { rx, ry, amount: f(e, "amount", cx) / 100.0, threshold: 0.0 }
             }
@@ -1113,6 +1115,7 @@ mod tests {
             clip_name: "",
             project: None,
             env: None,
+            frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
         };
         // Both sides of each cutoff, including samples inside the former artificial fade.

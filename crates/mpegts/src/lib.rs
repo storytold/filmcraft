@@ -218,7 +218,7 @@ pub struct Unit {
     /// No other unit depends on it (B pictures of MPEG-1/2 video, non-reference H.264/HEVC).
     pub disposable: bool,
     pub size: u32,
-    /// TS: index of the packet holding the first byte; PS: byte offset of its PES packet.
+    /// TS: byte offset of the packet holding the first byte; PS: byte offset of its PES packet.
     pub(crate) pos: u64,
     /// Offset of the first byte within that packet's elementary-stream payload.
     pub(crate) offset: u32,
@@ -284,6 +284,13 @@ pub struct File {
     pub warnings: Vec<String>,
 }
 
+/// Largest unit `read_unit` returns. The biggest real units are intra pictures (a few MB at
+/// 4K/8K broadcast rates); a stream without PES timestamps can make one unit of a whole PID.
+pub const MAX_UNIT_BYTES: u32 = 128 << 20;
+
+/// Bytes reserved up front by `read_unit`; the buffer grows beyond this only as data is read.
+const UNIT_PREALLOC: usize = 1 << 20;
+
 impl File {
     /// The first stream of `kind` whose codec satisfies `f`.
     pub fn find(&self, kind: Kind, f: impl Fn(&Codec) -> bool) -> Option<usize> {
@@ -294,7 +301,11 @@ impl File {
     pub fn read_unit<S: ByteSource + ?Sized>(&self, src: &S, s: usize, i: usize) -> Result<Vec<u8>> {
         let st = self.streams.get(s).ok_or_else(|| Error::Invalid("no such stream".into()))?;
         let u = st.units.get(i).ok_or_else(|| Error::Invalid("no such unit".into()))?;
-        let mut out = Vec::with_capacity(u.size as usize);
+        if u.size > MAX_UNIT_BYTES {
+            return Err(Error::Invalid(format!("unit {i} is {} bytes (limit {MAX_UNIT_BYTES})", u.size)));
+        }
+        // grow as bytes arrive: a damaged table must not reserve more than the file can supply
+        let mut out = Vec::with_capacity((u.size as usize).min(UNIT_PREALLOC));
         match self.format {
             Format::Ts { packet_size, sync_offset } => ts::read(src, packet_size, sync_offset, st, u, &mut out)?,
             Format::Ps { .. } => ps::read(src, st, u, &mut out)?,
@@ -345,3 +356,5 @@ impl Unwrap {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod work_tests;

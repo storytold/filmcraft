@@ -237,6 +237,9 @@
 	Normalize Mix Track…	Normalisasi Trek Mix…
 	Offline File…	Berkas Offline…
 	Open Project…	Buka Proyek…
+	Open Recent	Terakhir Dibuka
+	Clear Recent Files	Hapus Daftar Berkas Terakhir
+	Recent	Terbaru
 	Optical Flow	Aliran Optik
 	Overwrite	Timpa
 	Paste	Tempel
@@ -289,6 +292,7 @@
 	Review	Tinjauan
 	Right	Kanan
 	Ripple Delete	Hapus Ripple
+	Ripple Delete Head Frame	Hapus Ripple Frame Awal
 	Ripple Sequence Markers	Ripple Penanda Sekuens
 	Rose	Merah Mawar
 	Safe Margins	Margin Aman
@@ -322,6 +326,7 @@
 	Show Active Caption Tracks Only	Tampilkan Hanya Trek Takarir Aktif
 	Show All Caption Tracks	Tampilkan Semua Trek Takarir
 	Show All Marker Colors	Tampilkan Semua Warna Penanda
+	Show Duplicate Frame Markers	Tampilkan Penanda Bingkai Duplikat
 	Show Guides	Tampilkan Garis Bantu
 	Show Rulers	Tampilkan Penggaris
 	Show Through Edits	Tampilkan Edit Tembus
@@ -1267,6 +1272,7 @@
 	59.94 fps Non Drop-Frame	59,94 fps Non Drop-Frame
 	ASC CDL	ASC CDL
 	Accessible color contrast	Kontras warna yang aksesibel
+	Animate zoom, scrolling and menus	Animasikan zoom, gulir, dan menu
 	Action-Safe Margin	Margin Aman Aksi
 	Active Monitor	Monitor Aktif
 	Add	Tambah
@@ -2927,6 +2933,10 @@
 	Sample Size	Ukuran Sampel
 	16 bit	16 bit
 	24 bit	24 bit
+	32 bit	32 bit
+	32 bit float	32 bit titik mengambang
+	FLAC stores whole-number samples only	FLAC hanya menyimpan sampel bilangan bulat
+	MXF export writes integer PCM only	Ekspor MXF hanya menulis PCM bilangan bulat
 	Size / Opacity	Ukuran / Opasitas
 	Image Overlay	Overlay Gambar
 	PNG or JPEG file	Berkas PNG atau JPEG
@@ -3430,6 +3440,7 @@
 	in	masuk
 	The language changed but could not be saved: {e}	Bahasa telah diubah tetapi tidak dapat disimpan: {e}
 	no Chinese font is installed on this system; the interface stays in English	tidak ada font Tionghoa yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
+	no Korean font is installed on this system; the interface stays in English	tidak ada font Korea yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
 	no Japanese font is installed on this system; the interface stays in English	tidak ada font Jepang yang terpasang di sistem ini; antarmuka tetap dalam bahasa Inggris
 	Show	Tampilkan
 	Sort	Urutkan
@@ -3444,8 +3455,8 @@
 	Commits	Commit
 	% of all commits	% dari semua commit
 	Lines +/−	Baris +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Output audio gagal: memutar tanpa suara (periksa Pengaturan ▸ Perangkat Keras Audio)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Output audio tidak merespons: memutar tanpa suara (periksa Pengaturan ▸ Perangkat Keras Audio)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Output audio gagal: memutar tanpa suara (periksa Pengaturan > Perangkat Keras Audio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	Output audio tidak merespons: memutar tanpa suara (periksa Pengaturan > Perangkat Keras Audio)
 	Clip Speed / Duration	Kecepatan / Durasi Klip
 	Speed:	Kecepatan:
 	Reverse Speed	Balik Kecepatan
@@ -3566,3 +3577,9 @@
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
+# View > Reset Interface Zoom (#2253).
+	Reset Interface Zoom	Atur Ulang Zoom Antarmuka
+	Track Color	Warna Trek
+	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
+	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
+	No matching text.	Tidak ada teks yang cocok.

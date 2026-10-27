@@ -540,7 +540,7 @@ impl R<'_> {
             channels: if channel.is_some() { 1 } else { file_channels },
             file_channels,
             width: d.u32(pid::STORED_WIDTH).unwrap_or(0),
-            height: if matches!(layout, 1 | 3) { stored_h * 2 } else { stored_h },
+            height: if matches!(layout, 1 | 3) { stored_h.saturating_mul(2) } else { stored_h },
             frame_rate: if seg_kind == CKind::Picture { fr } else { FrameRate::FPS_25 },
             sample_rate: d.rational(pid::AUDIO_SAMPLING_RATE).filter(|r| r.1 > 0 && r.0 > 0).map(|r| (r.0 / r.1) as u32).unwrap_or(file_rate.0 as u32),
             bits: d.u32(pid::QUANTIZATION_BITS).unwrap_or(16).clamp(8, 32) as u16,

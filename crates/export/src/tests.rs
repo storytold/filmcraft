@@ -126,6 +126,31 @@ fn prores_export_roundtrip() {
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
 }
 
+/// #2142: SDR ProRes, DNxHR and APV (MOV) and H.264 (MP4) exports carry a `colr` box with the
+/// export's BT.709 colour: Apple's media stack reads the colour of the MOV codecs only from there.
+#[test]
+fn sdr_exports_carry_a_colr_box() {
+    use filmcraft_isobmff::ColorInfo;
+    let (p, seq, m) = project();
+    let nclc = ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 };
+    let nclx = ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false };
+    for (format, name, want) in [
+        (Format::ProRes, "colr-prores.mov", nclc.clone()),
+        (Format::DnxHr, "colr-dnxhr.mov", nclc.clone()),
+        (Format::Apv, "colr-apv.mov", nclc.clone()),
+        (Format::H264, "colr-h264.mp4", nclx),
+    ] {
+        let path = tmp(name);
+        export(&p, seq, &ExportSettings { format, path: path.clone(), include_audio: false, ..Default::default() }, &m, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let file = filmcraft_isobmff::open(bytes).unwrap();
+        let t = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        let v = file.tracks[t].entries[0].video.as_ref().unwrap();
+        assert_eq!(v.color.as_ref(), Some(&want), "{name}");
+        assert!(v.mastering_display.is_none() && v.content_light.is_none(), "{name}: no HDR metadata on SDR");
+    }
+}
+
 /// ProRes 4444 / 4444 XQ export (#342): 4:4:4 frames under the `ap4h` / `ap4x` codes, and with
 /// Include Alpha Channel the picture's alpha survives instead of being flattened over black.
 #[test]
@@ -491,4 +516,46 @@ impl FrameRenderer for FakeRenderer {
     ) -> Option<filmcraft_render::Image> {
         Some(filmcraft_render::Image::new(320, 180))
     }
+}
+
+/// The render threads may convert H.264 input ahead ([`VideoEncoder::prepare_ahead`]): the packets
+/// are the same whether a picture was converted ahead (in any order), converted by the encoder
+/// itself (none ahead, or one ahead for another picture size), or never asked for.
+#[test]
+fn h264_input_converted_ahead_encodes_to_the_same_packets() {
+    let (w, h) = (96u32, 64u32);
+    let frames: Vec<Vec<u8>> = (0..8u32)
+        .map(|t| {
+            (0..w * h)
+                .flat_map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    [(x * 3 + t * 7) as u8, (y * 5 + t) as u8, ((x + y) * 2 + t * 3) as u8, 255]
+                })
+                .collect()
+        })
+        .collect();
+    let s = ExportSettings { format: Format::H264, ..Default::default() };
+    let frame = |i: usize| EncoderFrame { width: w, height: h, rgba: &frames[i], hdr: None, index: i as u64 };
+    let encode_all = |ahead: bool| -> Vec<Vec<u8>> {
+        let mut enc = h264_factory(Format::H264, w, h, FrameRate::FPS_24, &s).unwrap().unwrap();
+        if ahead {
+            let prepare = enc.prepare_ahead().expect("the H.264 encoder converts ahead");
+            for i in (0..frames.len()).rev().filter(|&i| i != 3) {
+                prepare(&frame(i));
+            }
+            // a picture of another size under index 5: the encoder converts that one itself
+            prepare(&EncoderFrame { width: w / 2, height: h / 2, rgba: &frames[5][..(w * h) as usize], hdr: None, index: 5 });
+            // and one it is never asked to encode
+            prepare(&EncoderFrame { index: 99, ..frame(0) });
+        }
+        let mut out = Vec::new();
+        for i in 0..frames.len() {
+            out.extend(enc.encode(&frame(i)).unwrap().into_iter().map(|p| p.data));
+        }
+        out.extend(enc.flush().unwrap().into_iter().map(|p| p.data));
+        out
+    };
+    let plain = encode_all(false);
+    assert!(!plain.is_empty());
+    assert!(plain == encode_all(true), "converting ahead changed the packets");
 }

@@ -38,6 +38,7 @@ use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::{FramePlan, PlanLayer, PlanStep};
 
+pub mod adapter;
 pub mod export_renderer;
 pub mod fx;
 pub mod lut;
