@@ -23,6 +23,15 @@ Format reference: [GIF89a, 31 July 1990, §23 Graphic Control Extension](https:/
 with alpha 0, 127, 128 and 255, followed by an empty frame. Decoding verifies transparency,
 color, frame timing and removal of previous-frame pixels, with alpha both enabled and disabled.
 When FFmpeg is installed, its independent decode must agree on every pixel's alpha and opaque color.
+`settings_tests::gif_palette_quantization_preserves_isolated_transparency_and_dark_pixels`
+checks two frames with more than 256 distinct post-conversion RGBA colors, forcing palette
+reduction. A single transparent pixel moves between frames, surrounded by opaque black and
+near-black pixels. Decoded alpha must match exactly; opaque RGB channels allow at most 16/255
+quantization error. This test uses the Rust decoder and needs no FFmpeg installation.
+
+Run the GIF export tests with `cargo test -p filmcraft-export --lib gif_ -- --nocapture`.
+Run all export unit tests with `cargo test -p filmcraft-export --lib`.
+
 `filmcraft-ui-egui`'s `export_ui::gif_export_exposes_binary_alpha_option` uses the control
 channel to select GIF, toggle alpha and inspect the explanatory label. Set
 `FILMCRAFT_UI_SNAPSHOT_DIR` to render its Export-mode screenshot.

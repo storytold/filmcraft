@@ -358,6 +358,92 @@ fn gif_alpha_threshold_and_disposal_roundtrip() {
     }
 }
 
+/// A full grayscale ramp, repeated four times, with one transparent pixel surrounded by
+/// opaque black / near-black pixels. Moving the hole also exercises animated frame disposal.
+struct GifPaletteSource(filmcraft_media::SharedSource);
+
+impl MediaSource for GifPaletteSource {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        self.0.info()
+    }
+
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let second = FrameRate::FPS_24.frame_at(req.time) != 0;
+        let hole = if second { (17, 17) } else { (16, 16) };
+        let mut rgba = Vec::with_capacity(32 * 32 * 4);
+        for y in 0..32 {
+            for x in 0..32 {
+                let shade = ((y * 32 + x) % 256) as u8;
+                let shade = if second { 255 - shade } else { shade };
+                let px = if (x, y) == hole {
+                    [0, 0, 0, 0]
+                } else if (x, y) == (hole.0 - 1, hole.1) || (x, y) == (hole.0 + 1, hole.1) {
+                    [0, 0, 0, 255]
+                } else if (x, y) == (hole.0, hole.1 - 1) || (x, y) == (hole.0, hole.1 + 1) {
+                    [1, 2, 3, 255]
+                } else {
+                    [shade, shade, shade, 255]
+                };
+                rgba.extend_from_slice(&px);
+            }
+        }
+        Ok(Arc::new(filmcraft_frame::VideoFrame::rgba8(32, 32, rgba)))
+    }
+
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.0.audio(start, frames, sample_rate)
+    }
+}
+
+#[test]
+fn gif_palette_quantization_preserves_isolated_transparency_and_dark_pixels() {
+    use image::AnimationDecoder;
+    let (p, seq, mut sources) = matte([0.0, 0.0, 0.0, 1.0], 32, 32, None);
+    for source in sources.0.values_mut() {
+        *source = Arc::new(GifPaletteSource(source.clone()));
+    }
+    let dir = Scratch::new("gif-palette-alpha");
+    let settings = ExportSettings {
+        format: Format::Gif,
+        path: dir.path("palette.gif"),
+        alpha: true,
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2))),
+        ..Default::default()
+    };
+    // Count the actual rendered colors after binary-alpha conversion, not just source colors:
+    // exceeding GIF's 256-entry palette must survive the render pipeline on both frames.
+    let pipe = pipeline::Pipeline::new(p.clone(), seq, &settings, false).unwrap();
+    let expected: Vec<Vec<[u8; 4]>> = (0..2)
+        .map(|i| {
+            let rgba = pipe.frame(i, &sources).0;
+            let pixels: Vec<_> = rgba.as_chunks::<4>().0.iter().map(|&[r, g, b, a]| if a < 128 { [0; 4] } else { [r, g, b, 255] }).collect();
+            let colors: std::collections::HashSet<_> = pixels.iter().copied().collect();
+            assert!(colors.len() >= 257, "frame {i}: only {} post-conversion colors", colors.len());
+            assert_eq!(pixels.iter().filter(|p| p[3] == 0).count(), 1, "frame {i}: an isolated transparent pixel");
+            assert!(colors.contains(&[0, 0, 0, 255]), "frame {i}: opaque black");
+            assert!(colors.contains(&[1, 2, 3, 255]), "frame {i}: opaque near-black");
+            pixels
+        })
+        .collect();
+    assert_eq!(export(&p, seq, &settings, &sources, &Progress::default()).unwrap().frames, 2);
+    let bytes = std::fs::read(&settings.path).unwrap();
+    let frames = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).unwrap().into_frames().collect_frames().unwrap();
+    assert_eq!(frames.len(), 2);
+    for (i, (frame, expected)) in frames.iter().zip(&expected).enumerate() {
+        assert_eq!(frame.buffer().dimensions(), (32, 32));
+        for (at, (actual, expected)) in frame.buffer().pixels().zip(expected).enumerate() {
+            assert_eq!(actual[3], expected[3], "frame {i}, pixel {at}: alpha must be exact, including opaque dark pixels");
+            if expected[3] == 255 {
+                // Palette reduction is lossy. For this grayscale ramp, allow at most 16/255
+                // error per RGB channel (about 6% of the range), never any loss of opacity.
+                for channel in 0..3 {
+                    assert!(actual[channel].abs_diff(expected[channel]) <= 16, "frame {i}, pixel {at}: {:?} vs {expected:?}", actual.0);
+                }
+            }
+        }
+    }
+}
+
 /// Thumbnails (`encode_png`) and an 8-bit PNG Export Frame keep the alpha they are given: only the
 /// sequence's `alpha` switch drops it (#1863).
 #[test]
