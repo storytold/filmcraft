@@ -217,16 +217,15 @@ impl Bridge {
         let current = session.path.clone();
         // Decisions first, borrows dropped: in page mode a host listener reacts to a save
         // synchronously, and may open a file right back.
+        // The decisions run on a copy: the host's document changes only once a hand-over went out.
+        let mut known = self.host_document.borrow().clone();
         let mut decided: Vec<(String, bool)> = Vec::with_capacity(written.len());
-        {
-            let mut known = self.host_document.borrow_mut();
-            for path in written {
-                let save_as = is_save_as(&path, known.as_deref(), current.as_deref());
-                if save_as {
-                    *known = Some(path.clone());
-                }
-                decided.push((path, save_as));
+        for path in written {
+            let save_as = is_save_as(&path, known.as_deref(), current.as_deref());
+            if save_as {
+                known = Some(path.clone());
             }
+            decided.push((path, save_as));
         }
         for (path, save_as) in decided {
             let Some(bytes) = crate::fs::mem_bytes(&path) else {
@@ -234,8 +233,18 @@ impl Bridge {
                 continue;
             };
             let name = file_name(&path);
-            if let Err(e) = self.post_save(&name, &bytes, save_as) {
-                log::error!("couldn't hand {name} to the host: {e}");
+            let before = self.host_document.borrow().clone();
+            match self.post_save(&name, &bytes, save_as) {
+                // The host has this file as the document now, unless it opened another one while
+                // handling the save; a failed hand-over changes nothing, so a retry is still a Save As.
+                Ok(()) if save_as => {
+                    let mut document = self.host_document.borrow_mut();
+                    if *document == before {
+                        *document = Some(path);
+                    }
+                }
+                Ok(()) => {}
+                Err(e) => log::error!("couldn't hand {name} to the host: {e}"),
             }
         }
     }
