@@ -206,34 +206,26 @@ impl Bridge {
 
     /// Hand this frame's written files to the host. The `saveAs` decision needs the session's
     /// state *after* the frame's commands (a Save As adopts its path only once the write has
-    /// happened), so it is made here, not in the write hook. Decisions are made before any
-    /// message goes out and the borrows are dropped: in page mode a host listener reacts to a
-    /// save synchronously, and may open a file right back.
+    /// happened), so it is made here, not in the write hook, one file at a time against the
+    /// host's document as the earlier hand-overs left it.
     fn flush_saves(&self, session: &Session) {
         let written = std::mem::take(&mut *self.written.borrow_mut());
         if written.is_empty() {
             return;
         }
         let current = session.path.clone();
-        // Decisions first, borrows dropped: in page mode a host listener reacts to a save
-        // synchronously, and may open a file right back.
-        // The decisions run on a copy: the host's document changes only once a hand-over went out.
-        let mut known = self.host_document.borrow().clone();
-        let mut decided: Vec<(String, bool)> = Vec::with_capacity(written.len());
         for path in written {
-            let save_as = is_save_as(&path, known.as_deref(), current.as_deref());
-            if save_as {
-                known = Some(path.clone());
-            }
-            decided.push((path, save_as));
-        }
-        for (path, save_as) in decided {
             let Some(bytes) = crate::fs::mem_bytes(&path) else {
                 log::warn!("host save {path}: the written bytes are gone");
                 continue;
             };
             let name = file_name(&path);
+            // Each save is classified against the host's document as it is now, after the
+            // previous hand-overs (a failed one changed nothing), and the borrow is dropped before
+            // sending: in page mode a host listener reacts to a save synchronously, and may open
+            // a file right back.
             let before = self.host_document.borrow().clone();
+            let save_as = is_save_as(&path, before.as_deref(), current.as_deref());
             match self.post_save(&name, &bytes, save_as) {
                 // The host has this file as the document now, unless it opened another one while
                 // handling the save; a failed hand-over changes nothing, so a retry is still a Save As.
