@@ -472,9 +472,9 @@ pub(crate) fn encode_alpha(w: &mut Writer, vals: &[u32], bits: u32) {
         }
         prev = v;
         idx += 1;
-        if idx >= n {
-            break;
-        }
+        // RDD 36:2022 §5.3.3 requires a run after every alpha difference,
+        // including a singleton at the end of the slice. Do not replace that
+        // final `1` with byte-alignment zeros: native decoders reject it.
         let mut run = 0;
         while idx + run < n && vals[idx + run] == prev && run < 2047 {
             run += 1;
@@ -491,5 +491,120 @@ pub(crate) fn encode_alpha(w: &mut Writer, vals: &[u32], bits: u32) {
             w.put(run as u32, 11);
         }
         idx += run;
+    }
+}
+
+#[cfg(test)]
+mod alpha_tests {
+    use super::*;
+
+    #[test]
+    fn alpha_final_singleton_has_a_run_code() {
+        // RDD 36:2022 §5.3.3: every difference is followed by a run, including
+        // the final one. Tables 13/14 encode -1; Table 12 encodes run 1 as `1`.
+        // With 16-bit alpha the difference occupies exactly one byte, so the
+        // required final run must start another byte, followed by zero padding.
+        for (bits, expected) in [(16, vec![0x01, 0x80]), (8, vec![0x0c])] {
+            let mut w = Writer::new();
+            encode_alpha(&mut w, &[(1 << bits) - 2], bits);
+            assert_eq!(w.finish(), expected, "{bits}-bit final singleton");
+        }
+    }
+}
+
+#[cfg(test)]
+mod alpha_conformance_tests {
+    use super::*;
+    use filmcraft_bitstream::BitReader;
+
+    /// RDD 36:2022 §5.3.3 and Tables 12–14, using a bounds-checked reader.
+    /// Unlike the production decoder's zero-padded hot path, this checks every
+    /// final run and all alignment bits, so a truncated run cannot be accepted.
+    fn read_alpha(data: &[u8], bits: u32, count: usize) -> Vec<u32> {
+        let mut r = BitReader::new(data);
+        let mask = (1u32 << bits) - 1;
+        let mut prev = mask;
+        let mut out = Vec::new();
+        while out.len() < count {
+            let diff = if r.read_bits(1).unwrap() == 1 {
+                r.read_bits(bits).unwrap()
+            } else {
+                let code = r.read_bits(if bits == 16 { 7 } else { 4 }).unwrap();
+                let magnitude = (code >> 1) + 1;
+                if code & 1 == 0 { magnitude } else { magnitude.wrapping_neg() }
+            };
+            prev = prev.wrapping_add(diff) & mask;
+            let run = if r.read_bits(1).unwrap() == 1 {
+                1
+            } else {
+                let short = r.read_bits(4).unwrap();
+                if short == 0 { r.read_bits(11).unwrap() + 1 } else { short + 1 }
+            } as usize;
+            assert!(run <= count - out.len(), "alpha run exceeds the slice");
+            out.extend(std::iter::repeat_n(prev, run));
+        }
+        assert!(r.bits_left() < 8, "only byte-alignment padding may remain");
+        while r.bits_left() > 0 {
+            assert_eq!(r.read_bits(1).unwrap(), 0, "alignment padding must be zero");
+        }
+        out
+    }
+
+    #[test]
+    fn alpha_runs_cover_boundaries_and_final_values() {
+        for bits in [8, 16] {
+            let mask = (1 << bits) - 1;
+            for run in [1, 2, 15, 16, 17, 2047, 2048, 2049, 4096] {
+                for tail in 0..=8 {
+                    let mut values = vec![mask - 1; run];
+                    // Short negative/positive deltas, modulo transitions and
+                    // escaped full-width deltas, ending on every bit alignment.
+                    values.extend([0, mask, 1, 7, 8, 64, 65, mask / 2].into_iter().take(tail));
+                    let mut w = Writer::new();
+                    encode_alpha(&mut w, &values, bits);
+                    assert_eq!(read_alpha(&w.finish(), bits, values.len()), values, "bits={bits}, run={run}, tail={tail}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encoded_alpha_slices_have_complete_final_runs() {
+        for profile in [Profile::P4444, Profile::P4444Xq] {
+            for log2_slice_mbs in 0..=3 {
+                let (width, height) = (128, 32);
+                let mut frame = Frame::new(width, height, ChromaFormat::Yuv444, 16, true);
+                frame.y.fill(32768);
+                frame.cb.fill(32768);
+                frame.cr.fill(32768);
+                let alpha = frame.alpha.as_mut().unwrap();
+                for (i, a) in alpha.iter_mut().enumerate() {
+                    *a = (i as u16).wrapping_mul(257);
+                }
+                let mut cfg = EncoderConfig::new(profile, width, height);
+                cfg.log2_slice_mbs = log2_slice_mbs;
+                let bytes = Encoder::with_config(cfg).encode(&frame).unwrap();
+                let (_, start, _) = FrameHeader::parse(&bytes).unwrap();
+                let picture = &bytes[start..];
+                let header = PictureHeader::parse(picture).unwrap();
+                let table = &picture[header.header_size..][..2 * header.num_slices];
+                let mut offset = header.header_size + table.len();
+                let sw = 16 << log2_slice_mbs;
+                for (i, size) in table.as_chunks::<2>().0.iter().enumerate() {
+                    let size = u16::from_be_bytes([size[0], size[1]]) as usize;
+                    let slice = &picture[offset..offset + size];
+                    offset += size;
+                    let color_bytes: usize = slice[2..8].as_chunks::<2>().0.iter().map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).sum();
+                    let payload = &slice[(slice[0] >> 3) as usize + color_bytes..];
+                    let actual = read_alpha(payload, 16, sw * 16);
+                    let x0 = i % (width as usize / sw) * sw;
+                    let y0 = i / (width as usize / sw) * 16;
+                    let alpha = frame.alpha.as_ref().unwrap();
+                    let expected: Vec<u32> = (y0..y0 + 16).flat_map(|y| (x0..x0 + sw).map(move |x| alpha[y * width as usize + x] as u32)).collect();
+                    assert_eq!(actual, expected, "{profile:?}, slice {i}, log2={log2_slice_mbs}");
+                }
+                assert_eq!(offset, picture.len());
+            }
+        }
     }
 }

@@ -171,6 +171,9 @@
 	Hide All Caption Tracks	すべてのキャプショントラックを非表示
 	High Quality Playback	高画質再生
 	History	履歴
+	Delete Redoable Actions	やり直し可能な操作を削除
+	Clear History	履歴を消去
+	Delete the dimmed actions after the current state? They cannot be redone.	現在の状態より後の淡色表示の操作を削除しますか？ 削除した操作はやり直せません。
 	Import From	読み込み元
 	Import Image Sequence…	連番画像を読み込み…
 	Import from Media Browser	メディアブラウザーから読み込み
@@ -320,6 +323,7 @@
 	Show Active Caption Tracks Only	アクティブなキャプショントラックのみ表示
 	Show All Caption Tracks	すべてのキャプショントラックを表示
 	Show All Marker Colors	すべての色のマーカーを表示
+	Show Duplicate Frame Markers	重複フレームマーカーを表示
 	Show Guides	ガイドを表示
 	Show Rulers	ルーラーを表示
 	Show Through Edits	スルー編集点を表示
@@ -345,6 +349,7 @@
 	Transcribe Sequence…	シーケンスを文字起こし…
 	Transcribe…	文字起こし…
 	Transcript	文字起こし
+	Transparency Grid	透明グリッド
 	Transparent Video…	透明ビデオ…
 	Trim Edit	トリム編集
 	Trim…	トリム…
@@ -505,6 +510,10 @@
 	Reveal Sequence in Project	プロジェクトでシーケンスを表示
 	Video Thumbnails	ビデオサムネイル
 	Audio Waveforms	オーディオ波形
+	Work Area Bar	ワークエリアバー
+	Start: {tc}	開始: {tc}
+	End: {tc}	終了: {tc}
+	Duration: {tc}	長さ: {tc}
 	Delete Preset	プリセットを削除
 	Export Preset…	プリセットを書き出し…
 	Import Presets…	プリセットを読み込み…
@@ -3443,8 +3452,8 @@
 	Commits	コミット
 	% of all commits	全コミットに占める割合 (%)
 	Lines +/−	行数 +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	オーディオ出力に失敗したため、無音で再生しています (「環境設定 ▸ オーディオハードウェア」を確認してください)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	オーディオ出力が応答しないため、無音で再生しています (「環境設定 ▸ オーディオハードウェア」を確認してください)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	オーディオ出力に失敗したため、無音で再生しています (「環境設定 > オーディオハードウェア」を確認してください)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	オーディオ出力が応答しないため、無音で再生しています (「環境設定 > オーディオハードウェア」を確認してください)
 	Clip Speed / Duration	クリップの速度 / 長さ
 	Speed:	速度:
 	Reverse Speed	逆再生する
@@ -3610,9 +3619,11 @@
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
-# View ▸ Reset Interface Zoom (#2253).
+# View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	インターフェイスのズームをリセット
 	Track Color	トラックカラー
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。

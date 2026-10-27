@@ -752,11 +752,11 @@ pub fn on_open(s: &mut Session) -> usize {
         list.iter().filter(|m| m.status == "missing").filter_map(|m| s.media.follow(&m.path).err().map(|why| format!("{} ({why})", m.path))).collect();
     if !refused.is_empty() {
         log::warn!("media paths stored in the project not opened: {}", refused.join(", "));
-        s.toast(format!("Not opening {} media file(s) the project names on another computer or device; File ▸ Link Media… reconnects them", refused.len()));
+        s.toast(format!("Not opening {} media file(s) the project names on another computer or device; File > Link Media… reconnects them", refused.len()));
     }
     s.offline.prompt = !s.offline.missing.is_empty();
     if !s.offline.missing.is_empty() {
-        s.toast(format!("{} media file(s) are missing; File ▸ Link Media… reconnects them", s.offline.missing.len()));
+        s.toast(format!("{} media file(s) are missing; File > Link Media… reconnects them", s.offline.missing.len()));
     }
     list.len()
 }

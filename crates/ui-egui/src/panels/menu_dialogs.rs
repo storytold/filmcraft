@@ -48,7 +48,9 @@ impl Default for Extras {
 type Elems = Vec<(String, egui::Rect, String)>;
 
 fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: impl Into<String>) {
-    elems.push((id.into(), r.rect, label.into()));
+    let label = label.into();
+    crate::widgets::accessible_name(r.clone(), label.clone());
+    elems.push((id.into(), r.rect, label));
 }
 
 /// Dialog title, automation prefix and OK button text of a command's dialog.
@@ -420,7 +422,7 @@ fn combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mu
         }
         let cur = value.as_str().unwrap_or_default().to_string();
         let shown = options.iter().find(|o| o.0 == cur).map(|o| o.1.clone()).unwrap_or(cur.clone());
-        let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown)).show_ui(ui, |ui| {
+        let r = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown)).show_ui(ui, |ui| {
             for (k, l) in options {
                 if ui.selectable_label(cur == *k, crate::i18n::t(l)).clicked() {
                     *value = json!(k);
@@ -453,7 +455,7 @@ fn pairs(v: &[&str]) -> Vec<(String, String)> {
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.extras.dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("menu-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("menu-dialog-before-drag"), &mut d);
     let Some((title, pre, ok_text)) = meta(&d.command) else {
         app.ui.extras.dialog = None;
         return;
@@ -463,7 +465,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut browse: Option<String> = None;
     let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
     // the title is translated; the window keeps one id whatever the interface language
-    let id = egui::Id::new(("menu-dialog", pre));
+    let id = egui::Id::unique(("menu-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {

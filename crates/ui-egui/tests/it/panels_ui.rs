@@ -94,9 +94,11 @@ impl Driver {
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered (frames render on worker threads).
+    /// Step frames until `id` is registered (frames render on worker threads), for at most two
+    /// minutes of wall-clock time.
     fn wait_for(&mut self, id: &str) {
-        for _ in 0..400 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if self.has(id) {
                 return;
             }
@@ -183,7 +185,7 @@ fn every_panel_opens_from_the_window_menu() {
 /// and closing every panel still leaves a dock that Window ▸ can reopen panels into.
 #[test]
 fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
-    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    use filmcraft_ui_egui::dock::PanelKind;
     let mut d = Driver::demo();
     let layout = d.app().ui.dock.clone();
     d.click("panel.menu.Program");
@@ -198,16 +200,56 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
     assert_eq!(d.app().ui.dock, layout, "the layout survives maximize / restore");
     assert!(d.has("panel.Timeline"));
 
-    let mut all = Vec::new();
-    layout.panels(&mut all);
-    for p in all {
+    for p in layout.panels() {
         d.ok("ui.panel.close", json!({"panel": p.id()}));
     }
-    assert_eq!(d.app().ui.dock, DockNode::Tabs { panels: vec![], active: 0 });
+    assert_eq!(d.app().ui.dock.root, None);
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Program"}));
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Timeline"}));
     d.frames(3);
     assert!(d.has("panel.tab.Program") && d.has("panel.tab.Timeline"));
+}
+
+/// The History panel menu: Delete Redoable Actions asks for OK and then forgets the dimmed steps
+/// (Backspace in the History panel asks the same), and Clear History forgets every step. The
+/// project stays as it is.
+#[test]
+fn history_panel_menu_deletes_redoable_actions_and_clears_the_history() {
+    let mut d = Driver::demo();
+    for name in ["A", "B", "C"] {
+        d.exec("file.newBin", json!({"name": name}));
+    }
+    d.exec("edit.undo", json!({}));
+    d.exec("edit.undo", json!({}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.History"}));
+    d.frames(3);
+    let redo = |d: &mut Driver| d.exec("history.list", json!({}))["redo"].as_array().unwrap().len();
+    assert_eq!(redo(&mut d), 2);
+    let project = d.app().session.project.clone();
+
+    d.click("panel.menu.History");
+    assert_eq!(d.label("panel.menu.History.deleteRedoable"), "Delete Redoable Actions");
+    assert_eq!(d.label("panel.menu.History.clear"), "Clear History");
+    d.click("panel.menu.History.deleteRedoable");
+    assert!(d.has("history.deleteRedoable.ok"), "Delete Redoable Actions asks first");
+    assert_eq!(redo(&mut d), 2, "nothing is deleted before OK");
+    d.click("history.deleteRedoable.cancel");
+    assert!(!d.has("history.deleteRedoable.ok"));
+    assert_eq!(redo(&mut d), 2, "Cancel keeps the steps");
+
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(2);
+    assert!(d.has("history.deleteRedoable.ok"), "Backspace in the History panel asks too");
+    d.click("history.deleteRedoable.ok");
+    assert!(!d.has("history.deleteRedoable.ok"));
+    assert_eq!(redo(&mut d), 0);
+    assert_eq!(*d.app().session.project, *project, "the project does not change");
+
+    d.click("panel.menu.History");
+    d.click("panel.menu.History.clear");
+    assert_eq!(d.exec("history.list", json!({})), json!({"undo": [], "redo": []}));
+    assert_eq!(*d.app().session.project, *project, "the project does not change");
+    assert!(!d.app().session.is_enabled("history.clear"), "an empty history has nothing to clear");
 }
 
 /// The wheel over a tab strip switches that group's tab: down = next, up = previous, one tab per
@@ -215,16 +257,17 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
 /// content the wheel leaves the tabs alone.
 #[test]
 fn wheel_over_a_tab_strip_switches_tabs() {
-    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    use craft_ui::docking::Node;
+    use filmcraft_ui_egui::dock::PanelKind;
     fn shown(d: &mut Driver) -> PanelKind {
-        fn find(n: &DockNode) -> Option<PanelKind> {
+        fn find(n: &Node<PanelKind>) -> Option<PanelKind> {
             match n {
-                DockNode::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
-                DockNode::Tabs { .. } => None,
-                DockNode::Split { a, b, .. } => find(a).or_else(|| find(b)),
+                Node::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
+                Node::Split { first, second, .. } => find(first).or_else(|| find(second)),
+                _ => None,
             }
         }
-        find(&d.app().ui.dock).unwrap()
+        d.app().ui.dock.root.as_ref().and_then(find).unwrap()
     }
     fn wheel(d: &mut Driver, dy: f64) {
         let id = format!("panel.tab.{}", shown(d).id());
@@ -248,6 +291,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
     for step in 0..5 {
         d.harness.input_mut().events.push(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Wheel,
             delta: egui::vec2(0.0, -10.0),
             modifiers: egui::Modifiers::NONE,
             phase: egui::TouchPhase::Move,

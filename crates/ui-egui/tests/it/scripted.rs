@@ -54,6 +54,16 @@ impl Driver {
         }
     }
 
+    /// Run frames until `done` holds, for at most two minutes of wall-clock time.
+    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done(self) {
+            assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
+            self.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// Send a control request and run frames until it is answered.
     fn call(&mut self, method: &str, params: Value) -> Value {
         let (req, reply) = ControlRequest::new(method, params.clone());
@@ -533,15 +543,10 @@ fn keyboard_shortcuts_dialog_assigns_live_and_cancel_restores() {
 fn waveform_peaks_do_not_survive_opening_another_project() {
     let mut d = Driver::demo();
     let mut first = None;
-    for _ in 0..2000 {
-        d.frames(1);
-        let peaks = d.harness.state().tl.peaks.lock().unwrap().iter().map(|(k, v)| (*k, v.clone())).next();
-        if peaks.is_some() {
-            first = peaks;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    d.wait_until("the demo timeline's waveform peaks", |d| {
+        first = d.harness.state().tl.peaks.lock().unwrap().iter().map(|(k, v)| (*k, v.clone())).next();
+        first.is_some()
+    });
     let (item, old) = first.expect("the demo timeline computes waveform peaks");
     // Reopen the same project from disk: same item ids, new media pool.
     let path = std::env::temp_dir().join(format!("fc-peaks-{}.fcproj", std::process::id()));
@@ -598,11 +603,6 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
     d.ok("ui.click", json!({"id": "effectControls.color_key.color.eyedropper"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "program.picture"}));
-    for _ in 0..200 {
-        if color(&mut d) != before {
-            break;
-        }
-        d.frames(1);
-    }
+    d.wait_until("the eyedropper to fill Key Color", |d| color(d) != before);
     assert_ne!(color(&mut d), before, "the eyedropper filled Key Color from the Program picture");
 }
