@@ -1,5 +1,5 @@
 //! Headless UI tests of the Sequence / Markers menu additions: the Add Tracks and Delete Tracks dialogs, the
-//! through-edit marks on the timeline, the Markers panel colour filter and the Shift+; gap key.
+//! through-edit marks and duplicate frame markers on the timeline, the Markers panel colour filter and the Shift+; gap key.
 //! The real `FilmcraftApp` under `egui_kittest`, driven over the control channel by automation id.
 //!
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write
@@ -131,6 +131,20 @@ impl Driver {
         }
         self.ok("ui.click", json!({"x":x,"y":y,"button":"right"}));
         self.frames(3);
+    }
+
+    /// The ids under `prefix` once `done` holds for them: the timeline works out duplicate frame
+    /// markers on a background thread.
+    fn ids_once(&mut self, prefix: &str, mut done: impl FnMut(&[String]) -> bool) -> Vec<String> {
+        let t0 = std::time::Instant::now();
+        loop {
+            let ids = self.ids(prefix);
+            if done(&ids) || t0.elapsed().as_secs() >= 30 {
+                return ids;
+            }
+            self.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     fn ids(&mut self, prefix: &str) -> Vec<String> {
@@ -314,6 +328,66 @@ fn through_edits_are_marked_on_the_timeline() {
     d.exec("sequence.joinThroughEdits", json!({"all": true}));
     d.frames(3);
     assert!(d.ids("timeline.throughEdit.").is_empty(), "joined");
+}
+
+#[test]
+fn duplicate_frame_markers_are_drawn_on_repeated_clips() {
+    let mut d = Driver::demo();
+    // the demo's first V1 clip placed again on V2 at the same time: both show the same frames
+    let (first, item, start, source_in, duration) = {
+        let c = &d.app().session.active_sequence().unwrap().video_tracks[0].items[0];
+        (c.id.0, c.item.0, c.start.0, c.source_in.0, c.duration.0)
+    };
+    let r = d.exec("timeline.place", json!({"item": item, "track": "V2", "time": start, "sourceIn": source_in, "duration": duration, "audio": false}));
+    let copy = r["clips"][0].as_u64().unwrap();
+    d.frames(3);
+    assert!(d.ids("timeline.duplicateFrames.").is_empty(), "hidden until Show Duplicate Frame Markers");
+    d.click("timeline.toggle.settings");
+    d.click("timeline.settings.showDuplicateFrameMarkers");
+    assert!(d.app().session.state.show_duplicate_frame_markers);
+    let has = |marks: &[String], clip: u64| marks.contains(&format!("timeline.duplicateFrames.{clip}.0"));
+    let marks = d.ids_once("timeline.duplicateFrames.", |m| has(m, first) && has(m, copy));
+    for clip in [first, copy] {
+        assert!(has(&marks, clip), "clip {clip}: {marks:?}");
+    }
+    // the markers follow edits: without the copy the first clip repeats nothing (the demo
+    // repeats frames of another clip elsewhere, and those markers stay)
+    let ours = |marks: &[String]| marks.iter().filter(|m| [first, copy].iter().any(|c| m.starts_with(&format!("timeline.duplicateFrames.{c}.")))).count();
+    d.exec("edit.undo", json!({}));
+    let marks = d.ids_once("timeline.duplicateFrames.", |m| ours(m) == 0);
+    assert_eq!(ours(&marks), 0, "the copy is gone: {marks:?}");
+    assert!(!marks.is_empty(), "the demo's own repeat: {marks:?}");
+    d.exec("edit.redo", json!({}));
+    assert_eq!(ours(&d.ids_once("timeline.duplicateFrames.", |m| ours(m) == 2)), 2, "the copy is back");
+    // at 200 % the copy shows every other frame of the original, so the original repeats in
+    // single frames
+    d.app()
+        .session
+        .edit_sequence("test", |q, _, _| {
+            q.find_item_mut(filmcraft_project::ClipId(copy)).unwrap().1.speed = 2.0;
+            Ok(())
+        })
+        .unwrap();
+    let listed = d.exec("sequence.duplicateFrames", json!({}));
+    let runs = listed.as_array().unwrap().iter().find(|e| e["clip"] == json!(first)).unwrap()["ranges"].as_array().unwrap().len();
+    assert!(runs > 4, "{listed}");
+    // only the stripes in view are drawn: scrolled to the middle of the clip, the first is not
+    let (scroll, pps) = (d.app().ui.timeline.scroll, d.app().ui.timeline.pps);
+    let middle = (start + duration / 2) as f64 / filmcraft_time::TICKS_PER_SECOND as f64;
+    (d.app().ui.timeline.scroll, d.app().ui.timeline.target_scroll) = (middle, middle);
+    let scrolled = |m: &[String]| !m.is_empty() && !m.contains(&format!("timeline.duplicateFrames.{first}.0"));
+    let marks = d.ids_once(&format!("timeline.duplicateFrames.{first}."), scrolled);
+    assert!(scrolled(&marks), "{marks:?}");
+    (d.app().ui.timeline.scroll, d.app().ui.timeline.target_scroll) = (scroll, scroll);
+    // zoomed far out, the single frames make one stripe
+    (d.app().ui.timeline.pps, d.app().ui.timeline.target_pps) = (1.0, 1.0);
+    d.frames(3);
+    let marks = d.ids(&format!("timeline.duplicateFrames.{first}."));
+    assert_eq!(marks.len(), 1, "{marks:?}");
+    (d.app().ui.timeline.pps, d.app().ui.timeline.target_pps) = (pps, pps);
+    d.exec("sequence.showDuplicateFrameMarkers", json!({"on": false}));
+    d.frames(3);
+    assert!(d.ids("timeline.duplicateFrames.").is_empty(), "turned off");
 }
 
 #[test]

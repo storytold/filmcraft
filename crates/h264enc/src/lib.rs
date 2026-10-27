@@ -528,6 +528,13 @@ impl Encoder {
         &self.cfg
     }
 
+    /// Run `f` on the encoder's worker threads (the calling thread without the `threads`
+    /// feature). The pool is idle between pictures, so input preparation such as colour
+    /// conversion that runs here does not queue behind work on the global rayon pool.
+    pub fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        self.pool.install(f)
+    }
+
     /// The SPS and PPS NAL units (without start codes).
     pub fn sps_pps(&self) -> (Vec<u8>, Vec<u8>) {
         (self.sps_nal.clone(), self.pps_nal.clone())
@@ -573,12 +580,18 @@ impl Encoder {
         let use_aq = self.cfg.aq_strength > 0.0 && !matches!(self.cfg.rate, RateControl::Qp(_));
         let (mbw, mbh, strength) = (self.params.mbw, self.params.mbh, self.cfg.aq_strength);
         let prev = self.prev_lowres.take();
-        let (lowres, cplx, aq) = self.pool.install(|| {
+        let analyse = || {
             let lowres = LowRes::new(&src);
             let cplx = lookahead::complexity(&lowres, prev.as_ref());
-            let aq = if use_aq { lookahead::aq_offsets(&src, mbw, mbh, strength) } else { Vec::new() };
-            (lowres, cplx, aq)
-        });
+            (lowres, cplx)
+        };
+        let aq_of = || if use_aq { lookahead::aq_offsets(&src, mbw, mbh, strength) } else { Vec::new() };
+        // the two analyses are independent: side by side, the pool's threads are not left idle
+        // at the end of each
+        #[cfg(feature = "threads")]
+        let ((lowres, cplx), aq) = self.pool.install(|| rayon::join(analyse, aq_of));
+        #[cfg(not(feature = "threads"))]
+        let ((lowres, cplx), aq) = (analyse(), aq_of());
         self.prev_lowres = Some(lowres);
         let display = self.display_count;
         self.display_count += 1;

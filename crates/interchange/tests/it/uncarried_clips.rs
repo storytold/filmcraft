@@ -144,3 +144,19 @@ fn fcp7_import_reports_a_clip_item_whose_file_is_not_defined() {
     let (_, report) = import(&bytes, Format::Fcp7Xml, None).unwrap();
     assert!(!report.mentions("does not define"), "{report}");
 }
+
+/// An empty `ref` is not a valid IDREF: Final Cut Pro rejects the whole file. The adjustment layer
+/// on V1 becomes a gap in the primary storyline; the connected title is left out (a `<gap>` can
+/// only sit in a spine). The media clip still references its asset.
+#[test]
+fn fcpxml_has_no_empty_ref_for_a_title() {
+    let (p, s) = project_with_a_title();
+    let (bytes, report) = export_report(&p, s, Format::Fcpxml);
+    let xml = String::from_utf8(bytes).unwrap();
+    assert!(!xml.contains("ref=\"\""), "{xml}");
+    assert!(!xml.contains("Opening"), "{xml}");
+    assert_eq!(xml.matches("<gap name=\"Grade\" offset=").count(), 1, "{xml}");
+    assert!(xml.contains("<asset-clip ref=\"r"), "{xml}");
+    assert!(report.mentions(&format!("{TITLE} is not supported in FCPXML: it is left out")), "{report}");
+    assert!(report.mentions(&format!("{LAYER} is not supported in FCPXML: it is written as a gap")), "{report}");
+}
