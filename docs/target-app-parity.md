@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Performance: Program playback on a source slower than real time drops frames instead of freezing (#2696)) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -218,7 +218,7 @@ full-area depth (e.g. the ~20 common effects rather than all 93 and their approx
 | Titles and captions | 7% | 75% | Text, shapes, templates, SRT / SCC / VTT; `.mogrt` not read by design |
 | Export with presets | 9% | 75% | H.264, HEVC (hardware), ProRes, DNxHR, presets, queue; bitrate miss (#371) |
 | Save, reopen, auto-save, relink, proxies | 4% | 80% | Atomic saves, migrations, recovery, Link Media |
-| Playback speed on their machine | 9% | 65% | 4K H.264 / HEVC real time with hardware decode on macOS; lag / CPU reports (#523, #525) |
+| Playback speed on their machine | 9% | 65% | 4K H.264 / HEVC real time with hardware decode on macOS; lag / CPU reports (#523, #525); a source slower than real time drops frames instead of freezing the Program monitor (#2696) |
 | **Weighted depth** | 100% | **74.8%** | |
 
 Discounts for what still stops real work:
@@ -354,6 +354,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | Performance: Program playback on a source slower than real time drops frames instead of freezing (#2696) |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |

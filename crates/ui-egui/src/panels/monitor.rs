@@ -206,9 +206,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
         let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
         let project = app.session.project.clone();
+        let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
         if playing {
             let preroll = which == Which::Program && app.playback.preroll.is_some();
-            let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
             app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
             if preroll {
                 app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, rate.frame_at(duration) - 1);
@@ -224,21 +224,26 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         } else {
             format!("monitor-{prefix}")
         };
+        // behind the playhead in the play direction: in reverse playback the pictures still
+        // finishing (kept running by `schedule_playback`) are above it
+        let back = crate::frames::Lookback { frames: app.frames.plan_lookback(key.target, rate.as_f64()), dir: if playing && speed < 0.0 { -1 } else { 1 } };
         let (shown, on_screen) = if use_gpu {
             let found = app
                 .frames
                 .get_plan(&key)
                 .map(|p| (key, p))
-                .or_else(|| app.frames.nearest_plan(key, 6))
+                .or_else(|| app.frames.nearest_plan(key, back))
                 .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))));
             match found {
                 Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
                 None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
             }
-        } else if grid {
-            cpu_texture_as(app, &ctx, &tex_name, key, &asked, display, true)
         } else {
-            cpu_texture(app, &ctx, &tex_name, key, &asked, display)
+            if grid {
+                cpu_texture_as(app, &ctx, &tex_name, key, &asked, display, true, back)
+            } else {
+                cpu_texture(app, &ctx, &tex_name, key, &asked, display, back)
+            }
         };
         let exact = on_screen == Some(key);
         if which == Which::Program {
@@ -274,9 +279,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
             }
             let (reference, _) = if mv.transparency_grid {
-                cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], DisplayMode::Composite, true)
+                cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], DisplayMode::Composite, true, crate::frames::Lookback::backward(6))
             } else {
-                cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite)
+                cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite, crate::frames::Lookback::backward(6))
             };
             if let Some(tex) = reference {
                 ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -506,9 +511,10 @@ fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bo
     before
 }
 
-/// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
-/// it, else the newest ready one of `asked` (see [`asked_before`]), with the display mode's
-/// channel mapping. Returns the texture and the frame it shows.
+/// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one within
+/// `back` (the GPU path's look-back while playing, in the play direction), else the newest ready
+/// one of `asked` (see [`asked_before`]), with the display mode's channel mapping. Returns the
+/// texture and the frame it shows.
 fn cpu_texture(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
@@ -516,11 +522,13 @@ fn cpu_texture(
     key: FrameKey,
     asked: &[FrameKey],
     mode: DisplayMode,
+    back: crate::frames::Lookback,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
-    cpu_texture_as(app, ctx, name, key, asked, mode, false)
+    cpu_texture_as(app, ctx, name, key, asked, mode, false, back)
 }
 
 /// [`cpu_texture`], keeping the frame's alpha when `alpha` is set (the Transparency Grid).
+#[allow(clippy::too_many_arguments)]
 fn cpu_texture_as(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
@@ -529,12 +537,13 @@ fn cpu_texture_as(
     asked: &[FrameKey],
     mode: DisplayMode,
     alpha: bool,
+    back: crate::frames::Lookback,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
     let found = app
         .frames
         .get(&key)
         .map(|img| (key, img))
-        .or_else(|| (1..=6).map(|d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
+        .or_else(|| back.frames_before(key.frame).map(|frame| FrameKey { frame, ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
         .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))));
     match found {
         Some((k, img)) => {
