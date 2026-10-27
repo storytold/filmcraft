@@ -94,6 +94,47 @@ fn caption_font_picker_sets_the_track_font() {
     assert_eq!(d.font(track), "Noto Serif");
 }
 
+/// #1364: the caption position field moves captions up or down (the track style's margin).
+#[test]
+fn caption_margin_field_sets_the_track_margin() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let track = d.ok("engine.execute", json!({"command": "captions.newTrack", "params": {"format": "Subtitle"}}))["track"].as_u64().unwrap();
+    d.ok("engine.execute", json!({"command": "captions.add", "params": {"track": track, "text": "Hello", "seconds": 1.0}}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    d.frames(3);
+    let margin = |d: &mut Driver| {
+        let r = d.ok("engine.execute", json!({"command": "captions.list", "params": {}}));
+        let t = r["tracks"].as_array().unwrap().iter().find(|t| t["id"] == json!(track)).expect("track").clone();
+        t["style"]["margin"].as_f64().unwrap()
+    };
+    assert!((margin(&mut d) - 0.08).abs() < 1e-6);
+    // the whole style strip in view
+    d.ok("ui.set", json!({"focused": "Text"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "text.captions.style.margin"}));
+    d.frames(1);
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "20"}));
+    d.frames(1);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert!((margin(&mut d) - 0.20).abs() < 1e-4, "{}", margin(&mut d));
+    // typing the same value again adds no undo step
+    let undo = |d: &mut Driver| d.harness.state().session.history.undo.len();
+    let n = undo(&mut d);
+    d.ok("ui.click", json!({"id": "text.captions.style.margin"}));
+    d.frames(1);
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "20"}));
+    d.frames(1);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert_eq!(undo(&mut d), n, "no undo step for an unchanged margin");
+}
+
 /// Every text shape on screen, with the colour of its first run.
 fn painted_text(d: &Driver) -> Vec<(String, egui::Color32)> {
     fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Color32)>) {
