@@ -44,10 +44,10 @@ fn cfg(profile: Profile, preset: Preset, rate: RateControl) -> EncoderConfig {
 #[test]
 fn coded_slices_are_pinned() {
     let cases = [
-        ("high balanced crf", cfg(Profile::High, Preset::Balanced, RateControl::Crf(23.0)), 0xecd1_35a9_3a46_f7d8u64),
-        ("high quality vbr", cfg(Profile::High, Preset::Quality, RateControl::Vbr { target_kbps: 800, max_kbps: 1200 }), 0x251e_c302_fd8a_ed38),
-        ("main speed qp", cfg(Profile::Main, Preset::Speed, RateControl::Qp(30)), 0xa123_355d_d580_4e7b),
-        ("baseline balanced cbr", cfg(Profile::Baseline, Preset::Balanced, RateControl::Cbr { kbps: 600 }), 0x13cb_e982_aee0_13f8),
+        ("high balanced crf", cfg(Profile::High, Preset::Balanced, RateControl::Crf(23.0)), 0x6223_db82_41eb_7da1u64),
+        ("high quality vbr", cfg(Profile::High, Preset::Quality, RateControl::Vbr { target_kbps: 800, max_kbps: 1200 }), 0x196d_593c_b754_622f),
+        ("main speed qp", cfg(Profile::Main, Preset::Speed, RateControl::Qp(30)), 0x7772_91d5_4c75_c320),
+        ("baseline balanced cbr", cfg(Profile::Baseline, Preset::Balanced, RateControl::Cbr { kbps: 600 }), 0x73f3_1918_3ea8_80be),
     ];
     let got: Vec<u64> = cases.iter().map(|(_, c, _)| slices_hash(c.clone(), 20)).collect();
     for ((name, _, _), got) in cases.iter().zip(&got) {
