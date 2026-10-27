@@ -661,7 +661,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("caption-style"));
     child.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let r = egui::ComboBox::from_id_salt(("caption-font", tr.id.0)).selected_text(&st.font).width(130.0).height(400.0).show_ui(ui, |ui| {
+        let r = craft_ui::ComboBox::from_id_salt(("caption-font", tr.id.0)).selected_text(&st.font).width(130.0).height(400.0).show_ui(ui, |ui| {
             if !filmcraft_text::fonts::system_scanned() {
                 filmcraft_text::fonts::scan_system();
             }

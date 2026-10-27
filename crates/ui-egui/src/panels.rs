@@ -171,6 +171,11 @@ pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
 #[derive(Clone, Debug)]
 struct DragPayloadBox(DragPayload);
 
+/// Whether one of FilmCraft's own drags (an item, bin, source range, effect or template) is under way.
+pub(crate) fn dragging(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().is_some()
+}
+
 fn payload(ui: &egui::Ui) -> Option<DragPayload> {
     ui.ctx().data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map(|b| b.0)
 }
@@ -319,7 +324,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         let _ = crate::menus::invoke(app, ui.ctx(), "window.floatPanel", serde_json::json!({"panel": p.id()}));
                         close = true;
                     }
-                    let maximized = app.ui.keys.maximized.is_some_and(|q| app.ui.dock.contains(q) || app.ui.floating.iter().any(|g| g.panels.contains(&q)));
+                    let maximized = app.ui.keys.maximized.is_some_and(|q| crate::dock::LayoutExt::is_docked(&app.ui.dock, q));
                     let r = ui.button(if maximized { tl!("Restore Frame") } else { tl!("Maximize Frame") });
                     app.auto.add(&format!("panel.menu.{}.maximize", p.id()), r.rect, if maximized { "Restore Frame" } else { "Maximize Frame" });
                     if r.clicked() {
@@ -331,41 +336,7 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         app.set_workspace(&w);
                         close = true;
                     }
-                    if p == PanelKind::Timeline {
-                        ui.separator();
-                        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Button::new(tl!("Reveal Sequence in Project")));
-                        app.auto.add("panel.menu.Timeline.revealSequence", r.rect, "Reveal Sequence in Project");
-                        if r.clicked() {
-                            let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
-                            close = true;
-                        }
-                        ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
-                        ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
-                        let mut work_area = app.session.active_sequence().is_some_and(|q| q.work_area.is_some());
-                        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Checkbox::new(&mut work_area, tl!("Work Area Bar")));
-                        app.auto.add("panel.menu.Timeline.workAreaBar", r.rect, "Work Area Bar");
-                        if r.changed()
-                            && let Err(e) = app.session.execute("sequence.workAreaBar", serde_json::json!({"show": work_area}))
-                        {
-                            app.ui.status = e.to_string();
-                        }
-                    }
-                    if p == PanelKind::Project {
-                        ui.separator();
-                        close |= project::panel_menu(app, ui);
-                    }
-                    if p == PanelKind::MediaBrowser {
-                        ui.separator();
-                        close |= media_browser::panel_menu(app, ui);
-                    }
-                    if p == PanelKind::Source {
-                        ui.separator();
-                        close |= monitor::source_panel_menu(app, ui);
-                    }
-                    if p == PanelKind::History {
-                        ui.separator();
-                        close |= misc::history_panel_menu(app, ui);
-                    }
+                    close |= panel_items(app, ui, p);
                 });
             app.auto.add("panel.menu.scroll", scroll.inner_rect, "Panel menu");
         });
@@ -376,6 +347,49 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if close || (!fresh && area.response.clicked_elsewhere()) || crate::widgets::escape_closes(ui.ctx()) {
         ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
     }
+}
+
+/// The panel's own items, each section after a separator: the Timeline's sequence and track
+/// display items, and the Project, Media Browser and Source menus. Shared by the ≡ menu and the
+/// tab's context menu. True when an item asks the menu to close.
+pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind) -> bool {
+    let mut close = false;
+    if p == PanelKind::Timeline {
+        ui.separator();
+        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Button::new(tl!("Reveal Sequence in Project")));
+        app.auto.add("panel.menu.Timeline.revealSequence", r.rect, "Reveal Sequence in Project");
+        if r.clicked() {
+            let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
+            close = true;
+        }
+        ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
+        ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+        let mut work_area = app.session.active_sequence().is_some_and(|q| q.work_area.is_some());
+        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Checkbox::new(&mut work_area, tl!("Work Area Bar")));
+        app.auto.add("panel.menu.Timeline.workAreaBar", r.rect, "Work Area Bar");
+        if r.changed()
+            && let Err(e) = app.session.execute("sequence.workAreaBar", serde_json::json!({"show": work_area}))
+        {
+            app.ui.status = e.to_string();
+        }
+    }
+    if p == PanelKind::Project {
+        ui.separator();
+        close |= project::panel_menu(app, ui);
+    }
+    if p == PanelKind::MediaBrowser {
+        ui.separator();
+        close |= media_browser::panel_menu(app, ui);
+    }
+    if p == PanelKind::Source {
+        ui.separator();
+        close |= monitor::source_panel_menu(app, ui);
+    }
+    if p == PanelKind::History {
+        ui.separator();
+        close |= misc::history_panel_menu(app, ui);
+    }
+    close
 }
 
 pub(crate) mod transcript_cache;

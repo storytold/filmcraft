@@ -232,8 +232,11 @@ pub(crate) fn open_show_hide_tracks(app: &mut FilmcraftApp, ctx: &egui::Context)
 }
 
 /// Meter Input(s) Only (`mixer.meterInputOnly`, `{"on":bool?}`): sets the option, or toggles it
-/// without `on`.
+/// without `on`. Parameters that are neither an object nor null are an error.
 pub(crate) fn set_meter_input_only(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String> {
+    if !params.is_object() && !params.is_null() {
+        return Err("command parameters must be an object".into());
+    }
     let on = match params.get("on") {
         None | Some(Value::Null) => !app.ui.mixer_meter_input_only,
         Some(v) => v.as_bool().ok_or("`on` must be true or false")?,

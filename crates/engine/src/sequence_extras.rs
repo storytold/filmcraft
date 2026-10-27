@@ -556,5 +556,4 @@ fn add_flash_cue(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 #[cfg(test)]
-#[path = "sequence_extras_tests.rs"]
 mod tests;

@@ -106,7 +106,7 @@ impl Driver {
     }
 
     fn shows(&mut self, p: PanelKind) -> bool {
-        self.app().ui.dock.contains(p)
+        self.app().ui.dock.contains(&p)
     }
 
     /// Window ▸ Workspaces as (label, checked) in menu order.
