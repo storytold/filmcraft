@@ -11,7 +11,7 @@
 //! Synthetic bold grows outlines by 2.5 % of the size per side; synthetic italic slants by 12°.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
@@ -59,7 +59,7 @@ impl OutlinePen for Rec {
 fn outline(face: FaceId, gid: u32) -> Option<Arc<Vec<Cmd>>> {
     static C: OnceLock<Mutex<HashMap<(FaceId, u32), Option<Arc<Vec<Cmd>>>>>> = OnceLock::new();
     let c = C.get_or_init(Default::default);
-    if let Some(v) = c.lock().unwrap_or_else(|e| e.into_inner()).get(&(face, gid)) {
+    if let Some(v) = c.lock().unwrap_or_else(PoisonError::into_inner).get(&(face, gid)) {
         return v.clone();
     }
     let f = fonts::face(face);
@@ -69,7 +69,7 @@ fn outline(face: FaceId, gid: u32) -> Option<Arc<Vec<Cmd>>> {
         g.draw(DrawSettings::unhinted(Size::unscaled(), LocationRef::default()), &mut rec).ok()?;
         Some(Arc::new(rec.0))
     });
-    let mut m = c.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = c.lock().unwrap_or_else(PoisonError::into_inner);
     if m.len() > 20_000 {
         m.clear();
     }
@@ -164,7 +164,7 @@ pub fn glyph_mask(g: &Glyph, px: f32, frac: f32) -> Option<Arc<GlyphMask>> {
     let size_q = (px * 8.0).round().max(1.0) as u32;
     let frac_q = ((frac.rem_euclid(1.0) * 4.0).round() as u8) % 4;
     let key = (g.face, g.id, size_q, frac_q, g.synth_bold, g.synth_italic);
-    if let Some(v) = glyph_cache().lock().unwrap_or_else(|e| e.into_inner()).entries.get(&key) {
+    if let Some(v) = glyph_cache().lock().unwrap_or_else(PoisonError::into_inner).entries.get(&key) {
         return v.clone();
     }
     let px = size_q as f32 / 8.0;
@@ -178,7 +178,7 @@ pub fn glyph_mask(g: &Glyph, px: f32, frac: f32) -> Option<Arc<GlyphMask>> {
     };
     let v = Some(Arc::new(GlyphMask { mask: fill(&path, w, h, -left as f32, -top as f32), left, top }));
     let bytes = w * h * std::mem::size_of::<f32>();
-    let mut m = glyph_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = glyph_cache().lock().unwrap_or_else(PoisonError::into_inner);
     if m.entries.len() > 16_384 || m.bytes.checked_add(bytes).is_none_or(|n| n > MAX_GLYPH_CACHE_BYTES) {
         m.entries.clear();
         m.bytes = 0;

@@ -422,7 +422,7 @@ fn combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mu
         }
         let cur = value.as_str().unwrap_or_default().to_string();
         let shown = options.iter().find(|o| o.0 == cur).map(|o| o.1.clone()).unwrap_or(cur.clone());
-        let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown)).show_ui(ui, |ui| {
+        let r = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown)).show_ui(ui, |ui| {
             for (k, l) in options {
                 if ui.selectable_label(cur == *k, crate::i18n::t(l)).clicked() {
                     *value = json!(k);

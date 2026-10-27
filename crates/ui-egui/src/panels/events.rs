@@ -67,7 +67,7 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Level::Warning => tl!("Warnings and Errors"),
             Level::Error => tl!("Errors Only"),
         };
-        let r = egui::ComboBox::from_id_salt("events-filter").selected_text(label(min)).width(150.0).show_ui(ui, |ui| {
+        let r = craft_ui::ComboBox::from_id_salt("events-filter").selected_text(label(min)).width(150.0).show_ui(ui, |ui| {
             for l in [Level::Info, Level::Warning, Level::Error] {
                 let r = ui.selectable_label(min == l, label(l));
                 elems.push((format!("events.filter.{}", l.label().to_ascii_lowercase()), r.rect, label(l).into()));

@@ -91,6 +91,53 @@ fn satd_strip<const N: usize, const H: usize>(a: &[u8], sa: usize, b: &[u8], sb:
     total
 }
 
+/// [`satd_strip`] for 8 and 4 columns, where its pairwise sums across neighbouring lanes do not
+/// vectorise: the same sums are formed lane by lane against copies of the rows shifted by one and
+/// two lanes, and only every fourth lane (the first column of a 4x4 block) is counted.
+#[inline(always)]
+fn satd_strip_narrow<const N: usize>(a: &[u8], sa: usize, b: &[u8], sb: usize) -> u32 {
+    let mut d = [[0i16; N]; 4];
+    for r in 0..4 {
+        let ra = &a[r * sa..r * sa + N];
+        let rb = &b[r * sb..r * sb + N];
+        for i in 0..N {
+            d[r][i] = ra[i] as i16 - rb[i] as i16;
+        }
+    }
+    let mut v = [[0i16; N]; 4];
+    for i in 0..N {
+        let s01 = d[0][i] + d[1][i];
+        let d01 = d[0][i] - d[1][i];
+        let s23 = d[2][i] + d[3][i];
+        let d23 = d[2][i] - d[3][i];
+        v[0][i] = s01 + s23;
+        v[1][i] = s01 - s23;
+        v[2][i] = d01 + d23;
+        v[3][i] = d01 - d23;
+    }
+    // per lane at most 4 rows x 2 x 2040: fits u16
+    let mut acc = [0u16; N];
+    for row in &v {
+        let mut p = [0i16; N];
+        let mut m = [0i16; N];
+        p[..N - 1].copy_from_slice(&row[1..]);
+        m[..N - 1].copy_from_slice(&row[1..]);
+        for i in 0..N {
+            p[i] += row[i];
+            m[i] = row[i] - m[i];
+        }
+        let mut p2 = [0i16; N];
+        let mut m2 = [0i16; N];
+        p2[..N - 2].copy_from_slice(&p[2..]);
+        m2[..N - 2].copy_from_slice(&m[2..]);
+        for i in 0..N {
+            let t = p[i].unsigned_abs().max(p2[i].unsigned_abs()) + m[i].unsigned_abs().max(m2[i].unsigned_abs());
+            acc[i] += if i % 4 == 0 { t } else { 0 };
+        }
+    }
+    acc.iter().map(|&x| x as u32).sum()
+}
+
 /// Sum of absolute 4x4 Hadamard-transformed differences (halved), for w, h multiples of 4.
 pub fn satd(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u32 {
     let mut total = 0;
@@ -98,11 +145,11 @@ pub fn satd(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u32
         let (ao, bo) = (by * sa, by * sb);
         match w {
             16 => total += satd_strip::<16, 8>(&a[ao..], sa, &b[bo..], sb),
-            8 => total += satd_strip::<8, 4>(&a[ao..], sa, &b[bo..], sb),
-            4 => total += satd_strip::<4, 2>(&a[ao..], sa, &b[bo..], sb),
+            8 => total += satd_strip_narrow::<8>(&a[ao..], sa, &b[bo..], sb),
+            4 => total += satd_strip_narrow::<4>(&a[ao..], sa, &b[bo..], sb),
             _ => {
                 for bx in (0..w).step_by(4) {
-                    total += satd_strip::<4, 2>(&a[ao + bx..], sa, &b[bo + bx..], sb);
+                    total += satd_strip_narrow::<4>(&a[ao + bx..], sa, &b[bo + bx..], sb);
                 }
             }
         }
@@ -168,6 +215,30 @@ mod tests {
                 }
             }
             assert_eq!(satd(&a, 16, &b, 16, w, h), want / 2, "{w}x{h}");
+        }
+    }
+
+    #[test]
+    fn satd_matches_reference_at_the_extremes() {
+        // the largest differences (every lane at +-255) are where 16-bit sums could overflow
+        let (zero, full) = ([0u8; 16 * 16], [255u8; 16 * 16]);
+        let stripes: Vec<u8> = (0..16 * 16).map(|i| if (i / 16 + i % 16) % 2 == 0 { 255 } else { 0 }).collect();
+        for (a, b) in [(&zero[..], &full[..]), (&full[..], &zero[..]), (&stripes[..], &zero[..]), (&zero[..], &stripes[..])] {
+            for (w, h) in [(16, 16), (8, 8), (4, 4), (8, 16), (12, 4)] {
+                let mut want = 0;
+                for by in (0..h).step_by(4) {
+                    for bx in (0..w).step_by(4) {
+                        let mut d = [0i32; 16];
+                        for r in 0..4 {
+                            for c in 0..4 {
+                                d[r * 4 + c] = a[(by + r) * 16 + bx + c] as i32 - b[(by + r) * 16 + bx + c] as i32;
+                            }
+                        }
+                        want += hadamard4x4_sum(&d);
+                    }
+                }
+                assert_eq!(satd(a, 16, b, 16, w, h), want / 2, "{w}x{h}");
+            }
         }
     }
 }

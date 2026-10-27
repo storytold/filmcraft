@@ -244,7 +244,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.add_space(6.0);
         label(ui, &t, "Language");
         let lang_name = filmcraft_tts::LANGUAGES.iter().find(|(id, _)| *id == d.language).map_or(d.language.as_str(), |(_, n)| n);
-        let cb = egui::ComboBox::from_id_salt("tts-language").selected_text(lang_name).width(w).show_ui(ui, |ui| {
+        let cb = craft_ui::ComboBox::from_id_salt("tts-language").selected_text(lang_name).width(w).show_ui(ui, |ui| {
             for (id, name) in filmcraft_tts::LANGUAGES {
                 if ui.selectable_label(d.language == *id, *name).clicked() {
                     d.language = id.to_string();
@@ -255,7 +255,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.add_space(10.0);
         label(ui, &t, "Voice");
         let voice_name = voices.iter().find(|v| v.id == d.voice).map_or(d.voice.as_str(), |v| v.name);
-        let cb = egui::ComboBox::from_id_salt("tts-voice").selected_text(voice_name).width(w).show_ui(ui, |ui| {
+        let cb = craft_ui::ComboBox::from_id_salt("tts-voice").selected_text(voice_name).width(w).show_ui(ui, |ui| {
             for (engine, heading) in [("neural", "Natural voices"), ("basic", "Basic voices (built in)")] {
                 ui.label(egui::RichText::new(heading).color(t.text_faint).size(11.0));
                 for v in voices.iter().filter(|v| v.language == d.language && v.engine == engine) {
@@ -335,7 +335,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if open {
             ui.add_space(4.0);
             label(ui, &t, "Vocal pitch");
-            let cb = egui::ComboBox::from_id_salt("tts-pitch").selected_text(d.pitch.label()).width(w).show_ui(ui, |ui| {
+            let cb = craft_ui::ComboBox::from_id_salt("tts-pitch").selected_text(d.pitch.label()).width(w).show_ui(ui, |ui| {
                 for p in VocalPitch::ALL {
                     if ui.selectable_label(d.pitch == p, p.label()).clicked() {
                         d.pitch = p;

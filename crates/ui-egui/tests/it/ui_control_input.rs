@@ -5,14 +5,10 @@ use std::sync::{
     mpsc::{Sender, channel},
 };
 
-use egui::{Event, Id, Key, Modifiers, vec2};
+use egui::{Event, Key, Modifiers, vec2};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
-use filmcraft_ui_egui::{
-    FilmcraftApp,
-    control::ControlRequest,
-    dock::{DockNode, PanelKind, SplitSize},
-};
+use filmcraft_ui_egui::{FilmcraftApp, control::ControlRequest, dock::PanelKind};
 use serde_json::{Value, json};
 
 struct Driver {
@@ -99,21 +95,29 @@ fn ordinary_control_input_also_resizes_a_background_divider() {
 
 fn background_divider(isolated: bool) {
     let mut d = Driver::new(isolated);
-    d.h.state_mut().ui.dock = DockNode::Split {
-        vertical: false,
-        size: SplitSize::FixedA(400.0),
-        a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 }),
-        b: Box::new(DockNode::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    d.h.state_mut().ui.dock = craft_ui::docking::Layout {
+        root: Some(craft_ui::docking::Node::Split {
+            axis: craft_ui::layout::SplitAxis::Horizontal,
+            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+        }),
+        floating: vec![],
     };
     d.frames(3, true);
     let before_project = d.h.state().session.project.clone();
     let before_playheads = d.h.state().session.state.playheads.clone();
-    let divider = Id::unique(("dock-gutter", String::new()));
+    let divider = craft_ui::docking::DockArea::<PanelKind>::hit_id(
+        filmcraft_ui_egui::dock_area_id(),
+        &craft_ui::docking::Hit::Divider(craft_ui::docking::Divider::Split(vec![])),
+    );
     d.h.ctx.memory_mut(|memory| memory.request_focus(divider));
     d.frames(2, true);
     d.h.input_mut().events.push(Event::WindowFocused(false));
     d.ok("ui.key", json!({"key":"ArrowRight"}), false);
-    assert!(matches!(d.h.state().ui.dock, DockNode::Split { size: SplitSize::FixedA(408.0), .. }), "control input must work without native activation");
+    d.frames(2, false);
+    let width = d.h.state().auto.find("panel.Project").unwrap().rect[2];
+    assert!((width - 408.0).abs() < 0.5, "control input must work without native activation: Project is {width} wide");
     assert_eq!(d.h.state().session.state.playheads, before_playheads);
     assert!(Arc::ptr_eq(&d.h.state().session.project, &before_project));
     assert!(!d.h.state().playback.playing);

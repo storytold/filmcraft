@@ -241,7 +241,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!(j["streams"].as_array().unwrap().len(), 1, "{name}");
                 let a = stream(&j, "audio").unwrap();
                 assert_eq!((a["codec_name"].as_str(), a["sample_rate"].as_str(), a["channels"].as_u64()), (Some("mp3"), Some("48000"), Some(2)), "{name}");
-                let d = num(&j["format"]["duration"]) - 0.25;
+                let d = num(&j["format"]["duration"]) - (end - start);
                 assert!((0.0..0.06).contains(&d), "{name}: {}", j["format"]["duration"]);
                 continue;
             }
