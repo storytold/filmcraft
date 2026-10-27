@@ -95,7 +95,7 @@ fn methods() -> [(&'static str, &'static str); 5] {
 /// Draw the open Synchronize / Merge Clips / Create Multi-Camera dialog.
 pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.sync_dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("sync-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("sync-dialog-before-drag"), &mut d);
     let (title, pre) = match d.kind.as_str() {
         "merge" => (tl!("Merge Clips"), "merge"),
         "multicam" => (tl!("Create Multi-Camera Source Sequence"), "mcam"),
@@ -106,7 +106,7 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let accent = app.tokens.accent;
     let names: Vec<String> = d.items.iter().filter_map(|i| app.session.project.item(ItemId(*i)).map(|it| it.name.clone())).collect();
     egui::Window::new(title)
-        .id(egui::Id::new(("sync-dialog", pre)))
+        .id(egui::Id::unique(("sync-dialog", pre)))
         .collapsible(false)
         .resizable(false)
         .default_width(440.0)
@@ -116,7 +116,7 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if pre != "sync" {
                 ui.horizontal(|ui| {
                     ui.label(if pre == "merge" { tl!("Clip Name:") } else { tl!("Sequence Name:") });
-                    let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0));
+                    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0)), "Sequence Name");
                     push(&mut elems, format!("{pre}.name"), &r, "name");
                 });
                 ui.label(RichText::new(tlf!("{n} clip(s): {names}", n = names.len(), names = names.join(", "))).weak().small());
@@ -141,9 +141,12 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                                 push(&mut elems, format!("{pre}.ignoreHours"), &r, "Ignore Hours");
                             }
                             "marker" => {
-                                let r = ui.add_enabled(
-                                    d.method == "marker",
-                                    egui::TextEdit::singleline(&mut d.marker).hint_text(tl!("first marker")).desired_width(140.0),
+                                let r = crate::widgets::accessible_name(
+                                    ui.add_enabled(
+                                        d.method == "marker",
+                                        egui::TextEdit::singleline(&mut d.marker).hint_text(tl!("first marker")).desired_width(140.0),
+                                    ),
+                                    "first marker",
                                 );
                                 push(&mut elems, format!("{pre}.marker"), &r, "marker name");
                             }
@@ -161,7 +164,10 @@ pub fn show_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 "sync" => {
                     ui.horizontal(|ui| {
                         ui.label(tl!("Reference track:"));
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.track).hint_text(tl!("lowest (V1…)")).desired_width(90.0));
+                        let r = crate::widgets::accessible_name(
+                            ui.add(egui::TextEdit::singleline(&mut d.track).hint_text(tl!("lowest (V1…)")).desired_width(90.0)),
+                            "Reference track",
+                        );
                         push(&mut elems, "sync.track", &r, "reference track");
                     });
                 }
@@ -354,7 +360,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
         let cell_i = k - lay.first;
         let cell = Rect::from_min_size(pic.min + vec2((cell_i % cols) as f32 * cw, (cell_i / cols) as f32 * ch), vec2(cw, ch));
         let name = cams.cameras.get(angle).map(|c| c.name.clone()).unwrap_or_default();
-        let resp = ui.interact(cell, egui::Id::new(("multicam-angle", k)), Sense::click()).on_hover_text(tlf!("Camera {n} — {name}", n = k + 1, name));
+        let resp = ui.interact(cell, egui::Id::unique(("multicam-angle", k)), Sense::click()).on_hover_text(tlf!("Camera {n} — {name}", n = k + 1, name));
         app.auto.add(&format!("program.multicam.angle.{}", k + 1), cell, &name);
         if resp.clicked() {
             // modifiers held now, or carried by the click event (synthetic input)
@@ -385,7 +391,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
         for (id, label, dx, cmd) in [("pagePrev", "◀", -70.0, "multicam.prevPage"), ("pageNext", "▶", 70.0, "multicam.nextPage")] {
             let r = Rect::from_center_size(mid + vec2(dx, 0.0), vec2(26.0, 18.0));
             let enabled = if cmd == "multicam.prevPage" { lay.page > 0 } else { lay.page + 1 < lay.pages };
-            let resp = ui.interact(r, egui::Id::new(("multicam-page", id)), Sense::click()).on_hover_text(if dx < 0.0 {
+            let resp = ui.interact(r, egui::Id::unique(("multicam-page", id)), Sense::click()).on_hover_text(if dx < 0.0 {
                 tl!("Previous page")
             } else {
                 tl!("Next page")
@@ -401,7 +407,7 @@ pub fn grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) {
     // record indicator
     let rr = Rect::from_min_size(area.min + vec2(8.0, 8.0), vec2(64.0, 18.0));
     let rec_on = app.ui.multicam_record;
-    let resp = ui.interact(rr, egui::Id::new("multicam-record"), Sense::click()).on_hover_text(tl!("Multi-Camera Record On/Off (0)"));
+    let resp = ui.interact(rr, egui::Id::unique("multicam-record"), Sense::click()).on_hover_text(tl!("Multi-Camera Record On/Off (0)"));
     app.auto.add("program.multicam.record", rr, "Multi-Camera Record");
     let dot = if recording {
         Color32::from_rgb(0xe0, 0x3a, 0x3a)
@@ -455,7 +461,7 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let th = thumb_w * q.settings.height.max(1) as f32 / q.settings.width.max(1) as f32;
     let tokens = app.tokens;
     egui::Window::new(tl!("Edit Cameras"))
-        .id(egui::Id::new("Edit Cameras"))
+        .id(egui::Id::unique("Edit Cameras"))
         .collapsible(false)
         .resizable(false)
         .default_width(420.0)
@@ -481,7 +487,10 @@ pub fn show_edit_cameras(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         }
                         elems.push((format!("editCameras.thumb.{a}"), tr, format!("Camera {}", a + 1)));
                         ui.label(format!("{}", a + 1));
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.names[a]).desired_width(180.0));
+                        let r = crate::widgets::accessible_name(
+                            ui.add(egui::TextEdit::singleline(&mut d.names[a]).desired_width(180.0)),
+                            format!("Camera {}", a + 1),
+                        );
                         push(&mut elems, format!("editCameras.name.{a}"), &r, "Camera name");
                     });
                 }

@@ -479,3 +479,40 @@ fn lens_blur_frame_time() {
         before / after
     );
 }
+
+/// #3086: on a text layer the typewriter grid and caret follow the text, not the whole frame.
+#[test]
+fn typewriter_cursor_stays_on_the_text_block() {
+    let (x0, x1, y0, y1) = (40usize, 88usize, 30usize, 42usize);
+    let layer = paint(W, H, |x, y| {
+        let (xi, yi) = (x as usize, y as usize);
+        if (x0..x1).contains(&xi) && (y0..y1).contains(&yi) { [0.3, 0.3, 0.3, 1.0] } else { [0.0; 4] }
+    });
+    let def = transitions().find(|d| d.id == "typewriter").unwrap();
+    for rows in [1.0, 3.0] {
+        let mut e = def.instance();
+        e.params.get_mut("columns").unwrap().value = ParamValue::Float(8.0);
+        e.params.get_mut("rows").unwrap().value = ParamValue::Float(rows);
+        e.params.get_mut("cursor").unwrap().value = ParamValue::Bool(true);
+        for p in [0.3, 0.6] {
+            let m = apply(&e, &layer, &layer, p);
+            let (mut cx0, mut cx1, mut cy0, mut cy1) = (usize::MAX, 0, usize::MAX, 0);
+            for y in 0..H {
+                for x in 0..W {
+                    let i = (y * W + x) * 4;
+                    let (o, s) = (&m.px[i..i + 4], &layer.px[i..i + 4]);
+                    if s[3] == 0.0 {
+                        assert!(o[3] == 0.0, "rows={rows} p={p}: transparent pixel ({x}, {y}) painted");
+                    }
+                    if o.iter().zip(s).any(|(a, b)| (a - b).abs() > 1e-4) {
+                        (cx0, cx1, cy0, cy1) = (cx0.min(x), cx1.max(x + 1), cy0.min(y), cy1.max(y + 1));
+                    }
+                }
+            }
+            assert!(cx0 < cx1, "rows={rows} p={p}: no cursor visible");
+            assert!(cx0 >= x0 && cx1 <= x1 && cy0 >= y0 && cy1 <= y1, "rows={rows} p={p}: cursor x{cx0}..{cx1} y{cy0}..{cy1} outside block");
+            let max_h = ((y1 - y0) as f64 / rows).ceil() as usize;
+            assert!(cy1 - cy0 <= max_h, "rows={rows} p={p}: cursor {} px tall, row is {max_h}", cy1 - cy0);
+        }
+    }
+}

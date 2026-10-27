@@ -5,10 +5,12 @@
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
+use craft_ui::docking::Node;
+use craft_ui::layout::SplitSize;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::dock::{DockNode, PanelKind, SplitSize};
+use filmcraft_ui_egui::dock::PanelKind;
 use filmcraft_ui_egui::{AudioOut, FilmcraftApp};
 use serde_json::{Value, json};
 
@@ -87,20 +89,19 @@ impl Driver {
     fn label(&mut self, id: &str) -> String {
         self.element(id).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
-    /// Give the Audio Meters panel `width` points (it sits in a fixed-width split beside the
-    /// Timeline).
+    /// Give the Audio Meters panel `width` points (it sits in a split beside the Timeline).
     fn meters_width(&mut self, width: f32) {
-        fn set(n: &mut DockNode, width: f32) -> bool {
+        fn set(n: &mut Node<PanelKind>, width: f32) -> bool {
             match n {
-                DockNode::Split { size, b, .. } if matches!(&**b, DockNode::Tabs { panels, .. } if panels.as_slice() == [PanelKind::AudioMeters]) => {
-                    *size = SplitSize::FixedB(width);
+                Node::Split { size, second, .. } if matches!(&**second, Node::Tabs { panels, .. } if panels.as_slice() == [PanelKind::AudioMeters]) => {
+                    *size = SplitSize::FixedSecond(width);
                     true
                 }
-                DockNode::Split { a, b, .. } => set(a, width) || set(b, width),
-                DockNode::Tabs { .. } => false,
+                Node::Split { first, second, .. } => set(first, width) || set(second, width),
+                _ => false,
             }
         }
-        assert!(set(&mut self.harness.state_mut().ui.dock, width));
+        assert!(self.harness.state_mut().ui.dock.root.as_mut().is_some_and(|root| set(root, width)));
         self.frames(3);
     }
     /// The level the left bar shows, in dB.

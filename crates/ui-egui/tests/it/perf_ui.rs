@@ -4,6 +4,7 @@
 //! picture follows a value that is dragged and a scrub.
 
 use std::sync::mpsc::{Sender, channel};
+use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
@@ -65,27 +66,27 @@ impl Driver {
 
     /// Wait (without a UI pass) until the frame workers have `key` ready.
     fn ready(&self, key: FrameKey) {
-        for _ in 0..2000 {
-            if self.harness.state().frames.is_ready(&key) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("{key:?} was never rendered");
+        wait_for(&format!("{key:?} to be rendered"), Duration::from_millis(5), || self.harness.state().frames.is_ready(&key));
     }
 
     /// The Program monitor at rest: the picture of the frame due is on screen.
     fn settled(&mut self) -> FrameKey {
-        for _ in 0..2000 {
+        let mut shown = None;
+        wait_for("the Program monitor to show its frame", Duration::from_millis(5), || {
             self.frames(1);
-            if let Some(k) = self.harness.state().program_picture()
-                && k == self.due(k)
-            {
-                return k;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("the Program monitor never showed its frame");
+            shown = self.harness.state().program_picture().filter(|&k| k == self.due(k));
+            shown.is_some()
+        });
+        shown.unwrap()
+    }
+}
+
+/// Call `done` every `pause` until it holds, for at most two minutes of wall-clock time.
+fn wait_for(what: &str, pause: Duration, mut done: impl FnMut() -> bool) {
+    let t0 = Instant::now();
+    while !done() {
+        assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
+        std::thread::sleep(pause);
     }
 }
 
@@ -97,6 +98,7 @@ fn perf_stats_reports_playback_frames_and_decode() {
         d.frames(1);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    d.settled();
     let v = d.ok("perf.stats", json!({}));
     for (section, keys) in [
         ("decode", &["cacheHitRate", "samplesDecoded", "decodeMs"][..]),
@@ -160,6 +162,33 @@ fn program_monitor_follows_a_backward_scrub() {
     assert_eq!(d.settled().frame, before.frame);
 }
 
+/// Opening a project gives the app a new media pool and a new frame server. The old server's
+/// workers end, so the first project's media pool is released.
+#[test]
+fn opening_a_project_releases_the_previous_media_pool() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-perf-ui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("reopen.fcproj").to_string_lossy().to_string();
+
+    let mut d = Driver::demo();
+    d.settled();
+    d.exec("file.saveAs", json!({"path": path}));
+    let first = std::sync::Arc::downgrade(&d.harness.state().session.media);
+    d.exec("file.open", json!({"path": path}));
+    d.frames(3);
+    let app = d.harness.state();
+    assert!(std::sync::Arc::ptr_eq(&app.frames.pool, &app.session.media), "the frame server serves the opened project's pool");
+    for _ in 0..2000 {
+        if first.strong_count() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(first.strong_count(), 0, "something still holds the first project's media pool");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A frame being rendered is kept when the same frame is asked for at a newer revision: frames
 /// that take longer than a refresh (CPU effects) were each cancelled by the next step of a drag,
 /// so none was ever shown until the mouse rested.
@@ -167,15 +196,7 @@ fn program_monitor_follows_a_backward_scrub() {
 fn a_newer_revision_keeps_the_frame_being_rendered() {
     let d = Driver::demo();
     let app = d.harness.state();
-    let idle = || {
-        for _ in 0..200_000 {
-            if app.frames.queue_len() == 0 {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_micros(50));
-        }
-        panic!("the frame queue never emptied");
-    };
+    let idle = || wait_for("the frame queue to empty", Duration::from_micros(50), || app.frames.queue_len() == 0);
     // the clip with Lumetri Color at full resolution: tens of milliseconds on the CPU
     let seq = app.session.state.active_sequence.unwrap();
     let rate = app.session.active_sequence().unwrap().settings.frame_rate;
@@ -208,12 +229,9 @@ fn thumbnail_textures_are_capped() {
         for &f in &frames {
             d.harness.state_mut().thumbnail(&ctx, item, rate.tick_of(f), 32);
         }
-        for _ in 0..2000 {
-            if frames.iter().all(|&f| d.harness.state_mut().thumbnail(&ctx, item, rate.tick_of(f), 32).is_some()) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        wait_for("100 thumbnails to be rendered", Duration::from_millis(5), || {
+            frames.iter().all(|&f| d.harness.state_mut().thumbnail(&ctx, item, rate.tick_of(f), 32).is_some())
+        });
         d.frames(1);
     }
     let n = d.harness.state().thumbnail_textures();

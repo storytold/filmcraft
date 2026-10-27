@@ -33,6 +33,9 @@ fn system_font() -> Option<Arc<FontData>> {
     FONT.get_or_init(|| find_system_font(SAMPLE, PREFERRED)).clone()
 }
 
+/// The font-data name of the installed Hangul face [`install`] appends to every family.
+pub(crate) const KOREAN_FACE: &str = "system-korean";
+
 fn korean_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
     FONT.get_or_init(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)).clone()
@@ -50,7 +53,7 @@ fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
     let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
     let found = preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
     let face = found.or_else(|| faces.iter().filter(|f| covers(f)).min_by_key(by_weight))?;
-    Some(Arc::new(FontData { font: std::borrow::Cow::Owned(face.data()?), index: face.info.index, tweak: Default::default() }))
+    Some(Arc::new(FontData::from_blob(Arc::new(face.data()?), face.info.index)))
 }
 
 /// Whether [`install`] has a Hangul face to add (an installed system face; none is bundled).
@@ -71,9 +74,9 @@ pub(crate) fn available() -> bool {
 pub(crate) fn install(fonts: &mut FontDefinitions) {
     install_chinese(fonts);
     if let Some(font) = korean_font() {
-        fonts.font_data.insert("system-korean".into(), font);
+        fonts.font_data.insert(KOREAN_FACE.into(), font);
         for stack in fonts.families.values_mut() {
-            stack.push("system-korean".into());
+            stack.push(KOREAN_FACE.into());
         }
     }
 }
@@ -98,5 +101,17 @@ fn install_chinese(fonts: &mut FontDefinitions) {
         let mut order = chinese.clone();
         order.sort_by_key(|f| (f.family.contains("Serif") && !f.family.contains("Sans"), (f.style == "Bold") != heavy));
         stack.extend(order.iter().map(|f| name(f)));
+    }
+}
+
+#[cfg(test)]
+mod font_blob_tests {
+    use super::*;
+
+    /// `FontData::from_blob` retains the TTC face index when constructed from a shared blob.
+    #[test]
+    fn a_ttc_face_index_survives_font_data_construction() {
+        let font = FontData::from_blob(Arc::new(vec![0u8; 4]), 7);
+        assert_eq!(font.index, 7, "the face index must travel with the shared blob");
     }
 }

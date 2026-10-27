@@ -36,8 +36,9 @@ enum Gesture {
     TrimOut,
 }
 
+/// Single stable id for the live caption drag `(caption, gesture, delta ticks)`.
 fn drag_id() -> egui::Id {
-    egui::Id::new("caption-drag")
+    egui::Id::unique("caption-drag")
 }
 
 /// Live drag state: (caption, gesture, delta ticks).
@@ -93,7 +94,7 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
         app.auto.add(&format!("timeline.captionTrack.{label}"), badge, &tr.name);
         // right-click the header: delete this track or every empty caption track (registered
         // before the lock / eye toggles so those stay on top)
-        let hresp = ui.interact(hrect, egui::Id::new(("cap-header", tr.id.0)), Sense::click());
+        let hresp = ui.interact(hrect, egui::Id::unique(("cap-header", tr.id.0)), Sense::click());
         hresp.context_menu(|ui| {
             for (key, text, cmd, p) in [
                 ("delete", tl!("Delete Caption Track"), "captions.deleteTrack", json!({"track": tr.id.0})),
@@ -115,7 +116,7 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
             if tr.locked { Icon::Lock } else { Icon::Unlock },
             true,
             t,
-            egui::Id::new(("cap-lock", tr.id.0)),
+            egui::Id::unique(("cap-lock", tr.id.0)),
             Some(if tr.locked { t.icon_active } else { t.text_dim }),
         );
         app.auto.add(&format!("timeline.captionTrack.{label}.locked"), lock_r, "Toggle Caption Track Lock");
@@ -129,7 +130,7 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
             if tr.enabled { Icon::Eye } else { Icon::EyeOff },
             true,
             t,
-            egui::Id::new(("cap-eye", tr.id.0)),
+            egui::Id::unique(("cap-eye", tr.id.0)),
             Some(t.text_dim),
         );
         app.auto.add(&format!("timeline.captionTrack.{label}.enabled"), eye_r, "Toggle Caption Track Output");
@@ -221,7 +222,7 @@ fn razor_block(
     actions: &mut Vec<(String, Value)>,
 ) {
     let ctx = ui.ctx().clone();
-    let resp = ui.interact(r, egui::Id::new(("caption-block", c.id.0)), Sense::click_and_drag());
+    let resp = ui.interact(r, egui::Id::unique(("caption-block", c.id.0)), Sense::click_and_drag());
     if tr.locked {
         return;
     }
@@ -245,6 +246,8 @@ fn razor_block(
     }
 }
 
+/// Handle one caption block: 5 px trim edges (capped at a quarter width), hover cursor, selection and double-click, and drag state; locked tracks are
+/// read-only.
 fn interact_block(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
@@ -255,7 +258,7 @@ fn interact_block(
     actions: &mut Vec<(String, Value)>,
 ) {
     let ctx = ui.ctx().clone();
-    let resp = ui.interact(r, egui::Id::new(("caption-block", c.id.0)), Sense::click_and_drag());
+    let resp = ui.interact(r, egui::Id::unique(("caption-block", c.id.0)), Sense::click_and_drag());
     let edge = 5.0f32.min(r.width() / 4.0);
     let gesture_at = |x: f32| {
         if x - r.min.x < edge {
@@ -297,7 +300,7 @@ fn interact_block(
             Gesture::TrimIn => 1,
             Gesture::TrimOut => 2,
         };
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("caption-drag-origin"), p.x));
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("caption-drag-origin"), p.x));
         ctx.data_mut(|d| d.insert_temp(drag_id(), (c.id.0, g, 0i64)));
         if !app.session.state.caption_selection.contains(&c.id) {
             actions.push(("captions.select".into(), json!({"captions": [c.id.0]})));
@@ -310,7 +313,7 @@ fn interact_block(
         if g == 0 && ctx.input(|i| i.modifiers.alt) {
             ctx.set_cursor_icon(CursorIcon::Copy);
         }
-        let x0 = ctx.data(|d| d.get_temp::<f32>(egui::Id::new("caption-drag-origin"))).unwrap_or(p.x);
+        let x0 = ctx.data(|d| d.get_temp::<f32>(egui::Id::unique("caption-drag-origin"))).unwrap_or(p.x);
         let pps = app.ui.timeline.pps;
         let d = rate.snap_nearest(Tick::from_seconds_f64((p.x - x0) as f64 / pps));
         ctx.data_mut(|dd| dd.insert_temp(drag_id(), (id, g, d.0)));

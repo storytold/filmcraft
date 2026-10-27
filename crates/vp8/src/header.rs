@@ -89,7 +89,7 @@ pub struct EntropyContext {
 
 impl Default for EntropyContext {
     fn default() -> Self {
-        use crate::spec_tables::*;
+        use crate::spec_tables::{DEFAULT_COEFF_PROBS, DEFAULT_MV_PROBS, UV_MODE_PROBS, YMODE_PROBS};
         let mut coeff = [[[[0u8; 11]; 3]; 8]; 4];
         for (i, p) in coeff.iter_mut().flatten().flatten().flatten().enumerate() {
             *p = DEFAULT_COEFF_PROBS[i];

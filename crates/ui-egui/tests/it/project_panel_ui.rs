@@ -104,9 +104,10 @@ impl Driver {
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered.
+    /// Step frames until `id` is registered, for at most two minutes of wall-clock time.
     fn wait_for(&mut self, id: &str) {
-        for _ in 0..400 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if self.has(id) {
                 return;
             }

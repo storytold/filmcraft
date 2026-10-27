@@ -9,8 +9,15 @@ use crate::error::{Error, Result, ensure};
 use crate::header::{EntropyContext, FrameHeader, FrameTag, LfDeltas, Segmentation, read_header};
 use crate::loopfilter::{self, Kind, Params};
 use crate::predict::{self, RefPlane};
-use crate::spec_tables::*;
-use crate::tables::*;
+use crate::spec_tables::{
+    AC_QLOOKUP, BILINEAR_FILTERS, BMODE_PROBS, COEFF_BANDS, DC_QLOOKUP, KF_BMODE_PROBS, KF_UV_MODE_PROBS, KF_YMODE_PROBS, MODE_CONTEXTS, MVPARTITION_PROBS,
+    SIXTAP_FILTERS, SUB_MV_REF_PROBS,
+};
+use crate::tables::{
+    ABOVE_4X4, B_DC_PRED, B_HE_PRED, B_PRED, B_TM_PRED, B_VE_PRED, BMODE_TREE, CAT_BASE, COEFF_TREE, DC_PRED, DCT_0, DCT_4, DCT_CAT1, DCT_EOB, H_PRED,
+    KF_YMODE_TREE, LEFT_4X4, MV_NEAR, MV_NEAREST, MV_NEW, MV_REF_TREE, MV_SPLIT, MV_ZERO, MVP_BITS, MVP_IS_SHORT, MVP_SHORT, MVP_SIGN, MVPARTITION_TREE, PCAT,
+    SEGMENT_TREE, SMALL_MV_TREE, SPLIT_COUNTS, SPLIT_MAPS, SUB_MV_REF_TREE, TM_PRED, UV_MODE_TREE, V_PRED, YMODE_TREE, ZERO_4X4, ZIGZAG,
+};
 use crate::transform;
 
 /// Largest frame dimension in macroblocks (14-bit sizes).
@@ -380,7 +387,7 @@ impl Decoder {
                     predict::predict_block(&mut frame.u, cs, px / 2, py / 2, 8, uv_mode);
                     predict::predict_block(&mut frame.v, cs, px / 2, py / 2, 8, uv_mode);
                 } else {
-                    let Some(r) = refs.get(usize::from(info.ref_frame) - 1).and_then(|r| r.as_deref()) else {
+                    let Some(r) = refs.get(usize::from(info.ref_frame) - 1).and_then(Option::as_deref) else {
                         return Err(Error::MissingReference(format!("reference frame {}", info.ref_frame)));
                     };
                     predict_inter_mb(r, &mut frame, mb_x, mb_y, &info, filters, full_pixel);

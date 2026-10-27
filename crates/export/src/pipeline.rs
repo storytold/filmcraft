@@ -26,18 +26,6 @@ fn bounded_overlay_dimensions(w: usize, h: usize) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod overlay_budget_tests {
-    use super::*;
-
-    #[test]
-    fn overlay_pixel_budget_is_checked_without_overflow() {
-        assert!(bounded_overlay_dimensions(4096, 4096).is_ok());
-        assert!(bounded_overlay_dimensions(4097, 4096).is_err());
-        assert!(bounded_overlay_dimensions(usize::MAX, 2).is_err());
-    }
-}
-
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Geometry {
@@ -533,4 +521,16 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
         c.iter_mut().for_each(|v| *v += d);
     }
     c.iter_mut().for_each(|v| *v = v.clamp(0.0, hi.max(lo)));
+}
+
+#[cfg(test)]
+mod overlay_budget_tests {
+    use super::*;
+
+    #[test]
+    fn overlay_pixel_budget_is_checked_without_overflow() {
+        assert!(bounded_overlay_dimensions(4096, 4096).is_ok());
+        assert!(bounded_overlay_dimensions(4097, 4096).is_err());
+        assert!(bounded_overlay_dimensions(usize::MAX, 2).is_err());
+    }
 }
