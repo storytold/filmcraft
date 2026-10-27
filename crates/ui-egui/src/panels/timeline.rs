@@ -1963,6 +1963,18 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
     if !app.session.state.snapping {
         return t;
     }
+    let cands = snap_candidates(app, seq, exclude, to_playhead);
+    match nearest_snap(layout, &cands, t) {
+        Some((_, c)) => {
+            app.tl.snap_x = Some(layout.x_of(c));
+            c
+        }
+        None => t,
+    }
+}
+
+/// What a dragged time snaps to: clip edges (but `exclude`'s), the playhead, markers, In and Out.
+fn snap_candidates(app: &FilmcraftApp, seq: &Sequence, exclude: &[ClipId], to_playhead: bool) -> Vec<Tick> {
     let mut cands: Vec<Tick> = Vec::with_capacity(64);
     for tr in seq.all_tracks() {
         for it in &tr.items {
@@ -1979,21 +1991,25 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
     cands.extend(seq.markers.iter().map(|m| m.start));
     cands.extend(seq.mark_in);
     cands.extend(seq.mark_out);
+    cands
+}
+
+/// The candidate nearest `t` within [`SNAP_PX`], with its distance in pixels.
+fn nearest_snap(layout: &Layout, cands: &[Tick], t: Tick) -> Option<(f32, Tick)> {
+    nearest_snap_where(layout, cands, t, |_| true)
+}
+
+/// [`nearest_snap`] among the candidates `ok` accepts.
+fn nearest_snap_where(layout: &Layout, cands: &[Tick], t: Tick, ok: impl Fn(Tick) -> bool) -> Option<(f32, Tick)> {
     let x = layout.x_of(t);
     let mut best: Option<(f32, Tick)> = None;
-    for c in cands {
+    for &c in cands.iter().filter(|c| ok(**c)) {
         let d = (layout.x_of(c) - x).abs();
         if d < SNAP_PX && best.is_none_or(|b| d < b.0) {
             best = Some((d, c));
         }
     }
-    match best {
-        Some((_, c)) => {
-            app.tl.snap_x = Some(layout.x_of(c));
-            c
-        }
-        None => t,
-    }
+    best
 }
 
 /// What the Timeline shows at `pos` for the control channel's `ui.timeline.hit`, with `kind`: the
@@ -2794,12 +2810,30 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
             Drag::Move { clips, grab_tick, start_track, .. } => {
                 let raw = rate.snap_nearest(t_here - grab_tick);
-                // snap the moved block's start or end
+                // snap whichever edge of the moved clips is nearest a snap point, as Premiere does:
+                // not only the block's outer start and end, so a shorter linked partner's edges
+                // snap too (#374)
                 let first = clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.start)).min().unwrap_or_default();
-                let last = clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.end())).max().unwrap_or_default();
-                let s1 = snap(app, seq, layout, first + raw, &clips) - first;
-                let offset = if s1 != raw { s1 } else { snap(app, seq, layout, last + raw, &clips) - last };
-                let offset = offset.max(-first);
+                let mut edges: Vec<Tick> = clips.iter().filter_map(|c| seq.find_item(*c)).flat_map(|(_, i)| [i.start, i.end()]).collect();
+                edges.sort_unstable();
+                edges.dedup();
+                // the candidates are gathered once and every edge tested against them
+                let cands = if app.session.state.snapping { snap_candidates(app, seq, &clips, true) } else { Vec::new() };
+                // (distance in px, the edge, where it snaps)
+                let mut best: Option<(f32, Tick, Tick)> = None;
+                for e in edges {
+                    // a match that would move the block's start before 0 is clamped off its point:
+                    // it can't win (the guide would show a point the edge doesn't reach)
+                    if let Some((d, c)) = nearest_snap_where(layout, &cands, e + raw, |c| c - e >= -first)
+                        && best.is_none_or(|b| d < b.0)
+                    {
+                        best = Some((d, e, c));
+                    }
+                }
+                if let Some((_, _, c)) = best {
+                    app.tl.snap_x = Some(layout.x_of(c));
+                }
+                let offset = best.map_or(raw, |(_, e, c)| c - e).max(-first);
                 let cur_row = layout.row_at(p.y);
                 let start_row = layout.rows.iter().find(|r| r.track == start_track);
                 let track_delta = match (cur_row, start_row) {
