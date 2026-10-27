@@ -554,3 +554,40 @@ fn hdr_input_gpu_matches_cpu() {
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
 }
+
+/// An adjustment step runs its effects on the canvas composited so far and replaces it, on the
+/// GPU as on the CPU; layers after it are drawn over the adjusted canvas.
+#[test]
+fn gpu_adjustment_step_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (64usize, 36usize);
+    let gradient = |a: f32| {
+        let px = (0..w * h).flat_map(|i| [(i % w) as f32 / w as f32 * a, (i / w) as f32 / h as f32 * a, 0.3 * a, a]).collect();
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, px)), Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let mut above = gradient(0.5);
+    above.matrix = Affine::scale(0.5, 0.5);
+    let ops = vec![filmcraft_render::gpufx::FxOp::BrightnessContrast { br: 0.05, co: 1.3 }, filmcraft_render::gpufx::FxOp::Gamma { g: 1.4 }];
+    let fx = Arc::new(filmcraft_render::plan::LayerFx { size: (w as u32, h as u32), decimation: 1, ops });
+    let plan = FramePlan::Composite {
+        width: w,
+        height: h,
+        steps: vec![PlanStep::Layers(vec![gradient(1.0)]), PlanStep::Adjustment(fx), PlanStep::Layers(vec![above])],
+    };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    c.composite_prepared(&plan, Some(&prepare(&plan)));
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let mut diffs: Vec<u32> =
+        cpu.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0).map(|(a, b)| (0..3).map(|k| a[k].abs_diff(b[k]) as u32).max().unwrap()).collect();
+    diffs.sort_unstable();
+    let p99 = diffs[diffs.len() * 99 / 100];
+    let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
+    assert!(p99 <= 2 && mean < 0.5, "adjustment step: p99 {p99}, mean {mean}");
+    // the export read-back takes the same plan
+    let (_, _, px) = c.render_export_prepared(&plan, Some(&prepare(&plan))).expect("export read-back");
+    assert_eq!(px.len(), w * h * 4);
+}
