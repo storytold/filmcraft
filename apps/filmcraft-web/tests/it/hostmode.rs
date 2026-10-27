@@ -2,9 +2,9 @@
 //! natively even though the rest of the crate is wasm32-only.
 
 #[path = "../../src/hostmode.rs"]
-mod hostmode;
+mod rules;
 
-use hostmode::{DEFAULT_OPEN_NAME, MAX_OPEN_BYTES, is_project, is_save_as, open_name, open_size_ok, page_host_requested};
+use rules::{DEFAULT_OPEN_NAME, MAX_OPEN_BYTES, is_project, is_save_as, open_name, open_size_ok, page_host_requested};
 
 #[test]
 fn only_the_exact_page_value_opts_in() {
