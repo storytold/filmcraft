@@ -306,25 +306,37 @@ impl H264Decoder {
         let draft = p.draft;
         let (w, h) = (p.width as usize, p.height as usize);
         let (cw, ch) = (p.chroma_width as usize, p.chroma_height as usize);
-        let y = tight_plane(p.y, p.y_stride, w, h);
-        let u = tight_plane(p.u, p.uv_stride, cw, ch);
-        let v = tight_plane(p.v, p.uv_stride, cw, ch);
+        let chroma = if p.chroma_format_idc == 2 { filmcraft_frame::Chroma::C422 } else { filmcraft_frame::Chroma::C420 };
+        let data = match p.wide {
+            Some(wp) => filmcraft_frame::PixelData::Yuv16 {
+                planes: [
+                    Arc::new(tight_plane(wp.y, p.y_stride, w, h)),
+                    Arc::new(tight_plane(wp.u, p.uv_stride, cw, ch)),
+                    Arc::new(tight_plane(wp.v, p.uv_stride, cw, ch)),
+                ],
+                chroma,
+                bits: p.bit_depth,
+                alpha: None,
+            },
+            None => filmcraft_frame::PixelData::Yuv8 {
+                planes: [
+                    Arc::new(tight_plane(p.y, p.y_stride, w, h)),
+                    Arc::new(tight_plane(p.u, p.uv_stride, cw, ch)),
+                    Arc::new(tight_plane(p.v, p.uv_stride, cw, ch)),
+                ],
+                chroma,
+                alpha: None,
+            },
+        };
         let color = vui_color(p.width, p.height, p.color.primaries, p.color.matrix, p.color.transfer, p.color.full_range);
         let par = sar_par(p.sar);
-        let frame = VideoFrame {
-            width: p.width,
-            height: p.height,
-            data: filmcraft_frame::PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: filmcraft_frame::Chroma::C420, alpha: None },
-            color,
-            par,
-            pts: filmcraft_time::Tick::ZERO,
-        };
+        let frame = VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO };
         DecodedFrame { pts: p.pts, frame, draft }
     }
 }
 
 /// An H.264 decoder error as a [`CodecError`]: a feature the decoder does not implement (High
-/// 4:2:2, field pictures...) is [`CodecError::Unsupported`], so the media pool shows the
+/// 4:4:4, field pictures...) is [`CodecError::Unsupported`], so the media pool shows the
 /// unreadable slate instead of a black picture (#626); anything else is a decode error.
 fn h264_error(e: filmcraft_h264::Error) -> CodecError {
     match e {
@@ -373,6 +385,7 @@ impl VideoDecoder for H264Decoder {
 /// (`filmcraft_frame::pool`) instead of the allocator.
 fn recycle_h264_planes() {
     filmcraft_h264::set_plane_allocator(filmcraft_frame::pool::take_u8);
+    filmcraft_h264::set_plane_allocator_u16(filmcraft_frame::pool::take_u16);
 }
 
 /// Worker threads each H.264 decoder uses (frame threading; 1 on wasm).

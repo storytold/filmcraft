@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (G3: H.264 High 10 and High 4:2:2 Intra) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -65,8 +65,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G3. 10-bit and 4:2:2 camera media needs hardware
 
-- **Missing:** our H.264 decoder is 8-bit 4:2:0 only (`crates/h264/README.md`: no High 10, High
-  4:2:2, 4:4:4, lossless, interlaced field / MBAFF); HEVC has no 4:2:2 / RExt. Most mirrorless and
+- **Have:** H.264 High 10 (9/10-bit 4:2:0, intra and inter) and High 4:2:2 Intra (4:2:2 8–10-bit
+  intra pictures: Sony XAVC Intra, AVC-Intra) in software, bit-exact with ffmpeg.
+- **Missing:** H.264 4:2:2 inter prediction (long-GOP 4:2:2: XAVC S / XAVC L 4:2:2, most
+  mirrorless 4:2:2 MOVs), 4:4:4, lossless, interlaced field / MBAFF (`crates/h264/README.md`);
+  HEVC has no 4:2:2 / RExt. Most mirrorless and
   cinema cameras record exactly these (Sony XAVC S-I / XAVC HS 4:2:2 10-bit, Panasonic, Canon
   XF-AVC, Fujifilm).
 - **Evidence:** #626 (Panasonic Lumix 4K 10-bit 4:2:2 MOV). On macOS VideoToolbox decodes 10-bit
@@ -74,7 +77,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   there is no software fallback, so the clip fails. Premiere decodes them everywhere (and in
   hardware on Apple silicon, Intel and NVIDIA Blackwell).
 - **Impact:** camera originals from most current cameras do not open on Windows or Linux.
-- **Estimate:** H.264 High 10 + High 4:2:2 (chroma geometry, deblocking, transforms) 15–25 h;
+- **Estimate:** H.264 4:2:2 inter (chroma motion compensation, inter chroma deblocking) 5–10 h;
   HEVC Main 4:2:2 10 (RExt subset) 15–25 h. Doc: [codec-parity.md](codec-parity.md).
 
 ## G4. Crashes at start-up, and no test CI on pull requests
@@ -323,3 +326,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
+| 2026-10-26 | minor | G3: H.264 High 10 and High 4:2:2 Intra decode in software (XAVC Intra, AVC-Intra); 4:2:2 inter remains |

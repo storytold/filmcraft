@@ -1,4 +1,5 @@
-//! Decode an Annex-B H.264 file to raw yuv420p: `h264dec in.h264 [out.yuv]`.
+//! Decode an Annex-B H.264 file to raw planar YUV (yuv420p / yuv422p, 16-bit little-endian
+//! samples above 8 bits): `h264dec in.h264 [out.yuv]`.
 //! Prints timing information to stderr. `H264_BENCH_ITERS=n` (with `H264_THREADS=t`, and
 //! `H264_DRAFT=1` for draft mode) turns it into a benchmark.
 
@@ -35,9 +36,17 @@ fn main() {
         for p in pics {
             n += 1;
             if let Some(o) = out.as_mut() {
-                o.write_all(&p.y).unwrap();
-                o.write_all(&p.u).unwrap();
-                o.write_all(&p.v).unwrap();
+                if let Some(w) = &p.wide {
+                    // little-endian 16-bit samples (yuv420p10le / yuv422p10le)
+                    for plane in [&w.y, &w.u, &w.v] {
+                        let bytes: Vec<u8> = plane.iter().flat_map(|v| v.to_le_bytes()).collect();
+                        o.write_all(&bytes).unwrap();
+                    }
+                } else {
+                    o.write_all(&p.y).unwrap();
+                    o.write_all(&p.u).unwrap();
+                    o.write_all(&p.v).unwrap();
+                }
             }
         }
     };

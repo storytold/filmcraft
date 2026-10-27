@@ -1,7 +1,8 @@
 //! Clean-room pure-Rust H.264 / AVC decoder, implemented from ITU-T Rec. H.264 (ISO/IEC 14496-10).
 //!
 //! Supported: progressive (frame) coding, 8-bit 4:2:0, Baseline / Main / High profiles — CAVLC and CABAC,
-//! I/P/B slices, 8x8 transform, custom scaling matrices, weighted prediction, spatial/temporal direct,
+//! I/P/B slices; High 10 (4:2:0, 9/10-bit) and High 4:2:2 / High 4:2:2 Intra (4:2:2 intra pictures,
+//! 8–10-bit: Sony XAVC Intra, AVC-Intra), 8x8 transform, custom scaling matrices, weighted prediction, spatial/temporal direct,
 //! multiple slices, long-term references and all MMCOs, deblocking.
 //!
 //! ```no_run
@@ -35,7 +36,7 @@ mod intra;
 mod mbtypes;
 pub mod params;
 mod picture;
-pub use picture::set_plane_allocator;
+pub use picture::{set_plane_allocator, set_plane_allocator_u16};
 pub mod slice;
 mod slicedec;
 #[cfg(test)]
@@ -56,9 +57,23 @@ pub struct ColorInfo {
     pub matrix: u8,
 }
 
-/// A decoded, cropped picture in 8-bit planar 4:2:0.
+/// The planes of a picture with more than 8 bits per sample.
+#[derive(Clone, Debug, Default)]
+pub struct WidePlanes {
+    pub y: Vec<u16>,
+    pub u: Vec<u16>,
+    pub v: Vec<u16>,
+}
+
+/// A decoded, cropped picture: planar 4:2:0 or 4:2:2, 8-bit samples in `y`, `u`, `v`, higher bit
+/// depths in `wide` (`y`, `u`, `v` are then empty).
 #[derive(Clone, Debug)]
 pub struct Picture {
+    /// Samples of a high bit depth picture (`bit_depth` > 8).
+    pub wide: Option<WidePlanes>,
+    pub bit_depth: u32,
+    /// 1 (4:2:0) or 2 (4:2:2).
+    pub chroma_format_idc: u32,
     /// Cropped luma width.
     pub width: u32,
     /// Cropped luma height.
