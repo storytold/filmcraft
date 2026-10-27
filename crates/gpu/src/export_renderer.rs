@@ -13,7 +13,7 @@
 
 use crate::{GpuCompositor, prepare};
 use filmcraft_project::{ItemId, Project};
-use filmcraft_render::plan::{FramePlan, plan_frame};
+use filmcraft_render::plan::{FramePlan, PlanStep, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
 
@@ -136,7 +136,17 @@ impl ExportRenderer {
         match &plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
-            FramePlan::Layers { .. } => {
+            // Transitions: the export path leaves them to the CPU reference renderer.
+            FramePlan::Composite { steps, .. } if steps.iter().any(|s| matches!(s, PlanStep::Transition { .. })) => None,
+            // so are adjustment layers this device can't run: compositing them on the CPU here
+            // would upload the picture only to read it back
+            FramePlan::Composite { width, height, steps }
+                if steps.iter().any(|s| matches!(s, PlanStep::Adjust { .. })) && !self.compositor.can_adjust(*width, *height) =>
+            {
+                None
+            }
+            // layers, with adjustment layers between them
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
                     return None;
                 }
@@ -149,8 +159,6 @@ impl ExportRenderer {
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
-            // Transitions: the export path leaves them to the CPU reference renderer.
-            FramePlan::Composite { .. } => None,
         }
     }
 }
@@ -169,8 +177,8 @@ mod tests {
 
     const EPS: f32 = 1e-4;
 
-    /// A solid colour generator at 320×180 plus a tone generator (mirrors the export tests'
-    /// fixture-free project helper).
+    /// A solid colour generator at 320×180 on V1 (V2 empty) plus a tone generator (mirrors the
+    /// export tests' fixture-free project helper).
     fn project(transform: bool) -> (Arc<Project>, ItemId, SourceMap) {
         let mut p = Project::new("x");
         let g = GeneratorSource::new(
@@ -203,7 +211,7 @@ mod tests {
         let red = add(&mut p, &g);
         let t = add(&mut p, &tone);
         let seq =
-            p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
+            p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 2, 1, None);
         let r = filmcraft_time::FrameRate::FPS_24;
         let _v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
         let a = p.make_track_item(t, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
@@ -270,6 +278,36 @@ mod tests {
         eprintln!("solid: max |GPU-CPU| linear {max:.6}");
         assert!(max < 0.02, "solid frame differs by {max}");
         assert_parity(&cpu, &gpu, "solid");
+    }
+
+    /// Without an effect stage, a frame with an adjustment layer goes back to the caller (None:
+    /// the export renders it on the CPU) instead of being composited on the CPU here and
+    /// uploaded only to be read back.
+    #[test]
+    fn adjustment_layers_without_an_effect_stage_go_back_to_the_cpu() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export adjustment): no adapter");
+            return;
+        };
+        let (p, seq, m) = project(false);
+        let mut p = Arc::unwrap_or_clone(p);
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let a = p.add_item("Adjustment Layer", Label::Lavender, ItemKind::AdjustmentLayer { width: 320, height: 180, rate, duration: rate.tick_of(24) }, None);
+        let mut ti = p.make_track_item(a, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+        let mut e = filmcraft_project::find_effect("proc_amp").unwrap().instance();
+        e.param_mut("brightness").unwrap().value = filmcraft_project::ParamValue::Float(25.0);
+        ti.effects.insert(0, e);
+        p.sequence_mut(seq).unwrap().video_tracks[1].items.push(ti);
+        let t = Tick::ZERO;
+        if r.compositor.fx.is_some() {
+            let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
+            let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+            assert_parity(&cpu, &gpu, "adjustment layer");
+            assert_eq!((r.compositor.gpu_adjustments, r.compositor.cpu_adjustments), (1, 0));
+        }
+        r.compositor.fx = None;
+        assert!(r.render(&p, seq, t, RenderOptions::default(), &m).is_none(), "no effect stage: the frame goes back to the CPU");
+        assert_eq!(r.compositor.cpu_adjustments, 0, "nothing was composited on the CPU inside the renderer");
     }
 
     #[test]

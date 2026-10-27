@@ -321,23 +321,32 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
 /// Coverage of an adjustment layer's (Motion-transformed) frame in output pixels, or `None` when
 /// it covers the whole output.
 fn adjustment_region(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32, w: usize, h: usize) -> Option<Image> {
+    let (fw, fh, m) = adjustment_frame(seq, item, project, mt, scale);
+    if covers_output(fw, fh, &m, w, h) {
+        return None;
+    }
+    Some(Image::filled(fw, fh, [1.0; 4]).transformed(w, h, &m))
+}
+
+/// Whether an adjustment layer's (Motion-transformed) frame covers the whole `w`×`h` output
+/// ([`adjustment_region`] is `None`), without building its coverage.
+pub(crate) fn adjustment_covers_output(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32, w: usize, h: usize) -> bool {
+    let (fw, fh, m) = adjustment_frame(seq, item, project, mt, scale);
+    covers_output(fw, fh, &m, w, h)
+}
+
+/// An adjustment layer's frame size at `scale` and its Motion map into output pixels.
+fn adjustment_frame(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32) -> (usize, usize, Affine) {
     let size = source_size(project, item.item).unwrap_or((seq.settings.width, seq.settings.height));
     let motion = motion_matrix(seq, item, size, source_par(project, item.item), mt);
     let s = scale as f64;
     let (fw, fh) = (((size.0 as f64 * s).round() as usize).max(1), ((size.1 as f64 * s).round() as usize).max(1));
     let m = Affine::scale(s, s).then_apply(&motion).then_apply(&Affine::scale(1.0 / s, 1.0 / s));
-    let full = fw == w
-        && fh == h
-        && (m.a - 1.0).abs() < 1e-9
-        && (m.d - 1.0).abs() < 1e-9
-        && m.b.abs() < 1e-12
-        && m.c.abs() < 1e-12
-        && m.e.abs() < 1e-9
-        && m.f.abs() < 1e-9;
-    if full {
-        return None;
-    }
-    Some(Image::filled(fw, fh, [1.0; 4]).transformed(w, h, &m))
+    (fw, fh, m)
+}
+
+fn covers_output(fw: usize, fh: usize, m: &Affine, w: usize, h: usize) -> bool {
+    fw == w && fh == h && (m.a - 1.0).abs() < 1e-9 && (m.d - 1.0).abs() < 1e-9 && m.b.abs() < 1e-12 && m.c.abs() < 1e-12 && m.e.abs() < 1e-9 && m.f.abs() < 1e-9
 }
 
 /// Rendered captions of the visible caption tracks at `t` for a `w`×`h` output.

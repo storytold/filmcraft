@@ -318,7 +318,7 @@ fn a_transition_with_an_adjustment_layer_is_not_planned_as_layers() {
     dissolve(&mut s, 1, Some(b), Some(ac), 18);
     let q = s.p.sequence(s.seq).unwrap();
     // frame 20 is still on the blue clip, but the dissolve into the adjustment layer shows
-    assert!(!crate::plan::layered_at(&s.p, q, R.tick_of(20)));
+    assert!(!crate::plan::layered_at(&s.p, q, R.tick_of(20), 1.0));
     // halfway (frame 24): half blue, half the inverted red (cyan)
     assert!(near(at(&s, 24), [0.0, 0.5, 1.0], 1e-3), "{:?}", at(&s, 24));
 }
@@ -362,4 +362,128 @@ fn basic_3d_keeps_its_perspective_at_every_render_scale() {
             assert!((b[k] - full[k]).abs() < 6.0, "at {scale}: bounds {b:?}, {full:?} at full resolution");
         }
     }
+}
+
+fn set(s: &mut Scene, c: ClipId, effect: &str, param: &str, v: ParamValue) {
+    clip(s, c).effect_mut(effect).unwrap().params.get_mut(param).unwrap().value = v;
+}
+
+/// The largest channel difference between two images of the same size.
+fn max_diff(a: &Image, b: &Image) -> f32 {
+    assert_eq!((a.w, a.h), (b.w, b.h));
+    a.px.iter().zip(&b.px).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+}
+
+/// An opaque, Normal, full-frame adjustment layer whose effects all run on the GPU is planned as
+/// a `PlanStep::Adjust` between the layers below and above it, and the plan draws what the CPU
+/// renderer draws.
+#[test]
+fn a_gpu_adjustment_layer_plans_as_an_adjust_step() {
+    let mut s = scene(3);
+    let ocean = media(&mut s.p, &mut s.map, GeneratorSource::demo(DemoScene::OceanSunset));
+    let blue = matte(&mut s.p, &mut s.map, [0.0, 0.0, 1.0, 1.0]);
+    place(&mut s.p, s.seq, 0, ocean);
+    let adj = adjustment(&mut s.p, s.seq, 1);
+    fx(&mut s, adj, "proc_amp");
+    set(&mut s, adj, "proc_amp", "brightness", ParamValue::Float(20.0));
+    fx(&mut s, adj, "gaussian_blur");
+    set(&mut s, adj, "gaussian_blur", "blurriness", ParamValue::Float(8.0));
+    fx(&mut s, adj, "lumetri");
+    set(&mut s, adj, "lumetri", "contrast", ParamValue::Float(20.0));
+    set(&mut s, adj, "lumetri", "exposure", ParamValue::Float(-0.25));
+    // a small blue layer above the adjustment layer, which must stay untouched
+    let top = place(&mut s.p, s.seq, 2, blue);
+    set(&mut s, top, "motion", "scale", ParamValue::Float(25.0));
+    for scale in [1.0, 0.5] {
+        let opts = RenderOptions { scale, ..Default::default() };
+        let plan = crate::plan::plan_frame(&s.p, s.seq, R.tick_of(12), opts, &s.map);
+        let crate::plan::FramePlan::Composite { steps, .. } = &plan else { panic!("at {scale}: not planned as steps") };
+        assert!(
+            steps.iter().any(|st| matches!(st, crate::plan::PlanStep::Adjust { ops } if ops.len() == 3)),
+            "at {scale}: no Adjust step with the three effects"
+        );
+        let got = crate::plan::execute_cpu(&plan);
+        let want = render_sequence(&s.p, s.seq, R.tick_of(12), opts, &s.map);
+        let d = max_diff(&got, &want);
+        assert!(d < 1e-4, "at {scale}: plan vs CPU renderer max diff {d}");
+        let (cx, cy) = (got.w / 2, got.h / 2);
+        assert!(near(got.get(cx, cy), [0.0, 0.0, 1.0], 1e-4), "at {scale}: the layer above is untouched: {:?}", got.get(cx, cy));
+    }
+}
+
+/// Every adjustment layer the GPU step doesn't cover yet keeps the whole frame on the CPU: an
+/// effect without a GPU implementation, one whose parameters the GPU doesn't run (a shrinking
+/// Transform, a Transform's shutter motion blur), an opacity below 100 %, a blend mode, a Motion
+/// that leaves part of the frame out. `is_cpu_frame` says so before planning, so the export
+/// doesn't take a GPU renderer for the frame.
+#[test]
+fn an_adjustment_layer_the_gpu_cant_run_plans_the_frame_on_the_cpu() {
+    let base = || {
+        let mut s = scene(2);
+        let ocean = media(&mut s.p, &mut s.map, GeneratorSource::demo(DemoScene::OceanSunset));
+        place(&mut s.p, s.seq, 0, ocean);
+        let adj = adjustment(&mut s.p, s.seq, 1);
+        fx(&mut s, adj, "invert");
+        (s, adj)
+    };
+    let multiply = filmcraft_project::effect::BLEND_MODES.iter().position(|b| *b == "Multiply").unwrap() as u32;
+    let cases: Vec<(&str, Box<dyn Fn(&mut Scene, ClipId)>)> = vec![
+        ("an effect without a GPU implementation", Box::new(|s, a| fx(s, a, "emboss"))),
+        (
+            "a Transform that shrinks the frame (the CPU's mip path)",
+            Box::new(|s, a| {
+                fx(s, a, "transform");
+                set(s, a, "transform", "scale_height", ParamValue::Float(40.0));
+            }),
+        ),
+        (
+            "a Transform with a shutter angle (motion blur)",
+            Box::new(|s, a| {
+                fx(s, a, "transform");
+                set(s, a, "transform", "shutter_override", ParamValue::Bool(true));
+                set(s, a, "transform", "shutter_angle", ParamValue::Float(180.0));
+            }),
+        ),
+        ("opacity 50 %", Box::new(|s, a| set(s, a, "opacity", "opacity", ParamValue::Float(50.0)))),
+        ("Multiply", Box::new(move |s, a| set(s, a, "opacity", "blend", ParamValue::Choice(multiply)))),
+        ("Motion at 50 %", Box::new(|s, a| set(s, a, "motion", "scale", ParamValue::Float(50.0)))),
+    ];
+    for scale in [1.0, 0.5] {
+        let opts = RenderOptions { scale, ..Default::default() };
+        let (s, _) = base();
+        assert!(!matches!(crate::plan::plan_frame(&s.p, s.seq, R.tick_of(12), opts, &s.map), crate::plan::FramePlan::Image(_)));
+        assert!(!crate::plan::is_cpu_frame(&s.p, s.seq, R.tick_of(12), opts), "at {scale}: the plain layer goes to the GPU");
+        for (what, change) in &cases {
+            let (mut s, adj) = base();
+            change(&mut s, adj);
+            let plan = crate::plan::plan_frame(&s.p, s.seq, R.tick_of(12), opts, &s.map);
+            assert!(matches!(plan, crate::plan::FramePlan::Image(_)), "{what} at {scale}: should be rendered on the CPU");
+            assert!(crate::plan::is_cpu_frame(&s.p, s.seq, R.tick_of(12), opts), "{what} at {scale}: the export should not hand it to the GPU");
+        }
+    }
+}
+
+/// An adjustment layer inside a nested sequence adjusts only that sequence: the nested sequence
+/// is not flattened into the outer plan, where it would adjust the outer tracks below too.
+#[test]
+fn a_nested_adjustment_layer_does_not_adjust_the_outer_tracks() {
+    let mut s = scene(2);
+    let red = matte(&mut s.p, &mut s.map, [1.0, 0.0, 0.0, 1.0]);
+    let ocean = media(&mut s.p, &mut s.map, GeneratorSource::demo(DemoScene::OceanSunset));
+    let inner = s.p.new_sequence("inner", SequenceSettings { width: 320, height: 180, frame_rate: R, ..Default::default() }, 2, 0, None);
+    // inner: a small red square and an adjustment layer (invert) over it
+    let sq = place(&mut s.p, inner, 0, red);
+    s.p.sequence_mut(inner).unwrap().find_item_mut(sq).unwrap().1.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value =
+        ParamValue::Float(25.0);
+    let a = s.p.add_item("Adjustment Layer", Label::Lavender, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: R, duration: R.tick_of(48) }, None);
+    let ac = place(&mut s.p, inner, 1, a);
+    s.p.sequence_mut(inner).unwrap().find_item_mut(ac).unwrap().1.effects.insert(0, find_effect("invert").unwrap().instance());
+    // outer: ocean on V1, the nested sequence at 100 % on V2
+    place(&mut s.p, s.seq, 0, ocean);
+    place(&mut s.p, s.seq, 1, inner);
+    let t = R.tick_of(12);
+    let want = render_sequence(&s.p, s.seq, t, RenderOptions::default(), &s.map);
+    let got = crate::plan::execute_cpu(&crate::plan::plan_frame(&s.p, s.seq, t, RenderOptions::default(), &s.map));
+    let d = max_diff(&got, &want);
+    assert!(d < 1e-4, "planned vs CPU renderer max diff {d}");
 }
