@@ -137,7 +137,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
             let shown = align.label();
             let r = ui
                 .add_enabled_ui(!one_sided, |ui| {
-                    egui::ComboBox::from_id_salt(("tr-align", id.0))
+                    craft_ui::ComboBox::from_id_salt(("tr-align", id.0))
                         .selected_text(shown)
                         .width(170.0)
                         .show_ui(ui, |ui| {
@@ -506,7 +506,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, label: &str, ki
             let shown = opts.get(*c as usize).copied().unwrap_or("");
             let mut picked = None;
             let mut options = Vec::new();
-            let r = egui::ComboBox::from_id_salt(("tr-param", pid.to_string())).selected_text(crate::i18n::t(shown)).show_ui(ui, |ui| {
+            let r = craft_ui::ComboBox::from_id_salt(("tr-param", pid.to_string())).selected_text(crate::i18n::t(shown)).show_ui(ui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
                     let r = ui.selectable_label(i == *c as usize, crate::i18n::t(o));
                     if r.clicked() && i != *c as usize {

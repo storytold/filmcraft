@@ -651,7 +651,7 @@ pub(crate) fn param_row(
             fit_to_row(&mut vui);
             // (narrower when the effect list is narrow, so it stays left of the divider)
             let w = vui.available_width().min(130.0);
-            let combo = egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(&mut vui, |ui| {
+            let combo = craft_ui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(&mut vui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
                     if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
                         set = Some(json!(i));

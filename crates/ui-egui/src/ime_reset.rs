@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use super::*;
 use egui::{Context, IMEPurpose, Id, ImeResetId, ImeTarget, ViewportId, ViewportIdMap};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,11 +185,28 @@ impl State {
     /// Actual custom eligibility and actual final app output are independent facts. Never
     /// overwrite a stock field or infer native completion from a descriptor/publication.
     pub(crate) fn finish(&mut self, ctx: &Context, destination: Option<Destination>, eligible: bool) {
-        let viewport = ctx.viewport_id();
         let actual = ctx.output(|out| out.ime.as_ref().map(OutputContext::of));
-        let custom = self.custom_output;
+        let custom = self.custom_output.filter(|custom| eligible && actual == Some(*custom));
+        self.settle(ctx, destination.filter(|_| custom.is_some()), custom);
+    }
+
+    /// [`Self::finish`] for a native floating window, whose descriptor docking publishes after
+    /// this call: `destination` is the eligible editor's, and `output` the identity the window
+    /// published in its previous pass ([`published`]). `None` there is a context that starts in
+    /// this pass, whose identity is not known yet: the fence waits for the next pass.
+    pub(crate) fn finish_window(&mut self, ctx: &Context, destination: Option<Destination>, output: Option<OutputContext>) {
+        if destination.is_some() && output.is_none() {
+            return;
+        }
+        self.settle(ctx, destination, output);
+    }
+
+    /// Bind or rearm the viewport's fence for the eligible `destination` and its published
+    /// `custom` output, or suspend it when there is no eligible destination.
+    fn settle(&mut self, ctx: &Context, destination: Option<Destination>, custom: Option<OutputContext>) {
+        let viewport = ctx.viewport_id();
         let Some(pending) = self.pending.get_mut(&viewport) else { return };
-        let Some(destination) = destination.filter(|_| eligible && custom.is_some() && actual == custom) else {
+        let Some(destination) = destination else {
             self.suspend(viewport);
             return;
         };
@@ -229,6 +247,20 @@ pub(crate) fn in_ui_pass(ctx: &Context) -> bool {
     ctx.data(|data| data.get_temp::<bool>(mode_id(ctx.viewport_id()))).unwrap_or(false)
 }
 
+/// Temp-data key of the IME descriptor identity `viewport` published at the end of a pass.
+fn published_id(viewport: ViewportId) -> Id {
+    Id::unique(("filmcraft-ime-reset-published", viewport))
+}
+
+/// The identity of `owner`'s descriptor that `ctx`'s viewport published at the end of its
+/// previous pass; `None` when that pass published none of `owner`'s or wasn't the one before.
+pub(crate) fn published(ctx: &Context, owner: Id) -> Option<OutputContext> {
+    let viewport = ctx.viewport_id();
+    let previous = ctx.cumulative_pass_nr_for(viewport).checked_sub(1)?;
+    let (pass, output) = ctx.data(|data| data.get_temp::<(u64, Option<OutputContext>)>(published_id(viewport)))?;
+    output.filter(|output| pass == previous && output.owner == owner)
+}
+
 /// Install before the first run_ui. The callbacks receive Ui and capture no Context/app.
 pub(crate) fn install(ctx: &Context) {
     let installed = Id::unique("filmcraft-ime-reset-mode-installed");
@@ -247,9 +279,17 @@ pub(crate) fn install(ctx: &Context) {
         Arc::new(|ui| {
             let viewport = ui.ctx().viewport_id();
             ui.data_mut(|data| data.insert_temp(mode_id(viewport), false));
+            // A native floating window's descriptor is complete only here, after docking wrote it.
+            let published = (ui.ctx().cumulative_pass_nr_for(viewport), ui.ctx().output(|out| out.ime.as_ref().map(OutputContext::of)));
+            ui.data_mut(|data| data.insert_temp(published_id(viewport), published));
         }),
     );
     ctx.data_mut(|data| data.insert_temp(installed, true));
+}
+
+/// Install once in each native/web/harness Context creator, before the first UI pass.
+pub fn install_ime_reset_callbacks(ctx: &egui::Context) {
+    ime_reset::install(ctx);
 }
 
 #[cfg(test)]
@@ -445,6 +485,38 @@ mod tests {
         assert_ne!(replacement, queued);
         assert!(!state.complete(&ctx, queued, destination));
         assert!(state.complete(&ctx, replacement, destination));
+    }
+
+    /// A native window's suspended fence waits while the window's descriptor identity is not
+    /// known, rearms on the identity the window's previous pass published, and keeps that one
+    /// request while the identity stays.
+    #[test]
+    fn window_fence_rearms_on_the_published_identity() {
+        let ctx = Context::default();
+        install(&ctx);
+        let window = ViewportId::from_hash_of("film-native-window");
+        let mut state = State { viewport: window, ..Default::default() };
+        let destination = destination();
+        state.interrupt(destination.target, Some(destination));
+        state.suspend(window);
+        let pass = |state: &mut State, f: &mut dyn FnMut(&mut State, &Context)| {
+            let mut raw = egui::RawInput { viewport_id: window, ..Default::default() };
+            raw.viewports.insert(window, egui::ViewportInfo { parent: Some(ViewportId::ROOT), ..Default::default() });
+            let mut out = ctx.run_ui(raw, |ui| {
+                ui.ctx().output_mut(|out| out.ime = Some(output(destination, 1, IMEPurpose::Normal)));
+                f(state, ui.ctx());
+            });
+            out.textures_delta.clear();
+            out.platform_output.ime.and_then(|ime| ime.reset_request)
+        };
+        let mut finish = |state: &mut State, ctx: &Context| state.finish_window(ctx, Some(destination), published(ctx, destination.target.owner));
+        assert!(pass(&mut state, &mut finish).is_none(), "the first pass's identity is not known yet");
+        assert!(state.blocked(window));
+        let request = pass(&mut state, &mut finish).expect("the next pass rearms the fence");
+        assert!(pass(&mut state, &mut finish).is_none(), "the same identity keeps the request");
+        let mut completed = false;
+        pass(&mut state, &mut |state, ctx| completed = state.complete(ctx, request, destination));
+        assert!(completed && !state.blocked(window));
     }
 
     /// UI-pass mode is scoped per viewport, `install` is idempotent, and a child viewport's

@@ -238,10 +238,12 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
 // ------------------------------------------------------------------ frames and panels
 
 /// Maximize `p`, or restore the layout when a panel is maximized (also the panel menu's Maximize /
-/// Restore Frame). A maximized panel that has since been closed counts as restored.
+/// Restore Frame). Only a docked panel maximizes; a maximized panel that has since been closed or
+/// floated counts as restored.
 pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
-    let current = app.ui.keys.maximized.filter(|q| app.ui.dock.contains(*q) || app.ui.floating.iter().any(|g| g.panels.contains(q)));
-    app.ui.keys.maximized = if current.is_some() { None } else { Some(p) };
+    use crate::dock::LayoutExt as _;
+    let current = app.ui.keys.maximized.filter(|q| app.ui.dock.is_docked(*q));
+    app.ui.keys.maximized = if current.is_some() || !app.ui.dock.is_docked(p) { None } else { Some(p) };
     if let Some(p) = app.ui.keys.maximized {
         let _ = app.apply_dock(craft_ui::docking::Action::Activate { panel: p });
         app.ui.focused = p;
@@ -249,22 +251,27 @@ pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
     json!({"maximized": app.ui.keys.maximized.map(|p| p.title())})
 }
 
-/// The visible panel under the pointer (from last frame's automation rects).
+/// The visible panel under the pointer (from last frame's automation rects). Each native
+/// floating window has its own coordinates, so only rects of the window holding the pointer
+/// count.
 fn panel_under_pointer(app: &FilmcraftApp, ctx: &egui::Context) -> Option<PanelKind> {
-    let pos = ctx.input(|i| i.pointer.latest_pos())?;
-    app.auto.query("panel.").into_iter().rev().find_map(|e| {
+    let panels = app.auto.query("panel.");
+    let pointer = |viewport| ctx.input_for(viewport, |i| i.pointer.latest_pos()).map(|pos| (viewport, pos));
+    let (viewport, pos) =
+        pointer(egui::ViewportId::ROOT).or_else(|| panels.iter().map(|e| e.viewport).filter(|v| *v != egui::ViewportId::ROOT).find_map(pointer))?;
+    panels.into_iter().rev().filter(|e| e.viewport == viewport).find_map(|e| {
         let r = egui::Rect::from_min_size(egui::pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3]));
         r.contains(pos).then(|| PanelKind::from_name(&e.id["panel.".len()..])).flatten()
     })
 }
 
-/// Visible panels in layout order (the active tab of each frame).
+/// Visible panels in layout order (the active tab of each frame), without the narrow Tools and
+/// Audio Meters strips, which panel cycling skips.
 fn visible_panels(app: &FilmcraftApp) -> Vec<PanelKind> {
-    let mut all = Vec::new();
-    app.ui.dock.panels(&mut all);
-    let mut visible: Vec<_> = all.into_iter().filter(|p| app.ui.dock.is_visible(*p) && !p.compact()).collect();
-    visible.extend(app.ui.floating.iter().filter_map(|group| group.panels.get(group.active).copied()).filter(|panel| !panel.compact()));
-    visible
+    use crate::dock::LayoutExt as _;
+    let mut v = app.ui.dock.visible_panels();
+    v.retain(|p| !matches!(p, PanelKind::Tools | PanelKind::AudioMeters));
+    v
 }
 
 fn cycle_panel(app: &mut FilmcraftApp, next: bool) -> Value {

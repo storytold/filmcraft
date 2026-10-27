@@ -10,7 +10,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use web_time::Instant;
@@ -449,7 +449,7 @@ pub fn playback_plan(render_cost: f64, fps: f64, workers: usize) -> (i64, i64) {
 impl FrameServer {
     /// Settings ▸ Memory ▸ frame cache budget (bytes); evicts down to it right away.
     pub fn set_cache_budget(&self, bytes: usize) {
-        let mut c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = self.shared.done.lock().unwrap_or_else(PoisonError::into_inner);
         c.budget = bytes.max(16 << 20);
         if c.bytes > c.budget
             && let Some((k, v)) = c.map.iter().next().map(|(k, (v, _))| (*k, v.clone()))
@@ -461,7 +461,7 @@ impl FrameServer {
 
     /// (bytes cached, budget).
     pub fn cache_usage(&self) -> (usize, usize) {
-        let c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+        let c = self.shared.done.lock().unwrap_or_else(PoisonError::into_inner);
         (c.bytes, c.budget)
     }
 
@@ -500,7 +500,7 @@ impl FrameServer {
     }
 
     pub fn set_context(&self, ctx: &egui::Context) {
-        let mut g = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.repaint.lock().unwrap_or_else(PoisonError::into_inner);
         if g.is_none() {
             let ctx = ctx.clone();
             *g = Some(Box::new(move || ctx.request_repaint()));
@@ -513,12 +513,12 @@ impl FrameServer {
     }
 
     pub fn take_records(&self) -> Vec<JobRecord> {
-        std::mem::take(&mut *self.shared.records.lock().unwrap_or_else(|e| e.into_inner()))
+        std::mem::take(&mut *self.shared.records.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Cumulative job statistics (`perf.stats`).
     pub fn stats(&self) -> FrameStats {
-        self.shared.stats.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Worker threads.
@@ -529,15 +529,15 @@ impl FrameServer {
     /// (cached images, their bytes, cached GPU plans, their bytes).
     pub fn cache_entries(&self) -> (usize, usize, usize, usize) {
         let (n, b) = {
-            let c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+            let c = self.shared.done.lock().unwrap_or_else(PoisonError::into_inner);
             (c.map.len(), c.bytes)
         };
-        let p = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+        let p = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner);
         (n, b, p.map.len(), p.bytes)
     }
 
     pub fn get(&self, k: &FrameKey) -> Option<Arc<Rgba>> {
-        let mut c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = self.shared.done.lock().unwrap_or_else(PoisonError::into_inner);
         c.clock += 1;
         let clock = c.clock;
         c.map.get_mut(k).map(|(v, s)| {
@@ -547,20 +547,20 @@ impl FrameServer {
     }
 
     pub fn get_plan(&self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
-        self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).get(k)
+        self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).get(k)
     }
 
     /// Whether the exact frame (image or plan) is ready.
     pub fn is_ready(&self, k: &FrameKey) -> bool {
         match k.target {
-            Target::SequencePlan(_) => self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
-            _ => self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(k),
+            Target::SequencePlan(_) => self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(k),
+            _ => self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(k),
         }
     }
 
     /// Nearest cached plan at or before `frame`.
     pub fn nearest_plan(&self, key: FrameKey, max_back: i64) -> Option<(FrameKey, Arc<GpuPlan>)> {
-        let mut g = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner);
         (0..=max_back).find_map(|d| {
             let k = FrameKey { frame: key.frame - d, ..key };
             g.get(&k).map(|p| (k, p))
@@ -578,18 +578,18 @@ impl FrameServer {
     }
 
     fn request_job(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32, prefetch: bool, catch_up: Option<Tick>) {
-        let hit = || self.shared.stats.lock().unwrap_or_else(|e| e.into_inner()).request_hits += 1;
-        if self.shared.done.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key)
-            || self.shared.plans.lock().unwrap_or_else(|e| e.into_inner()).map.contains_key(&key)
+        let hit = || self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).request_hits += 1;
+        if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
+            || self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
         {
             hit();
             return;
         }
-        if self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(k, c, _)| *k == key && !c.load(Ordering::Relaxed)) {
+        if self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(k, c, _)| *k == key && !c.load(Ordering::Relaxed)) {
             hit();
             return;
         }
-        let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut q = self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(j) = q.iter_mut().find(|j| j.key == key) {
             j.prio = j.prio.min(prio);
             j.prefetch &= prefetch;
@@ -602,7 +602,7 @@ impl FrameServer {
             hit();
             return;
         }
-        self.shared.stats.lock().unwrap_or_else(|e| e.into_inner()).request_misses += 1;
+        self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).request_misses += 1;
         if prio == 0 {
             // A new frame on screen for this view replaces the one asked for before: scrubbing
             // asks for one per refresh, and without this the oldest position would decode
@@ -614,7 +614,7 @@ impl FrameServer {
             // refresh, cancelling each one for the next would show nothing until the mouse rests.
             let same_view = |k: &FrameKey| k.target == key.target && k.size == key.size;
             q.retain(|j| !(j.prio == 0 && !j.prefetch && same_view(&j.key)));
-            for (k, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            for (k, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
                 if !prefetch && same_view(k) && k.frame != key.frame {
                     c.store(true, Ordering::Relaxed);
                 }
@@ -666,15 +666,15 @@ impl FrameServer {
 
     /// The current per-frame render cost estimate (s), see [`playback_plan`].
     pub fn render_cost(&self) -> f64 {
-        *self.shared.render_cost.lock().unwrap_or_else(|e| e.into_inner())
+        *self.shared.render_cost.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Drop queued jobs that fail `keep` (e.g. stale revisions or frames far from the playhead).
     /// Jobs already running for such frames are cancelled: a worker blocked behind a decoder
     /// would otherwise go on to decode a frame playback has passed, possibly from its keyframe.
     pub fn retain_queue(&self, keep: impl Fn(&FrameKey) -> bool) {
-        self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| keep(&j.key));
-        for (k, c, _) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| keep(&j.key));
+        for (k, c, _) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             if !keep(k) {
                 c.store(true, Ordering::Relaxed);
             }
@@ -684,8 +684,8 @@ impl FrameServer {
     /// Playback stopped: drop its queued prefetch jobs and cancel the running ones (left alone,
     /// they would keep the workers busy, e.g. rendering effects for frames nobody will see).
     pub fn stop_prefetch(&self) {
-        self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| !j.prefetch);
-        for (_, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| !j.prefetch);
+        for (_, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             if *prefetch {
                 c.store(true, Ordering::Relaxed);
             }
@@ -693,7 +693,7 @@ impl FrameServer {
     }
 
     pub fn queue_len(&self) -> usize {
-        self.shared.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 
     /// The most recent cached frame for `target` at or before `frame` within `max_back` frames.
@@ -718,7 +718,7 @@ impl FrameServer {
         let mut retry = Vec::new();
         loop {
             let job = {
-                let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+                let mut q = self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner);
                 if q.is_empty() {
                     break;
                 }
@@ -738,7 +738,7 @@ impl FrameServer {
             }
         }
         if !retry.is_empty() {
-            let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+            let mut q = self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner);
             for j in retry.into_iter().rev() {
                 if !q.iter().any(|x| x.key == j.key) {
                     q.push_front(j);
@@ -753,11 +753,11 @@ impl Drop for FrameServer {
     /// Stop the workers: queued jobs are dropped, running ones are cancelled, and each worker
     /// returns once it has no job, releasing the frame cache, the media pool and the services.
     fn drop(&mut self) {
-        let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut q = self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner);
         self.shared.stop.store(true, Ordering::Relaxed);
         q.clear();
         drop(q);
-        for (_, c, _) in self.shared.in_flight.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        for (_, c, _) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             c.store(true, Ordering::Relaxed);
         }
         self.shared.cv.notify_all();
@@ -844,7 +844,7 @@ fn worker(
 ) {
     loop {
         let job = {
-            let mut q = sh.queue.lock().unwrap_or_else(|e| e.into_inner());
+            let mut q = sh.queue.lock().unwrap_or_else(PoisonError::into_inner);
             loop {
                 if sh.stop.load(Ordering::Relaxed) {
                     return;
@@ -856,7 +856,7 @@ fn worker(
                         break job;
                     }
                 }
-                q = sh.cv.wait(q).unwrap_or_else(|e| e.into_inner());
+                q = sh.cv.wait(q).unwrap_or_else(PoisonError::into_inner);
             }
         };
         // A panic while decoding or rendering one frame (bad media, a decoder bug) must not take
@@ -864,11 +864,11 @@ fn worker(
         // monitors blank. Log it, forget the job and keep serving.
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_job(&sh, &job, &pool, &services, &previews)));
         if ran.is_err() {
-            sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
-            sh.stats.lock().unwrap_or_else(|e| e.into_inner()).failed += 1;
+            sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+            sh.stats.lock().unwrap_or_else(PoisonError::into_inner).failed += 1;
             log::error!("frame job {:?} panicked; the worker continues", job.key);
         }
-        if let Some(f) = repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if let Some(f) = repaint.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
             f();
         }
     }
@@ -886,7 +886,7 @@ static INJECT_PANICS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 
 fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> bool {
     {
-        let mut in_flight = sh.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        let mut in_flight = sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner);
         // A job taken from the queue just before the server was dropped is not in the list
         // that `Drop` cancels.
         if sh.stop.load(Ordering::Relaxed) {
@@ -916,14 +916,14 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
                             let prepared = filmcraft_gpu::prepare(&plan);
-                            sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+                            sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
                         }
                         pv
                     } else {
                         let (img, pv) = render_job(job, pool, services, previews);
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+                            sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
                         }
                         pv
                     }
@@ -932,13 +932,13 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         })
     });
     let cancelled = job.cancel.load(Ordering::Relaxed);
-    sh.in_flight.lock().unwrap_or_else(|e| e.into_inner()).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+    sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
     if job.prefetch {
         // Work beyond fetching source frames (decoding is sequential per source and is
         // not saved by skipping frames, so it is left out of the estimate). A cancelled job
         // only tells that the work takes at least this long.
         let cost = started.elapsed().saturating_sub(SOURCE_TIME.with(|s| s.get()).0).as_secs_f64();
-        let mut c = sh.render_cost.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = sh.render_cost.lock().unwrap_or_else(PoisonError::into_inner);
         if !cancelled || cost > *c {
             *c = if *c == 0.0 { cost } else { *c * 0.8 + cost * 0.2 };
         }
@@ -947,7 +947,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         let job_wall = started.elapsed();
         let source = SOURCE_TIME.with(|s| s.get()).0;
         let (src_ms, render_ms) = (source.as_secs_f64() * 1e3, job_wall.saturating_sub(source).as_secs_f64() * 1e3);
-        let mut st = sh.stats.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = sh.stats.lock().unwrap_or_else(PoisonError::into_inner);
         st.jobs += 1;
         st.cancelled += cancelled as u64;
         st.preview += preview as u64;
@@ -974,7 +974,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
             preview,
             cancelled,
         };
-        sh.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec);
+        sh.records.lock().unwrap_or_else(PoisonError::into_inner).push(rec);
     }
     !loading
 }
