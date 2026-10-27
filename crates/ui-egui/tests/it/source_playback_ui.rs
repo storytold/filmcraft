@@ -134,6 +134,96 @@ fn audio_source_outputs_sound_and_uses_the_device_clock() {
     h.state_mut().stop_source();
 }
 
+/// #1789: L / L-L in the Source monitor plays sound at 2× and 4×, as the Program monitor does,
+/// with and without Maintain Pitch While Shuttling; reverse stays silent.
+#[test]
+fn source_shuttle_forward_plays_sound() {
+    for (speed, maintain) in [(2.0, true), (4.0, false)] {
+        let fill = Arc::new(Mutex::new(None));
+        let mut app = app(11);
+        app.session.prefs.audio.maintain_pitch_shuttling = maintain;
+        app.audio = Some(Box::new(Out { frames: Arc::new(AtomicU64::new(0)), fill: fill.clone(), stalled: false }));
+        let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+        h.step();
+        h.state_mut().shuttle_source(speed).unwrap();
+        for _ in 0..4 {
+            h.step();
+        }
+        assert!(h.state().source_playback.clock.audio_clock, "{speed}× plays through the audio device");
+        let mut heard = false;
+        for _ in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let mut buffer = vec![0.0; 960];
+            if let Some(f) = fill.lock().unwrap().as_mut() {
+                f(&mut buffer, 2);
+            }
+            heard |= buffer.iter().any(|x| x.abs() > 0.001);
+            if heard {
+                break;
+            }
+        }
+        assert!(heard, "{speed}× (maintain pitch {maintain}) must produce non-silent source samples");
+        h.state_mut().stop_source();
+    }
+}
+
+/// The left channel the Source monitor sends the device at `speed`, after the play-ahead has started.
+fn shuttle_output(speed: f64, maintain: bool) -> Vec<f32> {
+    let fill = Arc::new(Mutex::new(None));
+    // a pure 440 Hz tone in the Source monitor
+    let mut session = Session::default();
+    let item = filmcraft_engine::demo::add_generator(
+        std::sync::Arc::make_mut(&mut session.project),
+        &session.media,
+        filmcraft_media::generators::GeneratorSource::new(
+            filmcraft_media::Generator::Tone { hz: 440.0, db: -6.0 },
+            0,
+            0,
+            filmcraft_time::FrameRate::FPS_24,
+            Tick::from_seconds_f64(30.0),
+        ),
+        "Tone",
+        filmcraft_project::Label::Iris,
+        None,
+    );
+    session.execute("source.open", json!({"item": item.0})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    app.session.prefs.audio.maintain_pitch_shuttling = maintain;
+    app.audio = Some(Box::new(Out { frames: Arc::new(AtomicU64::new(0)), fill: fill.clone(), stalled: false }));
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+    h.step();
+    h.state_mut().shuttle_source(speed).unwrap();
+    h.step();
+    let mut out = Vec::new();
+    for _ in 0..400 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut buffer = vec![0.0; 960];
+        if let Some(f) = fill.lock().unwrap().as_mut() {
+            f(&mut buffer, 2);
+        }
+        if out.is_empty() && buffer.iter().all(|x| x.abs() <= 0.001) {
+            continue;
+        }
+        out.extend(buffer.chunks(2).map(|c| c[0]));
+        if out.len() >= 24_000 {
+            break;
+        }
+    }
+    h.state_mut().stop_source();
+    out
+}
+
+/// Maintain Pitch While Shuttling keeps the pitch at 2×: without it the sound is an octave up,
+/// with twice the zero crossings.
+#[test]
+fn source_shuttle_keeps_the_pitch_when_asked() {
+    let crossings = |x: &[f32]| x.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count() as f64 / x.len().max(1) as f64;
+    let (kept, raised) = (shuttle_output(2.0, true), shuttle_output(2.0, false));
+    assert!(kept.len() >= 24_000 && raised.len() >= 24_000, "{} / {} samples", kept.len(), raised.len());
+    let ratio = crossings(&raised) / crossings(&kept);
+    assert!(ratio > 1.5, "zero-crossing ratio {ratio}");
+}
+
 #[test]
 fn stalled_source_audio_falls_back_to_wall_clock() {
     let mut app = app(11);
