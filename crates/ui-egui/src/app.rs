@@ -303,6 +303,10 @@ impl FilmcraftApp {
         self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
+        // while the dialog is open the app is modal (#2018): the raw-input hook dropped the main
+        // window's input, dock-panel windows' accumulated drops go, and `logic_command_inbox`
+        // refuses native-menu commands.
+        self.modal_gate();
         self.logic_theme(ctx);
         let now = self.logic_clock(ctx);
         self.logic_control(ctx);
@@ -426,6 +430,13 @@ impl eframe::App for FilmcraftApp {
             synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
         }
         if self.control_input_only {
+            drop_native_input(raw_input);
+        }
+        // While a native file dialog is open the app is modal (#2018): the window system's input
+        // is dropped exactly as in `--control-input-only` mode, so drops, clicks and shortcuts
+        // outside the sheet do nothing. Agent-driven synthetic input below and the control channel
+        // keep working, and a close request (not an event) still reaches `intercept_quit`.
+        if self.native_dialog_open() {
             drop_native_input(raw_input);
         }
         if self.control_input_only || !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {

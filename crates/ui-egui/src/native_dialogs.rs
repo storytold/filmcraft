@@ -19,7 +19,11 @@
 //!   stored state (`app.ui.…`, an egui temporary); when the user has closed that dialog meanwhile
 //!   there is nothing to write into and the path is dropped.
 //!
-//! One dialog is open at a time; asking for another one meanwhile is refused.
+//! One dialog is open at a time; asking for another one meanwhile is refused. While a dialog is
+//! open the app is modal (#2018): the window system's input is dropped (as in
+//! `--control-input-only`), dock-panel drops and native-menu commands are refused (`app.quit`
+//! gets a status note) and a close request is refused, so nothing outside the sheet starts or
+//! changes work. Agents keep working: the control channel and synthetic input are untouched.
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;

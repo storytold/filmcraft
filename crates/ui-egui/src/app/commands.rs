@@ -36,6 +36,14 @@ impl FilmcraftApp {
                 if self.control_input_only && id != "app.quit" {
                     continue;
                 }
+                // the app is modal while a file dialog is open: menu commands do nothing (#2018).
+                // Quit at least says why it is ignored.
+                if self.native_dialog_open() {
+                    if id == "app.quit" {
+                        self.ui.status = tl!("A file dialog is already open").into();
+                    }
+                    continue;
+                }
                 if let Err(e) = menus::activate_native(self, ctx, &id) {
                     self.ui.status = e;
                 }
