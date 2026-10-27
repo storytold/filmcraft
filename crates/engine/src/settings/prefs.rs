@@ -8,7 +8,7 @@ use super::*;
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralPrefs {
     /// Interface language (persisted independently of projects): `en`, `ja`, `es`, `pt-br`, `uk`,
-    /// `zh-cn`, `de`, `ru`, `fr`, `id`, `it`, or `system` (the default: the operating system's preferred language when the
+    /// `zh-cn`, `de`, `ru`, `fr`, `id`, `it`, `ko`, `cs`, or `system` (the default: the operating system's preferred language when the
     /// interface has it, otherwise English).
     pub interface_language: String,
     /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.

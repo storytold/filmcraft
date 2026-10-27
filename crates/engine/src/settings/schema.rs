@@ -224,6 +224,7 @@ pub(super) static CATEGORIES: &[Category] = &[
                     ("id", "Bahasa Indonesia"),
                     ("it", "Italiano"),
                     ("ko", "한국어"),
+                    ("cs", "Čeština"),
                 ]),
                 true,
             ),

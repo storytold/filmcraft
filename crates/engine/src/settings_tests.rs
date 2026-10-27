@@ -50,6 +50,17 @@ fn interface_language_persists_and_rejects_hostile_values() {
     }
     set(&mut s, "general.interfaceLanguage", json!("it"));
     assert_eq!(Preferences::load(&path).general.interface_language, "it");
+    // Korean and Czech likewise store only their bare codes.
+    for value in [json!("ko-KR"), json!("KO")] {
+        assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
+    }
+    set(&mut s, "general.interfaceLanguage", json!("ko"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "ko");
+    for value in [json!("cs-CZ"), json!("CS")] {
+        assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
+    }
+    set(&mut s, "general.interfaceLanguage", json!("cs"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "cs");
     // back to following the operating system (#218)
     set(&mut s, "general.interfaceLanguage", json!("system"));
     assert_eq!(Preferences::load(&path).general.interface_language, "system");
