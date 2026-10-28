@@ -89,6 +89,110 @@ fn files_in(dir: &Path) -> Vec<String> {
     v
 }
 
+/// Walk top-level boxes, including the extended-size `mdat`; never match codec payload bytes.
+fn top_level_boxes(bytes: &[u8]) -> Vec<([u8; 4], usize, usize)> {
+    let mut boxes = Vec::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let header = &bytes[offset..offset + 8];
+        let size = u32::from_be_bytes(header[..4].try_into().unwrap());
+        let (size, header_len) = match size {
+            0 => (bytes.len() - offset, 8),
+            1 => (usize::try_from(u64::from_be_bytes(bytes[offset + 8..offset + 16].try_into().unwrap())).unwrap(), 16),
+            n => (n as usize, 8),
+        };
+        assert!(size >= header_len && size <= bytes.len() - offset);
+        boxes.push((header[4..8].try_into().unwrap(), offset, offset + size));
+        offset += size;
+    }
+    boxes
+}
+
+/// #3459: MP4 uploads need `moov` before `mdat`, on disk and in browser downloads alike.
+#[test]
+fn mp4_faststart_preserves_video_and_audio_for_every_output() {
+    let (p, seq, m) = matte([1.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("mp4-faststart");
+    for multiplexer in [Multiplexer::Mp4, Multiplexer::Mov] {
+        for mode in ["disk", "reserved", "memory"] {
+            let ext = if multiplexer == Multiplexer::Mp4 { "mp4" } else { "mov" };
+            let path = dir.path(&format!("{mode}.{ext}"));
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let mut settings = ExportSettings {
+                format: Format::H264,
+                multiplexer,
+                path: path.clone(),
+                range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(6))),
+                hardware_encoding: HardwareEncoding::Off,
+                gpu_rendering: GpuRendering::Off,
+                audio: AudioSettings { codec: AudioCodec::Aac, ..Default::default() },
+                ..Default::default()
+            };
+            if mode == "reserved" {
+                settings.output_file = Some(Arc::new(std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap()));
+            } else if mode == "memory" {
+                let captured = captured.clone();
+                settings.sink = Some(OutputSink(Arc::new(move |_, bytes| {
+                    *captured.lock().unwrap() = bytes;
+                    Ok(())
+                })));
+            }
+            let report = export(&p, seq, &settings, &m, &Progress::default()).unwrap();
+            let bytes = if mode == "memory" {
+                assert!(!Path::new(&path).exists(), "a download must not create a disk file");
+                std::mem::take(&mut *captured.lock().unwrap())
+            } else {
+                std::fs::read(&path).unwrap()
+            };
+            assert_eq!(report.frames, 6);
+            assert_eq!(report.bytes, bytes.len() as u64);
+            let boxes = top_level_boxes(&bytes);
+            assert_eq!(boxes[0].0, *b"ftyp");
+            let moov = boxes.iter().find(|b| b.0 == *b"moov").unwrap();
+            let mdat = boxes.iter().find(|b| b.0 == *b"mdat").unwrap();
+            assert_eq!(moov.1 < mdat.1, multiplexer == Multiplexer::Mp4, "{mode}.{ext}");
+            let file = filmcraft_isobmff::open(bytes.as_slice()).unwrap();
+            assert_eq!(file.tracks.len(), 2);
+            let video = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+            assert_eq!(file.tracks[video].samples.len(), 6);
+            for (track, t) in file.tracks.iter().enumerate() {
+                for (index, sample) in t.samples.iter().enumerate() {
+                    assert!(sample.offset >= mdat.1 as u64 + 8);
+                    assert!(sample.offset + u64::from(sample.size) <= mdat.2 as u64);
+                    assert_eq!(file.read_sample(bytes.as_slice(), track, index).unwrap().len(), sample.size as usize);
+                }
+            }
+            let src = filmcraft_codecs::open_bytes(&path, bytes.into()).unwrap();
+            for frame in [0, 3, 5] {
+                let rgba = src.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(frame))).unwrap().to_rgba8();
+                assert!(rgba[0] > 230 && rgba[1] < 30 && rgba[2] < 30, "{mode}.{ext}: frame {frame}");
+            }
+            let audio = src.audio(0, 12_000, 48_000).unwrap();
+            assert_eq!(audio.channels.len(), 2);
+            assert!(audio.channels.iter().all(|c| c.len() == 12_000 && c.iter().any(|v| v.abs() > 0.1)), "{mode}.{ext}: audible tone");
+        }
+    }
+}
+
+#[test]
+fn mp4_faststart_reports_unreadable_reserved_output() {
+    let (p, seq, m) = matte([1.0, 0.0, 0.0, 1.0], 64, 36, None);
+    let dir = Scratch::new("mp4-faststart-write-only");
+    let path = dir.path("write-only.mp4");
+    let settings = ExportSettings {
+        format: Format::H264,
+        path: path.clone(),
+        include_audio: false,
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(1))),
+        output_file: Some(Arc::new(std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap())),
+        ..Default::default()
+    };
+    let progress = Progress::default();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| export(&p, seq, &settings, &m, &progress)));
+    assert!(matches!(result.unwrap(), Err(ExportError::Io(_))));
+    assert!(!progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+}
+
 #[test]
 fn image_sequences_are_numbered_like_premiere() {
     let (p, seq, m) = matte([1.0, 0.0, 0.0, 1.0], 320, 180, None);

@@ -357,6 +357,7 @@ pub struct ExportSettings {
     pub sink: Option<OutputSink>,
     /// An already-created primary output file. Internal callers use this to retain an exclusive
     /// reservation made while choosing an output name, rather than reopening that path later.
+    /// MP4 video outputs require read and write access for fast-start finalization.
     #[serde(skip)]
     pub output_file: Option<Arc<std::fs::File>>,
 }
