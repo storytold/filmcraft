@@ -426,6 +426,20 @@ fn interpret_footage_changes_several_items_in_what_is_changed_only() {
     d.frames(3);
     d.click("colorDialog.ok");
     assert_eq!(d.app().session.revision, rev);
+    // text that is not a rate chooses nothing either
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    retype(&mut d, "colorDialog.rate.value", "abc");
+    d.click("colorDialog.ok");
+    assert_eq!(d.app().session.revision, rev);
+    assert_eq!(interpretation(&mut d, b).0, Some("25".into()));
+    // the dialog starts at a's rate (the file's): choosing it again applies it to b as well
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    d.click("colorDialog.rate.file");
+    d.click("colorDialog.ok");
+    assert_eq!(interpretation(&mut d, a).0, None);
+    assert_eq!(interpretation(&mut d, b).0, None);
 }
 
 #[test]

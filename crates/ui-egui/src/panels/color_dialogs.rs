@@ -156,26 +156,33 @@ fn interpret_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, ms: &[MediaClip], c:
         ui.label(tlf!("Changes apply to all {n} selected items; settings left as they are stay as each item has them.", n));
         ui.add_space(4.0);
     }
-    let rate_before = (*c.assume, c.rate_text.clone());
+    // what the user does with the rate, not whether the draft changed: in a mixed selection the
+    // draft starts as the first item's rate, and choosing it again applies it to all of them
+    let mut rate_chosen = false;
     group(ui, tl!("Frame Rate"), mixed("frameRate"), |ui| {
         ui.add_enabled_ui(has_rate, |ui| {
             egui::Grid::new("interpret-rate").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
                 if radio(app, ui, "colorDialog.rate.file", c.assume.is_none(), tl!("Use Frame Rate from File:"), OPTION_W) {
                     *c.assume = None;
+                    rate_chosen = true;
                 }
                 ui.label(one_or_various(ms.iter().filter(|m| moving(m)).map(|m| format!("{:.4}", m.info.frame_rate().as_f64()))));
                 ui.end_row();
-                if radio(app, ui, "colorDialog.rate.assume", c.assume.is_some(), tl!("Assume this frame rate:"), OPTION_W) && c.assume.is_none() {
-                    *c.assume = Some(parse_rate(c.rate_text).unwrap_or(file_rate).as_f64());
+                if radio(app, ui, "colorDialog.rate.assume", c.assume.is_some(), tl!("Assume this frame rate:"), OPTION_W) {
+                    if c.assume.is_none() {
+                        *c.assume = Some(parse_rate(c.rate_text).unwrap_or(file_rate).as_f64());
+                    }
+                    rate_chosen = true;
                 }
                 ui.horizontal(|ui| {
                     let r = ui.add(egui::TextEdit::singleline(c.rate_text).desired_width(64.0));
                     app.auto.add("colorDialog.rate.value", r.rect, "Assumed frame rate");
-                    // typing a rate chooses Assume this frame rate
+                    // typing a rate chooses Assume this frame rate; text that is not a rate chooses nothing
                     if r.changed()
                         && let Some(rate) = parse_rate(c.rate_text)
                     {
                         *c.assume = Some(rate.as_f64());
+                        rate_chosen = true;
                     }
                     let mut picked = None;
                     let list = craft_ui::ComboBox::from_id_salt("interpret-rate-list").selected_text("").width(20.0).show_ui(ui, |ui| {
@@ -193,6 +200,7 @@ fn interpret_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, ms: &[MediaClip], c:
                     if let Some(rate) = picked {
                         *c.assume = Some(rate.as_f64());
                         *c.rate_text = rate.label();
+                        rate_chosen = true;
                     }
                     ui.label(tl!("fps"));
                 });
@@ -210,7 +218,7 @@ fn interpret_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, ms: &[MediaClip], c:
             });
         });
     });
-    if (*c.assume, c.rate_text.clone()) != rate_before {
+    if rate_chosen {
         touch(c.touched, "frameRate");
     }
     group(ui, tl!("Field Order"), false, |ui| {
