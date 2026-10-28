@@ -89,6 +89,29 @@ impl Tool {
             Tool::VerticalType => "",
         }
     }
+
+    /// The engine command id used to activate this tool (matches shortcut_presets table).
+    /// Used to look up the *current* (possibly user-customized) binding (#issue8).
+    pub fn command_id(self) -> &'static str {
+        match self {
+            Tool::Selection => "tool.selection",
+            Tool::TrackSelectForward => "tool.trackSelectForward",
+            Tool::TrackSelectBackward => "tool.trackSelectBackward",
+            Tool::Ripple => "tool.ripple",
+            Tool::Rolling => "tool.rolling",
+            Tool::RateStretch => "tool.rateStretch",
+            Tool::Remix => "",
+            Tool::Razor => "tool.razor",
+            Tool::Slip => "tool.slip",
+            Tool::Slide => "tool.slide",
+            Tool::Pen => "tool.pen",
+            Tool::Rectangle | Tool::Ellipse => "",
+            Tool::Hand => "tool.hand",
+            Tool::Zoom => "tool.zoom",
+            Tool::Type => "tool.type",
+            Tool::VerticalType => "",
+        }
+    }
     pub fn icon(self) -> Icon {
         match self {
             Tool::Selection => Icon::Selection,
@@ -208,6 +231,10 @@ pub struct TimelineView {
     /// (`volume`, `pan`, `mute`, `send.<i>.level`, `fx.<slot>.<param>`).
     #[serde(default)]
     pub track_lanes: std::collections::BTreeMap<u64, String>,
+    /// Combined A/V lanes: each video track is shown alongside its linked audio
+    /// track in a single row (#2584). Default off.
+    #[serde(default)]
+    pub combined_av_lanes: bool,
 }
 
 impl TimelineView {
@@ -238,6 +265,7 @@ impl Default for TimelineView {
             seen_playhead: None,
             fit_empty: None,
             track_lanes: Default::default(),
+            combined_av_lanes: false,
         }
     }
 }

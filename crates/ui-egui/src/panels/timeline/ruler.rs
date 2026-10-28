@@ -108,6 +108,10 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
                     app.ui.timeline.video_track_h = 26.0;
                     app.ui.timeline.audio_track_h = 26.0;
                 }
+                ui.separator();
+                // Combined A/V lanes toggle (#2584).
+                let c = ui.checkbox(&mut app.ui.timeline.combined_av_lanes, tl!("Combined A/V Lanes"));
+                app.auto.add("timeline.settings.combinedAvLanes", c.rect, "Combined A/V Lanes");
             });
         }
         x += 30.0;
