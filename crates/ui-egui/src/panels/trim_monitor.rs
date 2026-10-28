@@ -42,7 +42,7 @@ pub fn advance_at(app: &mut FilmcraftApp, clock: f64) {
         return;
     }
     if let Err(e) = app.session.execute("trim.tick", json!({"clock": clock})) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 
@@ -323,7 +323,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 _ => app.session.execute("trim.applyDefaultTransition", json!({})),
             };
             if let Err(e) = res {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
         x += w + 4.0;
@@ -358,6 +358,6 @@ fn drag_trim(app: &mut FilmcraftApp, which: &str, frames: i64) {
         let _ = app.session.execute("trim.selectEditPoint", json!({"clip": clip.0, "edge": edge, "kind": kind}));
     }
     if let Err(e) = app.session.execute("trim.nudge", json!({"frames": frames})) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }

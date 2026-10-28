@@ -76,22 +76,52 @@ impl FilmcraftApp {
         let sb = egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - status_h), full.max);
         ui.painter().rect_filled(sb, 0.0, t.header_bg);
         let now = ui.input(|i| i.time);
-        if self.ui.status != self.status_seen.0 {
-            self.status_seen = (self.ui.status.clone(), now);
+        // an error stays longer than a note, and is drawn larger in the danger colour so it is not missed
+        let is_error = self.ui.status_is_error();
+        // an error shown again restarts its time, though its text is the same
+        if self.ui.status != self.status_seen.0 || self.ui.status_errors != self.status_seen.1 {
+            self.status_seen = (self.ui.status.clone(), self.ui.status_errors, now);
         } else if !self.ui.status.is_empty() {
-            if now - self.status_seen.1 > 8.0 {
+            if now - self.status_seen.2 > if is_error { 20.0 } else { 8.0 } {
                 self.ui.status.clear();
             } else {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             }
         }
-        let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
-        ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {
             self.ui.status.clear();
         }
-        self.job_status(ui, sb, &t);
+        // an error that just expired or was clicked away is not drawn as one this frame
+        let is_error = is_error && self.ui.status_is_error();
+        let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
+        let mut text_x = sb.min.x + 10.0;
+        if is_error {
+            ui.painter().rect_filled(sb, 0.0, t.danger.gamma_multiply(0.14));
+        }
+        // the job indicator is drawn first: the text ends before it
+        let room_end = self.job_status(ui, sb, &t) - 12.0;
+        if is_error {
+            let dot = egui::Rect::from_center_size(egui::pos2(text_x + 6.0, sb.center().y), egui::vec2(12.0, 12.0));
+            ui.painter().circle_filled(dot.center(), 6.0, t.danger);
+            ui.painter().text(dot.center(), egui::Align2::CENTER_CENTER, "!", Tokens::semibold(10.0), egui::Color32::WHITE);
+            text_x += 20.0;
+        }
+        let (font, color) = if is_error { (Tokens::semibold(12.0), t.text) } else { (Tokens::ui(11.0), t.text_dim) };
+        let mut job = egui::text::LayoutJob::simple_singleline(hint.clone(), font, color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((room_end - text_x).max(0.0));
+        let galley = ui.painter().layout_job(job);
+        let (shown, elided) = (egui::Rect::from_min_size(egui::pos2(text_x, sb.center().y - galley.size().y / 2.0), galley.size()), galley.elided);
+        ui.painter().galley(shown.min, galley, color);
+        // a message cut short by the job indicator shows whole in a tooltip
+        let over = ui.interact(shown, egui::Id::unique("status-text"), egui::Sense::hover());
+        let over = if elided { over.on_hover_text(&hint) } else { over };
+        if is_error {
+            self.auto.add_response("status.error", &over, &hint);
+        }
+        if !self.ui.status_is_error() {
+            self.ui.status_error = None;
+        }
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
@@ -128,9 +158,11 @@ impl FilmcraftApp {
 
     /// Right side of the status bar: the running job (export / render previews) with a progress
     /// bar and a cancel button.
-    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) {
+    /// Draws the running job's indicator and returns where it begins from the left, `sb`'s right
+    /// edge when none runs.
+    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) -> f32 {
         use std::sync::atomic::Ordering;
-        let Some(job) = self.running_job() else { return };
+        let Some(job) = self.running_job() else { return sb.max.x };
         let f = job.progress.fraction().clamp(0.0, 1.0);
         let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
         let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
@@ -139,7 +171,7 @@ impl FilmcraftApp {
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
         let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
-        p.text(
+        let label = p.text(
             egui::pos2(bar.min.x - 8.0, sb.center().y),
             egui::Align2::RIGHT_CENTER,
             format!("{verb}… {:.0}%{left}", f * 100.0),
@@ -157,6 +189,7 @@ impl FilmcraftApp {
             job.progress.cancel.store(true, Ordering::Relaxed);
             self.watched_render = None;
         }
+        label.min.x
     }
 
     /// Contextual hint for the status bar (Premiere shows tool/gesture hints here).

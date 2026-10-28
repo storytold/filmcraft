@@ -137,7 +137,7 @@ impl FilmcraftApp {
             if self.ui.focused == PanelKind::Project && id == "edit.selectAll" {
                 let (cmd, params) = panels::project::select_all_command(self);
                 if let Err(e) = menus::invoke(self, ctx, &cmd, params) {
-                    self.ui.status = e;
+                    self.ui.fail(e);
                 }
                 continue;
             }
@@ -164,7 +164,7 @@ impl FilmcraftApp {
                 json!({})
             };
             if let Err(e) = menus::invoke(self, ctx, &id, params) {
-                self.ui.status = e;
+                self.ui.fail(e);
             }
         }
         // Only the paste action of this pass may consume the event's image.

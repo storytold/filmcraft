@@ -234,7 +234,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         for (cmd, p) in std::mem::take(&mut ed.acts) {
             if let Err(e) = app.session.execute(&cmd, p) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
         if !open || closed {

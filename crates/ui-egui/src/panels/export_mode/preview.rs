@@ -138,7 +138,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         let r = app.session.execute("file.exportMedia", export_params(app));
         match r {
             Ok(v) => app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
     if qresp.clicked() {
@@ -149,7 +149,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         }
         match app.session.execute("export.queue.add", p) {
             Ok(_) => app.ui.status = tl!("Added to the export queue").into(),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
 }

@@ -35,10 +35,10 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
     match crate::widgets::timecode_field(ui, tc_id, tc_rect, &tc, app.session.playhead(), Tick::ZERO, rate, seq.settings.drop_frame, t.timecode) {
         Some(Ok(time)) => {
             if let Err(e) = app.session.execute("playhead.set", json!({"time": time.0})) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
-        Some(Err(e)) => app.ui.status = e,
+        Some(Err(e)) => app.ui.fail(e),
         None => {}
     }
     app.auto.add("timeline.timecode", tc_rect, &tc);

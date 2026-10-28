@@ -444,7 +444,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if resp.clicked()
             && let Err(e) = app.session.execute("graphics.newText", json!({"text": "New Text"}))
         {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
         return;
     };
@@ -722,7 +722,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             wrote = true;
         }
         if let Err(e) = app.session.execute(&cmd, p) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     if down && (wrote || begun.is_some()) {
@@ -778,7 +778,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 p.extend(x.clone());
             }
             if let Err(e) = app.session.execute(cmd, p) {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         };
         // a layer already of that type is left alone (no undo step)

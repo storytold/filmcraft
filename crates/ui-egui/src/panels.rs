@@ -370,7 +370,7 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
         if r.changed()
             && let Err(e) = app.session.execute("sequence.workAreaBar", serde_json::json!({"show": work_area}))
         {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     if p == PanelKind::Project {

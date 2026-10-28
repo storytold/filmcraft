@@ -82,7 +82,7 @@ impl FilmcraftApp {
             value_press: None,
             escape_cancel: false,
             loudness: None,
-            status_seen: (String::new(), 0.0),
+            status_seen: (String::new(), 0, 0.0),
             shots: capture::Shots::default(),
             capture_geometry: None,
             capture_epoch: 0,

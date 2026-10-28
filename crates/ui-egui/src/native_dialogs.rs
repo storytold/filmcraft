@@ -174,7 +174,7 @@ impl FilmcraftApp {
         };
         let Some(pending) = self.native_dialog.take() else { return };
         if let Err(e) = (pending.then)(self, paths) {
-            self.ui.status = e;
+            self.ui.fail(e);
         }
         ctx.request_repaint();
     }

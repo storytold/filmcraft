@@ -64,7 +64,7 @@ pub fn history_panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         app.auto.add_response(&format!("panel.menu.History.{id}"), &r, label);
         if r.clicked() {
             if let Err(e) = crate::menus::invoke(app, &ctx, command, serde_json::json!({})) {
-                app.ui.status = e;
+                app.ui.fail(e);
             }
             close = true;
         }
@@ -109,7 +109,7 @@ pub fn history_dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 app.auto.add("history.deleteRedoable.ok", r.rect, "OK");
                 if r.clicked() {
                     if let Err(e) = app.session.execute("history.deleteRedoable", serde_json::json!({})) {
-                        app.ui.status = e.to_string();
+                        app.ui.fail(e.to_string());
                     }
                     close = true;
                 }
@@ -138,7 +138,7 @@ pub(crate) fn marker_label_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, marke
             app.auto.add_response(&format!("{prefix}.color.{}", color.name()), &r, name);
             if r.clicked() {
                 if let Err(error) = app.session.execute("markers.edit", serde_json::json!({"target":"program","marker":marker.id.0,"color":color.name()})) {
-                    app.ui.status = error.to_string();
+                    app.ui.fail(error.to_string());
                 }
                 ui.close();
             }
@@ -220,7 +220,7 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some((l, visible)) = toggle
         && let Err(e) = app.session.execute("markers.filterColors", serde_json::json!({"color": l.name(), "visible": visible}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     if let Some(g) = go {
         app.session.set_playhead(g);
