@@ -4,7 +4,10 @@
 use crate::boolcoder::BoolDecoder;
 use crate::error::{Error, Result, ensure};
 use crate::probs::FrameContext;
-use crate::tables::*;
+use crate::tables::{
+    ALTREF_FRAME, GOLDEN_FRAME, INV_MAP_TABLE, LAST_FRAME, LITERAL_TO_TYPE, MAX_SEGMENTS, MAX_TILE_WIDTH_B64, MIN_TILE_WIDTH_B64, SEGMENTATION_FEATURE_BITS,
+    SEGMENTATION_FEATURE_SIGNED, SWITCHABLE, TX_MODE_SELECT, TX_MODE_TO_BIGGEST_TX_SIZE,
+};
 use filmcraft_bitstream::BitReader;
 
 pub const KEY_FRAME: u8 = 0;
@@ -216,6 +219,155 @@ fn setup_past_independence(st: &mut HeaderState, fc: &mut FrameContext) {
     *fc = FrameContext::default();
 }
 
+/// Intra-only (non-key) frame header tail (6.2): sync code, colour config, refresh flags, sizes.
+fn intra_only_header(r: &mut BitReader, h: &mut FrameHeader) -> Result<()> {
+    frame_sync_code(r)?;
+    h.color = if h.profile > 0 {
+        color_config(r, h.profile)?
+    } else {
+        ColorConfig { bit_depth: 8, color_space: 1, color_range: false, subsampling_x: true, subsampling_y: true }
+    };
+    h.refresh_frame_flags = r.read_bits(8)? as u8;
+    frame_size(r, h)?;
+    render_size(r, h)
+}
+
+/// frame_size_with_refs (6.2.5): the size is copied from the first flagged reference, or read explicitly.
+fn frame_size_with_refs(r: &mut BitReader, h: &mut FrameHeader, refs: &[Option<RefInfo>; 8]) -> Result<()> {
+    let mut found = false;
+    for i in 0..3 {
+        if r.read_flag()? {
+            let idx = h.ref_frame_idx[i] as usize;
+            let Some(info) = refs[idx] else {
+                return Err(Error::MissingReference(format!("frame size from empty slot {idx}")));
+            };
+            h.width = info.width;
+            h.height = info.height;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        frame_size(r, h)?;
+    }
+    h.size_from_ref = found;
+    Ok(())
+}
+
+/// Inter frame header tail (6.2): reference selection, sizes, motion vector precision and filter.
+fn inter_frame_header(r: &mut BitReader, h: &mut FrameHeader, st: &HeaderState, refs: &[Option<RefInfo>; 8]) -> Result<()> {
+    h.color = st.color;
+    h.refresh_frame_flags = r.read_bits(8)? as u8;
+    for i in 0..3 {
+        h.ref_frame_idx[i] = r.read_bits(3)? as u8;
+        h.ref_frame_sign_bias[LAST_FRAME as usize + i] = r.read_flag()?;
+    }
+    frame_size_with_refs(r, h, refs)?;
+    render_size(r, h)?;
+    h.allow_high_precision_mv = r.read_flag()?;
+    // read_interpolation_filter (6.2.7)
+    h.interp_filter = if r.read_flag()? { SWITCHABLE } else { LITERAL_TO_TYPE[r.read_bits(2)? as usize] };
+    Ok(())
+}
+
+/// Resets the probability contexts for intra / error resilient frames (7.2).
+fn reset_frame_contexts(st: &mut HeaderState, h: &mut FrameHeader) {
+    let mut fc = FrameContext::default();
+    setup_past_independence(st, &mut fc);
+    if h.frame_type == KEY_FRAME || h.error_resilient_mode || h.reset_frame_context == 3 {
+        for c in st.contexts.iter_mut() {
+            *c = fc.clone();
+        }
+    } else if h.reset_frame_context == 2 {
+        st.contexts[h.frame_context_idx as usize] = fc.clone();
+    }
+    h.frame_context_idx = 0;
+}
+
+/// loop_filter_params (6.2.8).
+fn read_loop_filter_params(r: &mut BitReader, lf: &mut LoopFilterParams) -> Result<()> {
+    lf.level = r.read_bits(6)? as u8;
+    lf.sharpness = r.read_bits(3)? as u8;
+    lf.delta_enabled = r.read_flag()?;
+    if lf.delta_enabled && r.read_flag()? {
+        for i in 0..4 {
+            if r.read_flag()? {
+                lf.ref_deltas[i] = read_s(r, 6)? as i8;
+            }
+        }
+        for i in 0..2 {
+            if r.read_flag()? {
+                lf.mode_deltas[i] = read_s(r, 6)? as i8;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// segmentation_params (6.2.11).
+fn read_segmentation_params(r: &mut BitReader, seg: &mut Segmentation) -> Result<()> {
+    seg.enabled = r.read_flag()?;
+    seg.update_map = false;
+    seg.temporal_update = false;
+    if !seg.enabled {
+        return Ok(());
+    }
+    seg.update_map = r.read_flag()?;
+    if seg.update_map {
+        for i in 0..7 {
+            seg.tree_probs[i] = read_prob(r)?;
+        }
+        seg.temporal_update = r.read_flag()?;
+        for i in 0..3 {
+            seg.pred_probs[i] = if seg.temporal_update { read_prob(r)? } else { 255 };
+        }
+    }
+    if r.read_flag()? {
+        seg.abs_or_delta_update = r.read_flag()?;
+        for i in 0..MAX_SEGMENTS {
+            for j in 0..4 {
+                let mut value = 0i32;
+                let enabled = r.read_flag()?;
+                seg.feature_enabled[i][j] = enabled;
+                if enabled {
+                    value = r.read_bits(SEGMENTATION_FEATURE_BITS[j])? as i32;
+                    if SEGMENTATION_FEATURE_SIGNED[j] && r.read_flag()? {
+                        value = -value;
+                    }
+                }
+                seg.feature_data[i][j] = value as i16;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// tile_info (6.2.13).
+fn read_tile_info(r: &mut BitReader, h: &mut FrameHeader) -> Result<()> {
+    let mut min_log2 = 0;
+    while (MAX_TILE_WIDTH_B64 << min_log2) < h.sb64_cols {
+        min_log2 += 1;
+    }
+    let mut max_log2 = 1;
+    while (h.sb64_cols >> max_log2) >= MIN_TILE_WIDTH_B64 {
+        max_log2 += 1;
+    }
+    max_log2 -= 1;
+    h.tile_cols_log2 = min_log2;
+    while h.tile_cols_log2 < max_log2 {
+        if r.read_flag()? {
+            h.tile_cols_log2 += 1;
+        } else {
+            break;
+        }
+    }
+    h.tile_rows_log2 = r.read_bits(1)?;
+    if h.tile_rows_log2 == 1 {
+        h.tile_rows_log2 += r.read_bits(1)?;
+    }
+    Ok(())
+}
+
 /// Parse the uncompressed header (6.2). `refs` gives the sizes of the eight reference slots.
 /// Updates the persistent state (probability contexts on reset, loop filter deltas,
 /// segmentation, colour configuration).
@@ -252,44 +404,9 @@ pub fn parse_uncompressed(data: &[u8], st: &mut HeaderState, refs: &[Option<RefI
         h.frame_is_intra = h.intra_only;
         h.reset_frame_context = if h.error_resilient_mode { 0 } else { r.read_bits(2)? as u8 };
         if h.intra_only {
-            frame_sync_code(&mut r)?;
-            h.color = if h.profile > 0 {
-                color_config(&mut r, h.profile)?
-            } else {
-                ColorConfig { bit_depth: 8, color_space: 1, color_range: false, subsampling_x: true, subsampling_y: true }
-            };
-            h.refresh_frame_flags = r.read_bits(8)? as u8;
-            frame_size(&mut r, &mut h)?;
-            render_size(&mut r, &mut h)?;
+            intra_only_header(&mut r, &mut h)?;
         } else {
-            h.color = st.color;
-            h.refresh_frame_flags = r.read_bits(8)? as u8;
-            for i in 0..3 {
-                h.ref_frame_idx[i] = r.read_bits(3)? as u8;
-                h.ref_frame_sign_bias[LAST_FRAME as usize + i] = r.read_flag()?;
-            }
-            // frame_size_with_refs (6.2.5)
-            let mut found = false;
-            for i in 0..3 {
-                if r.read_flag()? {
-                    let idx = h.ref_frame_idx[i] as usize;
-                    let Some(info) = refs[idx] else {
-                        return Err(Error::MissingReference(format!("frame size from empty slot {idx}")));
-                    };
-                    h.width = info.width;
-                    h.height = info.height;
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                frame_size(&mut r, &mut h)?;
-            }
-            h.size_from_ref = found;
-            render_size(&mut r, &mut h)?;
-            h.allow_high_precision_mv = r.read_flag()?;
-            // read_interpolation_filter (6.2.7)
-            h.interp_filter = if r.read_flag()? { SWITCHABLE } else { LITERAL_TO_TYPE[r.read_bits(2)? as usize] };
+            inter_frame_header(&mut r, &mut h, st, refs)?;
         }
     }
     compute_image_size(&mut h);
@@ -302,95 +419,17 @@ pub fn parse_uncompressed(data: &[u8], st: &mut HeaderState, refs: &[Option<RefI
     }
     h.frame_context_idx = r.read_bits(2)? as u8;
     if h.frame_is_intra || h.error_resilient_mode {
-        let mut fc = FrameContext::default();
-        setup_past_independence(st, &mut fc);
-        if h.frame_type == KEY_FRAME || h.error_resilient_mode || h.reset_frame_context == 3 {
-            for c in st.contexts.iter_mut() {
-                *c = fc.clone();
-            }
-        } else if h.reset_frame_context == 2 {
-            st.contexts[h.frame_context_idx as usize] = fc.clone();
-        }
-        h.frame_context_idx = 0;
+        reset_frame_contexts(st, &mut h);
     }
-    // loop_filter_params (6.2.8)
-    st.lf.level = r.read_bits(6)? as u8;
-    st.lf.sharpness = r.read_bits(3)? as u8;
-    st.lf.delta_enabled = r.read_flag()?;
-    if st.lf.delta_enabled && r.read_flag()? {
-        for i in 0..4 {
-            if r.read_flag()? {
-                st.lf.ref_deltas[i] = read_s(&mut r, 6)? as i8;
-            }
-        }
-        for i in 0..2 {
-            if r.read_flag()? {
-                st.lf.mode_deltas[i] = read_s(&mut r, 6)? as i8;
-            }
-        }
-    }
+    read_loop_filter_params(&mut r, &mut st.lf)?;
     // quantization_params (6.2.9)
     h.base_q_idx = r.read_bits(8)? as u8;
     h.delta_q_y_dc = read_delta_q(&mut r)?;
     h.delta_q_uv_dc = read_delta_q(&mut r)?;
     h.delta_q_uv_ac = read_delta_q(&mut r)?;
     h.lossless = h.base_q_idx == 0 && h.delta_q_y_dc == 0 && h.delta_q_uv_dc == 0 && h.delta_q_uv_ac == 0;
-    // segmentation_params (6.2.11)
-    let seg = &mut st.seg;
-    seg.enabled = r.read_flag()?;
-    seg.update_map = false;
-    seg.temporal_update = false;
-    if seg.enabled {
-        seg.update_map = r.read_flag()?;
-        if seg.update_map {
-            for i in 0..7 {
-                seg.tree_probs[i] = read_prob(&mut r)?;
-            }
-            seg.temporal_update = r.read_flag()?;
-            for i in 0..3 {
-                seg.pred_probs[i] = if seg.temporal_update { read_prob(&mut r)? } else { 255 };
-            }
-        }
-        if r.read_flag()? {
-            seg.abs_or_delta_update = r.read_flag()?;
-            for i in 0..MAX_SEGMENTS {
-                for j in 0..4 {
-                    let mut value = 0i32;
-                    let enabled = r.read_flag()?;
-                    seg.feature_enabled[i][j] = enabled;
-                    if enabled {
-                        value = r.read_bits(SEGMENTATION_FEATURE_BITS[j])? as i32;
-                        if SEGMENTATION_FEATURE_SIGNED[j] && r.read_flag()? {
-                            value = -value;
-                        }
-                    }
-                    seg.feature_data[i][j] = value as i16;
-                }
-            }
-        }
-    }
-    // tile_info (6.2.13)
-    let mut min_log2 = 0;
-    while (MAX_TILE_WIDTH_B64 << min_log2) < h.sb64_cols {
-        min_log2 += 1;
-    }
-    let mut max_log2 = 1;
-    while (h.sb64_cols >> max_log2) >= MIN_TILE_WIDTH_B64 {
-        max_log2 += 1;
-    }
-    max_log2 -= 1;
-    h.tile_cols_log2 = min_log2;
-    while h.tile_cols_log2 < max_log2 {
-        if r.read_flag()? {
-            h.tile_cols_log2 += 1;
-        } else {
-            break;
-        }
-    }
-    h.tile_rows_log2 = r.read_bits(1)?;
-    if h.tile_rows_log2 == 1 {
-        h.tile_rows_log2 += r.read_bits(1)?;
-    }
+    read_segmentation_params(&mut r, &mut st.seg)?;
+    read_tile_info(&mut r, &mut h)?;
     h.header_size_in_bytes = r.read_bits(16)?;
     // trailing_bits
     h.uncompressed_size = r.position().div_ceil(8);
@@ -452,6 +491,152 @@ fn update_mv_prob(bd: &mut BoolDecoder, prob: &mut u8) {
     }
 }
 
+/// tx_mode_probs (6.3.2): per-size transform probability updates for `TX_MODE_SELECT`.
+fn read_tx_mode_probs(bd: &mut BoolDecoder, fc: &mut FrameContext) {
+    for i in 0..2 {
+        diff_update_prob(bd, &mut fc.tx[1][i][0]);
+    }
+    for i in 0..2 {
+        for j in 0..2 {
+            diff_update_prob(bd, &mut fc.tx[2][i][j]);
+        }
+    }
+    for i in 0..2 {
+        for j in 0..3 {
+            diff_update_prob(bd, &mut fc.tx[3][i][j]);
+        }
+    }
+}
+
+/// read_coef_probs (6.3.7).
+fn read_coef_probs(bd: &mut BoolDecoder, h: &FrameHeader, fc: &mut FrameContext) {
+    let max_tx = TX_MODE_TO_BIGGEST_TX_SIZE[h.tx_mode as usize] as usize;
+    for tx in 0..=max_tx {
+        if bd.read_literal(1) == 1 {
+            for i in 0..2 {
+                for j in 0..2 {
+                    for k in 0..6 {
+                        let max_l = if k == 0 { 3 } else { 6 };
+                        for l in 0..max_l {
+                            for m in 0..3 {
+                                diff_update_prob(bd, &mut fc.coef[tx][i][j][k][l][m]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// frame_reference_mode (6.3.12) including setup_compound_reference_mode (6.3.18).
+fn read_frame_reference_mode(bd: &mut BoolDecoder, h: &mut FrameHeader) {
+    let bias = h.ref_frame_sign_bias;
+    let compound_allowed = bias[2] != bias[1] || bias[3] != bias[1];
+    h.reference_mode = 0;
+    if !compound_allowed {
+        return;
+    }
+    if bd.read_literal(1) == 1 {
+        h.reference_mode = if bd.read_literal(1) == 1 { 2 } else { 1 };
+    }
+    if bias[LAST_FRAME as usize] == bias[GOLDEN_FRAME as usize] {
+        h.comp_fixed_ref = ALTREF_FRAME;
+        h.comp_var_ref = [LAST_FRAME, GOLDEN_FRAME];
+    } else if bias[LAST_FRAME as usize] == bias[ALTREF_FRAME as usize] {
+        h.comp_fixed_ref = GOLDEN_FRAME;
+        h.comp_var_ref = [LAST_FRAME, ALTREF_FRAME];
+    } else {
+        h.comp_fixed_ref = LAST_FRAME;
+        h.comp_var_ref = [GOLDEN_FRAME, ALTREF_FRAME];
+    }
+}
+
+/// frame_reference_mode_probs (6.3.13).
+fn read_frame_reference_mode_probs(bd: &mut BoolDecoder, reference_mode: u8, fc: &mut FrameContext) {
+    if reference_mode == 2 {
+        for i in 0..5 {
+            diff_update_prob(bd, &mut fc.comp_mode[i]);
+        }
+    }
+    if reference_mode != 1 {
+        for i in 0..5 {
+            diff_update_prob(bd, &mut fc.single_ref[i][0]);
+            diff_update_prob(bd, &mut fc.single_ref[i][1]);
+        }
+    }
+    if reference_mode != 0 {
+        for i in 0..5 {
+            diff_update_prob(bd, &mut fc.comp_ref[i]);
+        }
+    }
+}
+
+/// mv_probs (6.3.16).
+fn read_mv_probs(bd: &mut BoolDecoder, allow_high_precision_mv: bool, fc: &mut FrameContext) {
+    for j in 0..3 {
+        update_mv_prob(bd, &mut fc.mv_joint[j]);
+    }
+    for i in 0..2 {
+        update_mv_prob(bd, &mut fc.mv_sign[i]);
+        for j in 0..10 {
+            update_mv_prob(bd, &mut fc.mv_class[i][j]);
+        }
+        update_mv_prob(bd, &mut fc.mv_class0_bit[i]);
+        for j in 0..10 {
+            update_mv_prob(bd, &mut fc.mv_bits[i][j]);
+        }
+    }
+    for i in 0..2 {
+        for j in 0..2 {
+            for k in 0..3 {
+                update_mv_prob(bd, &mut fc.mv_class0_fr[i][j][k]);
+            }
+        }
+        for k in 0..3 {
+            update_mv_prob(bd, &mut fc.mv_fr[i][k]);
+        }
+    }
+    if allow_high_precision_mv {
+        for i in 0..2 {
+            update_mv_prob(bd, &mut fc.mv_class0_hp[i]);
+            update_mv_prob(bd, &mut fc.mv_hp[i]);
+        }
+    }
+}
+
+/// Probability updates that only inter frames carry (6.3.8 to 6.3.16).
+fn read_inter_frame_probs(bd: &mut BoolDecoder, h: &mut FrameHeader, fc: &mut FrameContext) {
+    for i in 0..7 {
+        for j in 0..3 {
+            diff_update_prob(bd, &mut fc.inter_mode[i][j]);
+        }
+    }
+    if h.interp_filter == SWITCHABLE {
+        for j in 0..4 {
+            for i in 0..2 {
+                diff_update_prob(bd, &mut fc.interp_filter[j][i]);
+            }
+        }
+    }
+    for i in 0..4 {
+        diff_update_prob(bd, &mut fc.is_inter[i]);
+    }
+    read_frame_reference_mode(bd, h);
+    read_frame_reference_mode_probs(bd, h.reference_mode, fc);
+    for i in 0..4 {
+        for j in 0..9 {
+            diff_update_prob(bd, &mut fc.y_mode[i][j]);
+        }
+    }
+    for i in 0..16 {
+        for j in 0..3 {
+            diff_update_prob(bd, &mut fc.partition[i][j]);
+        }
+    }
+    read_mv_probs(bd, h.allow_high_precision_mv, fc);
+}
+
 /// Parse the compressed header (6.3) into `h` and the probabilities `fc`.
 pub fn parse_compressed(data: &[u8], h: &mut FrameHeader, fc: &mut FrameContext) -> Result<()> {
     let mut bd = BoolDecoder::new(data);
@@ -466,134 +651,14 @@ pub fn parse_compressed(data: &[u8], h: &mut FrameHeader, fc: &mut FrameContext)
         m
     };
     if h.tx_mode == TX_MODE_SELECT {
-        for i in 0..2 {
-            diff_update_prob(&mut bd, &mut fc.tx[1][i][0]);
-        }
-        for i in 0..2 {
-            for j in 0..2 {
-                diff_update_prob(&mut bd, &mut fc.tx[2][i][j]);
-            }
-        }
-        for i in 0..2 {
-            for j in 0..3 {
-                diff_update_prob(&mut bd, &mut fc.tx[3][i][j]);
-            }
-        }
+        read_tx_mode_probs(&mut bd, fc);
     }
-    // read_coef_probs (6.3.7)
-    let max_tx = TX_MODE_TO_BIGGEST_TX_SIZE[h.tx_mode as usize] as usize;
-    for tx in 0..=max_tx {
-        if bd.read_literal(1) == 1 {
-            for i in 0..2 {
-                for j in 0..2 {
-                    for k in 0..6 {
-                        let max_l = if k == 0 { 3 } else { 6 };
-                        for l in 0..max_l {
-                            for m in 0..3 {
-                                diff_update_prob(&mut bd, &mut fc.coef[tx][i][j][k][l][m]);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    read_coef_probs(&mut bd, h, fc);
     for i in 0..3 {
         diff_update_prob(&mut bd, &mut fc.skip[i]);
     }
     if !h.frame_is_intra {
-        for i in 0..7 {
-            for j in 0..3 {
-                diff_update_prob(&mut bd, &mut fc.inter_mode[i][j]);
-            }
-        }
-        if h.interp_filter == SWITCHABLE {
-            for j in 0..4 {
-                for i in 0..2 {
-                    diff_update_prob(&mut bd, &mut fc.interp_filter[j][i]);
-                }
-            }
-        }
-        for i in 0..4 {
-            diff_update_prob(&mut bd, &mut fc.is_inter[i]);
-        }
-        // frame_reference_mode (6.3.12)
-        let bias = h.ref_frame_sign_bias;
-        let compound_allowed = bias[2] != bias[1] || bias[3] != bias[1];
-        h.reference_mode = 0;
-        if compound_allowed {
-            if bd.read_literal(1) == 1 {
-                h.reference_mode = if bd.read_literal(1) == 1 { 2 } else { 1 };
-            }
-            // setup_compound_reference_mode (6.3.18)
-            if bias[LAST_FRAME as usize] == bias[GOLDEN_FRAME as usize] {
-                h.comp_fixed_ref = ALTREF_FRAME;
-                h.comp_var_ref = [LAST_FRAME, GOLDEN_FRAME];
-            } else if bias[LAST_FRAME as usize] == bias[ALTREF_FRAME as usize] {
-                h.comp_fixed_ref = GOLDEN_FRAME;
-                h.comp_var_ref = [LAST_FRAME, ALTREF_FRAME];
-            } else {
-                h.comp_fixed_ref = LAST_FRAME;
-                h.comp_var_ref = [GOLDEN_FRAME, ALTREF_FRAME];
-            }
-        }
-        // frame_reference_mode_probs (6.3.13)
-        if h.reference_mode == 2 {
-            for i in 0..5 {
-                diff_update_prob(&mut bd, &mut fc.comp_mode[i]);
-            }
-        }
-        if h.reference_mode != 1 {
-            for i in 0..5 {
-                diff_update_prob(&mut bd, &mut fc.single_ref[i][0]);
-                diff_update_prob(&mut bd, &mut fc.single_ref[i][1]);
-            }
-        }
-        if h.reference_mode != 0 {
-            for i in 0..5 {
-                diff_update_prob(&mut bd, &mut fc.comp_ref[i]);
-            }
-        }
-        for i in 0..4 {
-            for j in 0..9 {
-                diff_update_prob(&mut bd, &mut fc.y_mode[i][j]);
-            }
-        }
-        for i in 0..16 {
-            for j in 0..3 {
-                diff_update_prob(&mut bd, &mut fc.partition[i][j]);
-            }
-        }
-        // mv_probs (6.3.16)
-        for j in 0..3 {
-            update_mv_prob(&mut bd, &mut fc.mv_joint[j]);
-        }
-        for i in 0..2 {
-            update_mv_prob(&mut bd, &mut fc.mv_sign[i]);
-            for j in 0..10 {
-                update_mv_prob(&mut bd, &mut fc.mv_class[i][j]);
-            }
-            update_mv_prob(&mut bd, &mut fc.mv_class0_bit[i]);
-            for j in 0..10 {
-                update_mv_prob(&mut bd, &mut fc.mv_bits[i][j]);
-            }
-        }
-        for i in 0..2 {
-            for j in 0..2 {
-                for k in 0..3 {
-                    update_mv_prob(&mut bd, &mut fc.mv_class0_fr[i][j][k]);
-                }
-            }
-            for k in 0..3 {
-                update_mv_prob(&mut bd, &mut fc.mv_fr[i][k]);
-            }
-        }
-        if h.allow_high_precision_mv {
-            for i in 0..2 {
-                update_mv_prob(&mut bd, &mut fc.mv_class0_hp[i]);
-                update_mv_prob(&mut bd, &mut fc.mv_hp[i]);
-            }
-        }
+        read_inter_frame_probs(&mut bd, h, fc);
     }
     Ok(())
 }

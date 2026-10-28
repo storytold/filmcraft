@@ -246,7 +246,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                         let list_w = ui.available_width();
                         // nowhere to choose from while the sequence has no track of the kind
                         ui.add_enabled_ui(!tracks.is_empty(), |ui| {
-                            let r = egui::ComboBox::from_id_salt(("add-tracks-placement", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
+                            let r = craft_ui::ComboBox::from_id_salt(("add-tracks-placement", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
                                 for n in 0..=tracks.len() {
                                     let label = place(n);
                                     let o = ui.selectable_value(after, n, &label);
@@ -261,7 +261,7 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                             label(ui, tl!("Track type"));
                             let shown = types.iter().find(|(id, _)| *id == chosen.as_str()).map_or(types[0].1, |(_, label)| label).to_string();
                             let list_w = ui.available_width();
-                            let r = egui::ComboBox::from_id_salt(("add-tracks-type", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
+                            let r = craft_ui::ComboBox::from_id_salt(("add-tracks-type", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
                                 for (id, label) in types {
                                     let o = ui.selectable_value(chosen, id.to_string(), *label);
                                     elems.push((format!("addTracks.{kind}.type.option.{id}"), o.rect, label.to_string()));
@@ -355,7 +355,7 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                     ui.add_space(22.0);
                     let shown = if target == "empty" { tl!("All Empty Tracks").to_string() } else { target.clone() };
                     ui.add_enabled_ui(*on, |ui| {
-                        let r = egui::ComboBox::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
+                        let r = craft_ui::ComboBox::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
                             let e = ui.selectable_value(target, "empty".to_string(), tl!("All Empty Tracks"));
                             elems.push((format!("deleteTracks.{kind}.option.empty"), e.rect, "All Empty Tracks".into()));
                             for n in list {

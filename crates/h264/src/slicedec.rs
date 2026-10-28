@@ -3,13 +3,13 @@
 use crate::cavlc;
 use crate::deblock;
 use crate::error::{Result, ensure, invalid};
-use crate::inter::{self, Weight};
+use crate::inter::{self, McBlock, Weight};
 use crate::intra::{self, Avail};
-use crate::mbtypes::*;
+use crate::mbtypes::{CBP_ME, MbTypeInfo, Part, SubMbInfo, SubPart, b_mb_type, b_sub_mb_type, intra_mb_type, p_mb_type, p_sub_mb_type};
 use crate::params::{Pps, Sps};
-use crate::picture::*;
+use crate::picture::{Frame, FrameRef, MbKind, MbState, Planes, RefPic};
 use crate::slice::{SliceHeader, SliceType};
-use crate::tables::*;
+use crate::tables::{BLK4_XY, QPC_TABLE, RASTER_TO_BLK4, ZIGZAG4, ZIGZAG8};
 use crate::transform::{self, LevelScale};
 use filmcraft_bitstream::BitReader;
 
@@ -216,23 +216,22 @@ pub struct SliceDecoder<'a> {
 
 /// Interpolate a bw x bh luma block at (px, py) with motion vector `mv` from reference `f` into `y`,
 /// and the corresponding chroma blocks into `c` (stride `cs`).
-#[allow(clippy::too_many_arguments)]
 #[inline]
-fn predict_block(f: &Frame, mv: [i16; 2], px: usize, py: usize, bw: usize, bh: usize, y: (&mut [u8], usize), c: [&mut [u8]; 2], cs: usize) {
+fn predict_block(f: &Frame, mv: [i16; 2], (px, py): (usize, usize), (bw, bh): (usize, usize), y: (&mut [u8], usize), c: [&mut [u8]; 2], cs: usize) {
     const LW: usize = 24;
     let mut win = [0u8; LW * 21];
     let ix = px as i32 + (mv[0] as i32 >> 2);
     let iy = py as i32 + (mv[1] as i32 >> 2);
-    f.luma_window(ix - 2, iy - 2, bw + 5, bh + 5, &mut win, LW);
-    inter::mc_luma_win(&win, LW, (mv[0] & 3) as u32, (mv[1] & 3) as u32, bw, bh, y.0, y.1);
+    f.luma_window((ix - 2, iy - 2), bw + 5, bh + 5, &mut win, LW);
+    inter::mc_luma_win(&win, LW, McBlock { fx: (mv[0] & 3) as u32, fy: (mv[1] & 3) as u32, bw, bh }, y.0, y.1);
     let cx = (px / 2) as i32 + (mv[0] as i32 >> 3);
     let cy = (py / 2) as i32 + (mv[1] as i32 >> 3);
     let (cw, ch) = (bw / 2, bh / 2);
     let (fx, fy) = ((mv[0] & 7) as u32, (mv[1] & 7) as u32);
     for (comp, out) in c.into_iter().enumerate() {
         let mut w = [0u8; 16 * 9];
-        f.chroma_window(comp, cx, cy, cw + 1, ch + 1, &mut w, 16);
-        inter::mc_chroma_win(&w, 16, fx, fy, cw, ch, out, cs);
+        f.chroma_window(comp, (cx, cy), cw + 1, ch + 1, &mut w, 16);
+        inter::mc_chroma_win(&w, 16, McBlock { fx, fy, bw: cw, bh: ch }, out, cs);
     }
 }
 
@@ -450,8 +449,7 @@ impl<'a> SliceDecoder<'a> {
     }
 
     /// Luma motion vector prediction (8.4.1.3). `shape`: 1 = 16x8, 2 = 8x16, 0 = other.
-    #[allow(clippy::too_many_arguments)]
-    fn mvp(&self, list: usize, x: usize, y: usize, w: usize, ref_idx: i8, shape: u8, part: usize) -> [i16; 2] {
+    fn mvp(&self, list: usize, (x, y): (usize, usize), w: usize, ref_idx: i8, shape: u8, part: usize) -> [i16; 2] {
         let (a, b, c) = self.nb_abc(list, x, y, w);
         if shape == 1 {
             if part == 0 && b.ref_idx == ref_idx {
@@ -619,7 +617,7 @@ impl<'a> SliceDecoder<'a> {
         let mv = if self.nb[0].is_none() || self.nb[1].is_none() || (a.ref_idx == 0 && a.mv == [0, 0]) || (b.ref_idx == 0 && b.mv == [0, 0]) {
             [0, 0]
         } else {
-            self.mvp(0, 0, 0, 4, 0, 0, 0)
+            self.mvp(0, (0, 0), 4, 0, 0, 0)
         };
         self.set_motion(0, 0, 4, 4, [0, -1], [mv, [0, 0]]);
     }
@@ -645,7 +643,7 @@ impl<'a> SliceDecoder<'a> {
                     if info.pred[p] & (1 << l) != 0 {
                         let r = self.cur.ref_idx[l][p];
                         ensure!((r as usize) < n[l], "ref_idx {r} out of range (list {l}, size {})", n[l]);
-                        let mvp = self.mvp(l, x, y, w, r, shape, p);
+                        let mvp = self.mvp(l, (x, y), w, r, shape, p);
                         let d = self.cur.mvd[l][p * 4];
                         refs[l] = r;
                         mvs[l] = [mvp[0].wrapping_add(d[0]), mvp[1].wrapping_add(d[1])];
@@ -676,7 +674,7 @@ impl<'a> SliceDecoder<'a> {
                 let mut mvs = [[0i16; 2]; 2];
                 for l in 0..2 {
                     if refs[l] >= 0 {
-                        let mvp = self.mvp(l, x, y, w, refs[l], 0, 0);
+                        let mvp = self.mvp(l, (x, y), w, refs[l], 0, 0);
                         let d = self.cur.mvd[l][p * 4 + j];
                         mvs[l] = [mvp[0].wrapping_add(d[0]), mvp[1].wrapping_add(d[1])];
                     }
@@ -744,7 +742,15 @@ impl<'a> SliceDecoder<'a> {
             let l = if use0 { 0 } else { 1 };
             let f = &self.refs[l][refs[l] as usize].frame;
             let planes = &mut self.pic.planes;
-            predict_block(f, mvs[l], px, py, bw, bh, (&mut planes.y[py * ys + px..], ys), [&mut planes.cb[cy * cs + cx..], &mut planes.cr[cy * cs + cx..]], cs);
+            predict_block(
+                f,
+                mvs[l],
+                (px, py),
+                (bw, bh),
+                (&mut planes.y[py * ys + px..], ys),
+                [&mut planes.cb[cy * cs + cx..], &mut planes.cr[cy * cs + cx..]],
+                cs,
+            );
             return;
         }
         let s = &mut *self.s;
@@ -754,7 +760,7 @@ impl<'a> SliceDecoder<'a> {
             }
             let Some(rp) = self.refs[l].get(refs[l] as usize) else { continue };
             let [pc0, pc1] = &mut s.pred_c[l];
-            predict_block(&rp.frame, mvs[l], px, py, bw, bh, (&mut s.pred[l][..], 16), [&mut pc0[..], &mut pc1[..]], 8);
+            predict_block(&rp.frame, mvs[l], (px, py), (bw, bh), (&mut s.pred[l][..], 16), [&mut pc0[..], &mut pc1[..]], 8);
         }
         inter::weighted_store(
             &mut self.pic.planes.y[py * ys + px..],
@@ -762,8 +768,7 @@ impl<'a> SliceDecoder<'a> {
             if use0 { Some(&s.pred[0][..]) } else { None },
             if use1 { Some(&s.pred[1][..]) } else { None },
             16,
-            bw,
-            bh,
+            (bw, bh),
             wts[0],
         );
         for c in 0..2 {
@@ -771,7 +776,7 @@ impl<'a> SliceDecoder<'a> {
             let a = if use0 { Some(&s.pred_c[0][c][..]) } else { None };
             let b = if use1 { Some(&s.pred_c[1][c][..]) } else { None };
             let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
-            inter::weighted_store(&mut plane[cy * cs + cx..], cs, a, b, 8, bw / 2, bh / 2, wc);
+            inter::weighted_store(&mut plane[cy * cs + cx..], cs, a, b, 8, (bw / 2, bh / 2), wc);
         }
     }
 

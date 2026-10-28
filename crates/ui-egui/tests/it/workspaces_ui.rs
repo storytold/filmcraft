@@ -145,6 +145,20 @@ fn saved_file(data: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(data.join("workspaces.json")).expect("workspaces.json written")).unwrap()
 }
 
+fn built_in_keeps_saved_changes_and_restores(d: &mut Driver) {
+    // Save Changes to this Workspace on a built-in; it can't be deleted, only restored
+    d.ok("ui.set", json!({"workspace": "Assembly"}));
+    d.ok("ui.panel.close", json!({"panel": "History"}));
+    d.menu("window.workspace.saveChanges", json!({}));
+    d.ok("ui.set", json!({"workspace": "Cutting"}));
+    d.ok("ui.set", json!({"workspace": "Assembly"}));
+    assert!(!d.shows(PanelKind::History), "the built-in keeps its saved changes");
+    assert_eq!(d.menu("window.workspace.delete", json!({"name": "Assembly"}))["restored"], "Assembly");
+    assert!(d.shows(PanelKind::History), "restoring the current built-in shows its original layout");
+    assert!(d.menu_err("window.workspace.delete", json!({"name": "Assembly"})).contains("can't be deleted"));
+    assert!(d.menu_err("window.workspace.rename", json!({"from": "Assembly", "to": "Mine"})).contains("keeps its name"));
+}
+
 #[test]
 fn save_switch_reset_rename_delete_and_restart() {
     let data = data_dir("cycle");
@@ -201,17 +215,7 @@ fn save_switch_reset_rename_delete_and_restart() {
     d.menu("window.workspace.reset", json!({}));
     assert!(d.shows(PanelKind::Project) && !d.shows(PanelKind::Metadata));
 
-    // Save Changes to this Workspace on a built-in; it can't be deleted, only restored
-    d.ok("ui.set", json!({"workspace": "Assembly"}));
-    d.ok("ui.panel.close", json!({"panel": "History"}));
-    d.menu("window.workspace.saveChanges", json!({}));
-    d.ok("ui.set", json!({"workspace": "Cutting"}));
-    d.ok("ui.set", json!({"workspace": "Assembly"}));
-    assert!(!d.shows(PanelKind::History), "the built-in keeps its saved changes");
-    assert_eq!(d.menu("window.workspace.delete", json!({"name": "Assembly"}))["restored"], "Assembly");
-    assert!(d.shows(PanelKind::History), "restoring the current built-in shows its original layout");
-    assert!(d.menu_err("window.workspace.delete", json!({"name": "Assembly"})).contains("can't be deleted"));
-    assert!(d.menu_err("window.workspace.rename", json!({"from": "Assembly", "to": "Mine"})).contains("keeps its name"));
+    built_in_keeps_saved_changes_and_restores(&mut d);
 
     // rename follows the current workspace
     d.ok("ui.set", json!({"workspace": "Cutting"}));

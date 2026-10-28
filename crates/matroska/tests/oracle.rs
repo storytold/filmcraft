@@ -8,13 +8,8 @@ use filmcraft_matroska::*;
 use serde_json::Value;
 use std::path::Path;
 
-/// Compare every packet (file order) and stream parameter against ffprobe.
-fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
-    let json = ffprobe_json(ffprobe, path);
-    let bytes = std::fs::read(path).unwrap();
-    let mut d = Demuxer::from_slice(&bytes).unwrap();
-    let name = path.file_name().unwrap().to_string_lossy().to_string();
-    let file = d.file().clone();
+/// Compare the stream count and each track's codec, time base and dimensions with ffprobe.
+fn check_streams(name: &str, json: &Value, file: &MkvFile) {
     let streams = json["streams"].as_array().unwrap();
     assert_eq!(streams.len(), file.tracks.len(), "{name}: stream count");
     for (i, st) in streams.iter().enumerate() {
@@ -35,7 +30,11 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             _ => {}
         }
     }
-    let packets: Vec<Packet> = d.by_ref().collect::<Result<_>>().unwrap();
+}
+
+/// Compare every packet's track, size, keyframe flag, pts and duration with ffprobe; returns how
+/// many pts and durations were compared.
+fn check_packets(name: &str, json: &Value, file: &MkvFile, packets: &[Packet]) -> (usize, usize) {
     let ff = json["packets"].as_array().unwrap();
     assert_eq!(packets.len(), ff.len(), "{name}: packet count");
     let (mut pts_checked, mut dur_checked) = (0, 0);
@@ -71,9 +70,11 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             dur_checked += 1;
         }
     }
-    assert!(pts_checked > 0, "{name}: no pts compared");
-    eprintln!("{name}: {} packets, {pts_checked} pts and {dur_checked} durations compared", packets.len());
-    // the sample index agrees with the packet stream
+    (pts_checked, dur_checked)
+}
+
+/// The per-track sample index agrees with the packet stream.
+fn check_sample_index(name: &str, file: &MkvFile, bytes: &[u8], packets: &[Packet]) {
     for (ti, t) in file.tracks.iter().enumerate() {
         let pk: Vec<&Packet> = packets.iter().filter(|p| p.track == ti).collect();
         assert_eq!(t.samples.len(), pk.len(), "{name}: index size track {ti}");
@@ -83,15 +84,34 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             assert_eq!(t.sample_size(i), Some(p.data.len() as u64));
         }
         if let Some(i) = pk.len().checked_sub(1) {
-            assert_eq!(file.read_sample(&bytes[..], ti, i).unwrap(), pk[i].data);
+            assert_eq!(file.read_sample(bytes, ti, i).unwrap(), pk[i].data);
         }
     }
-    // duration
+}
+
+/// The container duration agrees with ffprobe's.
+fn check_duration(name: &str, json: &Value, file: &MkvFile) {
     if let Some(fd) = json["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok())
         && let Some(ours) = file.duration_ns()
     {
         assert!((fd - ours as f64 / 1e9).abs() < 0.05, "{name}: duration {fd} vs {ours}");
     }
+}
+
+/// Compare every packet (file order) and stream parameter against ffprobe.
+fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
+    let json = ffprobe_json(ffprobe, path);
+    let bytes = std::fs::read(path).unwrap();
+    let mut d = Demuxer::from_slice(&bytes).unwrap();
+    let name = path.file_name().unwrap().to_string_lossy().to_string();
+    let file = d.file().clone();
+    check_streams(&name, &json, &file);
+    let packets: Vec<Packet> = d.by_ref().collect::<Result<_>>().unwrap();
+    let (pts_checked, dur_checked) = check_packets(&name, &json, &file, &packets);
+    assert!(pts_checked > 0, "{name}: no pts compared");
+    eprintln!("{name}: {} packets, {pts_checked} pts and {dur_checked} durations compared", packets.len());
+    check_sample_index(&name, &file, &bytes, &packets);
+    check_duration(&name, &json, &file);
     (file, packets)
 }
 
