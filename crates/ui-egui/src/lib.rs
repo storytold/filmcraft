@@ -302,6 +302,10 @@ pub struct FilmcraftApp {
     /// The next close request quits without asking to save (Save / Don't Save was chosen in the
     /// quit prompt, or the control channel's `app.quit`).
     pub quit_confirmed: bool,
+    /// Home's recent projects: General ▸ `recentProjects` as last checked, and those of them that
+    /// exist. Checked when Home is shown and when the list changes, never every frame (a missing
+    /// network volume can take seconds to answer); `None` while Home is not shown.
+    pub(crate) home_recent: Option<(Vec<String>, Vec<String>)>,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,

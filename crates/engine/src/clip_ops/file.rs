@@ -218,11 +218,14 @@ pub(super) fn close_project(s: &mut Session, p: &Value) -> Result<Value> {
     s.history = Default::default();
     s.history.limit = 200;
     s.state = Session::default().state;
+    // the thumbnail belongs to the closed project's file
+    s.thumbnail = None;
     if s.path.take().is_some() {
         s.previews.reset_temp();
     }
     s.revision += 1;
     s.saved_revision = s.revision;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    s.events.push(crate::Event::ProjectClosed);
     Ok(json!({"closed": true}))
 }

@@ -272,6 +272,64 @@ fn auto_save_ring_rotates_and_can_save_the_project() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// "Auto Save also saves the current project" keeps the project file's thumbnail (Home ▸ Recent
+/// Projects); the auto-save copies themselves stay without one.
+#[test]
+fn saving_the_current_project_on_auto_save_keeps_its_thumbnail() {
+    let d = temp_dir("autosave-thumb");
+    let proj = d.join("film.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    start(&mut s, &d);
+    s.execute("file.saveAs", json!({"path": proj})).unwrap();
+    let thumb = s.thumbnail.clone().expect("the save made a thumbnail");
+    s.execute("prefs.set", json!({"key": "autoSave.saveCurrentProject", "value": true})).unwrap();
+    s.execute("sequence.addEdit", json!({"seconds": 1.5})).unwrap();
+    let copy = s.execute("file.autoSaveNow", json!({})).unwrap()["path"].as_str().unwrap().to_string();
+    wait_for("project saved", || {
+        s.poll_persistence();
+        !s.is_dirty()
+    });
+    let img = filmcraft_format::read_thumbnail(std::path::Path::new(&proj)).unwrap().expect("the project file keeps its thumbnail");
+    assert_eq!((img.width, img.height), (thumb.width, thumb.height));
+    let mut o = Session::default();
+    o.execute("file.open", json!({"path": proj})).unwrap();
+    assert_eq!(o.thumbnail.as_ref(), Some(&thumb));
+    assert_eq!(*o.project, *s.project, "the edit was saved");
+    assert_eq!(filmcraft_format::read_thumbnail(std::path::Path::new(&copy)).unwrap(), None, "auto-save copies have no thumbnail");
+    s.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Recovering unsaved changes to a saved project keeps the thumbnail in its file (the recovery
+/// snapshot has none), so an auto-save of the current project doesn't write it away.
+#[test]
+fn recovering_a_saved_project_keeps_its_thumbnail() {
+    let d = temp_dir("recover-thumb");
+    let proj = d.join("film.fcproj").to_string_lossy().to_string();
+    let mut a = demo();
+    start(&mut a, &d);
+    a.execute("file.saveAs", json!({"path": proj})).unwrap();
+    let thumb = a.thumbnail.clone().expect("the save made a thumbnail");
+    a.execute("sequence.addEdit", json!({"seconds": 1.5})).unwrap();
+    let rev = a.revision;
+    wait_for("journal", || journaled(&mut a) == rev);
+    a.persistence.take().unwrap().simulate_crash();
+    let mut c = Session::default();
+    start(&mut c, &d);
+    c.execute("file.recover", json!({})).unwrap();
+    assert_eq!(c.thumbnail.as_ref(), Some(&thumb), "the project file's thumbnail");
+    c.execute("prefs.set", json!({"key": "autoSave.saveCurrentProject", "value": true})).unwrap();
+    c.execute("file.autoSaveNow", json!({})).unwrap();
+    wait_for("project saved", || {
+        c.poll_persistence();
+        !c.is_dirty()
+    });
+    let img = filmcraft_format::read_thumbnail(std::path::Path::new(&proj)).unwrap().expect("the project file keeps its thumbnail");
+    assert_eq!((img.width, img.height), (thumb.width, thumb.height));
+    c.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
     // #894: a stale session with a snapshot must not be deleted because session.json is missing

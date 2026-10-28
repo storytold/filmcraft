@@ -95,6 +95,7 @@ impl FilmcraftApp {
             ui_error: None,
             panic_next_frame: false,
             quit_confirmed: false,
+            home_recent: None,
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
@@ -286,6 +287,15 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
+                // A project opened, created or recovered replaces Home with the editor; edits and
+                // refreshes (ProjectChanged) made while Home is up leave it there.
+                filmcraft_engine::Event::ProjectOpened => {
+                    if self.ui.mode == state::Mode::Home {
+                        self.ui.mode = state::Mode::Edit;
+                    }
+                }
+                // With no project open there is nothing to edit: show Home, as Premiere does
+                filmcraft_engine::Event::ProjectClosed => self.ui.mode = state::Mode::Home,
             }
         }
     }
