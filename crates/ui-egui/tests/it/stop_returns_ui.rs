@@ -177,6 +177,29 @@ fn source_play_from_the_end_returns_to_where_it_started_over() {
     assert_eq!(h.state().session.state.source_playhead, first);
 }
 
+/// Opening another sequence during playback does not stop it; the stop then stays where playback
+/// got to instead of jumping to a tick of the sequence it began in.
+#[test]
+fn a_stop_after_switching_sequence_does_not_jump_to_the_other_sequences_start() {
+    let mut h = harness(true);
+    let demo = h.state().session.state.active_sequence.unwrap();
+    invoke(&mut h, "file.newSequence", json!({"width": 64, "height": 36}));
+    let other = h.state().session.state.active_sequence.unwrap();
+    h.state_mut().session.execute("timeline.place", json!({"item": 5, "videoTrack": "V1", "seconds": 0.0})).unwrap();
+    invoke(&mut h, "sequence.open", json!({"item": demo.0}));
+    h.state_mut().session.set_playhead(Tick::from_seconds_f64(2.0));
+    invoke(&mut h, "playback.toggle", json!({"monitor": "program"}));
+    h.step();
+    invoke(&mut h, "sequence.open", json!({"item": other.0}));
+    for _ in 0..8 {
+        h.step();
+    }
+    assert!(h.state().playback.playing, "switching sequence does not stop playback");
+    let at = h.state().session.playhead();
+    invoke(&mut h, "playback.toggle", json!({"monitor": "program"}));
+    assert_eq!(h.state().session.playhead(), at, "the stop stays where it is in the new sequence");
+}
+
 /// With edit points selected the Program monitor is the Trim Monitor, and the alternate Play/Stop
 /// key plays around the edit like Space does.
 #[test]
