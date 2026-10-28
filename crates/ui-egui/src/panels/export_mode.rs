@@ -67,8 +67,8 @@ pub struct ExportUi {
     /// `entire` | `inOut` | `workArea` | `custom`. Follows the sequence's In/Out points (Source
     /// In/Out when either is set) until picked, see [`sync_sequence`].
     pub range: String,
-    /// The sequence and whether it had In/Out points when `range` was last defaulted.
-    pub range_marks: Option<(u64, bool)>,
+    /// The sequence and whether it had an In and an Out point when `range` was last defaulted.
+    pub range_marks: Option<(u64, bool, bool)>,
     /// The "export the entire sequence?" warning, open for an Export or Send to Queue click.
     pub confirm_entire: Option<PendingExport>,
     /// Its "Don't show this again" checkbox.
@@ -195,11 +195,13 @@ fn sync_sequence(app: &mut FilmcraftApp) {
     }
     // Range defaults to Source In/Out when the sequence has In/Out points; a range picked by hand
     // stays until the sequence changes or its marks are added or cleared
-    let marks = (seq.0, has_marks(app));
+    // (In and Out tracked apart, so adding the second mark or clearing one of two counts too)
+    let (has_in, has_out) = app.session.active_sequence().map(|q| (q.mark_in.is_some(), q.mark_out.is_some())).unwrap_or_default();
+    let marks = (seq.0, has_in, has_out);
     if app.ui.export.range_marks != Some(marks) {
         let ex = &mut app.ui.export;
-        if ex.range_marks.is_none_or(|(s, _)| s != seq.0) || matches!(ex.range.as_str(), "entire" | "inOut") {
-            ex.range = if marks.1 { "inOut" } else { "entire" }.into();
+        if ex.range_marks.is_none_or(|(s, _, _)| s != seq.0) || matches!(ex.range.as_str(), "entire" | "inOut") {
+            ex.range = if has_in || has_out { "inOut" } else { "entire" }.into();
         }
         ex.range_marks = Some(marks);
     }
@@ -290,15 +292,30 @@ fn entire_source_warning(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(choice) = choice else { return };
     app.ui.export.confirm_entire = None;
     let Some(range) = choice else { return };
-    if dont_show {
+    let save_error = if dont_show {
         let mut prefs = app.session.prefs.clone();
         prefs.general.show_export_range_warning = false;
-        if let Err(e) = app.session.set_prefs(prefs) {
-            app.ui.status = e.to_string();
-        }
-    }
+        app.session.set_prefs(prefs).err()
+    } else {
+        None
+    };
     app.ui.export.range = range.into();
     send_export(app, to);
+    // keep a failed save visible after the export's own status
+    if let Some(e) = save_error {
+        app.ui.status = format!("{} · {}", app.ui.status, tlf!("\"Don't show this again\" wasn't saved: {e}", e = e));
+    }
+}
+
+/// Drop a pending Entire Source warning once the active sequence is no longer the one it was
+/// opened for (a control-channel `sequence.open` can switch it while the warning is up), so the
+/// answer never exports another sequence.
+fn drop_stale_warning(app: &mut FilmcraftApp) {
+    let active = app.session.state.active_sequence.map(|s| s.0);
+    if app.ui.export.confirm_entire.is_some() && app.ui.export.range_marks.map(|(s, _, _)| s) != active {
+        app.ui.export.confirm_entire = None;
+        app.ui.export.confirm_dont_show = false;
+    }
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -309,6 +326,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for r in [left, mid, right] {
         ui.painter().rect_filled(r, t.radius, t.panel_bg);
     }
+    drop_stale_warning(app);
     let Some(seq_id) = app.session.state.active_sequence else {
         crate::dock::placeholder(ui, mid, &t, tl!("Open a sequence to export"));
         queue_column(app, ui, left);

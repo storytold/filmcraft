@@ -571,3 +571,32 @@ fn range_defaults_to_in_out_and_entire_source_asks_first() {
     assert!(d.app().ui.export.confirm_entire.is_none());
     assert_eq!(d.queue().len(), 3);
 }
+
+#[test]
+fn range_follows_each_mark_and_a_sequence_switch_drops_the_warning() {
+    let mut d = Driver::new("marks");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(2);
+    d.exec("markers.markIn", json!({"seconds": 0.0}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "inOut", "an In point alone is enough");
+    d.ok("ui.set", json!({"export": {"range": "entire"}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "entire", "picked by hand");
+    // adding the Out point is a mark change too, though the sequence already had a mark
+    d.exec("markers.markOut", json!({"seconds": 0.2}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "inOut");
+    // the warning is up when another sequence is opened over the control channel: it is dropped,
+    // so answering it can't export the other sequence
+    d.ok("ui.set", json!({"export": {"range": "entire"}}));
+    d.frames(2);
+    d.click("export.sendToQueue");
+    assert!(d.app().ui.export.confirm_entire.is_some());
+    let before = d.app().session.state.active_sequence;
+    d.exec("file.newSequence", json!({"name": "Other"}));
+    d.frames(2);
+    assert_ne!(d.app().session.state.active_sequence, before);
+    assert!(d.app().ui.export.confirm_entire.is_none());
+    assert!(d.queue().is_empty());
+}
