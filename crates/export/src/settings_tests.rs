@@ -45,7 +45,7 @@ fn matte(color: [f32; 4], w: u32, h: u32, tone_db: Option<f32>) -> (Arc<Project>
         let id = p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(g.generator.clone()),
                 info,
                 interpret: Default::default(),
@@ -55,7 +55,7 @@ fn matte(color: [f32; 4], w: u32, h: u32, tone_db: Option<f32>) -> (Arc<Project>
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         m.0.insert(id, Arc::new(g) as Arc<dyn MediaSource>);
@@ -238,7 +238,8 @@ fn openexr_sequences_compress() {
     }
 }
 
-/// `alpha` keeps straight alpha in PNG and TIFF sequences; off (the default) flattens over black (#160).
+/// `alpha` keeps straight alpha in PNG and TIFF sequences; off (the default) flattens over black (#160)
+/// and writes RGB files without an alpha channel (#1863).
 #[test]
 fn image_sequences_keep_alpha_when_asked() {
     let (p, seq, m) = matte([0.0, 0.0, 1.0, 0.5], 64, 36, None);
@@ -248,16 +249,36 @@ fn image_sequences_keep_alpha_when_asked() {
             let mut s = ExportSettings { format: fmt, path: dir.path(&format!("a.{ext}")), alpha, ..Default::default() };
             s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
             export(&p, seq, &s, &m, &Progress::default()).unwrap();
-            let img = image::open(dir.0.join(format!("a000.{ext}"))).unwrap();
+            let file = dir.0.join(format!("a000.{ext}"));
+            if fmt == Format::PngSequence {
+                let colour_type = std::fs::read(&file).unwrap()[25];
+                assert_eq!(colour_type, if alpha { 6 } else { 2 }, "PNG colour type, alpha={alpha}");
+            }
+            let img = image::open(&file).unwrap();
             let px = img.to_rgba8().get_pixel(32, 18).0;
+            assert_eq!(img.color().has_alpha(), alpha, "{fmt:?} alpha channel written, alpha={alpha}");
             if alpha {
-                assert!(img.color().has_alpha(), "{fmt:?} must be written with an alpha channel");
                 assert!((100..=160).contains(&px[3]) && px[2] > 200 && px[0] < 15, "{fmt:?} straight alpha: {px:?}");
             } else {
                 assert!(px[3] == 255 && px[2] > 100 && px[2] < 240 && px[0] < 15, "{fmt:?} flattened over black: {px:?}");
             }
         }
     }
+    // the PNG size estimate counts the channels actually written, as TIFF's does
+    let rate = FrameRate::FPS_24;
+    let png = |alpha| ExportSettings { format: Format::PngSequence, alpha, ..Default::default() }.estimate_bytes(320, 180, rate, 48_000, rate.tick_of(1));
+    assert_eq!(png(false) * 4, png(true) * 3, "PNG estimate: {} RGB vs {} RGBA", png(false), png(true));
+}
+
+/// Thumbnails (`encode_png`) and an 8-bit PNG Export Frame keep the alpha they are given: only the
+/// sequence's `alpha` switch drops it (#1863).
+#[test]
+fn png_stills_keep_their_alpha_channel() {
+    let half = filmcraft_render::Image::filled(4, 2, [0.0, 0.0, 0.5, 0.5]);
+    let thumb = encode_png(half.to_rgba8(), 4, 2).unwrap();
+    assert_eq!(thumb[25], 6, "encode_png colour type");
+    let frame = still::encode(&half, still::StillFormat::Png, 8).unwrap();
+    assert_eq!(frame[25], 6, "Export Frame PNG colour type");
 }
 
 #[test]
@@ -307,15 +328,27 @@ fn aac_audio_writes_m4a_and_adts() {
     let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
     let dir = Scratch::new("aac-audio");
     let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)));
-    // .m4a: one AAC track, no video, the encoder delay in an edit list
     let m4a = dir.path("a.m4a");
-    let s = ExportSettings { format: Format::Aac, path: m4a.clone(), range, ..Default::default() };
-    assert!(!s.has_video());
-    assert_eq!(s.audio_codec(), AudioCodec::Aac);
-    assert_eq!(s.extension(), "m4a");
-    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
-    assert_eq!(r.frames, 48_000, "one second of samples");
-    let bytes = std::fs::read(&m4a).unwrap();
+    write_and_check_m4a_aac(&p, seq, &m, &m4a, range);
+
+    let adts = dir.path("a.aac");
+    write_and_check_adts_aac(&p, seq, &m, &adts, range);
+    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("AAC Audio decode") {
+        for path in [&m4a, &adts] {
+            let out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i", path, "-f", "null", "-"]).output().unwrap();
+            assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+}
+
+fn write_and_check_m4a_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, path: &str, range: Option<TimeRange>) {
+    let settings = ExportSettings { format: Format::Aac, path: path.to_owned(), range, ..Default::default() };
+    assert!(!settings.has_video());
+    assert_eq!(settings.audio_codec(), AudioCodec::Aac);
+    assert_eq!(settings.extension(), "m4a");
+    let report = export(p, seq, &settings, sources, &Progress::default()).unwrap();
+    assert_eq!(report.frames, 48_000, "one second of samples");
+    let bytes = std::fs::read(path).unwrap();
     let file = filmcraft_isobmff::open(bytes.clone()).unwrap();
     assert_eq!(file.tracks.len(), 1, "audio only");
     let t = &file.tracks[0];
@@ -331,7 +364,7 @@ fn aac_audio_writes_m4a_and_adts() {
     }
     // the -6 dBFS tone (RMS about 0.35) survives the round trip
     assert!((0.2..0.5).contains(&rms(&pcm)), "rms {}", rms(&pcm));
-    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], &m4a) {
+    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], path) {
         assert_eq!(j["streams"].as_array().unwrap().len(), 1);
         let st = &j["streams"][0];
         assert_eq!(st["codec_name"], "aac");
@@ -340,13 +373,13 @@ fn aac_audio_writes_m4a_and_adts() {
         let d: f64 = j["format"]["duration"].as_str().unwrap().parse().unwrap();
         assert!((d - 1.0).abs() < 0.03, "duration {d}");
     }
+}
 
-    // .aac: raw ADTS, mono 44.1 kHz at 128 kbps
-    let adts = dir.path("a.aac");
-    let mut s = ExportSettings { format: Format::Aac, path: adts.clone(), range, ..Default::default() };
-    s.audio = AudioSettings { sample_rate: Some(44_100), channels: 1, bitrate_kbps: 128, ..Default::default() };
-    export(&p, seq, &s, &m, &Progress::default()).unwrap();
-    let b = std::fs::read(&adts).unwrap();
+fn write_and_check_adts_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, path: &str, range: Option<TimeRange>) {
+    let mut settings = ExportSettings { format: Format::Aac, path: path.to_owned(), range, ..Default::default() };
+    settings.audio = AudioSettings { sample_rate: Some(44_100), channels: 1, bitrate_kbps: 128, ..Default::default() };
+    export(p, seq, &settings, sources, &Progress::default()).unwrap();
+    let b = std::fs::read(path).unwrap();
     // AAC-LC 44.1 kHz (index 4) mono: 00010 0100 0001 000
     let mut dec = filmcraft_aac::Decoder::new(&[0x12, 0x08]).unwrap();
     let (mut pos, mut units, mut pcm) = (0usize, 0usize, vec![Vec::new()]);
@@ -363,18 +396,12 @@ fn aac_audio_writes_m4a_and_adts() {
     }
     assert!(units >= 44_100 / 1024, "{units} frames");
     assert!((0.2..0.5).contains(&rms(&pcm)), "rms {}", rms(&pcm));
-    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], &adts) {
+    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], path) {
         assert_eq!(j["format"]["format_name"], "aac");
         let st = &j["streams"][0];
         assert_eq!(st["codec_name"], "aac");
         assert_eq!(st["sample_rate"], "44100");
         assert_eq!(st["channels"], 1);
-    }
-    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("AAC Audio decode") {
-        for f in [&m4a, &adts] {
-            let out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i", f, "-f", "null", "-"]).output().unwrap();
-            assert!(out.status.success() && out.stderr.is_empty(), "{f}: {}", String::from_utf8_lossy(&out.stderr));
-        }
     }
 }
 

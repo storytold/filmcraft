@@ -12,6 +12,22 @@ const SMOOTH_MS: f32 = 30.0;
 /// Most bands a [`BandBank`] can hold.
 pub(crate) const MAX_BANDS: usize = 40;
 
+#[derive(Clone, Copy)]
+pub(crate) struct BandSettings {
+    enabled: bool,
+    kind: FilterType,
+    frequency_hz: f32,
+    gain_db: f32,
+    q: f32,
+    snap: bool,
+}
+
+impl BandSettings {
+    pub(crate) fn new(enabled: bool, kind: FilterType, frequency_hz: f32, gain_db: f32, q: f32, snap: bool) -> Self {
+        Self { enabled, kind, frequency_hz, gain_db, q, snap }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Band {
     kind: FilterType,
@@ -50,16 +66,17 @@ impl BandBank {
         BandBank { sample_rate: sample_rate as f64, bands: vec![band; nbands], state: vec![vec![Biquad::new(); nbands]; channels.max(1)], counter: 0 }
     }
 
-    pub(crate) fn set_band(&mut self, i: usize, on: bool, kind: FilterType, freq: f32, gain: f32, q: f32, snap: bool) {
+    pub(crate) fn set_band(&mut self, i: usize, settings: BandSettings) {
+        let BandSettings { enabled, kind, frequency_hz, gain_db, q, snap } = settings;
         let b = &mut self.bands[i];
         if b.kind != kind {
             b.kind = kind;
             b.dirty = true;
         }
-        b.freq.set(freq.max(1.0).log2());
-        b.gain.set(gain);
+        b.freq.set(frequency_hz.max(1.0).log2());
+        b.gain.set(gain_db);
         b.q.set(q);
-        b.mix.set(if on { 1.0 } else { 0.0 });
+        b.mix.set(if enabled { 1.0 } else { 0.0 });
         if snap {
             b.freq.snap();
             b.gain.snap();
@@ -258,12 +275,14 @@ impl ParametricEq {
         for (i, ids) in BAND_IDS.iter().enumerate() {
             self.bank.set_band(
                 i,
-                self.pv.on(ids[0]),
-                FilterType::from_index(self.pv.idx(ids[1])),
-                self.pv.v(ids[2]),
-                self.pv.v(ids[3]),
-                self.pv.v(ids[4]),
-                snap,
+                BandSettings::new(
+                    self.pv.on(ids[0]),
+                    FilterType::from_index(self.pv.idx(ids[1])),
+                    self.pv.v(ids[2]),
+                    self.pv.v(ids[3]),
+                    self.pv.v(ids[4]),
+                    snap,
+                ),
             );
         }
         self.out.set(crate::db_to_gain(self.pv.v("output")));
@@ -324,9 +343,9 @@ impl SimpleEq {
         let sq = std::f32::consts::FRAC_1_SQRT_2;
         let p = &self.pv;
         let (lg, lf, mg, mf, mq, hg, hf) = (p.v("low"), p.v("low_freq"), p.v("mid"), p.v("mid_freq"), p.v("mid_q"), p.v("high"), p.v("high_freq"));
-        self.bank.set_band(0, true, FilterType::LowShelf, lf, lg, sq, snap);
-        self.bank.set_band(1, true, FilterType::Peaking, mf, mg, mq, snap);
-        self.bank.set_band(2, true, FilterType::HighShelf, hf, hg, sq, snap);
+        self.bank.set_band(0, BandSettings::new(true, FilterType::LowShelf, lf, lg, sq, snap));
+        self.bank.set_band(1, BandSettings::new(true, FilterType::Peaking, mf, mg, mq, snap));
+        self.bank.set_band(2, BandSettings::new(true, FilterType::HighShelf, hf, hg, sq, snap));
         self.out.set(crate::db_to_gain(self.pv.v("output")));
         if snap {
             self.out.snap();
@@ -476,7 +495,7 @@ mod throughput_tests {
     #[test]
     fn flat_eq_fast_path_preserves_samples_and_filter_tails() {
         let mut fast = BandBank::new(48000.0, 2, 1);
-        fast.set_band(0, true, FilterType::Peaking, 1000.0, 0.0, 0.7, true);
+        fast.set_band(0, BandSettings::new(true, FilterType::Peaking, 1000.0, 0.0, 0.7, true));
         fast.reset();
         let mut reference = fast.clone();
         let mut gain = Smoothed::new(1.0, 0);
@@ -496,10 +515,10 @@ mod throughput_tests {
         }
         // A newly flat filter must drain its old state, not drop the tail.
         fast.reset();
-        fast.set_band(0, true, FilterType::Peaking, 1000.0, 12.0, 0.7, true);
+        fast.set_band(0, BandSettings::new(true, FilterType::Peaking, 1000.0, 12.0, 0.7, true));
         fast.update_coeffs(true);
         fast.process(&mut [&mut [0.5], &mut [0.5]], &mut gain);
-        fast.set_band(0, true, FilterType::Peaking, 1000.0, 0.0, 0.7, true);
+        fast.set_band(0, BandSettings::new(true, FilterType::Peaking, 1000.0, 0.0, 0.7, true));
         fast.update_coeffs(true);
         reference = fast.clone();
         let mut a = [vec![0.0; 4096], vec![0.0; 4096]];
@@ -523,7 +542,7 @@ mod throughput_tests {
                 let on = block != 180;
                 let db = if block == 270 { 0.0 } else { 9.0 };
                 for bank in [&mut fast, &mut reference] {
-                    bank.set_band(0, on, FilterType::Peaking, 1733.0, db, 0.7, false);
+                    bank.set_band(0, BandSettings::new(on, FilterType::Peaking, 1733.0, db, 0.7, false));
                 }
                 gain.set(if block == 360 { 1.0 } else { 0.8 });
                 ref_gain.set(gain.target());

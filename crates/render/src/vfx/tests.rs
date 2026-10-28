@@ -540,11 +540,19 @@ fn colour_replace_and_cineon() {
     assert!(p[2] > 0.9 && p[0] < 0.1, "{p:?}");
     // Cineon: code 685 → white, 95 → black; log→lin→log round trip
     let (b, w) = (95.0, 685.0);
-    assert!(close(color::cineon_value(685.0 / 1023.0, 0, b, w, 0.0, 1.0, 1.7, 0.0), 1.0, 1e-4));
-    assert!(close(color::cineon_value(95.0 / 1023.0, 0, b, w, 0.0, 1.0, 1.7, 0.0), 0.0, 1e-4));
+    assert!(close(
+        color::cineon_value(685.0 / 1023.0, &color::CineonParams { mode: 0, black: b, white: w, ib: 0.0, iw: 1.0, gamma: 1.7, roll: 0.0 }),
+        1.0,
+        1e-4
+    ));
+    assert!(close(
+        color::cineon_value(95.0 / 1023.0, &color::CineonParams { mode: 0, black: b, white: w, ib: 0.0, iw: 1.0, gamma: 1.7, roll: 0.0 }),
+        0.0,
+        1e-4
+    ));
     for v in [0.2f32, 0.4, 0.6] {
-        let l = color::cineon_value(v, 0, b, w, 0.0, 1.0, 1.7, 0.0);
-        let back = color::cineon_value(l, 1, b, w, 0.0, 1.0, 1.7, 0.0);
+        let l = color::cineon_value(v, &color::CineonParams { mode: 0, black: b, white: w, ib: 0.0, iw: 1.0, gamma: 1.7, roll: 0.0 });
+        let back = color::cineon_value(l, &color::CineonParams { mode: 1, black: b, white: w, ib: 0.0, iw: 1.0, gamma: 1.7, roll: 0.0 });
         assert!(close(back, v, 2e-3), "{v} → {l} → {back}");
     }
 }
@@ -1086,7 +1094,7 @@ mod pipeline {
         let id = p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(generator),
                 info,
                 interpret: Default::default(),
@@ -1096,7 +1104,7 @@ mod pipeline {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         map.0.insert(id, Arc::new(g) as SharedSource);

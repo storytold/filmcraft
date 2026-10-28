@@ -207,27 +207,37 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     {
         settings.format = Format::from_name(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}`")))?;
     }
-    if let Some(patch) = p.get("settings").filter(|v| v.is_object()) {
-        let mut v = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
-        merge(&mut v, patch);
-        // an explicit sample rate or channel count turns Audio ▸ Match Source off (unless the patch
-        // sets it too), so it is not silently overridden by the sequence's (a Match Source preset)
-        if let Some(a) = patch.get("audio").and_then(Value::as_object)
-            && ["sample_rate", "sampleRate", "channels"].iter().any(|k| a.get(*k).is_some_and(|v| !v.is_null()))
-            && !a.contains_key("match_source")
-            && !a.contains_key("matchSource")
-            && let Some(m) = v.get_mut("audio").and_then(|a| a.get_mut("match_source"))
-        {
-            *m = Value::Bool(false);
-        }
-        settings = serde_json::from_value(v).map_err(|e| bad(cmd, format!("settings: {e}")))?;
-        // serde ignores keys it doesn't know, so a misspelt or misplaced key (a flat parameter
-        // such as `loudnessLufs` put inside `settings`) would silently do nothing.
-        let known = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
-        if let Some(path) = unknown_key(&known, patch, "") {
-            return Err(bad(cmd, format!("settings: unknown key `{path}` (see export.presets.get for the settings' keys)")));
-        }
+    apply_nested_settings(&mut settings, p, cmd)?;
+    apply_flat_overrides(&mut settings, p, cmd)?;
+    settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    Ok((preset, settings))
+}
+
+fn apply_nested_settings(settings: &mut ExportSettings, params: &Value, cmd: &str) -> Result<()> {
+    let Some(patch) = params.get("settings").filter(|value| value.is_object()) else { return Ok(()) };
+    let mut value = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
+    merge(&mut value, patch);
+    // an explicit sample rate or channel count turns Audio ▸ Match Source off (unless the patch
+    // sets it too), so it is not silently overridden by the sequence's (a Match Source preset)
+    if let Some(audio) = patch.get("audio").and_then(Value::as_object)
+        && ["sample_rate", "sampleRate", "channels"].iter().any(|key| audio.get(*key).is_some_and(|v| !v.is_null()))
+        && !audio.contains_key("match_source")
+        && !audio.contains_key("matchSource")
+        && let Some(matched) = value.get_mut("audio").and_then(|a| a.get_mut("match_source"))
+    {
+        *matched = Value::Bool(false);
     }
+    *settings = serde_json::from_value(value).map_err(|error| bad(cmd, format!("settings: {error}")))?;
+    // serde ignores unknown keys; detect misspelled or misplaced settings before returning.
+    let known = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
+    if let Some(path) = unknown_key(&known, patch, "") {
+        return Err(bad(cmd, format!("settings: unknown key `{path}` (see export.presets.get for the settings' keys)")));
+    }
+    Ok(())
+}
+
+/// Apply the legacy flat export parameters after preset and nested settings have been resolved.
+fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> Result<()> {
     // flat overrides (the original file.exportMedia parameters and a few common ones)
     if let Some(f) = str_p(p, "format") {
         settings.format = Format::from_name(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}`")))?;
@@ -245,6 +255,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.bitrate_kbps = v;
         settings.adaptive_bitrate = None;
     }
+    if let Some(v) = crate::commands::checked_u32_p(p, "maxThreads", cmd)? {
+        settings.max_threads = v;
+    }
     if let Some(v) = crate::commands::checked_u32_p(p, "maxBitrateKbps", cmd)? {
         settings.max_bitrate_kbps = Some(v);
     }
@@ -261,28 +274,10 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.keyframe_distance = Some(v);
     }
     if let Some(v) = p.get("hardwareEncoding") {
-        settings.hardware_encoding = match v {
-            Value::Bool(on) => {
-                if *on {
-                    HardwareEncoding::Auto
-                } else {
-                    HardwareEncoding::Off
-                }
-            }
-            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto"))?,
-        };
+        settings.hardware_encoding = parse_hardware_encoding(v, cmd)?;
     }
     if let Some(v) = p.get("gpuRendering") {
-        settings.gpu_rendering = match v {
-            Value::Bool(on) => {
-                if *on {
-                    GpuRendering::Auto
-                } else {
-                    GpuRendering::Off
-                }
-            }
-            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto"))?,
-        };
+        settings.gpu_rendering = parse_gpu_rendering(v, cmd)?;
     }
     if let Some(v) = bool_p(p, "burnCaptions") {
         settings.burn_captions = v;
@@ -329,8 +324,23 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.effects.loudness.enabled = true;
         settings.effects.loudness.target_lufs = v;
     }
-    settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
-    Ok((preset, settings))
+    Ok(())
+}
+
+fn parse_hardware_encoding(value: &Value, cmd: &str) -> Result<HardwareEncoding> {
+    match value {
+        Value::Bool(true) => Ok(HardwareEncoding::Auto),
+        Value::Bool(false) => Ok(HardwareEncoding::Off),
+        other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto")),
+    }
+}
+
+fn parse_gpu_rendering(value: &Value, cmd: &str) -> Result<GpuRendering> {
+    match value {
+        Value::Bool(true) => Ok(GpuRendering::Auto),
+        Value::Bool(false) => Ok(GpuRendering::Off),
+        other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto")),
+    }
 }
 
 /// The sequence an export command targets (`sequence` param, else the active one).
@@ -395,10 +405,11 @@ pub fn default_export_dir(s: &Session) -> PathBuf {
     crate::temp_dir()
 }
 
-fn file_safe(n: &str) -> String {
+/// Convert project-derived display text into exactly one safe output filename component.
+pub fn file_safe(n: &str) -> String {
     let s: String = n.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
     let s = s.trim().to_string();
-    if s.is_empty() { "Export".into() } else { s }
+    if s.is_empty() || matches!(s.as_str(), "." | "..") { "Export".into() } else { s }
 }
 
 /// `path` with the settings' extension (added when missing; image sequences keep theirs).

@@ -35,6 +35,102 @@ fn journaled(s: &mut Session) -> u64 {
     s.persistence.as_ref().unwrap().status.journaled_revision
 }
 
+fn discard_fixture(tag: &str) -> (Session, std::path::PathBuf) {
+    let d = temp_dir(tag);
+    let mut s = Session::default();
+    start(&mut s, &d);
+    let candidates = ["first", "second", "third"]
+        .into_iter()
+        .map(|id| {
+            let dir = d.join(id);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("snapshot.fcproj"), b"retained snapshot").unwrap();
+            autosave::RecoveryCandidate { id: id.into(), dir, meta: Default::default() }
+        })
+        .collect();
+    s.persistence.as_mut().unwrap().candidates = candidates;
+    (s, d)
+}
+
+fn block_discard(dir: &std::path::Path) {
+    // An ordinary file cannot be removed as a directory, on Windows or Unix.
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::write(dir, b"occupied directory path").unwrap();
+}
+
+fn recovery_ids(s: &mut Session) -> Vec<String> {
+    s.execute("file.recoveryList", json!({})).unwrap().as_array().unwrap().iter().map(|v| v["id"].as_str().unwrap().to_owned()).collect()
+}
+
+#[test]
+fn discard_failure_preserves_candidates_and_allows_retry() {
+    let (mut s, d) = discard_fixture("discard-first-error");
+    block_discard(&d.join("first"));
+    assert!(s.execute("file.discardRecovery", json!({"all": true})).is_err());
+    assert_eq!(recovery_ids(&mut s), ["first", "second", "third"]);
+    assert!(s.is_enabled("file.discardRecovery"));
+    assert!(d.join("second/snapshot.fcproj").exists());
+    assert!(d.join("third/snapshot.fcproj").exists());
+    std::fs::remove_file(d.join("first")).unwrap();
+    std::fs::create_dir(d.join("first")).unwrap();
+    assert_eq!(s.execute("file.discardRecovery", json!({"all": true})).unwrap()["discarded"], 3);
+    assert!(recovery_ids(&mut s).is_empty());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn discard_failure_keeps_only_not_yet_deleted_candidates() {
+    let (mut s, d) = discard_fixture("discard-second-error");
+    block_discard(&d.join("second"));
+    assert!(s.execute("file.discardRecovery", json!({"all": true})).is_err());
+    assert_eq!(recovery_ids(&mut s), ["second", "third"]);
+    assert!(!d.join("first").exists());
+    assert!(d.join("third/snapshot.fcproj").exists());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn discard_selected_failure_keeps_unselected_candidates() {
+    let (mut s, d) = discard_fixture("discard-selected-error");
+    block_discard(&d.join("second"));
+    assert!(s.execute("file.discardRecovery", json!({"id": "second"})).is_err());
+    assert_eq!(recovery_ids(&mut s), ["first", "second", "third"]);
+    assert!(d.join("first/snapshot.fcproj").exists());
+    assert!(d.join("third/snapshot.fcproj").exists());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn discard_default_failure_does_not_select_another_candidate() {
+    let (mut s, d) = discard_fixture("discard-default-error");
+    block_discard(&d.join("first"));
+    let error = s.execute("file.discardRecovery", json!({})).unwrap_err().to_string();
+    assert!(error.contains("first"), "{error}");
+    assert_eq!(recovery_ids(&mut s), ["first", "second", "third"]);
+    assert!(d.join("second/snapshot.fcproj").exists());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn discard_selection_and_unknown_id_preserve_other_candidates() {
+    let (mut s, d) = discard_fixture("discard-selection");
+    assert!(s.execute("file.discardRecovery", json!({"id": "unknown"})).is_err());
+    assert_eq!(recovery_ids(&mut s), ["first", "second", "third"]);
+    assert_eq!(s.execute("file.discardRecovery", json!({"id": "second"})).unwrap()["discarded"], 1);
+    assert_eq!(recovery_ids(&mut s), ["first", "third"]);
+    assert!(!d.join("second").exists());
+    assert_eq!(s.execute("file.discardRecovery", json!({})).unwrap()["discarded"], 1);
+    assert_eq!(recovery_ids(&mut s), ["third"]);
+    assert!(!d.join("first").exists());
+    assert!(d.join("third/snapshot.fcproj").exists());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 #[test]
 fn preferences_get_set_and_persist() {
     let d = temp_dir("prefs");
