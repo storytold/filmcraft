@@ -203,6 +203,12 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
             Err(e) => return err(format!("`export`: {e}")),
         }
     }
+    // the open Export Frame dialog: `{"folder": path}`
+    if let Some(f) = p.get("frameExport").and_then(|v| v.get("folder")).and_then(Value::as_str)
+        && let Err(e) = crate::panels::frame_export::set_folder(ctx, f)
+    {
+        return err(e);
+    }
     // panel settings (`panels::panel_state`): {"scopes": {...}, "timecode": {...}, …}, merged
     if let Some(patch) = p.get("panels") {
         let mut cur = serde_json::to_value(&app.ui.panels).unwrap_or_default();

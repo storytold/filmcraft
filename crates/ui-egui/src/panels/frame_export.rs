@@ -80,6 +80,15 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Value) -> Resu
     Ok(json!({"dialog":"exportFrame"}))
 }
 
+/// Set the open dialog's destination folder (the control channel's way to fill the Path link).
+pub fn set_folder(ctx: &egui::Context, folder: &str) -> Result<(), String> {
+    let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return Err("no Export Frame dialog is open".into()) };
+    d.folder = folder.to_string();
+    ctx.data_mut(|m| m.insert_temp(draft_id(), Some(d)));
+    ctx.request_repaint();
+    Ok(())
+}
+
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
     let mut close = false;
