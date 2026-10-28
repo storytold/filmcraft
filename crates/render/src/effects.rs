@@ -1558,6 +1558,23 @@ mod lumetri_cpu_parity_tests {
             }
             eprintln!("{name}: max sample diff vs fn lumetri: {max_diff:.2e}");
         }
+
+        // HDR working spaces: the op grades the same PQ / HLG signal as fn lumetri
+        for working in [filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+            let cx = FxCtx { working, ..cx };
+            for (name, params) in cases.iter().chain(&[("specular", vec![("contrast", fl(30.0)), ("hdr_specular", fl(-40.0)), ("exposure", fl(1.0))])]) {
+                let e = effect(params);
+                let mut img_orig = test_picture(w, h);
+                let mut img_copy = img_orig.clone();
+                lumetri(&mut img_orig, &e, &cx);
+                let op = FxOp::eval(&e, &cx, w, h).unwrap_or_else(|| panic!("{name}: eval returned None"));
+                assert!(op.gpu_ok(), "{working:?} {name}: expected gpu_ok == true");
+                op.apply(&mut img_copy);
+                for (i, (&orig, &copy)) in img_orig.px.iter().zip(&img_copy.px).enumerate() {
+                    assert!((orig - copy).abs() <= 1e-6, "{working:?} {name}: sample {i}: orig={orig}, copy={copy}");
+                }
+            }
+        }
     }
 
     /// #719: positive Roundness rounds the Lumetri vignette (it used to be ignored), +100

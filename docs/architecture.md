@@ -561,9 +561,12 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 - **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
   [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
 - **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
-  sRGB decodes exactly as before, and its layers stay on the GPU. Log, HDR or wide-gamut media,
-  and every layer of an HDR/wide-gamut sequence, are converted on the CPU (the GPU path draws them
-  as pre-rendered images, like layers with effects).
+  sRGB decodes exactly as before, and its layers stay on the GPU. Display-referred HDR or
+  wide-gamut media (PQ, HLG, BT.2020, P3) is converted in the compositor's shader, and an HDR /
+  wide-gamut sequence composites on the GPU too: the resolve pass runs its display transform
+  (working space → monitor, `OutputTransform::gpu_params`); a display transform the shader cannot
+  encode keeps the whole frame on the CPU. Log media and camera gamuts are converted on the CPU
+  (the GPU path draws them as pre-rendered images, like layers with effects).
 - **Outputs.** `RenderOptions::working_output` returns working-space pixels (HDR exports,
   scopes); otherwise the top-level render is converted for an SDR monitor. The other colour
   effects work on display-encoded values clamped to 0..1 (they clip HDR highlights above
@@ -574,8 +577,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   Range**): `filmcraft_color::GradeSpace` (PQ: `PQ⁻¹(nits/10000) / PQ⁻¹(white/10000)`; HLG: the
   BT.2100 inverse OOTF of a display with that peak, then the OETF). So the sliders and curves span
   0 … HDR White like black … white in SDR, exposure is stops of light, and highlights above HDR
-  White pass through (contrast leaves them alone; **HDR Specular** scales them). Rec. 709
-  sequences grade exactly as before. HSL Secondary ▸ Refine: **Denoise** (median of the key,
+  White pass through (contrast leaves them alone; **HDR Specular** scales them). The GPU Lumetri
+  op (basic, creative, vignette) grades the same signal. Rec. 709 sequences grade exactly as
+  before. HSL Secondary ▸ Refine: **Denoise** (median of the key,
   radius 1–3 px) and **Blur** (Gaussian of the key, σ ≤ 20 px), both scaled with the playback
   resolution.
 - **HDR metadata.** `VideoStreamInfo::hdr` (`HdrMetadata`: ST 2086 mastering luminance, MaxCLL,

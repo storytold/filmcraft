@@ -566,12 +566,65 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // HDR working space
-    let e = effect("lumetri", &[]);
+    // HDR still falls back for the sections the shader does not have
     let mut cx_hdr = cx(Tick::ZERO, 1.0);
-    cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
-    let op = FxOp::eval(&e, &cx_hdr, w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Hlg;
+    let e = effect("lumetri", &[("sharpen", fl(20.0))]);
+    assert!(FxOp::eval(&e, &cx_hdr, w, h).is_some_and(|o| !o.gpu_ok()));
+}
+
+/// Lumetri's basic, creative and vignette sections in an HDR working space (the PQ / HLG grading
+/// signal, contrast that leaves speculars alone, HDR Specular) match the CPU op on the GPU.
+#[test]
+fn hdr_lumetri_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let grades: [&[(&str, ParamValue)]; 4] = [
+        &[("exposure", fl(-0.5)), ("saturation", fl(150.0))],
+        &[("contrast", fl(40.0)), ("highlights", fl(-20.0)), ("shadows", fl(25.0)), ("hdr_specular", fl(-30.0)), ("temperature", fl(15.0))],
+        &[("contrast", fl(-50.0)), ("whites", fl(20.0)), ("blacks", fl(-10.0)), ("hdr_white", fl(200.0)), ("hdr_specular", fl(60.0))],
+        &[
+            ("creative_on", ParamValue::Bool(true)),
+            ("vibrance", fl(30.0)),
+            ("faded_film", fl(20.0)),
+            ("shadow_tint", col(0.4, 0.45, 0.6)),
+            ("vignette_amount", fl(-2.0)),
+        ],
+    ];
+    let mut failures = Vec::new();
+    for working in [filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+        let mut cxh = cx(Tick::ZERO, 1.0);
+        cxh.working = working;
+        for params in grades {
+            let e = effect("lumetri", params);
+            let op = FxOp::eval(&e, &cxh, w as usize, h as usize).expect("lumetri op");
+            assert!(op.gpu_ok(), "{working:?} {params:?}: not GPU-capable");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            // HDR Specular only acts above HDR White: the picture must reach it, or the parity
+            // check below would pass without running that branch
+            if params.iter().any(|(k, _)| *k == "hdr_specular") {
+                let off: Vec<(&str, ParamValue)> = params.iter().map(|(k, v)| (*k, if *k == "hdr_specular" { fl(0.0) } else { v.clone() })).collect();
+                let flat = FxOp::eval(&effect("lumetri", &off), &cxh, w as usize, h as usize).expect("lumetri op");
+                let mut plain = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                flat.apply(&mut plain);
+                assert_ne!(cpu.px, plain.px, "{working:?} {params:?}: HDR Specular changed nothing");
+            }
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("{working:?} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            if worst > EXACT * 10.0 || flips > 0.0 {
+                failures.push(format!("{working:?} {params:?}: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "HDR Lumetri differs from the CPU:\n{}", failures.join("\n"));
 }
 
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working
@@ -707,6 +760,44 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         let (p99, mean, _) = stats8(&cpu, &gpu, &interior(&plan));
         eprintln!("effect stage {stage}: interior p99 {p99}, mean {mean:.3}");
         assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}");
+    }
+}
+
+/// A colour-managed layer (PQ media) with effects comes out the same with and without the GPU
+/// effect stage: the CPU fallback decodes it through the layer's input transform too.
+#[test]
+fn cpu_effect_fallback_keeps_the_input_transform() {
+    use filmcraft_color::{ColorInfo, ColorPipeline, ColorSpace, InputTransform, Primaries};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (256u32, 4u32);
+    let y: Vec<u16> = (0..h).flat_map(|_| (0..w).map(|x| (64 + x * 876 / 255) as u16)).collect();
+    let n = (w * h) as usize;
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(vec![480; n]), Arc::new(vec![560; n])], chroma: Chroma::C444, bits: 10, alpha: None };
+    let color = ColorInfo { matrix: Matrix::Bt2020Ncl, transfer: Transfer::Pq, primaries: Primaries::Bt2020, range: Range::Limited };
+    let frame = Arc::new(VideoFrame { width: w, height: h, data, color, par: (1, 1), pts: Default::default() });
+    let t = Arc::new(InputTransform::new(ColorSpace::from_info(&color), color.range, &ColorPipeline::REC709, None));
+    let e = effect("brightness_contrast", &[("brightness", fl(-10.0)), ("contrast", fl(20.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("brightness / contrast op");
+    let layer = PlanLayer {
+        fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: vec![op] })),
+        input: Some(t),
+        ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    for stage in [true, false] {
+        let mut c = GpuCompositor::new(&dev, &q);
+        if !stage {
+            c.fx = None;
+        }
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let (p99, mean, max) = stats8(&cpu, &gpu, &vec![true; n]);
+        eprintln!("PQ layer with effects, effect stage {stage}: p99 {p99}, mean {mean:.2}, max {max}");
+        assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}, max {max}");
     }
 }
 

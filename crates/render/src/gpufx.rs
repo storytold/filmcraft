@@ -9,7 +9,7 @@
 //! op to the GPU when [`FxOp::gpu_ok`] says the shader covers it (finite numbers, no minifying
 //! resample), otherwise the clip is rendered on the CPU as before.
 
-use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
+use filmcraft_color::{GradeSpace, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
 use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
@@ -195,6 +195,11 @@ pub enum FxOp {
         vround: f32,
         vfeather: f32,
         aspect: f32,
+        /// The signal the grade works on: sRGB (SDR) or the PQ / HLG signal normalised to HDR
+        /// White (an HDR working space).
+        grade: GradeSpace,
+        /// HDR Specular (0 for SDR).
+        specular: f32,
         gpu_capable: bool,
     },
 }
@@ -529,7 +534,7 @@ impl FxOp {
 
                 let hsl_on = b(e, "hsl_on");
 
-                let gpu_capable = !is_hdr && !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
+                let gpu_capable = !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let temp = bf("temperature") / 100.0;
@@ -572,6 +577,8 @@ impl FxOp {
                     vround,
                     vfeather,
                     aspect,
+                    grade: gs,
+                    specular: if is_hdr && basic_on { f(e, "hdr_specular", cx) / 100.0 } else { 0.0 },
                     gpu_capable,
                 }
             }
@@ -620,8 +627,36 @@ impl FxOp {
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
             FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
             FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
-            FxOp::Lumetri { gains, exposure, contrast, hl, sh, wh, bl, sat, faded, vib, st, ht, va, vmid, vround, vfeather, aspect, gpu_capable, .. } => {
+            FxOp::Lumetri {
+                gains,
+                exposure,
+                contrast,
+                hl,
+                sh,
+                wh,
+                bl,
+                sat,
+                faded,
+                vib,
+                st,
+                ht,
+                va,
+                vmid,
+                vround,
+                vfeather,
+                aspect,
+                grade,
+                specular,
+                gpu_capable,
+                ..
+            } => {
                 *gpu_capable
+                    && specular.is_finite()
+                    && match *grade {
+                        GradeSpace::Sdr => true,
+                        GradeSpace::Pq { white, norm } => white.is_finite() && norm.is_finite() && norm > 0.0,
+                        GradeSpace::Hlg { white, gamma } => white.is_finite() && gamma.is_finite() && gamma > 0.0,
+                    }
                     && fin(gains)
                     && fin(&[*exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *faded, *vib])
                     && fin(st)
@@ -942,8 +977,12 @@ impl FxOp {
                 vround,
                 vfeather,
                 aspect,
+                grade,
+                specular,
                 ..
             } => {
+                let (gs, specular) = (*grade, *specular);
+                let hdr = gs.is_hdr();
                 let gains = *gains;
                 let (exposure, contrast, hl, sh, wh, bl, sat) = (*exposure, *contrast, *hl, *sh, *wh, *bl, *sat);
                 let (creative_on, faded, vib, st, ht) = (*creative_on, *faded, *vib, *st, *ht);
@@ -952,7 +991,7 @@ impl FxOp {
                 img.map_rgb(|c, x, y| {
                     // white balance + exposure in linear light
                     let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
-                    let mut v = enc(lin);
+                    let mut v = gs.encode(lin);
                     // whites / blacks: endpoints
                     let b0 = -bl * 0.15;
                     let w0 = 1.0 - wh * 0.15;
@@ -966,14 +1005,22 @@ impl FxOp {
                         let k = nl / l;
                         v = v.map(|q| q * k);
                     }
-                    // contrast: smooth S-curve around mid grey
+                    // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White;
+                    // speculars above it keep their distance from white)
                     if contrast.abs() > 1e-4 {
                         let k = 1.0 + contrast;
                         v = v.map(|q| {
+                            if hdr && q > 1.0 {
+                                return q;
+                            }
                             let q = q.clamp(0.0, 1.0);
                             let s = q * q * (3.0 - 2.0 * q);
                             if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
                         });
+                    }
+                    // HDR Specular: brightness of the highlights above HDR White
+                    if specular.abs() > 1e-4 {
+                        v = v.map(|q| if q > 1.0 { 1.0 + (q - 1.0) * (1.0 + specular).max(0.0) } else { q });
                     }
                     // faded film: lift blacks and compress
                     if faded > 0.0 {
@@ -1001,7 +1048,7 @@ impl FxOp {
                         let k = 1.0 + va * 0.2 * e2;
                         v = v.map(|q| if va < 0.0 { q * k.max(0.0) } else { q + (1.0 - q) * (k - 1.0) });
                     }
-                    dec(v)
+                    gs.decode(v)
                 });
             }
         }
