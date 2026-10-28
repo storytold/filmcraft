@@ -1,4 +1,3 @@
-#![allow(clippy::option_map_unit_fn)]
 //! A ready-made demo project (synthetic footage, a cut sequence with transitions, titles-free
 //! effects, markers and music) so the editor shows a realistic workspace with no files at all.
 
@@ -13,6 +12,13 @@ use filmcraft_project::{
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
 use crate::MediaPool;
+
+/// Set the value of effect parameter `name` when the effect has it.
+fn set_param(params: &mut std::collections::BTreeMap<String, filmcraft_project::Param>, name: &str, value: ParamValue) {
+    if let Some(p) = params.get_mut(name) {
+        p.value = value;
+    }
+}
 
 /// Add a generator-backed media item to the project and the pool.
 pub fn add_generator(p: &mut Project, pool: &MediaPool, src: GeneratorSource, name: &str, label: Label, bin: Option<BinId>) -> ItemId {
@@ -33,7 +39,7 @@ pub fn add_generator(p: &mut Project, pool: &MediaPool, src: GeneratorSource, na
         identity: None,
     };
     let key = crate::media_pool::media_key(&clip);
-    let id = p.add_item(name, label, ItemKind::Media(clip), bin);
+    let id = p.add_item(name, label, ItemKind::Media(Box::new(clip)), bin);
     pool.insert_keyed(id, key, Arc::new(src.with_name(name)));
     id
 }
@@ -135,12 +141,12 @@ fn build_demo(pool: &MediaPool) -> Option<(Project, ItemId)> {
         resolve_auto_points(e, (1920, 1080), (1920, 1080));
     }
     if let Some(m) = ov.effect_mut("motion") {
-        m.params.get_mut("scale").map(|s| s.value = ParamValue::Float(32.0));
-        m.params.get_mut("position").map(|s| s.value = ParamValue::Vec2(filmcraft_geom::Vec2::new(1540.0, 820.0)));
+        set_param(&mut m.params, "scale", ParamValue::Float(32.0));
+        set_param(&mut m.params, "position", ParamValue::Vec2(filmcraft_geom::Vec2::new(1540.0, 820.0)));
     }
     if let Some(mut ds) = find_effect("drop_shadow").map(|d| d.instance()) {
-        ds.params.get_mut("distance").map(|v| v.value = ParamValue::Float(18.0));
-        ds.params.get_mut("softness").map(|v| v.value = ParamValue::Float(40.0));
+        set_param(&mut ds.params, "distance", ParamValue::Float(18.0));
+        set_param(&mut ds.params, "softness", ParamValue::Float(40.0));
         ov.effects.insert(0, ds);
     }
     ov.label = Label::Mango;
@@ -154,9 +160,9 @@ fn build_demo(pool: &MediaPool) -> Option<(Project, ItemId)> {
     }
     // Grade on the dunes shot.
     if let Some(mut lum) = find_effect("lumetri").map(|d| d.instance()) {
-        lum.params.get_mut("temperature").map(|v| v.value = ParamValue::Float(18.0));
-        lum.params.get_mut("contrast").map(|v| v.value = ParamValue::Float(22.0));
-        lum.params.get_mut("vignette_amount").map(|v| v.value = ParamValue::Float(-1.4));
+        set_param(&mut lum.params, "temperature", ParamValue::Float(18.0));
+        set_param(&mut lum.params, "contrast", ParamValue::Float(22.0));
+        set_param(&mut lum.params, "vignette_amount", ParamValue::Float(-1.4));
         let s = p.sequence_mut(seq)?;
         if let Some(it) = s.video_tracks[0].items.get_mut(3) {
             it.effects.insert(0, lum);

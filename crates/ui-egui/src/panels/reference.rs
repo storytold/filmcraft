@@ -129,7 +129,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut display = st.display;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(dr));
     let label = |d: RefDisplay| if d == RefDisplay::Composite { tl!("Composite Video") } else { tl!("Lumetri Scopes") };
-    let cb = egui::ComboBox::from_id_salt("reference-display").selected_text(label(display)).width(134.0).show_ui(&mut child, |ui| {
+    let cb = craft_ui::ComboBox::from_id_salt("reference-display").selected_text(label(display)).width(134.0).show_ui(&mut child, |ui| {
         for d in [RefDisplay::Composite, RefDisplay::Scopes] {
             let r = ui.selectable_value(&mut display, d, label(d));
             elems.push((format!("reference.display.{}", if d == RefDisplay::Composite { "composite" } else { "scopes" }), r.rect, label(d).into()));

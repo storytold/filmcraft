@@ -1,6 +1,6 @@
 //! Deblocking filter (8.7) for progressive frames, 4:2:0, 8-bit.
 
-use crate::picture::{MbKind, MbState};
+use crate::picture::{MbKind, MbState, Planes};
 use crate::slicedec::{PicState, SliceInfo};
 use crate::tables::{ALPHA, BETA, TC0};
 
@@ -278,8 +278,156 @@ fn filter_horizontal<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y:
     }
 }
 
+/// Boundary strengths `[dir][edge][segment]`; dir 0 = vertical edges (x), 1 = horizontal edges (y).
+type MbBs = [[[u8; 4]; 4]; 2];
+
+/// Boundary strengths of an intra macroblock (8.7.2.1).
+fn intra_mb_bs(t8: bool, left: Option<usize>, top: Option<usize>) -> MbBs {
+    let mut bs = [[[0u8; 4]; 4]; 2];
+    for (dir, neighbor) in [left, top].into_iter().enumerate() {
+        if neighbor.is_some() {
+            bs[dir][0] = [4; 4];
+        }
+        for e in 1..4 {
+            if !(t8 && e % 2 == 1) {
+                bs[dir][e] = [3; 4];
+            }
+        }
+    }
+    bs
+}
+
+/// Boundary strengths of the macroblock edge between neighbour `p` and the inter macroblock `q`.
+fn inter_outer_edge_bs(pic: &PicState, p: &MbState, q: &MbState, qm: &[Motion; 16], dir: usize) -> [u8; 4] {
+    if p.kind.is_intra() {
+        return [4; 4];
+    }
+    let pids = ref_ids8(p, &pic.slices[p.slice_num as usize]);
+    let mut out = [0u8; 4];
+    for (k, o) in out.iter_mut().enumerate() {
+        let (rq, rp) = if dir == 0 { (k * 4, k * 4 + 3) } else { (k, 12 + k) };
+        *o = if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(p, &pids, rp), &qm[rq]) };
+    }
+    out
+}
+
+/// Boundary strengths of internal edge `e` (1..4) of the inter macroblock `q`.
+fn inter_inner_edge_bs(q: &MbState, qm: &[Motion; 16], dir: usize, e: usize) -> [u8; 4] {
+    let mut out = [0u8; 4];
+    for (k, o) in out.iter_mut().enumerate() {
+        let (rq, rp) = if dir == 0 { (k * 4 + e, k * 4 + e - 1) } else { (e * 4 + k, e * 4 + k - 4) };
+        *o = if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&qm[rp], &qm[rq]) };
+    }
+    out
+}
+
+/// Boundary strengths of an inter macroblock (8.7.2.1).
+fn inter_mb_bs(pic: &PicState, q: &MbState, sq: &SliceInfo, left: Option<usize>, top: Option<usize>) -> MbBs {
+    let mut bs = [[[0u8; 4]; 4]; 2];
+    let t8 = q.transform_8x8;
+    let qids = ref_ids8(q, sq);
+    let q_uniform = (0..2).all(|l| {
+        let r = q.ref_idx[l];
+        r[1] == r[0] && r[2] == r[0] && r[3] == r[0] && q.mv[l].iter().all(|m| *m == q.mv[l][0])
+    });
+    let qm: [Motion; 16] = std::array::from_fn(|r| block_motion(q, &qids, r));
+    for (dir, neighbor) in [left, top].into_iter().enumerate() {
+        if let Some(n) = neighbor {
+            bs[dir][0] = inter_outer_edge_bs(pic, &pic.mbs[n], q, &qm, dir);
+        }
+        if q_uniform && q.nz_mask == 0 {
+            // one motion for the whole MB and no coefficients: all internal edges have bS 0
+            continue;
+        }
+        for e in 1..4 {
+            if !(t8 && e % 2 == 1) {
+                bs[dir][e] = inter_inner_edge_bs(q, &qm, dir, e);
+            }
+        }
+    }
+    bs
+}
+
+/// Slice-level filter offsets (`FilterOffsetA` / `FilterOffsetB`).
+#[derive(Clone, Copy)]
+struct FilterOffsets {
+    alpha: i32,
+    beta: i32,
+}
+
+/// Edge filter parameters for neighbouring QPs `qpp` / `qpq` (8.7.2.2).
+fn edge_params(qpp: i32, qpq: i32, b: [u8; 4], off: FilterOffsets) -> EdgeParams {
+    let qpav = (qpp + qpq + 1) >> 1;
+    let index_a = (qpav + off.alpha).clamp(0, 51) as usize;
+    let index_b = (qpav + off.beta).clamp(0, 51) as usize;
+    let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
+    EdgeParams { bs: b, tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])], alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 }
+}
+
+/// Everything the per-plane edge filters need to know about one macroblock.
+struct MbEdges {
+    bs: MbBs,
+    offsets: FilterOffsets,
+    mx: usize,
+    my: usize,
+    q_qp: i32,
+    q_qpc: [u8; 2],
+    /// (luma QP, chroma QPs) of the left and top neighbours.
+    p_qp: [Option<(i32, [u8; 2])>; 2],
+}
+
+/// Filter the luma edges of one macroblock.
+fn filter_luma_edges(planes: &mut Planes, m: &MbEdges) {
+    let width = planes.width;
+    for dir in 0..2 {
+        for e in 0..4 {
+            if m.bs[dir][e] == [0; 4] {
+                continue;
+            }
+            let qpp = if e == 0 { m.p_qp[dir].map(|p| p.0).unwrap_or(m.q_qp) } else { m.q_qp };
+            let ep = edge_params(qpp, m.q_qp, m.bs[dir][e], m.offsets);
+            if ep.alpha == 0 || ep.beta == 0 {
+                // filterSamplesFlag needs |p0 - q0| < alpha and |p1 - p0| < beta (8.7.2.2): no
+                // sample of the edge changes (low QPs)
+                continue;
+            }
+            if dir == 0 {
+                filter_vertical::<16>(&mut planes.y, width, m.mx * 16 + e * 4, m.my * 16, &ep, false);
+            } else {
+                filter_horizontal::<16>(&mut planes.y, width, m.mx * 16, m.my * 16 + e * 4, &ep, false);
+            }
+        }
+    }
+}
+
+/// Filter the chroma (4:2:0) edges of one macroblock: edges at chroma samples 0 and 4 use the bS of
+/// luma edges 0 and 2.
+fn filter_chroma_edges(planes: &mut Planes, m: &MbEdges) {
+    let cwidth = planes.cwidth;
+    for c in 0..2 {
+        for dir in 0..2 {
+            for ce in 0..2 {
+                let e = ce * 2;
+                if m.bs[dir][e] == [0; 4] {
+                    continue;
+                }
+                let qpp = if e == 0 { m.p_qp[dir].map(|p| p.1[c]).unwrap_or(m.q_qpc[c]) } else { m.q_qpc[c] } as i32;
+                let ep = edge_params(qpp, m.q_qpc[c] as i32, m.bs[dir][e], m.offsets);
+                if ep.alpha == 0 || ep.beta == 0 {
+                    continue;
+                }
+                let plane = if c == 0 { &mut planes.cb } else { &mut planes.cr };
+                if dir == 0 {
+                    filter_vertical::<8>(plane, cwidth, m.mx * 8 + ce * 4, m.my * 8, &ep, true);
+                } else {
+                    filter_horizontal::<8>(plane, cwidth, m.mx * 8, m.my * 8 + ce * 4, &ep, true);
+                }
+            }
+        }
+    }
+}
+
 /// Deblock one macroblock (macroblocks must be processed in raster order).
-#[allow(clippy::needless_range_loop)]
 pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
     let q = &pic.mbs[addr];
     if q.slice_num == u32::MAX {
@@ -300,114 +448,20 @@ pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
     };
     let left = usable(if mx > 0 { Some(addr - 1) } else { None });
     let top = usable(if my > 0 { Some(addr - mb_w) } else { None });
-    let alpha_off = sq.alpha_offset;
-    let beta_off = sq.beta_offset;
-    let t8 = q.transform_8x8;
-    // bS[dir][edge][segment]; dir 0 = vertical edges (x), 1 = horizontal edges (y)
-    let mut bs = [[[0u8; 4]; 4]; 2];
-    if q.kind.is_intra() {
-        for dir in 0..2 {
-            if (if dir == 0 { left } else { top }).is_some() {
-                bs[dir][0] = [4; 4];
-            }
-            for e in 1..4 {
-                if !(t8 && e % 2 == 1) {
-                    bs[dir][e] = [3; 4];
-                }
-            }
-        }
-    } else {
-        let qids = ref_ids8(q, sq);
-        let q_uniform = (0..2).all(|l| {
-            let r = q.ref_idx[l];
-            r[1] == r[0] && r[2] == r[0] && r[3] == r[0] && q.mv[l].iter().all(|m| *m == q.mv[l][0])
-        });
-        let qm: [Motion; 16] = std::array::from_fn(|r| block_motion(q, &qids, r));
-        for dir in 0..2 {
-            let neighbor = if dir == 0 { left } else { top };
-            if let Some(n) = neighbor {
-                let p = &pic.mbs[n];
-                if p.kind.is_intra() {
-                    bs[dir][0] = [4; 4];
-                } else {
-                    let pids = ref_ids8(p, &pic.slices[p.slice_num as usize]);
-                    for k in 0..4 {
-                        let (rq, rp) = if dir == 0 { (k * 4, k * 4 + 3) } else { (k, 12 + k) };
-                        bs[dir][0][k] =
-                            if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(p, &pids, rp), &qm[rq]) };
-                    }
-                }
-            }
-            if q_uniform && q.nz_mask == 0 {
-                // one motion for the whole MB and no coefficients: all internal edges have bS 0
-                continue;
-            }
-            for e in 1..4 {
-                if t8 && e % 2 == 1 {
-                    continue;
-                }
-                for k in 0..4 {
-                    let (rq, rp) = if dir == 0 { (k * 4 + e, k * 4 + e - 1) } else { (e * 4 + k, e * 4 + k - 4) };
-                    bs[dir][e][k] = if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&qm[rp], &qm[rq]) };
-                }
-            }
-        }
-    }
+    let bs = if q.kind.is_intra() { intra_mb_bs(q.transform_8x8, left, top) } else { inter_mb_bs(pic, q, sq, left, top) };
     let qp_of = |st: &MbState| if st.kind == MbKind::IPcm { 0 } else { st.qp as i32 };
-    let q_qp = qp_of(q);
-    let q_qpc = q.qpc;
-    let p_qp = [left.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc)), top.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc))];
-    let params = |qpp: i32, qpq: i32, b: [u8; 4]| {
-        let qpav = (qpp + qpq + 1) >> 1;
-        let index_a = (qpav + alpha_off).clamp(0, 51) as usize;
-        let index_b = (qpav + beta_off).clamp(0, 51) as usize;
-        let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
-        EdgeParams { bs: b, tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])], alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 }
+    let neighbor_qp = |n: Option<usize>| n.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc));
+    let edges = MbEdges {
+        bs,
+        offsets: FilterOffsets { alpha: sq.alpha_offset, beta: sq.beta_offset },
+        mx,
+        my,
+        q_qp: qp_of(q),
+        q_qpc: q.qpc,
+        p_qp: [neighbor_qp(left), neighbor_qp(top)],
     };
-    let width = pic.planes.width;
-    let cwidth = pic.planes.cwidth;
-    // luma
-    for dir in 0..2 {
-        for e in 0..4 {
-            if bs[dir][e] == [0; 4] {
-                continue;
-            }
-            let qpp = if e == 0 { p_qp[dir].map(|p| p.0).unwrap_or(q_qp) } else { q_qp };
-            let ep = params(qpp, q_qp, bs[dir][e]);
-            if ep.alpha == 0 || ep.beta == 0 {
-                // filterSamplesFlag needs |p0 - q0| < alpha and |p1 - p0| < beta (8.7.2.2): no
-                // sample of the edge changes (low QPs)
-                continue;
-            }
-            if dir == 0 {
-                filter_vertical::<16>(&mut pic.planes.y, width, mx * 16 + e * 4, my * 16, &ep, false);
-            } else {
-                filter_horizontal::<16>(&mut pic.planes.y, width, mx * 16, my * 16 + e * 4, &ep, false);
-            }
-        }
-    }
-    // chroma (4:2:0): edges at chroma samples 0 and 4 use the bS of luma edges 0 and 2
-    for c in 0..2 {
-        for dir in 0..2 {
-            for ce in 0..2 {
-                let e = ce * 2;
-                if bs[dir][e] == [0; 4] {
-                    continue;
-                }
-                let qpp = if e == 0 { p_qp[dir].map(|p| p.1[c]).unwrap_or(q_qpc[c]) } else { q_qpc[c] } as i32;
-                let ep = params(qpp, q_qpc[c] as i32, bs[dir][e]);
-                if ep.alpha == 0 || ep.beta == 0 {
-                    continue;
-                }
-                let plane = if c == 0 { &mut pic.planes.cb } else { &mut pic.planes.cr };
-                if dir == 0 {
-                    filter_vertical::<8>(plane, cwidth, mx * 8 + ce * 4, my * 8, &ep, true);
-                } else {
-                    filter_horizontal::<8>(plane, cwidth, mx * 8, my * 8 + ce * 4, &ep, true);
-                }
-            }
-        }
-    }
+    filter_luma_edges(&mut pic.planes, &edges);
+    filter_chroma_edges(&mut pic.planes, &edges);
 }
 
 #[cfg(test)]

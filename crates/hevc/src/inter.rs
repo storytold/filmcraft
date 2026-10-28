@@ -141,24 +141,26 @@ fn v_taps<'a, P>(rows: &'a [&'a [P]], r: usize, x: usize) -> impl Fn(usize) -> O
     move |k| rows.get(r + k).and_then(|row| row.get(x..))
 }
 
-/// Separable sub-sample interpolation of a w x h block from the window `rows` (h + T - 1 rows of
-/// at least w + T - 1 samples; the block's top-left sample at (m, m) for a T-tap filter with
-/// m = T / 2 - 1). The window rows are the reference picture's own lines when the window lies
-/// inside it horizontally, or lines of an edge-replicated copy.
-#[allow(clippy::too_many_arguments)]
-fn interpolate<P: Px, const T: usize>(
-    rows: &[&[P]],
-    tmp: &mut [i16],
+/// Parameters of one [`interpolate`] call: the fractional sample position (`fx`, `fy`), the
+/// horizontal and vertical `T`-tap filters, the block size and the two intermediate shifts.
+#[derive(Clone, Copy)]
+struct Interp<'a, const T: usize> {
     fx: usize,
     fy: usize,
-    hf: &[i8; T],
-    vf: &[i8; T],
+    hf: &'a [i8; T],
+    vf: &'a [i8; T],
     w: usize,
     h: usize,
     shift1: u32,
     shift3: u32,
-    out: &mut [i16],
-) {
+}
+
+/// Separable sub-sample interpolation of a w x h block from the window `rows` (h + T - 1 rows of
+/// at least w + T - 1 samples; the block's top-left sample at (m, m) for a T-tap filter with
+/// m = T / 2 - 1). The window rows are the reference picture's own lines when the window lies
+/// inside it horizontally, or lines of an edge-replicated copy.
+fn interpolate<P: Px, const T: usize>(rows: &[&[P]], tmp: &mut [i16], k: &Interp<T>, out: &mut [i16]) {
+    let Interp { fx, fy, hf, vf, w, h, shift1, shift3 } = *k;
     let m = T / 2 - 1;
     // 8-bit samples: first passes in 16-bit lanes (see filt16_w)
     let narrow = shift1 == 0 && shift3 == 6;
@@ -196,63 +198,52 @@ fn interpolate<P: Px, const T: usize>(
 /// Prediction samples of a w x h block of plane `c` whose filter window (`T`-tap filters) starts
 /// at (x0, y0): read straight from the reference lines when the window is inside the picture
 /// horizontally, else from an edge-replicated copy.
-#[allow(clippy::too_many_arguments)]
-fn predict_block<S: Sample, const T: usize>(
-    f: &Frame,
-    c: usize,
-    (x0, y0): (i32, i32),
-    (fx, fy): (usize, usize),
-    filters: (&[i8; T], &[i8; T]),
-    (w, h): (usize, usize),
-    (shift1, shift3): (u32, u32),
-    out: &mut [i16],
-    sc: &mut McScratch,
-) {
-    let (ww, wh) = (w + T - 1, h + T - 1);
+fn predict_block<S: Sample, const T: usize>(f: &Frame, c: usize, (x0, y0): (i32, i32), k: &Interp<T>, out: &mut [i16], sc: &mut McScratch) {
+    let (ww, wh) = (k.w + T - 1, k.h + T - 1);
     let McScratch { win, tmp } = sc;
     let mut rows: [&[S]; WIN] = [&[]; WIN];
     if let Some(rows) = rows.get_mut(..wh)
         && f.window_rows(c, x0, y0, ww, rows)
     {
-        interpolate::<S, T>(rows, tmp, fx, fy, filters.0, filters.1, w, h, shift1, shift3, out);
+        interpolate::<S, T>(rows, tmp, k, out);
         return;
     }
     if c == 0 {
-        f.luma_window::<S>(x0, y0, ww, wh, win, WIN);
+        f.luma_window::<S>((x0, y0), (ww, wh), win, WIN);
     } else {
-        f.chroma_window::<S>(c - 1, x0, y0, ww, wh, win, WIN);
+        f.chroma_window::<S>(c - 1, (x0, y0), (ww, wh), win, WIN);
     }
     let mut wrows: [&[i16]; WIN] = [&[]; WIN];
     for (r, row) in wrows.iter_mut().zip(win.chunks(WIN)).take(wh) {
         *r = row;
     }
-    interpolate::<i16, T>(&wrows[..wh.min(WIN)], tmp, fx, fy, filters.0, filters.1, w, h, shift1, shift3, out);
+    interpolate::<i16, T>(&wrows[..wh.min(WIN)], tmp, k, out);
 }
 
 /// Luma prediction samples (14-bit intermediate precision) of a w x h block at (x, y) displaced by the
 /// quarter-sample motion vector `mv`, into `out` (stride w).
-#[allow(clippy::too_many_arguments)]
-pub fn mc_luma<S: Sample>(f: &Frame, x: i32, y: i32, mv: [i16; 2], w: usize, h: usize, out: &mut [i16], sc: &mut McScratch) {
+pub fn mc_luma<S: Sample>(f: &Frame, (x, y): (i32, i32), mv: [i16; 2], (w, h): (usize, usize), out: &mut [i16], sc: &mut McScratch) {
     let bd = f.bit_depth;
     let (fx, fy) = ((mv[0] & 3) as usize, (mv[1] & 3) as usize);
     let xi = x + (mv[0] as i32 >> 2);
     let yi = y + (mv[1] as i32 >> 2);
     let shift1 = bd.min(12) - 8;
     let shift3 = 14 - bd;
-    predict_block::<S, 8>(f, 0, (xi - 3, yi - 3), (fx, fy), (&LUMA_FILTER[fx], &LUMA_FILTER[fy]), (w, h), (shift1, shift3), out, sc);
+    let k = Interp { fx, fy, hf: &LUMA_FILTER[fx], vf: &LUMA_FILTER[fy], w, h, shift1, shift3 };
+    predict_block::<S, 8>(f, 0, (xi - 3, yi - 3), &k, out, sc);
 }
 
 /// Chroma prediction samples of a w x h chroma block at chroma position (x, y) with a 1/8-sample
 /// vector (4:2:0).
-#[allow(clippy::too_many_arguments)]
-pub fn mc_chroma<S: Sample>(f: &Frame, c: usize, x: i32, y: i32, mv: [i16; 2], w: usize, h: usize, out: &mut [i16], sc: &mut McScratch) {
+pub fn mc_chroma<S: Sample>(f: &Frame, c: usize, (x, y): (i32, i32), mv: [i16; 2], (w, h): (usize, usize), out: &mut [i16], sc: &mut McScratch) {
     let bd = f.bit_depth_c;
     let (fx, fy) = ((mv[0] & 7) as usize, (mv[1] & 7) as usize);
     let xi = x + (mv[0] as i32 >> 3);
     let yi = y + (mv[1] as i32 >> 3);
     let shift1 = bd.min(12) - 8;
     let shift3 = 14 - bd;
-    predict_block::<S, 4>(f, c + 1, (xi - 1, yi - 1), (fx, fy), (&CHROMA_FILTER[fx], &CHROMA_FILTER[fy]), (w, h), (shift1, shift3), out, sc);
+    let k = Interp { fx, fy, hf: &CHROMA_FILTER[fx], vf: &CHROMA_FILTER[fy], w, h, shift1, shift3 };
+    predict_block::<S, 4>(f, c + 1, (xi - 1, yi - 1), &k, out, sc);
 }
 
 /// Calls `$f::<_, W>(args)` with `W` the prediction block width `$w` as a constant (block widths are
@@ -325,8 +316,9 @@ fn put_bi_w<S: Sample, const W: usize>(p0: &[i16], p1: &[i16], w: usize, h: usiz
     }
 }
 
-/// Explicit weighted prediction, one list (8-265). `o` is the offset already scaled to the bit depth.
-pub fn put_weighted_uni<S: Sample>(p: &[i16], w: usize, h: usize, bd: u32, log2wd: u32, wt: i32, o: i32, dst: &mut [S], ds: usize) {
+/// Explicit weighted prediction, one list (8-265). `(wt, o)` is the weight and the offset already
+/// scaled to the bit depth.
+pub fn put_weighted_uni<S: Sample>(p: &[i16], (w, h): (usize, usize), bd: u32, log2wd: u32, (wt, o): (i32, i32), dst: &mut [S], ds: usize) {
     let max = (1i32 << bd) - 1;
     for r in 0..h {
         for c in 0..w {
@@ -337,18 +329,13 @@ pub fn put_weighted_uni<S: Sample>(p: &[i16], w: usize, h: usize, bd: u32, log2w
     }
 }
 
-/// Explicit weighted bi-prediction (8-266).
+/// Explicit weighted bi-prediction (8-266), with a (weight, offset) pair per list.
 pub fn put_weighted_bi<S: Sample>(
-    p0: &[i16],
-    p1: &[i16],
-    w: usize,
-    h: usize,
+    [p0, p1]: [&[i16]; 2],
+    (w, h): (usize, usize),
     bd: u32,
     log2wd: u32,
-    w0: i32,
-    w1: i32,
-    o0: i32,
-    o1: i32,
+    [(w0, o0), (w1, o1)]: [(i32, i32); 2],
     dst: &mut [S],
     ds: usize,
 ) {
@@ -438,12 +425,12 @@ mod tests {
                     let (o0, o1) = (off(&mut rng), off(&mut rng));
                     let ds = w + 3;
                     let (mut uni, mut bi) = (vec![0u16; ds * h], vec![0u16; ds * h]);
-                    put_weighted_uni(&p0, w, h, bd, log2wd, w0, o0, &mut uni, ds);
-                    put_weighted_bi(&p0, &p1, w, h, bd, log2wd, w0, w1, o0, o1, &mut bi, ds);
+                    put_weighted_uni(&p0, (w, h), bd, log2wd, (w0, o0), &mut uni, ds);
+                    put_weighted_bi([&p0, &p1], (w, h), bd, log2wd, [(w0, o0), (w1, o1)], &mut bi, ds);
                     let denom = log2wd - (14 - bd);
                     let (mut duni, mut dbi) = (vec![0u16; ds * h], vec![0u16; ds * h]);
-                    put_weighted_uni(&p0, w, h, bd, log2wd, 1 << denom, 0, &mut duni, ds);
-                    put_weighted_bi(&p0, &p1, w, h, bd, log2wd, 1 << denom, 1 << denom, 0, 0, &mut dbi, ds);
+                    put_weighted_uni(&p0, (w, h), bd, log2wd, (1 << denom, 0), &mut duni, ds);
+                    put_weighted_bi([&p0, &p1], (w, h), bd, log2wd, [(1 << denom, 0); 2], &mut dbi, ds);
                     let (mut uni0, mut bi0) = (vec![0u16; ds * h], vec![0u16; ds * h]);
                     put_uni(&p0, w, h, bd, &mut uni0, ds);
                     put_bi(&p0, &p1, w, h, bd, &mut bi0, ds);
@@ -545,17 +532,19 @@ mod tests {
                 let mut win = vec![0i16; WIN * WIN];
                 let mut tmp = vec![0i16; WIN * WIN];
                 if c == 0 {
-                    f.luma_window::<S>(x0, y0, w + t - 1, h + t - 1, &mut win, WIN);
+                    f.luma_window::<S>((x0, y0), (w + t - 1, h + t - 1), &mut win, WIN);
                 } else {
-                    f.chroma_window::<S>(c - 1, x0, y0, w + t - 1, h + t - 1, &mut win, WIN);
+                    f.chroma_window::<S>(c - 1, (x0, y0), (w + t - 1, h + t - 1), &mut win, WIN);
                 }
                 let wrows: Vec<&[i16]> = win.chunks(WIN).take(h + t - 1).collect();
                 if c == 0 {
-                    mc_luma::<S>(&f, x, y, mv, w, h, &mut a, &mut sc);
-                    interpolate::<i16, 8>(&wrows, &mut tmp, fx, fy, &LUMA_FILTER[fx], &LUMA_FILTER[fy], w, h, shift1, shift3, &mut b);
+                    mc_luma::<S>(&f, (x, y), mv, (w, h), &mut a, &mut sc);
+                    let k = Interp { fx, fy, hf: &LUMA_FILTER[fx], vf: &LUMA_FILTER[fy], w, h, shift1, shift3 };
+                    interpolate::<i16, 8>(&wrows, &mut tmp, &k, &mut b);
                 } else {
-                    mc_chroma::<S>(&f, c - 1, x, y, mv, w, h, &mut a, &mut sc);
-                    interpolate::<i16, 4>(&wrows, &mut tmp, fx, fy, &CHROMA_FILTER[fx], &CHROMA_FILTER[fy], w, h, shift1, shift3, &mut b);
+                    mc_chroma::<S>(&f, c - 1, (x, y), mv, (w, h), &mut a, &mut sc);
+                    let k = Interp { fx, fy, hf: &CHROMA_FILTER[fx], vf: &CHROMA_FILTER[fy], w, h, shift1, shift3 };
+                    interpolate::<i16, 4>(&wrows, &mut tmp, &k, &mut b);
                 }
                 assert_eq!(a, b, "plane {c} bd {bd} at ({x}, {y}) mv {mv:?} {w}x{h}");
             }
@@ -579,18 +568,18 @@ mod tests {
                 let (x, y) = (rng.range(-40, 80), rng.range(-40, 70));
                 let mut pred = vec![0i16; w * h];
                 let (mut a, mut b) = (vec![S::default(); w * h], vec![S::default(); w * h]);
-                mc_luma::<S>(&f, 0, 0, [(x * 4) as i16, (y * 4) as i16], w, h, &mut pred, &mut sc);
+                mc_luma::<S>(&f, (0, 0), [(x * 4) as i16, (y * 4) as i16], (w, h), &mut pred, &mut sc);
                 put_uni(&pred, w, h, bd, &mut a, w);
-                f.copy_block(0, x, y, w, h, &mut b, w);
+                f.copy_block(0, (x, y), (w, h), &mut b, w);
                 assert_eq!(a, b, "luma bd {bd} at ({x}, {y}) {w}x{h}");
                 // (the window really was read: not all samples equal the default)
                 assert!(a.iter().any(|&v| v != S::default()) || w * h < 8);
                 for c in 1..3 {
                     let (cw, ch) = (w / 2, h / 2);
-                    mc_chroma::<S>(&f, c - 1, 0, 0, [(x * 8) as i16, (y * 8) as i16], cw, ch, &mut pred, &mut sc);
+                    mc_chroma::<S>(&f, c - 1, (0, 0), [(x * 8) as i16, (y * 8) as i16], (cw, ch), &mut pred, &mut sc);
                     let (mut a, mut b) = (vec![S::default(); cw * ch], vec![S::default(); cw * ch]);
                     put_uni(&pred, cw, ch, bd, &mut a, cw);
-                    f.copy_block(c, x, y, cw, ch, &mut b, cw);
+                    f.copy_block(c, (x, y), (cw, ch), &mut b, cw);
                     assert_eq!(a, b, "chroma {c} bd {bd} at ({x}, {y}) {cw}x{ch}");
                 }
             }

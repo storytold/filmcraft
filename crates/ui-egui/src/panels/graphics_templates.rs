@@ -183,7 +183,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         );
         elems.push(("gfxTemplates.search".into(), r.rect, "Search".into()));
         let cur = if st.category.is_empty() { tl!("All Categories").to_string() } else { crate::i18n::t(&st.category).to_string() };
-        let r = egui::ComboBox::from_id_salt("gfx-cat").selected_text(cur).width(130.0).show_ui(ui, |ui| {
+        let r = craft_ui::ComboBox::from_id_salt("gfx-cat").selected_text(cur).width(130.0).show_ui(ui, |ui| {
             ui.selectable_value(&mut st.category, String::new(), tl!("All Categories"));
             for c in &cats {
                 ui.selectable_value(&mut st.category, c.clone(), crate::i18n::t(c));
@@ -433,7 +433,7 @@ pub fn template_controls(
                     Some(ParamValue::Text(s)) => s,
                     _ => String::new(),
                 };
-                let r = egui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str())).selected_text(&fam).width(170.0).height(360.0).show_ui(
+                let r = craft_ui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str())).selected_text(&fam).width(170.0).height(360.0).show_ui(
                     &mut vui,
                     |ui| {
                         for (f, _) in filmcraft_text::families() {
@@ -478,7 +478,7 @@ pub fn responsive_time(app: &FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, it: 
     }
     let mut vui = row_label(ui, tl!("Roll"), &t);
     let mut mode = m.roll.mode;
-    let r = egui::ComboBox::from_id_salt(("gfx-roll", clip.0)).selected_text(crate::i18n::t(mode.label())).width(120.0).show_ui(&mut vui, |ui| {
+    let r = craft_ui::ComboBox::from_id_salt(("gfx-roll", clip.0)).selected_text(crate::i18n::t(mode.label())).width(120.0).show_ui(&mut vui, |ui| {
         for x in RollMode::ALL {
             ui.selectable_value(&mut mode, x, crate::i18n::t(x.label()));
         }
@@ -546,7 +546,7 @@ pub fn responsive_position(
             .unwrap_or_default(),
     };
     let mut vui = row_label(ui, tl!("Pin To"), &t);
-    let r = egui::ComboBox::from_id_salt(("gfx-pin", clip.0, layer)).selected_text(&target_name).width(150.0).show_ui(&mut vui, |ui| {
+    let r = craft_ui::ComboBox::from_id_salt(("gfx-pin", clip.0, layer)).selected_text(&target_name).width(150.0).show_ui(&mut vui, |ui| {
         if ui.selectable_label(pin.is_none(), tl!("None")).clicked() {
             actions.push(("graphics.pin".into(), json!({"clip": clip.0, "layer": layer, "to": "none"})));
         }
@@ -761,14 +761,14 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             fams.dedup();
             ui.horizontal(|ui| {
                 ui.label(tl!("Replace:"));
-                let r = egui::ComboBox::from_id_salt("gfx-rf-from").selected_text(&d.from).width(160.0).show_ui(ui, |ui| {
+                let r = craft_ui::ComboBox::from_id_salt("gfx-rf-from").selected_text(&d.from).width(160.0).show_ui(ui, |ui| {
                     for f in &fams {
                         ui.selectable_value(&mut d.from, f.clone(), f);
                     }
                 });
                 elems.push(("replaceFonts.from".into(), r.response.rect, "Replace".into()));
                 ui.label(tl!("with:"));
-                let r = egui::ComboBox::from_id_salt("gfx-rf-to").selected_text(&d.to).width(160.0).height(360.0).show_ui(ui, |ui| {
+                let r = craft_ui::ComboBox::from_id_salt("gfx-rf-to").selected_text(&d.to).width(160.0).height(360.0).show_ui(ui, |ui| {
                     for (f, _) in filmcraft_text::families() {
                         ui.selectable_value(&mut d.to, f.clone(), &f);
                     }

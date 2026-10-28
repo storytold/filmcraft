@@ -142,10 +142,23 @@ fn sat(v: i32, lim: i32) -> i32 {
     v.clamp(-lim, lim)
 }
 
+/// Block description for [`inverse_transform_add`].
+#[derive(Clone, Copy, Debug)]
+pub struct InverseTx {
+    pub tx_size: u8,
+    pub tx_type: u8,
+    pub lossless: bool,
+    /// End-of-block position (number of coded coefficients).
+    pub eob: usize,
+    /// Number of leading rows that can hold non-zero values.
+    pub rows: usize,
+    pub bit_depth: u8,
+}
+
 /// Inverse transform `coefs` (row-major n x n dequantized coefficients, `rows` = number of leading
 /// rows that can hold non-zero values) and add the residual to `dst` (8.6.2 step 4).
-#[allow(clippy::too_many_arguments)]
-pub fn inverse_transform_add(coefs: &[i32], tx_size: u8, tx_type: u8, lossless: bool, eob: usize, rows: usize, bit_depth: u8, dst: &mut [u16], stride: usize) {
+pub fn inverse_transform_add(coefs: &[i32], tx: &InverseTx, dst: &mut [u16], stride: usize) {
+    let InverseTx { tx_size, tx_type, lossless, eob, rows, bit_depth } = *tx;
     let n = 4usize << tx_size;
     let max = (1i32 << bit_depth) - 1;
     if lossless {
@@ -441,8 +454,8 @@ mod tests {
                 coefs[0] = dc;
                 let mut a = vec![128u16; n * n];
                 let mut b = vec![128u16; n * n];
-                inverse_transform_add(&coefs, tx, DCT_DCT, false, 1, 1, 8, &mut a, n);
-                inverse_transform_add(&coefs, tx, DCT_DCT, false, 2, n, 8, &mut b, n);
+                inverse_transform_add(&coefs, &InverseTx { tx_size: tx, tx_type: DCT_DCT, lossless: false, eob: 1, rows: 1, bit_depth: 8 }, &mut a, n);
+                inverse_transform_add(&coefs, &InverseTx { tx_size: tx, tx_type: DCT_DCT, lossless: false, eob: 2, rows: n, bit_depth: 8 }, &mut b, n);
                 assert_eq!(a, b, "tx {tx} dc {dc}");
             }
         }
@@ -514,7 +527,7 @@ mod tests {
         let mut coefs = [0i32; 16];
         coefs[0] = 4 * 4;
         let mut dst = [100u16; 16];
-        inverse_transform_add(&coefs, 0, DCT_DCT, true, 1, 4, 8, &mut dst, 4);
+        inverse_transform_add(&coefs, &InverseTx { tx_size: 0, tx_type: DCT_DCT, lossless: true, eob: 1, rows: 4, bit_depth: 8 }, &mut dst, 4);
         let sum: i32 = dst.iter().map(|&v| v as i32 - 100).sum();
         assert_eq!(sum, 16);
     }

@@ -22,7 +22,7 @@ fn media(p: &mut Project, map: &mut SourceMap, g: GeneratorSource) -> ItemId {
     let id = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(generator),
             info,
             interpret: Default::default(),
@@ -32,7 +32,7 @@ fn media(p: &mut Project, map: &mut SourceMap, g: GeneratorSource) -> ItemId {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     map.0.insert(id, Arc::new(g) as SharedSource);
