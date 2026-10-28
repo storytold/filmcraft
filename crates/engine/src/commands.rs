@@ -3611,9 +3611,7 @@ fn build() -> Vec<CommandSpec> {
             r#"{"kind":"Video"|"Audio"|"VideoTransition"|"AudioTransition"?,"folder":"Video Transitions/Wipe"?,"detail":bool?}"#,
             |_, p| Ok(list_effects(p))
         ),
-        query!("history.list", "List History", "{}", |s, _| Ok(
-            json!({"undo": s.history.undo.iter().map(|h| &h.0).collect::<Vec<_>>(), "redo": s.history.redo.iter().map(|h| &h.0).collect::<Vec<_>>()})
-        )),
+        query!("history.list", "List History", r#"{"detail":bool?,"limit":1..200?}"#, |s, p| crate::history_details::list(s, p)),
     ];
     crate::sequence_tools::splice(&mut v);
     v.extend(crate::captions::commands());

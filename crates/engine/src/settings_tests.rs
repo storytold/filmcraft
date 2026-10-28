@@ -574,6 +574,18 @@ fn transcription_without_speech_to_text_says_so() {
 
 #[test]
 fn hardware_decoding_setting_drives_the_decoder_switch() {
+    // Preference changes in other tests update the same process-wide decoder switch.
+    // Exercise this assertion alone in a child, without serializing unrelated tests.
+    const CHILD: &str = "FILMCRAFT_HW_SETTING_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", "settings_tests::hardware_decoding_setting_drives_the_decoder_switch", "--nocapture"])
+            .env(CHILD, "1")
+            .status()
+            .expect("isolated hardware setting test");
+        assert!(status.success(), "isolated hardware setting test failed");
+        return;
+    }
     let mut s = Session::default();
     assert_eq!(s.prefs.playback.hardware_decoding, "auto", "Auto by default");
     set(&mut s, "playback.hardwareDecoding", json!("off"));
