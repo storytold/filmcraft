@@ -706,3 +706,17 @@ fn export_mode_location_link_opens_the_save_dialog_and_export_writes_there() {
     let out = d.path("chosen.wav");
     d.wait_until("the export", |_| std::fs::metadata(&out).map(|m| m.len() > 44).unwrap_or(false));
 }
+
+#[test]
+fn the_control_channel_sets_the_location_link() {
+    let mut d = Driver::new("location-set");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    let want = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"location": want}}));
+    d.frames(3);
+    assert_eq!(d.app().ui.export.location, want);
+    let v = d.ok("ui.elements", json!({"prefix": "export.location"}));
+    let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!("export.location")).unwrap().clone();
+    assert_eq!(e["label"], json!(want));
+}

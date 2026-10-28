@@ -1,6 +1,7 @@
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::{FrameRate, Tick};
+use filmcraft_ui_egui::control::{self, ControlRequest, Outcome};
 use filmcraft_ui_egui::{FilmcraftApp, dock::PanelKind, menus};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -354,4 +355,22 @@ fn the_folder_link_opens_the_save_dialog_and_the_choice_sets_folder_and_name() {
     assert!(has(&h, "exportFrame.name"), "the dialog stays open");
     click(&mut h, "exportFrame.export");
     assert!(chosen.exists(), "{}", h.state().ui.status);
+}
+
+#[test]
+fn the_control_channel_sets_the_folder_of_the_path_link() {
+    let mut h = harness();
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "file.exportFrame", json!({"monitor":"program"})).unwrap();
+    step(&mut h);
+    let folder = tempfile::tempdir().unwrap();
+    let want = folder.path().to_string_lossy().into_owned();
+    let (req, _) = ControlRequest::new("ui.set", json!({"frameExport": {"folder": want}}));
+    let Outcome::Done(reply) = control::handle(h.state_mut(), &ctx, &req) else { panic!("ui.set answers at once") };
+    assert_eq!(reply["ok"], json!(true), "{reply}");
+    step(&mut h);
+    let label = h.state().auto.elements.iter().find(|e| e.id == "exportFrame.path").map(|e| e.label.clone());
+    assert_eq!(label, Some(want.clone()));
+    click(&mut h, "exportFrame.export");
+    assert!(folder.path().join("Program clip.png").exists(), "{}", h.state().ui.status);
 }
