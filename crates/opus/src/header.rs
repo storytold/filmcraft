@@ -90,6 +90,38 @@ impl OpusHead {
         v
     }
 
+    /// Validate a header independently of its wire parser. This is required for callers of
+    /// [`crate::Decoder::from_head`], which may construct an `OpusHead` directly with `usize`
+    /// values that cannot occur in the byte format.
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=255).contains(&self.channels) || self.mapping.len() != self.channels {
+            return Err(Error::InvalidHeader("bad channel count or mapping length"));
+        }
+        if self.mapping_family == 0 {
+            if self.channels > 2 || self.streams != 1 || self.coupled_streams != self.channels - 1 || self.mapping.iter().copied().ne(0..self.channels as u8) {
+                return Err(Error::InvalidHeader("invalid family 0 mapping"));
+            }
+            return Ok(());
+        }
+        if self.mapping_family == 3 {
+            return Err(Error::Unsupported("channel mapping family 3 (projection)"));
+        }
+        if self.streams == 0
+            || self.streams > 255
+            || self.coupled_streams > self.streams
+            || self.streams.checked_add(self.coupled_streams).is_none_or(|n| n > 255)
+        {
+            return Err(Error::InvalidHeader("bad stream counts"));
+        }
+        if self.mapping_family == 1 && !(1..=8).contains(&self.channels) {
+            return Err(Error::InvalidHeader("family 1 allows 1 to 8 channels"));
+        }
+        if self.mapping.iter().any(|&m| m != 255 && m as usize >= self.streams + self.coupled_streams) {
+            return Err(Error::InvalidHeader("channel mapping out of range"));
+        }
+        Ok(())
+    }
+
     fn build(channels: usize, pre_skip: u16, input_sample_rate: u32, output_gain: i16, family: u8, rest: &[u8]) -> Result<OpusHead> {
         if channels == 0 {
             return Err(Error::InvalidHeader("zero channels"));
@@ -120,7 +152,9 @@ impl OpusHead {
             }
             (streams, coupled, mapping)
         };
-        Ok(OpusHead { channels, pre_skip, input_sample_rate, output_gain, mapping_family: family, streams, coupled_streams: coupled, mapping })
+        let head = OpusHead { channels, pre_skip, input_sample_rate, output_gain, mapping_family: family, streams, coupled_streams: coupled, mapping };
+        head.validate()?;
+        Ok(head)
     }
 
     /// Linear output gain factor.
@@ -175,5 +209,20 @@ mod tests {
         let head = OpusHead::from_dops(&d).unwrap();
         assert_eq!(head.pre_skip, 312);
         assert_eq!(head.channels, 2);
+    }
+
+    #[test]
+    fn directly_constructed_headers_are_checked_before_decoder_allocation() {
+        let head = OpusHead {
+            channels: 1,
+            pre_skip: 0,
+            input_sample_rate: 48_000,
+            output_gain: 0,
+            mapping_family: 255,
+            streams: usize::MAX,
+            coupled_streams: 0,
+            mapping: vec![0],
+        };
+        assert!(crate::Decoder::from_head(head, 48_000).is_err());
     }
 }

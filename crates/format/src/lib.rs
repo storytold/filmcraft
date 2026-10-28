@@ -216,6 +216,20 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
 /// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
 /// structural rules such as overlaps are left to the editor, so projects that open today still open.
 fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
+    // Graphic layers written before they carried a uid get a stable identity now, before any
+    // undo history exists. The field is optional in the schema, so this is not a schema upgrade.
+    loaded.project.ensure_graphic_layer_uids();
+    // Embedded LUT text is rendered on the hot path. Drop oversize entries at load time so a
+    // hostile project cannot retain an unrenderable multi-megabyte source or repeatedly offer it
+    // to renderers. Clips that refer to one simply have no LUT, like a deleted library entry.
+    let max_lut = filmcraft_project::MAX_LUT_TEXT_BYTES;
+    loaded.project.luts.retain(|lut| {
+        let keep = lut.text.len() <= max_lut;
+        if !keep {
+            log::warn!("LUT `{}`: {} bytes, dropping entry above {max_lut} byte limit", lut.name, lut.text.len());
+        }
+        keep
+    });
     // Out-of-range audio stream data is repaired, not refused: failing the load would lose the
     // whole project over one bad index. A media item keeps its first `MAX_AUDIO_STREAMS` streams; a
     // clip pointing past that plays stream 0.
@@ -223,9 +237,14 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
     for item in loaded.project.items.values_mut() {
         let name = item.name.clone();
         match &mut item.kind {
-            filmcraft_project::ItemKind::Media(m) if m.info.audio_streams.len() > max => {
-                log::warn!("media `{name}`: {} audio streams, keeping the first {max}", m.info.audio_streams.len());
-                m.info.audio_streams.truncate(max);
+            filmcraft_project::ItemKind::Media(m) => {
+                if let Some(video) = &m.info.video {
+                    filmcraft_project::validate_frame_size(video.width, video.height).map_err(|e| FormatError::Corrupt(format!("media `{name}`: {e}")))?;
+                }
+                if m.info.audio_streams.len() > max {
+                    log::warn!("media `{name}`: {} audio streams, keeping the first {max}", m.info.audio_streams.len());
+                    m.info.audio_streams.truncate(max);
+                }
             }
             filmcraft_project::ItemKind::Sequence(sequence) => {
                 let sequence = std::sync::Arc::make_mut(sequence);
@@ -243,6 +262,18 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
         if let filmcraft_project::ItemKind::Sequence(sequence) = &item.kind {
             sequence.check_bounds().map_err(|e| FormatError::Corrupt(format!("sequence `{}`: {e}", item.name)))?;
         }
+    }
+    // Every new id is `next_id`, read from the file as is. One that lags behind the ids in it (an
+    // older build, a hand edit) would hand out an id in use, and the new item replace the old (#2809).
+    let project = &mut loaded.project;
+    let max = project.max_id();
+    let past = max.checked_add(1).ok_or_else(|| FormatError::Corrupt(format!("project ID space exhausted (id {max} in use)")))?;
+    if project.next_id < past {
+        log::warn!("next id {} is not past the largest id in the project, raised to {past}", project.next_id);
+        project.next_id = past;
+    }
+    if project.next_id > Project::MAX_NEXT_ID {
+        return Err(FormatError::Corrupt(format!("project ID space exhausted (next id {})", project.next_id)));
     }
     Ok(loaded)
 }
@@ -409,6 +440,32 @@ mod tests {
         assert_eq!(loaded.project.sequence(seq).unwrap().video_tracks[0].items.len(), 3);
     }
 
+    /// Opening a project written before graphic layers had uids assigns stable, unique identities
+    /// without a schema upgrade. The old file still opens, and its two byte-identical layers (same
+    /// geometry, different text) can no longer be confused after a reorder.
+    #[test]
+    fn opening_a_legacy_project_assigns_unique_graphic_layer_uids() {
+        use filmcraft_project::graphic::{layer_indices, new_text_layer};
+        use filmcraft_project::{ItemKind, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, Tick, TimeRange};
+        let mut p = Project::new("Legacy graphics");
+        let rate = FrameRate::FPS_25;
+        let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 1, 1, None);
+        let graphic = p.add_item("Graphic", filmcraft_project::Label::Rose, ItemKind::Graphic { width: 1920, height: 1080, rate }, None);
+        let mut item = p.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(100)), rate).unwrap();
+        item.effects = vec![new_text_layer("one", Default::default(), 100.0), new_text_layer("two", Default::default(), 100.0)];
+        assert!(item.effects.iter().all(|e| filmcraft_project::gtemplate::layer_uid(e) == 0));
+        p.sequence_mut(seq).unwrap().video_tracks[0].items = vec![item];
+        let loaded = decode(&encode(&p, false)).expect("an old project still opens");
+        let item = &loaded.project.sequence(seq).unwrap().video_tracks[0].items[0];
+        let uids: Vec<u64> = layer_indices(&item.effects).into_iter().map(|i| filmcraft_project::gtemplate::layer_uid(&item.effects[i])).collect();
+        assert_eq!(uids.len(), 2);
+        assert!(uids.iter().all(|uid| *uid != 0), "opening assigned uids: {uids:?}");
+        assert_ne!(uids[0], uids[1], "identical geometry and different text still get distinct identities");
+        let again = decode(&encode(&loaded.project, false)).expect("the upgraded project round-trips");
+        assert_eq!(again.project, loaded.project, "assigned uids are stable across saves");
+    }
+
     #[test]
     fn roundtrip_current() {
         let p = Project::new("Round Trip");
@@ -420,6 +477,20 @@ mod tests {
             assert!(!l.migrated());
             assert_eq!(l.generator.as_deref(), Some(generator().as_str()));
         }
+    }
+
+    #[test]
+    fn oversized_embedded_luts_are_dropped_on_load() {
+        let mut p = Project::new("LUT limit");
+        p.luts.push(filmcraft_project::ProjectLut {
+            id: "huge".into(),
+            name: "huge".into(),
+            source_path: None,
+            format: "cube".into(),
+            text: "#".repeat(filmcraft_project::MAX_LUT_TEXT_BYTES + 1).into(),
+        });
+        let loaded = decode(&encode(&p, false)).unwrap();
+        assert!(loaded.project.luts.is_empty());
     }
 
     /// What is open is stored beside the project. A file without it, or with one that cannot be

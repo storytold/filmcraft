@@ -119,7 +119,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G6. No real-world media corpus or workflow acceptance tests
 
-- **Done:** first scripted MCP workflows (#835, `apps/filmcraft-cli/tests/workflows.rs`): the
+- **Done:** first scripted MCP workflows (#835, `apps/filmcraft-cli/tests/it/workflows.rs`): the
   `filmcraft-cli mcp` binary imports ffmpeg-made phone-like VFR H.264 + AAC MP4 and long-GOP
   H.264 Matroska with two audio tracks (AAC, AC-3), edits (extract, audio gain, title; ripple
   trims, colour matte, cross dissolve), exports H.264 MP4, and saves a project that a new process
@@ -161,8 +161,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   rearrangement (#493); clicking empty space to deselect (#683); filmstrip thumbnails (#614);
   marquee selection in the Project panel (#578); Freeform bins and middle-mouse pan (#579);
   Program monitor Button Editor (+) (#431); keyframe curves for Position (#448); transition
-  editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize;
-  the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
+  editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize,
+  drag the cut to move it with the transition; the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
   X11 (#457).
 - **Estimate:** 120–200 h. Doc: [ui-parity.md](ui-parity.md).
 
@@ -298,7 +298,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   with circular fillets (`masks.add` `cornerRadius`, `masks.roundCorners`, every path keyframe;
   #813), from an on-monitor corner-roundness handle with a live preview (one undo step per drag;
   #844); Shift snaps pen mask segments and dragged-out Bézier handles to 45° steps (#853), and
-  Shift constrains vertex and whole-mask drags to 45° steps from the press point (#1408).
+  Shift constrains vertex and whole-mask drags to 45° steps from the press point (#1408); a
+  marquee or Shift-click selects several vertices on the Program monitor, and dragging any of
+  them moves them all in one undo step (#3150).
 - **Estimate:** 60–110 h.
 
 ## G19. Speech to text off in release builds
@@ -320,3 +322,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |

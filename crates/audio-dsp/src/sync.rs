@@ -77,9 +77,13 @@ pub fn mixdown(channels: &[&[f32]]) -> Vec<f32> {
 /// Low-pass filter (Blackman-windowed sinc, cutoff at 0.42 × the new sample rate) and keep every
 /// `d`-th sample.
 pub fn decimate(x: &[f32], d: usize) -> Vec<f32> {
-    if d <= 1 {
+    if x.is_empty() || d <= 1 {
         return x.to_vec();
     }
+    // Factors above the input length cannot produce another output sample. Cap the useful factor
+    // as well as the filter width so a public caller cannot turn a tiny input into a huge plan.
+    const MAX_FACTOR: usize = 4096;
+    let d = d.min(x.len()).min(MAX_FACTOR);
     let half = 8 * d;
     let fc = 0.42 / d as f64; // cycles per input sample
     let taps: Vec<f32> = {
@@ -394,6 +398,13 @@ mod tests {
         let rh = crate::testutil::rms(&dh[100..7900]);
         assert!((rl - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.01, "{rl}");
         assert!(rh < 0.01, "{rh}");
+    }
+
+    #[test]
+    fn decimate_does_not_plan_a_filter_for_empty_or_extreme_requests() {
+        assert!(decimate(&[], usize::MAX).is_empty());
+        let tiny = [1.0, -1.0];
+        assert_eq!(decimate(&tiny, usize::MAX), decimate(&tiny, tiny.len()));
     }
 
     #[test]
