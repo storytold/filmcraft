@@ -68,6 +68,7 @@ impl GpuMask {
         self.run(masks, w, h, Some((original, effected))).map(|(_, px)| px)
     }
 
+    /// Run the mask compute shader for `masks` over `w`×`h`, optionally mixing `original` and `effected`.
     fn run(&self, masks: &[FlatMask], w: usize, h: usize, mix: Option<(&[f32], &[f32])>) -> Option<(Vec<f32>, Vec<f32>)> {
         use wgpu::util::DeviceExt;
         let active: Vec<&FlatMask> = masks.iter().filter(|m| m.mode.index() != 0).collect();
@@ -152,15 +153,14 @@ impl GpuMask {
         }
         enc.copy_buffer_to_buffer(&cov_b, 0, &rc, 0, cov_size);
         enc.copy_buffer_to_buffer(&px_b, 0, &rp, 0, px_size);
-        self.queue.submit([enc.finish()]);
+        let sub = self.queue.submit([enc.finish()]);
         let fetch = |b: &wgpu::Buffer| -> Option<Vec<f32>> {
             let slice = b.slice(..);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| {
                 let _ = tx.send(r);
             });
-            d.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(8)) }).ok()?;
-            rx.recv().ok()?.ok()?;
+            crate::wait_mapped(d, sub.clone(), &rx)?;
             let data = slice.get_mapped_range().ok()?;
             let v = data.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
             drop(data);

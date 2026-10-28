@@ -82,21 +82,20 @@ fn composition_offset(pts: i64, dts: i64, den: i64) -> i32 {
 }
 
 impl VideoEncoder for NvencEncoder {
+    /// Build the ISOBMFF sample entry (`avc1` or `hvc1`) with colour and HDR signalling.
     fn sample_entry(&self) -> SampleEntry {
         let (sps, pps) = self.enc.parameter_sets();
         // `config` declines sizes above u16::MAX
         let (w, h) = (u16::try_from(self.w).unwrap_or(u16::MAX), u16::try_from(self.h).unwrap_or(u16::MAX));
-        match self.enc.codec() {
+        let mut e = match self.enc.codec() {
             Codec::H264 => SampleEntry::avc(AvcConfig::new(vec![sps.to_vec()], vec![pps.to_vec()], 4), w, h),
-            Codec::Hevc => {
-                // `Nvenc::new` built and validated the record, so there is always one for HEVC
-                let mut e = SampleEntry::hevc(self.enc.hevc_config().cloned().unwrap_or_default(), w, h);
-                // HDR: `colr` (BT.2020 + PQ / HLG) and, for PQ, `mdcv` / `clli`, as the software H.264 encoder does
-                // (nclx, whatever the container: readers take it from either). SDR stays as it was, with the VUI only.
-                self.signal.apply_to(&mut e, false);
-                e
-            }
-        }
+            // `Nvenc::new` built and validated the record, so there is always one for HEVC
+            Codec::Hevc => SampleEntry::hevc(self.enc.hevc_config().cloned().unwrap_or_default(), w, h),
+        };
+        // `colr` (BT.709 for SDR, BT.2020 + PQ / HLG for HDR) and, for PQ, `mdcv` / `clli`, as the
+        // software H.264 encoder does (nclx, whatever the container: readers take it from either).
+        self.signal.apply_to(&mut e, false);
+        e
     }
 
     fn timescale(&self) -> u32 {

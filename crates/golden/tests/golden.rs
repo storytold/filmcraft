@@ -742,24 +742,23 @@ fn scenes_are_distinct() {
 /// usable adapter. `require_float_target` additionally demands a renderable `Rgba32Float`, which
 /// only the effect-chain plan needs; main falls back to CPU effects on adapters without it.
 fn device(context: &str, require_float_target: bool) -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
-    let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok() else {
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, String, bool, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
+    let Some((_, name, renderable, dev, q)) = SHARED.get_or_init(|| {
+        let (instance, backends) = filmcraft_gpu::adapter::offscreen_instance()?;
+        let adapter = filmcraft_gpu::adapter::offscreen_adapter(&instance, backends)?;
+        let name = adapter.get_info().name;
+        let renderable = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba32Float).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let (dev, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        Some((instance, name, renderable, dev, q))
+    }) else {
         eprintln!("SKIPPED ({context}): no GPU adapter");
         return None;
     };
-    let name = adapter.get_info().name;
-    let renderable = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba32Float).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
-    if require_float_target && !renderable {
+    if require_float_target && !*renderable {
         eprintln!("SKIPPED ({context}): adapter {name} cannot render to Rgba32Float");
         return None;
     }
-    match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
-        Ok(device) => Some(device),
-        Err(_) => {
-            eprintln!("SKIPPED ({context}): adapter {name} refused a device");
-            None
-        }
-    }
+    Some((dev.clone(), q.clone()))
 }
 
 #[test]

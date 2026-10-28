@@ -105,14 +105,8 @@ impl ExportRenderer {
         static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
         let (instance, device, queue) = SHARED
             .get_or_init(|| {
-                // A build without a wgpu backend for this platform (`cargo build -p filmcraft-cli`
-                // alone: this crate asks for none) has no GPU to offer, and `Instance::default()`
-                // panics there.
-                if wgpu::Instance::enabled_backend_features().is_empty() {
-                    return None;
-                }
-                let instance = wgpu::Instance::default();
-                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+                let (instance, backends) = crate::adapter::offscreen_instance()?;
+                let adapter = crate::adapter::offscreen_adapter(&instance, backends)?;
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
