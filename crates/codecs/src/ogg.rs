@@ -6,7 +6,8 @@
 //! final page's end trimming is applied, and random access decodes [`crate::audio::OPUS_PRE_ROLL`]
 //! of preceding packets first (so a seek gives the same samples as continuous playback).
 //!
-//! Vorbis: decoded once when opened (audio files are small next to video), aligned to the granule
+//! Vorbis: decoded once when opened into the shared audio cache (a compressed file's decoded
+//! PCM costs far more than the file itself), aligned to the granule
 //! positions (leading samples before the first page's granule and samples after the last page's
 //! granule are dropped).
 
@@ -45,12 +46,13 @@ enum Kind {
     Opus {
         head: Box<filmcraft_opus::OpusHead>,
         timing: OpusTiming,
-        state: Mutex<OpusState>,
+        state: Mutex<Box<OpusState>>,
     },
-    /// Fully decoded planar samples.
+    /// Fully decoded planar samples, held in the shared audio cache (`pcm_key`); evicted
+    /// sources decode the file again on the next read (#2473).
     Pcm {
         rate: u32,
-        samples: Vec<Vec<f32>>,
+        pcm_key: u64,
     },
 }
 
@@ -79,7 +81,7 @@ impl OggSource {
             .position(|s| matches!(s.codec, Codec::Opus | Codec::Vorbis) && !s.packets.is_empty())
             .ok_or_else(|| CodecError::Unsupported("Ogg: no Opus or Vorbis stream".into()))?;
         let st = &file.streams[stream];
-        let (kind, rate, channels, codec) = match st.codec {
+        let (kind, rate, channels, codec, pcm_frames) = match st.codec {
             Codec::Opus => {
                 let head = filmcraft_opus::OpusHead::parse(&st.headers[0]).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
                 let timing = OpusTiming::of(st, head.pre_skip as u32);
@@ -88,22 +90,26 @@ impl OggSource {
                     Kind::Opus {
                         head: Box::new(head),
                         timing,
-                        state: Mutex::new(OpusState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None }),
+                        state: Mutex::new(Box::new(OpusState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None })),
                     },
                     OPUS_RATE,
                     channels,
                     "Opus",
+                    0,
                 )
             }
             _ => {
                 let (rate, samples) = decode_vorbis(&file, &bytes, stream)?;
                 let ch = samples.len() as u32;
-                (Kind::Pcm { rate, samples }, rate, ch, "Vorbis")
+                let frames = samples.first().map_or(0, Vec::len) as i64;
+                let pcm_key = crate::audio::fresh_key();
+                crate::audio::audio_cache().insert(pcm_key, Arc::new(samples));
+                (Kind::Pcm { rate, pcm_key }, rate, ch, "Vorbis", frames)
             }
         };
         let frames = match &kind {
             Kind::Opus { timing, .. } => timing.total,
-            Kind::Pcm { samples, .. } => samples.first().map_or(0, Vec::len) as i64,
+            Kind::Pcm { .. } => pcm_frames,
         };
         let info = MediaInfo {
             name: name.to_string(),
@@ -211,7 +217,12 @@ impl MediaSource for OggSource {
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
         let (head, timing, state) = match &self.kind {
-            Kind::Pcm { rate, samples } => return Ok(read_resampled(samples, *rate, start, frames, sample_rate)),
+            Kind::Pcm { rate, pcm_key } => {
+                let samples = crate::audio::audio_cache()
+                    .get_or_insert_with(*pcm_key, || decode_vorbis(&self.file, &self.bytes, self.stream).map(|(_, s)| Arc::new(s)))
+                    .map_err(MediaError::from)?;
+                return Ok(read_resampled(&samples, *rate, start, frames, sample_rate));
+            }
             Kind::Opus { head, timing, state } => (head, timing, state),
         };
         let ch = head.channels.max(1);

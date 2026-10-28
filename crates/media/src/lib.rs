@@ -30,7 +30,7 @@ use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
 
-pub use cache::FrameCache;
+pub use cache::{AudioCache, FrameCache};
 pub use generators::{DemoScene, Generator};
 pub use reader::{ByteReader, ReaderOpener, SharedReader};
 
