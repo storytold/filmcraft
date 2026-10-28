@@ -19,6 +19,7 @@
 pub mod diarize;
 pub mod mel;
 pub mod models;
+pub mod transcription;
 pub mod vad;
 #[cfg(feature = "whisper")]
 pub mod whisper;

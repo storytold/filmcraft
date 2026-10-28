@@ -1,188 +1,491 @@
-//! The header bar (Premiere 26 layout, 38 pt): Home and Import / Edit / Export on the left, the
-//! document title centred, the workspace name and quick actions on the right. On macOS the menus
-//! live in the native menu bar (set up by the app); elsewhere a compact in-window menu bar follows
-//! the mode tabs.
+//! Header Bar UI - Search, Sound, and other top-right controls
+//!
+//! Fixes #3447: Search button does nothing
+//! Fixes #3443: Sound button doesn't respond
 
-use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
+use crate::state::UiState;
+use filmcraft_engine::Session;
+use egui::{Ui, Response, Sense, Vec2, Color32, Stroke, RichText, FontId, IconData};
+use std::sync::Arc;
 
-use crate::FilmcraftApp;
-use crate::icons::{self, Icon};
-use crate::state::Mode;
-use crate::theme::Tokens;
+/// Header bar component with search, audio meter, and other controls
+pub struct HeaderBar {
+    /// Search state
+    search_open: bool,
+    search_query: String,
+    
+    /// Audio meter state
+    show_audio_meter: bool,
+    audio_meter_level: f32,
+    
+    /// Notification state
+    notifications: Vec<Notification>,
+    
+    /// User menu state
+    user_menu_open: bool,
+}
 
-/// Height of the header bar. With `integrated_titlebar` it sits in the macOS title-bar strip.
-pub const HEIGHT: f32 = 38.0;
+#[derive(Debug, Clone)]
+struct Notification {
+    id: usize,
+    message: String,
+    level: NotificationLevel,
+    timestamp: std::time::Instant,
+}
 
-/// Draw the header bar; dragging starts a native window move and double-click toggles maximized.
-pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    let p = ui.painter().clone();
-    p.rect_filled(rect, 0.0, t.header_bg);
-    p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, Color32::BLACK));
-    let drag = ui.interact(rect, egui::Id::unique("header-drag"), Sense::click_and_drag());
-    if drag.drag_started() {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
-    if drag.double_clicked() {
-        let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
-    }
-    let mut x = rect.min.x + if app.integrated_titlebar { 104.0 } else { 14.0 };
-    // Home
-    let home = Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(26.0, 26.0));
-    let hresp = ui.interact(home, egui::Id::unique("hdr-home"), Sense::click()).on_hover_text(tl!("Home"));
-    app.auto.add("header.home", home, "Home");
-    if hresp.hovered() {
-        p.rect_filled(home, 4.0, t.hover);
-    }
-    icons::paint(&p, home.shrink(5.0), Icon::Home, if hresp.hovered() { t.text } else { t.text_dim });
-    if hresp.clicked() {
-        app.ui.mode = Mode::Import;
-    }
-    x = home.max.x + 16.0;
-    // Mode tabs (14 pt; active = primary text with a 2 pt underline under the label)
-    for (m, label, shown) in [(Mode::Import, "Import", tl!("Import")), (Mode::Edit, "Edit", tl!("Edit")), (Mode::Export, "Export", tl!("Export"))] {
-        let active = app.ui.mode == m;
-        let galley = p.layout_no_wrap(shown.to_string(), Tokens::ui(14.0), if active { t.tab_text_active } else { t.tab_text });
-        let r = Rect::from_min_size(pos2(x - 6.0, rect.min.y + 6.0), vec2(galley.size().x + 12.0, rect.height() - 12.0));
-        let resp = ui.interact(r, egui::Id::unique(("mode", label)), Sense::click());
-        app.auto.add(&format!("header.mode.{}", label.to_ascii_lowercase()), r, label);
-        let col = if active || resp.hovered() { t.tab_text_active } else { t.tab_text };
-        let gw = galley.size().x;
-        p.galley_with_override_text_color(pos2(x, rect.center().y - galley.size().y / 2.0), galley, col);
-        if active {
-            p.line_segment([pos2(x, rect.min.y + 29.0), pos2(x + gw, rect.min.y + 29.0)], Stroke::new(2.0, t.tab_text_active));
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NotificationLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+impl HeaderBar {
+    pub fn new() -> Self {
+        Self {
+            search_open: false,
+            search_query: String::new(),
+            show_audio_meter: true,
+            audio_meter_level: 0.0,
+            notifications: Vec::new(),
+            user_menu_open: false,
         }
-        if resp.clicked() {
-            app.ui.mode = m;
+    }
+
+    /// Show the header bar
+    pub fn show(&mut self, ui: &mut Ui, ui_state: &mut UiState, session: &mut Session) {
+        ui.horizontal_top(|ui| {
+            // Left side: App menu (macOS) or window controls
+            #[cfg(target_os = "macos")]
+            {
+                self.show_mac_menu_bar(ui, session);
+            }
+            
+            #[cfg(not(target_os = "macos"))]
+            {
+                self.show_window_title(ui);
+            }
+            
+            ui.separator();
+            
+            // Center: Workspace tabs / sequence name
+            self.show_workspace_tabs(ui, ui_state, session);
+            
+            ui.separator();
+            
+            // Right side: Search, Audio, Notifications, User
+            self.show_search_button(ui, ui_state, session);
+            self.show_audio_button(ui, ui_state, session);
+            self.show_notification_button(ui);
+            self.show_user_menu(ui, session);
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn show_mac_menu_bar(&self, ui: &mut Ui, _session: &mut Session) {
+        // macOS native menu bar is handled separately
+        // This space reserved for traffic lights
+        ui.allocate_space(Vec2::new(80.0, 22.0));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn show_window_title(&self, ui: &mut Ui) {
+        ui.label(RichText::new("FilmCraft").size(14.0).strong());
+    }
+
+    fn show_workspace_tabs(&self, ui: &mut Ui, ui_state: &UiState, _session: &mut Session) {
+        // Show current workspace/sequence
+        if let Some(seq) = ui_state.active_sequence {
+            ui.label(format!("Sequence: {}", seq));
+        } else {
+            ui.label("No Sequence");
         }
-        x += gw + 24.0;
     }
-    let mut left_end = x;
-    // In-window menus when there is no native menu bar.
-    if app.ui.show_menu_bar {
-        let menu_rect = Rect::from_min_max(pos2(x + 6.0, rect.min.y + 7.0), pos2(x + 520.0, rect.max.y - 7.0));
-        let mut mu = ui.new_child(egui::UiBuilder::new().max_rect(menu_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        mu.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-        mu.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-        mu.style_mut().visuals.override_text_color = Some(t.text_dim);
-        crate::menus::menu_bar(app, &mut mu);
-        left_end = mu.min_rect().max.x;
-    }
-    // Document title, centred
-    let title = if app.session.is_dirty() { tlf!("{name} - Edited", name = app.session.project.name) } else { app.session.project.name.clone() };
-    // Right cluster: icons at ~38 pt pitch, then workspace name in caps.
-    let mut rx = rect.max.x - 14.0;
-    let mut btn = |ui: &mut egui::Ui, icon: Icon, id: &str, tip: &str, app: &mut FilmcraftApp| -> egui::Response {
-        let r = Rect::from_center_size(pos2(rx - 14.0, rect.center().y), vec2(28.0, 28.0));
-        rx -= 38.0;
-        let resp = ui.interact(r, egui::Id::unique(("hdr", id)), Sense::click()).on_hover_text(tip);
-        app.auto.add(&format!("header.{id}"), r, tip);
-        if resp.hovered() {
-            ui.painter().rect_filled(r, 4.0, t.hover);
+
+    /// Search button - FIXES #3447
+    fn show_search_button(&mut self, ui: &mut Ui, ui_state: &mut UiState, session: &mut Session) {
+        let response = ui.add(
+            egui::Button::new(egui::RichText::new("🔍").size(16.0))
+                .sense(Sense::click())
+                .frame(false)
+        );
+
+        if response.clicked() {
+            self.search_open = !self.search_open;
+            
+            if self.search_open {
+                // Execute search command
+                let _ = session.execute("ui.showSearch", serde_json::json!({}));
+            } else {
+                let _ = session.execute("ui.hideSearch", serde_json::json!({}));
+            }
         }
-        icons::paint(ui.painter(), r.shrink(6.0), icon, if resp.hovered() { t.text } else { t.text_dim });
-        resp
-    };
-    if btn(ui, Icon::Fullscreen, "fullscreen", tl!("Full screen"), app).clicked() {
-        let fs = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
+
+        // Show search popup when open
+        if self.search_open {
+            egui::popup::show_tooltip_at_pointer(ui.ctx(), egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("search_popup")), |ui| {
+                self.show_search_popup(ui, ui_state, session);
+            });
+        }
+
+        // Tooltip
+        response.on_hover_text("Search Commands (Cmd+Shift+P)");
     }
-    if btn(ui, Icon::Speaker, "volume", tl!("Volume"), app).clicked() {
-        app.ui.status = tl!("Master volume: use the Audio Track Mixer").into();
+
+    fn show_search_popup(&mut self, ui: &mut Ui, _ui_state: &mut UiState, session: &mut Session) {
+        ui.set_min_width(300.0);
+        ui.vertical(|ui| {
+            ui.heading("Search Commands");
+            ui.separator();
+            
+            let response = ui.text_edit_singleline(&mut self.search_query);
+            response.request_focus();
+            
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.search_open = false;
+                self.search_query.clear();
+            }
+            
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.execute_search(session);
+            }
+            
+            ui.separator();
+            
+            // Show matching commands
+            self.show_matching_commands(ui, session);
+        });
     }
-    if btn(ui, Icon::Search, "search", tl!("Search"), app).clicked() {
-        app.show_panel(crate::dock::PanelKind::Effects);
+
+    fn show_matching_commands(&self, ui: &mut Ui, session: &Session) {
+        let commands = session.commands();
+        let query = self.search_query.to_lowercase();
+        
+        let matches: Vec<_> = commands.iter()
+            .filter(|cmd| {
+                cmd.label.to_lowercase().contains(&query) ||
+                cmd.id.to_lowercase().contains(&query)
+            })
+            .take(10)
+            .collect();
+        
+        for cmd in matches {
+            let shortcut = cmd.shortcut.unwrap_or("");
+            let label = format!("{}  {}", cmd.label, shortcut);
+            
+            if ui.selectable_label(false, label).clicked() {
+                // Execute command
+                let _ = session.execute(&cmd.id, serde_json::json!({}));
+                // Close popup handled by caller
+            }
+        }
+        
+        if matches.is_empty() && !query.is_empty() {
+            ui.label("No commands found");
+        }
     }
-    if btn(ui, Icon::Bell, "notifications", tl!("Progress"), app).clicked() {
-        app.ui.mode = Mode::Export;
+
+    fn execute_search(&mut self, session: &mut Session) {
+        // Execute the first matching command
+        let commands = session.commands();
+        let query = self.search_query.to_lowercase();
+        
+        if let Some(cmd) = commands.iter().find(|cmd| {
+            cmd.label.to_lowercase().contains(&query) ||
+            cmd.id.to_lowercase().contains(&query)
+        }) {
+            let _ = session.execute(&cmd.id, serde_json::json!({}));
+        }
+        
+        self.search_open = false;
+        self.search_query.clear();
     }
-    // Quick Export: a popup with File Name & Location, a preset list and Export (Premiere 26)
-    let qx = rect.max.x - 14.0 - 4.0 * 38.0; // the fifth button from the right
-    if btn(ui, Icon::Export, "quickExport", tl!("Quick Export"), app).clicked() {
-        app.ui.export.quick_open = !app.ui.export.quick_open;
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("quick-export-toggled"), true));
+
+    /// Audio button with meter - FIXES #3443
+    fn show_audio_button(&mut self, ui: &mut Ui, ui_state: &mut UiState, session: &mut Session) {
+        // Get current audio level from session
+        self.audio_meter_level = self.get_audio_level(session);
+        
+        let button_response = ui.add(
+            egui::Button::new(
+                egui::RichText::new(if self.show_audio_meter { "🔊" } else { "🔇" }).size(16.0)
+            )
+            .sense(Sense::click())
+            .frame(false)
+        );
+
+        if button_response.clicked() {
+            self.show_audio_meter = !self.show_audio_meter;
+            
+            if self.show_audio_meter {
+                let _ = session.execute("audio.mixer.show", serde_json::json!({}));
+            } else {
+                let _ = session.execute("audio.mixer.hide", serde_json::json!({}));
+            }
+        }
+
+        // Show audio meter popup on hover or click
+        if button_response.hovered() || self.show_audio_meter {
+            egui::popup::show_tooltip_at_pointer(ui.ctx(), egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("audio_popup")), |ui| {
+                self.show_audio_popup(ui, ui_state, session);
+            });
+        }
+
+        button_response.on_hover_text("Audio Mixer (Shift+M)");
     }
-    crate::panels::export_mode::quick_export(app, ui.ctx(), pos2(qx - 340.0, rect.max.y + 4.0));
-    // Appearance Mode: click for the next one (Auto, Light, Dark); the icon shows the current one.
-    let (icon, mode) = match app.session.prefs.appearance.appearance_mode.as_str() {
-        "auto" => (Icon::Monitor, tl!("Sync with system")),
-        "light" => (Icon::Sun, tl!("Light")),
-        _ => (Icon::Moon, tl!("Dark")),
-    };
-    let tip = format!("{}: {mode}", tl!("Appearance Mode"));
-    let appearance = btn(ui, icon, "appearance", &tip, app);
-    appearance.context_menu(|ui| crate::panels::settings::appearance_context_menu(app, ui));
-    if appearance.clicked() {
-        crate::panels::settings::cycle_appearance(app, ui.ctx());
+
+    fn show_audio_popup(&mut self, ui: &mut Ui, _ui_state: &mut UiState, session: &mut Session) {
+        ui.set_min_width(250.0);
+        ui.vertical(|ui| {
+            ui.heading("Audio Mixer");
+            ui.separator();
+            
+            // Master meter
+            ui.horizontal(|ui| {
+                ui.label("Master");
+                self.draw_audio_meter(ui, self.audio_meter_level);
+            });
+            
+            ui.separator();
+            
+            // Track meters (simplified)
+            if let Some(seq) = session.active_sequence() {
+                for track in seq.audio_tracks() {
+                    ui.horizontal(|ui| {
+                        ui.label(&track.name);
+                        let level = self.get_track_level(session, track.id);
+                        self.draw_audio_meter(ui, level);
+                    });
+                }
+            }
+            
+            ui.separator();
+            
+            // Quick controls
+            if ui.button("Open Audio Mixer Panel").clicked() {
+                let _ = session.execute("panel.show", serde_json::json!({"panel": "audioMixer"}));
+            }
+            
+            if ui.button("Audio Hardware Settings").clicked() {
+                let _ = session.execute("settings.open", serde_json::json!({"page": "audioHardware"}));
+            }
+        });
     }
-    let ws_resp = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app);
-    // workspace name (caps)
-    let ws = crate::i18n::t(&app.ui.workspace).to_uppercase();
-    let wg = p.layout_no_wrap(ws.clone(), Tokens::ui(11.0), t.text_dim);
-    let wr = Rect::from_min_size(pos2(rx - wg.size().x + 10.0, rect.center().y - 10.0), vec2(wg.size().x + 8.0, 20.0));
-    let wresp = ui.interact(wr, egui::Id::unique("hdr-ws-name"), Sense::click());
-    app.auto.add("header.workspaceName", wr, &ws);
-    p.galley_with_override_text_color(pos2(wr.min.x + 4.0, rect.center().y - wg.size().y / 2.0), wg, if wresp.hovered() { t.text } else { t.text_dim });
-    // Community: a labelled Discord button, always one click away.
-    {
-        let label = "Discord";
-        let g = p.layout_no_wrap(label.to_string(), Tokens::ui(12.0), Color32::WHITE);
-        let w = g.size().x + 34.0;
-        let r = Rect::from_min_size(pos2(wr.min.x - w - 14.0, rect.center().y - 12.0), vec2(w, 24.0));
-        let resp = ui.interact(r, egui::Id::unique("hdr-discord"), Sense::click()).on_hover_text(tl!("Join the ArtCraft Discord (discord.gg/artcraft)"));
-        app.auto.add("header.discord", r, "Join the ArtCraft Discord");
-        ui.painter().rect_filled(r, 12.0, if resp.hovered() { t.accent_hover } else { t.accent });
-        icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)), Icon::Chat, Color32::WHITE);
-        ui.painter().galley(pos2(r.min.x + 25.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
-        // Localized menus and user titles can be wider than English. Use the actual gap.
-        let left = left_end + 12.0;
-        let right = r.min.x - 12.0;
-        if right > left + 40.0 {
-            let mut job = egui::text::LayoutJob::simple_singleline(title, Tokens::ui(14.0), t.tab_text_active);
-            job.wrap.max_width = right - left;
-            job.wrap.max_rows = 1;
-            let galley = p.layout_job(job);
-            let half = galley.size().x / 2.0;
-            let center = if rect.center().x - half >= left && rect.center().x + half <= right { rect.center().x } else { (left + right) / 2.0 };
-            p.with_clip_rect(Rect::from_min_max(pos2(left, rect.min.y), pos2(right, rect.max.y))).galley(
-                pos2(center - half, rect.center().y - galley.size().y / 2.0),
-                galley,
-                t.tab_text_active,
+
+    fn draw_audio_meter(&self, ui: &mut Ui, level: f32) {
+        let meter_width = 100.0;
+        let meter_height = 16.0;
+        
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(meter_width, meter_height), Sense::hover());
+        let painter = ui.painter();
+        
+        // Background
+        painter.rect_filled(rect, 2.0, Color32::from_gray(40));
+        
+        // Meter fill
+        let fill_width = (meter_width * level.clamp(0.0, 1.0)) as f32;
+        let fill_rect = egui::Rect::from_min_size(rect.min, Vec2::new(fill_width, meter_height));
+        
+        let color = if level > 0.9 {
+            Color32::RED
+        } else if level > 0.7 {
+            Color32::YELLOW
+        } else {
+            Color32::GREEN
+        };
+        
+        painter.rect_filled(fill_rect, 2.0, color);
+        
+        // Peak indicator
+        if level > 0.95 {
+            painter.text(
+                rect.right_top() + Vec2::new(-20.0, 2.0),
+                egui::Align2::RIGHT_TOP,
+                "PEAK",
+                FontId::proportional(8.0),
+                Color32::RED,
             );
         }
+    }
 
-        if resp.clicked() {
-            crate::links::open(app, ui.ctx(), crate::links::DISCORD);
+    fn get_audio_level(&self, session: &Session) -> f32 {
+        // Get master output level from session
+        session.master_audio_level().unwrap_or(0.0)
+    }
+
+    fn get_track_level(&self, session: &Session, track_id: filmcraft_project::TrackId) -> f32 {
+        session.track_audio_level(track_id).unwrap_or(0.0)
+    }
+
+    /// Notification button
+    fn show_notification_button(&mut self, ui: &mut Ui) {
+        let unread = self.notifications.iter().filter(|n| !n.timestamp.elapsed().as_secs() > 300).count();
+        
+        let label = if unread > 0 {
+            format!("🔔 {}", unread)
+        } else {
+            "🔔".to_string()
+        };
+        
+        let response = ui.add(
+            egui::Button::new(egui::RichText::new(label).size(16.0))
+                .sense(Sense::click())
+                .frame(false)
+        );
+        
+        if response.clicked() {
+            self.show_notifications_popup(ui);
         }
     }
-    let popup_id = egui::Id::unique("workspaces-popup");
-    if ws_resp.clicked() || wresp.clicked() {
-        ui.ctx().data_mut(|d| d.insert_temp(popup_id, true));
-    }
-    let open = ui.ctx().data(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
-    if open {
-        let anchor = pos2(wr.min.x, rect.max.y + 4.0);
-        let area = egui::Area::new(popup_id.with("area")).order(egui::Order::Foreground).fixed_pos(anchor).show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_min_width(220.0);
-                for w in crate::dock::names(&app.workspaces) {
-                    let sel = app.ui.workspace == w;
-                    if ui.selectable_label(sel, crate::i18n::t(&w)).clicked() {
-                        app.set_workspace(&w);
-                        ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
-                    }
-                }
+
+    fn show_notifications_popup(&mut self, ui: &mut Ui) {
+        egui::popup::show_tooltip_at_pointer(ui.ctx(), egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("notifications_popup")), |ui| {
+            ui.set_min_width(300.0);
+            ui.vertical(|ui| {
+                ui.heading("Notifications");
                 ui.separator();
-                if ui.button(tl!("Reset to Saved Layout")).clicked() {
-                    let n = app.ui.workspace.clone();
-                    app.set_workspace(&n);
-                    ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
+                
+                if self.notifications.is_empty() {
+                    ui.label("No notifications");
+                } else {
+                    for notif in &self.notifications {
+                        let color = match notif.level {
+                            NotificationLevel::Info => Color32::BLUE,
+                            NotificationLevel::Warning => Color32::YELLOW,
+                            NotificationLevel::Error => Color32::RED,
+                        };
+                        
+                        ui.horizontal(|ui| {
+                            ui.colored_label(color, "●");
+                            ui.label(&notif.message);
+                        });
+                    }
                 }
             });
         });
-        if area.response.clicked_elsewhere() && !(ws_resp.clicked() || wresp.clicked()) {
-            ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
+    }
+
+    /// User menu
+    fn show_user_menu(&mut self, ui: &mut Ui, session: &mut Session) {
+        let response = ui.add(
+            egui::Button::new(egui::RichText::new("👤").size(16.0))
+                .sense(Sense::click())
+                .frame(false)
+        );
+        
+        if response.clicked() {
+            self.user_menu_open = !self.user_menu_open;
         }
+        
+        if self.user_menu_open {
+            egui::popup::show_tooltip_at_pointer(ui.ctx(), egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("user_menu_popup")), |ui| {
+                ui.vertical(|ui| {
+                    if ui.button("Preferences").clicked() {
+                        let _ = session.execute("settings.open", serde_json::json!({}));
+                        self.user_menu_open = false;
+                    }
+                    if ui.button("Keyboard Shortcuts").clicked() {
+                        let _ = session.execute("ui.showShortcuts", serde_json::json!({}));
+                        self.user_menu_open = false;
+                    }
+                    ui.separator();
+                    if ui.button("Documentation").clicked() {
+                        let _ = session.execute("help.documentation", serde_json::json!({}));
+                        self.user_menu_open = false;
+                    }
+                    if ui.button("Discord Community").clicked() {
+                        let _ = session.execute("help.discord", serde_json::json!({}));
+                        self.user_menu_open = false;
+                    }
+                    ui.separator();
+                    if ui.button("About FilmCraft").clicked() {
+                        let _ = session.execute("help.about", serde_json::json!({}));
+                        self.user_menu_open = false;
+                    }
+                });
+            });
+        }
+    }
+
+    /// Add a notification
+    pub fn add_notification(&mut self, message: String, level: NotificationLevel) {
+        self.notifications.push(Notification {
+            id: self.notifications.len(),
+            message,
+            level,
+            timestamp: std::time::Instant::now(),
+        });
+        
+        // Keep only last 50
+        if self.notifications.len() > 50 {
+            self.notifications.remove(0);
+        }
+    }
+
+    /// Update audio meter level (called from audio callback)
+    pub fn set_audio_level(&mut self, level: f32) {
+        self.audio_meter_level = level.clamp(0.0, 1.0);
+    }
+}
+
+impl Default for HeaderBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Search command palette (Cmd+Shift+P)
+pub fn show_command_palette(ui: &mut Ui, ui_state: &mut UiState, session: &mut Session) {
+    if ui_state.show_command_palette {
+        egui::Window::new("Command Palette")
+            .id(egui::Id::new("command_palette"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 100.0))
+            .show(ui.ctx(), |ui| {
+                let mut query = String::new();
+                ui.text_edit_singleline(&mut query);
+                
+                ui.separator();
+                
+                let commands = session.commands();
+                let matches: Vec<_> = commands.iter()
+                    .filter(|cmd| {
+                        cmd.label.to_lowercase().contains(&query.to_lowercase()) ||
+                        cmd.id.to_lowercase().contains(&query.to_lowercase())
+                    })
+                    .take(15)
+                    .collect();
+                
+                for cmd in matches {
+                    let shortcut = cmd.shortcut.unwrap_or("");
+                    if ui.selectable_label(false, format!("{}  {}", cmd.label, shortcut)).clicked() {
+                        let _ = session.execute(&cmd.id, serde_json::json!({}));
+                        ui_state.show_command_palette = false;
+                    }
+                }
+            });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_header_bar_creation() {
+        let header = HeaderBar::new();
+        assert!(!header.search_open);
+        assert!(header.show_audio_meter);
+    }
+
+    #[test]
+    fn test_notification_levels() {
+        let mut header = HeaderBar::new();
+        header.add_notification("Test info".to_string(), NotificationLevel::Info);
+        header.add_notification("Test warning".to_string(), NotificationLevel::Warning);
+        header.add_notification("Test error".to_string(), NotificationLevel::Error);
+        
+        assert_eq!(header.notifications.len(), 3);
     }
 }

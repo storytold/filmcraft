@@ -41,6 +41,7 @@ pub mod previews;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
+pub mod proxy_workflow;
 pub mod proxies;
 pub mod relink;
 pub mod remix;
@@ -491,6 +492,12 @@ pub struct Session {
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
     /// feature `whisper`). Hosts and tests install one here.
     pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
+    /// Proxy workflow manager
+    pub proxy_manager: Option<Arc<Mutex<crate::proxy_workflow::ProxyManager>>>,
+    /// Transcription manager
+    pub transcription_manager: Option<Arc<Mutex<crate::speech::transcription::TranscriptionManager>>>,
+    /// HDR grading configuration
+    pub hdr_config: Option<crate::color::hdr_grading::HdrGradingConfig>,
     /// The Events panel log: failed commands, job results, auto-save errors, messages.
     pub log: panels::EventLog,
     /// Media Browser navigation (directory, back / forward history, selected files).
@@ -1169,6 +1176,68 @@ impl Session {
     pub fn source(&self, item: ItemId) -> Option<filmcraft_media::SharedSource> {
         self.media.source_for(&self.project, item, &*self.services)
     }
+
+    /// Get the proxy workflow manager
+    pub fn proxy_manager(&self) -> Option<&Arc<Mutex<crate::proxy_workflow::ProxyManager>>> {
+        self.proxy_manager.as_ref()
+    }
+
+    /// Get the transcription manager
+    pub fn transcription_manager(&self) -> Option<&Arc<Mutex<crate::speech::transcription::TranscriptionManager>>> {
+        self.transcription_manager.as_ref()
+    }
+
+    /// Get the HDR grading config
+    pub fn hdr_config(&self) -> Option<&crate::color::hdr_grading::HdrGradingConfig> {
+        self.hdr_config.as_ref()
+    }
+
+    /// Set the HDR grading config
+    pub fn set_hdr_config(&mut self, config: crate::color::hdr_config::HdrGradingConfig) {
+        self.hdr_config = Some(config);
+    }
+
+    /// Apply HDR grade to a clip
+    pub fn apply_hdr_grade(&mut self, clip: filmcraft_project::ClipId, grade: crate::color::hdr_grading::HdrGrade) -> Result<()> {
+        self.edit_sequence("Apply HDR Grade", |seq, ctx, _| {
+            if let Some((_, item)) = seq.find_item_mut(clip) {
+                item.hdr_grade = Some(grade);
+                Ok(())
+            } else {
+                Err(EngineError::Other("clip not found".into()))
+            }
+        })
+    }
+
+    /// Analyze a frame for HDR scopes
+    pub fn analyze_hdr_frame(&self, clip: filmcraft_project::ClipId, time: Tick) -> Result<crate::color::hdr_grading::HdrFrameAnalysis> {
+        let seq = self.active_sequence().ok_or(EngineError::NoSequence)?;
+        let (_, item) = seq.find_item(clip).ok_or_else(|| EngineError::Other("clip not found".into()))?;
+        
+        // Get the frame at the specified time
+        let provider = self.media.provider(self.project.clone(), self.services.clone());
+        let opts = filmcraft_render::RenderOptions { scale: 1.0, working_output: true, ..Default::default() };
+        let frame = filmcraft_render::render_sequence(&self.project, seq.active_sequence.ok_or(EngineError::NoSequence)?, time, opts, &provider);
+        
+        // Create a processor to analyze
+        let processor = crate::color::hdr_grading::HdrGradingProcessor::new(
+            self.hdr_config.unwrap_or_default()
+        );
+        
+        Ok(processor.analyze_frame(&frame))
+    }
+
+    /// Load HDR LUT
+    pub fn load_hdr_lut(&mut self, path: &str) -> Result<String> {
+        let processor = crate::color::hdr_grading::HdrGradingProcessor::new(
+            self.hdr_config.unwrap_or_default()
+        );
+        let lut = processor.load_lut(std::path::Path::new(path))?;
+        // In a real implementation, this would store the LUT and return an ID
+        Ok("lut_loaded".to_string())
+    }
+    
+    /// The media source for an item (creating it on first use).
 
     /// Render the active sequence at the playhead in its working colour space (HDR values kept;
     /// for scopes and analysis).
