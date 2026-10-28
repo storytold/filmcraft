@@ -31,6 +31,7 @@ filmcraft-hevc = { path = "crates/hevc" }
 filmcraft-vp8 = { path = "crates/vp8" }
 filmcraft-vp9 = { path = "crates/vp9" }
 filmcraft-prores = { path = "crates/prores" }
+filmcraft-dv = { path = "crates/dv" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-apv = { path = "crates/apv" }
 filmcraft-dng = { path = "crates/dng" }

@@ -617,6 +617,7 @@ fn codec_label(c: &CodecConfig) -> String {
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"raw " => "Uncompressed RGB".into(),
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"2vuy" => "Uncompressed YUV 4:2:2".into(),
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"v210" => "Uncompressed YUV 4:2:2 10-bit".into(),
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"dvc " => "DV / DVCPRO NTSC".into(),
         CodecConfig::Av1(c) => format!("AV1 ({} Profile)", ["Main", "High", "Professional"].get(c.seq_profile as usize).unwrap_or(&"Main")),
         CodecConfig::Apv(a) => match filmcraft_apv::Profile::from_idc(a.profile_idc) {
             Some(p) => p.name().into(),
@@ -690,6 +691,7 @@ fn hevc_format(h: &filmcraft_isobmff::HevcConfig) -> (u32, u32) {
 
 fn pixfmt_label(c: &CodecConfig) -> String {
     match c {
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"dvc " => "YUV 4:1:1 8-bit".into(),
         CodecConfig::Avc(a) => avc_format(a).map(|(chroma, bits)| yuv_label(chroma, bits)).unwrap_or_default(),
         CodecConfig::Hevc(h) => {
             let (chroma, bits) = hevc_format(h);

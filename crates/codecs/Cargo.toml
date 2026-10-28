@@ -29,6 +29,7 @@ filmcraft-hevc = { workspace = true }
 filmcraft-vp8 = { workspace = true }
 filmcraft-vp9 = { workspace = true }
 filmcraft-prores = { workspace = true }
+filmcraft-dv = { workspace = true }
 filmcraft-dnx = { workspace = true }
 filmcraft-av1 = { workspace = true }
 filmcraft-apv = { workspace = true }
