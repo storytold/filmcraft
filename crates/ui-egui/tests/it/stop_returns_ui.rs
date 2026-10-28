@@ -177,6 +177,22 @@ fn source_play_from_the_end_returns_to_where_it_started_over() {
     assert_eq!(h.state().session.state.source_playhead, first);
 }
 
+/// With edit points selected the Program monitor is the Trim Monitor, and the alternate Play/Stop
+/// key plays around the edit like Space does.
+#[test]
+fn the_alternate_key_plays_around_the_edit_in_trim_mode() {
+    let mut h = harness(true);
+    let clip = h.state().session.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    h.state_mut().session.execute("trim.selectEditPoint", json!({"clip": clip, "edge": "out", "kind": "roll"})).unwrap();
+    h.step();
+    invoke(&mut h, "playback.toggleOther", json!({}));
+    h.step();
+    assert!(!h.state().playback.playing, "no ordinary Program playback starts");
+    assert!(h.state().session.trim_play.around.is_some(), "it loops around the edit");
+    invoke(&mut h, "playback.toggleOther", json!({}));
+    assert!(h.state().session.trim_play.around.is_none(), "and a second press ends it");
+}
+
 #[test]
 fn the_toggle_command_switches_the_setting() {
     let mut h = harness(false);
