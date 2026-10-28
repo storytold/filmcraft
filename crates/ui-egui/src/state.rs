@@ -531,6 +531,10 @@ pub struct UiState {
     /// Delete Tracks dialog draft.
     #[serde(default)]
     pub delete_tracks: DeleteTracksDraft,
+    /// File ▸ Export ▸ Captions…: the file format chosen last (its extension, e.g. `vtt`), offered
+    /// first the next time.
+    #[serde(default)]
+    pub caption_export_format: Option<String>,
     /// Sequence Settings dialog draft.
     #[serde(default)]
     pub sequence_settings: SequenceSettingsDraft,
@@ -1010,6 +1014,7 @@ impl Default for UiState {
             audio_gain: AudioGainDraft::default(),
             add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
+            caption_export_format: None,
             sequence_settings: SequenceSettingsDraft::default(),
             transition_duration: TransitionDurationDraft::default(),
             gfx_edit: None,
