@@ -78,6 +78,49 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
+- **Pending Windows Media Foundation hardware H.264 / H.265 encoder proposal**
+  ([#2488](https://github.com/storytold/filmcraft/pull/2488), `media_foundation/encode.rs`).
+  This encoder module and its registration are absent at this documentation branch's source head;
+  the Media Foundation decoder described above is already registered. The following describes
+  the proposed 8-bit SDR 4:2:0 path, not released or accepted behavior. It registers behind NVENC
+  so an NVIDIA machine keeps NVENC, using available hardware encoder MFTs across vendors.
+  Historical Qualcomm / AMD observations do not validate the revised transport. Intel and explicit
+  per-adapter acceptance remain pending. In the proposal, transform activation and media-type
+  negotiation are handled in `media_foundation/mft.rs`:
+  - they are **asynchronous** MFTs, and an asynchronous MFT answers `MF_E_TRANSFORM_ASYNC_LOCKED`
+    (`0xC00D6D77`) to *every* call until the caller sets `MF_TRANSFORM_ASYNC_UNLOCK`, so activation
+    unlocks it before anything else. The HRESULT's message text does not mention the cause;
+  - candidates come from an unfiltered hardware enumeration and each is asked for the output type
+    it takes; the output type is set before the input type. Filtered enumeration passes the input
+    type before the output type, following the
+    [`MFTEnumEx` contract](https://learn.microsoft.com/en-us/windows/win32/api/mfapi/nf-mfapi-mftenumex).
+    An earlier empty encoder search used these arguments in reverse; it did not prove that vendor
+    MFTs omit their registered media types.
+  A transform with `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES` set must be given an output descriptor with
+  no sample attached (`cbSize` is then 0); attaching one, as is natural, makes `ProcessOutput` fail
+  forever while the MFT encodes correctly. **`IMFMediaBuffer::Lock` reports the buffer's size, not the
+  sample's**: an encoder MFT recycles one buffer across every picture it writes, and only
+  `GetCurrentLength` bytes of it are this picture. Reading what `Lock` returns puts the driver's
+  leftovers in the file — measured on a Snapdragon X, the first keyframe of a session carried 9 kB of
+  stale bytes out to offset 262 kB, which showed up as a hardware export coming out *larger* than the
+  software one at the same bitrate. Compare the two sizes when something looks wrong here.
+  Asynchronous MFT input and output calls consume NeedInput and HaveOutput event credits.
+  The final drain waits for DrainComplete and all pending output, with bounded polling and
+  allocation; quiet time alone cannot complete it. Accepted and emitted picture counts must match
+  before flush succeeds. Activated encoders are explicitly shut down on configuration failure,
+  diagnostic completion and normal drop. Initial output-type notifications have bounded recovery
+  only while the requested codec, size, rate and profile remain unchanged and no native picture
+  has been emitted; later format changes fail the export. `mfcaps` lists the encoder MFTs.
+  H.264 is opt-in (Export ▸ Hardware encoding) exactly as with NVENC; H.265, which has no software
+  encoder, fails with the reason and its availability probe makes the format offered wherever either
+  encoder opens a session. It declines CRF, two-pass, HDR, MXF, interlaced output, non-square pixels
+  in H.265 and odd picture sizes. **A constant native timestamp offset of 0–16 pictures is accepted**
+  while packets remain ordered. MF packets have uniform durations and zero composition offsets;
+  their first picture stays at media time zero. The timestamp offset must not become an edit-list
+  trim, which would hide valid initial pictures. A changing offset is rejected as reordering with
+  an error naming the encoder. The earlier encoder implementation was verified on a Snapdragon X
+  (Adreno X1-85, Windows 11 ARM64, driver `31.0.137.0`) with `QCOM Hardware Encoder - H264` and
+  `- HEVC`. That historical result does not validate the revised transport on that device.
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
@@ -344,8 +387,10 @@ Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on mac
 textures on Windows); B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
 VideoToolbox; VP9 and AV1 through VA-API (Linux), and VA-API encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
 H.264 with NVENC (HDR H.264 stays with the software encoder), HDR10 MaxCLL / MaxFALL measured from
-the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 with the other Windows vendors and on Linux, and encoders
-from other vendors on Windows (through Media Foundation); VP9 / AV1 4:4:4 and 12-bit on Windows.
+the pictures (they are written as 0, unknown), AV1 with NVENC and H.265 on Linux; Media Foundation
+H.264 / HEVC encoding (pending #2488), followed by its 10-bit / HDR and B-frame support, and AV1
+through Media Foundation (FilmCraft has no AV1 encoder plumbing at all, though the MFTs exist);
+VP9 / AV1 4:4:4 and 12-bit on Windows.
 
 ### Linux NVENC sources and limits
 
