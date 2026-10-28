@@ -221,6 +221,33 @@ fn run_fade(app: &mut FilmcraftApp, clip: ClipId, edge: filmcraft_edit::Edge, au
     }
 }
 
+/// A press at `p` on a fade handle, with the Selection tool and no selection modifier held (which
+/// selects the clip as anywhere else on it), unless a middle-button drag pans: a click applies the
+/// default transition at that edge, held to what a drag could make there; a drag starts setting its
+/// length. Returns whether the press landed on a handle.
+fn press_fade(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response, seq: &Sequence, layout: &Layout, p: Pos2) -> bool {
+    let mods = ctx.input(|i| i.modifiers);
+    let selecting = mods.shift || mods.alt || mods.command;
+    if app.ui.tool != Tool::Selection || selecting || resp.drag_started_by(egui::PointerButton::Middle) {
+        return false;
+    }
+    let Some((clip, edge, audio)) = fade_handle_at(seq, layout, p) else { return false };
+    if !resp.clicked() {
+        if resp.drag_started() {
+            app.tl.drag = Some(Drag::Fade { clip, edge, audio, frames: 0 });
+        }
+        return true;
+    }
+    let rate = seq.settings.frame_rate;
+    let default = if audio { app.session.prefs.timeline.audio_transition_duration(rate) } else { app.session.prefs.timeline.video_transition_duration(rate) };
+    let most = seq.find_item(clip).map(|(track, it)| fade_most(seq, rate, track, it, edge));
+    // a clip too short for any fade gets none, as a drag of no length makes none
+    if most != Some(0) {
+        run_fade(app, clip, edge, audio, most.filter(|m| rate.frame_at(default) > *m));
+    }
+    true
+}
+
 /// The fade handles on the hovered and the selected clips, and the fade being dragged (#1385).
 fn fade_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, pos: Option<Pos2>) {
     let ctx = ui.ctx().clone();
@@ -520,7 +547,9 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
             Grab::Volume { .. } if resp.clicked() && !adding => Grab::Other(pressed.grab.hit()),
             g => g,
         };
-        start_drag(app, ctx, resp, seq, layout, grab, p, t, (pressed.v_scroll, pressed.a_scroll));
+        if !press_fade(app, ctx, resp, seq, layout, p) {
+            start_drag(app, ctx, resp, seq, layout, grab, p, t, (pressed.v_scroll, pressed.a_scroll));
+        }
     }
 
     false
@@ -544,8 +573,6 @@ fn start_drag(
     let mods = ctx.input(|i| i.modifiers);
     let rate = seq.settings.frame_rate;
     let roll_ripple = app.session.prefs.trim.selection_tool_roll_ripple;
-    let selecting = mods.shift || mods.alt || mods.command;
-    let fade = if tool == Tool::Selection && !selecting { fade_handle_at(seq, layout, p) } else { None };
     let started = match (tool, grab) {
         // a middle-button drag pans whatever the tool and whatever it starts on, as in the
         // monitors (#824) and DaVinci Resolve (#1490); only a primary press is kept in
@@ -555,22 +582,6 @@ fn start_drag(
             let tv = &app.ui.timeline;
             Some(Drag::Pan { last, start_scroll: tv.target_scroll, start_v: tv.v_scroll, audio: last.y >= layout.split_y, start_a: tv.a_scroll })
         }
-        // a fade handle: a click applies the default transition at that edge, a drag sets its length
-        (Tool::Selection, _) if fade.is_some() => fade.and_then(|(clip, edge, audio)| {
-            if resp.clicked() {
-                // the default length, held to what a drag could make at this edge
-                let default =
-                    if audio { app.session.prefs.timeline.audio_transition_duration(rate) } else { app.session.prefs.timeline.video_transition_duration(rate) };
-                let most = seq.find_item(clip).map(|(track, it)| fade_most(seq, rate, track, it, edge));
-                // a clip too short for any fade gets none, as a drag of no length makes none
-                if most != Some(0) {
-                    run_fade(app, clip, edge, audio, most.filter(|m| rate.frame_at(default) > *m));
-                }
-                None
-            } else {
-                Some(Drag::Fade { clip, edge, audio, frames: 0 })
-            }
-        }),
         (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
         (_, Grab::Other(Hit::WorkArea { edge })) => {
             seq.work_area.filter(|_| resp.drag_started()).map(|w| Drag::WorkArea { edge, from: t, start: w.start, end: w.end() })
