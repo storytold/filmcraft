@@ -460,10 +460,16 @@ pub fn picture_rect(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) -> 
     }
 }
 
-/// Keep a monitor's stored pan what the picture `pic` in `area` shows: zero at Fit, else clamped
-/// to the range the scroll bars cover, so `ui.inspect` reads back the pan in effect.
+/// Keep a monitor's stored zoom and pan what the picture `pic` in `area` shows: the zoom within
+/// the menu's range (Fit for a value that is not a usable factor), the pan zero at Fit, else
+/// clamped to the range the scroll bars cover, so `ui.inspect` and the zoom menu read back the
+/// view in effect.
 fn settle_pan(app: &mut FilmcraftApp, w: Which, area: Rect, pic: Rect) {
     let v = view_mut(app, w);
+    let zoom = sane_zoom(v.zoom);
+    if zoom != v.zoom {
+        v.zoom = zoom;
+    }
     let pan = if sane_zoom(v.zoom).is_some() { clamp_pan(v.pan, pan_limit(pic.size(), area)) } else { Vec2::ZERO };
     if (pan.x - v.pan[0]).abs() > 1e-3 || (pan.y - v.pan[1]).abs() > 1e-3 || !v.pan.iter().all(|p| p.is_finite()) {
         v.pan = [pan.x, pan.y];
@@ -478,13 +484,22 @@ fn pan_by(app: &mut FilmcraftApp, w: Which, area: Rect, pic: Rect, d: Vec2) {
     v.pan = [p.x, p.y];
 }
 
+/// The magnification a zoom gesture by `f` takes a picture shown at `cur` to, within the zoom
+/// menu's range, or None when that would not move it the way the gesture asks: a picture already
+/// past the range (an 8K frame fitted below 10%, a tiny one above 1600%) would be clamped the
+/// other way, so the gesture leaves it alone.
+fn wheel_zoom(cur: f32, f: f32) -> Option<f32> {
+    let z = (cur * f).clamp(ZOOMS[0].1, ZOOMS[ZOOMS.len() - 1].1);
+    ((z - cur) * (f - 1.0) > 0.0 && z.is_finite()).then_some(z)
+}
+
 /// Zoom and pan the picture `pic` shown in `area`. A pinch, or the wheel with Cmd / Ctrl, zooms
 /// about the pointer, from Fit too, between the zoom menu's 10% and 1600%. Over a magnified
 /// picture the wheel scrolls it as Premiere does (#2685): vertically, horizontally with Shift, and
 /// both ways with a two-finger trackpad swipe. A middle-button drag, or a drag with the Hand tool,
 /// pans a magnified picture. `fw` is the picture's width in frame pixels.
 ///
-/// The stored pan is settled to the picture shown first.
+/// The stored zoom and pan are settled to the picture shown first.
 pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, pic: Rect, fw: f32, ppp: f32) {
     settle_pan(app, w, area, pic);
     let ctx = ui.ctx().clone();
@@ -500,7 +515,7 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
             let f = if pinch { wheel.pinch } else { (travel * 1.1_f32.ln() / 40.0).exp().clamp(0.5, 2.0) };
             if (f - 1.0).abs() > 1e-4 && pic.width() > 0.0 && fw > 0.0 {
                 let cur = pic.width() * ppp / fw;
-                let z = (cur * f).clamp(ZOOMS[0].1, ZOOMS[ZOOMS.len() - 1].1);
+                let Some(z) = wheel_zoom(cur, f) else { return };
                 let k = z / cur;
                 // the point of the picture under the pointer stays under it
                 let centre = p - (p - pic.center()) * k;
@@ -1182,6 +1197,23 @@ mod tests {
         assert_eq!(channel_view(&img, DisplayMode::Red).px, vec![200, 200, 200, 255, 0, 0, 0, 255, 90, 90, 90, 255]);
         assert_eq!(channel_view(&img, DisplayMode::Green).px[..4], [100, 100, 100, 255]);
         assert_eq!(channel_view(&img, DisplayMode::Alpha).px, vec![255, 255, 255, 255, 0, 0, 0, 255, 128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn a_zoom_gesture_never_moves_the_picture_the_other_way() {
+        // within range: about the factor asked
+        assert!(wheel_zoom(1.0, 1.1).is_some_and(|z| (z - 1.1).abs() < 1e-6));
+        assert!(wheel_zoom(1.0, 0.9).is_some_and(|z| (z - 0.9).abs() < 1e-6));
+        // an 8K frame fitted at 5%: zooming out would clamp up to 10%, so nothing changes;
+        // zooming in still works
+        assert_eq!(wheel_zoom(0.05, 0.9), None);
+        assert!(wheel_zoom(0.05, 1.1).is_some_and(|z| (z - 0.1).abs() < 1e-6));
+        // a tiny frame fitted at 3000%: zooming in would clamp down to 1600%
+        assert_eq!(wheel_zoom(30.0, 1.1), None);
+        assert!(wheel_zoom(30.0, 0.9).is_some_and(|z| (z - 16.0).abs() < 1e-6));
+        // already at a limit: no change
+        assert_eq!(wheel_zoom(16.0, 1.1), None);
+        assert_eq!(wheel_zoom(0.1, 0.9), None);
     }
 
     #[test]

@@ -466,6 +466,14 @@ fn magnified_monitor_scrolls_with_bars_and_the_wheel() {
     d.ok("ui.set", json!({"program": {"pan": [40.0, 40.0]}}));
     d.frames(2);
     assert_eq!(d.program()["pan"], json!([0.0, 0.0]));
+    // a zoom set from outside reads back as the one shown: past the menu's range at 1600%,
+    // one that is no factor at all as Fit
+    d.ok("ui.set", json!({"program": {"zoom": 1.0e6}}));
+    d.frames(2);
+    assert_eq!(num(&d.program()["zoom"]), 16.0, "{}", d.program());
+    d.ok("ui.set", json!({"program": {"zoom": -2.0}}));
+    d.frames(2);
+    assert!(d.program()["zoom"].is_null(), "{}", d.program());
 
     // the Source monitor scrolls its own picture
     let project = d.exec("project.inspect", json!({}));
