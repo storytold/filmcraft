@@ -158,7 +158,9 @@ pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
 pub fn output_path(ex: &ExportUi) -> String {
     let name = if ex.file_name.trim().is_empty() { "Export" } else { ex.file_name.trim() };
     let dir = filmcraft_engine::export_tools::expand_home(ex.location.trim());
-    let file = format!("{name}.{}", ex.settings.extension());
+    let ext = ex.settings.extension();
+    let has_ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| filmcraft_engine::export_tools::extension_matches(ext, e));
+    let file = if has_ext { name.to_string() } else { format!("{name}.{ext}") };
     if dir.is_empty() { file } else { std::path::Path::new(&dir).join(file).to_string_lossy().to_string() }
 }
 
@@ -266,5 +268,20 @@ mod location_tests {
         assert!(tail.len() <= MAX_LOCATION_DISPLAY_BYTES);
         assert!(tail.ends_with('終'));
         assert!(std::str::from_utf8(tail.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn a_name_that_ends_in_the_formats_alias_gets_no_second_extension() {
+        for (format, name, out) in [
+            (Format::TiffSequence, "shot.tiff", "shot.tiff"),
+            (Format::TiffSequence, "shot.TIF", "shot.TIF"),
+            (Format::JpegSequence, "shot.jpeg", "shot.jpeg"),
+            (Format::Aiff, "take.aiff", "take.aiff"),
+            (Format::H264, "take.aiff", "take.aiff.mp4"),
+        ] {
+            let ex =
+                ExportUi { file_name: name.into(), location: String::new(), settings: ExportSettings { format, ..Default::default() }, ..Default::default() };
+            assert_eq!(output_path(&ex), out);
+        }
     }
 }
