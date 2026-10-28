@@ -45,6 +45,11 @@ impl FilmcraftApp {
                 if self.control_input_only && id != "app.quit" {
                     continue;
                 }
+                // The native menu took the press of this command's V shortcut (Cmd+V on macOS), so
+                // only its release reaches egui: it is not a press egui-winit dropped (#611, #3448).
+                if self.bindings.iter().any(|b| b.1 == egui::Key::V && b.2 == id) {
+                    self.v_down = true;
+                }
                 if let Err(e) = menus::activate_native(self, ctx, &id) {
                     self.ui.status = e;
                 }
