@@ -305,20 +305,22 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         && area.contains(p)
     {
         let g = grab_at(seq, layout, p, tool, mods, roll_ripple);
-        let blocked = tool == Tool::Selection
-            && match g.hit() {
-                Hit::Clip { clip, .. } => {
-                    let clips = if app.session.state.selection.contains(&clip) {
-                        app.session.state.selection.clone()
-                    } else if mods.alt {
-                        vec![clip]
-                    } else {
-                        filmcraft_engine::commands::with_links(&app.session, &[clip])
-                    };
-                    move_is_locked(seq, &clips, 0)
-                }
-                _ => false,
-            };
+        let blocked = match g.hit() {
+            Hit::Clip { clip, .. } if tool == Tool::Selection => {
+                let clips = if app.session.state.selection.contains(&clip) {
+                    app.session.state.selection.clone()
+                } else if mods.alt {
+                    vec![clip]
+                } else {
+                    filmcraft_engine::commands::with_links(&app.session, &[clip])
+                };
+                move_is_locked(seq, &clips, 0)
+            }
+            Hit::Clip { clip, .. } if matches!(tool, Tool::Slip | Tool::Slide) => {
+                move_is_locked(seq, &filmcraft_engine::commands::with_links(&app.session, &[clip]), 0)
+            }
+            _ => false,
+        };
         let cur = if blocked {
             CursorIcon::NotAllowed
         } else {
@@ -339,8 +341,14 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         };
         ctx.set_cursor_icon(cur);
         // the editing tools show their own icon as the pointer wherever they act in the tracks (the
-        // system pointer is hidden); a blocked edit, a volume line and the ruler keep the system one
-        if !blocked && tool_draws_pointer(tool) && !matches!(g, Grab::Volume { .. } | Grab::Other(Hit::Ruler | Hit::None)) {
+        // system pointer is hidden); a blocked edit, a volume line, the ruler and the work area bar
+        // keep the system one, and so does empty space for every tool but Hand and Zoom
+        let draws = match g {
+            Grab::Volume { .. } | Grab::Other(Hit::Ruler | Hit::WorkArea { .. }) => false,
+            Grab::Other(Hit::None) => matches!(tool, Tool::Hand | Tool::Zoom),
+            _ => true,
+        };
+        if !blocked && tool_draws_pointer(tool) && draws {
             ctx.set_cursor_icon(CursorIcon::None);
             paint_tool_pointer(&ctx, tool, p);
         }
@@ -1429,7 +1437,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         && tool_draws_pointer(tool)
         && match d {
             Drag::Pan { .. } => tool == Tool::Hand,
-            Drag::Scrub { .. } | Drag::Volume(_) | Drag::Marquee { .. } | Drag::Divider | Drag::ZoomBar { .. } => false,
+            Drag::Scrub { .. } | Drag::WorkArea { .. } | Drag::Volume(_) | Drag::Marquee { .. } | Drag::Divider | Drag::ZoomBar { .. } => false,
             _ => true,
         }
         && ctx.output(|o| o.cursor_icon) == CursorIcon::Default
