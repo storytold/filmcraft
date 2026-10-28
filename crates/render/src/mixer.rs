@@ -485,8 +485,37 @@ impl<'a> Plan<'a> {
 
     /// How long (seconds) the inserts of audible strips keep sounding after their input falls
     /// silent at `t` (reverb and echo tails, dynamics release): the pre-roll a fresh graph needs.
+    ///
+    /// Inserts in series add up: a reverb feeding an echo on the same strip, or a track reverb
+    /// feeding a submix or Mix reverb, rings on for both tails. So each strip's inserts are summed
+    /// and every route adds the tail of the strip it feeds; the longest path through the graph
+    /// wins.
     fn tail_s(&self, t: Tick) -> f64 {
-        let s = self.strips.iter().filter(|s| !s.silent).flat_map(|s| s.pre.iter().chain(&s.post)).map(|i| (i.map.preroll)(&i.effect, t)).fold(0.0, f64::max);
+        // one insert's tail, made safe (a hostile parameter can make it NaN or huge)
+        let one = |i: &Insert<'_>| {
+            let s = (i.map.preroll)(&i.effect, t);
+            if s.is_finite() { s.clamp(0.0, MAX_TAIL_S) } else { 0.0 }
+        };
+        let own: Vec<f64> = self.strips.iter().map(|s| if s.silent { 0.0 } else { s.pre.iter().chain(&s.post).map(one).sum() }).collect();
+        // the longest tail from each strip to the Mix: routes only feed later strips, but relax
+        // at most once per strip so a malformed plan still ends
+        let mut total = own.clone();
+        for _ in 0..self.strips.len() {
+            let mut changed = false;
+            for r in &self.routes {
+                let (Some(&mine), Some(&down)) = (own.get(r.src), total.get(r.target)) else { continue };
+                if let Some(t) = total.get_mut(r.src)
+                    && mine + down > *t
+                {
+                    *t = mine + down;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let s = total.into_iter().fold(0.0, f64::max);
         if s.is_finite() { s.max(0.0) } else { 0.0 }
     }
 

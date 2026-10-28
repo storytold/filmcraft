@@ -157,8 +157,10 @@ pub struct Playback {
     /// How long the sound keeps playing past the sequence end so track, submix and Mix effect
     /// tails (reverb, echo) decay instead of being cut (#2731): the mixer graph's
     /// [`filmcraft_render::mixer::effect_tail`], taken when playback starts. The playhead rests
-    /// on the last frame meanwhile.
+    /// on the last frame meanwhile. Taken again at the end if the project changed since.
     pub ring_out: Tick,
+    /// The project revision `ring_out` was taken at.
+    pub ring_out_revision: Option<u64>,
 }
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain

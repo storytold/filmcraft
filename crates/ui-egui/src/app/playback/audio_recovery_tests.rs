@@ -391,6 +391,18 @@ fn track_effect_tails_ring_out_past_the_sequence_end() {
     assert!(app.playback.playing);
     run(&mut app, (end - from).seconds() + ring.seconds() + 0.05);
     assert!(!app.playback.playing, "stops once the tail has rung out");
+    // a longer decay set while the tail rings out is heard to its end
+    played.store(0, Ordering::Relaxed);
+    start(&mut app);
+    run(&mut app, (end - from).seconds() + 0.05);
+    assert!(app.playback.playing);
+    app.session.execute("mixer.setInsert", json!({"strip":"A1","slot":0,"params":{"decay":100.0}})).unwrap();
+    run(&mut app, (end - from).seconds() + ring.seconds() + 0.05);
+    assert!(app.playback.playing, "the longer tail is still sounding");
+    assert!(app.playback.ring_out > ring, "{:?}", app.playback.ring_out);
+    let longer = app.playback.ring_out;
+    run(&mut app, (end - from).seconds() + longer.seconds() + 0.05);
+    assert!(!app.playback.playing, "stops once the longer tail has rung out");
     assert_eq!(app.session.playhead(), last);
     // replaying from the end starts over from the beginning, as before
     app.play(1.0);

@@ -825,3 +825,26 @@ fn effect_tail_follows_the_inserts() {
     r.p.sequence_mut(r.seq).unwrap().master_effects[0].enabled = false;
     assert_eq!(tail(&r), Tick::ZERO);
 }
+
+/// Inserts in series ring on for the sum of their tails: two reverbs on one track, and a track
+/// reverb feeding a Mix reverb, both outlast either reverb alone (#2731).
+#[test]
+fn effect_tails_in_series_add_up() {
+    let mut r = short_clip(noise, 24_000);
+    let tail = |r: &Rig| mixer::effect_tail(r.p.sequence(r.seq).unwrap());
+    r.track(0).effects.push(studio_reverb(true));
+    let one = tail(&r);
+    assert!(one > Tick::ZERO);
+    r.track(0).effects.push(studio_reverb(true));
+    let two = tail(&r);
+    assert!(two > one + Tick::from_seconds_f64(0.5), "two reverbs in series: {two:?} vs {one:?}");
+    r.track(0).effects.truncate(1);
+    r.p.sequence_mut(r.seq).unwrap().master_effects.push(studio_reverb(false));
+    let through = tail(&r);
+    assert!(through > one + Tick::from_seconds_f64(0.5), "track reverb into a Mix reverb: {through:?} vs {one:?}");
+    // never past the cap
+    for _ in 0..8 {
+        r.track(0).effects.push(studio_reverb(true));
+    }
+    assert!(tail(&r) <= Tick::from_seconds_f64(mixer::MAX_TAIL_S + 1.0));
+}
