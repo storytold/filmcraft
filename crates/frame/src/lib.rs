@@ -253,17 +253,17 @@ impl VideoFrame {
             PixelData::Rgba8(d) => PixelData::Rgba8(Arc::new(rotate_plane(d, w, h, 4, q))),
             PixelData::RgbaF32(d) => PixelData::RgbaF32(Arc::new(rotate_plane(d, w, h, 4, q))),
             PixelData::Yuv8 { planes, chroma, alpha } => {
-                let (c, chroma) = rotate_chroma(planes, *chroma, w, h, q);
+                let ([cb, cr], chroma) = rotate_chroma(planes, *chroma, w, h, q);
                 PixelData::Yuv8 {
-                    planes: [Arc::new(rotate_plane(&planes[0], w, h, 1, q)), Arc::new(c[0].clone()), Arc::new(c[1].clone())],
+                    planes: [Arc::new(rotate_plane(&planes[0], w, h, 1, q)), Arc::new(cb), Arc::new(cr)],
                     chroma,
                     alpha: alpha.as_ref().map(|a| Arc::new(rotate_plane(a, w, h, 1, q))),
                 }
             }
             PixelData::Yuv16 { planes, chroma, bits, alpha } => {
-                let (c, chroma) = rotate_chroma(planes, *chroma, w, h, q);
+                let ([cb, cr], chroma) = rotate_chroma(planes, *chroma, w, h, q);
                 PixelData::Yuv16 {
-                    planes: [Arc::new(rotate_plane(&planes[0], w, h, 1, q)), Arc::new(c[0].clone()), Arc::new(c[1].clone())],
+                    planes: [Arc::new(rotate_plane(&planes[0], w, h, 1, q)), Arc::new(cb), Arc::new(cr)],
                     chroma,
                     bits: *bits,
                     alpha: alpha.as_ref().map(|a| Arc::new(rotate_plane(a, w, h, 1, q))),
