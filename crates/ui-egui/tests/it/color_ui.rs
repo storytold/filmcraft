@@ -364,3 +364,46 @@ fn lumetri_rows_keep_their_width_when_the_clip_name_is_long() {
     let long = d.element("lumetri.param.hdr_white").expect("hdr_white row");
     assert_eq!(short, long, "a long clip name must not move or widen the control rows");
 }
+
+#[test]
+fn hsl_key_pickers_and_invert_mask() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    // fold Basic Correction and open HSL Secondary so its Key rows are on screen
+    d.click("lumetri.section.Basic Correction");
+    d.click("lumetri.section.HSL Secondary");
+    for id in ["lumetri.hslKey.set", "lumetri.hslKey.add", "lumetri.hslKey.remove", "lumetri.param.hsl_invert"] {
+        assert!(!d.ids(id).is_empty(), "{id} missing: {:?}", d.ids("lumetri."));
+    }
+    d.snapshot("color-lumetri-hsl-key", None);
+    let key = |d: &mut Driver| {
+        let e = lumetri(d, clip);
+        ["hsl_on", "hsl_hue", "hsl_sat_min", "hsl_luma_min", "hsl_luma_max"].map(|k| e["params"][k]["value"].clone())
+    };
+    let before = key(&mut d);
+    // Set color: arm the picker, click the Program picture
+    d.click("lumetri.hslKey.set");
+    d.click("program.picture");
+    for _ in 0..50 {
+        if key(&mut d) != before {
+            break;
+        }
+        d.frames(1);
+    }
+    let after = key(&mut d);
+    assert_ne!(after, before, "the Set color picker changed the key");
+    // it disarms after the pick: another click on the picture changes nothing
+    d.click("program.picture");
+    assert_eq!(key(&mut d), after);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(key(&mut d), before, "one undo step");
+    // Invert Mask
+    let invert = |d: &mut Driver| lumetri(d, clip)["params"]["hsl_invert"]["value"].clone();
+    let off = invert(&mut d);
+    d.click("lumetri.param.hsl_invert");
+    assert_ne!(invert(&mut d), off, "Invert Mask switched on");
+}

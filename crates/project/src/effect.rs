@@ -458,6 +458,7 @@ fn build_effects() -> Vec<EffectDef> {
                 grp(fs("hsl_luma_max", "Luma Max", 95.0, (0.0, 100.0), (0.0, 100.0), "", 0), "HSL Secondary"),
                 grp(f("hsl_soft", "Soften", 20.0, 0.0, 100.0, ""), "HSL Secondary"),
                 grp(ch("hsl_show_mask", "Show Mask", &["Off", "Color/Gray", "Color/Black", "White/Black"], 0), "HSL Secondary"),
+                grp(b("hsl_invert", "Invert Mask", false), "HSL Secondary"),
                 grp(f("hsl_denoise", "Denoise", 0.0, 0.0, 100.0, ""), "HSL Secondary"),
                 grp(f("hsl_blur", "Blur", 0.0, 0.0, 100.0, ""), "HSL Secondary"),
                 grp(f("hsl_temp", "Temperature", 0.0, -100.0, 100.0, ""), "HSL Secondary"),

@@ -3626,5 +3626,9 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+	Set color (click the colour to key in the Program monitor)	Definir color (haz clic en el color que quieres aislar en el monitor de programa)
+	Add color (widen the key to a colour in the Program monitor)	Añadir color (amplía la clave a un color del monitor de programa)
+	Remove color (narrow the key to leave out a colour in the Program monitor)	Quitar color (reduce la clave para excluir un color del monitor de programa)
+	Invert Mask	Invertir máscara
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
