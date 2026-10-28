@@ -1345,3 +1345,85 @@ mod wave_extent_tests {
         assert!(loud <= 20.0);
     }
 }
+
+#[cfg(test)]
+mod centred_waveform_tests {
+    use super::*;
+    use filmcraft_project::Label;
+
+    fn clip() -> TrackItem {
+        TrackItem {
+            custom_label_color: None,
+            id: ClipId(1),
+            item: ItemId(1),
+            name: String::new(),
+            label: Label::Iris,
+            start: Tick::ZERO,
+            duration: Tick(TICKS_PER_SECOND),
+            source_in: Tick::ZERO,
+            speed: 1.0,
+            reverse: false,
+            enabled: true,
+            link: None,
+            group: None,
+            effects: filmcraft_project::effect::intrinsic_audio(),
+            markers: Vec::new(),
+            gain_db: 0.0,
+            frame_hold: None,
+            scale_to_frame: false,
+            essential: None,
+            multicam: None,
+            time_interpolation: Default::default(),
+            hold_filters: false,
+            field_options: None,
+            source_channels: Vec::new(),
+            audio_stream: 0,
+            graphic: None,
+        }
+    }
+
+    /// The vertices of the waveform `draw_waveform` paints for a one second clip whose first half
+    /// has only positive samples and whose second half only negative ones, in `body`.
+    fn painted(centered: bool, body: Rect) -> Vec<Pos2> {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.extras.centered_waveforms = centered;
+        app.ui.extras.dynamic_waveforms = false;
+        // 256 samples a peak at 48 kHz: 188 peaks a second
+        let peaks: Vec<(f32, f32)> = (0..188).map(|i| if i < 94 { (0.0, 0.5) } else { (-0.5, 0.0) }).collect();
+        app.tl.peaks.lock().unwrap_or_else(|e| e.into_inner()).insert((ItemId(1), 0), Arc::new(peaks));
+        let it = clip();
+        let mut out =
+            egui::Context::default().run_ui(egui::RawInput::default(), |ui| waveforms::draw_waveform(&mut app, ui.painter(), body, &it, Color32::WHITE));
+        out.textures_delta.clear();
+        let mut points = Vec::new();
+        for s in &out.shapes {
+            if let egui::Shape::Mesh(m) = &s.shape {
+                points.extend(m.vertices.iter().filter(|v| v.color == Color32::WHITE).map(|v| v.pos));
+            }
+        }
+        points
+    }
+
+    #[test]
+    fn centred_positive_peaks_go_above_the_centre_line_and_negative_ones_below() {
+        let body = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 60.0));
+        // the zone is the lower 42% of the body less a point; its centre line is half way up it
+        let centre = 60.0 - 1.0 - (60.0_f32 * 0.42) / 2.0;
+        let points = painted(true, body);
+        let positive: Vec<&Pos2> = points.iter().filter(|p| p.x < 45.0).collect();
+        let negative: Vec<&Pos2> = points.iter().filter(|p| p.x > 55.0).collect();
+        assert!(!positive.is_empty() && !negative.is_empty(), "both halves are drawn");
+        assert!(positive.iter().all(|p| p.y <= centre + 1e-3) && positive.iter().any(|p| p.y < centre - 1.0), "positive peaks rise from the centre line");
+        assert!(negative.iter().all(|p| p.y >= centre - 1e-3) && negative.iter().any(|p| p.y > centre + 1.0), "negative peaks hang from the centre line");
+    }
+
+    #[test]
+    fn rectified_waveforms_stand_on_the_bottom_of_the_zone_for_both_signs() {
+        let body = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 60.0));
+        let bottom = 60.0 - 1.0;
+        let points = painted(false, body);
+        assert!(!points.is_empty());
+        assert!(points.iter().all(|p| p.y <= bottom + 1e-3), "nothing below the bottom");
+        assert!(points.iter().filter(|p| p.x > 55.0).any(|p| p.y < bottom - 1.0), "negative peaks rise as well");
+    }
+}
