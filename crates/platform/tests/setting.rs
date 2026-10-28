@@ -2,6 +2,7 @@
 //! Off gives the software decoder (and no hardware frames), Auto the hardware one where the
 //! system has it. Its own test binary: the switch is process-wide.
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use common::*;

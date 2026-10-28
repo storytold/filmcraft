@@ -67,7 +67,7 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             Level::Warning => tl!("Warnings and Errors"),
             Level::Error => tl!("Errors Only"),
         };
-        let r = egui::ComboBox::from_id_salt("events-filter").selected_text(label(min)).width(150.0).show_ui(ui, |ui| {
+        let r = craft_ui::ComboBox::from_id_salt("events-filter").selected_text(label(min)).width(150.0).show_ui(ui, |ui| {
             for l in [Level::Info, Level::Warning, Level::Error] {
                 let r = ui.selectable_label(min == l, label(l));
                 elems.push((format!("events.filter.{}", l.label().to_ascii_lowercase()), r.rect, label(l).into()));
@@ -198,7 +198,7 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             elems.push((format!("progress.job.{id}"), r, format!("{label}: {status}")));
             if !done {
                 let cr = Rect::from_center_size(pos2(r.max.x - 18.0, bar.center().y), vec2(20.0, 20.0));
-                let resp = ui.interact(cr, egui::Id::new(("progress-cancel", id)), Sense::click());
+                let resp = ui.interact(cr, egui::Id::unique(("progress-cancel", id)), Sense::click());
                 let col = if resp.hovered() { t.danger } else { t.icon };
                 let s = Stroke::new(1.5, col);
                 ui.painter().line_segment([cr.center() + vec2(-5.0, -5.0), cr.center() + vec2(5.0, 5.0)], s);

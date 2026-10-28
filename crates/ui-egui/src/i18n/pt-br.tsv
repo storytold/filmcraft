@@ -323,6 +323,7 @@
 	Show Active Caption Tracks Only	Mostrar apenas faixas de legendas ativas
 	Show All Caption Tracks	Mostrar todas as faixas de legendas
 	Show All Marker Colors	Mostrar todas as cores de marcador
+	Show Duplicate Frame Markers	Mostrar marcadores de quadros duplicados
 	Show Guides	Mostrar guias
 	Show Rulers	Mostrar réguas
 	Show Through Edits	Mostrar edições contíguas
@@ -3452,8 +3453,8 @@
 	Commits	Commits
 	% of all commits	% de todos os commits
 	Lines +/−	Linhas +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	A saída de áudio falhou: reproduzindo sem som (verifique Preferências ▸ Hardware de áudio)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	A saída de áudio não está respondendo: reproduzindo sem som (verifique Preferências ▸ Hardware de áudio)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	A saída de áudio falhou: reproduzindo sem som (verifique Preferências > Hardware de áudio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	A saída de áudio não está respondendo: reproduzindo sem som (verifique Preferências > Hardware de áudio)
 	Clip Speed / Duration	Velocidade/duração do clipe
 	Speed:	Velocidade:
 	Reverse Speed	Inverter velocidade
@@ -3580,7 +3581,7 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
-# View ▸ Reset Interface Zoom (#2253).
+# View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	Redefinir zoom da interface
 	Track Color	Cor da trilha
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela

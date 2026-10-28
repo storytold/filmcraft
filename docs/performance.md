@@ -19,7 +19,7 @@ search highlights by query. Playhead movement reuses them; project edits, undo/r
 refresh them. Highlight lookup is constant work per word, including searches with many matches.
 
 To measure a long transcript, run
-`cargo test -p filmcraft-ui-egui --test transcript_ui long_transcript_redraw_benchmark -- --ignored --nocapture`
+`cargo test -p filmcraft-ui-egui --test it transcript_ui::long_transcript_redraw_benchmark -- --ignored --nocapture`
 alone. It reports median and p95 redraw time for 10,000 words with an empty query and a query matching
 every word. It measures UI update work, not native display presentation, and deliberately has no
 machine-dependent timing assertion. The transcript still lays out every word; list virtualization
@@ -181,7 +181,7 @@ Same commit, Settings ▸ Playback ▸ Hardware decoding switched with the bench
 `--hw auto` (`cargo xtask bench --sections decode --only dec_h --repeat 3 --hw …`, then
 `--sections playback --only h264` and `--only hevc-2160`), 2026-10-05, Apple M4 Pro, load average
 **150–190** throughout (shared with other agent builds). The decoded pictures are identical either
-way (bit-exact parity tests, `crates/platform/tests/videotoolbox.rs`); only who decodes changes.
+way (bit-exact parity tests, `crates/platform/tests/it/videotoolbox.rs`); only who decodes changes.
 
 ### Decode (every frame through the media stack)
 
@@ -344,6 +344,26 @@ the encoder's hand-off). Only NVENC, whose encode is light on the CPU, comes clo
 encoder waits for the renderer), as expected. 1080p exports use 70-160 MB more (the second batch of 16
 frames); 4K exports use less than before because the batch is smaller (8 for SDR, 2 for HDR instead of 16).
 
+## Results (CPU H.264 export: encoder work and colour conversion, before → after)
+
+`cargo run --release -p filmcraft-engine --example bench_export -- --runs 1`: 10 s of 1080p23.976
+H.264 + AAC (ffmpeg `testsrc2` with noise) exported to H.264 + AAC MP4 on the CPU (software
+encoder, no GPU renderer). Ryzen, 16 threads, Linux, 2026-10-27; 7 rounds with the builds in
+rotating order, one export per run, wall time in seconds:
+
+| build | median | min |
+|---|---|---|
+| before | 7.86 | 7.78 |
+| after | 6.14 | 6.02 |
+
+Every build writes the same file (same MD5), and so does a ProRes export of the same clip.
+The H.264 encoder now keeps the winning 4x4/8x8 transform trial instead of coding it again, skips motion
+search points it has already costed, codes the residual of an inter candidate only once it can
+still be chosen, and computes 8- and 4-wide SATD lane by lane. The export converts the H.264
+input on the render threads, which are idle while a batch is encoded, instead of on the encoding
+thread; the conversions themselves (Y'CbCr → linear for decoded video, linear → sRGB, RGBA → 4:2:0)
+use per-code tables built from the same expressions.
+
 ## Results (HW3: VideoToolbox hardware H.265 (HEVC) encoding, against hardware H.264)
 
 Apple M1 (8 cores, 16 GB), 2026-10-07, single runs on an otherwise idle machine, release build. Both
@@ -390,7 +410,7 @@ rounds; the table gives the range of the two (decode: best of 3 within each). Re
 `cargo xtask bench --sections decode --only dec_h264 --repeat 3 --hw off|auto` (likewise `dec_hevc`)
 and `--sections playback --only "h264-2160 full" --hw off|auto`; set `FILMCRAFT_FFMPEG` if ffmpeg is not
 on `PATH` for the fixture generator. Pictures are identical either way (bit-exact parity tests,
-`crates/platform/tests/media_foundation.rs`). The decoder MFTs were Microsoft's H.264 decoder
+`crates/platform/tests/it/media_foundation.rs`). The decoder MFTs were Microsoft's H.264 decoder
 (`Microsoft H264 Video Decoder MFT`) and the `HEVCVideoExtension` decoder, both decoding with DXVA
 on the RTX 5060's NVDEC: `nvidia-smi dmon -s u` showed the decoder engine at 18–27 % during an
 Auto run and 0 % otherwise, and every picture came back as a Direct3D 11 texture.
@@ -553,7 +573,7 @@ one thread the code path is the old one.
 
 Linux, AMD Ryzen 7 7800X3D (8 cores / 16 threads), 2026-10-11, shared with other agents' builds;
 base = `2ff3f5e`, after = this change, 16 decoder threads, SVT-AV1 preset 8 fixtures from
-`crates/av1/tests/perf.rs` (`perf_1080p_lowdelay` and `perf_2160p_gop` are new there).
+`crates/av1/tests/it/perf.rs` (`perf_1080p_lowdelay` and `perf_2160p_gop` are new there).
 
 `av1dec` example (`AV1_LOOPS=2 AV1_THREADS=16`), 8 rounds alternating base / after per fixture,
 load average 11–27; speed-up = base wall time / after wall time of the adjacent pair:
@@ -693,7 +713,7 @@ copy.
    the loop filter; HEVC sub-layer non-reference pictures of the top sub-layer skip deblocking
    and SAO; AV1 shown frames that refresh no slot skip deblocking, CDEF and loop restoration.
    Tested per codec (unflagged pictures bit-exact, single- and multi-threaded) and through the
-   media stack (`crates/codecs/tests/draft_decoders.rs`: draft frames reach draft requests only;
+   media stack (`crates/codecs/tests/it/draft_decoders.rs`: draft frames reach draft requests only;
    an export after draft playback is bit-exact with ffmpeg).
 
 Not done: AV1 row-level frame threading (references are waited for as whole frames) and its

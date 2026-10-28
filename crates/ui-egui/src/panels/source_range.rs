@@ -21,8 +21,9 @@ struct Drag {
     pointer_x: f32,
     revision: u64,
 }
+/// Temp-store key for the in/out range drag, per monitor, so Source and Program drags never alias.
 fn key(which: Which) -> egui::Id {
-    egui::Id::new(("monitor-range-edit", which as u8))
+    egui::Id::unique(("monitor-range-edit", which as u8))
 }
 fn self_item(app: &FilmcraftApp, which: Which) -> Option<ItemId> {
     if which == Which::Source { app.session.state.source_item } else { app.session.state.active_sequence }
@@ -72,6 +73,14 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
     let xof = |t: Tick| bar.min.x + (t.0.saturating_sub(shown.0.0) as f64 / span).clamp(0.0, 1.0) as f32 * bar.width();
     // what is off a zoomed bar has no handle (past either end of it all, it sits at that end)
     let shows = |t: Tick| (t >= shown.0 || shown.0 <= view.start) && (t <= shown.1 || shown.1 >= view.end);
+    // a hand on the movable band, a horizontal-resize arrow on the In/Out handles
+    let cursor_for = |edge: RangeEdge| {
+        if edge == RangeEdge::Move {
+            if cfg!(windows) { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Grab }
+        } else {
+            egui::CursorIcon::ResizeHorizontal
+        }
+    };
     let (a, b) = (xof(selected.start), xof(selected.end()));
     let mid = (a + b) * 0.5;
     let band = Rect::from_min_max(pos2(a, bar.min.y + 8.0), pos2(b, bar.max.y));
@@ -103,19 +112,14 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         }
         app.auto.add(id, rect, label);
         let response =
-            ui.add_enabled_ui(enabled && rect.width() > 0.0, |ui| ui.interact(rect, egui::Id::new(id), Sense::click_and_drag())).inner.on_hover_text(label);
-        let cursor = if edge == RangeEdge::Move {
-            if cfg!(windows) { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Grab }
-        } else {
-            egui::CursorIcon::ResizeHorizontal
-        };
+            ui.add_enabled_ui(enabled && rect.width() > 0.0, |ui| ui.interact(rect, egui::Id::unique(id), Sense::click_and_drag())).inner.on_hover_text(label);
+        let cursor = cursor_for(edge);
         let response = response.on_hover_cursor(cursor);
         result.handled |= response.hovered() || response.dragged() || response.clicked();
-        if edge == RangeEdge::In {
-            result.in_hot = response.hovered();
-        }
-        if edge == RangeEdge::Out {
-            result.out_hot = response.hovered();
+        match edge {
+            RangeEdge::In => result.in_hot = response.hovered(),
+            RangeEdge::Out => result.out_hot = response.hovered(),
+            RangeEdge::Move => {}
         }
         if response.drag_started() {
             let Some(pointer) = ctx.input(|i| i.pointer.press_origin()) else { continue };
@@ -157,11 +161,10 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
                     }
                 }
             }
-            if edge == RangeEdge::In {
-                result.in_hot = true;
-            }
-            if edge == RangeEdge::Out {
-                result.out_hot = true;
+            match edge {
+                RangeEdge::In => result.in_hot = true,
+                RangeEdge::Out => result.out_hot = true,
+                RangeEdge::Move => {}
             }
             if response.drag_stopped() {
                 clear(&ctx, which);
@@ -197,7 +200,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         let rect = Rect::from_min_max(pos2(x - 7.0, bar.max.y - 12.0), pos2(x + 7.0, bar.max.y));
         let id = if which == Which::Source { "source.playhead" } else { "program.playhead" };
         app.auto.add(id, rect, "Scrub playhead");
-        let playhead = ui.interact(rect, egui::Id::new(id), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        let playhead = ui.interact(rect, egui::Id::unique(id), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         if (playhead.dragged() || playhead.clicked())
             && let Some(pos) = playhead.interact_pointer_pos()
         {

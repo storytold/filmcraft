@@ -14,7 +14,7 @@ pub(crate) fn project() -> (Arc<Project>, ItemId, SourceMap) {
         p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(g.generator.clone()),
                 info,
                 interpret: Default::default(),
@@ -24,7 +24,7 @@ pub(crate) fn project() -> (Arc<Project>, ItemId, SourceMap) {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         )
     };
@@ -230,7 +230,7 @@ fn caption_burn_in_h264_ffmpeg_oracle() {
     let matte = p.add_item(
         "matte",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -240,7 +240,7 @@ fn caption_burn_in_h264_ffmpeg_oracle() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let r = FrameRate::FPS_24;
@@ -400,7 +400,7 @@ fn gpu_hook_scenarios() {
         let red = p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(g.generator.clone()),
                 info,
                 interpret: Default::default(),
@@ -410,7 +410,7 @@ fn gpu_hook_scenarios() {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
@@ -516,4 +516,46 @@ impl FrameRenderer for FakeRenderer {
     ) -> Option<filmcraft_render::Image> {
         Some(filmcraft_render::Image::new(320, 180))
     }
+}
+
+/// The render threads may convert H.264 input ahead ([`VideoEncoder::prepare_ahead`]): the packets
+/// are the same whether a picture was converted ahead (in any order), converted by the encoder
+/// itself (none ahead, or one ahead for another picture size), or never asked for.
+#[test]
+fn h264_input_converted_ahead_encodes_to_the_same_packets() {
+    let (w, h) = (96u32, 64u32);
+    let frames: Vec<Vec<u8>> = (0..8u32)
+        .map(|t| {
+            (0..w * h)
+                .flat_map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    [(x * 3 + t * 7) as u8, (y * 5 + t) as u8, ((x + y) * 2 + t * 3) as u8, 255]
+                })
+                .collect()
+        })
+        .collect();
+    let s = ExportSettings { format: Format::H264, ..Default::default() };
+    let frame = |i: usize| EncoderFrame { width: w, height: h, rgba: &frames[i], hdr: None, index: i as u64 };
+    let encode_all = |ahead: bool| -> Vec<Vec<u8>> {
+        let mut enc = h264_factory(Format::H264, w, h, FrameRate::FPS_24, &s).unwrap().unwrap();
+        if ahead {
+            let prepare = enc.prepare_ahead().expect("the H.264 encoder converts ahead");
+            for i in (0..frames.len()).rev().filter(|&i| i != 3) {
+                prepare(&frame(i));
+            }
+            // a picture of another size under index 5: the encoder converts that one itself
+            prepare(&EncoderFrame { width: w / 2, height: h / 2, rgba: &frames[5][..(w * h) as usize], hdr: None, index: 5 });
+            // and one it is never asked to encode
+            prepare(&EncoderFrame { index: 99, ..frame(0) });
+        }
+        let mut out = Vec::new();
+        for i in 0..frames.len() {
+            out.extend(enc.encode(&frame(i)).unwrap().into_iter().map(|p| p.data));
+        }
+        out.extend(enc.flush().unwrap().into_iter().map(|p| p.data));
+        out
+    };
+    let plain = encode_all(false);
+    assert!(!plain.is_empty());
+    assert!(plain == encode_all(true), "converting ahead changed the packets");
 }

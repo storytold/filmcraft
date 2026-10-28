@@ -285,6 +285,38 @@ impl Param {
         self.value_at(t).as_f64().unwrap_or(0.0)
     }
 
+    /// Borrowing text evaluation for read-only observers (the Program monitor's IME producer).
+    ///
+    /// Text parameters never interpolate, so the result is the applicable static or keyframed
+    /// `ParamValue::Text`; an interpolating non-text value yields `None`. Unlike
+    /// [`Self::value_at`] this does not clone the document-sized string.
+    pub fn text_ref_at(&self, t: Tick) -> Option<&str> {
+        fn text(v: &ParamValue) -> Option<&str> {
+            match v {
+                ParamValue::Text(s) => Some(s.as_str()),
+                _ => None,
+            }
+        }
+        let k = &self.keyframes;
+        if k.is_empty() {
+            return text(&self.value);
+        }
+        if t <= k[0].time {
+            return text(&k[0].value);
+        }
+        let last = &k[k.len() - 1];
+        if t >= last.time {
+            return text(&last.value);
+        }
+        let i = match k.binary_search_by_key(&t, |kf| kf.time) {
+            Ok(i) => return text(&k[i].value),
+            Err(i) => i - 1,
+        };
+        // Hold semantics match `value_at`: non-interpolating values (including text) stay until
+        // the next keyframe; an interpolating segment never evaluates to text.
+        if k[i].interp == Interpolation::Hold || !k[i].value.interpolates() { text(&k[i].value) } else { None }
+    }
+
     /// Allocation-free [`Param::f64_at`] for scalar parameters (Float / Choice / Bool), for
     /// per-sample evaluation in the audio mixer. Non-scalar values evaluate to 0.
     pub fn scalar_at(&self, t: Tick) -> f64 {
@@ -403,6 +435,19 @@ mod tests {
             assert!(v >= last - 1e-9);
             last = v;
         }
+    }
+
+    #[test]
+    fn text_ref_at_borrows_without_cloning_and_holds_non_interpolating_values() {
+        let p = Param::new(ParamValue::Text("abc".into()));
+        assert_eq!(p.text_ref_at(Tick(0)), Some("abc"));
+        let f = Param::new(ParamValue::Float(1.0));
+        assert_eq!(f.text_ref_at(Tick(0)), None);
+        let mut p = Param::new(ParamValue::Text("a".into()));
+        p.toggle_animation(Tick(0));
+        p.set_at(Tick(100), ParamValue::Text("b".into()));
+        assert_eq!(p.text_ref_at(Tick(50)), Some("a"), "text does not interpolate");
+        assert_eq!(p.text_ref_at(Tick(100)), Some("b"));
     }
 
     #[test]

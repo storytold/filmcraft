@@ -534,7 +534,8 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   removeVertex / toggleVertexSmooth / roundCorners / select / list; `masks.add` takes a
   `cornerRadius` for a rounded rectangle); keyframe commands take `"mask": n`. The
   Program monitor overlay drags vertices, Bézier handles, the whole mask and the feather /
-  expansion handles; drags merge into one undo step.
+  expansion handles; a marquee from outside the shape or Shift-click selects several vertices,
+  which move together (`masks.moveVertex` `vertices`); drags merge into one undo step.
 - **Tracking** (`render::track`, `masks.track`): Shi–Tomasi features inside the mask, pyramidal
   Lucas–Kanade (4 levels, 15×15 window) with a forward–backward check, then RANSAC + least squares
   for Position / Position & Rotation / Position, Scale & Rotation (2D Procrustes). Each frame's
