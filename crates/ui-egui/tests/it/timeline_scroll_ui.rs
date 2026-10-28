@@ -467,6 +467,31 @@ fn zoom_bar_middle_drag_never_shows_the_resize_cursor() {
     d.release(track[0] + track[2] - 3.0, y);
 }
 
+/// A handle dragged in and back to where it was pressed restores the view, also when the view was
+/// wider than the sequence's extent (the extent the bar spans shrinks while the drag zooms in).
+#[test]
+fn a_zoom_bar_handle_dragged_back_restores_a_view_wider_than_the_sequence() {
+    let mut d = Driver::tall();
+    d.ok("ui.set", json!({"timeline": {"pps": 0.5, "scroll": 0.0}}));
+    d.frames(4);
+    let (_, start_pps, ..) = d.view();
+    let track = d.rect("timeline.zoomBar.track");
+    let y = track[1] + track[3] / 2.0;
+    let grab = egui::pos2(track[0] + track[2] - 3.0, y);
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    push(&mut d, egui::Event::PointerMoved(grab));
+    push(&mut d, egui::Event::PointerButton { pos: grab, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    d.frames(2);
+    for dx in [-40.0, -120.0, -300.0, -120.0, -40.0, 0.0] {
+        push(&mut d, egui::Event::PointerMoved(grab + egui::vec2(dx, 0.0)));
+        d.frames(2);
+    }
+    push(&mut d, egui::Event::PointerButton { pos: grab, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    d.frames(3);
+    let (_, pps, ..) = d.view();
+    assert!((pps / start_pps - 1.0).abs() < 0.01, "the view was {start_pps} a second, back at the press it is {pps}");
+}
+
 /// Show Video Thumbnails ▸ Continuous asks for frames across each video clip, not only its head;
 /// `ui.set` switches the mode (and Off) and refuses an unknown one.
 #[test]

@@ -101,7 +101,8 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                     let floor = min_pps(seq_seconds, bar.width());
                     let min_span = (bar.width() as f64 / 24_000.0).max(0.05);
                     let start_span = bar.width() as f64 / start_pps.max(1e-9);
-                    let (ns, ne) = zoom_by_drag(start, start_span, grow, playhead, total, min_span);
+                    // `total` follows the live view, which the drag itself shrinks: keep room for the view pressed
+                    let (ns, ne) = zoom_by_drag(start, start_span, grow, playhead, total.max(start_span), min_span);
                     v.pps = (bar.width() as f64 / (ne - ns).max(min_span)).clamp(floor, 24_000.0);
                     v.scroll = ns;
                     v.target_scroll = ns;
