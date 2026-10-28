@@ -353,6 +353,45 @@ impl TimeDisplay {
     }
 }
 
+impl TimeDisplay {
+    /// The video display formats (Sequence Settings ▸ Display Format, the burn-in's Time Format).
+    pub const VIDEO: [TimeDisplay; 4] = [TimeDisplay::Timecode, TimeDisplay::Feet35, TimeDisplay::Feet16, TimeDisplay::Frames];
+
+    /// Stable id used by commands and the UI: `timecode`, `feet35`, `feet16`, `frames`, `samples`, `seconds`.
+    pub fn id(self) -> &'static str {
+        match self {
+            TimeDisplay::Timecode => "timecode",
+            TimeDisplay::Frames => "frames",
+            TimeDisplay::Feet16 => "feet16",
+            TimeDisplay::Feet35 => "feet35",
+            TimeDisplay::AudioSamples => "samples",
+            TimeDisplay::Seconds => "seconds",
+        }
+    }
+
+    /// The display with this [`id`](Self::id), ignoring case.
+    pub fn from_id(id: &str) -> Option<TimeDisplay> {
+        TimeDisplay::ALL.into_iter().find(|d| d.id().eq_ignore_ascii_case(id))
+    }
+
+    /// Frames per foot of film for the Feet + Frames displays: 16 for 35mm 4-perf, 40 for 16mm.
+    pub fn frames_per_foot(self) -> Option<i64> {
+        match self {
+            TimeDisplay::Feet35 => Some(16),
+            TimeDisplay::Feet16 => Some(40),
+            _ => None,
+        }
+    }
+}
+
+/// Format a frame count as film feet + frames (`F+FF`, e.g. `2+08`; negative: `-2+08`).
+/// `frames_per_foot` below 1 is treated as 1 so a bad value never divides by zero.
+pub fn format_feet_frames(frame: i64, frames_per_foot: i64) -> String {
+    let per_ft = frames_per_foot.max(1).unsigned_abs();
+    let a = frame.unsigned_abs();
+    format!("{}{}+{:02}", if frame < 0 { "-" } else { "" }, a / per_ft, a % per_ft)
+}
+
 /// Drop-frame parameters: frames dropped per minute and nominal base.
 fn df_params(rate: FrameRate) -> (i64, i64) {
     let base = rate.timecode_base();
@@ -410,12 +449,7 @@ pub fn format_time(t: Tick, rate: FrameRate, drop_frame: bool, display: TimeDisp
     match display {
         TimeDisplay::Timecode => format_timecode_frames(frame, rate, drop_frame),
         TimeDisplay::Frames => format!("{frame}"),
-        TimeDisplay::Feet35 | TimeDisplay::Feet16 => {
-            let per_ft = if display == TimeDisplay::Feet35 { 16 } else { 40 };
-            let neg = frame < 0;
-            let a = frame.unsigned_abs();
-            format!("{}{}+{:02}", if neg { "-" } else { "" }, a / per_ft, a % per_ft)
-        }
+        TimeDisplay::Feet35 | TimeDisplay::Feet16 => format_feet_frames(frame, display.frames_per_foot().unwrap_or(16)),
         TimeDisplay::AudioSamples => {
             let neg = t.0 < 0;
             let a = t.0.unsigned_abs();
@@ -508,6 +542,50 @@ pub fn parse_timecode(input: &str, rate: FrameRate, drop_frame: bool, current: i
     } else {
         // Saturating: typed or agent-sent timecodes can have absurdly large fields.
         h.saturating_mul(3600).saturating_add(m.saturating_mul(60)).saturating_add(sec).saturating_mul(base).saturating_add(fr)
+    };
+    Ok(match rel {
+        Some(sign) => current.saturating_add(frames.saturating_mul(sign)),
+        None => frames,
+    })
+}
+
+/// Parse typed text in the given display format into a frame count.
+///
+/// - [`TimeDisplay::Frames`]: a plain frame count (`240`).
+/// - [`TimeDisplay::Feet35`] / [`TimeDisplay::Feet16`]: `F+FF` (`2+08`; `.`, `:`, `;` and `,` also
+///   separate); a bare number is a frame count. A frames field past the foot rolls over
+///   (`1+20` at 35mm is 36 frames), as the timecode parser does.
+/// - A leading `+` / `-` makes the value relative to `current` (a bare relative number is frames).
+/// - Every other display parses as timecode ([`parse_timecode`]).
+pub fn parse_time_display(input: &str, rate: FrameRate, drop_frame: bool, display: TimeDisplay, current: i64) -> Result<i64, ParseError> {
+    let per_ft = match display {
+        TimeDisplay::Frames => 1,
+        TimeDisplay::Feet35 | TimeDisplay::Feet16 => display.frames_per_foot().unwrap_or(16),
+        _ => return parse_timecode(input, rate, drop_frame, current),
+    };
+    let s = input.trim();
+    if s.is_empty() {
+        return Err(ParseError("empty time".into()));
+    }
+    let (rel, body) = match s.as_bytes()[0] {
+        b'+' => (Some(1), &s[1..]),
+        b'-' => (Some(-1), &s[1..]),
+        _ => (None, s),
+    };
+    let field = |p: &str| -> Result<i64, ParseError> {
+        if p.is_empty() {
+            Ok(0)
+        } else if !p.bytes().all(|b| b.is_ascii_digit()) {
+            Err(ParseError(format!("not a time: `{input}`")))
+        } else {
+            p.parse::<i64>().map_err(|_| ParseError("number too large".into()))
+        }
+    };
+    let parts: Vec<&str> = body.split(['+', ':', ';', '.', ',']).collect();
+    let frames = match parts.as_slice() {
+        [n] => field(n)?,
+        [feet, fr] if per_ft > 1 => field(feet)?.saturating_mul(per_ft).saturating_add(field(fr)?),
+        _ => return Err(ParseError(format!("not a time: `{input}`"))),
     };
     Ok(match rel {
         Some(sign) => current.saturating_add(frames.saturating_mul(sign)),

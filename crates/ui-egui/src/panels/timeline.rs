@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_engine::sequence_tools::{DuplicateFrames, duplicate_frames};
 use filmcraft_project::{ClipId, ItemId, MarkerId, Sequence, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, TimeRange, format_time};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange, format_time};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;

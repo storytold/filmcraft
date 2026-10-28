@@ -1,7 +1,7 @@
 //! Small custom widgets in Premiere's visual language.
 
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use filmcraft_time::{FrameRate, Tick, parse_timecode};
+use filmcraft_time::{FrameRate, Tick, TimeDisplay, parse_time_display};
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
@@ -153,6 +153,7 @@ pub fn timecode_field(
     min: Tick,
     rate: FrameRate,
     drop_frame: bool,
+    display: TimeDisplay,
     color: Color32,
 ) -> Option<Result<Tick, String>> {
     let editing_id = id.with("editing");
@@ -176,7 +177,7 @@ pub fn timecode_field(
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 return None;
             }
-            let typed = parse_timecode(&buf, rate, drop_frame, rate.frame_at(time));
+            let typed = parse_time_display(&buf, rate, drop_frame, display, rate.frame_at(time));
             return Some(typed.map(|f| rate.tick_of(f).max(min)).map_err(|e| e.to_string()));
         }
         // select the whole value once the field has focus: egui collapses a selection to a caret

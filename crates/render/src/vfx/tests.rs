@@ -728,6 +728,14 @@ fn transform_presets_animate_over_the_clip() {
         fn media_timecode(&self) -> String {
             "00:00:10:00".into()
         }
+        fn sequence_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+            let r = filmcraft_time::FrameRate::FPS_24;
+            Some(filmcraft_time::format_time(r.tick_of(40), r, false, display, 48_000))
+        }
+        fn media_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+            let r = filmcraft_time::FrameRate::FPS_24;
+            Some(filmcraft_time::format_time(r.tick_of(240), r, false, display, 48_000))
+        }
         fn file_name(&self) -> String {
             "A001.mov".into()
         }
@@ -772,6 +780,26 @@ fn transform_presets_animate_over_the_clip() {
     assert_eq!(text::burnin_text(&e2, &end), "FILE A001.mov");
     set(&mut e2, "source", ParamValue::Choice(4));
     assert_eq!(text::burnin_text(&e2, &mid), "FILE 24");
+    // Time Format: the film formats replace the timecode of the timecode sources only
+    let mut e3 = e.clone();
+    set(&mut e3, "time_format", ParamValue::Choice(1));
+    assert_eq!(text::burnin_text(&e3, &end), "2+08");
+    set(&mut e3, "time_format", ParamValue::Choice(2));
+    assert_eq!(text::burnin_text(&e3, &end), "1+00");
+    set(&mut e3, "time_format", ParamValue::Choice(3));
+    assert_eq!(text::burnin_text(&e3, &end), "40");
+    set(&mut e3, "source", ParamValue::Choice(1));
+    assert_eq!(text::burnin_text(&e3, &end), "240");
+    set(&mut e3, "source", ParamValue::Choice(2));
+    assert_eq!(text::burnin_text(&e3, &end), "clip", "clip name is unaffected");
+    // an out-of-range choice (a newer file) clamps instead of panicking
+    set(&mut e3, "source", ParamValue::Choice(0));
+    set(&mut e3, "time_format", ParamValue::Choice(99));
+    assert_eq!(text::burnin_text(&e3, &end), "40");
+    // a project from before Time Format has no such parameter: Timecode
+    let mut old = e.clone();
+    old.params.remove("time_format");
+    assert_eq!(text::burnin_text(&old, &end), "01:00:00:00");
 }
 
 #[test]

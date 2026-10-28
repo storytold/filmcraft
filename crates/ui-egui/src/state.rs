@@ -871,6 +871,8 @@ pub struct SequenceSettingsDraft {
     pub height: u32,
     pub scale_motion: bool,
     pub drop_frame: bool,
+    /// Video Display Format: Timecode, Feet + Frames 35mm / 16mm or Frames.
+    pub display: filmcraft_time::TimeDisplay,
     pub mix: String,
     pub sample_rate: u32,
     pub max_render_quality: bool,
@@ -893,6 +895,7 @@ impl Default for SequenceSettingsDraft {
             height: 1080,
             scale_motion: true,
             drop_frame: false,
+            display: filmcraft_time::TimeDisplay::Timecode,
             mix: "Stereo".into(),
             sample_rate: 48_000,
             max_render_quality: false,
