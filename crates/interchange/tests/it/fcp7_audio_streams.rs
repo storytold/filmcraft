@@ -111,7 +111,7 @@ fn multi_stream_project() -> (filmcraft_project::Project, filmcraft_project::Ite
     second.bits_per_sample = Some(24);
     info.audio_streams.push(second);
     let seq = sequence(&mut p, "timeline", rate, false);
-    let id = clip(&mut p, seq, TrackKind::Audio, 0, source, 0, 45, 64);
+    let id = clip(&mut p, seq, TrackKind::Audio, 0, source, 0..45, 64);
     p.sequence_mut(seq).unwrap().find_item_mut(id).unwrap().1.audio_stream = 1;
     (p, seq)
 }
