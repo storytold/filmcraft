@@ -27,10 +27,17 @@ impl FilmcraftApp {
     pub fn stop_playback(&mut self, back: bool) {
         let back = back && self.playback.playing && !self.session.voiceover.recording() && !self.session.mcrec.active();
         let origin = self.playback.origin;
+        let back = back && self.playback.origin_sequence == self.session.state.active_sequence;
         self.stop();
         if back {
             self.session.set_playhead(origin);
         }
+    }
+
+    /// Where a stop that returns goes back to: the playhead of the active sequence now.
+    pub(crate) fn mark_stop_origin(&mut self) {
+        self.playback.origin = self.session.playhead();
+        self.playback.origin_sequence = self.session.state.active_sequence;
     }
 
     pub fn play(&mut self, speed: f64) {
@@ -54,7 +61,7 @@ impl FilmcraftApp {
             self.playback.meter.start(speed);
         }
         if !self.playback.playing {
-            self.playback.origin = self.session.playhead();
+            self.mark_stop_origin();
         }
         self.playback.playing = true;
         self.playback.speed = speed;
