@@ -3583,3 +3583,28 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+# Parakeet speech model and word-by-word captions.
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (akurasi terbaik, waktu per kata)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = tanpa batas. 1 membuat takarir kata demi kata; dengan durasi minimum 0, setiap kata mempertahankan waktunya sendiri.
+	A shorter caption is held into the silence after it, never over the next caption.	Takarir yang lebih pendek diperpanjang ke jeda sesudahnya, tidak pernah menimpa takarir berikutnya.
+	Caption preset	Prasetel takarir
+	Captioning Preferences (format, max/min length, lines)	Preferensi takarir (format, panjang maks./min., baris)
+	Couldn't save caption settings: {e}	Tidak dapat menyimpan pengaturan takarir: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Buat takarir dari transkrip, mulai trek takarir kosong, atau impor berkas takarir.
+	Create captions from transcript	Buat takarir dari transkrip
+	Created {n} captions	{n} takarir dibuat
+	Delete preset	Hapus prasetel
+	Double Line	Dua baris
+	Frames left empty between one caption and the next.	Bingkai yang dibiarkan kosong di antara satu takarir dan berikutnya.
+	Gap between captions (frames)	Jarak antar takarir (bingkai)
+	Layout	Tata letak
+	Maximum length in characters	Panjang maksimum dalam karakter
+	Maximum words per caption	Kata maksimum per takarir
+	Minimum duration in seconds	Durasi minimum dalam detik
+	Save as preset…	Simpan sebagai prasetel…
+	Single Line	Satu baris
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	Gaya trek takarir untuk trek baru: gaya bawaan, atau gaya trek takarir di sekuens ini.
+	Words wrap to a new line, or a new caption, at this many characters.	Kata berpindah ke baris baru, atau takarir baru, pada jumlah karakter ini.
+	characters	karakter
+	words	kata
+	words (no limit)	kata (tanpa batas)

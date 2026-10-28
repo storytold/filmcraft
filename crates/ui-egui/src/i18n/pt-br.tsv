@@ -3586,3 +3586,28 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+# Parakeet speech model and word-by-word captions.
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (máxima precisão, tempo por palavra)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = sem limite. 1 cria legendas palavra por palavra; com duração mínima de 0, cada palavra mantém o próprio tempo.
+	A shorter caption is held into the silence after it, never over the next caption.	Uma legenda mais curta é estendida no silêncio seguinte, nunca sobre a próxima legenda.
+	Caption preset	Predefinição de legendas
+	Captioning Preferences (format, max/min length, lines)	Preferências de legendagem (formato, comprimento máx./mín., linhas)
+	Couldn't save caption settings: {e}	Não foi possível salvar as configurações de legenda: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Crie legendas a partir da transcrição, comece uma faixa de legendas vazia ou importe um arquivo de legendas.
+	Create captions from transcript	Criar legendas a partir da transcrição
+	Created {n} captions	{n} legendas criadas
+	Delete preset	Excluir predefinição
+	Double Line	Duas linhas
+	Frames left empty between one caption and the next.	Quadros deixados vazios entre uma legenda e a próxima.
+	Gap between captions (frames)	Intervalo entre legendas (quadros)
+	Layout	Layout
+	Maximum length in characters	Comprimento máximo em caracteres
+	Maximum words per caption	Máximo de palavras por legenda
+	Minimum duration in seconds	Duração mínima em segundos
+	Save as preset…	Salvar como predefinição…
+	Single Line	Uma linha
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	O estilo da nova faixa de legendas: o estilo padrão ou o estilo de uma faixa de legendas desta sequência.
+	Words wrap to a new line, or a new caption, at this many characters.	As palavras quebram para uma nova linha, ou uma nova legenda, neste número de caracteres.
+	characters	caracteres
+	words	palavras
+	words (no limit)	palavras (sem limite)

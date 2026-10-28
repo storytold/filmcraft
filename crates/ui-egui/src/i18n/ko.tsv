@@ -3604,3 +3604,28 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+# Parakeet speech model and word-by-word captions.
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (최고 정확도, 단어 단위 타이밍)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = 제한 없음. 1은 단어별 캡션을 만듭니다. 최소 지속 시간이 0이면 각 단어가 자체 타이밍을 유지합니다.
+	A shorter caption is held into the silence after it, never over the next caption.	짧은 캡션은 뒤따르는 무음 구간까지 늘어나지만 다음 캡션과 겹치지는 않습니다.
+	Caption preset	캡션 사전 설정
+	Captioning Preferences (format, max/min length, lines)	캡션 환경설정(형식, 최대/최소 길이, 줄 수)
+	Couldn't save caption settings: {e}	캡션 설정을 저장할 수 없습니다: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	대본에서 캡션을 만들거나, 빈 캡션 트랙을 시작하거나, 캡션 파일을 가져옵니다.
+	Create captions from transcript	대본에서 캡션 만들기
+	Created {n} captions	캡션 {n}개를 만들었습니다
+	Delete preset	사전 설정 삭제
+	Double Line	두 줄
+	Frames left empty between one caption and the next.	한 캡션과 다음 캡션 사이에 비워 두는 프레임 수입니다.
+	Gap between captions (frames)	캡션 간 간격(프레임)
+	Layout	레이아웃
+	Maximum length in characters	최대 길이(문자)
+	Maximum words per caption	캡션당 최대 단어 수
+	Minimum duration in seconds	최소 지속 시간(초)
+	Save as preset…	사전 설정으로 저장…
+	Single Line	한 줄
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	새 트랙의 캡션 트랙 스타일: 기본 스타일 또는 이 시퀀스에 있는 캡션 트랙의 스타일입니다.
+	Words wrap to a new line, or a new caption, at this many characters.	이 문자 수에서 단어가 새 줄이나 새 캡션으로 넘어갑니다.
+	characters	문자
+	words	단어
+	words (no limit)	단어(제한 없음)

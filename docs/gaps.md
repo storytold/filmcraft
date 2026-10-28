@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (G19: Parakeet TDT v3 speech model and its known limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -307,6 +307,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Missing:** the `whisper` feature is off by default and in releases, so Transcribe Sequence,
   text-based editing and auto captions need a source build.
+- **Limits of the Parakeet TDT v3 recogniser** (details in the `filmcraft-speech` README): about
+  4 GB of memory (3.8 GB peak), CPU only; accuracy measured only on synthesized English speech,
+  recorded dialogue untested; numbers come out as digits; the transcript language is guessed for
+  only 10 of its 25 languages (else `en`), and `language` does not steer recognition; clips over
+  120 s are cut into chunks of at most 90 s with the decoder state reset at each cut.
 - **Estimate:** 5–10 h (model download UX, licence check).
 
 ## G20. The web app shell
@@ -322,4 +327,5 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-24 | minor | G19: known limits of the Parakeet TDT v3 recogniser |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |

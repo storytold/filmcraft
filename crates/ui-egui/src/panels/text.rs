@@ -86,15 +86,23 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let c = rect.center();
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
         ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, tl!("Add captions"), Tokens::semibold(16.0), t.text);
-        ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, tl!("Create a caption track or import a caption file."), Tokens::ui(12.0), t.text_dim);
-        for (i, (id, label, cmd)) in [
+        // with a transcript, captions are made from it first (the Create captions dialog)
+        let has_transcript = !app.transcript_cache.content(&app.session).words.is_empty();
+        let note = if has_transcript {
+            tl!("Create captions from the transcript, start an empty caption track or import a caption file.")
+        } else {
+            tl!("Create a caption track or import a caption file.")
+        };
+        ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
+        let mut buttons = vec![
             ("text.captions.newTrack", tl!("Create new caption track"), "captions.newTrack"),
             ("text.captions.import", tl!("Import captions file…"), "captions.import"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let r = Rect::from_center_size(c + vec2(0.0, 26.0 + i as f32 * 34.0), vec2(200.0, 26.0));
+        ];
+        if has_transcript {
+            buttons.insert(0, ("text.captions.fromTranscript", tl!("Create captions from transcript"), "transcript.createCaptions"));
+        }
+        for (i, (id, label, cmd)) in buttons.into_iter().enumerate() {
+            let r = Rect::from_center_size(c + vec2(0.0, 26.0 + i as f32 * 34.0), vec2(230.0, 26.0));
             let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
             ui.painter().rect_filled(r, 13.0, if i == 0 { if resp.hovered() { t.accent_hover } else { t.accent } } else { t.field_bg });
             ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(12.0), if i == 0 { Color32::WHITE } else { t.text });
@@ -577,14 +585,17 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- toolbar: search, extract / lift selection, remove fillers / pauses, captions
     let bar = Rect::from_min_size(rect.min + vec2(10.0, 2.0), vec2(rect.width() - 20.0, 26.0));
-    let sw = 170.0f32.min(bar.width() * 0.4);
+    const TOOLS: usize = 4;
+    // the search field gives up width before a tool button falls off a narrow panel
+    let sw = 170.0f32.min(bar.width() * 0.4).min(bar.width() - 10.0 - TOOLS as f32 * 28.0).max(60.0);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(bar.min, vec2(sw, 24.0))));
     let sresp = crate::widgets::search_field(&mut child, &mut app.ui.transcript_search, tl!("Search"), sw, &t);
     app.auto.add("text.transcript.search", sresp.rect, "Search transcript");
     let highlights = app.transcript_cache.highlights(&app.ui.transcript_search);
     let mut x = bar.min.x + sw + 10.0;
     let range = sel.map(|(a, b)| json!({"from": a.min(b), "to": a.max(b)}));
-    let tools: [(Icon, &str, &str, bool, &str, Value); 4] = [
+    // Create captions opens the Create captions dialog (`panels::caption_dialog`)
+    let tools: [(Icon, &str, &str, bool, &str, Value); TOOLS] = [
         (Icon::Razor, "text.transcript.extract", tl!("Extract selected text"), sel.is_some(), "transcript.extract", range.clone().unwrap_or_default()),
         (Icon::Trash, "text.transcript.lift", tl!("Lift selected text"), sel.is_some(), "transcript.lift", range.unwrap_or_default()),
         (Icon::Link, "text.transcript.removeFillers", tl!("Remove filler words"), true, "transcript.removeFillers", json!({})),

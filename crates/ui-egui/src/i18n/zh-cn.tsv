@@ -3603,3 +3603,28 @@
 	No matching text.	没有匹配的文本。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。
+# Parakeet speech model and word-by-word captions.
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3（最高准确度，逐词时间）
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = 不限制。1 会创建逐词字幕；最短持续时间为 0 时，每个词保留自身的时间。
+	A shorter caption is held into the silence after it, never over the next caption.	较短的字幕会延续到其后的静音部分,但不会覆盖下一条字幕。
+	Caption preset	字幕预设
+	Captioning Preferences (format, max/min length, lines)	字幕首选项(格式、最大/最小长度、行数)
+	Couldn't save caption settings: {e}	无法保存字幕设置:{e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	根据转录创建字幕、新建空字幕轨道或导入字幕文件。
+	Create captions from transcript	根据转录创建字幕
+	Created {n} captions	已创建 {n} 条字幕
+	Delete preset	删除预设
+	Double Line	双行
+	Frames left empty between one caption and the next.	一条字幕与下一条字幕之间留空的帧数。
+	Gap between captions (frames)	字幕间隔(帧)
+	Layout	布局
+	Maximum length in characters	最大字符数
+	Maximum words per caption	每条字幕的最大词数
+	Minimum duration in seconds	最短持续时间(秒)
+	Save as preset…	另存为预设…
+	Single Line	单行
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	新轨道的字幕轨道样式:默认样式,或此序列中某条字幕轨道的样式。
+	Words wrap to a new line, or a new caption, at this many characters.	达到此字符数时,词语会换到新的一行或新的字幕。
+	characters	个字符
+	words	个词
+	words (no limit)	个词(不限制)
