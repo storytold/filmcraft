@@ -516,25 +516,41 @@ fn hostile_parameters_are_bounded() {
 #[test]
 fn lumetri_unsupported_sections_fall_back() {
     let (w, h) = (40usize, 24usize);
-    // sharpen > 0 and input LUT (explicitly required by brief)
-    let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("custom.cube".into()))]);
+    // sharpen > 0 with an input LUT: the LUT runs on the GPU, Sharpen does not
+    let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 and input_lut must fall back to CPU");
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 must fall back to CPU");
 
     // sharpen alone
     let e = effect("lumetri", &[("sharpen", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // input_lut alone
-    let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    // LUT references that name no LUT (a file name, a library entry that is gone) apply none, on
+    // the CPU too, so they stay on the GPU
+    for (id, spec) in [("input_lut", "test.cube"), ("look_lut", "look.cube"), ("look_lut", "lib:gone")] {
+        let e = effect("lumetri", &[(id, ParamValue::Text(spec.into()))]);
+        let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+        assert!(matches!(&op, Some(o @ FxOp::Lumetri { input_lut: None, look_lut: None, .. }) if o.gpu_ok()), "{id} = {spec:?}: {op:?}");
+    }
 
-    // look_lut
-    let e = effect("lumetri", &[("look_lut", ParamValue::Text("look.cube".into()))]);
-    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    // tables the LUT pass does not take: a cube above the GPU cap, a cube whose data does not
+    // match its size, an empty domain, a non-finite Intensity
+    let lumetri_lut = |lut: filmcraft_color::Lut, mix: Option<f32>| filmcraft_render::gpufx::LumetriLut {
+        lut: std::sync::Arc::new(lut),
+        grade: filmcraft_color::GradeSpace::Sdr,
+        mix,
+    };
+    let cube = |c: filmcraft_color::Lut3d| filmcraft_color::Lut::from_cube(c);
+    assert!(lumetri_lut(cube(filmcraft_color::Lut3d::identity(filmcraft_render::gpufx::GPU_LUT_MAX_CUBE)), Some(1.0)).gpu_ok());
+    assert!(!lumetri_lut(cube(filmcraft_color::Lut3d::identity(filmcraft_render::gpufx::GPU_LUT_MAX_CUBE + 1)), None).gpu_ok());
+    let mut short = filmcraft_color::Lut3d::identity(5);
+    short.data.pop();
+    assert!(!lumetri_lut(cube(short), None).gpu_ok());
+    let mut flat = filmcraft_color::Lut3d::identity(5);
+    flat.domain_max = flat.domain_min;
+    assert!(!lumetri_lut(cube(flat), None).gpu_ok());
+    assert!(!lumetri_lut(cube(filmcraft_color::Lut3d::identity(5)), Some(f32::NAN)).gpu_ok());
 
     // look > 0
     let e = effect("lumetri", &[("look", ch(1))]);
@@ -566,12 +582,138 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // HDR working space
-    let e = effect("lumetri", &[]);
+    // HDR still falls back for the sections the shader does not have
     let mut cx_hdr = cx(Tick::ZERO, 1.0);
-    cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
-    let op = FxOp::eval(&e, &cx_hdr, w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Hlg;
+    let e = effect("lumetri", &[("sharpen", fl(20.0))]);
+    assert!(FxOp::eval(&e, &cx_hdr, w, h).is_some_and(|o| !o.gpu_ok()));
+}
+
+/// Lumetri's basic, creative and vignette sections in an HDR working space (the PQ / HLG grading
+/// signal, contrast that leaves speculars alone, HDR Specular) match the CPU op on the GPU.
+#[test]
+fn hdr_lumetri_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let grades: [&[(&str, ParamValue)]; 4] = [
+        &[("exposure", fl(-0.5)), ("saturation", fl(150.0))],
+        &[("contrast", fl(40.0)), ("highlights", fl(-20.0)), ("shadows", fl(25.0)), ("hdr_specular", fl(-30.0)), ("temperature", fl(15.0))],
+        &[("contrast", fl(-50.0)), ("whites", fl(20.0)), ("blacks", fl(-10.0)), ("hdr_white", fl(200.0)), ("hdr_specular", fl(60.0))],
+        &[
+            ("creative_on", ParamValue::Bool(true)),
+            ("vibrance", fl(30.0)),
+            ("faded_film", fl(20.0)),
+            ("shadow_tint", col(0.4, 0.45, 0.6)),
+            ("vignette_amount", fl(-2.0)),
+        ],
+    ];
+    let mut failures = Vec::new();
+    for working in [filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+        let mut cxh = cx(Tick::ZERO, 1.0);
+        cxh.working = working;
+        for params in grades {
+            let e = effect("lumetri", params);
+            let op = FxOp::eval(&e, &cxh, w as usize, h as usize).expect("lumetri op");
+            assert!(op.gpu_ok(), "{working:?} {params:?}: not GPU-capable");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            // HDR Specular only acts above HDR White: the picture must reach it, or the parity
+            // check below would pass without running that branch
+            if params.iter().any(|(k, _)| *k == "hdr_specular") {
+                let off: Vec<(&str, ParamValue)> = params.iter().map(|(k, v)| (*k, if *k == "hdr_specular" { fl(0.0) } else { v.clone() })).collect();
+                let flat = FxOp::eval(&effect("lumetri", &off), &cxh, w as usize, h as usize).expect("lumetri op");
+                let mut plain = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                flat.apply(&mut plain);
+                assert_ne!(cpu.px, plain.px, "{working:?} {params:?}: HDR Specular changed nothing");
+            }
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("{working:?} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            if worst > EXACT * 10.0 || flips > 0.0 {
+                failures.push(format!("{working:?} {params:?}: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "HDR Lumetri differs from the CPU:\n{}", failures.join("\n"));
+}
+
+/// A project whose LUT library holds `lib:shaped`: a 1D shaper over a non-unit domain in front of
+/// a 5³ cube that rotates and bends the channels.
+fn shaped_lut_project() -> filmcraft_project::Project {
+    let shaper = filmcraft_color::Lut1d {
+        domain_min: [-0.1, 0.0, 0.05],
+        domain_max: [1.2, 1.0, 1.1],
+        data: (0..6).map(|i| [(i as f32 / 5.0).powf(0.8), i as f32 / 5.0, (i as f32 / 5.0).powf(1.3)]).collect(),
+    };
+    let cube = filmcraft_color::Lut3d::from_fn(5, |c| [c[1] * 0.9 + 0.05, c[2], c[0].powf(1.2)]);
+    let text = filmcraft_color::Lut { title: "shaped".into(), shaper: Some(shaper), cube: Some(cube) }.to_cube();
+    let mut p = filmcraft_project::Project::new("luts");
+    p.luts.push(filmcraft_project::ProjectLut { id: "shaped".into(), name: "Shaped".into(), source_path: None, format: "cube".into(), text: text.into() });
+    p
+}
+
+/// Lumetri's Input LUT and Look LUT run on the GPU's LUT pass and match the CPU op, in SDR and in
+/// the HDR working spaces: built-in 33³ cubes, a library LUT with a shaper over a non-unit
+/// domain, Intensity below and above 100, with and without a grade around them. The tables are
+/// kept between frames that use them and released after a frame that does not.
+#[test]
+fn lumetri_luts_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let txt = |s: &str| ParamValue::Text(s.into());
+    let cases: Vec<Vec<(&str, ParamValue)>> = vec![
+        vec![("input_lut", txt("builtin:slog3-sgamut3cine-to-rec709"))],
+        vec![("look_lut", txt("builtin:look-bleach-bypass")), ("look_intensity", fl(70.0))],
+        vec![
+            ("input_lut", txt("builtin:slog3-sgamut3cine-to-rec709")),
+            ("look_lut", txt("builtin:look-bleach-bypass")),
+            ("exposure", fl(-0.5)),
+            ("contrast", fl(15.0)),
+            ("highlights", fl(-15.0)),
+            ("creative_sat", fl(95.0)),
+            ("highlight_tint", col(0.79, 0.54, 0.35)),
+            ("vignette_amount", fl(-1.5)),
+        ],
+        vec![("look_lut", txt("builtin:look-teal-orange")), ("look_intensity", fl(150.0))],
+        vec![("input_lut", txt("lib:shaped")), ("saturation", fl(120.0))],
+        vec![("look_lut", txt("lib:shaped")), ("curves_hdr_range", fl(400.0))],
+    ];
+    let project = shaped_lut_project();
+    let mut failures = Vec::new();
+    for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+        let cxl = FxCtx { project: Some(&project), working, ..cx(Tick::ZERO, 1.0) };
+        for params in &cases {
+            let op = FxOp::eval(&effect("lumetri", params), &cxl, w as usize, h as usize).expect("lumetri op");
+            assert!(matches!(op, FxOp::Lumetri { input_lut: Some(_), .. } | FxOp::Lumetri { look_lut: Some(_), .. }), "{params:?}: no LUT");
+            assert!(op.gpu_ok(), "{working:?} {params:?}: not GPU-capable");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("{working:?} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            if worst > EXACT * 10.0 || flips > 0.0 {
+                failures.push(format!("{working:?} {params:?}: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "Lumetri LUTs differ from the CPU:\n{}", failures.join("\n"));
+    // the last frame's table is held; a frame without LUT layers releases it
+    assert!(!c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
+    let plain = FramePlan::Layers { width: 64, height: 36, layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)] };
+    c.composite(&plain);
+    assert!(c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
 }
 
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working
@@ -707,6 +849,44 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         let (p99, mean, _) = stats8(&cpu, &gpu, &interior(&plan));
         eprintln!("effect stage {stage}: interior p99 {p99}, mean {mean:.3}");
         assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}");
+    }
+}
+
+/// A colour-managed layer (PQ media) with effects comes out the same with and without the GPU
+/// effect stage: the CPU fallback decodes it through the layer's input transform too.
+#[test]
+fn cpu_effect_fallback_keeps_the_input_transform() {
+    use filmcraft_color::{ColorInfo, ColorPipeline, ColorSpace, InputTransform, Primaries};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (256u32, 4u32);
+    let y: Vec<u16> = (0..h).flat_map(|_| (0..w).map(|x| (64 + x * 876 / 255) as u16)).collect();
+    let n = (w * h) as usize;
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(vec![480; n]), Arc::new(vec![560; n])], chroma: Chroma::C444, bits: 10, alpha: None };
+    let color = ColorInfo { matrix: Matrix::Bt2020Ncl, transfer: Transfer::Pq, primaries: Primaries::Bt2020, range: Range::Limited };
+    let frame = Arc::new(VideoFrame { width: w, height: h, data, color, par: (1, 1), pts: Default::default() });
+    let t = Arc::new(InputTransform::new(ColorSpace::from_info(&color), color.range, &ColorPipeline::REC709, None));
+    let e = effect("brightness_contrast", &[("brightness", fl(-10.0)), ("contrast", fl(20.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("brightness / contrast op");
+    let layer = PlanLayer {
+        fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: vec![op] })),
+        input: Some(t),
+        ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    for stage in [true, false] {
+        let mut c = GpuCompositor::new(&dev, &q);
+        if !stage {
+            c.fx = None;
+        }
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let (p99, mean, max) = stats8(&cpu, &gpu, &vec![true; n]);
+        eprintln!("PQ layer with effects, effect stage {stage}: p99 {p99}, mean {mean:.2}, max {max}");
+        assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}, max {max}");
     }
 }
 

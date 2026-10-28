@@ -9,13 +9,74 @@
 //! op to the GPU when [`FxOp::gpu_ok`] says the shader covers it (finite numbers, no minifying
 //! resample), otherwise the clip is rendered on the CPU as before.
 
-use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
+use std::sync::Arc;
+
+use filmcraft_color::{GradeSpace, Lut, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
 use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text};
+use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text, within_unit};
 use crate::image::Image;
+
+/// The largest 3D cube (entries per side) a [`LumetriLut`] takes to the GPU; larger ones (a
+/// 129³ cube is 34 MB of storage per layer) stay on the CPU.
+pub const GPU_LUT_MAX_CUBE: usize = 65;
+/// The largest 1D table (a `.cube` shaper or a 1D-only LUT) a [`LumetriLut`] takes to the GPU.
+pub const GPU_LUT_MAX_SHAPER: usize = 65_536;
+
+/// A LUT of the Lumetri op: the Input LUT (first, on the grading signal of HDR White) or the
+/// Creative ▸ Look LUT (last, on the signal of the curves' HDR Range, mixed in by Intensity).
+/// `apply` is `fn lumetri`'s arithmetic for it, which the GPU's LUT pass reproduces.
+#[derive(Clone, Debug)]
+pub struct LumetriLut {
+    /// The resolved LUT (shared with `luts::resolve`'s cache, so a frame copies no table).
+    pub lut: Arc<Lut>,
+    /// The signal the LUT reads and writes.
+    pub grade: GradeSpace,
+    /// None: the LUT's output replaces the signal (Input LUT); Some(k): it is mixed in by k (the
+    /// Look's Intensity / 100).
+    pub mix: Option<f32>,
+}
+
+impl PartialEq for LumetriLut {
+    // the same table (by identity: comparing tables of 65³ entries per frame would cost more
+    // than the comparison saves) on the same signal
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.lut, &other.lut) && self.grade == other.grade && self.mix == other.mix
+    }
+}
+
+impl LumetriLut {
+    /// Linear (unpremultiplied) colour → the colour after the LUT.
+    #[inline]
+    pub fn apply(&self, c: [f32; 3]) -> [f32; 3] {
+        let v = self.grade.encode(c);
+        let lk = within_unit(v, self.grade.is_hdr(), |u| self.lut.apply(u));
+        let o = match self.mix {
+            None => lk,
+            Some(k) => [v[0] + (lk[0] - v[0]) * k, v[1] + (lk[1] - v[1]) * k, v[2] + (lk[2] - v[2]) * k],
+        };
+        self.grade.decode(o)
+    }
+
+    /// Whether the GPU's LUT pass reproduces [`apply`](Self::apply): tables it can index (sizes
+    /// at least 2 and within the GPU caps, as many entries as the size says), domains that are
+    /// finite and not empty, a finite mix and grading signal.
+    pub fn gpu_ok(&self) -> bool {
+        let domain = |lo: &[f32; 3], hi: &[f32; 3]| lo.iter().zip(hi).all(|(a, b)| a.is_finite() && b.is_finite() && b > a);
+        let shaper_ok = self.lut.shaper.as_ref().is_none_or(|s| (2..=GPU_LUT_MAX_SHAPER).contains(&s.data.len()) && domain(&s.domain_min, &s.domain_max));
+        let cube_ok = self.lut.cube.as_ref().is_none_or(|c| {
+            (2..=GPU_LUT_MAX_CUBE).contains(&c.size) && c.size.checked_pow(3).is_some_and(|n| n == c.data.len()) && domain(&c.domain_min, &c.domain_max)
+        });
+        let grade_ok = match self.grade {
+            GradeSpace::Sdr => true,
+            GradeSpace::Pq { white, norm } => white.is_finite() && norm.is_finite() && norm > 0.0,
+            GradeSpace::Hlg { white, gamma } => white.is_finite() && gamma.is_finite() && gamma > 0.0,
+        };
+        shaper_ok && cube_ok && grade_ok && self.mix.is_none_or(f32::is_finite)
+    }
+}
 
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
 /// magnification or mild minification: no mip pre-filter).
@@ -195,6 +256,15 @@ pub enum FxOp {
         vround: f32,
         vfeather: f32,
         aspect: f32,
+        /// The signal the grade works on: sRGB (SDR) or the PQ / HLG signal normalised to HDR
+        /// White (an HDR working space).
+        grade: GradeSpace,
+        /// HDR Specular (0 for SDR).
+        specular: f32,
+        /// Basic ▸ Input LUT, applied before the grade.
+        input_lut: Option<LumetriLut>,
+        /// Creative ▸ Look LUT, applied after the grade.
+        look_lut: Option<LumetriLut>,
         gpu_capable: bool,
     },
 }
@@ -506,9 +576,11 @@ impl FxOp {
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
                 let gs = grade_space(e, cx, "hdr_white");
                 let is_hdr = gs.is_hdr();
-                let has_input_lut = basic_on && !text(e, "input_lut").is_empty();
-                let has_look_lut = creative_on && !text(e, "look_lut").is_empty();
-                let look = if creative_on && !has_look_lut { choice(e, "look") } else { 0 };
+                // LUTs as `fn lumetri` resolves them: a reference that names no LUT (a library
+                // entry that is gone) applies none, and then the procedural Look menu applies
+                let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
+                let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
+                let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
                 let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
 
                 let curves_on = on(e, "curves_on");
@@ -529,7 +601,7 @@ impl FxOp {
 
                 let hsl_on = b(e, "hsl_on");
 
-                let gpu_capable = !is_hdr && !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
+                let gpu_capable = look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let temp = bf("temperature") / 100.0;
@@ -572,6 +644,14 @@ impl FxOp {
                     vround,
                     vfeather,
                     aspect,
+                    grade: gs,
+                    specular: if is_hdr && basic_on { f(e, "hdr_specular", cx) / 100.0 } else { 0.0 },
+                    input_lut: input_lut.map(|lut| LumetriLut { lut, grade: gs, mix: None }),
+                    look_lut: look_lut.map(|lut| LumetriLut {
+                        lut,
+                        grade: grade_space(e, cx, "curves_hdr_range"),
+                        mix: Some(f(e, "look_intensity", cx) / 100.0),
+                    }),
                     gpu_capable,
                 }
             }
@@ -620,8 +700,40 @@ impl FxOp {
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
             FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
             FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
-            FxOp::Lumetri { gains, exposure, contrast, hl, sh, wh, bl, sat, faded, vib, st, ht, va, vmid, vround, vfeather, aspect, gpu_capable, .. } => {
+            FxOp::Lumetri {
+                gains,
+                exposure,
+                contrast,
+                hl,
+                sh,
+                wh,
+                bl,
+                sat,
+                faded,
+                vib,
+                st,
+                ht,
+                va,
+                vmid,
+                vround,
+                vfeather,
+                aspect,
+                grade,
+                specular,
+                input_lut,
+                look_lut,
+                gpu_capable,
+                ..
+            } => {
                 *gpu_capable
+                    && input_lut.as_ref().is_none_or(LumetriLut::gpu_ok)
+                    && look_lut.as_ref().is_none_or(LumetriLut::gpu_ok)
+                    && specular.is_finite()
+                    && match *grade {
+                        GradeSpace::Sdr => true,
+                        GradeSpace::Pq { white, norm } => white.is_finite() && norm.is_finite() && norm > 0.0,
+                        GradeSpace::Hlg { white, gamma } => white.is_finite() && gamma.is_finite() && gamma > 0.0,
+                    }
                     && fin(gains)
                     && fin(&[*exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *faded, *vib])
                     && fin(st)
@@ -942,17 +1054,28 @@ impl FxOp {
                 vround,
                 vfeather,
                 aspect,
+                grade,
+                specular,
+                input_lut,
+                look_lut,
                 ..
             } => {
+                let (gs, specular) = (*grade, *specular);
+                let (input_lut, look_lut) = (input_lut.as_ref(), look_lut.as_ref());
+                let hdr = gs.is_hdr();
                 let gains = *gains;
                 let (exposure, contrast, hl, sh, wh, bl, sat) = (*exposure, *contrast, *hl, *sh, *wh, *bl, *sat);
                 let (creative_on, faded, vib, st, ht) = (*creative_on, *faded, *vib, *st, *ht);
                 let (vignette_on, va, vmid, vround, vfeather, aspect) = (*vignette_on, *va, *vmid, *vround, *vfeather, *aspect);
                 let (w, h) = (img.w as f32, img.h as f32);
                 img.map_rgb(|c, x, y| {
+                    let c = match input_lut {
+                        Some(l) => l.apply(c),
+                        None => c,
+                    };
                     // white balance + exposure in linear light
                     let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
-                    let mut v = enc(lin);
+                    let mut v = gs.encode(lin);
                     // whites / blacks: endpoints
                     let b0 = -bl * 0.15;
                     let w0 = 1.0 - wh * 0.15;
@@ -966,14 +1089,22 @@ impl FxOp {
                         let k = nl / l;
                         v = v.map(|q| q * k);
                     }
-                    // contrast: smooth S-curve around mid grey
+                    // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White;
+                    // speculars above it keep their distance from white)
                     if contrast.abs() > 1e-4 {
                         let k = 1.0 + contrast;
                         v = v.map(|q| {
+                            if hdr && q > 1.0 {
+                                return q;
+                            }
                             let q = q.clamp(0.0, 1.0);
                             let s = q * q * (3.0 - 2.0 * q);
                             if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
                         });
+                    }
+                    // HDR Specular: brightness of the highlights above HDR White
+                    if specular.abs() > 1e-4 {
+                        v = v.map(|q| if q > 1.0 { 1.0 + (q - 1.0) * (1.0 + specular).max(0.0) } else { q });
                     }
                     // faded film: lift blacks and compress
                     if faded > 0.0 {
@@ -1001,8 +1132,13 @@ impl FxOp {
                         let k = 1.0 + va * 0.2 * e2;
                         v = v.map(|q| if va < 0.0 { q * k.max(0.0) } else { q + (1.0 - q) * (k - 1.0) });
                     }
-                    dec(v)
+                    gs.decode(v)
                 });
+                // the Look is a pass of its own after the grade, as `lumetri_advanced` after
+                // `fn lumetri`'s pass (and the GPU's LUT pass after its grade pass)
+                if let Some(l) = look_lut {
+                    img.map_rgb(|c, _, _| l.apply(c));
+                }
             }
         }
     }

@@ -11,10 +11,16 @@
 //! Box blurs (Gaussian Blur, Camera Blur, the blur inside Unsharp / Sharpen) run per pixel for
 //! radii up to [`BOX_PER_PIXEL_MAX`] and as a running sum per row / column above, so a huge
 //! radius costs O(1) per pixel like on the CPU (radii are capped by `gaussian_boxes`).
+//!
+//! Lumetri's Input LUT and Look LUT run as a LUT pass before and after its grade pass. The pass
+//! reads the table from a storage buffer (the 1D shaper's entries, then the cube's), uploaded once
+//! per LUT and kept while frames use it.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use filmcraft_render::gpufx::FxOp;
+use filmcraft_color::{GradeSpace, Lut};
+use filmcraft_render::gpufx::{FxOp, LumetriLut};
 use filmcraft_render::plan::LayerFx;
 
 /// Working texture format.
@@ -52,6 +58,7 @@ const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
 const OP_VIDEO_LIMITER: u32 = 30;
 const OP_LUMETRI: u32 = 31;
+const OP_LUT: u32 = 32;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -63,6 +70,12 @@ pub(crate) struct FxStage {
     source: wgpu::RenderPipeline,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
+    /// LUT tables by the address of their `Arc<Lut>`, which the entry keeps alive (so a new LUT
+    /// can't take a freed one's address and be drawn with its table).
+    luts: HashMap<usize, (Arc<Lut>, wgpu::Buffer)>,
+    luts_used: HashSet<usize>,
+    /// Bound as the table of passes that read none.
+    no_lut: wgpu::Buffer,
 }
 
 /// One compute pass of a job.
@@ -93,6 +106,8 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
+    /// The table of a LUT pass.
+    lut: Option<Arc<Lut>>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -100,7 +115,64 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, lut: None }
+}
+
+/// The grading signal as `fx.wgsl`'s `grade_enc` / `grade_dec` read it: mode (0 sRGB, 1 PQ, 2
+/// HLG) and its two numbers (PQ: norm; HLG: white, gamma).
+fn grade_mode(g: GradeSpace) -> (u32, f32, f32) {
+    match g {
+        GradeSpace::Sdr => (0, 0.0, 0.0),
+        GradeSpace::Pq { norm, .. } => (1, norm, 0.0),
+        GradeSpace::Hlg { white, gamma } => (2, white, gamma),
+    }
+}
+
+/// A LUT pass (`LumetriLut::apply`): i1 = cube size, shaper size (0: none), grading mode, mix;
+/// p0 = cube domain min + mix amount, p1 = cube domain max, p2 / p3 = shaper domain, with the
+/// grading numbers in p3.w / p4.w where `grade_enc` reads them.
+fn lut_step(l: &LumetriLut) -> Step {
+    let (mode, g0, g1) = grade_mode(l.grade);
+    let (cube_n, cmin, cmax) = l.lut.cube.as_ref().map_or((0, [0.0; 3], [1.0; 3]), |c| (c.size as u32, c.domain_min, c.domain_max));
+    let (shaper_n, smin, smax) = l.lut.shaper.as_ref().map_or((0, [0.0; 3], [1.0; 3]), |s| (s.data.len() as u32, s.domain_min, s.domain_max));
+    let p = [
+        cmin[0],
+        cmin[1],
+        cmin[2],
+        l.mix.unwrap_or(1.0),
+        cmax[0],
+        cmax[1],
+        cmax[2],
+        0.0,
+        smin[0],
+        smin[1],
+        smin[2],
+        0.0,
+        smax[0],
+        smax[1],
+        smax[2],
+        g0,
+        0.0,
+        0.0,
+        0.0,
+        g1,
+    ];
+    let mut s = step(OP_LUT, [cube_n, shaper_n, mode, l.mix.is_some() as u32], &p);
+    s.lut = Some(l.lut.clone());
+    s
+}
+
+/// A LUT's table as the LUT pass reads it: the shaper's entries, then the cube's (red fastest),
+/// one `vec4` each.
+fn lut_bytes(l: &Lut) -> Vec<u8> {
+    let shaper = l.shaper.iter().flat_map(|s| &s.data);
+    let cube = l.cube.iter().flat_map(|c| &c.data);
+    let mut bytes: Vec<u8> = shaper.chain(cube).flat_map(|c| [c[0], c[1], c[2], 0.0]).flat_map(f32::to_le_bytes).collect();
+    if bytes.is_empty() {
+        // a LUT without tables still binds a buffer (zero-sized bindings are invalid)
+        bytes.resize(16, 0);
+    }
+    bytes
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -206,8 +278,17 @@ fn steps(op: &FxOp) -> Vec<Step> {
             vround,
             vfeather,
             aspect,
+            grade,
+            specular,
+            input_lut,
+            look_lut,
             ..
         } => {
+            // the grading signal: mode 0 sRGB, 1 PQ (p3.w = norm), 2 HLG (p3.w = white, p4.w = gamma)
+            let (mode, g0, g1) = grade_mode(*grade);
+            if let Some(l) = input_lut {
+                out.push(lut_step(l));
+            }
             let ge = [gains[0] * exposure, gains[1] * exposure, gains[2] * exposure];
             let b0 = -bl * 0.15;
             let w0 = 1.0 - wh * 0.15;
@@ -233,17 +314,20 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 *vmid,
                 *vfeather,
                 vround_aspect,
-                0.0,
+                g0,
                 st_k[0],
                 st_k[1],
                 st_k[2],
-                0.0,
+                g1,
                 ht_k[0],
                 ht_k[1],
                 ht_k[2],
-                0.0,
+                *specular,
             ];
-            out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, 0, 0], &p));
+            out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, mode, 0], &p));
+            if let Some(l) = look_lut {
+                out.push(lut_step(l));
+            }
         }
     }
     out
@@ -255,6 +339,7 @@ impl FxStage {
     pub(crate) fn supported(device: &wgpu::Device) -> bool {
         let l = device.limits();
         l.max_storage_textures_per_shader_stage >= 1
+            && l.max_storage_buffers_per_shader_stage >= 1
             && l.max_compute_invocations_per_workgroup >= 256
             && l.max_compute_workgroup_size_x >= 64
             && l.max_compute_workgroup_size_y >= 16
@@ -297,6 +382,16 @@ impl FxStage {
                     count: None,
                 },
                 tex(3),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fx"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -331,24 +426,66 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
+        let no_lut =
+            device.create_buffer(&wgpu::BufferDescriptor { label: Some("fx-no-lut"), size: 16, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            bgl,
+            source,
+            pool: HashMap::new(),
+            used: HashSet::new(),
+            luts: HashMap::new(),
+            luts_used: HashSet::new(),
+            no_lut,
+        }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
     /// are released then.
     pub(crate) fn begin_frame(&mut self) {
         self.used.clear();
+        self.luts_used.clear();
     }
 
     pub(crate) fn end_frame(&mut self) {
         let used = &self.used;
         self.pool.retain(|k, _| used.contains(k));
+        let used = &self.luts_used;
+        self.luts.retain(|k, _| used.contains(k));
     }
 
-    /// No working textures held.
+    /// No working textures (or LUT tables) held.
     #[cfg(test)]
     pub(crate) fn is_idle(&self) -> bool {
-        self.pool.is_empty()
+        self.pool.is_empty() && self.luts.is_empty()
+    }
+
+    /// The storage buffer holding `lut`'s table (uploaded on first use). None when the table is
+    /// larger than the device lets a shader read (`LumetriLut::gpu_ok` keeps such tables on the
+    /// CPU; this guards callers that did not ask it).
+    fn lut_buffer(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lut: &Arc<Lut>) -> Option<wgpu::Buffer> {
+        let key = Arc::as_ptr(lut) as usize;
+        self.luts_used.insert(key);
+        if let Some((_, buf)) = self.luts.get(&key) {
+            return Some(buf.clone());
+        }
+        let entries = lut.shaper.as_ref().map_or(0, |s| s.data.len()).saturating_add(lut.cube.as_ref().map_or(0, |c| c.data.len()));
+        let limits = device.limits();
+        let max = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
+        if (entries as u64).saturating_mul(16) > max {
+            return None;
+        }
+        let bytes = lut_bytes(lut);
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx-lut"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buf, 0, &bytes);
+        self.luts.insert(key, (lut.clone(), buf.clone()));
+        Some(buf)
     }
 
     fn targets(&mut self, device: &wgpu::Device, size: (u32, u32), n: usize) -> Vec<Target> {
@@ -377,7 +514,8 @@ impl FxStage {
     /// Prepare the passes of `fx`, whose source draw uses `source_bg` (a layer bind group whose
     /// uniforms map the frame onto the working image). None when the working image does not fit
     /// in a texture (the layer is then drawn without its effects — never larger than the source
-    /// frame, which would not have uploaded either).
+    /// frame, which would not have uploaded either) or a LUT table does not fit in a storage
+    /// buffer.
     pub(crate) fn job(
         &mut self,
         device: &wgpu::Device,
@@ -424,6 +562,10 @@ impl FxStage {
                 mapped_at_creation: false,
             });
             queue.write_buffer(&buf, 0, &bytes);
+            let table = match &s.lut {
+                Some(l) => self.lut_buffer(device, queue, l)?,
+                None => self.no_lut.clone(),
+            };
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,
@@ -432,6 +574,7 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
+                    wgpu::BindGroupEntry { binding: 4, resource: table.as_entire_binding() },
                 ],
             });
             let groups = if s.run {

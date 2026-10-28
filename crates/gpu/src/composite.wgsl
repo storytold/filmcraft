@@ -394,6 +394,21 @@ fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
 
 @group(0) @binding(0) var accum: texture_2d<f32>;
 
+// The resolve pass's display transform (`filmcraft_color::OutputTransform`, #965): the sequence's
+// working linear → monitor. Same stages as `OutputTransform::apply`, in the same order: BT.2390
+// tone mapping (from an HDR working space), the working → target gamut matrix, then desaturation
+// into the target gamut. `a.x` is 0 for a plain sequence (the accumulator is already monitor
+// space) and the sRGB encode below is the whole transform.
+struct O {
+    a: vec4<f32>,   // on, target curve (0 sdr), tone mapping on, matrix on
+    b: vec4<f32>,   // desaturation on, tone source peak cd/m², tone target peak cd/m², reference white cd/m²
+    m0: vec4<f32>,  // matrix row 0, desaturation luma weight 0
+    m1: vec4<f32>,  // matrix row 1, desaturation luma weight 1
+    m2: vec4<f32>,  // matrix row 2, desaturation luma weight 2
+};
+
+@group(0) @binding(1) var<uniform> disp: O;
+
 @vertex
 fn vs_full(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     let x = f32((vi << 1u) & 2u) * 2.0 - 1.0;
@@ -401,9 +416,44 @@ fn vs_full(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     return vec4(x, y, 0.0, 1.0);
 }
 
+// Working linear → monitor linear.
+fn display(rgb: vec3<f32>) -> vec3<f32> {
+    if disp.a.x < 0.5 { return rgb; }
+    var c = rgb;
+    if disp.a.z > 0.5 {
+        // `ToneMap::apply`: one scale from max(R,G,B), the EETF sampled in the PQ domain
+        let m = max(max(c.r, c.g), c.b);
+        if m > 0.0 {
+            let nits = m * disp.b.w;
+            var k = 1.0;
+            if nits >= disp.b.y {
+                // above the source peak: clip to the target peak
+                k = disp.b.z / disp.b.w / m;
+            } else if nits > 1e-6 {
+                k = eetf(nits, disp.b.y, disp.b.z) / nits;
+            }
+            c = c * k;
+        }
+    }
+    if disp.a.w > 0.5 { c = vec3(dot(disp.m0.xyz, c), dot(disp.m1.xyz, c), dot(disp.m2.xyz, c)); }
+    if disp.b.x > 0.5 {
+        // `desaturate_into_gamut`: out-of-gamut colours towards their luminance, in-gamut exactly
+        let mn = min(min(c.r, c.g), c.b);
+        if mn < 0.0 {
+            let y = dot(vec3(disp.m0.w, disp.m1.w, disp.m2.w), c);
+            if y <= 0.0 {
+                c = vec3(0.0);
+            } else {
+                c = max(y + (c - y) * (y / (y - mn)), vec3(0.0));
+            }
+        }
+    }
+    return c;
+}
+
 @fragment
 fn fs_full(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = clamp(textureLoad(accum, vec2<i32>(pos.xy), 0).rgb, vec3(0.0), vec3(1.0));
+    let c = clamp(display(textureLoad(accum, vec2<i32>(pos.xy), 0).rgb), vec3(0.0), vec3(1.0));
     let lo = c * 12.92;
     let hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
     return vec4(select(hi, lo, c <= vec3(0.0031308)), 1.0);

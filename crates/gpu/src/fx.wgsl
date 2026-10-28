@@ -19,6 +19,8 @@ struct U {
 @group(0) @binding(2) var dst: texture_storage_2d<rgba32float, write>;
 // Unsharp Mask: the image before blurring.
 @group(0) @binding(3) var aux: texture_2d<f32>;
+// LUT pass: the table (the 1D shaper's entries, then the cube's, red fastest; rgb in .xyz).
+@group(0) @binding(4) var<storage, read> lut_data: array<vec4<f32>>;
 
 const OP_BRIGHTNESS_CONTRAST: u32 = 1u;
 const OP_PROC_AMP: u32 = 2u;
@@ -50,6 +52,7 @@ const OP_MIRROR: u32 = 28u;
 const OP_OFFSET: u32 = 29u;
 const OP_VIDEO_LIMITER: u32 = 30u;
 const OP_LUMETRI: u32 = 31u;
+const OP_LUT: u32 = 32u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -441,6 +444,83 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
     }
 }
 
+// `GradeSpace::encode` / `decode` (filmcraft-color): the signal Lumetri grades, by u.i1.z
+// (0 sRGB, 1 PQ normalised by u.p3.w, 2 HLG of a u.p3.w cd/m² display with system gamma u.p4.w).
+const REFERENCE_WHITE: f32 = 203.0;
+const LUMA2020: vec3<f32> = vec3(0.26270021, 0.67799807, 0.05930172);
+
+fn pq_eotf1(e: f32) -> f32 {
+    let m1 = 0.15930176; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.851563; let c3 = 18.6875;
+    let p = powf(max(e, 0.0), 1.0 / m2);
+    return powf(max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+}
+
+fn pq_inverse_eotf1(y: f32) -> f32 {
+    let m1 = 0.15930176; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.851563; let c3 = 18.6875;
+    let p = powf(max(y, 0.0), m1);
+    return powf((c1 + c2 * p) / (1.0 + c3 * p), m2);
+}
+
+fn hlg_oetf1(l: f32) -> f32 {
+    let a = 0.17883277; let b = 0.28466892; let c = 0.5599107;
+    if l <= 1.0 / 12.0 {
+        return sqrt(3.0 * max(l, 0.0));
+    }
+    return a * log(12.0 * l - b) + c;
+}
+
+fn hlg_inverse_oetf1(e: f32) -> f32 {
+    let a = 0.17883277; let b = 0.28466892; let c = 0.5599107;
+    if e <= 0.5 {
+        return e * e / 3.0;
+    }
+    return (exp((e - c) / a) + b) / 12.0;
+}
+
+fn grade_enc(c: vec3<f32>) -> vec3<f32> {
+    let mode = u.i1.z;
+    if mode == 1u {
+        let norm = u.p3.w;
+        let k = REFERENCE_WHITE / 10000.0;
+        let m = max(c, vec3(0.0)) * k;
+        return vec3(pq_inverse_eotf1(min(m.x, 1.0)), pq_inverse_eotf1(min(m.y, 1.0)), pq_inverse_eotf1(min(m.z, 1.0))) / norm;
+    }
+    if mode == 2u {
+        let white = u.p3.w;
+        let gamma = u.p4.w;
+        let fd = max(c, vec3(0.0)) * (REFERENCE_WHITE / white);
+        let yd = dot(LUMA2020, fd);
+        if yd <= 0.0 {
+            return vec3(0.0);
+        }
+        let k = powf(yd, (1.0 - gamma) / gamma);
+        return vec3(hlg_oetf1(fd.x * k), hlg_oetf1(fd.y * k), hlg_oetf1(fd.z * k));
+    }
+    return enc(c);
+}
+
+fn grade_dec(v: vec3<f32>) -> vec3<f32> {
+    let mode = u.i1.z;
+    if mode == 1u {
+        let norm = u.p3.w;
+        let q = clamp(v * norm, vec3(0.0), vec3(1.0));
+        return vec3(pq_eotf1(q.x), pq_eotf1(q.y), pq_eotf1(q.z)) * (10000.0 / REFERENCE_WHITE);
+    }
+    if mode == 2u {
+        let white = u.p3.w;
+        let gamma = u.p4.w;
+        let q = clamp(v, vec3(0.0), vec3(1.5));
+        let es = vec3(hlg_inverse_oetf1(q.x), hlg_inverse_oetf1(q.y), hlg_inverse_oetf1(q.z));
+        let ys = dot(LUMA2020, es);
+        if ys <= 0.0 {
+            return vec3(0.0);
+        }
+        let k = powf(ys, gamma - 1.0);
+        return es * (k * white / REFERENCE_WHITE);
+    }
+    return dec(v);
+}
+
 fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     let s = size();
     let creative_on = u.i1.x != 0u;
@@ -449,7 +529,7 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     // white balance + exposure in linear light
     let ge = u.p0.xyz;
     let lin = c * ge;
-    var v = enc(lin);
+    var v = grade_enc(lin);
 
     // whites / blacks: endpoints
     let b0 = u.p0.w;
@@ -471,17 +551,27 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
         v = v * k;
     }
 
-    // contrast: smooth S-curve around mid grey
+    // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
+    // keep their distance from white)
     let contrast = u.p1.w;
+    let hdr = u.i1.z != 0u;
     if abs(contrast) > 1e-4 {
         let k = 1.0 + contrast;
         let q = clamp(v, vec3(0.0), vec3(1.0));
         let sc = q * q * (vec3(3.0) - 2.0 * q);
+        var o: vec3<f32>;
         if k >= 1.0 {
-            v = q + (sc - q) * (k - 1.0);
+            o = q + (sc - q) * (k - 1.0);
         } else {
-            v = vec3(0.5) + (q - vec3(0.5)) * k;
+            o = vec3(0.5) + (q - vec3(0.5)) * k;
         }
+        v = select(o, v, vec3(hdr) & (v > vec3(1.0)));
+    }
+
+    // HDR Specular: brightness of the highlights above HDR White
+    let specular = u.p5.w;
+    if abs(specular) > 1e-4 {
+        v = select(v, vec3(1.0) + (v - vec3(1.0)) * max(1.0 + specular, 0.0), v > vec3(1.0));
     }
 
     // faded film: lift blacks and compress
@@ -527,7 +617,89 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
         }
     }
 
-    return dec(v);
+    return grade_dec(v);
+}
+
+// The LUT pass (`LumetriLut::apply`): u.i1.x cube size (0: none), u.i1.y shaper size (0: none),
+// u.i1.z grading mode (as `grade_enc`), u.i1.w mix by u.p0.w (the Look's Intensity); cube domain
+// u.p0.xyz … u.p1.xyz, shaper domain u.p2.xyz … u.p3.xyz. Sizes are at least 2 (`gpu_ok`).
+
+// One channel of `Lut1d::apply`.
+fn lut_shaper1(v: f32, lo: f32, hi: f32, ch: u32) -> f32 {
+    let n = u.i1.y - 1u;
+    let t = clamp((v - lo) / (hi - lo), 0.0, 1.0) * f32(n);
+    let i = min(u32(t), n - 1u);
+    let f = t - f32(i);
+    let a = lut_data[i][ch];
+    let b = lut_data[min(i + 1u, n)][ch];
+    return a + (b - a) * f;
+}
+
+fn lut_at(r: u32, g: u32, b: u32) -> vec3<f32> {
+    let n = u.i1.x;
+    return lut_data[u.i1.y + r + g * n + b * n * n].xyz;
+}
+
+// `Lut3d::apply`: tetrahedral interpolation (the arithmetic of `lut.wgsl`).
+fn lut_cube(c: vec3<f32>) -> vec3<f32> {
+    let n = u.i1.x;
+    let m = f32(n - 1u);
+    let t = clamp((c - u.p0.xyz) / (u.p1.xyz - u.p0.xyz), vec3(0.0), vec3(1.0)) * m;
+    let i = min(vec3<u32>(t), vec3(n - 2u));
+    let f = t - vec3<f32>(i);
+    let fr = f.x;
+    let fg = f.y;
+    let fb = f.z;
+    let c000 = lut_at(i.x, i.y, i.z);
+    let c111 = lut_at(i.x + 1u, i.y + 1u, i.z + 1u);
+    var ca: vec3<f32>;
+    var cb: vec3<f32>;
+    var w: vec4<f32>;
+    if fr > fg {
+        if fg > fb {
+            ca = lut_at(i.x + 1u, i.y, i.z); cb = lut_at(i.x + 1u, i.y + 1u, i.z); w = vec4(1.0 - fr, fr - fg, fg - fb, fb);
+        } else if fr > fb {
+            ca = lut_at(i.x + 1u, i.y, i.z); cb = lut_at(i.x + 1u, i.y, i.z + 1u); w = vec4(1.0 - fr, fr - fb, fb - fg, fg);
+        } else {
+            ca = lut_at(i.x, i.y, i.z + 1u); cb = lut_at(i.x + 1u, i.y, i.z + 1u); w = vec4(1.0 - fb, fb - fr, fr - fg, fg);
+        }
+    } else if fb > fg {
+        ca = lut_at(i.x, i.y, i.z + 1u); cb = lut_at(i.x, i.y + 1u, i.z + 1u); w = vec4(1.0 - fb, fb - fg, fg - fr, fr);
+    } else if fb > fr {
+        ca = lut_at(i.x, i.y + 1u, i.z); cb = lut_at(i.x, i.y + 1u, i.z + 1u); w = vec4(1.0 - fg, fg - fb, fb - fr, fr);
+    } else {
+        ca = lut_at(i.x, i.y + 1u, i.z); cb = lut_at(i.x + 1u, i.y + 1u, i.z); w = vec4(1.0 - fg, fg - fr, fr - fb, fb);
+    }
+    return w.x * c000 + w.y * ca + w.z * cb + w.w * c111;
+}
+
+// `Lut::apply`: the shaper, then the cube.
+fn lut_apply(c: vec3<f32>) -> vec3<f32> {
+    var v = c;
+    if u.i1.y >= 2u {
+        v = vec3(lut_shaper1(v.x, u.p2.x, u.p3.x, 0u), lut_shaper1(v.y, u.p2.y, u.p3.y, 1u), lut_shaper1(v.z, u.p2.z, u.p3.z, 2u));
+    }
+    if u.i1.x >= 2u {
+        v = lut_cube(v);
+    }
+    return v;
+}
+
+fn lut_op(c: vec3<f32>) -> vec3<f32> {
+    let v = grade_enc(c);
+    // `effects::within_unit`: SDR clamps to 0…1; HDR scales a signal above 1 into it and back
+    var lk: vec3<f32>;
+    if u.i1.z == 0u {
+        lk = lut_apply(clamp(v, vec3(0.0), vec3(1.0)));
+    } else {
+        let m = max(max(max(v.x, v.y), v.z), 1.0);
+        lk = lut_apply(max(v / m, vec3(0.0))) * m;
+    }
+    var o = lk;
+    if u.i1.w != 0u {
+        o = v + (lk - v) * u.p0.w;
+    }
+    return grade_dec(o);
 }
 
 // One output pixel of every op but the running-sum box blur.
@@ -714,6 +886,14 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let c = o.rgb / a;
             let res = lumetri_op(c, p);
             return vec4(res * a, a);
+        }
+        case OP_LUT: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            return vec4(lut_op(o.rgb / a) * a, a);
         }
         default: {
             let o = ld(p);
