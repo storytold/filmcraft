@@ -116,6 +116,59 @@ compositor's savings are a larger part of the export.
 What is left in a frame without overlays is the Y'CbCr → linear float conversion of the camera
 picture (4.5 ms in the synthetic case) and the conversion to 8 bits (2 ms).
 
+## Results (CPU box blur: column strips instead of transposes, before → after)
+
+`box_blur` is the CPU path of Gaussian Blur, Unsharp Mask, Sharpen, Lumetri's Sharpen, the glows and
+the blur transitions. Its vertical passes ran as row passes over a transposed copy of the picture: two
+strided copies of every pixel into fresh full-size images, and a separate sweep of the whole picture
+per radius. At the radii Lumetri's Sharpen uses in an export at ½ render scale (σ 0.6: radii 0, 0, 1)
+the transposes cost more than the passes. Now:
+
+- a row's passes run back to back while it is in cache (one sweep instead of one per radius);
+- the columns are cut into strips of about 256 KiB of floats: a strip is gathered once, all its passes
+  run on it, and the last pass writes straight back into the picture's rows. The rows are split into
+  disjoint slices per band of strips, so the bands run in parallel without `unsafe`;
+- the unsharp mask's first row pass reads the picture itself instead of a copy of it.
+
+Every pixel goes through the same floating-point operations in the same order, so **the result is the
+same bits**: `effects::box_blur_tests` keeps the previous implementation as an oracle and compares 882
+cases (1×1 to 300×65, radii up to 40, edge repeat on and off) and the Gaussian / unsharp entry points
+bit for bit.
+
+Apple M4 (10 cores), 2026-10-14,
+`cargo test --release -p filmcraft-render --lib perf_box_blur -- --ignored --nocapture` (best of 7, ms):
+
+| picture | σ | box blur | unsharp mask |
+|---|---|---|---|
+| 1920×1080 | 0.6 (Lumetri Sharpen at ½ scale) | 8.9 → **3.5** | 11.0 → **4.9** |
+| 1920×1080 | 1.2 | 10.3 → **5.9** | 11.7 → **7.0** |
+| 1920×1080 | 10 | 11.4 → **8.0** | 13.7 → **9.2** |
+| 1920×1080 | 40 | 11.3 → **8.5** | 14.1 → **10.1** |
+| 3840×2160 | 0.6 | 52.3 → **16.0** | 59.4 → **22.3** |
+| 3840×2160 | 1.2 | 58.3 → **25.4** | 66.1 → **29.2** |
+| 3840×2160 | 10 | 64.5 → **32.6** | 73.1 → **37.6** |
+| 3840×2160 | 40 | 66.7 → **30.9** | 75.8 → **39.3** |
+
+Where it shows in an export: a two-camera 4K lesson exported to 1920×1080 ProRes 422 on Linux
+(i5-13400F, 16 threads, the 0.7.2 CLI, CPU compositor), with Lumetri (Sharpen 8) on the front camera,
+on the overhead camera and on a masked picture-in-picture of the front camera, spent 2,522 CPU ms per
+frame; switching only the three Sharpens off took it to 2,011, so Sharpen was about a fifth of that
+export. The same lesson after this change, with the CLI built at 0.8.0 and at this branch on 0.8.0
+(`filmcraft-cli --project … export out.mov --preset "Apple ProRes 422" --settings
+'{"frameSize":[1920,1080]}' --no-audio --start 200 --end 260`, 1,800 frames, three rounds in
+alternating order, nothing else running):
+
+| build | wall time (s) | frames/s | CPU ms per frame |
+|---|---|---|---|
+| 0.8.0 | 315.7 / 313.0 / 313.5 | 5.73 | 2,582 / 2,554 / 2,566 |
+| this branch | 277.5 / 276.9 / 276.6 | **6.50** | 2,258 / 2,262 / 2,245 |
+
+About 12 % less time for the whole export (the 0.7.2 CLI, run in the same rounds, took 312.0 / 314.5 /
+312.7 s, the same as 0.8.0). The first 60 frames of the section, exported by both builds as a TIFF
+sequence, are pixel-identical. `cargo xtask bench --sections export --only h264_fx --cpu --hw off
+--repeat 3`, the two builds alternating: 851–895 CPU ms per frame before and 886 after, no change
+beyond the noise in a scene whose time is the built-in H.264 encoder and decoding.
+
 ## Results (GPU3: GPU export rendering, Off → Auto, #30)
 
 Export ▸ GPU Rendering composites the exported frames on the GPU (`filmcraft-gpu`'s off-screen
