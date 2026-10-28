@@ -425,6 +425,12 @@ pub enum Event {
     OpenSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),
+    /// File ▸ Close Project left no project open (the frontend shows its Home screen).
+    ProjectClosed,
+    /// Another project took the current one's place: opened, recovered, created (New Project,
+    /// from a template) or the demo project. `ProjectChanged` also follows every edit and view
+    /// refresh (proxies toggled), so a frontend leaving its Home screen listens for this one.
+    ProjectOpened,
 }
 
 pub struct Session {

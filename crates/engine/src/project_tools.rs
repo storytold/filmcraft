@@ -693,6 +693,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     s.revision += 1;
     s.saved_revision = s.revision;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    s.events.push(crate::Event::ProjectOpened);
     if let Some(q) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(q));
     }

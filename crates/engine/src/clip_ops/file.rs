@@ -224,5 +224,6 @@ pub(super) fn close_project(s: &mut Session, p: &Value) -> Result<Value> {
     s.revision += 1;
     s.saved_revision = s.revision;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+    s.events.push(crate::Event::ProjectClosed);
     Ok(json!({"closed": true}))
 }
