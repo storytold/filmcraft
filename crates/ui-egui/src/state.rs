@@ -492,8 +492,8 @@ pub struct UiState {
     pub show_scopes: bool,
     /// Transient status line shown in the footer.
     pub status: String,
-    /// The job whose progress window was closed: it stays closed until another job runs.
-    pub progress_window_hidden: Option<u64>,
+    /// The jobs whose progress window was closed: each stays closed until it finishes.
+    pub progress_window_hidden: Vec<u64>,
     /// A job whose progress window was asked for from the status bar, whatever the preference.
     pub progress_window_asked: Option<u64>,
     /// A link the web browser couldn't open, shown with its address until closed
@@ -1022,7 +1022,7 @@ impl Default for UiState {
             dark: true,
             show_scopes: false,
             status: String::new(),
-            progress_window_hidden: None,
+            progress_window_hidden: Vec::new(),
             progress_window_asked: None,
             failed_link: None,
             eyedropper: None,
