@@ -36,7 +36,7 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 |---|---|---|---|---|---|
 | H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames; takes the RGBA pictures and converts them itself) | Intel QSV, NVENC, AMD | **NVENC** (opt-in); Media Foundation pending #2488 | **NVENC only** |
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
-| HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC**; Media Foundation pending #2488 | no (#1648 proposed) |
+| HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC**; Media Foundation pending #2488 | no |
 | HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`); pending Media Foundation proposal is 8-bit SDR only | no |
 | ProRes | Apple silicon | software only | software | software | software |
 | AV1 | — | no | via plug-ins / newer GPUs | no (encoder MFTs exist; no plumbing) | no |
