@@ -42,7 +42,6 @@ pub struct Gray {
 
 impl Gray {
     pub fn new(w: usize, h: usize, px: Vec<f32>) -> Self {
-        assert_eq!(px.len(), w * h);
         Self { w, h, px }
     }
     /// Luma of 8-bit RGBA (Rec. 709 weights on the encoded values).
@@ -52,9 +51,12 @@ impl Gray {
     }
     #[inline]
     fn at(&self, x: i32, y: i32) -> f32 {
-        let x = x.clamp(0, self.w as i32 - 1) as usize;
-        let y = y.clamp(0, self.h as i32 - 1) as usize;
-        self.px[y * self.w + x]
+        if self.w == 0 || self.h == 0 {
+            return 0.0;
+        }
+        let x = x.clamp(0, self.w.min(i32::MAX as usize) as i32 - 1) as usize;
+        let y = y.clamp(0, self.h.min(i32::MAX as usize) as i32 - 1) as usize;
+        y.checked_mul(self.w).and_then(|row| row.checked_add(x)).and_then(|index| self.px.get(index)).copied().unwrap_or(0.0)
     }
     /// Bilinear sample at continuous coordinates (pixel centres at integers), clamped.
     #[inline]
@@ -90,8 +92,12 @@ impl Gray {
         });
         Gray { w: nw, h: nh, px }
     }
-    fn pyramid(&self) -> Vec<Gray> {
-        let mut v = vec![self.clone()];
+    fn pyramid(self) -> Vec<Gray> {
+        if self.w == 0 || self.h == 0 || self.w.checked_mul(self.h) != Some(self.px.len()) {
+            return vec![self];
+        }
+        let mut v = Vec::with_capacity(LEVELS);
+        v.push(self);
         while v.len() < LEVELS && v.last().is_some_and(|g| g.w >= 32 && g.h >= 32) {
             let Some(n) = v.last().map(Gray::down) else { break };
             v.push(n);
@@ -132,7 +138,17 @@ fn dist_to_poly(poly: &[Vec2], p: Vec2) -> f64 {
 
 /// Shi–Tomasi corners inside `region` (a polygon in `g`'s pixels), strongest first.
 pub fn features(g: &Gray, region: &[Vec2], max: usize, min_dist: f32) -> Vec<[f32; 2]> {
-    if region.len() < 3 {
+    // Validate once before the hot loops and cap the input-sized gradient/response buffers.
+    if region.len() < 3
+        || region.len() > 1024
+        || region.iter().any(|p| !p.x.is_finite() || !p.y.is_finite())
+        || max == 0
+        || !min_dist.is_finite()
+        || min_dist < 0.0
+        || g.w == 0
+        || g.h == 0
+        || !g.w.checked_mul(g.h).is_some_and(|n| n == g.px.len() && n <= 16_777_216)
+    {
         return Vec::new();
     }
     let lo = region.iter().fold(Vec2::new(f64::INFINITY, f64::INFINITY), |a, p| Vec2::new(a.x.min(p.x), a.y.min(p.y)));
@@ -145,7 +161,23 @@ pub fn features(g: &Gray, region: &[Vec2], max: usize, min_dist: f32) -> Vec<[f3
     if x1 <= x0 || y1 <= y0 {
         return Vec::new();
     }
+    // Stabilization uses an axis-aligned viewport. Its interior/margin test needs no per-pixel
+    // winding walk or four point-to-segment projections; arbitrary mask polygons keep those.
+    let rectangle = match region {
+        [a, b, c, d] => (a.y == b.y && b.x == c.x && c.y == d.y && d.x == a.x) || (a.x == b.x && b.y == c.y && c.x == d.x && d.y == a.y),
+        _ => false,
+    };
     let (bw, bh) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
+    // Each gradient participates in 49 overlapping tensors. Compute it once, retaining the
+    // original tensor summation order so corner selection and RANSAC remain bit-identical.
+    let (gw, gh) = (bw + 6, bh + 6);
+    let gradients: Vec<[f32; 2]> = (0..gw * gh)
+        .into_par_iter()
+        .map(|i| {
+            let (gx, gy) = g.grad(x0 - 3 + (i % gw) as i32, y0 - 3 + (i / gw) as i32);
+            [gx, gy]
+        })
+        .collect();
     // structure tensor response (min eigenvalue) over a 7×7 window, at pixels inside the region
     let r = 3;
     let resp: Vec<f32> = (0..bw * bh)
@@ -153,13 +185,18 @@ pub fn features(g: &Gray, region: &[Vec2], max: usize, min_dist: f32) -> Vec<[f3
         .map(|i| {
             let (x, y) = (x0 + (i % bw) as i32, y0 + (i / bw) as i32);
             let p = Vec2::new(x as f64, y as f64);
-            if !point_in(region, p.x, p.y) || dist_to_poly(region, p) < r as f64 {
+            let inside = if rectangle {
+                p.x - lo.x >= r as f64 && hi.x - p.x >= r as f64 && p.y - lo.y >= r as f64 && hi.y - p.y >= r as f64
+            } else {
+                point_in(region, p.x, p.y) && dist_to_poly(region, p) >= r as f64
+            };
+            if !inside {
                 return 0.0;
             }
             let (mut a, mut b, mut c) = (0.0f32, 0.0f32, 0.0f32);
             for dy in -r..=r {
                 for dx in -r..=r {
-                    let (gx, gy) = g.grad(x + dx, y + dy);
+                    let [gx, gy] = gradients[(y + dy - y0 + 3) as usize * gw + (x + dx - x0 + 3) as usize];
                     a += gx * gx;
                     b += gx * gy;
                     c += gy * gy;
@@ -220,9 +257,10 @@ fn lk(pa: &[Gray], pb: &[Gray], p: [f32; 2]) -> Option<[f32; 2]> {
         let (a, b) = (&pa[lvl], &pb[lvl]);
         let (px, py) = (p[0] / s, p[1] / s);
         // spatial gradient matrix and template over the window (bilinear at sub-pixel p)
-        let n = (2 * WIN + 1) as usize;
-        let mut tpl = Vec::with_capacity(n * n);
-        let mut grads = Vec::with_capacity(n * n);
+        const N: usize = (2 * WIN + 1) as usize;
+        let mut tpl = [0.0f32; N * N];
+        let mut grads = [(0.0f32, 0.0f32); N * N];
+        let mut k = 0;
         let (mut gxx, mut gxy, mut gyy) = (0.0f32, 0.0f32, 0.0f32);
         for wy in -WIN..=WIN {
             for wx in -WIN..=WIN {
@@ -232,8 +270,9 @@ fn lk(pa: &[Gray], pb: &[Gray], p: [f32; 2]) -> Option<[f32; 2]> {
                 gxx += ix * ix;
                 gxy += ix * iy;
                 gyy += iy * iy;
-                tpl.push(a.sample(x, y));
-                grads.push((ix, iy));
+                tpl[k] = a.sample(x, y);
+                grads[k] = (ix, iy);
+                k += 1;
             }
         }
         let det = gxx * gyy - gxy * gxy;
@@ -271,11 +310,79 @@ fn lk(pa: &[Gray], pb: &[Gray], p: [f32; 2]) -> Option<[f32; 2]> {
     let (w, h) = (pa[0].w as f32, pa[0].h as f32);
     (q[0].is_finite() && q[1].is_finite() && q[0] >= 0.0 && q[1] >= 0.0 && q[0] < w && q[1] < h).then_some(q)
 }
+/// Track each source point with one forward/backward pyramidal LK pass.
+///
+/// The returned vector preserves the input order.  `None` means LK failed, the
+/// forward/backward check failed, or the source point was malformed/outside the
+/// prepared image.  Keeping this as a separate helper lets callers reuse the
+/// exact matches for more than one geometric fit without running LK again.
+pub(crate) fn track_points(a: &Prepared, b: &Prepared, points: &[[f32; 2]]) -> Vec<Option<[f32; 2]>> {
+    if a.dimensions().is_none() || b.dimensions().is_none() {
+        return vec![None; points.len()];
+    }
+    let (aw, ah) = (a.levels[0].w as f32, a.levels[0].h as f32);
+    let (bw, bh) = (b.levels[0].w as f32, b.levels[0].h as f32);
+    if !(aw.is_finite() && ah.is_finite() && bw.is_finite() && bh.is_finite() && aw > 0.0 && ah > 0.0 && bw > 0.0 && bh > 0.0) {
+        return vec![None; points.len()];
+    }
+    if a.levels[0].w != b.levels[0].w || a.levels[0].h != b.levels[0].h {
+        return vec![None; points.len()];
+    }
+    points
+        .par_iter()
+        .map(|&p| {
+            if !p[0].is_finite() || !p[1].is_finite() || p[0] < 0.0 || p[1] < 0.0 || p[0] >= aw || p[1] >= ah {
+                return None;
+            }
+            let q = lk(&a.levels, &b.levels, p)?;
+            if !q[0].is_finite() || !q[1].is_finite() || q[0] < 0.0 || q[1] < 0.0 || q[0] >= bw || q[1] >= bh {
+                return None;
+            }
+            let back = lk(&b.levels, &a.levels, q)?;
+            let fb = ((back[0] - p[0]).powi(2) + (back[1] - p[1]).powi(2)).sqrt();
+            (fb.is_finite() && fb < FB_MAX).then_some(q)
+        })
+        .collect()
+}
+
+/// Fit a legacy global transform from matches already produced by [`track_points`].
+///
+/// This intentionally retains the old helper's minimum/inlier behavior: a
+/// global `Step` is only useful when at least three geometrically consistent
+/// matches remain, even though the trajectory collector may keep shorter
+/// persistent tracks for the subspace model.
+pub(crate) fn fit_tracked_points(points: &[[f32; 2]], tracked: &[Option<[f32; 2]>], method: TrackMethod) -> Option<Step> {
+    if points.len() < 3 || points.len() != tracked.len() {
+        return None;
+    }
+    let mut src = Vec::with_capacity(points.len().min(MAX_FEATURES.saturating_mul(4)));
+    let mut dst = Vec::with_capacity(src.capacity());
+    for (p, q) in points.iter().zip(tracked.iter()) {
+        let Some(q) = q else { continue };
+        if !p[0].is_finite() || !p[1].is_finite() || !q[0].is_finite() || !q[1].is_finite() {
+            continue;
+        }
+        src.push(Vec2::new(p[0] as f64, p[1] as f64));
+        dst.push(Vec2::new(q[0] as f64, q[1] as f64));
+    }
+    let (transform, inliers) = fit_robust(method, &src, &dst)?;
+    if inliers < 3 {
+        return None;
+    }
+    Some(Step { transform, features: points.len(), tracked: src.len(), inliers })
+}
+
+fn finite_affine(m: Affine) -> Option<Affine> {
+    [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|value| value.is_finite()).then_some(m)
+}
 
 /// Least-squares fit of `method` mapping `src` → `dst`.
 pub fn fit_ls(method: TrackMethod, src: &[Vec2], dst: &[Vec2]) -> Option<Affine> {
     let n = src.len();
-    if n == 0 || (method != TrackMethod::Position && n < 2) {
+    if n == 0 || src.len() != dst.len() || (method != TrackMethod::Position && n < 2) {
+        return None;
+    }
+    if src.iter().chain(dst).any(|p| !p.x.is_finite() || !p.y.is_finite()) {
         return None;
     }
     let inv = 1.0 / n as f64;
@@ -283,7 +390,7 @@ pub fn fit_ls(method: TrackMethod, src: &[Vec2], dst: &[Vec2]) -> Option<Affine>
     let cd = dst.iter().fold(Vec2::ZERO, |a, p| a + *p) * inv;
     if method == TrackMethod::Position {
         let t = cd - cs;
-        return Some(Affine::translate(t.x, t.y));
+        return finite_affine(Affine::translate(t.x, t.y));
     }
     // 2D Procrustes: [a −b; b a] minimising Σ |R s + t − d|²
     let (mut sa, mut sb, mut ss) = (0.0, 0.0, 0.0);
@@ -308,7 +415,7 @@ pub fn fit_ls(method: TrackMethod, src: &[Vec2], dst: &[Vec2]) -> Option<Affine>
     }
     let lin = Affine { a, b, c: -b, d: a, e: 0.0, f: 0.0 };
     let t = cd - lin.apply(cs);
-    Some(Affine { e: t.x, f: t.y, ..lin })
+    finite_affine(Affine { e: t.x, f: t.y, ..lin })
 }
 
 /// Deterministic xorshift for RANSAC sampling.
@@ -329,7 +436,7 @@ impl Rng {
 pub fn fit_robust(method: TrackMethod, src: &[Vec2], dst: &[Vec2]) -> Option<(Affine, usize)> {
     let n = src.len();
     let k = if method == TrackMethod::Position { 1 } else { 2 };
-    if n < k {
+    if n < k || src.len() != dst.len() || src.iter().chain(dst).any(|p| !p.x.is_finite() || !p.y.is_finite()) {
         return None;
     }
     let inliers_of = |m: &Affine| -> Vec<usize> { (0..n).filter(|&i| (m.apply(src[i]) - dst[i]).length() < RANSAC_THRESHOLD).collect() };
@@ -396,6 +503,9 @@ impl Prepared {
     pub fn new(g: Gray) -> Self {
         Self { levels: g.pyramid() }
     }
+    pub(crate) fn dimensions(&self) -> Option<(usize, usize)> {
+        self.levels.first().and_then(|g| (g.w > 0 && g.h > 0 && g.w.checked_mul(g.h).is_some_and(|n| n == g.px.len())).then_some((g.w, g.h)))
+    }
     pub fn base(&self) -> &Gray {
         &self.levels[0]
     }
@@ -403,30 +513,49 @@ impl Prepared {
 
 /// Track the picture inside `region` (polygon in frame pixels) from `a` to `b`.
 pub fn track_step(a: &Prepared, b: &Prepared, region: &[Vec2], method: TrackMethod) -> Option<Step> {
+    a.dimensions()?;
+    b.dimensions()?;
     let feats = features(a.base(), region, MAX_FEATURES, 5.0);
+    track_step_with_features(a, b, &feats, method)
+}
+
+/// Track previously detected corners; stabilization prepares these independently across frames.
+pub(crate) fn track_step_with_features(a: &Prepared, b: &Prepared, feats: &[[f32; 2]], method: TrackMethod) -> Option<Step> {
     if feats.len() < 3 {
         return None;
     }
-    let pairs: Vec<(Vec2, Vec2)> = feats
-        .par_iter()
-        .filter_map(|&p| {
-            let q = lk(&a.levels, &b.levels, p)?;
-            let back = lk(&b.levels, &a.levels, q)?;
-            let fb = ((back[0] - p[0]).powi(2) + (back[1] - p[1]).powi(2)).sqrt();
-            (fb < FB_MAX).then(|| (Vec2::new(p[0] as f64, p[1] as f64), Vec2::new(q[0] as f64, q[1] as f64)))
-        })
-        .collect();
-    let (src, dst): (Vec<Vec2>, Vec<Vec2>) = pairs.into_iter().unzip();
-    let (transform, inliers) = fit_robust(method, &src, &dst)?;
-    if inliers < 3 {
-        return None;
-    }
-    Some(Step { transform, features: feats.len(), tracked: src.len(), inliers })
+    let tracked = track_points(a, b, feats);
+    fit_tracked_points(feats, &tracked, method)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_detection_rejects_malformed_images_and_regions() {
+        let region = [Vec2::new(0.0, 0.0), Vec2::new(64.0, 0.0), Vec2::new(64.0, 64.0), Vec2::new(0.0, 64.0)];
+        for g in [Gray { w: 64, h: 64, px: vec![] }, Gray { w: usize::MAX, h: 2, px: vec![0.0; 8] }, Gray { w: 0, h: 64, px: vec![] }] {
+            let result = std::panic::catch_unwind(|| features(&g, &region, MAX_FEATURES, 5.0));
+            assert!(result.unwrap().is_empty());
+        }
+        let g = Gray::new(64, 64, (0..64 * 64).map(|i| texture((i % 64) as f64, (i / 64) as f64)).collect());
+        assert!(features(&g, &region, 0, 5.0).is_empty());
+        assert!(features(&g, &region, MAX_FEATURES, f32::NAN).is_empty());
+        let invalid = [Vec2::new(f64::NAN, 0.0), region[1], region[2]];
+        assert!(features(&g, &invalid, MAX_FEATURES, 5.0).is_empty());
+    }
+
+    #[test]
+    fn equivalent_viewport_polygons_select_identical_corners() {
+        let g = Gray::new(96, 80, (0..96 * 80).map(|i| texture((i % 96) as f64, (i / 96) as f64)).collect());
+        let region = [Vec2::new(3.2, 7.3), Vec2::new(90.2, 7.3), Vec2::new(90.2, 73.3), Vec2::new(3.2, 73.3)];
+        // A collinear vertex changes the representation, not the viewport or its tensor margin.
+        let polygon = [region[0], (region[0] + region[1]) * 0.5, region[1], region[2], region[3]];
+        let expected = features(&g, &polygon, MAX_FEATURES, 5.0);
+        assert!(expected.len() >= 6);
+        assert_eq!(features(&g, &region, MAX_FEATURES, 5.0), expected);
+    }
 
     /// A deterministic texture: smooth blobs + fine detail.
     fn texture(u: f64, v: f64) -> f32 {
@@ -522,6 +651,31 @@ mod tests {
         assert_eq!(inl, 30);
         for p in &src {
             assert!((m.apply(*p) - truth.apply(*p)).length() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn prepared_tracking_helpers_reject_malformed_points() {
+        let malformed = Prepared::new(Gray { w: 64, h: 64, px: Vec::new() });
+        let points = [[0.0, 0.0], [f32::NAN, 3.0], [10.0, 10.0]];
+        let tracked = track_points(&malformed, &malformed, &points);
+        assert_eq!(tracked.len(), points.len());
+        assert!(tracked.iter().all(|point| point.is_none()));
+        let matches = [Some([0.0, 0.0]), Some([1.0, 1.0]), Some([2.0, 2.0])];
+        assert!(fit_tracked_points(&points, &matches, TrackMethod::Position).is_none());
+    }
+
+    #[test]
+    fn invalid_prepared_base_is_safe_and_untrackable() {
+        for gray in [Gray::new(2, 2, Vec::new()), Gray::new(0, 0, Vec::new())] {
+            let result = std::panic::catch_unwind(|| {
+                let prepared = Prepared::new(gray);
+                let dimensions = prepared.base();
+                (dimensions.w, dimensions.h, dimensions.px.len(), track_step(&prepared, &prepared, &[], TrackMethod::Position).is_none())
+            });
+            let (width, height, pixels, untrackable) = result.expect("invalid prepared image must not panic");
+            assert!(width == 0 || height == 0 || width.checked_mul(height) != Some(pixels));
+            assert!(untrackable);
         }
     }
 }
