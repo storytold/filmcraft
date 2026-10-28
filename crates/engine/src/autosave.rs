@@ -88,6 +88,10 @@ pub struct PlaybackPrefs {
     pub postroll_seconds: f64,
     /// "Step forward/back many: N frames" (Shift+Right / Shift+Left).
     pub step_many_frames: u32,
+    /// Stop (Space, K, the transport button, the end of a range or the sequence) puts the playhead
+    /// back where playback began; off, it stays where it stopped. The alternate Play/Stop key
+    /// (`playback.toggleOther`) does the opposite either way.
+    pub stop_returns_to_start: bool,
     pub pause_encoder_queue: bool,
     pub enable_transmit: bool,
     pub disable_video_in_background: bool,
@@ -108,6 +112,7 @@ impl Default for PlaybackPrefs {
             preroll_seconds: 3.0,
             postroll_seconds: 2.0,
             step_many_frames: 5,
+            stop_returns_to_start: false,
             pause_encoder_queue: true,
             enable_transmit: false,
             disable_video_in_background: true,

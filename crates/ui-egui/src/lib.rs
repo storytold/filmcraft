@@ -154,6 +154,11 @@ pub struct Playback {
     /// Resting playhead for an inclusive marked range; unlike stop_at, this
     /// names the last visible frame, not the following playback boundary.
     pub rest_at: Option<Tick>,
+    /// Where playback began: what a stop that returns goes back to. Kept across speed changes and
+    /// loop restarts, set again by the next play from a stop.
+    pub origin: Tick,
+    /// The sequence `origin` belongs to: a stop in another one (opened during playback) stays put.
+    pub origin_sequence: Option<filmcraft_project::ItemId>,
 }
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain

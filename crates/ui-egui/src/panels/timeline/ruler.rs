@@ -214,6 +214,7 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         }
     });
     ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
+    crate::panels::monitor::stop_returns_checkbox(app, ui, "timeline.settings.stopReturnsToStart");
     ui.separator();
     let mut te = app.session.state.show_through_edits;
     let c = ui.checkbox(&mut te, tl!("Show Through Edits"));
