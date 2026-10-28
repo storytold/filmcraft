@@ -316,6 +316,7 @@
 	Show Active Caption Tracks Only	Mostra solo le tracce sottotitoli attive
 	Show All Caption Tracks	Mostra tutte le tracce sottotitoli
 	Show All Marker Colors	Mostra tutti i colori dei marcatori
+	Show Duplicate Frame Markers	Mostra marcatori dei fotogrammi duplicati
 	Show Guides	Mostra guide
 	Show Rulers	Mostra righelli
 	Show Through Edits	Mostra tagli passanti
@@ -3447,8 +3448,8 @@
 	Commits	Commit
 	% of all commits	% di tutti i commit
 	Lines +/−	Righe +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Uscita audio non riuscita: riproduzione senza audio (controlla Impostazioni ▸ Hardware audio)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	L'uscita audio non risponde: riproduzione senza audio (controlla Impostazioni ▸ Hardware audio)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Uscita audio non riuscita: riproduzione senza audio (controlla Impostazioni > Hardware audio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	L'uscita audio non risponde: riproduzione senza audio (controlla Impostazioni > Hardware audio)
 	Clip Speed / Duration	Velocità / durata clip
 	Speed:	Velocità:
 	Reverse Speed	Velocità inversa
@@ -3602,7 +3603,7 @@
 	Shows the version, community links and credits in a FilmCraft window.	Mostra la versione, i link della community e i riconoscimenti in una finestra di FilmCraft.
 	Couldn't open your web browser	Impossibile aprire il browser web
 	Open this address in your browser yourself:	Apri tu questo indirizzo nel browser:
-# View ▸ Reset Interface Zoom (#2253).
+# View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	Reimposta zoom dell'interfaccia
 	Track Color	Colore traccia
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche

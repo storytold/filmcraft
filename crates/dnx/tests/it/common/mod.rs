@@ -254,7 +254,18 @@ pub fn ffmpeg_decode(ff: &Path, mov: &Path, pix_fmt: &str) -> Vec<u16> {
 }
 
 /// Render a lavfi source to raw planar frames with ffmpeg and load them as [`Frame`]s.
-pub fn source_frames(ff: &Path, name: &str, lavfi: &str, frames: u32, w: u32, h: u32, chroma: filmcraft_dnx::ChromaFormat, depth: u8) -> Vec<Frame> {
+pub struct SourceFrameSpec<'a> {
+    pub name: &'a str,
+    pub lavfi: &'a str,
+    pub frames: u32,
+    pub width: u32,
+    pub height: u32,
+    pub chroma: filmcraft_dnx::ChromaFormat,
+    pub depth: u8,
+}
+
+pub fn source_frames(ff: &Path, spec: SourceFrameSpec<'_>) -> Vec<Frame> {
+    let SourceFrameSpec { name, lavfi, frames, width: w, height: h, chroma, depth } = spec;
     let pix = match (chroma, depth) {
         (filmcraft_dnx::ChromaFormat::Yuv422, 8) => "yuv422p",
         (filmcraft_dnx::ChromaFormat::Yuv422, 10) => "yuv422p10le",

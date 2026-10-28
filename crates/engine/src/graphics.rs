@@ -8,7 +8,9 @@
 //! at the playhead.
 
 use filmcraft_geom::Vec2;
-use filmcraft_project::graphic::{self, LayerContent, SHAPE_OPTS, eval_layer, layer_display_name, layer_indices, new_shape_layer, new_text_layer};
+use filmcraft_project::graphic::{
+    self, LayerContent, SHAPE_OPTS, ensure_layer_uids, eval_layer, layer_display_name, layer_indices, new_shape_layer, new_text_layer,
+};
 use filmcraft_project::{ClipId, EffectInstance, ItemId, ItemKind, Label, Param, ParamValue, Sequence, TrackKind};
 use filmcraft_render::graphic_clip::{item_layer_specs, layer_local_bounds, layer_quad, text_layout};
 use filmcraft_time::{Tick, TimeRange};
@@ -138,6 +140,9 @@ pub(crate) fn place_video_clip(
         let mut ti = pr.make_track_item(src, TrackKind::Video, t, TimeRange::new(Tick::ZERO, dur), rate).ok_or_else(|| bad(cmd, "bad item"))?;
         ti.name = name;
         ti.effects.extend(extra);
+        // Every new graphic layer gets a stable uid; a new clip holds layers from `extra` plus
+        // any source-graphic layers, so do it after both are in place (duplicates are repaired).
+        ensure_layer_uids(&mut ti.effects);
         for e in &mut ti.effects {
             filmcraft_project::resolve_auto_points(e, (w, h), src_size);
         }
@@ -179,6 +184,9 @@ fn add_layer(s: &mut Session, clip: ClipId, mut layer: filmcraft_project::Effect
         // new layers go in front: after the last graphic layer
         let pos = layer_indices(&it.effects).last().map_or(it.effects.len(), |l| l + 1);
         it.effects.insert(pos, layer);
+        // Assign a uid to the new layer (and lazily upgrade any uid-less legacy layers) inside
+        // this undo step, so undo/redo keeps the same identities.
+        ensure_layer_uids(&mut it.effects);
         let n = layer_indices(&it.effects).len() - 1;
         st.selection = vec![clip];
         st.graphic_layers = vec![n];
@@ -1158,5 +1166,4 @@ pub fn commands() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
-#[path = "graphics_tests.rs"]
 mod tests;

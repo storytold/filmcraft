@@ -94,9 +94,11 @@ impl Driver {
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered (frames render on worker threads).
+    /// Step frames until `id` is registered (frames render on worker threads), for at most two
+    /// minutes of wall-clock time.
     fn wait_for(&mut self, id: &str) {
-        for _ in 0..400 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if self.has(id) {
                 return;
             }
@@ -183,7 +185,7 @@ fn every_panel_opens_from_the_window_menu() {
 /// and closing every panel still leaves a dock that Window ▸ can reopen panels into.
 #[test]
 fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
-    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    use filmcraft_ui_egui::dock::PanelKind;
     let mut d = Driver::demo();
     let layout = d.app().ui.dock.clone();
     d.click("panel.menu.Program");
@@ -198,12 +200,10 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
     assert_eq!(d.app().ui.dock, layout, "the layout survives maximize / restore");
     assert!(d.has("panel.Timeline"));
 
-    let mut all = Vec::new();
-    layout.panels(&mut all);
-    for p in all {
+    for p in layout.panels() {
         d.ok("ui.panel.close", json!({"panel": p.id()}));
     }
-    assert_eq!(d.app().ui.dock, DockNode::Tabs { panels: vec![], active: 0 });
+    assert_eq!(d.app().ui.dock.root, None);
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Program"}));
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Timeline"}));
     d.frames(3);
@@ -257,16 +257,17 @@ fn history_panel_menu_deletes_redoable_actions_and_clears_the_history() {
 /// content the wheel leaves the tabs alone.
 #[test]
 fn wheel_over_a_tab_strip_switches_tabs() {
-    use filmcraft_ui_egui::dock::{DockNode, PanelKind};
+    use craft_ui::docking::Node;
+    use filmcraft_ui_egui::dock::PanelKind;
     fn shown(d: &mut Driver) -> PanelKind {
-        fn find(n: &DockNode) -> Option<PanelKind> {
+        fn find(n: &Node<PanelKind>) -> Option<PanelKind> {
             match n {
-                DockNode::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
-                DockNode::Tabs { .. } => None,
-                DockNode::Split { a, b, .. } => find(a).or_else(|| find(b)),
+                Node::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
+                Node::Split { first, second, .. } => find(first).or_else(|| find(second)),
+                _ => None,
             }
         }
-        find(&d.app().ui.dock).unwrap()
+        d.app().ui.dock.root.as_ref().and_then(find).unwrap()
     }
     fn wheel(d: &mut Driver, dy: f64) {
         let id = format!("panel.tab.{}", shown(d).id());
@@ -290,6 +291,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
     for step in 0..5 {
         d.harness.input_mut().events.push(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Wheel,
             delta: egui::vec2(0.0, -10.0),
             modifiers: egui::Modifiers::NONE,
             phase: egui::TouchPhase::Move,

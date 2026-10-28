@@ -4,7 +4,7 @@
 
 use filmcraft_dng::color::{D50, D65, bradford, inverse, mul, rec709_to_xyz, xy_to_xyz};
 use filmcraft_dng::tiff::tags;
-use filmcraft_dng::writer::{Compression, Layout, Options, Value, lj92, write};
+use filmcraft_dng::writer::{Compression, Layout, Lj92Params, Options, Value, lj92, write};
 use filmcraft_dng::{Dng, Error, Timecode, decode, ljpeg, probe, sniff};
 
 /// A deterministic pseudo-random sequence.
@@ -129,24 +129,27 @@ fn lossless_jpeg_extremes_restarts_and_point_transform() {
     px[0] = 0;
     px[2] = 32_768; // 0 after the 2^15 initial prediction is a difference of 32768 (SSSS 16)
     for predictor in 1..=7 {
-        let j = lj92(&px, w, h, 2, 16, predictor, 0, 0);
+        let j = lj92(&px, &Lj92Params { width: w, height: h, comps: 2, precision: 16, predictor, restart_lines: 0, pt: 0 });
         let d = ljpeg::decode(&j, 1 << 20).unwrap();
         assert_eq!((d.width, d.height, d.components, d.precision, d.predictor), (w, h, 2, 16, predictor));
         assert_eq!(d.samples, px, "predictor {predictor}");
         // restart markers every 2 and every 3 lines
         for r in [2, 3] {
-            let j = lj92(&px, w, h, 2, 16, predictor, r, 0);
+            let j = lj92(&px, &Lj92Params { width: w, height: h, comps: 2, precision: 16, predictor, restart_lines: r, pt: 0 });
             assert!(j.windows(2).any(|b| b == [0xFF, 0xD0]), "has RST0");
             assert_eq!(ljpeg::decode(&j, 1 << 20).unwrap().samples, px, "predictor {predictor} restart {r}");
         }
     }
     // point transform: the low bits are dropped and the rest shifted back
     let px = picture(12, 6, 1, 14, 9);
-    let j = lj92(&px, 12, 6, 1, 14, 4, 0, 2);
+    let j = lj92(&px, &Lj92Params { width: 12, height: 6, comps: 1, precision: 14, predictor: 4, restart_lines: 0, pt: 2 });
     let want: Vec<u16> = px.iter().map(|v| v >> 2 << 2).collect();
     assert_eq!(ljpeg::decode(&j, 1 << 20).unwrap().samples, want);
     // the sample cap
-    assert_eq!(ljpeg::decode(&lj92(&px, 12, 6, 1, 14, 1, 0, 0), 71).err(), Some(Error::TooLarge));
+    assert_eq!(
+        ljpeg::decode(&lj92(&px, &Lj92Params { width: 12, height: 6, comps: 1, precision: 14, predictor: 1, restart_lines: 0, pt: 0 }), 71).err(),
+        Some(Error::TooLarge)
+    );
 }
 
 /// The colour tags of a camera whose white-balanced values are Rec. 709 already.

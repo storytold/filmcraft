@@ -51,7 +51,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec(
             "masks.moveVertex",
             "Move Mask Vertex",
-            r#"{"clip":id?,"effect":index|id?,"mask":n?,"vertex":n,"handle":"point"|"in"|"out"?,"to":[x,y]?|"delta":[dx,dy]?,"breakHandles":bool?,"merge":key?}"#,
+            r#"{"clip":id?,"effect":index|id?,"mask":n?,"vertex":n|"vertices":[n],"handle":"point"|"in"|"out"?,"to":[x,y]?|"delta":[dx,dy]?,"breakHandles":bool?,"merge":key?}"#,
             move_vertex,
         ),
         spec("masks.translate", "Move Mask", r#"{"clip":id?,"effect":index|id?,"mask":n?,"delta":[dx,dy],"merge":key?}"#, translate),
@@ -324,6 +324,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn move_vertex(s: &mut Session, p: &Value) -> Result<Value> {
+    if p.get("vertices").is_some_and(|v| !v.is_null()) {
+        return move_vertices(s, p);
+    }
     let vi = u64_p(p, "vertex").ok_or_else(|| bad("masks.moveVertex", "need `vertex`"))? as usize;
     let handle = str_p(p, "handle").unwrap_or("point").to_string();
     let to = p.get("to").and_then(pt);
@@ -355,6 +358,33 @@ fn move_vertex(s: &mut Session, p: &Value) -> Result<Value> {
             _ => {
                 v.p = to.unwrap_or_else(|| v.p + delta.unwrap_or_default());
             }
+        }
+        set_path_at(m, t, path);
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
+/// `masks.moveVertex` with `vertices`: the listed points move by `delta` together, in one edit
+/// (the multi-vertex drag on the Program monitor). Any index past the path moves nothing.
+fn move_vertices(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "masks.moveVertex";
+    let list = p.get("vertices").and_then(Value::as_array).ok_or_else(|| bad(ID, "`vertices` is a list of vertex indices"))?;
+    let mut only = list
+        .iter()
+        .map(|i| i.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| bad(ID, "`vertices` is a list of vertex indices")))
+        .collect::<Result<Vec<_>>>()?;
+    only.sort_unstable();
+    only.dedup();
+    if str_p(p, "handle").is_some_and(|h| h != "point") || p.get("to").is_some() {
+        return Err(bad(ID, "`vertices` moves points by `delta`"));
+    }
+    let d = p.get("delta").and_then(pt).ok_or_else(|| bad(ID, "need `delta`"))?;
+    edit_mask(s, p, "Move Mask Vertex", move |m, t| {
+        let mut path = m.path_at(t);
+        for &vi in &only {
+            let v = path.vertices.get_mut(vi).ok_or_else(|| bad(ID, format!("no vertex {vi}")))?;
+            v.p = v.p + d;
         }
         set_path_at(m, t, path);
         Ok(())
