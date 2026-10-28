@@ -4,8 +4,9 @@
 //! (Fit, 10%…1600%, a pinch or Cmd/Ctrl+wheel zooming about the pointer; scroll bars, the wheel,
 //! a middle-button or Hand-tool drag panning a magnified picture),
 //! rulers, guides (dragged out of the rulers, Add
-//! Guide…, Clear Guides, Lock Guides, templates saved in the user preferences) and Snap in Program
-//! Monitor (graphic drags snap to guides, the frame edges and centre).
+//! Guide…, Clear Guides, Lock Guides, templates saved in the user preferences), Snap in Program
+//! Monitor (graphic drags snap to guides, the frame edges and center) and Transparency Grid (a
+//! checkerboard behind the picture shows its transparent areas).
 //!
 //! Everything is [`MonitorView`] state (serde: `ui.inspect`, `ui.set {"program": {…}}`) changed
 //! through the `view.*` UI commands, which [`route`] handles for `menus::invoke`. Commands act on
@@ -146,6 +147,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             let v = view_mut(app, w);
             v.safe_margins = toggled(v.safe_margins, params);
             Ok(json!({"monitor": pfx, "safeMargins": v.safe_margins}))
+        }
+        "transparencyGrid" => {
+            let v = view_mut(app, w);
+            v.transparency_grid = toggled(v.transparency_grid, params);
+            Ok(json!({"monitor": pfx, "transparencyGrid": v.transparency_grid}))
         }
         "showRulers" => {
             let v = view_mut(app, w);
@@ -306,6 +312,7 @@ pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
     match rest {
         "highQualityPlayback" => Some(v.high_quality),
         "safeMargins" => Some(v.safe_margins),
+        "transparencyGrid" => Some(v.transparency_grid),
         "showRulers" => Some(v.show_rulers),
         "showGuides" => Some(v.show_guides),
         "lockGuides" => Some(v.lock_guides),
@@ -323,17 +330,17 @@ pub fn enabled(app: &FilmcraftApp, id: &str) -> bool {
     }
 }
 
-/// A channel of a frame as greyscale (Alpha, Red, Green, Blue display modes); colour channels are
-/// shown premultiplied, so transparent areas are black.
+/// A channel of a frame as grayscale (Alpha, Red, Green, Blue display modes). The frame's color
+/// is already premultiplied (the picture over black), so transparent areas are black in the
+/// color channels.
 pub fn channel_view(img: &Rgba, mode: DisplayMode) -> Rgba {
     let mut px = Vec::with_capacity(img.px.len());
     for p in img.px.as_chunks::<4>().0 {
-        let a = p[3] as u32;
         let v = match mode {
             DisplayMode::Alpha => p[3],
-            DisplayMode::Red => (p[0] as u32 * a / 255) as u8,
-            DisplayMode::Green => (p[1] as u32 * a / 255) as u8,
-            DisplayMode::Blue => (p[2] as u32 * a / 255) as u8,
+            DisplayMode::Red => p[0],
+            DisplayMode::Green => p[1],
+            DisplayMode::Blue => p[2],
             _ => {
                 px.extend_from_slice(p);
                 continue;
@@ -371,8 +378,9 @@ fn clamp_pan(pan: [f32; 2], max: Vec2) -> Vec2 {
 /// The picture area of a monitor once the scroll bars of a magnified picture are taken out of
 /// `area`, and which bars show: (area, horizontal, vertical). A bar shows along an axis where the
 /// magnified picture is larger than the area, and taking one bar's strip can make the other needed.
-pub fn scroll_layout(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) -> (Rect, bool, bool) {
-    let Some(z) = sane_zoom(v.zoom) else { return (area, false, false) };
+/// A monitor that is not `magnifiable` (no picture, or Comparison View) keeps its whole area.
+pub fn scroll_layout(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32, magnifiable: bool) -> (Rect, bool, bool) {
+    let Some(z) = sane_zoom(v.zoom).filter(|_| magnifiable) else { return (area, false, false) };
     let size = vec2(fw, fh) * z / ppp.max(0.1);
     let mut a = area;
     let (mut h, mut vb) = (false, false);
@@ -389,6 +397,58 @@ pub fn scroll_layout(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) ->
     (a, h, vb)
 }
 
+/// The Transparency Grid's square size (points) and its two grays.
+pub const GRID_CELL: f32 = 8.0;
+pub const GRID_LIGHT: Color32 = Color32::from_gray(0xff);
+pub const GRID_DARK: Color32 = Color32::from_gray(0xcc);
+
+/// The dark squares of the Transparency Grid behind `pic` that overlap `area`, cut to `area`. The
+/// squares start at the picture's top-left corner, which is light.
+pub fn grid_cells(pic: Rect, area: Rect) -> Vec<Rect> {
+    let area = pic.intersect(area);
+    let mut out = Vec::new();
+    if !area.is_positive() || !pic.min.is_finite() || !pic.max.is_finite() {
+        return out;
+    }
+    let first = |lo: f32, origin: f32| ((lo - origin) / GRID_CELL).floor() as i64;
+    let (c0, c1) = (first(area.min.x, pic.min.x), first(area.max.x, pic.min.x));
+    let (r0, r1) = (first(area.min.y, pic.min.y), first(area.max.y, pic.min.y));
+    // no screen holds more squares than this across or down
+    const MAX_SQUARES: i64 = 4096;
+    if c1.saturating_sub(c0) > MAX_SQUARES || r1.saturating_sub(r0) > MAX_SQUARES {
+        return out;
+    }
+    for row in r0..=r1 {
+        for col in c0..=c1 {
+            // light where row + col is even (`^` gives the parity without an overflowing sum)
+            if (row ^ col) & 1 == 0 {
+                continue;
+            }
+            let min = pos2(pic.min.x + col as f32 * GRID_CELL, pic.min.y + row as f32 * GRID_CELL);
+            let cell = Rect::from_min_size(min, vec2(GRID_CELL, GRID_CELL)).intersect(area);
+            if cell.is_positive() {
+                out.push(cell);
+            }
+        }
+    }
+    out
+}
+
+/// Paint the Transparency Grid behind the picture `pic`, where it overlaps `visible`: light
+/// squares as one rectangle, the dark ones as one mesh.
+pub fn transparency_grid(p: &egui::Painter, pic: Rect, visible: Rect) {
+    let area = pic.intersect(visible);
+    if !area.is_positive() {
+        return;
+    }
+    p.rect_filled(area, 0.0, GRID_LIGHT);
+    let mut mesh = egui::Mesh::default();
+    for cell in grid_cells(pic, area) {
+        mesh.add_colored_rect(cell, GRID_DARK);
+    }
+    p.add(egui::Shape::mesh(mesh));
+}
+
 /// The on-screen picture rect: fitted, or magnified about the area centre plus the (clamped) pan.
 pub fn picture_rect(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) -> Rect {
     match sane_zoom(v.zoom) {
@@ -402,7 +462,7 @@ pub fn picture_rect(area: Rect, fw: f32, fh: f32, v: &MonitorView, ppp: f32) -> 
 
 /// Keep a monitor's stored pan what the picture `pic` in `area` shows: zero at Fit, else clamped
 /// to the range the scroll bars cover, so `ui.inspect` reads back the pan in effect.
-pub fn settle_pan(app: &mut FilmcraftApp, w: Which, area: Rect, pic: Rect) {
+fn settle_pan(app: &mut FilmcraftApp, w: Which, area: Rect, pic: Rect) {
     let v = view_mut(app, w);
     let pan = if sane_zoom(v.zoom).is_some() { clamp_pan(v.pan, pan_limit(pic.size(), area)) } else { Vec2::ZERO };
     if (pan.x - v.pan[0]).abs() > 1e-3 || (pan.y - v.pan[1]).abs() > 1e-3 || !v.pan.iter().all(|p| p.is_finite()) {
@@ -423,7 +483,10 @@ fn pan_by(app: &mut FilmcraftApp, w: Which, area: Rect, pic: Rect, d: Vec2) {
 /// picture the wheel scrolls it as Premiere does (#2685): vertically, horizontally with Shift, and
 /// both ways with a two-finger trackpad swipe. A middle-button drag, or a drag with the Hand tool,
 /// pans a magnified picture. `fw` is the picture's width in frame pixels.
+///
+/// The stored pan is settled to the picture shown first.
 pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, pic: Rect, fw: f32, ppp: f32) {
+    settle_pan(app, w, area, pic);
     let ctx = ui.ctx().clone();
     if ui.rect_contains_pointer(area)
         && let Some(p) = ctx.pointer_hover_pos()
@@ -460,7 +523,7 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
     }
     let mut d = Vec2::ZERO;
     // a middle-button drag that began over the picture pans it, whatever the tool
-    let held = egui::Id::new((prefix(w), "middle-pan"));
+    let held = egui::Id::unique((prefix(w), "middle-pan"));
     let (pressed, down, moved) = ui.input(|i| (i.pointer.button_pressed(egui::PointerButton::Middle), i.pointer.middle_down(), i.pointer.delta()));
     let panning = down && (ui.data(|m| m.get_temp::<bool>(held)).unwrap_or(false) || (pressed && ui.rect_contains_pointer(area)));
     ui.data_mut(|m| m.insert_temp(held, panning));
@@ -469,7 +532,7 @@ pub fn zoom_pan_input(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area:
         d += moved;
     }
     if app.ui.tool == Tool::Hand {
-        let resp = ui.interact(area, egui::Id::new((prefix(w), "pan")), Sense::drag());
+        let resp = ui.interact(area, egui::Id::unique((prefix(w), "pan")), Sense::drag());
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         }
@@ -528,7 +591,7 @@ fn scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, track: Rect, a
     let pfx = prefix(w);
     app.auto.add(&format!("{pfx}.scroll.{key}"), thumb, label);
     app.auto.add(&format!("{pfx}.scroll.{key}.track"), track, &format!("{label} track"));
-    let resp = ui.interact(track, egui::Id::new((pfx, "scroll", key)), Sense::click_and_drag());
+    let resp = ui.interact(track, egui::Id::unique((pfx, "scroll", key)), Sense::click_and_drag());
     let p = ui.painter();
     p.rect_filled(track, SCROLLBAR / 2.0, t.separator);
     let hot = resp.dragged() || ui.rect_contains_pointer(thumb);
@@ -541,7 +604,7 @@ fn scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, track: Rect, a
     {
         set = Some(jump(at(pos)));
     }
-    let drag_id = egui::Id::new((pfx, "scroll-drag", key));
+    let drag_id = egui::Id::unique((pfx, "scroll-drag", key));
     if resp.drag_started()
         && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
@@ -666,9 +729,9 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
             }
         }
     }
-    let drag_id = egui::Id::new((pfx, "new-guide"));
+    let drag_id = egui::Id::unique((pfx, "new-guide"));
     for (r, name, vertical) in [(top, "top", false), (left, "left", true)] {
-        let resp = ui.interact(r, egui::Id::new((pfx, "ruler", name)), Sense::drag());
+        let resp = ui.interact(r, egui::Id::unique((pfx, "ruler", name)), Sense::drag());
         app.auto.add(&format!("{pfx}.ruler.{name}"), r, if vertical { "left ruler" } else { "top ruler" });
         if resp.hovered() {
             ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
@@ -720,13 +783,13 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
         if v.lock_guides {
             continue;
         }
-        let resp = ui.interact(hit, egui::Id::new((pfx, "guide", i)), Sense::drag());
+        let resp = ui.interact(hit, egui::Id::unique((pfx, "guide", i)), Sense::drag());
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if g.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
         let left = egui::PointerButton::Primary;
         // egui ends a drag on Escape: that stop puts the guide back where it was (#580)
-        let before_id = egui::Id::new((pfx, "guide-before-drag", i));
+        let before_id = egui::Id::unique((pfx, "guide-before-drag", i));
         if resp.drag_started_by(left) {
             ui.data_mut(|d| d.insert_temp(before_id, g.position));
         }
@@ -811,7 +874,7 @@ pub fn waveform(
     }
     let x = xof(time);
     p.line_segment([pos2(x, area.min.y), pos2(x, area.max.y)], Stroke::new(1.0, t.playhead));
-    let resp = ui.interact(area, egui::Id::new("source-waveform"), Sense::click_and_drag());
+    let resp = ui.interact(area, egui::Id::unique("source-waveform"), Sense::click_and_drag());
     app.auto.add("source.waveform", area, "audio waveform");
     // Horizontal waveform drags scrub; dragging vertically lifts the marked audio to the timeline.
     let delta = resp.drag_delta();
@@ -854,7 +917,7 @@ pub fn compare_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, rate: f
     ] {
         let r = Rect::from_min_max(pos2(x - 34.0, bar.min.y + 1.0), pos2(x - 2.0, bar.max.y - 1.0));
         x -= 34.0;
-        let resp = ui.interact(r, egui::Id::new(("compare", key)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(("compare", key)), Sense::click()).on_hover_text(tip);
         ui.painter().rect_filled(r, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
         ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(10.0), t.text);
         app.auto.add(&format!("program.compare.{key}"), r, tip);
@@ -921,6 +984,7 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
     if w == Which::Program {
         pick(ui, &mut out, "snapInProgramMonitor", tl!("Snap in Program Monitor"), v.snap);
     }
+    pick(ui, &mut out, "transparencyGrid", tl!("Transparency Grid"), v.transparency_grid);
     ui.separator();
     let pfx = prefix(w);
     for (key, r, label, clicked) in out {
@@ -961,7 +1025,7 @@ fn push(e: &mut Elems, id: &str, r: &egui::Response, label: &str) {
 /// Add Guide… / Save Guides as Template… / Manage Guides… dialogs.
 pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.guide_dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("guide-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("guide-dialog-before-drag"), &mut d);
     let mut elems: Elems = Vec::new();
     let mut close = crate::widgets::escape_closes(ctx);
     let mut act: Option<(String, Value)> = None;
@@ -972,7 +1036,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         GuideDialog::Manage { .. } => ("Manage Guides", tl!("Manage Guides")),
     };
     egui::Window::new(shown)
-        .id(egui::Id::new(title))
+        .id(egui::Id::unique(title))
         .collapsible(false)
         .resizable(false)
         .pivot(Align2::CENTER_CENTER)
@@ -1094,11 +1158,30 @@ mod tests {
     }
 
     #[test]
+    fn grid_cells_alternate_from_a_light_corner_and_stay_in_view() {
+        let pic = Rect::from_min_size(pos2(100.0, 50.0), vec2(4.0 * GRID_CELL, 2.0 * GRID_CELL));
+        let mins: Vec<_> = grid_cells(pic, Rect::EVERYTHING).iter().map(|r| ((r.min.x - 100.0) / GRID_CELL, (r.min.y - 50.0) / GRID_CELL)).collect();
+        assert_eq!(mins, [(1.0, 0.0), (3.0, 0.0), (0.0, 1.0), (2.0, 1.0)]);
+        // a magnified picture: only the squares in view, cut to it, keeping the picture's pattern
+        let big = Rect::from_min_size(pos2(-1000.0, -1000.0), vec2(4000.0, 4000.0));
+        let view = Rect::from_min_size(pos2(3.0, 0.0), vec2(20.0, 8.0));
+        let cells = grid_cells(big, view);
+        assert!(cells.iter().all(|c| view.contains_rect(*c)), "{cells:?}");
+        assert_eq!(cells, [Rect::from_min_max(pos2(8.0, 0.0), pos2(16.0, 8.0))]);
+        assert!(grid_cells(pic, Rect::from_min_size(pos2(0.0, 0.0), vec2(10.0, 10.0))).is_empty(), "nothing outside the picture");
+        // a picture magnified far past the zoom menu (`ui.set` takes any zoom) does not overflow
+        let huge = Rect::from_min_max(pos2(-1e20, -1e20), pos2(1e20, 1e20));
+        assert!(grid_cells(huge, view).len() <= 6);
+        assert!(grid_cells(Rect::from_min_max(pos2(f32::NEG_INFINITY, 0.0), pos2(f32::INFINITY, 1.0)), view).is_empty());
+    }
+
+    #[test]
     fn channel_view_greyscales() {
-        let img = Rgba { w: 2, h: 1, px: vec![200, 100, 50, 255, 255, 255, 255, 0] };
-        assert_eq!(channel_view(&img, DisplayMode::Red).px, vec![200, 200, 200, 255, 0, 0, 0, 255]);
+        // an opaque pixel, a transparent one and a half-transparent one (color premultiplied)
+        let img = Rgba { w: 3, h: 1, px: vec![200, 100, 50, 255, 0, 0, 0, 0, 90, 40, 20, 128] };
+        assert_eq!(channel_view(&img, DisplayMode::Red).px, vec![200, 200, 200, 255, 0, 0, 0, 255, 90, 90, 90, 255]);
         assert_eq!(channel_view(&img, DisplayMode::Green).px[..4], [100, 100, 100, 255]);
-        assert_eq!(channel_view(&img, DisplayMode::Alpha).px, vec![255, 255, 255, 255, 0, 0, 0, 255]);
+        assert_eq!(channel_view(&img, DisplayMode::Alpha).px, vec![255, 255, 255, 255, 0, 0, 0, 255, 128, 128, 128, 255]);
     }
 
     #[test]
@@ -1133,7 +1216,7 @@ mod tests {
         assert!((r.width() - 1920.0 * 16.0).abs() < 1.0, "capped at 1600%");
         assert!((r.center() - area.center()).length() < 1e-3, "non-finite pan centres");
         // a degenerate frame or area does not panic
-        let _ = scroll_layout(Rect::NOTHING, 0.0, 0.0, &v, 0.0);
+        let _ = scroll_layout(Rect::NOTHING, 0.0, 0.0, &v, 0.0, true);
         assert_eq!(thumb_geometry(0.0, 100.0, 50.0, 0.0, 0.0), (0.0, 100.0, 0.0));
     }
 
@@ -1141,15 +1224,17 @@ mod tests {
     fn scroll_bars_show_along_axes_the_magnified_picture_overflows() {
         let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0));
         let mut v = MonitorView::default();
-        assert_eq!(scroll_layout(area, 1920.0, 1080.0, &v, 1.0), (area, false, false), "none at Fit");
+        assert_eq!(scroll_layout(area, 1920.0, 1080.0, &v, 1.0, true), (area, false, false), "none at Fit");
         v.zoom = Some(0.2); // 384 x 216: fits
-        assert!(matches!(scroll_layout(area, 1920.0, 1080.0, &v, 1.0), (_, false, false)));
+        assert!(matches!(scroll_layout(area, 1920.0, 1080.0, &v, 1.0, true), (_, false, false)));
         v.zoom = Some(0.21); // 403 x 227: wider only
-        let (a, h, vb) = scroll_layout(area, 1920.0, 1080.0, &v, 1.0);
+        let (a, h, vb) = scroll_layout(area, 1920.0, 1080.0, &v, 1.0, true);
         assert!(h && !vb && (a.height() - (300.0 - SCROLLBAR)).abs() < 1e-3, "{a:?}");
         // 402 x 296: wider; taking the horizontal bar's strip makes it taller than the area too
-        let (a, h, vb) = scroll_layout(area, 2010.0, 1480.0, &MonitorView { zoom: Some(0.2), ..v.clone() }, 1.0);
+        let (a, h, vb) = scroll_layout(area, 2010.0, 1480.0, &MonitorView { zoom: Some(0.2), ..v.clone() }, 1.0, true);
         assert!(h && vb && (a.width() - (400.0 - SCROLLBAR)).abs() < 1e-3, "{a:?}");
+        // no bars where the picture is not magnified (Comparison View, no picture)
+        assert_eq!(scroll_layout(area, 2010.0, 1480.0, &MonitorView { zoom: Some(0.2), ..v.clone() }, 1.0, false), (area, false, false));
         // thumb: a quarter of the picture in view, scrolled to the end
         let (start, len, per) = thumb_geometry(0.0, 100.0, 100.0, 400.0, 300.0);
         assert!((len - 25.0).abs() < 1e-3 && (start - 75.0).abs() < 1e-3 && (per - 4.0).abs() < 1e-3, "{start} {len} {per}");

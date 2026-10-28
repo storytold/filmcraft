@@ -108,13 +108,13 @@ impl VideoEncoder for NvencEncoder {
             return Err(ExportError::Encode(format!("NVENC: a {}x{} picture for a {}x{} encoder", f.width, f.height, self.w, self.h)));
         }
         let (w, h) = (self.w as usize, self.h as usize);
-        let hint = if self.enc.codec() == Codec::H264 { " (turn Export ▸ Hardware encoding off to use the software encoder)" } else { "" };
+        let hint = if self.enc.codec() == Codec::H264 { " (turn Export > Hardware encoding off to use the software encoder)" } else { "" };
         let ps = match (self.enc.is_ten_bit(), f.hdr) {
             // Main 10 takes the encoded R'G'B' floats: 10-bit limited-range BT.2020 NCL (or the signal's matrix)
             (true, Some(rgb)) => {
                 let (kr, kb) = self.signal.kr_kb();
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
-                    filmcraft_export::rgbf_to_yuv420_10(rgb, w, h, kr, kb, &mut self.y16, &mut self.u16, &mut self.v16)
+                    filmcraft_export::rgbf_to_yuv420_10(rgb, w, h, filmcraft_export::Matrix::new(kr, kb), &mut self.y16, &mut self.u16, &mut self.v16)
                 })?;
                 self.enc.encode_10(&self.y16, &self.u16, &self.v16, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?
             }

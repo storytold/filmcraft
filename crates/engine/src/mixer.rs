@@ -33,7 +33,8 @@
 use serde_json::{Value, json};
 
 use filmcraft_project::mixer::{
-    self as pm, FADER_MAX_DB, FADER_MIN_DB, LANE_MUTE, LANE_PAN, LANE_VOLUME, MASTER_STRIP, lane_info, parse_fx_lane, parse_send_lane, thin_points, write_lane,
+    self as pm, FADER_MAX_DB, FADER_MIN_DB, LANE_MUTE, LANE_PAN, LANE_VOLUME, LaneWrite, MASTER_STRIP, lane_info, parse_fx_lane, parse_send_lane, thin_points,
+    write_lane,
 };
 use filmcraft_project::{AudioChannels, AutomationMode, InputMap, ItemId, Param, ParamValue, Sequence, Track, TrackId, TrackKind, TrackSend, find_effect};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
@@ -196,7 +197,7 @@ fn write_clip_points(tr: &mut Track, lane: &str, pts: &[(Tick, f64)], sr: i64) -
         let Some(param) = e.param_mut(par) else { continue };
         let before = starts_inside.then(|| param.f64_at(m0 - eps));
         let after = ends_inside.then(|| param.f64_at(m1 + eps));
-        write_lane(param, m0, m1, &mt, before, after, eps, false);
+        write_lane(param, &LaneWrite { t0: m0, t1: m1, points: &mt, before, after, eps, hold: false });
         written += mt.len();
     }
     written
@@ -396,7 +397,7 @@ pub fn record_stop(s: &mut Session, t_stop: Tick) -> Result<Value> {
             let lane = g.lane.clone();
             seq.with_strip_mut(g.strip, |tr| {
                 if let Some(param) = tr.lane_mut(&lane) {
-                    write_lane(param, t0, t1, &thinned, before, after, eps, hold);
+                    write_lane(param, &LaneWrite { t0, t1, points: &thinned, before, after, eps, hold });
                 }
             });
             written.push(json!({"strip": g.strip.0, "lane": lane, "from": t0.0, "to": t1.0, "keyframes": thinned.len(), "points": pts.len()}));
@@ -1005,7 +1006,7 @@ fn write_automation(s: &mut Session, p: &Value) -> Result<Value> {
             let before = (t0.0 > 0).then(|| underlying(tr, &lane, t0 - eps));
             let after = tr.lane(&lane).filter(|p| p.keyframes.iter().any(|k| k.time > t1)).map(|_| underlying(tr, &lane, t1 + eps));
             if let Some(par) = tr.lane_mut(&lane) {
-                write_lane(par, t0, t1, &thinned, before, after, eps, hold);
+                write_lane(par, &LaneWrite { t0, t1, points: &thinned, before, after, eps, hold });
             }
         })
         .ok_or_else(|| EngineError::Other("no such strip".into()))
@@ -1166,7 +1167,7 @@ fn not_recording(s: &Session) -> std::result::Result<(), String> {
     if s.mixrec.active() { Err("an automation pass is already recording".into()) } else { Ok(()) }
 }
 
-fn spec(
+struct CommandDefinition {
     id: &'static str,
     label: &'static str,
     menu: &'static [&'static str],
@@ -1175,31 +1176,43 @@ fn spec(
     enabled: Enabled,
     run: Run,
     journal: bool,
-) -> CommandSpec {
+}
+
+fn spec(definition: CommandDefinition) -> CommandSpec {
+    let CommandDefinition { id, label, menu, shortcut, params, enabled, run, journal } = definition;
     CommandSpec { id, label, menu, shortcut, params, enabled, run, journal }
 }
 
 pub fn commands() -> Vec<CommandSpec> {
     vec![
-        spec("mixer.inspect", "Inspect Audio Track Mixer", &[], None, r#"{"time":ticks?}"#, always, inspect, false),
-        spec(
-            "mixer.setStrip",
-            "Track Mixer Settings",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"name":str?,"volumeDb":f64?,"pan":f64?,"muted":bool?,"solo":bool?,"recordArm":bool?,"soloSafe":bool?,"mode":"Off|Read|Latch|Touch|Write"?,"output":"Mix"|"S1"?,"inputMap":"Stereo|Left|Right|Swap|Mono"?,"channels":"Mono|Stereo|5.1"?}"#,
-            has_seq,
-            set_strip,
-            true,
-        ),
-        spec(
-            "mixer.setValue",
-            "Set Mixer Control",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":"volume|pan|mute|send.<i>.level|fx.<slot>.<param>","value":f64,"time":ticks?}"#,
-            has_seq,
-            |s, p| {
+        spec(CommandDefinition {
+            id: "mixer.inspect",
+            label: "Inspect Audio Track Mixer",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"time":ticks?}"#,
+            enabled: always,
+            run: inspect,
+            journal: false,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.setStrip",
+            label: "Track Mixer Settings",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"name":str?,"volumeDb":f64?,"pan":f64?,"muted":bool?,"solo":bool?,"recordArm":bool?,"soloSafe":bool?,"mode":"Off|Read|Latch|Touch|Write"?,"output":"Mix"|"S1"?,"inputMap":"Stereo|Left|Right|Swap|Mono"?,"channels":"Mono|Stereo|5.1"?}"#,
+            enabled: has_seq,
+            run: set_strip,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.setValue",
+            label: "Set Mixer Control",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":"volume|pan|mute|send.<i>.level|fx.<slot>.<param>","value":f64,"time":ticks?}"#,
+            enabled: has_seq,
+            run: |s, p| {
                 let id = strip_p(s, p, "mixer.setValue")?;
                 let lane = lane_p(s, p, id, "mixer.setValue")?;
                 let v = value_p(p, &lane, "mixer.setValue")?;
@@ -1211,206 +1224,260 @@ pub fn commands() -> Vec<CommandSpec> {
                 set_value(s, id, &lane, v, t)?;
                 Ok(json!({"value": v}))
             },
-            true,
-        ),
-        spec(
-            "mixer.touch",
-            "Touch Mixer Control",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":"volume|pan|mute|send.<i>.level|fx.<slot>.<param>","value":f64,"time":ticks?}"#,
-            has_seq,
-            |s, p| {
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.touch",
+            label: "Touch Mixer Control",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":"volume|pan|mute|send.<i>.level|fx.<slot>.<param>","value":f64,"time":ticks?}"#,
+            enabled: has_seq,
+            run: |s, p| {
                 let id = strip_p(s, p, "mixer.touch")?;
                 let lane = lane_p(s, p, id, "mixer.touch")?;
                 let v = value_p(p, &lane, "mixer.touch")?;
                 let t = time_p(s, p, "").unwrap_or(s.playhead());
                 touch(s, id, &lane, v, t)
             },
-            false,
-        ),
-        spec(
-            "mixer.release",
-            "Release Mixer Control",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"time":ticks?}"#,
-            has_seq,
-            |s, p| {
+            journal: false,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.release",
+            label: "Release Mixer Control",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"time":ticks?}"#,
+            enabled: has_seq,
+            run: |s, p| {
                 let id = strip_p(s, p, "mixer.release")?;
                 let lane = lane_p(s, p, id, "mixer.release")?;
                 let t = time_p(s, p, "").unwrap_or(s.playhead());
                 release(s, id, &lane, t)
             },
-            true,
-        ),
-        spec(
-            "mixer.recordStart",
-            "Start Automation Pass",
-            &[],
-            None,
-            r#"{"time":ticks?}"#,
-            not_recording,
-            |s, p| {
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.recordStart",
+            label: "Start Automation Pass",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"time":ticks?}"#,
+            enabled: not_recording,
+            run: |s, p| {
                 let t = time_p(s, p, "").unwrap_or(s.playhead());
                 record_start(s, t)
             },
-            false,
-        ),
-        spec(
-            "mixer.recordStop",
-            "Write Automation",
-            &[],
-            None,
-            r#"{"time":ticks?}"#,
-            has_seq,
-            |s, p| {
+            journal: false,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.recordStop",
+            label: "Write Automation",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"time":ticks?}"#,
+            enabled: has_seq,
+            run: |s, p| {
                 let t = time_p(s, p, "").unwrap_or(s.playhead());
                 record_stop(s, t)
             },
-            true,
-        ),
-        spec(
-            "clipMixer.set",
-            "Audio Clip Mixer Adjust",
-            &[],
-            None,
-            r#"{"clip":id,"effect":"volume"|"panner","param":"level"|"balance","value":f64,"keyframe":bool?,"time":ticks?,"begin":bool?}"#,
-            has_seq,
-            clip_set,
-            true,
-        ),
-        spec(
-            "clipMixer.setMode",
-            "Audio Clip Mixer Automation Mode",
-            &[],
-            None,
-            r#"{"track":"A1"|id,"mode":"Off|Read|Latch|Touch|Write"}"#,
-            has_seq,
-            |s, p| {
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "clipMixer.set",
+            label: "Audio Clip Mixer Adjust",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"clip":id,"effect":"volume"|"panner","param":"level"|"balance","value":f64,"keyframe":bool?,"time":ticks?,"begin":bool?}"#,
+            enabled: has_seq,
+            run: clip_set,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "clipMixer.setMode",
+            label: "Audio Clip Mixer Automation Mode",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"track":"A1"|id,"mode":"Off|Read|Latch|Touch|Write"}"#,
+            enabled: has_seq,
+            run: |s, p| {
                 let id = clip_track_p(s, p, "clipMixer.setMode")?;
                 let m = mode_p(p).ok_or_else(|| bad("clipMixer.setMode", "need `mode` (Off, Read, Latch, Touch, Write)"))?;
                 s.state.clip_mixer_modes.insert(id.0, m);
                 Ok(json!({"track": id.0, "mode": m.label()}))
             },
-            false,
-        ),
-        spec(
-            "clipMixer.touch",
-            "Touch Clip Mixer Control",
-            &[],
-            None,
-            r#"{"track":"A1"|id,"lane":"volume|pan","value":f64,"time":ticks?}"#,
-            has_seq,
-            |s, p| {
+            journal: false,
+        }),
+        spec(CommandDefinition {
+            id: "clipMixer.touch",
+            label: "Touch Clip Mixer Control",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"track":"A1"|id,"lane":"volume|pan","value":f64,"time":ticks?}"#,
+            enabled: has_seq,
+            run: |s, p| {
                 let id = clip_track_p(s, p, "clipMixer.touch")?;
                 let lane = clip_lane_p(p);
                 let v = f64_p(p, "value").ok_or_else(|| bad("clipMixer.touch", "need `value`"))?;
                 let t = time_p(s, p, "").unwrap_or(s.playhead());
                 touch(s, id, &lane, v, t)
             },
-            false,
-        ),
-        spec(
-            "clipMixer.release",
-            "Release Clip Mixer Control",
-            &[],
-            None,
-            r#"{"track":"A1"|id,"lane":"volume|pan","time":ticks?}"#,
-            has_seq,
-            |s, p| {
+            journal: false,
+        }),
+        spec(CommandDefinition {
+            id: "clipMixer.release",
+            label: "Release Clip Mixer Control",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"track":"A1"|id,"lane":"volume|pan","time":ticks?}"#,
+            enabled: has_seq,
+            run: |s, p| {
                 let id = clip_track_p(s, p, "clipMixer.release")?;
                 let lane = clip_lane_p(p);
                 let t = time_p(s, p, "").unwrap_or(s.playhead());
                 release(s, id, &lane, t)
             },
-            true,
-        ),
-        spec(
-            "effects.setDefaultTransition",
-            "Set Selected as Default Transition",
-            &[],
-            None,
-            r#"{"effect":"constant_power|constant_gain|exponential_fade|<video transition>"}"#,
-            always,
-            set_default_transition,
-            true,
-        ),
-        spec("mixer.addSubmix", "Add Audio Submix Track", &["Sequence"], None, r#"{"name":str?,"channels":"Mono|Stereo|5.1"?}"#, has_seq, add_submix, true),
-        spec("mixer.deleteSubmix", "Delete Submix Track", &[], None, r#"{"strip":"S1"|id}"#, has_seq, delete_submix, true),
-        spec(
-            "mixer.addInsert",
-            "Add Track Effect",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"effect":str,"slot":n?,"postFader":bool?}"#,
-            has_seq,
-            add_insert,
-            true,
-        ),
-        spec("mixer.removeInsert", "Remove Track Effect", &[], None, r#"{"strip":"A1"|"S1"|"Mix"|id,"slot":n}"#, has_seq, remove_insert, true),
-        spec(
-            "mixer.setInsert",
-            "Track Effect Settings",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"slot":n,"enabled":bool?,"postFader":bool?,"params":{id:value}?}"#,
-            has_seq,
-            set_insert,
-            true,
-        ),
-        spec(
-            "mixer.addSend",
-            "Add Send",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|id,"target":"S1"|id,"levelDb":f64?,"preFader":bool?,"pan":f64?}"#,
-            has_seq,
-            add_send,
-            true,
-        ),
-        spec(
-            "mixer.setSend",
-            "Send Settings",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|id,"send":n,"levelDb":f64?,"pan":f64?,"preFader":bool?,"muted":bool?,"target":"S1"?}"#,
-            has_seq,
-            set_send,
-            true,
-        ),
-        spec("mixer.removeSend", "Remove Send", &[], None, r#"{"strip":"A1"|"S1"|id,"send":n}"#, has_seq, remove_send, true),
-        spec(
-            "mixer.setKeyframe",
-            "Add Track Keyframe",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"time":ticks?,"value":f64}"#,
-            has_seq,
-            set_kf,
-            true,
-        ),
-        spec("mixer.deleteKeyframe", "Delete Track Keyframe", &[], None, r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"time":ticks}"#, has_seq, delete_kf, true),
-        spec(
-            "mixer.moveKeyframe",
-            "Move Track Keyframe",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"time":ticks,"newTime":ticks?,"value":f64?}"#,
-            has_seq,
-            move_kf,
-            true,
-        ),
-        spec("mixer.clearLane", "Clear Track Keyframes", &[], None, r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?}"#, has_seq, clear_lane, true),
-        spec(
-            "mixer.writeAutomation",
-            "Write Automation Points",
-            &[],
-            None,
-            r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"points":[[ticks,value]],"tolerance":f64?}"#,
-            has_seq,
-            write_automation,
-            true,
-        ),
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "effects.setDefaultTransition",
+            label: "Set Selected as Default Transition",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"effect":"constant_power|constant_gain|exponential_fade|<video transition>"}"#,
+            enabled: always,
+            run: set_default_transition,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.addSubmix",
+            label: "Add Audio Submix Track",
+            menu: &["Sequence"],
+            shortcut: None,
+            params: r#"{"name":str?,"channels":"Mono|Stereo|5.1"?}"#,
+            enabled: has_seq,
+            run: add_submix,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.deleteSubmix",
+            label: "Delete Submix Track",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"S1"|id}"#,
+            enabled: has_seq,
+            run: delete_submix,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.addInsert",
+            label: "Add Track Effect",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"effect":str,"slot":n?,"postFader":bool?}"#,
+            enabled: has_seq,
+            run: add_insert,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.removeInsert",
+            label: "Remove Track Effect",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"slot":n}"#,
+            enabled: has_seq,
+            run: remove_insert,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.setInsert",
+            label: "Track Effect Settings",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"slot":n,"enabled":bool?,"postFader":bool?,"params":{id:value}?}"#,
+            enabled: has_seq,
+            run: set_insert,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.addSend",
+            label: "Add Send",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|id,"target":"S1"|id,"levelDb":f64?,"preFader":bool?,"pan":f64?}"#,
+            enabled: has_seq,
+            run: add_send,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.setSend",
+            label: "Send Settings",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|id,"send":n,"levelDb":f64?,"pan":f64?,"preFader":bool?,"muted":bool?,"target":"S1"?}"#,
+            enabled: has_seq,
+            run: set_send,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.removeSend",
+            label: "Remove Send",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|id,"send":n}"#,
+            enabled: has_seq,
+            run: remove_send,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.setKeyframe",
+            label: "Add Track Keyframe",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"time":ticks?,"value":f64}"#,
+            enabled: has_seq,
+            run: set_kf,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.deleteKeyframe",
+            label: "Delete Track Keyframe",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"time":ticks}"#,
+            enabled: has_seq,
+            run: delete_kf,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.moveKeyframe",
+            label: "Move Track Keyframe",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"time":ticks,"newTime":ticks?,"value":f64?}"#,
+            enabled: has_seq,
+            run: move_kf,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.clearLane",
+            label: "Clear Track Keyframes",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?}"#,
+            enabled: has_seq,
+            run: clear_lane,
+            journal: true,
+        }),
+        spec(CommandDefinition {
+            id: "mixer.writeAutomation",
+            label: "Write Automation Points",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":str?,"points":[[ticks,value]],"tolerance":f64?}"#,
+            enabled: has_seq,
+            run: write_automation,
+            journal: true,
+        }),
     ]
 }

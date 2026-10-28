@@ -6,8 +6,9 @@
 //! [`resolve`] maps a family + style name (as stored in projects) to a face and the synthetic
 //! bold/italic needed when the family lacks that style. Unknown families fall back to Inter.
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider};
@@ -114,13 +115,43 @@ fn walk(dir: &std::path::Path, depth: u32, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
-        if p.is_dir() {
+        let Ok(file_type) = e.file_type() else { continue };
+        // Font discovery is bounded to the configured folders: never follow a symlinked folder
+        // into a loop or an unrelated tree. Symlinked font files (NixOS, home-manager, Debian
+        // alternatives) still count.
+        let is_file = if file_type.is_symlink() { std::fs::metadata(&p).is_ok_and(|m| m.is_file()) } else { file_type.is_file() };
+        if file_type.is_dir() {
             if depth < 4 {
                 walk(&p, depth + 1, out);
             }
-        } else if p.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc")) {
+        } else if is_file && p.extension().and_then(OsStr::to_str).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc")) {
             out.push(p);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod directory_tests {
+    use super::walk;
+
+    #[test]
+    fn directory_source_does_not_follow_symlinked_font_trees() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let configured = root.path().join("configured");
+        let foreign = root.path().join("foreign");
+        std::fs::create_dir_all(&configured).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(configured.join("inside.ttf"), b"").unwrap();
+        std::fs::write(foreign.join("outside.ttf"), b"").unwrap();
+        symlink(&foreign, configured.join("loop")).unwrap();
+        symlink(foreign.join("outside.ttf"), configured.join("linked.ttf")).unwrap();
+
+        let mut found = Vec::new();
+        walk(&configured, 0, &mut found);
+        found.sort();
+        assert_eq!(found, vec![configured.join("inside.ttf"), configured.join("linked.ttf")]);
     }
 }
 
@@ -279,13 +310,25 @@ impl Face {
 
 struct Db {
     faces: Vec<Arc<Face>>,
+    /// Served by [`face`] if no face is registered (the bundled faces always are).
+    fallback: Arc<Face>,
     scanned: bool,
 }
 
 fn db() -> &'static RwLock<Db> {
     static DB: OnceLock<RwLock<Db>> = OnceLock::new();
     DB.get_or_init(|| {
-        let mut db = Db { faces: Vec::new(), scanned: false };
+        let info = FaceInfo {
+            family: "Inter".into(),
+            style: "Regular".into(),
+            weight: 400,
+            italic: false,
+            index: 0,
+            data: FaceData::Static(INTER_REGULAR),
+            origin: "bundled",
+        };
+        let fallback = Arc::new(Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() });
+        let mut db = Db { faces: Vec::new(), fallback, scanned: false };
         for b in [INTER_REGULAR, INTER_MEDIUM, INTER_SEMIBOLD, INTER_BOLD, INTER_ITALIC, JETBRAINS_MONO_REGULAR, NOTO_SERIF_REGULAR] {
             for n in read_faces_bytes(b) {
                 push(&mut db, info_from(n, FaceData::Static(b), "bundled"));
@@ -312,7 +355,7 @@ fn push(db: &mut Db, info: FaceInfo) -> FaceId {
 /// added.
 pub fn add_source(src: &dyn FontSource) -> usize {
     let faces = src.faces();
-    let mut d = db().write().unwrap_or_else(|e| e.into_inner());
+    let mut d = db().write().unwrap_or_else(PoisonError::into_inner);
     let mut n = 0;
     for f in faces {
         let dup = d.faces.iter().any(|g| g.info.family.eq_ignore_ascii_case(&f.family) && g.info.style.eq_ignore_ascii_case(&f.style));
@@ -328,7 +371,7 @@ pub fn add_source(src: &dyn FontSource) -> usize {
 pub fn add_font_data(data: Vec<u8>) -> Vec<FaceId> {
     let data = Arc::new(data);
     let names = read_faces_bytes(&data);
-    let mut d = db().write().unwrap_or_else(|e| e.into_inner());
+    let mut d = db().write().unwrap_or_else(PoisonError::into_inner);
     names.into_iter().map(|n| push(&mut d, info_from(n, FaceData::Shared(data.clone()), "user"))).collect()
 }
 
@@ -338,31 +381,30 @@ pub fn scan_system() -> usize {
     // Held for the whole scan: a concurrent caller waits for the complete list instead of
     // returning early and resolving against a half-filled database.
     static SCAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _scan = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = SCAN.lock().unwrap_or_else(PoisonError::into_inner);
     if system_scanned() {
         return 0;
     }
     let n = if cfg!(target_arch = "wasm32") { 0 } else { add_source(&DirectorySource::system()) };
-    db().write().unwrap_or_else(|e| e.into_inner()).scanned = true;
+    db().write().unwrap_or_else(PoisonError::into_inner).scanned = true;
     n
 }
 
 pub fn system_scanned() -> bool {
-    db().read().unwrap_or_else(|e| e.into_inner()).scanned
+    db().read().unwrap_or_else(PoisonError::into_inner).scanned
 }
 
 /// A face by id (unknown ids give the default face).
 // The bundled faces are compiled in (`include_bytes!`) and registered when the database is
-// created, so `faces` is never empty.
-#[allow(clippy::expect_used)]
+// created, so `faces` is never empty; the fallback only covers a corrupt bundle.
 pub fn face(id: FaceId) -> Arc<Face> {
-    let d = db().read().unwrap_or_else(|e| e.into_inner());
-    d.faces.get(id).or_else(|| d.faces.first()).cloned().expect("bundled fonts present")
+    let d = db().read().unwrap_or_else(PoisonError::into_inner);
+    d.faces.get(id).or_else(|| d.faces.first()).unwrap_or(&d.fallback).clone()
 }
 
 /// All faces (bundled first).
 pub fn all_faces() -> Vec<Arc<Face>> {
-    db().read().unwrap_or_else(|e| e.into_inner()).faces.clone()
+    db().read().unwrap_or_else(PoisonError::into_inner).faces.clone()
 }
 
 /// Families with their style names, sorted by family; styles in weight order.

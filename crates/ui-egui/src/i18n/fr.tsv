@@ -321,6 +321,7 @@
 	Show Active Caption Tracks Only	Afficher uniquement les pistes de sous-titres actives
 	Show All Caption Tracks	Afficher toutes les pistes de sous-titres
 	Show All Marker Colors	Afficher toutes les couleurs de marqueur
+	Show Duplicate Frame Markers	Afficher les marqueurs d'images en double
 	Show Guides	Afficher les repères
 	Show Rulers	Afficher les règles
 	Show Through Edits	Afficher les points de montage traversants
@@ -3437,8 +3438,8 @@
 	Commits	Commits
 	% of all commits	% de tous les commits
 	Lines +/−	Lignes +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Échec de la sortie audio : lecture sans son (vérifiez Préférences ▸ Matériel audio)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	La sortie audio ne répond pas : lecture sans son (vérifiez Préférences ▸ Matériel audio)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Échec de la sortie audio : lecture sans son (vérifiez Préférences > Matériel audio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	La sortie audio ne répond pas : lecture sans son (vérifiez Préférences > Matériel audio)
 	Clip Speed / Duration	Vitesse/durée du clip
 	Speed:	Vitesse :
 	Reverse Speed	Vitesse inversée
@@ -3578,9 +3579,51 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
-# View ▸ Reset Interface Zoom (#2253).
+# View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	Réinitialiser le zoom de l'interface
 	Track Color	Couleur de la piste
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+	Hide FilmCraft	Masquer FilmCraft
+	Hide Others	Masquer les autres
+	More transport controls	Autres commandes de lecture
+	A file dialog is already open	Une fenêtre de sélection de fichier est déjà ouverte
+	FLAC	FLAC
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24 bits
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, stéréo 48 kHz 24 bits, sans perte
+	FLAC (lossless)	FLAC (sans perte)
+	Compression Level	Niveau de compression
+	0 fastest, 8 smallest	0 le plus rapide, 8 le plus compact
+	JPEG	JPEG
+	Targa	Targa
+	DPX	DPX
+	JPEG Sequence	Séquence JPEG
+	Targa Sequence	Séquence Targa
+	DPX Sequence	Séquence DPX
+	Numbered JPEG stills (quality 90)	Images fixes JPEG numérotées (qualité 90)
+	Numbered Targa stills (24-bit, uncompressed)	Images fixes Targa numérotées (24 bits, sans compression)
+	Numbered DPX stills (10-bit RGB)	Images fixes DPX numérotées (RVB 10 bits)
+	OpenEXR	OpenEXR
+	OpenEXR Sequence	Séquence OpenEXR
+	Numbered OpenEXR stills (half float, linear, uncompressed)	Images fixes OpenEXR numérotées (virgule flottante 16 bits, linéaire, sans compression)
+	Dock Panel	Ancrer le panneau
+	Undock Panel	Détacher le panneau
+	Docking Action	Action d'ancrage
+	Resize floating panel	Redimensionner le panneau flottant
+	Opens in your web browser: {url}	S'ouvre dans votre navigateur : {url}
+	Saves this session's log and shows it in your file manager.	Enregistre le journal de cette session et l'affiche dans votre gestionnaire de fichiers.
+	Shows a report on this computer.	Affiche un rapport sur cet ordinateur.
+	Shows the version, community links and credits in a FilmCraft window.	Affiche la version, les liens de la communauté et les crédits dans une fenêtre FilmCraft.
+	Couldn't open your web browser	Impossible d'ouvrir votre navigateur
+	Open this address in your browser yourself:	Ouvrez vous-même cette adresse dans votre navigateur :
+	Delete Redoable Actions	Supprimer les actions rétablissables
+	Clear History	Effacer l'historique
+	Delete the dimmed actions after the current state? They cannot be redone.	Supprimer les actions grisées qui suivent l'état actuel ? Elles ne pourront plus être rétablies.
+	Work Area Bar	Barre de zone de travail
+	Start: {tc}	Début : {tc}
+	End: {tc}	Fin : {tc}
+	Duration: {tc}	Durée : {tc}
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) nécessite un encodeur matériel (NVENC sur les GPU NVIDIA, VideoToolbox sur macOS) ; aucun n'a été trouvé sur cet ordinateur, et FilmCraft n'a pas encore d'encodeur H.265 logiciel. Choisissez plutôt H.264 ou ProRes.
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 nécessite un encodeur matériel ; aucun n'a été trouvé sur cet ordinateur, et FilmCraft n'a pas encore d'encodeur AV1 logiciel.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Décodage matériel : Auto utilise le décodeur vidéo du système (VideoToolbox sur macOS, Media Foundation sur Windows, VA-API pour H.264 et HEVC sous Linux) pour les flux qu'il prend en charge, et le décodeur de FilmCraft pour tout le reste ou en cas d'échec du matériel. Un média déjà ouvert garde son décodeur jusqu'à sa réouverture.
