@@ -391,6 +391,53 @@ fn add_keyframe_at_the_out_point_stays_there_and_the_replies_say_what_happened()
     assert!(s.execute("effects.deleteKeyframe", json!({"clip": c, "effect": "motion", "param": "scale"})).is_err());
 }
 
+/// The keyframe replies are for edits that undo and redo like any other, and the commands refuse to
+/// run without an active sequence instead of reporting a keyframe that was never made.
+#[test]
+fn add_and_delete_keyframe_undo_redo_and_need_a_sequence() {
+    let mut s = demo();
+    let (c, end) = {
+        let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.end())
+    };
+    let keys = |s: &Session| {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
+        it.effect("motion").unwrap().params["scale"].keyframes.iter().map(|k| k.time).collect::<Vec<_>>()
+    };
+    let out = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.source_time_at(end);
+    let key = |extra: Value| {
+        let mut p = json!({"clip": c, "effect": "motion", "param": "scale"});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+
+    // add at the out point: one undo step that takes the keyframe away and brings it back
+    let r = s.execute("effects.addKeyframe", key(json!({"time": end.0}))).unwrap();
+    assert_eq!(r["added"], json!(true));
+    assert_eq!(keys(&s), vec![out]);
+    s.undo();
+    assert_eq!(keys(&s), Vec::<Tick>::new(), "undo removes the keyframe");
+    s.redo();
+    assert_eq!(keys(&s), vec![out], "redo puts it back at the out point");
+
+    // delete it: the same, the other way round
+    let r = s.execute("effects.deleteKeyframe", key(json!({"mediaTime": out.0}))).unwrap();
+    assert_eq!(r["removed"], json!(true));
+    assert_eq!(keys(&s), Vec::<Tick>::new());
+    s.undo();
+    assert_eq!(keys(&s), vec![out], "undo restores the deleted keyframe");
+    s.redo();
+    assert_eq!(keys(&s), Vec::<Tick>::new(), "redo deletes it again");
+
+    // no active sequence: both commands are refused, nothing panics, and there is no reply to trust
+    let mut empty = Session::default();
+    assert!(empty.active_sequence().is_none());
+    for (command, extra) in [("effects.addKeyframe", json!({"time": 0})), ("effects.deleteKeyframe", json!({"mediaTime": 0}))] {
+        assert!(empty.execute(command, key(extra)).is_err(), "{command} without a sequence");
+    }
+    assert!(empty.history.undo.is_empty(), "and no undo step was recorded");
+}
+
 /// The position half of #3386, read from the project and not from a reply: a keyframe asked for at
 /// the clip's out point is at the out point.
 #[test]
