@@ -125,7 +125,8 @@ impl FilmcraftApp {
         let Some(item) = self.source_playback.item else { return };
         let Some(view) = source_view(&self.session, item) else { return };
         let Some(media) = self.session.project.item(view.media).and_then(|i| i.as_media()) else { return };
-        if !media.info.has_audio() {
+        // nothing to hear when no stream decodes: the picture plays on without a failing audio stream
+        if !media.info.has_decodable_audio() {
             self.source_playback.clock.audio_retry_at = 0.0;
             return;
         }

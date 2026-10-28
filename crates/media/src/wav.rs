@@ -1,4 +1,4 @@
-//! Minimal WAV (RIFF/RF64 PCM 8/16/24/32-bit int, 32/64-bit float) source, with the Broadcast Wave
+//! Minimal WAV (RIFF/RF64 PCM 8/16/24/32/64-bit int, 32/64-bit float) source, with the Broadcast Wave
 //! start time: `bext` TimeReference (EBU Tech 3285), else iXML `BWF_TIME_REFERENCE_LOW/HIGH`. The
 //! full `riff` crate (all BWF metadata, AIFF) will replace this.
 
@@ -184,6 +184,8 @@ impl WavSource {
             (32, false, &[a, b, c, d]) => i32::from_le_bytes([a, b, c, d]) as f32 / 2_147_483_648.0,
             (32, true, &[a, b, c, d]) => f32::from_le_bytes([a, b, c, d]),
             (64, true, b) => f64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32,
+            // 64-bit integer PCM (format tag 1): accepted at open and listed as decodable, so it plays
+            (64, false, b) => (i64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f64 / 9_223_372_036_854_775_808.0) as f32,
             _ => 0.0,
         }
     }
@@ -302,6 +304,32 @@ mod tests {
         assert_eq!(src.info().duration, Tick::from_units(100, 48000));
         assert_eq!(src.time_reference(), None);
         assert_eq!(src.info().start_timecode, None);
+    }
+
+    #[test]
+    fn integer_pcm_64_plays_instead_of_silence() {
+        let samples = [0.5f64, -0.25, 0.0, 1.0 - 1e-9];
+        let mut v = Vec::new();
+        let data: Vec<u8> = samples.iter().flat_map(|x| ((x * 9_223_372_036_854_775_808.0) as i64).to_le_bytes()).collect();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        v.extend_from_slice(b"WAVEfmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes()); // integer PCM
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&48_000u32.to_le_bytes());
+        v.extend_from_slice(&(48_000u32 * 8).to_le_bytes());
+        v.extend_from_slice(&8u16.to_le_bytes());
+        v.extend_from_slice(&64u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(&data);
+        let src = WavSource::parse("int64.wav", v.into()).unwrap();
+        assert!(src.info().audio().unwrap().can_decode());
+        let a = src.audio(0, 4, 48_000).unwrap();
+        for (got, want) in a.channels[0].iter().zip(samples) {
+            assert!((f64::from(*got) - want).abs() < 1e-6, "{got} vs {want}");
+        }
     }
 
     /// Insert a chunk before `data`.

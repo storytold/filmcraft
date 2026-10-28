@@ -455,6 +455,22 @@ fn an_imported_movie_with_only_undecodable_audio_is_refused_with_the_reason() {
 }
 
 #[test]
+fn new_sequence_from_clip_with_only_undecodable_audio_leaves_no_empty_sequence() {
+    let dir = filmcraft_testkit::fixtures_dir("engine/apac");
+    let path = dir.join("apac_only_new_sequence.mov");
+    std::fs::write(&path, apac_first_mov(false)).unwrap();
+    let mut s = demo();
+    let r = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let item = ItemId(r["items"][0].as_u64().unwrap_or_else(|| panic!("{r}")));
+    let (items, active, undo) = (s.project.items.len(), s.state.active_sequence, s.history.undo.len());
+    let e = s.execute("file.newSequenceFromClip", json!({"items": [item.0]})).unwrap_err().to_string();
+    assert!(e.contains("can't decode"), "{e}");
+    assert_eq!(s.project.items.len(), items, "the half-made sequence is rolled back");
+    assert_eq!(s.state.active_sequence, active);
+    assert_eq!(s.history.undo.len(), undo);
+}
+
+#[test]
 fn the_decodable_flag_round_trips_and_older_projects_load_as_decodable() {
     let old: filmcraft_media::AudioStreamInfo =
         serde_json::from_value(json!({"sample_rate": 48000, "channels": 2, "codec": "AAC", "bits_per_sample": null})).unwrap();
