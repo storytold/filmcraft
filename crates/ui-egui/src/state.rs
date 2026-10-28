@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::dock::{DockNode, PanelKind};
+use crate::dock::PanelKind;
 use crate::icons::Icon;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -316,6 +316,8 @@ pub struct MonitorView {
     /// length (start, end), set with the zoom bar under the ruler; None = all of it.
     pub time_zoom: Option<[f64; 2]>,
     pub safe_margins: bool,
+    /// Transparency Grid: a checkerboard behind the picture shows its transparent areas.
+    pub transparency_grid: bool,
     pub show_transport: bool,
     /// Transport buttons hidden through the monitor's Button Editor. Stored per monitor.
     pub transport_hidden: Vec<String>,
@@ -342,6 +344,7 @@ impl Default for MonitorView {
             pan: [0.0, 0.0],
             time_zoom: None,
             safe_margins: false,
+            transparency_grid: false,
             show_transport: true,
             // The optional Loop button is available from the editor without altering default layouts.
             transport_hidden: vec!["playback.loop".into()],
@@ -433,9 +436,8 @@ pub struct UiState {
     pub tool: Tool,
     pub mode: Mode,
     pub workspace: String,
-    pub dock: DockNode,
-    #[serde(default)]
-    pub floating: Vec<crate::dock::Floating>,
+    /// The panel arrangement in use: craft-ui's frame tree and floating windows.
+    pub dock: crate::dock::Layout,
     /// Where each panel closed while floating was ([x, y, width, height]): opening it again
     /// brings it back there, floating, instead of docked (#1985).
     #[serde(default)]
@@ -942,6 +944,14 @@ pub struct GfxEdit {
     pub layer: usize,
     pub caret: usize,
     pub anchor: usize,
+    /// Stable layer uid (`0` = the project layer has none).
+    #[serde(default)]
+    pub uid: u64,
+    /// Compact identity of a uid-less layer, so the edit target follows its layer through a
+    /// reorder, a deletion below it, or undo/redo instead of editing whatever moves into the
+    /// numeric index.
+    #[serde(default)]
+    pub fingerprint: u64,
 }
 
 fn shown() -> bool {
@@ -963,7 +973,6 @@ impl Default for UiState {
             tool: Tool::Selection,
             mode: Mode::Edit,
             workspace: "Editing".into(),
-            floating: vec![],
             closed_floating: vec![],
             dock: crate::dock::workspace("Editing"),
             focused: PanelKind::Timeline,

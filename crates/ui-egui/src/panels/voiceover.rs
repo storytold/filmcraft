@@ -38,13 +38,13 @@ struct Draft {
 }
 
 fn draft_id() -> egui::Id {
-    egui::Id::new("voiceover-settings-draft")
+    egui::Id::unique("voiceover-settings-draft")
 }
 
 /// The microphone button of an audio track header. Returns the requested action.
 pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: TrackId, r: Rect, visible: Rect, label: &str, t: &Tokens) -> Option<Action> {
     let recording_here = app.session.voiceover.rec.as_ref().is_some_and(|x| x.track == track);
-    let resp = ui.interact(r.intersect(visible), egui::Id::new(("vo", track.0)), Sense::click());
+    let resp = ui.interact(r.intersect(visible), egui::Id::unique(("vo", track.0)), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(r, 2.0, t.hover);
     }
@@ -220,7 +220,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         tl!("● Recording").into()
     };
     let r = Rect::from_center_size(pos2(screen.center().x, screen.min.y + 90.0), vec2(220.0, 64.0));
-    egui::Area::new(egui::Id::new("voiceover-countdown")).order(egui::Order::Foreground).fixed_pos(r.min).interactable(false).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("voiceover-countdown")).order(egui::Order::Foreground).fixed_pos(r.min).interactable(false).show(ctx, |ui| {
         let p = ui.painter();
         p.rect_filled(r, 8.0, Color32::from_black_alpha(180));
         p.rect_stroke(r, 8.0, Stroke::new(2.0, RED), egui::StrokeKind::Inside);
@@ -232,24 +232,24 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 
 fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("voiceover-settings-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("voiceover-settings-before-drag"), &mut d);
     let mut elems: Vec<(String, Rect, String)> = Vec::new();
     let mut close = false;
     let mut apply = false;
     let mut discard = false;
     let accent = app.tokens.accent;
     // the title is translated; the window keeps one id whatever the interface language
-    let id = egui::Id::new("voiceover-settings");
+    let id = egui::Id::unique("voiceover-settings");
     egui::Window::new(tl!("Voice-Over Record Settings")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         egui::Grid::new("voiceover-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label(tl!("Name:"));
-            let r = ui.add(egui::TextEdit::singleline(&mut d.prefs.name).desired_width(220.0));
+            let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut d.prefs.name).desired_width(220.0)), "Name");
             elems.push(("voiceover.name".into(), r.rect, d.prefs.name.clone()));
             ui.end_row();
             ui.label(tl!("Source:"));
             let shown = if d.prefs.source.is_empty() { tl!("Default Input").to_string() } else { d.prefs.source.clone() };
             let previous_source = d.prefs.source.clone();
-            let cb = egui::ComboBox::from_id_salt("voiceover-source").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
+            let cb = craft_ui::ComboBox::from_id_salt("voiceover-source").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
                 let mut opts = vec![(String::new(), tl!("Default Input").to_string())];
                 opts.extend(d.devices.iter().map(|x| (x.clone(), x.clone())));
                 for (i, (val, label)) in opts.into_iter().enumerate() {
@@ -273,7 +273,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let n = u32::from(d.channels.clamp(1, 64));
             d.prefs.input_channel = d.prefs.input_channel.min(63);
             let cur = tlf!("Channel {n}", n = d.prefs.input_channel + 1);
-            let cb = egui::ComboBox::from_id_salt("voiceover-input").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
+            let cb = craft_ui::ComboBox::from_id_salt("voiceover-input").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
                 for c in 0..n.max(d.prefs.input_channel + 1) {
                     let label = tlf!("Channel {n}", n = c + 1);
                     let r = ui.selectable_label(d.prefs.input_channel == c, &label);

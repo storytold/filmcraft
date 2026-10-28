@@ -42,8 +42,8 @@ pub fn controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect) {
     let left = row.center().x - (width * 3.0 + gap * 2.0) * 0.5;
     for (i, (id, label, video, audio, enabled)) in buttons.into_iter().enumerate() {
         let rect = Rect::from_min_size(pos2(left + i as f32 * (width + gap), row.min.y), vec2(width, row.height()));
-        let response = ui.add_enabled_ui(enabled, |ui| ui.interact(rect, egui::Id::new(id), Sense::drag())).inner;
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+        let response = ui.add_enabled_ui(enabled, |ui| ui.interact(rect, egui::Id::unique(id), Sense::drag())).inner;
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
         let t = app.tokens;
         if response.hovered() || response.dragged() {
             ui.painter().rect_filled(rect, 2.0, t.hover);

@@ -212,9 +212,13 @@ fn encode_text(text: &str) -> Vec<u8> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(ch) = rest.chars().next() {
-        if ch == '<'
-            && let Some(end) = rest.find('>')
-        {
+        let is_tag_start = ch == '<'
+            && rest
+                .get(1..)
+                .and_then(|tail| tail.strip_prefix('/').or(Some(tail)))
+                .and_then(|name| name.as_bytes().first())
+                .is_some_and(u8::is_ascii_alphabetic);
+        if is_tag_start && let Some(end) = rest.find('>') {
             let tag = &rest[1..end];
             // Only a syntactically plausible tag is markup. Comparisons such as
             // "2 < 3 > 1" and "x < y > z" must not lose their middle text.
@@ -231,6 +235,18 @@ fn encode_text(text: &str) -> Vec<u8> {
                 rest = &rest[end + 1..];
                 continue;
             }
+        }
+        if is_tag_start && !rest.contains('>') {
+            // This cannot become markup later.  Encode the remaining literal text in one pass
+            // instead of searching the shrinking suffix after every opening bracket.
+            for ch in rest.chars() {
+                if ch == '\n' {
+                    out.push(0x8a);
+                } else {
+                    out.extend(encode_6937(ch).unwrap_or_else(|| vec![b'?']));
+                }
+            }
+            break;
         }
         if ch == '\n' {
             out.push(0x8a);
@@ -472,6 +488,14 @@ mod tests {
         // Recognized styling still becomes STL control bytes.
         assert_eq!(encode_text("<i>Hi</i>"), vec![0x80, b'H', b'i', 0x81]);
         assert_eq!(encode_text("<i >Hi</i >"), vec![0x80, b'H', b'i', 0x81]);
+    }
+
+    #[test]
+    fn unterminated_markup_is_encoded_in_one_pass() {
+        let text = format!("<i{}", "<".repeat(10_000));
+        let encoded = encode_text(&text);
+        assert_eq!(encoded.len(), text.len());
+        assert_eq!(encoded[0], b'<');
     }
 
     #[test]

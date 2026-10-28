@@ -1094,6 +1094,13 @@ fn esds_object_type(raw: &[u8]) -> Option<u8> {
     raw.get(p).copied()
 }
 
+/// Uncompressed QuickTime / MP4 video (`raw ` 24-bit RGB, `2vuy`, `v210`, #2340).
+pub fn raw_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
+    let v = e.video.as_ref()?;
+    let format = RawFormat::from_mov(e.format.0, v.depth)?;
+    Some(RawVideoDecoder::new(format, u32::from(v.width), u32::from(v.height), false).map(|d| Box::new(d) as Box<dyn VideoDecoder>))
+}
+
 pub fn mpeg2_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     match &e.codec {
         CodecConfig::Unknown { fourcc, raw } if is_mpeg2_entry(&fourcc.0, raw) => {
@@ -1168,6 +1175,11 @@ pub enum RawFormat {
     Nv12,
     /// Luma only (`Y800`, `GREY`, `Y8  `).
     Gray8,
+    /// 24-bit R, G, B; rows unpadded (QuickTime `raw ` at depth 24).
+    Rgb24,
+    /// 10-bit 4:2:2 Y'CbCr, six pixels in four little-endian words, rows padded to 128 bytes
+    /// (QuickTime `v210`); shown at 8 bits.
+    V210,
 }
 
 impl RawFormat {
@@ -1193,13 +1205,24 @@ impl RawFormat {
         })
     }
 
+    /// The layout of a QuickTime / MP4 video sample entry (`raw ` RGB at depth 24, `2vuy`, `v210`).
+    pub fn from_mov(fourcc: [u8; 4], depth: u16) -> Option<RawFormat> {
+        match (&fourcc, depth) {
+            (b"raw ", 24) => Some(RawFormat::Rgb24),
+            (b"2vuy", _) => Some(RawFormat::Uyvy),
+            (b"v210", _) => Some(RawFormat::V210),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
-            RawFormat::Bgr24 => "Uncompressed RGB 24-bit",
+            RawFormat::Bgr24 | RawFormat::Rgb24 => "Uncompressed RGB 24-bit",
             RawFormat::Bgrx32 => "Uncompressed RGB 32-bit",
             RawFormat::Yuy2 | RawFormat::Uyvy => "Uncompressed YUV 4:2:2",
             RawFormat::I420 | RawFormat::Yv12 | RawFormat::Nv12 => "Uncompressed YUV 4:2:0",
             RawFormat::Gray8 => "Uncompressed greyscale",
+            RawFormat::V210 => "Uncompressed YUV 4:2:2 10-bit",
         }
     }
 }
@@ -1253,6 +1276,42 @@ impl RawVideoDecoder {
                     }
                 }
                 VideoFrame::rgba8(self.width, self.height, rgba)
+            }
+            RawFormat::Rgb24 => {
+                let stride = w * 3;
+                if s.len() < stride * h {
+                    return Err(short());
+                }
+                let mut rgba = Vec::with_capacity(w * h * 4);
+                for px in s.get(..stride * h).unwrap_or_default().as_chunks::<3>().0 {
+                    rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+                }
+                VideoFrame::rgba8(self.width, self.height, rgba)
+            }
+            RawFormat::V210 => {
+                // 6 pixels per 16 bytes; each row padded to a multiple of 128 bytes (48 pixels)
+                let stride = w.div_ceil(48) * 128;
+                if s.len() < stride * h {
+                    return Err(short());
+                }
+                let (mut y, mut u, mut v) = (Vec::with_capacity(w * h), Vec::with_capacity(cw * h), Vec::with_capacity(cw * h));
+                for row in s.chunks_exact(stride).take(h) {
+                    // the row's 10-bit samples in order: Cb Y Cr Y Cb Y Cr Y …, kept at 8 bits
+                    let mut comps = row.as_chunks::<4>().0.iter().flat_map(|b| {
+                        let word = u32::from_le_bytes(*b);
+                        [word & 0x3ff, (word >> 10) & 0x3ff, (word >> 20) & 0x3ff].map(|c| (c >> 2) as u8)
+                    });
+                    for x in 0..cw {
+                        let (Some(cb), Some(y0), Some(cr), Some(y1)) = (comps.next(), comps.next(), comps.next(), comps.next()) else { break };
+                        u.push(cb);
+                        v.push(cr);
+                        y.push(y0);
+                        if 2 * x + 1 < w {
+                            y.push(y1);
+                        }
+                    }
+                }
+                self.yuv([y, u, v], filmcraft_frame::Chroma::C422)
             }
             RawFormat::Yuy2 | RawFormat::Uyvy => {
                 let stride = cw * 4;

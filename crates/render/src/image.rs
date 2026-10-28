@@ -11,14 +11,38 @@ pub struct Image {
 }
 
 impl Image {
+    pub const MAX_PIXELS: usize = 268_435_456;
+
     pub fn new(w: usize, h: usize) -> Self {
-        Self { w, h, px: vec![0.0; w * h * 4] }
+        let len = w.checked_mul(h).filter(|&px| px <= Self::MAX_PIXELS).and_then(|px| px.checked_mul(4)).unwrap_or(0);
+        let (w, h, px) = if len == 0 && (w > 0 || h > 0) {
+            (0, 0, Vec::new())
+        } else {
+            let mut px = Vec::new();
+            if px.try_reserve_exact(len).is_ok() {
+                px.resize(len, 0.0);
+                (w, h, px)
+            } else {
+                (0, 0, Vec::new())
+            }
+        };
+        Self { w, h, px }
     }
     pub fn filled(w: usize, h: usize, c: [f32; 4]) -> Self {
-        let mut px = Vec::with_capacity(w * h * 4);
-        for _ in 0..w * h {
-            px.extend_from_slice(&c);
-        }
+        let len = w.checked_mul(h).filter(|&px| px <= Self::MAX_PIXELS).and_then(|px| px.checked_mul(4)).unwrap_or(0);
+        let (w, h, px) = if len == 0 && (w > 0 || h > 0) {
+            (0, 0, Vec::new())
+        } else {
+            let mut px = Vec::new();
+            if px.try_reserve_exact(len).is_ok() {
+                for _ in 0..w * h {
+                    px.extend_from_slice(&c);
+                }
+                (w, h, px)
+            } else {
+                (0, 0, Vec::new())
+            }
+        };
         Self { w, h, px }
     }
     #[inline]
@@ -83,6 +107,9 @@ impl Image {
     /// Resample `self` into a `w`×`h` image through `m` (maps source pixels → destination pixels).
     /// Uses bilinear filtering, with a box pre-filter (mip level) when minifying by more than 2×.
     pub fn transformed(&self, w: usize, h: usize, m: &Affine) -> Image {
+        if self.w == 0 || self.h == 0 || w == 0 || h == 0 {
+            return Image::new(w, h);
+        }
         let Some(inv) = m.inverse() else { return Image::new(w, h) };
         // minification factor
         let sx = (m.a * m.a + m.b * m.b).sqrt();
@@ -92,6 +119,9 @@ impl Image {
             let half = self.downsample2();
             let m2 = m.then_apply(&Affine::scale(2.0, 2.0));
             return half.transformed(w, h, &m2);
+        }
+        if w == 0 || h == 0 {
+            return Image::new(0, 0);
         }
         let mut out = Image::new(w, h);
         // Destination bounds of the source rect, to skip empty rows/cols.
@@ -119,6 +149,9 @@ impl Image {
 
     /// Half-size box downsample.
     pub fn downsample2(&self) -> Image {
+        if self.w == 0 || self.h == 0 {
+            return Image::new(0, 0);
+        }
         let (w, h) = ((self.w / 2).max(1), (self.h / 2).max(1));
         let mut out = Image::new(w, h);
         out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
@@ -161,6 +194,9 @@ impl Image {
 
     /// Apply a per-pixel function on straight-alpha colour (alpha preserved).
     pub fn map_rgb(&mut self, f: impl Fn([f32; 3], usize, usize) -> [f32; 3] + Sync) {
+        if self.w == 0 || self.h == 0 {
+            return;
+        }
         let w = self.w;
         self.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
             for x in 0..w {
@@ -179,6 +215,9 @@ impl Image {
 
     /// Convert to straight sRGB RGBA8.
     pub fn to_rgba8(&self) -> Vec<u8> {
+        if self.w == 0 || self.h == 0 {
+            return Vec::new();
+        }
         let mut out = vec![0u8; self.w * self.h * 4];
         out.par_chunks_mut(self.w * 4).zip(self.px.par_chunks(self.w * 4)).for_each(|(o, s)| filmcraft_frame::linear_premul_to_srgb8(s, o));
         out
@@ -186,13 +225,36 @@ impl Image {
 
     /// Opaque version over black (for monitors).
     pub fn over_black_rgba8(&self) -> Vec<u8> {
+        if self.w == 0 || self.h == 0 {
+            return Vec::new();
+        }
+        let mut out = vec![0u8; self.w * self.h * 4];
+        let lut = filmcraft_color::linear_to_srgb_u8_table();
+        out.par_chunks_mut(self.w * 4).zip(self.px.par_chunks(self.w * 4)).for_each(|(o, s)| {
+            for (o, s) in o.as_chunks_mut::<4>().0.iter_mut().zip(s.as_chunks::<4>().0) {
+                o[0] = filmcraft_color::linear_to_srgb_u8_in(lut, s[0]);
+                o[1] = filmcraft_color::linear_to_srgb_u8_in(lut, s[1]);
+                o[2] = filmcraft_color::linear_to_srgb_u8_in(lut, s[2]);
+                o[3] = 255;
+            }
+        });
+        out
+    }
+
+    /// [`Self::over_black_rgba8`] with each pixel's alpha in the fourth byte: the color bytes are
+    /// the same (the sRGB of the premultiplied linear color), so the picture still shows over
+    /// black, and the alpha says where it is transparent.
+    pub fn over_black_with_alpha_rgba8(&self) -> Vec<u8> {
+        if self.w == 0 || self.h == 0 {
+            return Vec::new();
+        }
         let mut out = vec![0u8; self.w * self.h * 4];
         out.par_chunks_mut(self.w * 4).zip(self.px.par_chunks(self.w * 4)).for_each(|(o, s)| {
             for (o, s) in o.as_chunks_mut::<4>().0.iter_mut().zip(s.as_chunks::<4>().0) {
                 o[0] = filmcraft_color::linear_to_srgb_u8(s[0]);
                 o[1] = filmcraft_color::linear_to_srgb_u8(s[1]);
                 o[2] = filmcraft_color::linear_to_srgb_u8(s[2]);
-                o[3] = 255;
+                o[3] = (s[3].clamp(0.0, 1.0) * 255.0).round() as u8;
             }
         });
         out

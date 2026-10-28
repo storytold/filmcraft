@@ -133,7 +133,6 @@ pub(crate) fn read_bsi(r: &mut Bits) -> Result<Bsi> {
     } else {
         (fscod, r.read(2) as usize)
     };
-    let nblocks = BLOCKS[numblkscod & 3] as usize;
     let acmod = r.read(3) as usize;
     let lfeon = r.bit();
     r.skip(5 + 5); // bsid, dialnorm
@@ -149,81 +148,8 @@ pub(crate) fn read_bsi(r: &mut Bits) -> Result<Bsi> {
     if strmtyp == 1 && r.bit() {
         r.skip(16); // chanmap
     }
-    if r.bit() {
-        // mixing metadata
-        if acmod > 2 {
-            r.skip(2); // dmixmod
-        }
-        if acmod & 1 != 0 && acmod > 2 {
-            r.skip(6); // ltrtcmixlev, lorocmixlev
-        }
-        if acmod & 4 != 0 {
-            r.skip(6); // ltrtsurmixlev, lorosurmixlev
-        }
-        if lfeon && r.bit() {
-            r.skip(5); // lfemixlevcod
-        }
-        if strmtyp == 0 {
-            if r.bit() {
-                r.skip(6); // pgmscl
-            }
-            if acmod == 0 && r.bit() {
-                r.skip(6); // pgmscl2
-            }
-            if r.bit() {
-                r.skip(6); // extpgmscl
-            }
-            match r.read(2) {
-                1 => r.skip(5), // premixcmpsel, drcsrc, premixcmpscl
-                2 => r.skip(12),
-                // mixdeflen: the mixdata field (through mixdatafill) is mixdeflen + 2 bytes
-                3 => {
-                    let len = r.read(5) as usize;
-                    r.skip(8 * (len + 2));
-                }
-                _ => {}
-            }
-            if acmod < 2 {
-                if r.bit() {
-                    r.skip(14); // panmean, paninfo
-                }
-                if acmod == 0 && r.bit() {
-                    r.skip(14); // panmean2, paninfo2
-                }
-            }
-            if r.bit() {
-                // frame mixing configuration information
-                if numblkscod == 0 {
-                    r.skip(5);
-                } else {
-                    for _ in 0..nblocks {
-                        if r.bit() {
-                            r.skip(5);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if r.bit() {
-        // informational metadata
-        r.skip(5); // bsmod, copyrightb, origbs
-        if acmod == 2 {
-            r.skip(4); // dsurmod, dheadphonmod
-        }
-        if acmod >= 6 {
-            r.skip(2); // dsurexmod
-        }
-        if r.bit() {
-            r.skip(8); // mixlevel, roomtyp, adconvtyp
-        }
-        if acmod == 0 && r.bit() {
-            r.skip(8); // mixlevel2, roomtyp2, adconvtyp2
-        }
-        if fscod < 3 {
-            r.skip(1); // sourcefscod
-        }
-    }
+    skip_mixing_metadata(r, strmtyp, acmod, lfeon, numblkscod);
+    skip_informational_metadata(r, acmod, fscod);
     if strmtyp == 0 && numblkscod != 3 {
         r.skip(1); // convsync
     }
@@ -235,6 +161,92 @@ pub(crate) fn read_bsi(r: &mut Bits) -> Result<Bsi> {
         r.skip((l + 1) * 8); // addbsi
     }
     Ok(Bsi { strmtyp, fscod: rate_code, numblkscod })
+}
+
+/// Mixing metadata (mixmdate), when present.
+fn skip_mixing_metadata(r: &mut Bits, strmtyp: u8, acmod: usize, lfeon: bool, numblkscod: usize) {
+    if !r.bit() {
+        return;
+    }
+    let nblocks = BLOCKS[numblkscod & 3] as usize;
+    // mixing metadata
+    if acmod > 2 {
+        r.skip(2); // dmixmod
+    }
+    if acmod & 1 != 0 && acmod > 2 {
+        r.skip(6); // ltrtcmixlev, lorocmixlev
+    }
+    if acmod & 4 != 0 {
+        r.skip(6); // ltrtsurmixlev, lorosurmixlev
+    }
+    if lfeon && r.bit() {
+        r.skip(5); // lfemixlevcod
+    }
+    if strmtyp == 0 {
+        if r.bit() {
+            r.skip(6); // pgmscl
+        }
+        if acmod == 0 && r.bit() {
+            r.skip(6); // pgmscl2
+        }
+        if r.bit() {
+            r.skip(6); // extpgmscl
+        }
+        match r.read(2) {
+            1 => r.skip(5), // premixcmpsel, drcsrc, premixcmpscl
+            2 => r.skip(12),
+            // mixdeflen: the mixdata field (through mixdatafill) is mixdeflen + 2 bytes
+            3 => {
+                let len = r.read(5) as usize;
+                r.skip(8 * (len + 2));
+            }
+            _ => {}
+        }
+        if acmod < 2 {
+            if r.bit() {
+                r.skip(14); // panmean, paninfo
+            }
+            if acmod == 0 && r.bit() {
+                r.skip(14); // panmean2, paninfo2
+            }
+        }
+        if r.bit() {
+            // frame mixing configuration information
+            if numblkscod == 0 {
+                r.skip(5);
+            } else {
+                for _ in 0..nblocks {
+                    if r.bit() {
+                        r.skip(5);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Informational metadata (infomdate), when present.
+fn skip_informational_metadata(r: &mut Bits, acmod: usize, fscod: usize) {
+    if !r.bit() {
+        return;
+    }
+    // informational metadata
+    r.skip(5); // bsmod, copyrightb, origbs
+    if acmod == 2 {
+        r.skip(4); // dsurmod, dheadphonmod
+    }
+    if acmod >= 6 {
+        r.skip(2); // dsurexmod
+    }
+    if r.bit() {
+        r.skip(8); // mixlevel, roomtyp, adconvtyp
+    }
+    if acmod == 0 && r.bit() {
+        r.skip(8); // mixlevel2, roomtyp2, adconvtyp2
+    }
+    if fscod < 3 {
+        r.skip(1); // sourcefscod
+    }
 }
 
 /// The audio frame (§E2.2.3) and the state that runs from block to block within a syncframe.

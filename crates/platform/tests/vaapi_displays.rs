@@ -7,6 +7,7 @@
 //! Skips without ffmpeg (fixture generator) or without a VA-API driver.
 #![cfg(target_os = "linux")]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use common::*;
