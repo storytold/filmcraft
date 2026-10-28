@@ -170,6 +170,9 @@ fn mp4_faststart_preserves_video_and_audio_for_every_output() {
             let audio = src.audio(0, 12_000, 48_000).unwrap();
             assert_eq!(audio.channels.len(), 2);
             assert!(audio.channels.iter().all(|c| c.len() == 12_000 && c.iter().any(|v| v.abs() > 0.1)), "{mode}.{ext}: audible tone");
+            // A -6 dB sine has RMS near 0.35; allow for AAC loss and boundary transients.
+            let level = rms(&audio.channels);
+            assert!((0.2..0.5).contains(&level), "{mode}.{ext}: decoded tone RMS {level}");
         }
     }
 }
