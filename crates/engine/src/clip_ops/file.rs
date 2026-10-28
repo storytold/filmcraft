@@ -1,4 +1,4 @@
-use super::common::{collapse_history, item_rate, items_p, media_root};
+use super::common::{item_rate, items_p, media_root};
 use super::enabled::is_clip_item;
 use super::{
     AudioChannels, BTreeMap, BinEntry, EngineError, FrameRate, ItemId, ItemKind, Label, MediaClip, MediaRef, Project, Result, Session, Tick, TimeRange, Value,
@@ -25,48 +25,52 @@ pub(super) fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
     let channels = media_root(&s.project, first).and_then(|(_, m, _)| m.info.audio().map(|a| a.channels)).unwrap_or(2);
     let n_audio = media_root(&s.project, first)
         .map(|(_, m, _)| {
-            crate::commands::audio_placement_specs(m.interpret.audio_channels.as_ref().map_or(&[], |a| a.clips.as_slice()), m.info.audio_streams.len()).len()
+            let decodable: Vec<bool> = m.info.audio_streams.iter().map(|a| a.can_decode()).collect();
+            crate::commands::audio_placement_specs(m.interpret.audio_channels.as_ref().map_or(&[], |a| a.clips.as_slice()), &decodable).len()
         })
         .unwrap_or(1);
-    let n0 = s.history.undo.len();
     let name = pi.name.clone();
     let bin = s.project.root.parent_of(first).filter(|b| *b != s.project.root.id);
-    let seq = s.edit("New Sequence From Clip", |pr, st| {
-        let id = pr.new_sequence(&name, settings, 1, n_audio.max(1), bin);
-        if channels == 1
-            && let Some(q) = pr.sequence_mut(id)
-        {
-            q.settings.audio_master = AudioChannels::Stereo;
+    // one undo step; a placement that fails (media whose only audio can't be decoded, #2758) takes
+    // the new sequence back with it rather than leaving it empty
+    let (seq, placed) = s.edit_group("New Sequence From Clip", |s| {
+        let seq = s.edit("New Sequence From Clip", |pr, st| {
+            let id = pr.new_sequence(&name, settings, 1, n_audio.max(1), bin);
+            if channels == 1
+                && let Some(q) = pr.sequence_mut(id)
+            {
+                q.settings.audio_master = AudioChannels::Stereo;
+            }
+            st.active_sequence = Some(id);
+            if !st.open_sequences.contains(&id) {
+                st.open_sequences.push(id);
+            }
+            Ok(id)
+        })?;
+        let mut at = Tick::ZERO;
+        let mut placed = Vec::new();
+        for item in items {
+            let still = s.prefs.timeline.still_duration(item_rate(&s.project, item));
+            let Some(range) = item_range(&s.project, item, still) else { continue };
+            let tg = s.targeting();
+            let ids = place_item(
+                s,
+                crate::commands::ItemPlacement {
+                    item,
+                    range,
+                    at,
+                    vdest: tg.video_dest,
+                    adest: tg.audio_dest,
+                    insert: false,
+                    label: "New Sequence From Clip",
+                    audio_split: None,
+                },
+            )?;
+            at = s.active_sequence().map(|q| q.duration()).unwrap_or(at);
+            placed.extend(ids.iter().map(|c| c.0));
         }
-        st.active_sequence = Some(id);
-        if !st.open_sequences.contains(&id) {
-            st.open_sequences.push(id);
-        }
-        Ok(id)
+        Ok((seq, placed))
     })?;
-    let mut at = Tick::ZERO;
-    let mut placed = Vec::new();
-    for item in items {
-        let still = s.prefs.timeline.still_duration(item_rate(&s.project, item));
-        let Some(range) = item_range(&s.project, item, still) else { continue };
-        let tg = s.targeting();
-        let ids = place_item(
-            s,
-            crate::commands::ItemPlacement {
-                item,
-                range,
-                at,
-                vdest: tg.video_dest,
-                adest: tg.audio_dest,
-                insert: false,
-                label: "New Sequence From Clip",
-                audio_split: None,
-            },
-        )?;
-        at = s.active_sequence().map(|q| q.duration()).unwrap_or(at);
-        placed.extend(ids.iter().map(|c| c.0));
-    }
-    collapse_history(s, n0, "New Sequence From Clip");
     s.state.selection.clear();
     s.events.push(crate::Event::OpenSequence(seq));
     Ok(json!({"sequence": seq.0, "clips": placed}))
@@ -169,6 +173,7 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
                 channels: u64_p(p, "channels").unwrap_or(2).max(1) as u32,
                 codec: String::new(),
                 bits_per_sample: None,
+                decodable: true,
             })
             .into_iter()
             .collect(),
