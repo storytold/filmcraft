@@ -839,14 +839,16 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     // #1104: dropped past the last track, the clips go onto a new one; moved between
                     // tracks, a linked partner of the other kind stays on its own track (#1484)
                     let to = |tid| new_track.map_or_else(|| json!(move_dest(seq, start_track, tid, track_delta).unwrap_or(tid).0), |_| json!("new"));
+                    let copying = copy || mods.alt;
                     let mut seen = std::collections::HashSet::new();
                     let moves: Vec<Value> = clips
                         .iter()
                         .filter(|c| seen.insert(**c))
+                        // a partner that stays put would be copied onto itself, overwriting the original
+                        .filter(|c| !(copying && new_track.is_none() && offset == Tick::ZERO && seq.find_item(**c).is_some_and(|(tid, _)| !same_kind(seq, start_track, tid))))
                         .filter_map(|c| seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": to(tid), "time": (it.start + offset).max(Tick::ZERO).0})))
                         .collect();
                     // Option held while dropping copies (Premiere: Option-drag duplicates)
-                    let copying = copy || mods.alt;
                     let captions = track_select_drag_captions(app, copying, mods.command);
                     Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})))
                 }

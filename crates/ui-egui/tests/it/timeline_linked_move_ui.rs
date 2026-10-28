@@ -76,17 +76,25 @@ impl Driver {
 
     /// Press at `from`, move to `to` over `steps` frames (as a mouse does), release.
     fn drag(&mut self, from: Pos2, to: Pos2, steps: usize) {
+        self.drag_with(from, to, steps, egui::Modifiers::NONE);
+    }
+
+    /// As [`Self::drag`], with `modifiers` held throughout.
+    fn drag_with(&mut self, from: Pos2, to: Pos2, steps: usize, modifiers: egui::Modifiers) {
         let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
+        push(self, egui::Event::ModifiersChanged(modifiers));
         push(self, egui::Event::PointerMoved(from));
         self.frames(1);
-        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers });
         self.frames(1);
         for i in 1..=steps {
             push(self, egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
             self.frames(1);
         }
-        push(self, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        push(self, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers });
         self.frames(2);
+        push(self, egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        self.frames(1);
     }
 
     /// The clip named `name` on V1.
@@ -172,4 +180,34 @@ fn moving_a_linked_audio_clip_down_a_track_leaves_its_video_on_its_track() {
     assert_eq!(partner1.map(|(t, _)| t), below, "the audio clip went down one track");
     assert_eq!(d.span(city).0, video_start0, "a vertical drag leaves the video's time alone");
     assert_eq!(d.span(audio_clip).0, audio_start0, "and the audio's");
+}
+
+/// Option-dragging a linked pair up a track copies the grabbed clip there; the audio partner would
+/// land on itself, so it is not copied, and the original pair stays linked.
+#[test]
+fn an_option_drag_up_a_track_copies_the_clip_and_leaves_the_original_pair_alone() {
+    let mut d = Driver::demo();
+    d.exec("sequence.addTracks", json!({"video": 2, "audio": 2}));
+    d.frames(4);
+    let city = d.v1_clip(CITY);
+    let (video0, partner0) = tracks_of(&d, city);
+    let (audio_track0, audio_clip) = partner0.expect("the clip has linked audio");
+    let link0 = d.app().session.active_sequence().unwrap().find_item(ClipId(city)).unwrap().1.link;
+    let count = |d: &Driver| d.app().session.active_sequence().unwrap().all_tracks().map(|t| t.items.len()).sum::<usize>();
+    let before = count(&d);
+    // Option at the press grabs one side of a link, unless the pair is already selected
+    d.exec("timeline.select", json!({"clips": [city], "linked": true}));
+    let audio_span0 = d.span(audio_clip);
+    let (x0, x1, y) = d.edges(city);
+    let from = pos2((x0 + x1) / 2.0, y + 10.0);
+    d.drag_with(from, pos2(from.x, from.y - 34.0), 12, egui::Modifiers::ALT);
+    assert_eq!(count(&d), before + 1, "one clip was copied: the video clip");
+    let (video1, partner1) = tracks_of(&d, city);
+    assert_eq!(video1, video0, "the original video clip stays");
+    let (audio_track1, audio_clip1) = partner1.expect("the original pair is still linked");
+    assert_eq!((audio_track1, audio_clip1), (audio_track0, audio_clip), "the original audio clip is still there on its track");
+    assert_eq!(d.span(audio_clip), audio_span0, "and was not overwritten");
+    let seq = d.app().session.active_sequence().unwrap();
+    assert_eq!(seq.find_item(ClipId(audio_clip)).unwrap().1.link, link0, "with its link");
+    assert!(seq.video_tracks[1].items.iter().any(|i| i.name == CITY), "the copy is on the track above");
 }
