@@ -156,6 +156,8 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
   Recover unsaved changes from 2026-10-01 00:02:09?"*, with the buttons **Recover**, **Not Now** and
   **Discard**. Stale directories without a snapshot are removed. Journals of running sessions are
   never touched.
+- If discarding a recovery session fails, FilmCraft reports the error and keeps that session and
+  the remaining candidates in the recovery list for retry. Sessions already deleted stay removed.
 - Recovering loads the snapshot as an **unsaved** project with its original path, so Save writes
   over the original file. The recovered state goes into the new session's own journal before the old
   journal is deleted.

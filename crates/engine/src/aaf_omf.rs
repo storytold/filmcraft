@@ -130,6 +130,9 @@ fn dequantize(pcm: &[u8], channels: usize, bits: u16) -> Vec<Vec<f32>> {
     out
 }
 
+const MAX_EXPORT_AUDIO_CHANNELS: usize = 64;
+const MAX_EXPORT_AUDIO_SAMPLES: usize = 64 * 1024 * 1024;
+
 /// Decode a media range at `sample_rate` (planar).
 fn decode(s: &Session, need: &AudioNeed, sample_rate: u32) -> Result<Vec<Vec<f32>>> {
     let src = s
@@ -138,7 +141,12 @@ fn decode(s: &Session, need: &AudioNeed, sample_rate: u32) -> Result<Vec<Vec<f32
         .ok_or_else(|| EngineError::Other(format!("media {} is offline", need.path.as_deref().unwrap_or("?"))))?;
     let start = need.start.to_units_floor(sample_rate as i64);
     let frames = (need.end.to_units_floor(sample_rate as i64) - start).max(0) as usize;
-    let mut out: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); need.channels.max(1) as usize];
+    let ch = (need.channels.max(1) as usize).min(MAX_EXPORT_AUDIO_CHANNELS);
+    let total_samples = ch.checked_mul(frames).ok_or_else(|| EngineError::Other("audio export buffer size overflow".into()))?;
+    if total_samples > MAX_EXPORT_AUDIO_SAMPLES {
+        return Err(EngineError::Other(format!("audio export buffer size {total_samples} samples exceeds maximum allowed ({MAX_EXPORT_AUDIO_SAMPLES})")));
+    }
+    let mut out: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); ch];
     let chunk = sample_rate as usize * 10;
     let mut done = 0usize;
     while done < frames {

@@ -163,6 +163,29 @@ fn make_offline_shows_the_slate_until_relinked() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(unix)]
+#[test]
+fn relink_search_does_not_follow_directory_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let root = tmp_dir("relink-no-symlink-walk");
+    let inside = root.join("inside");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(inside.join("kept.mov"), b"kept").unwrap();
+    std::fs::write(outside.join("outside.mov"), b"outside").unwrap();
+    symlink(&outside, inside.join("loop")).unwrap();
+    symlink(outside.join("outside.mov"), inside.join("linked.mov")).unwrap();
+
+    let index = crate::relink::index_folder(&inside, 20_000);
+    assert!(index.contains_key("kept.mov"));
+    assert!(!index.contains_key("outside.mov"));
+    // a symlinked file is still media the user can relink to
+    assert!(index.contains_key("linked.mov"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // Regression test for issue #110: after `file.import` re-imports a file at a path the project
 // already listed as offline, `s.offline.missing` must drop that item so the slate and the
 // "Media missing" badge clear without reopening the project. Before the fix (the patch in

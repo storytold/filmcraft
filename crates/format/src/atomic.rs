@@ -28,11 +28,21 @@ fn parent_dir(path: &Path) -> PathBuf {
 /// `fsync` the directory so the rename itself survives a power cut. If anything fails the temp file
 /// is removed and `path` is untouched.
 pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
+    // `rename` replaces the inode, so a new staging file must inherit an existing project's
+    // access mode instead of silently broadening a private file to the process default.
+    let permissions = match fs::metadata(path) {
+        Ok(meta) => Some(meta.permissions()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
     let tmp = temp_path(path);
     let r = (|| {
         {
             // closed before the rename
             let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+            if let Some(permissions) = permissions.as_ref() {
+                f.set_permissions(permissions.clone())?;
+            }
             f.write_all(data)?;
             f.sync_all()?;
         }
@@ -65,8 +75,9 @@ fn atomic_write_new_with(path: &Path, write: impl FnOnce(&mut File) -> io::Resul
     #[cfg(unix)]
     let mut staged = {
         use std::os::unix::fs::PermissionsExt;
-        // Match ordinary file-creation permissions after the process umask.
-        tempfile::Builder::new().permissions(fs::Permissions::from_mode(0o666)).tempfile_in(&dir)?
+        // Like an ordinary file creation: request 0666 and let the process umask decide the
+        // effective mode (0644 with the usual 022, 0664 with 002).
+        tempfile::Builder::new().permissions(fs::Permissions::from_mode(0o666)).tempfile_in(&dir)? // NOSONAR
     };
     #[cfg(not(unix))]
     let mut staged = tempfile::NamedTempFile::new_in(&dir)?;
@@ -118,6 +129,21 @@ mod tests {
         assert_eq!(fs::read(&p).unwrap(), b"good");
         let tmp_left = fs::read_dir(&d).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp")).count();
         assert_eq!(tmp_left, 0);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_preserves_existing_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let d = tmpdir("permissions");
+        let p = d.join("private.fcproj");
+        fs::write(&p, b"before").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        atomic_write(&p, b"after").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"after");
+        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         fs::remove_dir_all(&d).unwrap();
     }
 

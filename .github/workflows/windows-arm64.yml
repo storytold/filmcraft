@@ -4,19 +4,18 @@
 # out for now: PdfCraft saw an intermittent access violation in egui UI tests there.)
 name: Windows ARM64
 
+# The package build takes about 15 minutes, so it runs nightly on main and on pushes to `release`
+# rather than on every push to main: a dependency or runner-image change still shows up within a
+# day. PRs that change the Windows packaging itself still run it.
 on:
+  schedule:
+    - cron: "41 4 * * *"
   push:
-    branches: [main]
+    branches: [release]
   pull_request:
     paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "**/Cargo.toml"
-      - "**/build.rs"
       - .github/workflows/windows-arm64.yml
       - packaging/windows/**
-  schedule:
-    - cron: "41 4 * * 1" # weekly, so drift in the runner images shows up
   workflow_dispatch:
 
 concurrency:
@@ -28,8 +27,10 @@ permissions:
 
 jobs:
   windows-arm64:
-    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
-    uses: storytold/craft-common-actions/.github/workflows/windows-arm64.yml@main
+    # Immutable supporting workflow revision until the new install contract lands upstream.
+    uses: storytold/craft-common-actions/.github/workflows/windows-arm64.yml@8bb4e5ab95443171104ad88113fe1ef9b0e5ce3f
     with:
       app-name: filmcraft
       app-dir: FilmCraft
+      install-relative-path: Programs/ArtCraft/FilmCraft
+      install-scope: perUser

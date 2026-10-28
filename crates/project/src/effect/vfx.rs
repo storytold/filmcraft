@@ -6,7 +6,10 @@
 //! our own where the reference does not pin them. Pixel implementations live in
 //! `filmcraft_render::vfx`.
 
-use super::*;
+use super::{
+    ADJUST, BLUR, COLOR_CORR, DISTORT, EffectDef, EffectKind, GENERATE, IMAGE_CONTROL, KEYING, PERSPECTIVE, ParamDef, ParamKind, ParamValue, STYLIZE,
+    TRANSFORM, VIDEO, ang, b, ch, col, f, fs, grp, pt, txt, video,
+};
 
 const IMMERSIVE: &[&str] = &["Video Effects", "Immersive Video"];
 pub(super) const LIGHTS: &[&str] = &["Video Effects", "Lights & Glows"];
@@ -1163,6 +1166,8 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effect::find_effect_by_name;
+    use crate::{effect_defs, find_effect};
 
     /// Premiere 26's Video Effects bin: every effect, in its folder (names are functional facts).
     const CATALOGUE: &[(&str, &[&str])] = &[
