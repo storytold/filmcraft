@@ -352,13 +352,13 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
             // `pressed`, so the pan starts from where the button went down
             _ if resp.drag_started_by(egui::PointerButton::Middle) => {
                 let last = ctx.input(|i| i.pointer.press_origin()).unwrap_or(p);
-                Some(Drag::Pan { last, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll })
+                Some(Drag::Pan { last, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll, start_a: app.ui.timeline.a_scroll, in_audio: p.y >= layout.split_y })
             }
             (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
             (_, Grab::Other(Hit::WorkArea { edge })) => {
                 seq.work_area.filter(|_| resp.drag_started()).map(|w| Drag::WorkArea { edge, from: t, start: w.start, end: w.end() })
             }
-            (Tool::Hand, _) => Some(Drag::Pan { last: p, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll }),
+            (Tool::Hand, _) => Some(Drag::Pan { last: p, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll, start_a: app.ui.timeline.a_scroll, in_audio: p.y >= layout.split_y }),
             (Tool::Zoom, _) => {
                 if resp.clicked() {
                     let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
@@ -526,11 +526,12 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                         let _ = app.session.execute("edit.undo", json!({}));
                     }
                 }
-                Drag::Pan { start_scroll, start_v, .. } => {
+                Drag::Pan { start_scroll, start_v, start_a, .. } => {
                     let v = &mut app.ui.timeline;
                     v.target_scroll = start_scroll;
                     v.scroll = start_scroll;
                     v.v_scroll = start_v;
+                    v.a_scroll = start_a;
                 }
                 // the live box (#1028) already changed the selection: put back the one the drag began with
                 Drag::Marquee { before, .. } => {
@@ -560,13 +561,18 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                 app.session.set_playhead(tt);
                 Some(Drag::Scrub { initial })
             }
-            Drag::Pan { last, start_scroll, start_v } => {
+            Drag::Pan { last, start_scroll, start_v, start_a, in_audio } => {
                 let dx = p.x - last.x;
                 let v = &mut app.ui.timeline;
                 v.target_scroll = (v.target_scroll - dx as f64 / v.pps).max(0.0);
                 v.scroll = v.target_scroll;
-                app.ui.timeline.v_scroll += p.y - last.y;
-                Some(Drag::Pan { last: p, start_scroll, start_v })
+                // Route vertical delta to the scroll area where the drag began (#2536).
+                if in_audio {
+                    app.ui.timeline.a_scroll -= p.y - last.y;
+                } else {
+                    app.ui.timeline.v_scroll += p.y - last.y;
+                }
+                Some(Drag::Pan { last: p, start_scroll, start_v, start_a, in_audio })
             }
             Drag::Move { clips, grab_tick, start_track, .. } => {
                 let raw = rate.snap_nearest(t_here - grab_tick);

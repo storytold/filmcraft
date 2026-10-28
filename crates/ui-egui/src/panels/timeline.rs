@@ -231,6 +231,9 @@ pub enum Drag {
         last: Pos2,
         start_scroll: f64,
         start_v: f32,
+        start_a: f32,
+        /// Whether the drag started in the audio half of the timeline (#2536).
+        in_audio: bool,
     },
     /// Box selection, shown live: `before` is the selection when the drag began, which Shift or
     /// Ctrl (`add`) keep; the release commits one `timeline.select`.
