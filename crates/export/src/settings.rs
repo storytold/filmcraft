@@ -595,7 +595,7 @@ impl ExportSettings {
             _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or_else(|| (u64::from(target) * 3 / 2).min(u64::from(u32::MAX)) as u32),
         };
         let keyint = self.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (fps * 2.0).round().max(1.0) as u32);
-        let (sample_rate, channels) = self.audio.resolve(seq_audio.into());
+        let (sample_rate, channels) = self.output_audio(seq_audio.into());
         Resolved { width: w, height: h, rate, sample_rate, channels, target_kbps: target, max_kbps: max, keyint }
     }
 
@@ -610,6 +610,22 @@ impl ExportSettings {
     }
 
     /// The audio codec actually used.
+    /// The output (sample rate, channels) for a source with `src` audio ([`AudioSettings::resolve`]),
+    /// except that AAC, which stores only the 13 MPEG-4 rates up to 96 kHz, takes a source rate it
+    /// can't store (a 192 kHz sequence under Match Source or an unset rate) at the nearest of those
+    /// below it instead of failing the export. A rate chosen explicitly is left for the encoder to refuse.
+    pub fn output_audio(&self, src: SourceAudio) -> (u32, u32) {
+        let (rate, channels) = self.audio.resolve(src);
+        let from_source = self.audio.match_source || self.audio.sample_rate.is_none();
+        if from_source && self.audio_codec() == AudioCodec::Aac && filmcraft_aac::sample_rate_index(rate).is_none() {
+            // SAMPLE_RATES runs from highest to lowest
+            let aac =
+                filmcraft_aac::SAMPLE_RATES.iter().copied().find(|r| *r <= rate).or_else(|| filmcraft_aac::SAMPLE_RATES.last().copied()).unwrap_or(48_000);
+            return (aac, channels);
+        }
+        (rate, channels)
+    }
+
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
             (Format::Flac, _) => AudioCodec::Flac,

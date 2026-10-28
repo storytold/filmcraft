@@ -1459,3 +1459,40 @@ fn wav_export_with_audio_match_source_writes_the_sequence_rate() {
     assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 2, "stereo");
     assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 48_000);
 }
+
+/// AAC stores only the MPEG-4 rates up to 96 kHz: a 192 kHz sequence under Audio ▸ Match Source
+/// (the default preset) exports AAC at 96 kHz instead of failing in the encoder; a rate the AAC
+/// can store, and every rate for PCM, still follows the sequence.
+#[test]
+fn aac_match_source_takes_a_rate_aac_can_store() {
+    let (project, sequence, sources) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let mut p = (*project).clone();
+    p.sequence_mut(sequence).unwrap().settings.sample_rate = 192_000;
+    let project = Arc::new(p);
+    let seq = project.sequence(sequence).unwrap().settings.clone();
+    let dir = Scratch::new("aac-match-source-192k");
+    let settings = ExportSettings {
+        path: dir.path("m.mp4"),
+        audio: AudioSettings { match_source: true, ..Default::default() },
+        range: Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4))),
+        ..Default::default()
+    };
+    assert_eq!(settings.audio_codec(), AudioCodec::Aac);
+    assert_eq!(settings.resolve(64, 36, FrameRate::FPS_24, &seq).sample_rate, 96_000);
+    export(&project, sequence, &settings, &sources, &Progress::default()).unwrap();
+    if let Some(probe) = ffprobe_json(&["-show_streams", "-select_streams", "a"], &settings.path) {
+        assert_eq!(probe["streams"][0]["sample_rate"], "96000");
+    }
+    // an unset rate is the sequence's too
+    let unset = ExportSettings { audio: AudioSettings { sample_rate: None, ..Default::default() }, ..settings.clone() };
+    assert_eq!(unset.resolve(64, 36, FrameRate::FPS_24, &seq).sample_rate, 96_000);
+    // a rate between the AAC ones takes the one below; a storable one is kept; PCM keeps any rate
+    for (src, want) in [(50_000, 48_000), (44_100, 44_100), (4_000, 7_350)] {
+        assert_eq!(settings.output_audio(SourceAudio::from(src)).0, want, "{src}");
+    }
+    let wav = ExportSettings { format: Format::Wav, ..settings.clone() };
+    assert_eq!(wav.resolve(64, 36, FrameRate::FPS_24, &seq).sample_rate, 192_000);
+    // an explicit unsupported rate is still refused, not substituted
+    let explicit = ExportSettings { audio: AudioSettings { sample_rate: Some(192_000), ..Default::default() }, ..settings };
+    assert_eq!(explicit.resolve(64, 36, FrameRate::FPS_24, &seq).sample_rate, 192_000);
+}
