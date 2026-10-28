@@ -3,7 +3,7 @@
 use crate::bits::{Counter, Sink, Writer};
 use crate::dct::fdct8x8;
 use crate::header::{FRAME_ID, FrameHeader, PictureHeader, row_slice_widths};
-use crate::tables::*;
+use crate::tables::{DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_PROGRESSIVE, qscale};
 use crate::{AlphaType, ChromaFormat, ColorInfo, Error, Frame, Interlace, Profile, Result};
 
 /// Encoder configuration.

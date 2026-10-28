@@ -40,7 +40,9 @@ Existing commands that only lacked their Premiere key were added to the table to
 Project, Import from Media Browser, Get Media File Properties, Paste Attributes, Find, Edit
 Original, Make Subclip, Audio Channels, the Graphics New Layer / Arrange / Select Layer commands,
 Program monitor Show Rulers / Show Guides / Snap / Lock Guides, New Bin From Selection, Paste and
-Paste Insert in the Timeline, the Audio Track Mixer Loop).
+Paste Insert in the Timeline, the Audio Track Mixer Loop). The Audio Track Mixer menu's
+Show/Hide Tracks… and Meter Input(s) Only are the commands `mixer.showHideTracks` and
+`mixer.meterInputOnly`, on Cmd+Alt+T and Ctrl+Shift+I with the Audio Track Mixer focused.
 
 FilmCraft Default keeps its own keys where they differ (Shift+E is Clip ▸ Enable there, so Export
 Frame has no default key; the Premiere preset moves Shift+E to Export Frame and Enable to ⇧⌘E).
@@ -54,7 +56,6 @@ Frame has no default key; the Premiere preset moves Shift+E to Export Frame and 
 | Change Draw Mode (⌥⌘L) | Premiere's shape draw modes for the Pen/shape tools; FilmCraft's shape tools have no draw modes. |
 | Production panel: New Project, New Folder, Close Project, Make a Copy, Move Selection Home/End/Page Up/Page Down, Move To Trash, Open Project, Zoom In/Out (12 keys) | Productions (shared multi-project folders) are not implemented; there is no Production panel. |
 | Search panel: Open in Source Monitor (⇧O) | No separate Search panel; Open Search (⇧⌘F) focuses the Project panel search. |
-| Audio Track Mixer: Show/Hide Tracks… (⌥⌘T), Meter Input(s) Only (⌃⇧I) | The mixer has no track visibility dialog and no input metering (no hardware input recording). |
 | Effect Controls: Remove Selected Effect (Delete), Loop During Audio-Only Playback (⌘L) | Effect Controls has no effect selection state and no audio-only playback mode; effects are removed from their context menu or `effects.remove`. |
 | Effects panel: New Custom Bin (⌘/), Delete Custom Item (Delete) | The Effects panel has no custom bins (effect presets live in the Presets bin). |
 | Media Browser: Select Directory List / Select Media List (⇧← / ⇧→) | The directory tree and media list take no separate keyboard focus. |

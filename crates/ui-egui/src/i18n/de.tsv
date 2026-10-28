@@ -348,6 +348,7 @@
 	Show Active Caption Tracks Only	Nur aktive Untertitelspuren anzeigen
 	Show All Caption Tracks	Alle Untertitelspuren anzeigen
 	Show All Marker Colors	Alle Markerfarben anzeigen
+	Show Duplicate Frame Markers	Markierungen für doppelte Frames anzeigen
 	Show Guides	Hilfslinien anzeigen
 	Show Rulers	Lineale anzeigen
 	Show Through Edits	Durchgehende Schnitte anzeigen
@@ -3469,8 +3470,8 @@
 	Commits	Commits
 	% of all commits	% aller Commits
 	Lines +/−	Zeilen +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Audioausgabe fehlgeschlagen: Wiedergabe ohne Ton (prüfe Voreinstellungen ▸ Audiohardware)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Audioausgabe reagiert nicht: Wiedergabe ohne Ton (prüfe Voreinstellungen ▸ Audiohardware)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Audioausgabe fehlgeschlagen: Wiedergabe ohne Ton (prüfe Voreinstellungen > Audiohardware)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	Audioausgabe reagiert nicht: Wiedergabe ohne Ton (prüfe Voreinstellungen > Audiohardware)
 	Clip Speed / Duration	Clipgeschwindigkeit/-dauer
 	Speed:	Geschwindigkeit:
 	Reverse Speed	Rückwärts abspielen

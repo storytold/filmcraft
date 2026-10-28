@@ -191,7 +191,7 @@ fn run(app: &mut FilmcraftApp, acts: Vec<(&str, Value)>) {
 /// The level next to the pointer while dragging: one line, always as wide, so it does not jump.
 fn tip(ui: &egui::Ui, db: f64) {
     let text = if db <= FADER_MIN_DB { format!("{:>7} dB", "-∞") } else { format!("{db:>+7.2} dB") };
-    egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new("tl-volume-tip"), egui::PopupAnchor::Pointer).show(|ui| {
+    egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique("tl-volume-tip"), egui::PopupAnchor::Pointer).show(|ui| {
         ui.add(egui::Label::new(egui::RichText::new(text).font(Tokens::mono(12.0))).wrap_mode(egui::TextWrapMode::Extend));
     });
 }
@@ -205,8 +205,9 @@ struct KeyDrag {
     begun: bool,
 }
 
+/// Single stable id for the in-flight audio keyframe drag; interaction runs above the clips.
 fn key_drag_id() -> egui::Id {
-    egui::Id::new("tl-volume-key-drag")
+    egui::Id::unique("tl-volume-key-drag")
 }
 
 /// The keyframes on the lines of the audio clips in view: drag one in time and level, right-click
@@ -256,7 +257,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                     continue;
                 }
                 let kr = Rect::from_center_size(c, vec2(11.0, 11.0));
-                let resp = ui.interact(kr, egui::Id::new(("tl-volume-kf", it.id.0, i)), Sense::click_and_drag());
+                let resp = ui.interact(kr, egui::Id::unique(("tl-volume-kf", it.id.0, i)), Sense::click_and_drag());
                 app.auto.add(&format!("timeline.clip.{}.volume.kf.{i}", it.id.0), kr, "Volume keyframe");
                 let mine = held.filter(|h| h.clip == it.id && h.index == i);
                 if resp.hovered() || mine.is_some() {

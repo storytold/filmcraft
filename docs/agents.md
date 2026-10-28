@@ -38,19 +38,29 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 { "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
 ```
 
+### Effect parameter replies
+
+`effects.setParam` returns `{"keyframes": n, "param": id, "value": value}` on success.
+The keyframe count is zero for a static parameter: this is a successful static edit,
+not a failure. `param` identifies the edited parameter and `value` reports the accepted
+value; a choice supplied by name is returned as its numeric option index. An animated
+edit reports the value written at the requested time, rather than the static fallback.
+For example, setting opacity `blend` to `"Screen"` returns
+`{"keyframes": 0, "param": "blend", "value": 8}`.
+
 ### From an installed release
 
 The release packages ship `filmcraft-cli` alongside the desktop app, so no build is needed:
 
 | Install | CLI |
 |---|---|
-| Windows (MSI) | `C:\Program Files\FilmCraft\filmcraft-cli.exe` by default (wherever you installed it otherwise), not on `PATH` |
+| Windows (MSI) | `%LOCALAPPDATA%\Programs\ArtCraft\FilmCraft\filmcraft-cli.exe` by default (`C:\Program Files\ArtCraft\FilmCraft\filmcraft-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
 | Linux (deb, rpm) | `/usr/bin/filmcraft-cli` |
 | macOS | the separate `filmcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
 
 ```sh
-# Windows, default install folder
-claude mcp add filmcraft -- "C:\Program Files\FilmCraft\filmcraft-cli.exe" mcp
+# Windows (PowerShell), default install folder
+claude mcp add filmcraft -- "$env:LOCALAPPDATA\Programs\ArtCraft\FilmCraft\filmcraft-cli.exe" mcp
 # Linux, or macOS with the CLI unzipped onto PATH
 claude mcp add filmcraft -- filmcraft-cli mcp
 ```
