@@ -205,8 +205,9 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let num = ui.add(egui::Button::new(egui::RichText::new(format!("{}", n + 1)).size(11.0).color(t.text_dim)).frame(false));
                         app.auto.add(&format!("text.captions.{}.goto", c.id.0), num.rect, "Go to caption");
                         if num.clicked() {
-                            if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
-                                actions.push(("captions.select".into(), json!({"captions": [c.id.0], "add": true})));
+                            let mods = ui.input(|i| i.modifiers);
+                            if let Some(p) = list_click(c.id.0, mods) {
+                                actions.push(("captions.select".into(), p));
                             } else {
                                 actions.push(("captions.goTo".into(), json!({"caption": c.id.0})));
                             }
@@ -260,8 +261,13 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         app.auto.add(&format!("text.captions.{}.text", c.id.0), resp.rect, "Caption text");
                         if resp.has_focus() {
                             ui.data_mut(|d| d.insert_temp(key, buf.clone()));
-                            if !selected {
-                                actions.push(("captions.select".into(), json!({"captions": [c.id.0]})));
+                            // Shift / Cmd-click on the text extends the selection like the number does
+                            let mods = ui.input(|i| i.modifiers);
+                            match list_click(c.id.0, mods) {
+                                Some(p) if resp.gained_focus() => actions.push(("captions.select".into(), p)),
+                                Some(_) => {}
+                                None if !selected => actions.push(("captions.select".into(), json!({"captions": [c.id.0]}))),
+                                None => {}
                             }
                         } else {
                             ui.data_mut(|d| d.remove::<String>(key));
@@ -298,6 +304,28 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     });
     run(app, ui, actions);
+}
+
+/// The selection a modified click on caption `id` in the Captions list makes: Shift selects the
+/// range from the last selected caption, Cmd/Ctrl adds the one caption (Premiere's list rules).
+/// `None` for a plain click.
+fn list_click(id: u64, mods: egui::Modifiers) -> Option<Value> {
+    if mods.shift {
+        Some(json!({"captions": [id], "range": true}))
+    } else if mods.command {
+        Some(json!({"captions": [id], "add": true}))
+    } else {
+        None
+    }
+}
+
+/// The caption track the Captions tab shows: the one picked in its track menu, else the one
+/// holding the first selected caption, else C1.
+pub fn shown_caption_track(app: &FilmcraftApp, ctx: &egui::Context) -> Option<filmcraft_project::TrackId> {
+    let seq = app.session.active_sequence()?;
+    let by_sel = app.session.state.caption_selection.first().and_then(|c| seq.caption_tracks.iter().position(|tr| tr.caption(*c).is_some())).unwrap_or(0);
+    let idx = ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("text-cap-track"))).filter(|i| *i < seq.caption_tracks.len()).unwrap_or(by_sel);
+    seq.caption_tracks.get(idx).map(|t| t.id)
 }
 
 /// A text layer of a graphic clip in the active sequence, for the Graphics tab.

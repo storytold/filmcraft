@@ -452,6 +452,7 @@
 	All Empty Tracks	Alle leeren Spuren
 	Caption Tracks	Untertitelspuren
 	Delete Caption Tracks	Untertitelspuren löschen
+	Select All Captions on Track	Alle Untertitel der Spur auswählen
 	Delete Caption Track	Untertitelspur löschen
 	Delete Empty Caption Tracks	Leere Untertitelspuren löschen
 	Version {version}	Version {version}

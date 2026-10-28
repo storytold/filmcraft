@@ -29,6 +29,18 @@ pub fn rows(area: Rect, n: usize) -> Vec<Rect> {
     (0..n).map(|i| Rect::from_min_size(pos2(area.min.x, area.min.y + i as f32 * ROW_H), vec2(area.width(), ROW_H))).collect()
 }
 
+/// The captions Track Select takes from time `t`: on every unlocked caption track, those ending
+/// after `t` (forward) or starting before it (backward), as it does with clips.
+pub fn captions_from(seq: &Sequence, t: Tick, forward: bool) -> Vec<ClipId> {
+    seq.caption_tracks
+        .iter()
+        .filter(|tr| !tr.locked)
+        .flat_map(|tr| tr.captions.iter())
+        .filter(|c| if forward { c.end() > t } else { c.start < t })
+        .map(|c| c.id)
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Gesture {
     Move,
@@ -92,15 +104,20 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
         painter.rect_filled(badge, 3.0, if tr.enabled { FILL } else { t.field_bg });
         painter.text(badge.center(), Align2::CENTER_CENTER, &label, Tokens::semibold(10.5), Color32::WHITE);
         app.auto.add(&format!("timeline.captionTrack.{label}"), badge, &tr.name);
-        // right-click the header: delete this track or every empty caption track (registered
-        // before the lock / eye toggles so those stay on top)
+        // right-click the header: select every caption on this track, delete this track or every
+        // empty caption track (registered before the lock / eye toggles so those stay on top)
         let hresp = ui.interact(hrect, egui::Id::unique(("cap-header", tr.id.0)), Sense::click());
         hresp.context_menu(|ui| {
             for (key, text, cmd, p) in [
+                ("selectAll", tl!("Select All Captions on Track"), "captions.selectTrack", json!({"track": tr.id.0})),
                 ("delete", tl!("Delete Caption Track"), "captions.deleteTrack", json!({"track": tr.id.0})),
                 ("deleteEmpty", tl!("Delete Empty Caption Tracks"), "sequence.deleteTracks", json!({"captions": "empty"})),
             ] {
-                let enabled = key != "deleteEmpty" || seq.caption_tracks.iter().any(|t| t.captions.is_empty());
+                let enabled = match key {
+                    "selectAll" => !tr.locked && !tr.captions.is_empty(),
+                    "deleteEmpty" => seq.caption_tracks.iter().any(|t| t.captions.is_empty()),
+                    _ => true,
+                };
                 let r = ui.add_enabled(enabled, egui::Button::new(text));
                 app.auto.add(&format!("timeline.captionTrack.{label}.menu.{key}"), r.rect, text);
                 if r.clicked() {

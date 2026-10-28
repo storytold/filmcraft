@@ -185,6 +185,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
+    // Select All with the Captions tab of the Text panel in focus takes every caption of the
+    // track it lists, as Premiere's does, rather than the whole sequence
+    if id == "edit.selectAll"
+        && app.ui.focused == PanelKind::Text
+        && app.ui.text_tab == "Captions"
+        && let Some(track) = crate::panels::text::shown_caption_track(app, ctx)
+    {
+        return invoke(app, ctx, "captions.selectTrack", json!({"track": track.0}));
+    }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));

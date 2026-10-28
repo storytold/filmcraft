@@ -69,6 +69,22 @@ fn caption_ids(s: &Session, p: &Value) -> Vec<ClipId> {
     s.active_sequence().and_then(|q| q.caption_tracks.iter().find_map(|tr| tr.caption_at(t).map(|c| c.id))).into_iter().collect()
 }
 
+/// Shift-click in the Captions list: every caption from the anchor (the last one selected) to
+/// `to`, on `to`'s track, in either direction. The anchor goes last so a further Shift-click
+/// ranges from the same caption, as list selection does everywhere. `None` when there is no anchor
+/// on that track, which the caller treats as a plain click.
+fn caption_range(s: &Session, to: ClipId) -> Option<Vec<ClipId>> {
+    let seq = s.active_sequence()?;
+    let anchor = *s.state.caption_selection.last()?;
+    let track = seq.caption_tracks.iter().find(|t| t.caption(to).is_some())?;
+    let a = track.captions.iter().position(|c| c.id == anchor)?;
+    let b = track.captions.iter().position(|c| c.id == to)?;
+    let (lo, hi) = (a.min(b), a.max(b));
+    let mut ids: Vec<ClipId> = track.captions.get(lo..=hi)?.iter().map(|c| c.id).filter(|c| *c != anchor).collect();
+    ids.push(anchor);
+    Some(ids)
+}
+
 fn one_caption(s: &Session, p: &Value, cmd: &str) -> Result<ClipId> {
     caption_ids(s, p).first().copied().ok_or_else(|| bad(cmd, "no caption (pass `caption` or select one)"))
 }
@@ -561,12 +577,17 @@ pub fn commands() -> Vec<CommandSpec> {
             let ids = caption_ids(s, p);
             delete(s, &ids, bool_p(p, "ripple").unwrap_or(false))
         }),
-        spec("captions.select", "Select Captions", &[], None, r#"{"captions":[id],"add":bool?}"#, has_seq, |s, p| {
+        spec("captions.select", "Select Captions", &[], None, r#"{"captions":[id],"add":bool?,"range":bool?}"#, has_seq, |s, p| {
             let ids: Vec<ClipId> =
                 p.get("captions").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(ClipId).collect()).unwrap_or_default();
             let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
             let ids: Vec<ClipId> = ids.into_iter().filter(|c| seq.find_caption(*c).is_some()).collect();
-            if bool_p(p, "add").unwrap_or(false) {
+            if bool_p(p, "range").unwrap_or(false)
+                && let Some(range) = ids.last().and_then(|c| caption_range(s, *c))
+            {
+                s.state.caption_selection = range;
+                s.state.selection.clear();
+            } else if bool_p(p, "add").unwrap_or(false) {
                 for c in ids {
                     if !s.state.caption_selection.contains(&c) {
                         s.state.caption_selection.push(c);
@@ -576,6 +597,18 @@ pub fn commands() -> Vec<CommandSpec> {
                 s.state.caption_selection = ids;
                 s.state.selection.clear();
             }
+            Ok(json!({"captions": s.state.caption_selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
+        }),
+        spec("captions.selectTrack", "Select All Captions on Track", &[], None, r#"{"track":id|"C1"?}"#, has_captions, |s, p| {
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.selectTrack", "no such caption track"))?;
+            let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+            let track = seq.caption_track(tid).ok_or_else(|| bad("captions.selectTrack", "no such caption track"))?;
+            if track.locked {
+                return Err(bad("captions.selectTrack", "the caption track is locked"));
+            }
+            let ids: Vec<ClipId> = track.captions.iter().map(|c| c.id).collect();
+            s.state.caption_selection = ids;
+            s.state.selection.clear();
             Ok(json!({"captions": s.state.caption_selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
         }),
         spec("captions.goTo", "Go to Caption", &[], None, r#"{"caption":id}"#, has_captions, |s, p| {

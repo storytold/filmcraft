@@ -224,3 +224,77 @@ fn captions_copy_cut_and_paste() {
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(caption_spans(&s).len(), 1);
 }
+
+/// Five one-second captions on C1, at 1 s, 3 s … 9 s; their ids in order.
+fn five_captions(s: &mut Session) -> Vec<ClipId> {
+    for (k, text) in ["one", "two", "three", "four", "five"].into_iter().enumerate() {
+        s.execute("captions.add", json!({"text": text, "seconds": 1.0 + 2.0 * k as f64, "durationSeconds": 1.0})).unwrap();
+    }
+    s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| c.id).collect()
+}
+
+fn selected(s: &Session) -> Vec<ClipId> {
+    let mut v = s.state.caption_selection.clone();
+    v.sort_unstable_by_key(|c| c.0);
+    v
+}
+
+/// There was no way to select every caption of a track at once, so Upgrade Caption to Graphic
+/// converted just the captions picked one by one. Select All Captions on Track feeds it them all.
+#[test]
+fn select_track_then_upgrade_converts_every_caption() {
+    let mut s = demo();
+    let ids = five_captions(&mut s);
+    s.execute("captions.selectTrack", json!({"track": "C1"})).unwrap();
+    assert_eq!(selected(&s), ids);
+    let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+    assert_eq!(r["upgraded"], 5, "{r}");
+    assert!(s.active_sequence().unwrap().caption_tracks[0].captions.is_empty());
+}
+
+/// Shift-click in the Captions list added the one caption, like Cmd-click; it now takes the range
+/// from the last caption selected, in either direction, keeping that anchor.
+#[test]
+fn shift_click_selects_a_range_of_captions() {
+    let mut s = demo();
+    let ids = five_captions(&mut s);
+    s.execute("captions.select", json!({"captions": [ids[0].0]})).unwrap();
+    s.execute("captions.select", json!({"captions": [ids[3].0], "range": true})).unwrap();
+    assert_eq!(selected(&s), ids[0..=3].to_vec());
+    // a second Shift-click ranges from the same anchor
+    s.execute("captions.select", json!({"captions": [ids[1].0], "range": true})).unwrap();
+    assert_eq!(selected(&s), ids[0..=1].to_vec());
+    // backwards
+    s.execute("captions.select", json!({"captions": [ids[4].0]})).unwrap();
+    s.execute("captions.select", json!({"captions": [ids[2].0], "range": true})).unwrap();
+    assert_eq!(selected(&s), ids[2..=4].to_vec());
+    // with nothing selected it is a plain click
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    s.execute("captions.select", json!({"captions": [ids[2].0], "range": true})).unwrap();
+    assert_eq!(selected(&s), vec![ids[2]]);
+    // Cmd-click still adds one
+    s.execute("captions.select", json!({"captions": [ids[4].0], "add": true})).unwrap();
+    assert_eq!(selected(&s), vec![ids[2], ids[4]]);
+}
+
+#[test]
+fn select_track_and_timeline_select_take_captions() {
+    let mut s = demo();
+    let ids = five_captions(&mut s);
+    let r = s.execute("captions.selectTrack", json!({"track": "C1"})).unwrap();
+    assert_eq!(r["captions"].as_array().unwrap().len(), 5);
+    assert_eq!(selected(&s), ids);
+    assert!(s.execute("captions.selectTrack", json!({"track": "C9"})).is_err());
+    // a box or Track Select over the caption rows passes them with the clips
+    s.execute("timeline.select", json!({"clips": [], "captions": [ids[1].0, ids[2].0]})).unwrap();
+    assert_eq!(selected(&s), vec![ids[1], ids[2]]);
+    s.execute("timeline.select", json!({"clips": [], "captions": [ids[4].0, 987_654], "add": true})).unwrap();
+    assert_eq!(selected(&s), vec![ids[1], ids[2], ids[4]], "unknown ids are dropped");
+    s.execute("timeline.select", json!({"clips": [], "captions": [ids[1].0], "toggle": true})).unwrap();
+    assert_eq!(selected(&s), vec![ids[2], ids[4]]);
+    // a plain clip click still clears the captions
+    s.execute("timeline.select", json!({"clips": []})).unwrap();
+    assert!(s.state.caption_selection.is_empty());
+    s.execute("captions.setTrack", json!({"track": "C1", "locked": true})).unwrap();
+    assert!(s.execute("captions.selectTrack", json!({"track": "C1"})).is_err(), "locked");
+}

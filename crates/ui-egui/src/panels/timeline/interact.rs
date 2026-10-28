@@ -122,6 +122,20 @@ fn marquee_clips(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId> {
         .collect()
 }
 
+/// What Track Select takes from `t` (forward or backward): the clips on every track, or only on
+/// `track` with Shift, and the captions too unless Shift keeps it to that one clip track.
+fn track_select(seq: &Sequence, track: TrackId, t: Tick, fwd: bool, only_track: bool) -> Value {
+    let ids: Vec<u64> = seq
+        .all_tracks()
+        .filter(|tr| !only_track || tr.id == track)
+        .flat_map(|tr| tr.items.iter())
+        .filter(|i| if fwd { i.end() > t } else { i.start < t })
+        .map(|i| i.id.0)
+        .collect();
+    let captions: Vec<u64> = if only_track { Vec::new() } else { crate::panels::timeline_captions::captions_from(seq, t, fwd).iter().map(|c| c.0).collect() };
+    json!({"clips": ids, "captions": captions})
+}
+
 /// A move previews the same track-lock restrictions as its eventual edit.
 fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Drag) -> bool {
     let clips = match drag {
@@ -394,15 +408,7 @@ fn start_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response
         }
         // a transition over a cut counts as its track, as the clips under it do
         (Tool::TrackSelectForward | Tool::TrackSelectBackward, Grab::Other(Hit::Clip { track, .. } | Hit::Transition { track, .. } | Hit::Empty { track })) => {
-            let fwd = tool == Tool::TrackSelectForward;
-            let ids: Vec<u64> = seq
-                .all_tracks()
-                .filter(|tr| !mods.shift || tr.id == track)
-                .flat_map(|tr| tr.items.iter())
-                .filter(|i| if fwd { i.end() > t } else { i.start < t })
-                .map(|i| i.id.0)
-                .collect();
-            let _ = app.session.execute("timeline.select", json!({"clips": ids}));
+            let _ = app.session.execute("timeline.select", track_select(seq, track, t, tool == Tool::TrackSelectForward, mods.shift));
             // as in Premiere Pro, a drag with the tool moves what it just selected
             if resp.drag_started() {
                 let clips = app.session.state.selection.clone();
