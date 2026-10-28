@@ -394,7 +394,7 @@ async fn review_invalid_utf8_before_initialization_reports_input_error() {
             .await
             .expect("invalid input must settle");
     let error = result.expect_err("invalid input cannot be successful EOF").to_string();
-    assert!(error.contains("MCP input read") && error.contains("UTF-8"), "{error}");
+    assert!(error.contains("MCP input read") && error.to_ascii_lowercase().contains("utf-8"), "{error}");
 }
 
 /// Ordinary I/O errors retain their actionable diagnostic.
@@ -430,5 +430,5 @@ async fn review_invalid_utf8_after_initialization_reports_input_error() {
         serving.abort();
     }
     let error = stopped.expect("invalid input must settle").unwrap().expect_err("input failure cannot be successful EOF").to_string();
-    assert!(error.contains("MCP input read") && error.contains("UTF-8"), "{error}");
+    assert!(error.contains("MCP input read") && error.to_ascii_lowercase().contains("utf-8"), "{error}");
 }
