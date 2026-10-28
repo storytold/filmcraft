@@ -104,7 +104,7 @@ fn slider_row(
 }
 
 fn combo(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, shown: &str, width: f32, add: impl FnOnce(&mut Ui)) {
-    let r = egui::ComboBox::from_id_salt(("captions", id)).selected_text(RichText::new(shown).size(13.0)).width(width).height(320.0).show_ui(ui, add);
+    let r = craft_ui::ComboBox::from_id_salt(("captions", id)).selected_text(RichText::new(shown).size(13.0)).width(width).height(320.0).show_ui(ui, add);
     app.auto.add(id, r.response.rect, label);
 }
 
@@ -134,7 +134,7 @@ fn save_prefs(app: &mut FilmcraftApp, f: impl FnOnce(&mut filmcraft_engine::tran
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.caption_dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("caption-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("caption-dialog-before-drag"), &mut d);
     let t = app.tokens;
     // Enter creates the captions, unless it is committing a number field or the preset name
     let field_focused = ctx.memory(|m| m.focused().is_some());
@@ -149,7 +149,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut save_as: Option<String> = None;
     let mut delete: Option<String> = None;
     let frame = Frame::new().fill(t.panel_bg).stroke(Stroke::new(1.0, t.separator)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(0));
-    egui::Modal::new(egui::Id::new("caption-dialog")).frame(frame).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("caption-dialog")).frame(frame).show(ctx, |ui| {
         ui.set_width(W);
         let (bar, _) = ui.allocate_exact_size(vec2(W, 30.0), Sense::hover());
         ui.painter().rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, t.header_bg);
@@ -220,7 +220,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             // ---- Captioning Preferences
             let (resp, open) = crate::widgets::section_header(
                 ui,
-                egui::Id::new("captions-prefs"),
+                egui::Id::unique("captions-prefs"),
                 tl!("Captioning Preferences (format, max/min length, lines)"),
                 !d.collapsed,
                 &t,
