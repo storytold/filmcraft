@@ -1,6 +1,11 @@
 //! Synchronized script rows, setup thumbnails, candles, and mark interactions.
 
-use super::*;
+use super::{
+    Action, Align2, Arc, CANDLE_CAP_H, Color32, DEFAULT_TEXT_INSET, FilmcraftApp, HashMap, ItemId, MIN_ROW_H, Rect, SCRIPT_FONT_SIZE, SLATE_GAP, ScriptColor,
+    ScriptDocument, ScriptLine, ScriptTake, Sense, Stroke, TAKE_HEADER_H, TAKE_NUMBER_H, TAKE_W, Tick, Tokens, candle_row_bounds, coverage_rows, first_visible,
+    json, pos2, recovery, row_layout, script_color, select_line, selected_range, selected_take_lines, shift_click, thumbnail_height, thumbnail_width,
+    toggle_offscreen, truncate, vec2,
+};
 
 struct SlateHeader<'a> {
     id: u64,
@@ -240,30 +245,13 @@ pub(super) fn content(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, doc
                 ui.painter().rect_filled(row.intersect(body), 0.0, t.hover.gamma_multiply(0.9));
             }
         }
-        // Each take has its own connector from its number box to its candle.
-        // During a drag, use the stepped preview rows so every connector stays attached.
-        for header in &slate_headers {
-            let Some(slate) = doc.slates.iter().find(|slate| slate.id.0 == header.id) else { continue };
-            let shown_index =
-                if app.ui.script.drag_slate == Some(header.id) { app.ui.script.drag_slate_target.unwrap_or(header.start_index) } else { header.start_index };
-            let Some(&shown_top) = tops.get(shown_index).or_else(|| tops.get(header.start_index)) else { continue };
-            let box_top = base_y + shown_top;
-            let preview_y = if app.ui.script.drag_slate == Some(header.id) && app.ui.script.drag_slate_group { app.ui.script.drag_slate_delta.y } else { 0.0 };
-            for (ordinal, take) in slate.takes.iter().enumerate() {
-                let Some(&center) = column_centers.get(header.first_column + ordinal) else { continue };
-                let Some((take_start, _)) = coverage_rows(&app.ui.script, take, &line_indices) else { continue };
-                let Some(&row_top) = tops.get(take_start) else { continue };
-                let cx = body.min.x + center - app.ui.script.take_scroll;
-                if cx < body.left() || cx > body.right() {
-                    continue;
-                }
-                let box_bottom = take_metadata_rect(cx, box_top - TAKE_HEADER_H).bottom();
-                let candle_top = base_y + row_top + preview_y;
-                if (box_bottom - candle_top).abs() > 1.0 {
-                    ui.painter().with_clip_rect(body).line_segment([pos2(cx, box_bottom), pos2(cx, candle_top)], Stroke::new(1.0, t.text_dim));
-                }
-            }
-        }
+        paint_take_connectors(
+            app,
+            ui,
+            doc,
+            &slate_headers,
+            ConnectorLayout { column_centers: &column_centers, line_indices: &line_indices, tops: &tops, base_y, body },
+        );
         for index in start..end {
             let (Some(line), Some(&y0), Some(&y1)) = (doc.lines.get(index), tops.get(index), tops.get(index + 1)) else { continue };
             let row = Rect::from_min_size(pos2(ui.max_rect().left(), base_y + y0), vec2(body.width().max(1.0), y1 - y0));
@@ -662,142 +650,11 @@ fn row_view(
             ui.close();
         }
     });
-    let label_y = left.center().y;
-    let mut scene_start = 6.0;
-    if app.ui.script.show_line_numbers.unwrap_or(true) {
-        let number = (index + 1).to_string();
-        let font = Tokens::ui(10.0);
-        scene_start += ui.painter().layout_no_wrap(number.clone(), font.clone(), t.text_dim).size().x + 5.0;
-        ui.painter().text(pos2(left.min.x + 6.0, label_y), Align2::LEFT_CENTER, number, font, t.text_dim.gamma_multiply(0.55));
-    }
-    let page_rect = Rect::from_min_size(pos2(left.max.x, left.min.y + 1.0), vec2(52.0, MIN_ROW_H - 2.0));
-    let scene_rect =
-        Rect::from_min_size(pos2(left.min.x + scene_start, left.min.y + 1.0), vec2((text_inset - scene_start - 4.0).clamp(1.0, 72.0), MIN_ROW_H - 2.0));
-    if app.ui.script.edit_page == Some(line.id.0) {
-        let response = ui.put(page_rect, egui::TextEdit::singleline(&mut app.ui.script.page_text).hint_text(tl!("Page")));
-        *foreground_click |= response.clicked();
-        if app.ui.script.label_focus == Some(2) {
-            response.request_focus();
-            app.ui.script.label_focus = None;
-        }
-        app.auto.add_response(&format!("script.page.{}.edit", line.id.0), &response, "Edit page label");
-        if response.lost_focus() || response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-            let page = app.ui.script.page_text.trim();
-            actions.push(Action::Command(
-                "script.setLabel",
-                json!({"item": app.ui.script.item, "line": line.id.0,
-                "scene": line.scene.as_deref(), "page": if page.is_empty() { None } else { Some(page) }}),
-            ));
-            app.ui.script.edit_page = None;
-        }
-    } else if let Some(page) = &line.page {
-        let response = ui
-            .put(
-                page_rect,
-                egui::Label::new(egui::RichText::new(format!("Pg {}", truncate(page, 3))).italics().color(t.text_dim).size(10.5)).sense(Sense::click()),
-            )
-            .on_hover_text(tl!("Double-click to edit Page"));
-        *foreground_click |= response.clicked();
-        app.auto.add(&format!("script.page.{}", line.id.0), response.rect, "Page label");
-        if response.double_clicked() {
-            select_line(&mut app.ui.script, line, false);
-            app.ui.script.edit_page = Some(line.id.0);
-            app.ui.script.label_focus = Some(2);
-        }
-    }
-    if app.ui.script.edit_scene == Some(line.id.0) {
-        let response = ui.put(scene_rect, egui::TextEdit::singleline(&mut app.ui.script.scene_text).hint_text(tl!("Scene")));
-        *foreground_click |= response.clicked();
-        if app.ui.script.label_focus == Some(1) {
-            response.request_focus();
-            app.ui.script.label_focus = None;
-        }
-        app.auto.add_response(&format!("script.scene.{}.edit", line.id.0), &response, "Edit scene label");
-        if response.lost_focus() || response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-            let scene = app.ui.script.scene_text.trim();
-            actions.push(Action::Command(
-                "script.setLabel",
-                json!({"item": app.ui.script.item, "line": line.id.0,
-                "scene": if scene.is_empty() { None } else { Some(scene) }, "page": line.page.as_deref()}),
-            ));
-            app.ui.script.edit_scene = None;
-        }
-    } else if let Some(scene) = &line.scene {
-        let response = ui
-            .put(
-                scene_rect,
-                egui::Label::new(egui::RichText::new(format!("Sc {scene}")).italics().color(t.text_dim).size(11.0)).truncate().sense(Sense::click()),
-            )
-            .on_hover_text(tl!("Double-click to edit Scene"));
-        *foreground_click |= response.clicked();
-        app.auto.add(&format!("script.scene.{}", line.id.0), response.rect, "Scene label");
-        if response.double_clicked() {
-            select_line(&mut app.ui.script, line, false);
-            app.ui.script.edit_scene = Some(line.id.0);
-            app.ui.script.label_focus = Some(1);
-        }
-    }
+    row_labels(app, ui, line, RowLabelLayout { left, text_inset, index }, foreground_click, actions);
     let text_x = left.min.x + text_inset;
     if app.ui.script.edit_line == Some(line.id.0) {
         let edit_rect = Rect::from_min_max(pos2(text_x, left.min.y + 2.0), pos2(left.max.x, left.max.y - 2.0));
-        let edit_id = ui.scope_id().with(("script.line.edit", line.id.0));
-        let pasted = if ui.memory(|memory| memory.has_focus(edit_id)) {
-            ui.input_mut(|input| {
-                let index = input.events.iter().position(|event| matches!(event, egui::Event::Paste(_)))?;
-                match input.events.remove(index) {
-                    egui::Event::Paste(text) => Some(text),
-                    _ => None,
-                }
-            })
-        } else {
-            None
-        };
-        let paste_cursor = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|state| state.cursor.char_range());
-        let response = crate::widgets::accessible_name(
-            ui.put(edit_rect, egui::TextEdit::singleline(&mut app.ui.script.edit_text).id(edit_id).desired_width(edit_rect.width())),
-            "Edit script line",
-        );
-        app.auto.add_response(&format!("script.line.{}.edit", line.id.0), &response, "Edit script line");
-        if response.changed() {
-            app.ui.script.text_paste_revision = None;
-        }
-        if let Some(at) = app.ui.script.edit_caret.take()
-            && let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), response.id)
-        {
-            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(at))));
-            state.store(ui.ctx(), response.id);
-            response.request_focus();
-        }
-        let cursor = egui::text_edit::TextEditState::load(ui.ctx(), response.id).and_then(|state| state.cursor.char_range());
-        if let Some(text) = pasted {
-            let (start, end) = paste_cursor.map_or_else(
-                || {
-                    let end = app.ui.script.edit_text.chars().count();
-                    (end, end)
-                },
-                |range| {
-                    let a = usize::from(range.primary.index);
-                    let b = usize::from(range.secondary.index);
-                    (a.min(b), a.max(b))
-                },
-            );
-            actions.push(Action::PasteText { line: line.id.0, text, start, end });
-        } else if response.has_focus()
-            && index > 0
-            && ui.input(|input| input.key_pressed(egui::Key::Backspace))
-            && cursor.is_some_and(|range| usize::from(range.primary.index) == 0 && usize::from(range.secondary.index) == 0)
-        {
-            actions.push(Action::MergeWithPrevious { line: line.id.0, text: app.ui.script.edit_text.clone() });
-        } else if (response.has_focus() || response.lost_focus()) && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-            let at = cursor.map_or(app.ui.script.edit_text.chars().count(), |range| range.primary.index.into());
-            actions.push(Action::SplitLine { line: line.id.0, text: app.ui.script.edit_text.clone(), at });
-            app.ui.script.edit_line = None;
-        } else if response.lost_focus() {
-            if app.ui.script.edit_text != line.text {
-                actions.push(Action::Command("script.editLine", json!({"item": app.ui.script.item, "line": line.id.0, "text": app.ui.script.edit_text})));
-            }
-            app.ui.script.edit_line = None;
-        }
+        row_text_editor(app, ui, line, index, edit_rect, actions);
     } else {
         let text_rect = Rect::from_min_max(pos2(text_x, left.min.y + 2.0), pos2(left.max.x, left.max.y - 2.0));
         let galley = ui.painter().layout(
@@ -1207,6 +1064,190 @@ fn take_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, take: &ScriptTake, actio
         if ui.button(if all_offscreen { tl!("Clear Offscreen") } else { tl!("Mark Offscreen") }).clicked() {
             toggle_offscreen(app, take, ids, actions);
             ui.close();
+        }
+    }
+}
+
+fn row_text_editor(app: &mut FilmcraftApp, ui: &mut egui::Ui, line: &ScriptLine, index: usize, edit_rect: Rect, actions: &mut Vec<Action>) {
+    let edit_id = ui.scope_id().with(("script.line.edit", line.id.0));
+    let pasted = if ui.memory(|memory| memory.has_focus(edit_id)) {
+        ui.input_mut(|input| {
+            let index = input.events.iter().position(|event| matches!(event, egui::Event::Paste(_)))?;
+            match input.events.remove(index) {
+                egui::Event::Paste(text) => Some(text),
+                _ => None,
+            }
+        })
+    } else {
+        None
+    };
+    let paste_cursor = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|state| state.cursor.char_range());
+    let response = crate::widgets::accessible_name(
+        ui.put(edit_rect, egui::TextEdit::singleline(&mut app.ui.script.edit_text).id(edit_id).desired_width(edit_rect.width())),
+        "Edit script line",
+    );
+    app.auto.add_response(&format!("script.line.{}.edit", line.id.0), &response, "Edit script line");
+    if response.changed() {
+        app.ui.script.text_paste_revision = None;
+    }
+    if let Some(at) = app.ui.script.edit_caret.take()
+        && let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), response.id)
+    {
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(at))));
+        state.store(ui.ctx(), response.id);
+        response.request_focus();
+    }
+    let cursor = egui::text_edit::TextEditState::load(ui.ctx(), response.id).and_then(|state| state.cursor.char_range());
+    if let Some(text) = pasted {
+        let (start, end) = paste_cursor.map_or_else(
+            || {
+                let end = app.ui.script.edit_text.chars().count();
+                (end, end)
+            },
+            |range| {
+                let a = usize::from(range.primary.index);
+                let b = usize::from(range.secondary.index);
+                (a.min(b), a.max(b))
+            },
+        );
+        actions.push(Action::PasteText { line: line.id.0, text, start, end });
+    } else if response.has_focus()
+        && index > 0
+        && ui.input(|input| input.key_pressed(egui::Key::Backspace))
+        && cursor.is_some_and(|range| usize::from(range.primary.index) == 0 && usize::from(range.secondary.index) == 0)
+    {
+        actions.push(Action::MergeWithPrevious { line: line.id.0, text: app.ui.script.edit_text.clone() });
+    } else if (response.has_focus() || response.lost_focus()) && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        let at = cursor.map_or(app.ui.script.edit_text.chars().count(), |range| range.primary.index.into());
+        actions.push(Action::SplitLine { line: line.id.0, text: app.ui.script.edit_text.clone(), at });
+        app.ui.script.edit_line = None;
+    } else if response.lost_focus() {
+        if app.ui.script.edit_text != line.text {
+            actions.push(Action::Command("script.editLine", json!({"item": app.ui.script.item, "line": line.id.0, "text": app.ui.script.edit_text})));
+        }
+        app.ui.script.edit_line = None;
+    }
+}
+
+struct ConnectorLayout<'a> {
+    column_centers: &'a [f32],
+    line_indices: &'a HashMap<u64, usize>,
+    tops: &'a [f32],
+    base_y: f32,
+    body: Rect,
+}
+
+fn paint_take_connectors(app: &FilmcraftApp, ui: &egui::Ui, doc: &ScriptDocument, slate_headers: &[SlateHeader<'_>], layout: ConnectorLayout<'_>) {
+    let ConnectorLayout { column_centers, line_indices, tops, base_y, body } = layout;
+    let t = app.tokens;
+    // Each take has its own connector from its number box to its candle.
+    // During a drag, use the stepped preview rows so every connector stays attached.
+    for header in slate_headers {
+        let Some(slate) = doc.slates.iter().find(|slate| slate.id.0 == header.id) else { continue };
+        let shown_index =
+            if app.ui.script.drag_slate == Some(header.id) { app.ui.script.drag_slate_target.unwrap_or(header.start_index) } else { header.start_index };
+        let Some(&shown_top) = tops.get(shown_index).or_else(|| tops.get(header.start_index)) else { continue };
+        let box_top = base_y + shown_top;
+        let preview_y = if app.ui.script.drag_slate == Some(header.id) && app.ui.script.drag_slate_group { app.ui.script.drag_slate_delta.y } else { 0.0 };
+        for (ordinal, take) in slate.takes.iter().enumerate() {
+            let Some(&center) = column_centers.get(header.first_column + ordinal) else { continue };
+            let Some((take_start, _)) = coverage_rows(&app.ui.script, take, line_indices) else { continue };
+            let Some(&row_top) = tops.get(take_start) else { continue };
+            let cx = body.min.x + center - app.ui.script.take_scroll;
+            if cx < body.left() || cx > body.right() {
+                continue;
+            }
+            let box_bottom = take_metadata_rect(cx, box_top - TAKE_HEADER_H).bottom();
+            let candle_top = base_y + row_top + preview_y;
+            if (box_bottom - candle_top).abs() > 1.0 {
+                ui.painter().with_clip_rect(body).line_segment([pos2(cx, box_bottom), pos2(cx, candle_top)], Stroke::new(1.0, t.text_dim));
+            }
+        }
+    }
+}
+
+struct RowLabelLayout {
+    left: Rect,
+    text_inset: f32,
+    index: usize,
+}
+
+fn row_labels(app: &mut FilmcraftApp, ui: &mut egui::Ui, line: &ScriptLine, layout: RowLabelLayout, foreground_click: &mut bool, actions: &mut Vec<Action>) {
+    let RowLabelLayout { left, text_inset, index } = layout;
+    let t = app.tokens;
+    let label_y = left.center().y;
+    let mut scene_start = 6.0;
+    if app.ui.script.show_line_numbers.unwrap_or(true) {
+        let number = (index + 1).to_string();
+        let font = Tokens::ui(10.0);
+        scene_start += ui.painter().layout_no_wrap(number.clone(), font.clone(), t.text_dim).size().x + 5.0;
+        ui.painter().text(pos2(left.min.x + 6.0, label_y), Align2::LEFT_CENTER, number, font, t.text_dim.gamma_multiply(0.55));
+    }
+    let page_rect = Rect::from_min_size(pos2(left.max.x, left.min.y + 1.0), vec2(52.0, MIN_ROW_H - 2.0));
+    let scene_rect =
+        Rect::from_min_size(pos2(left.min.x + scene_start, left.min.y + 1.0), vec2((text_inset - scene_start - 4.0).clamp(1.0, 72.0), MIN_ROW_H - 2.0));
+    if app.ui.script.edit_page == Some(line.id.0) {
+        let response = ui.put(page_rect, egui::TextEdit::singleline(&mut app.ui.script.page_text).hint_text(tl!("Page")));
+        *foreground_click |= response.clicked();
+        if app.ui.script.label_focus == Some(2) {
+            response.request_focus();
+            app.ui.script.label_focus = None;
+        }
+        app.auto.add_response(&format!("script.page.{}.edit", line.id.0), &response, "Edit page label");
+        if response.lost_focus() || response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            let page = app.ui.script.page_text.trim();
+            actions.push(Action::Command(
+                "script.setLabel",
+                json!({"item": app.ui.script.item, "line": line.id.0,
+                "scene": line.scene.as_deref(), "page": if page.is_empty() { None } else { Some(page) }}),
+            ));
+            app.ui.script.edit_page = None;
+        }
+    } else if let Some(page) = &line.page {
+        let response = ui
+            .put(
+                page_rect,
+                egui::Label::new(egui::RichText::new(format!("Pg {}", truncate(page, 3))).italics().color(t.text_dim).size(10.5)).sense(Sense::click()),
+            )
+            .on_hover_text(tl!("Double-click to edit Page"));
+        *foreground_click |= response.clicked();
+        app.auto.add(&format!("script.page.{}", line.id.0), response.rect, "Page label");
+        if response.double_clicked() {
+            select_line(&mut app.ui.script, line, false);
+            app.ui.script.edit_page = Some(line.id.0);
+            app.ui.script.label_focus = Some(2);
+        }
+    }
+    if app.ui.script.edit_scene == Some(line.id.0) {
+        let response = ui.put(scene_rect, egui::TextEdit::singleline(&mut app.ui.script.scene_text).hint_text(tl!("Scene")));
+        *foreground_click |= response.clicked();
+        if app.ui.script.label_focus == Some(1) {
+            response.request_focus();
+            app.ui.script.label_focus = None;
+        }
+        app.auto.add_response(&format!("script.scene.{}.edit", line.id.0), &response, "Edit scene label");
+        if response.lost_focus() || response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            let scene = app.ui.script.scene_text.trim();
+            actions.push(Action::Command(
+                "script.setLabel",
+                json!({"item": app.ui.script.item, "line": line.id.0,
+                "scene": if scene.is_empty() { None } else { Some(scene) }, "page": line.page.as_deref()}),
+            ));
+            app.ui.script.edit_scene = None;
+        }
+    } else if let Some(scene) = &line.scene {
+        let response = ui
+            .put(
+                scene_rect,
+                egui::Label::new(egui::RichText::new(format!("Sc {scene}")).italics().color(t.text_dim).size(11.0)).truncate().sense(Sense::click()),
+            )
+            .on_hover_text(tl!("Double-click to edit Scene"));
+        *foreground_click |= response.clicked();
+        app.auto.add(&format!("script.scene.{}", line.id.0), response.rect, "Scene label");
+        if response.double_clicked() {
+            select_line(&mut app.ui.script, line, false);
+            app.ui.script.edit_scene = Some(line.id.0);
+            app.ui.script.label_focus = Some(1);
         }
     }
 }

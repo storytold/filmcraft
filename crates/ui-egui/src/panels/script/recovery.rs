@@ -1,6 +1,6 @@
 //! Recovery of offline or deleted Script sources uses the same reviewed, undoable rebind command.
 
-use super::*;
+use super::{Action, FilmcraftApp, ItemId, ItemKind, ScriptTake};
 
 fn source_missing(app: &FilmcraftApp, source: ItemId) -> bool {
     let Some(item) = app.session.project.item(source) else { return true };

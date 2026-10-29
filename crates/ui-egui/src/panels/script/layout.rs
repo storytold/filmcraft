@@ -1,6 +1,9 @@
 //! Shared row measurements and candle geometry; painting and hit targets use the same coordinates.
 
-use super::*;
+use super::{
+    Arc, DEFAULT_THUMB_W, FilmcraftApp, HashMap, MAX_THUMB_W, MAX_VISUAL_LINES, MIN_ROW_H, MIN_THUMB_W, Rect, SCRIPT_FONT_SIZE, ScriptDocument, ScriptTake,
+    ScriptUi, TAKE_HEADER_H, THUMB_CHIN_H, Tokens,
+};
 
 pub(super) fn thumbnail_width(state: &ScriptUi) -> f32 {
     state.thumbnail_width.unwrap_or(DEFAULT_THUMB_W).clamp(MIN_THUMB_W, MAX_THUMB_W)

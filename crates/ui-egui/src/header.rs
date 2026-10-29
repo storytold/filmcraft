@@ -10,6 +10,9 @@ use crate::icons::{self, Icon};
 use crate::state::Mode;
 use crate::theme::Tokens;
 
+/// Height of the header bar. With `integrated_titlebar` it sits in the macOS title-bar strip.
+pub const HEIGHT: f32 = 38.0;
+
 /// Draw the header bar; dragging starts a native window move and double-click toggles maximized.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;

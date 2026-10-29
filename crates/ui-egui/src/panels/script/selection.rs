@@ -1,6 +1,6 @@
 //! Document-local selection and editing state. Project commands own persisted edits.
 
-use super::*;
+use super::{ScriptDocument, ScriptLine, ScriptTake, ScriptUi};
 
 impl ScriptUi {
     /// IDs belong to one script. Retain view preferences and the cross-script clipboard,

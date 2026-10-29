@@ -1082,7 +1082,7 @@ mod tests {
         Arc::make_mut(&mut s.project).add_item(
             name,
             Label::Blue,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(generator),
                 info,
                 interpret: Default::default(),
@@ -1092,7 +1092,7 @@ mod tests {
                 offline: false,
                 proxy: None,
                 identity: Some(MediaIdentity { size: 10, fingerprint }),
-            }),
+            })),
             None,
         )
     }

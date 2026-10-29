@@ -183,7 +183,7 @@ fn tc(t: Tick, rate: filmcraft_time::FrameRate) -> String {
 pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
     let Some(it) = p.item(id) else { return Vec::new() };
     let media = match &it.kind {
-        ItemKind::Media(m) => Some(m),
+        ItemKind::Media(m) => Some(m.as_ref()),
         ItemKind::Subclip { parent, .. } => p.item(*parent).and_then(|x| x.as_media()),
         _ => None,
     };

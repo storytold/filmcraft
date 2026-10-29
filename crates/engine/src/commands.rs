@@ -765,7 +765,7 @@ fn import_source(
         Ok(p.add_item(
             &name,
             label,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::File { path: path_s },
                 info,
                 interpret: Default::default(),
@@ -775,7 +775,7 @@ fn import_source(
                 offline: false,
                 proxy: None,
                 identity: Some(identity),
-            }),
+            })),
             bin,
         ))
     })?;
@@ -958,7 +958,19 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
     let end = rate.snap_nearest(Tick(at.0.saturating_add(dur.0)));
     let at = rate.snap_nearest(at);
     let dur = end - at;
-    let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip", None)?;
+    let ids = place_item(
+        s,
+        ItemPlacement {
+            item,
+            range: TimeRange::new(sin, dur),
+            at,
+            vdest: v,
+            adest: a,
+            insert: bool_p(p, "insert").unwrap_or(false),
+            label: "Place Clip",
+            audio_split: None,
+        },
+    )?;
     Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
 }
 
@@ -1020,21 +1032,23 @@ fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
 }
 
 /// Place a project item on the timeline (drag from Project, or Insert/Overwrite from source).
-pub(crate) fn place_item(
-    s: &mut Session,
-    item: ItemId,
-    range: TimeRange,
-    at: Tick,
-    vdest: Option<TrackId>,
-    adest: Option<TrackId>,
-    insert: bool,
-    label: &str,
-    audio_split: Option<(TimeRange, Tick)>,
-) -> Result<Vec<ClipId>> {
+pub(crate) struct ItemPlacement<'a> {
+    pub(crate) item: ItemId,
+    pub(crate) range: TimeRange,
+    pub(crate) at: Tick,
+    pub(crate) vdest: Option<TrackId>,
+    pub(crate) adest: Option<TrackId>,
+    pub(crate) insert: bool,
+    pub(crate) label: &'a str,
+    pub(crate) audio_split: Option<(TimeRange, Tick)>,
+}
+
+pub(crate) fn place_item(s: &mut Session, placement: ItemPlacement<'_>) -> Result<Vec<ClipId>> {
+    let ItemPlacement { item, range, at, vdest, adest, insert, label, audio_split } = placement;
     let pi = s.project.item(item).ok_or_else(|| bad(label, "no such item"))?.clone();
     // the nest toggle off: a sequence edits in as its clips (a multi-camera source stays one clip)
     if s.state.sequences_as_clips && pi.as_sequence().is_some_and(|q| q.multicam.is_none()) {
-        return crate::sequence_tools::place_sequence_clips(s, item, range, at, vdest, adest, insert, label);
+        return crate::sequence_tools::place_sequence_clips(s, ItemPlacement { item, range, at, vdest, adest, insert, label, audio_split: None });
     }
     let (video, audio) = s.project.source_streams(item);
     let has_v = video && vdest.is_some();
@@ -1179,9 +1193,9 @@ fn edit_at_source(s: &mut Session, insert: bool) -> Result<Value> {
     let base = vr.start.min(ar.start);
     let (vat, aat) = (at + (vr.start - base), at + (ar.start - base));
     let ids = if vr == ar {
-        place_item(s, item, range, at, tg.video_dest, tg.audio_dest, insert, label, None)?
+        place_item(s, ItemPlacement { item, range, at, vdest: tg.video_dest, adest: tg.audio_dest, insert, label, audio_split: None })?
     } else {
-        place_item(s, item, vr, vat, tg.video_dest, tg.audio_dest, insert, label, Some((ar, aat)))?
+        place_item(s, ItemPlacement { item, range: vr, at: vat, vdest: tg.video_dest, adest: tg.audio_dest, insert, label, audio_split: Some((ar, aat)) })?
     };
     let end =
         if vr == ar { at + s.sequence_rate().snap_nearest(range.duration) } else { s.sequence_rate().snap_nearest((vat + vr.duration).max(aat + ar.duration)) };
@@ -1306,8 +1320,19 @@ fn build() -> Vec<CommandSpec> {
                 if let Some((&from, rest)) = from_ids.split_first() {
                     let dur = s.project.item(from).map(|i| i.duration()).unwrap_or_default();
                     let tg = s.targeting();
-                    let ids =
-                        place_item(s, from, TimeRange::new(Tick::ZERO, dur), Tick::ZERO, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
+                    let ids = place_item(
+                        s,
+                        ItemPlacement {
+                            item: from,
+                            range: TimeRange::new(Tick::ZERO, dur),
+                            at: Tick::ZERO,
+                            vdest: tg.video_dest,
+                            adest: tg.audio_dest,
+                            insert: false,
+                            label: "New Sequence From Clip",
+                            audio_split: None,
+                        },
+                    )?;
                     if !rest.is_empty() {
                         let end = s.active_sequence().and_then(|q| ids.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max()).unwrap_or_default();
                         place_items(s, &json!({"time": end.0}), &json!(rest.iter().map(|i| i.0).collect::<Vec<_>>()))?;

@@ -112,7 +112,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 elems.push(("exportFrame.name".into(), r.rect, d.name.clone()));
                 ui.end_row();
                 ui.label("Format:");
-                let combo = egui::ComboBox::from_id_salt("frame-export-format").width(292.0).selected_text(d.format.label()).show_ui(ui, |ui| {
+                let combo = craft_ui::ComboBox::from_id_salt("frame-export-format").width(292.0).selected_text(d.format.label()).show_ui(ui, |ui| {
                     for format in StillFormat::ALL {
                         let r = ui.selectable_value(&mut d.format, format, format.label());
                         elems.push((format!("exportFrame.format.{}", format.extension()), r.rect, format.label().into()));
@@ -128,7 +128,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     d.depth = 8;
                 }
                 ui.label("Depth:");
-                let combo = egui::ComboBox::from_id_salt("frame-export-depth").width(292.0).selected_text(format!("{} Bit", d.depth)).show_ui(ui, |ui| {
+                let combo = craft_ui::ComboBox::from_id_salt("frame-export-depth").width(292.0).selected_text(format!("{} Bit", d.depth)).show_ui(ui, |ui| {
                     for bits in [8, 16] {
                         let r = ui.add_enabled(bits == 8 || d.format.supports_16(), egui::Button::selectable(d.depth == bits, format!("{bits} Bit")));
                         if r.clicked() {

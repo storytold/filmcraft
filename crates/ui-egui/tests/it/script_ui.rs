@@ -1310,8 +1310,8 @@ fn deleted_source_candle(driver: &mut Driver) -> (u64, u64, u64, u64, Vec<u64>) 
     let (original, replacement) = {
         let project = std::sync::Arc::make_mut(&mut driver.harness.state_mut().session.project);
         (
-            project.add_item("Deleted clip", Label::Blue, ItemKind::Media(media.clone()), None).0,
-            project.add_item("Moved clip", Label::Blue, ItemKind::Media(media), None).0,
+            project.add_item("Deleted clip", Label::Blue, ItemKind::Media(Box::new(media.clone())), None).0,
+            project.add_item("Moved clip", Label::Blue, ItemKind::Media(Box::new(media)), None).0,
         )
     };
     let script = driver.exec("script.importText", json!({"name":"Recovery","text":"\n\n\n\n\nFirst\nSecond\nThird"}))["item"].as_u64().unwrap();
