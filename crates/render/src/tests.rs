@@ -13,7 +13,7 @@ fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
         let id = p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(generator),
                 info,
                 interpret: Default::default(),
@@ -23,7 +23,7 @@ fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         map.0.insert(id, Arc::new(g) as SharedSource);
@@ -116,7 +116,7 @@ fn cross_dissolve_midpoint() {
     let blue = p.add_item(
         "blue",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(blue_src.generator.clone()),
             info,
             interpret: Default::default(),
@@ -126,7 +126,7 @@ fn cross_dissolve_midpoint() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let mut map = map;
@@ -168,7 +168,7 @@ fn audio_mix_bars_tone() {
     let id = p.add_item(
         "bars",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(Generator::BarsAndTone),
             info,
             interpret: Default::default(),
@@ -178,7 +178,7 @@ fn audio_mix_bars_tone() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let mut map = SourceMap::default();
@@ -297,7 +297,7 @@ fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap)
     let id = p.add_item(
         "bars",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(Generator::BarsAndTone),
             info,
             interpret: Default::default(),
@@ -307,7 +307,7 @@ fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap)
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let mut map = SourceMap::default();
@@ -486,7 +486,7 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let item = p.add_item(
         "ids",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -496,7 +496,7 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let src = Arc::new(NearestUnitSource { inner: g, asked: Default::default() });

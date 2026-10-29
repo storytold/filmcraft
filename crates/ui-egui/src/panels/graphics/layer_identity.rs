@@ -1,4 +1,4 @@
-use super::*;
+use super::{ClipId, EffectInstance, FilmcraftApp, LayerView, ParamValue, Session, Tick, graphic, layer_display_name, layer_indices};
 
 pub(super) fn layer_display_name_view(app: &FilmcraftApp, v: &LayerView) -> String {
     app.session

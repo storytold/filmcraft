@@ -1,5 +1,8 @@
-use super::settings::{combo, drag};
-use super::*;
+use super::settings::{DragOptions, combo, drag};
+use super::{
+    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, export_params, format_bytes, json, output_path,
+    pos2, vec2,
+};
 
 // ---------------------------------------------------------------------------------------------
 // right: preview, range, summary, buttons
@@ -55,8 +58,8 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
             ex.range = RANGES[i].0.into();
         }
         if ex.range == "custom" {
-            drag(ui, &mut reg, "export.range.start", &mut ex.custom_start, 0.0..=86_400.0, 0.04, " s", 2);
-            drag(ui, &mut reg, "export.range.end", &mut ex.custom_end, 0.0..=86_400.0, 0.04, " s", 2);
+            drag(ui, &mut reg, "export.range.start", &mut ex.custom_start, DragOptions { range: 0.0..=86_400.0, speed: 0.04, suffix: " s", decimals: 2 });
+            drag(ui, &mut reg, "export.range.end", &mut ex.custom_end, DragOptions { range: 0.0..=86_400.0, speed: 0.04, suffix: " s", decimals: 2 });
         }
     });
     if ex.settings.has_video() {

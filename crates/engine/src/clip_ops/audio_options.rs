@@ -1,6 +1,6 @@
 use super::common::{collapse_history, items_p, media_root};
 use super::enabled::extract_items;
-use super::*;
+use super::{AudioChannelMap, AudioChannels, EngineError, ItemId, ItemKind, MediaRef, Result, Session, Tick, TimeRange, Value, bad, json, str_p};
 
 // ---------------------------------------------------------------------------------------------
 // Clip: Audio Options
@@ -31,7 +31,7 @@ pub(super) fn breakout_to_mono(s: &mut Session, p: &Value) -> Result<Value> {
                 mm.mark_out = None;
                 mm.markers.clear();
                 mm.proxy = None;
-                let id = pr.add_item(&format!("{} {suffix}", it.name), it.label, ItemKind::Media(mm), bin);
+                let id = pr.add_item(&format!("{} {suffix}", it.name), it.label, ItemKind::Media(Box::new(mm)), bin);
                 made.push(id);
             }
         }

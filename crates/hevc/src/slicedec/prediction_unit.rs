@@ -1,20 +1,12 @@
-use super::*;
+use super::{
+    ABS_MVD_GT0, ABS_MVD_GT1, INTER_PRED_IDC, MERGE_FLAG, MERGE_IDX, MVP_FLAG, MvField, REF_IDX, Result, Sample, SliceDecoder, SliceType, ensure, inter,
+};
+use crate::mvpred::PredBlock;
 
 impl<'a, S: Sample> SliceDecoder<'a, S> {
     /// prediction_unit(): parse, derive motion, store it and predict. Returns merge_flag.
-    pub(super) fn prediction_unit(
-        &mut self,
-        xc: i32,
-        yc: i32,
-        ncb: i32,
-        xp: i32,
-        yp: i32,
-        w: i32,
-        h: i32,
-        part_idx: usize,
-        part: PartMode,
-        skip: bool,
-    ) -> Result<bool> {
+    pub(super) fn prediction_unit(&mut self, pb: &PredBlock, skip: bool) -> Result<bool> {
+        let PredBlock { xc, yc, xp, yp, w, h, .. } = *pb;
         let merge = if skip { true } else { self.dd(MERGE_FLAG) == 1 };
         let mvf = if merge {
             let idx = if self.sh.max_num_merge_cand > 1 {
@@ -29,7 +21,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             } else {
                 0
             };
-            self.derive_merge(xc, yc, ncb, xp, yp, w, h, part_idx, part, idx as usize)
+            self.derive_merge(pb, idx as usize)
         } else {
             let pred_idc = if self.sh.is_b() {
                 if w + h != 12 {
@@ -73,7 +65,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 if ref_idx[l] < 0 {
                     continue;
                 }
-                let mvp = self.derive_amvp(xc, yc, ncb, xp, yp, w, h, part_idx, l, ref_idx[l] as usize, mvp_flag[l] as usize);
+                let mvp = self.derive_amvp(pb, l, ref_idx[l] as usize, mvp_flag[l] as usize);
                 // mvLX = (mvp + mvd) wrapped to 16 bits (8-94)
                 f.mv[l] = [(mvp[0] as i32 + mvd[l][0]) as i16, (mvp[1] as i32 + mvd[l][1]) as i16];
             }
@@ -154,7 +146,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                     let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
                     let frame = &self.refs[l][f.ref_idx[l] as usize].frame;
                     let dst = &mut self.pic.planes[c][y as usize * stride + x as usize..];
-                    frame.copy_block(c, x + (mv[0] as i32 >> sh), y + (mv[1] as i32 >> sh), bw, bh, dst, stride);
+                    frame.copy_block(c, (x + (mv[0] as i32 >> sh), y + (mv[1] as i32 >> sh)), (bw, bh), dst, stride);
                     continue;
                 }
             }
@@ -167,9 +159,9 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 let frame = &self.refs[l][f.ref_idx[l] as usize].frame;
                 let buf = if l == 0 || !bi { &mut self.pred0 } else { &mut self.pred1 };
                 if c == 0 {
-                    inter::mc_luma::<S>(frame, x, y, f.mv[l], bw, bh, buf, &mut self.mc);
+                    inter::mc_luma::<S>(frame, (x, y), f.mv[l], (bw, bh), buf, &mut self.mc);
                 } else {
-                    inter::mc_chroma::<S>(frame, c - 1, x, y, f.mv[l], bw, bh, buf, &mut self.mc);
+                    inter::mc_chroma::<S>(frame, c - 1, (x, y), f.mv[l], (bw, bh), buf, &mut self.mc);
                 }
             }
             let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
@@ -190,13 +182,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 (wt, o << (bd - 8))
             };
             if bi {
-                let (w0, o0) = get(0);
-                let (w1, o1) = get(1);
-                inter::put_weighted_bi(&self.pred0, &self.pred1, bw, bh, bd, log2wd, w0, w1, o0, o1, dst, stride);
+                inter::put_weighted_bi([&self.pred0, &self.pred1], (bw, bh), bd, log2wd, [get(0), get(1)], dst, stride);
             } else {
                 let l = if lists[0] { 0 } else { 1 };
-                let (wt, o) = get(l);
-                inter::put_weighted_uni(&self.pred0, bw, bh, bd, log2wd, wt, o, dst, stride);
+                inter::put_weighted_uni(&self.pred0, (bw, bh), bd, log2wd, get(l), dst, stride);
             }
         }
     }

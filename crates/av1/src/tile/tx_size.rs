@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BLOCK_4X4, MAX_TX_DEPTH_TABLE, MAX_TX_SIZE_RECT, MAX_VARTX_DEPTH, SPLIT_TX_SIZE, TX_4X4, TX_HEIGHT, TX_MODE_SELECT, TX_SIZE_SQR_UP, TX_SIZES, TX_SIZES_ALL,
+    TX_WIDTH, TileDecoder, block_height, block_width,
+};
 
 impl<'a, 'f> TileDecoder<'a, 'f> {
     // ---- transform size ---------------------------------------------------------------------

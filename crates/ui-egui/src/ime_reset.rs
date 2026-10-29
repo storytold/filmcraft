@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use super::*;
+use super::ime_reset;
 use egui::{Context, IMEPurpose, Id, ImeResetId, ImeTarget, ViewportId, ViewportIdMap};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

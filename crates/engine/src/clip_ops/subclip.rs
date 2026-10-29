@@ -1,6 +1,9 @@
 use super::common::{item_rate, items_p, media_root};
 use super::enabled::{selected_audio_clips, subclip_source};
-use super::*;
+use super::{
+    AudioChannelMap, AudioChannels, ClipId, EngineError, ItemId, ItemKind, Label, Result, Session, Tick, TimeRange, Value, bad, bool_p, item_p, json,
+    parse_timecode, str_p,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Clip: subclips, Modify
@@ -108,7 +111,7 @@ pub(super) fn edit_subclip(s: &mut Session, p: &Value) -> Result<Value> {
             m.mark_in = Some(a);
             m.mark_out = Some((b - fd).max(a));
             m.markers.retain(|k| k.start >= a && k.start < b);
-            it.kind = ItemKind::Media(m);
+            it.kind = ItemKind::Media(Box::new(m));
         } else {
             it.kind = ItemKind::Subclip { parent, range: TimeRange::from_bounds(a, b), restrict_trims: restrict };
         }

@@ -376,12 +376,41 @@ struct ParaLine {
     underlines: Vec<(f32, f32, u16)>,
 }
 
+/// One character of a paragraph with the properties that decide which shaping run it joins.
+struct CharInfo {
+    byte: usize,
+    ch: char,
+    /// The character as shaped (case-mapped for caps styles).
+    shaped: char,
+    face: FaceId,
+    rtl: bool,
+    small: bool,
+    /// Style index ([`Styles`]).
+    style: usize,
+}
+
+/// Horizontal extent of a cluster within a line: `(x0, x1, rtl)`.
+type Extents = HashMap<usize, (f32, f32, bool)>;
+
+/// A paragraph being laid out: its text, resolved characters, shaped items and cluster advances.
+struct Para<'a> {
+    text: &'a str,
+    /// Byte offset of `text` in the whole string.
+    base: usize,
+    sty: &'a Styles<'a>,
+    style: &'a ParagraphStyle,
+    bidi: BidiInfo<'a>,
+    chars: Vec<CharInfo>,
+    items: Vec<Item>,
+    /// Advance per char byte (at its cluster start).
+    char_adv: Vec<f32>,
+}
+
 /// Lay out one paragraph (no newlines) whose text starts at byte `base` of the whole string.
 fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Vec<ParaLine> {
-    let style = sty.list[0];
-    let primary = sty.prim[0];
-    let pm = fonts::face(primary.face).metrics(style.size);
     if text.is_empty() {
+        let primary = sty.prim[0];
+        let pm = fonts::face(primary.face).metrics(sty.list[0].size);
         return vec![ParaLine {
             range: base..base,
             glyphs: vec![],
@@ -395,11 +424,23 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
     }
     let default_level = para.rtl.map(|r| if r { Level::rtl() } else { Level::ltr() });
     let bidi = BidiInfo::new(text, default_level);
-    let pinfo = &bidi.paragraphs[0];
-    let base_rtl = pinfo.level.is_rtl();
-    // per char: (byte, char, shaped char), face, level, small, style
-    let chars: Vec<(usize, char, char, FaceId, bool, bool, usize)> = text
-        .char_indices()
+    let chars = classify_chars(text, base, sty, &bidi);
+    let items = shape_items(text, &chars, sty, para);
+    let mut char_adv = vec![0.0f32; text.len() + 1];
+    for it in &items {
+        for g in &it.glyphs {
+            char_adv[g.cluster.min(text.len())] += g.adv;
+        }
+    }
+    let p = Para { text, base, sty, style: para, bidi, chars, items, char_adv };
+    let ranges = p.line_ranges();
+    let nlines = ranges.len();
+    ranges.into_iter().enumerate().map(|(li, r)| p.line(li, nlines, r)).collect()
+}
+
+/// Resolve each character's style, shaped form, face and bidi direction.
+fn classify_chars(text: &str, base: usize, sty: &Styles, bidi: &BidiInfo) -> Vec<CharInfo> {
+    text.char_indices()
         .map(|(b, c)| {
             let si = sty.at(base + b);
             let (sc, small) = match sty.list[si].caps {
@@ -410,20 +451,23 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
             };
             let pf = sty.prim[si].face;
             let face = if sc.is_whitespace() { pf } else { fonts::fallback_for(sc, pf) };
-            (b, c, sc, face, bidi.levels[b].is_rtl(), small, si)
+            CharInfo { byte: b, ch: c, shaped: sc, face, rtl: bidi.levels[b].is_rtl(), small, style: si }
         })
-        .collect();
-    // items: runs of equal (face, rtl, small, style)
+        .collect()
+}
+
+/// Shape runs of equal (face, rtl, small, style) into items.
+fn shape_items(text: &str, chars: &[CharInfo], sty: &Styles, para: &ParagraphStyle) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        let (face, rtl, small, si) = (chars[i].3, chars[i].4, chars[i].5, chars[i].6);
+        let (face, rtl, small, si) = (chars[i].face, chars[i].rtl, chars[i].small, chars[i].style);
         let mut j = i + 1;
-        while j < chars.len() && chars[j].3 == face && chars[j].4 == rtl && chars[j].5 == small && chars[j].6 == si {
+        while j < chars.len() && chars[j].face == face && chars[j].rtl == rtl && chars[j].small == small && chars[j].style == si {
             j += 1;
         }
         let st = sty.list[si];
-        let sub: Vec<(usize, char, char)> = chars[i..j].iter().map(|c| (c.0, c.1, c.2)).collect();
+        let sub: Vec<(usize, char, char)> = chars[i..j].iter().map(|c| (c.byte, c.ch, c.shaped)).collect();
         let size = if small { st.size * SMALL_CAPS_SCALE } else { st.size };
         let mut glyphs = shape_item(text, &sub, rtl, face, size, st, para.vertical);
         // tracking after each cluster
@@ -435,78 +479,84 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
                 }
             }
         }
-        let end = if j < chars.len() { chars[j].0 } else { text.len() };
-        items.push(Item { range: chars[i].0..end, rtl, glyphs, style: si });
+        let end = if j < chars.len() { chars[j].byte } else { text.len() };
+        items.push(Item { range: chars[i].byte..end, rtl, glyphs, style: si });
         i = j;
     }
-    // advance per char byte (cluster start)
-    let mut char_adv = vec![0.0f32; text.len() + 1];
-    for it in &items {
-        for g in &it.glyphs {
-            char_adv[g.cluster.min(text.len())] += g.adv;
-        }
+    items
+}
+
+impl Para<'_> {
+    fn range_w(&self, r: Range<usize>) -> f32 {
+        self.char_adv[r].iter().sum()
     }
-    let range_w = |r: Range<usize>| -> f32 { char_adv[r].iter().sum() };
-    let trailing_ws = |r: &Range<usize>| -> (usize, f32) {
+
+    /// End of `r` without its trailing whitespace, and that whitespace's width.
+    fn trailing_ws(&self, r: &Range<usize>) -> (usize, f32) {
         let mut end = r.end;
         let mut w = 0.0;
-        for (b, c) in text[r.clone()].char_indices().rev() {
+        for (b, c) in self.text[r.clone()].char_indices().rev() {
             if !c.is_whitespace() {
                 break;
             }
             end = r.start + b;
-            w += char_adv[r.start + b];
+            w += self.char_adv[r.start + b];
         }
         (end, w)
-    };
-    // line breaking
-    let mut ranges: Vec<Range<usize>> = Vec::new();
-    match para.width {
-        None => ranges.push(0..text.len()),
-        Some(maxw) => {
-            let mut start = 0usize;
-            let mut last_ok: Option<usize> = None;
-            for (p, _) in unicode_linebreak::linebreaks(text) {
-                loop {
-                    let r = start..p;
-                    let (ce, _) = trailing_ws(&r);
-                    let w = range_w(start..ce);
-                    if w <= maxw || last_ok.is_none() {
-                        last_ok = Some(p);
-                        break;
-                    }
-                    let Some(b) = last_ok.take() else { break };
-                    ranges.push(start..b);
-                    start = b;
-                }
-            }
-            ranges.push(start..text.len());
-            ranges.retain(|r| !r.is_empty());
-            if ranges.is_empty() {
-                ranges.push(0..text.len());
-            }
-        }
     }
-    let nlines = ranges.len();
-    let mut out = Vec::new();
-    for (li, r) in ranges.into_iter().enumerate() {
-        let (ce, tw) = trailing_ws(&r);
-        let content = range_w(r.start..ce);
-        // justification
-        let mut space_extra = 0.0;
-        if para.align == Align::Justify
-            && li + 1 < nlines
-            && let Some(maxw) = para.width
-        {
-            let spaces = text[r.start..ce].chars().filter(|c| *c == ' ').count();
-            if spaces > 0 {
-                space_extra = ((maxw - content) / spaces as f32).max(0.0);
+
+    /// Line breaking: byte ranges of the lines at the paragraph width.
+    fn line_ranges(&self) -> Vec<Range<usize>> {
+        let text = self.text;
+        let Some(maxw) = self.style.width else { return std::iter::once(0..text.len()).collect() };
+        let mut ranges: Vec<Range<usize>> = Vec::new();
+        let mut start = 0usize;
+        let mut last_ok: Option<usize> = None;
+        for (p, _) in unicode_linebreak::linebreaks(text) {
+            loop {
+                let r = start..p;
+                let (ce, _) = self.trailing_ws(&r);
+                let w = self.range_w(start..ce);
+                if w <= maxw || last_ok.is_none() {
+                    last_ok = Some(p);
+                    break;
+                }
+                let Some(b) = last_ok.take() else { break };
+                ranges.push(start..b);
+                start = b;
             }
         }
-        let (levels, runs) = bidi.visual_runs(pinfo, r.clone());
+        ranges.push(start..text.len());
+        ranges.retain(|r| !r.is_empty());
+        if ranges.is_empty() {
+            ranges.push(0..text.len());
+        }
+        ranges
+    }
+
+    /// Extra width per space that justifies line `li` of `nlines` (zero unless justifying a
+    /// non-final line).
+    fn space_extra(&self, li: usize, nlines: usize, r: &Range<usize>, ce: usize, content: f32) -> f32 {
+        if self.style.align == Align::Justify
+            && li + 1 < nlines
+            && let Some(maxw) = self.style.width
+        {
+            let spaces = self.text[r.start..ce].chars().filter(|c| *c == ' ').count();
+            if spaces > 0 {
+                return ((maxw - content) / spaces as f32).max(0.0);
+            }
+        }
+        0.0
+    }
+
+    /// Place the glyphs of the visual runs of line `r`; returns them, each cluster's extent and the
+    /// final pen position.
+    fn place_glyphs(&self, r: &Range<usize>, ce: usize, space_extra: f32) -> (Vec<Glyph>, Extents, f32) {
+        let (items, sty, text) = (&self.items, self.sty, self.text);
+        let (levels, runs) = self.bidi.visual_runs(&self.bidi.paragraphs[0], r.clone());
         let mut pen = 0.0f32;
         let mut glyphs = Vec::new();
-        let mut extents: HashMap<usize, (f32, f32, bool)> = HashMap::new();
+        let mut extents: Extents = HashMap::new();
         for run in runs {
             let rtl = levels[run.start].is_rtl();
             let mut idx: Vec<usize> = (0..items.len()).filter(|&k| items[k].range.start < run.end && items[k].range.end > run.start).collect();
@@ -524,7 +574,7 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
                         x: pen + g.dx,
                         y: -g.dy - st.baseline_shift,
                         size: g.size,
-                        cluster: base + g.cluster,
+                        cluster: self.base + g.cluster,
                         synth_bold: pr.synth_bold || st.faux_bold,
                         synth_italic: pr.synth_italic || st.faux_italic,
                         run: si as u16,
@@ -539,11 +589,13 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
                 }
             }
         }
-        // caret stops for each char boundary in the line
+        (glyphs, extents, pen)
+    }
+
+    /// Caret stops for each char boundary in line `r`, interpolated within multi-char clusters.
+    fn caret_stops(&self, r: &Range<usize>, extents: &Extents, cluster_starts: &[usize]) -> Vec<(usize, f32)> {
         let mut carets = Vec::new();
-        let mut cluster_starts: Vec<usize> = extents.keys().copied().collect();
-        cluster_starts.sort_unstable();
-        let char_bytes: Vec<usize> = text[r.clone()].char_indices().map(|(b, _)| r.start + b).collect();
+        let char_bytes: Vec<usize> = self.text[r.clone()].char_indices().map(|(b, _)| r.start + b).collect();
         let mut first_member = 0usize;
         for (ci, &cs) in cluster_starts.iter().enumerate() {
             let (x0, x1, rtl) = extents[&cs];
@@ -560,70 +612,97 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
             for (mi, b) in members.iter().enumerate() {
                 let f = mi as f32 / n;
                 let x = if rtl { x1 - (x1 - x0) * f } else { x0 + (x1 - x0) * f };
-                carets.push((base + b, x));
+                carets.push((self.base + b, x));
             }
         }
-        // underlined segments of rich layouts: clusters set in an underlined style, merged
+        carets
+    }
+
+    /// Underlined segments of rich layouts: clusters set in an underlined style, merged.
+    fn underline_segments(&self, ce: usize, extents: &Extents, cluster_starts: &[usize]) -> Vec<(f32, f32, u16)> {
         let mut underlines: Vec<(f32, f32, u16)> = Vec::new();
-        if sty.rich() {
-            let mut segs: Vec<(f32, f32, u16)> = cluster_starts
-                .iter()
-                .filter(|&&cs| cs < ce)
-                .filter_map(|&cs| {
-                    let si = sty.at(base + cs);
-                    sty.list[si].underline.then(|| (extents[&cs].0, extents[&cs].1, si as u16))
-                })
-                .collect();
-            segs.sort_by(|a, b| a.0.total_cmp(&b.0));
-            for sg in segs {
-                match underlines.last_mut() {
-                    Some(l) if l.2 == sg.2 && (sg.0 - l.1).abs() < 0.01 => l.1 = l.1.max(sg.1),
-                    _ => underlines.push(sg),
-                }
+        if !self.sty.rich() {
+            return underlines;
+        }
+        let mut segs: Vec<(f32, f32, u16)> = cluster_starts
+            .iter()
+            .filter(|&&cs| cs < ce)
+            .filter_map(|&cs| {
+                let si = self.sty.at(self.base + cs);
+                self.sty.list[si].underline.then(|| (extents[&cs].0, extents[&cs].1, si as u16))
+            })
+            .collect();
+        segs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for sg in segs {
+            match underlines.last_mut() {
+                Some(l) if l.2 == sg.2 && (sg.0 - l.1).abs() < 0.01 => l.1 = l.1.max(sg.1),
+                _ => underlines.push(sg),
             }
         }
-        // end of line caret
-        let end_x = match chars.iter().rev().find(|c| c.0 < r.end && c.0 >= r.start) {
-            Some(c) => {
-                let cs = cluster_starts.iter().rev().find(|s| **s <= c.0).copied();
-                match cs.and_then(|s| extents.get(&s)) {
-                    Some(&(x0, x1, rtl)) => {
-                        if rtl {
-                            x0
-                        } else {
-                            x1
-                        }
-                    }
-                    None => pen,
+        underlines
+    }
+
+    /// Caret position at the end of line `r`: past its last character's cluster.
+    fn end_caret_x(&self, r: &Range<usize>, extents: &Extents, cluster_starts: &[usize], pen: f32) -> f32 {
+        let Some(c) = self.chars.iter().rev().find(|c| c.byte < r.end && c.byte >= r.start) else { return 0.0 };
+        let cs = cluster_starts.iter().rev().find(|s| **s <= c.byte).copied();
+        match cs.and_then(|s| extents.get(&s)) {
+            Some(&(x0, x1, rtl)) => {
+                if rtl {
+                    x0
+                } else {
+                    x1
                 }
             }
-            None => 0.0,
-        };
-        carets.push((base + r.end, end_x));
-        carets.sort_by_key(|c| c.0);
-        carets.dedup_by_key(|c| c.0);
+            None => pen,
+        }
+    }
+
+    /// Line ascent and descent: the primary font's, grown by any fallback or larger-run glyph.
+    fn line_metrics(&self, glyphs: &[Glyph]) -> (f32, f32) {
+        let style = self.sty.list[0];
+        let primary = self.sty.prim[0];
+        let pm = fonts::face(primary.face).metrics(style.size);
         let mut asc = pm.ascent;
         let mut desc = pm.descent;
-        for g in &glyphs {
-            if g.face != primary.face || (sty.rich() && g.size != style.size) {
+        for g in glyphs {
+            if g.face != primary.face || (self.sty.rich() && g.size != style.size) {
                 let m = fonts::face(g.face).metrics(g.size);
                 asc = asc.max(m.ascent);
                 desc = desc.max(m.descent);
             }
         }
-        let content_w = if space_extra > 0.0 { para.width.unwrap_or(content) } else { content };
-        out.push(ParaLine {
-            range: base + r.start..base + r.end,
+        (asc, desc)
+    }
+
+    /// Lay out line `li` of `nlines`, covering bytes `r` of the paragraph.
+    fn line(&self, li: usize, nlines: usize, r: Range<usize>) -> ParaLine {
+        let (ce, tw) = self.trailing_ws(&r);
+        let content = self.range_w(r.start..ce);
+        let space_extra = self.space_extra(li, nlines, &r, ce, content);
+        let (glyphs, extents, pen) = self.place_glyphs(&r, ce, space_extra);
+        let mut cluster_starts: Vec<usize> = extents.keys().copied().collect();
+        cluster_starts.sort_unstable();
+        let mut carets = self.caret_stops(&r, &extents, &cluster_starts);
+        let underlines = self.underline_segments(ce, &extents, &cluster_starts);
+        let end_x = self.end_caret_x(&r, &extents, &cluster_starts, pen);
+        carets.push((self.base + r.end, end_x));
+        carets.sort_by_key(|c| c.0);
+        carets.dedup_by_key(|c| c.0);
+        let (ascent, descent) = self.line_metrics(&glyphs);
+        let content_w = if space_extra > 0.0 { self.style.width.unwrap_or(content) } else { content };
+        let base_rtl = self.bidi.paragraphs[0].level.is_rtl();
+        ParaLine {
+            range: self.base + r.start..self.base + r.end,
             glyphs,
             carets,
             content: content_w,
             left_trim: if base_rtl { tw } else { 0.0 },
-            ascent: asc,
-            descent: desc,
+            ascent,
+            descent,
             underlines,
-        });
+        }
     }
-    out
 }
 
 /// Lay out `text` (paragraphs separated by `\n`).

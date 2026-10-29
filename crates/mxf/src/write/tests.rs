@@ -77,10 +77,8 @@ fn build_op1a() -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
-#[test]
-fn op1a_reads_back() {
-    let f = build_op1a();
-    let m = open(&f).unwrap();
+/// The OP1a file's partitions, names, timecode and operational pattern.
+fn assert_op1a_metadata(m: &crate::MxfFile) {
     assert!(m.warnings.is_empty(), "{:?}", m.warnings);
     assert_eq!(m.operational_pattern, OperationalPattern::Generalized { item: 1, package: 1 });
     assert_eq!(m.material_package_name.as_deref(), Some("Test Clip"));
@@ -91,7 +89,10 @@ fn op1a_reads_back() {
     let kinds: Vec<(PartitionKind, u8)> = m.partitions.iter().map(|p| (p.kind, p.status)).collect();
     assert_eq!(kinds, vec![(PartitionKind::Header, 4), (PartitionKind::Body, 4), (PartitionKind::Footer, 4)]);
     assert!(m.partitions.iter().all(|p| p.footer_partition == m.partitions[2].offset));
-    assert_eq!(m.tracks.len(), 3);
+}
+
+/// The picture track's parameters and every frame's bytes.
+fn assert_op1a_picture(m: &crate::MxfFile, f: &[u8]) {
     let v = m.track_of_kind(TrackKind::Picture).unwrap();
     let t = &m.tracks[v];
     assert_eq!(t.codec, Codec::ProRes { profile: Some(3) });
@@ -105,6 +106,10 @@ fn op1a_reads_back() {
     for i in 0..10 {
         assert_eq!(m.read_sample(&f, v, i).unwrap(), prores_like(i));
     }
+}
+
+/// Both sound tracks' layout and samples.
+fn assert_op1a_sound(m: &crate::MxfFile, f: &[u8]) {
     let sounds: Vec<usize> = (0..m.tracks.len()).filter(|&i| m.tracks[i].kind == TrackKind::Sound).collect();
     assert_eq!(sounds.len(), 2);
     let s0 = &m.tracks[sounds[0]];
@@ -123,11 +128,26 @@ fn op1a_reads_back() {
         let want = ((k as i64 * 1000) % 8_000_000) as i32 - 4_000_000;
         assert_eq!(pcm[0][k], want as f32 / 8_388_608.0, "sample {k}");
     }
+}
+
+/// The index has one entry per content package with two sound slices.
+fn assert_op1a_index(m: &crate::MxfFile) {
     // index: one entry per content package, two sound slices
     let entries: usize = m.index_segments.iter().map(|s| s.entries.len()).sum();
     assert_eq!(entries, 10);
     assert_eq!(m.index_segments[0].slice_count, 2);
     assert_eq!(m.index_segments[0].delta_entries.len(), 3);
+}
+
+#[test]
+fn op1a_reads_back() {
+    let f = build_op1a();
+    let m = open(&f).unwrap();
+    assert_op1a_metadata(&m);
+    assert_eq!(m.tracks.len(), 3);
+    assert_op1a_picture(&m, &f);
+    assert_op1a_sound(&m, &f);
+    assert_op1a_index(&m);
 }
 
 #[test]
