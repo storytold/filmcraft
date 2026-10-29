@@ -56,6 +56,10 @@ pub enum Hit {
     WorkArea {
         edge: Option<Edge>,
     },
+    /// An In or Out mark on the timeline ruler.
+    InOut {
+        edge: Edge,
+    },
     Clip {
         track: TrackId,
         clip: ClipId,
@@ -125,10 +129,41 @@ pub fn work_area_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Option
     })
 }
 
+/// The In or Out mark under the pointer on the timeline ruler if within reach (px).
+pub fn in_out_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Edge> {
+    if !layout.ruler.contains(pos) {
+        return None;
+    }
+    let y_top = layout.ruler.min.y + 28.0;
+    let y_bot = layout.ruler.max.y - 3.0;
+    if pos.y < y_top || pos.y > y_bot {
+        return None;
+    }
+    let rate = seq.settings.frame_rate;
+    let zone = EDGE_PX;
+    let in_dist = seq.mark_in.map(|i| (layout.x_of(i) - pos.x).abs()).filter(|&d| d <= zone);
+    let out_dist = seq.mark_out.map(|o| (layout.x_of(o + rate.frame_duration()) - pos.x).abs()).filter(|&d| d <= zone);
+    match (in_dist, out_dist) {
+        (Some(di), Some(do_)) => {
+            if di <= do_ {
+                Some(Edge::In)
+            } else {
+                Some(Edge::Out)
+            }
+        }
+        (Some(_), None) => Some(Edge::In),
+        (None, Some(_)) => Some(Edge::Out),
+        (None, None) => None,
+    }
+}
+
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     if layout.ruler.contains(pos) {
         if let Some(edge) = work_area_at(seq, layout, pos) {
             return Hit::WorkArea { edge };
+        }
+        if let Some(edge) = in_out_at(seq, layout, pos) {
+            return Hit::InOut { edge };
         }
         return Hit::Ruler;
     }
@@ -507,6 +542,34 @@ mod tests {
         seq.markers[1].duration = Tick(-1);
         assert!(marker_range_rect(&layout, &seq.markers[1]).is_none());
         assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 9);
+    }
+
+    #[test]
+    fn in_out_marks_have_two_ends_and_hit_on_ruler() {
+        let (mut seq, l, _) = fixture(clips());
+        assert_eq!(hit(&seq, &l, pos2(200.0, 32.0)), Hit::Ruler);
+        seq.mark_in = Some(Tick::from_seconds_f64(2.0));
+        seq.mark_out = Some(Tick::from_seconds_f64(5.0));
+        let rate = seq.settings.frame_rate;
+        let xin = l.x_of(seq.mark_in.unwrap());
+        let xout = l.x_of(seq.mark_out.unwrap() + rate.frame_duration());
+        // Above the bracket vertical span (e.g. y = 20.0), clicks remain plain ruler hits for scrubbing
+        assert_eq!(hit(&seq, &l, pos2(xin, 20.0)), Hit::Ruler);
+        assert_eq!(hit(&seq, &l, pos2(xout, 20.0)), Hit::Ruler);
+        // Within the bracket vertical span (y = 32.0), handle hits are detected
+        assert_eq!(hit(&seq, &l, pos2(xin, 32.0)), Hit::InOut { edge: Edge::In });
+        assert_eq!(hit(&seq, &l, pos2(xout, 32.0)), Hit::InOut { edge: Edge::Out });
+        assert_eq!(hit(&seq, &l, pos2((xin + xout) * 0.5, 32.0)), Hit::Ruler);
+
+        // When handles overlap in close proximity, the closer handle wins
+        let t0 = Tick::from_seconds_f64(10.0);
+        seq.mark_in = Some(t0);
+        seq.mark_out = Some(t0);
+        let xin2 = l.x_of(seq.mark_in.unwrap());
+        let xout2 = l.x_of(seq.mark_out.unwrap() + rate.frame_duration());
+        let mid_x = (xin2 + xout2) * 0.5;
+        assert_eq!(hit(&seq, &l, pos2(mid_x + 1.0, 32.0)), Hit::InOut { edge: Edge::Out });
+        assert_eq!(hit(&seq, &l, pos2(mid_x - 1.0, 32.0)), Hit::InOut { edge: Edge::In });
     }
 
     #[test]

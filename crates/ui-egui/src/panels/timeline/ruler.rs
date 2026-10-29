@@ -82,12 +82,8 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
     let label_y = ruler.min.y + 24.0;
     let tick_base = ruler.max.y - 3.0;
     let (minor, label_step) = ruler_steps(layout.pps / rate.as_f64(), rate.timecode_base());
-    // In/Out band
-    if seq.mark_in.is_some() || seq.mark_out.is_some() {
-        let a = layout.x_of(seq.mark_in.unwrap_or(Tick::ZERO));
-        let b = layout.x_of(seq.mark_out.map(|o| o + rate.frame_duration()).unwrap_or(seq.duration()));
-        clip.rect_filled(Rect::from_min_max(pos2(a, label_y + 7.0), pos2(b, tick_base)), 0.0, Color32::from_rgb(0x5c, 0x5c, 0x5c));
-    }
+    // In/Out band and draggable brackets
+    draw_in_out(app, ui, &clip, layout, seq, t);
     // split points: a short bracket with a V or A tag (video above, audio below)
     let sp = seq.split;
     for (t, is_in, tag, low) in
@@ -235,5 +231,53 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if ui.button(tl!("Minimize All Tracks")).clicked() {
         app.ui.timeline.video_track_h = 26.0;
         app.ui.timeline.audio_track_h = 26.0;
+    }
+}
+
+/// The timeline In/Out band and draggable brackets.
+fn draw_in_out(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, layout: &Layout, seq: &Sequence, t: &Tokens) {
+    let rate = seq.settings.frame_rate;
+    let ruler = layout.ruler;
+    let label_y = ruler.min.y + 24.0;
+    let tick_base = ruler.max.y - 3.0;
+    let (shown_in, shown_end) = match app.tl.drag {
+        Some(Drag::InOut { start, end, .. }) => (start, end),
+        _ => (seq.mark_in, seq.mark_out.map(|o| o + rate.frame_duration())),
+    };
+    if shown_in.is_none() && shown_end.is_none() {
+        return;
+    }
+    let a = layout.x_of(shown_in.unwrap_or(Tick::ZERO));
+    let b = layout.x_of(shown_end.unwrap_or(seq.duration()));
+    clip.rect_filled(Rect::from_min_max(pos2(a, label_y + 7.0), pos2(b, tick_base)), 0.0, Color32::from_rgb(0x5c, 0x5c, 0x5c));
+    let bracket_col = t.timecode;
+    let y_top = label_y + 4.0;
+    let y_bot = tick_base;
+    if let Some(in_t) = shown_in {
+        let x = layout.x_of(in_t);
+        clip.line_segment([pos2(x, y_top), pos2(x, y_bot)], Stroke::new(2.5, bracket_col));
+        clip.line_segment([pos2(x, y_top), pos2(x + 5.0, y_top)], Stroke::new(2.0, bracket_col));
+        clip.line_segment([pos2(x, y_bot), pos2(x + 5.0, y_bot)], Stroke::new(2.0, bracket_col));
+        app.auto.add("timeline.range.in", Rect::from_min_max(pos2(x - 5.0, y_top), pos2(x + 5.0, y_bot)), "In point");
+        let fmt = |tick: Tick| format_time(tick, rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
+        if ui.rect_contains_pointer(Rect::from_min_max(pos2(x - EDGE_PX, y_top), pos2(x + EDGE_PX, y_bot)).intersect(ruler)) {
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique("in-tip"), egui::PopupAnchor::Pointer).show(|ui| {
+                ui.label(tlf!("In: {tc}", tc = fmt(in_t)));
+            });
+        }
+    }
+    if let Some(end_t) = shown_end {
+        let x = layout.x_of(end_t);
+        clip.line_segment([pos2(x, y_top), pos2(x, y_bot)], Stroke::new(2.5, bracket_col));
+        clip.line_segment([pos2(x, y_top), pos2(x - 5.0, y_top)], Stroke::new(2.0, bracket_col));
+        clip.line_segment([pos2(x, y_bot), pos2(x - 5.0, y_bot)], Stroke::new(2.0, bracket_col));
+        app.auto.add("timeline.range.out", Rect::from_min_max(pos2(x - 5.0, y_top), pos2(x + 5.0, y_bot)), "Out point");
+        let fmt = |tick: Tick| format_time(tick, rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
+        if ui.rect_contains_pointer(Rect::from_min_max(pos2(x - EDGE_PX, y_top), pos2(x + EDGE_PX, y_bot)).intersect(ruler)) {
+            let out_tick = Tick(end_t.0.saturating_sub(rate.frame_duration().0).max(0));
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique("out-tip"), egui::PopupAnchor::Pointer).show(|ui| {
+                ui.label(tlf!("Out: {tc}", tc = fmt(out_tick)));
+            });
+        }
     }
 }

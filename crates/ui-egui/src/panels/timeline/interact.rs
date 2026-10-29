@@ -293,6 +293,7 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 (Tool::Selection, Grab::Other(Hit::Transition { edge: None, .. })) => CursorIcon::Grab,
                 (_, Grab::Other(Hit::WorkArea { edge: Some(_) })) => CursorIcon::ResizeColumn,
                 (_, Grab::Other(Hit::WorkArea { edge: None })) => CursorIcon::Grab,
+                (_, Grab::Other(Hit::InOut { .. })) => CursorIcon::ResizeColumn,
                 (_, Grab::Volume { .. }) if tool == Tool::Pen || mods.command => CursorIcon::Crosshair,
                 (_, Grab::Volume { .. }) => CursorIcon::ResizeVertical,
                 (Tool::Razor, Grab::Other(Hit::Clip { .. })) => CursorIcon::Crosshair,
@@ -368,6 +369,12 @@ fn start_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response
         (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
         (_, Grab::Other(Hit::WorkArea { edge })) => {
             seq.work_area.filter(|_| resp.drag_started()).map(|w| Drag::WorkArea { edge, from: t, start: w.start, end: w.end() })
+        }
+        (_, Grab::Other(Hit::InOut { edge })) => {
+            let fd = rate.frame_duration();
+            let start = seq.mark_in;
+            let end = seq.mark_out.map(|o| o + fd);
+            resp.drag_started().then_some(Drag::InOut { edge, from: t, start, end })
         }
         (Tool::Hand, _) => Some(Drag::Pan { last: p, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll }),
         (Tool::Zoom, _) => {
@@ -669,6 +676,25 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 };
                 Some(Drag::WorkArea { edge, from, start, end })
             }
+            Drag::InOut { edge, from, start, end } => {
+                let fd = rate.frame_duration();
+                let s0 = seq.mark_in.unwrap_or(start.unwrap_or(Tick::ZERO));
+                let e0 = seq.mark_out.map(|o| o + fd).unwrap_or(end.unwrap_or_else(|| seq.duration().max(s0 + fd)));
+                let delta = rate.snap_nearest(t_here - from);
+                let (start, end) = match edge {
+                    filmcraft_edit::Edge::In => {
+                        let new_s = snap(app, seq, layout, rate.snap_nearest(s0 + delta), &[]).max(Tick::ZERO);
+                        let capped = if seq.mark_out.is_some() || end.is_some() { new_s.min(e0 - fd) } else { new_s };
+                        (Some(capped), end)
+                    }
+                    filmcraft_edit::Edge::Out => {
+                        let new_e = snap(app, seq, layout, rate.snap_nearest(e0 + delta), &[]);
+                        let capped = if seq.mark_in.is_some() || start.is_some() { new_e.max(s0 + fd) } else { new_e.max(fd) };
+                        (start, Some(capped))
+                    }
+                };
+                Some(Drag::InOut { edge, from, start, end })
+            }
             Drag::Volume(v) => Some(Drag::Volume(crate::panels::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
             Drag::Marquee { start, before, add, individual } => {
                 let r = Rect::from_two_pos(start, p);
@@ -751,6 +777,30 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                 Drag::WorkArea { start, end, .. } => {
                     let moved = seq.work_area.is_some_and(|w| (w.start, w.end()) != (start, end));
                     moved.then(|| app.session.execute("sequence.setWorkArea", json!({"start": start.0, "end": end.0})))
+                }
+                Drag::InOut { edge, start, end, .. } => {
+                    let fd = seq.settings.frame_rate.frame_duration();
+                    match edge {
+                        filmcraft_edit::Edge::In => {
+                            if let Some(s) = start && seq.mark_in != Some(s) {
+                                Some(app.session.execute("markers.markIn", json!({"time": s.0})))
+                            } else {
+                                None
+                            }
+                        }
+                        filmcraft_edit::Edge::Out => {
+                            if let Some(e) = end {
+                                let out_tick = Tick(e.0.saturating_sub(fd.0).max(0));
+                                if seq.mark_out != Some(out_tick) {
+                                    Some(app.session.execute("markers.markOut", json!({"time": out_tick.0})))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                    }
                 }
                 Drag::Marquee { start, before, add, individual } => {
                     app.session.state.selection = before;

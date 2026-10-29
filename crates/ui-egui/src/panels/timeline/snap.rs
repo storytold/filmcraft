@@ -63,6 +63,7 @@ pub fn hit_json(app: &FilmcraftApp, pos: Pos2, mods: egui::Modifiers) -> Value {
     match grab.hit() {
         Hit::Ruler => json!({"hit": "ruler", "time": t.0}),
         Hit::WorkArea { edge } => json!({"hit": "workArea", "edge": edge.map(|e| format!("{e:?}")), "time": t.0}),
+        Hit::InOut { edge } => json!({"hit": "inOut", "edge": format!("{edge:?}"), "time": t.0}),
         Hit::Clip { track, clip, edge } => {
             json!({"hit": "clip", "track": track.0, "clip": clip.0, "edge": edge.map(|e| format!("{e:?}")), "kind": kind, "time": t.0})
         }

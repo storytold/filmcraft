@@ -227,6 +227,13 @@ pub enum Drag {
         start: Tick,
         end: Tick,
     },
+    /// An In or Out mark dragged by its handle on the timeline ruler.
+    InOut {
+        edge: filmcraft_edit::Edge,
+        from: Tick,
+        start: Option<Tick>,
+        end: Option<Tick>,
+    },
     Pan {
         last: Pos2,
         start_scroll: f64,
@@ -341,9 +348,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     // in/out shading across tracks
-    if seq.mark_in.is_some() || seq.mark_out.is_some() {
-        let a = layout.x_of(seq.mark_in.unwrap_or(Tick::ZERO)).max(content.min.x);
-        let b = layout.x_of(seq.mark_out.map(|o| o + rate.frame_duration()).unwrap_or(seq.duration())).min(content.max.x);
+    let (shown_in, shown_end) = match app.tl.drag {
+        Some(Drag::InOut { start, end, .. }) => (start, end),
+        _ => (seq.mark_in, seq.mark_out.map(|o| o + rate.frame_duration())),
+    };
+    if shown_in.is_some() || shown_end.is_some() {
+        let a = layout.x_of(shown_in.unwrap_or(Tick::ZERO)).max(content.min.x);
+        let b = layout.x_of(shown_end.unwrap_or(seq.duration())).min(content.max.x);
         if b > a {
             painter.rect_filled(Rect::from_min_max(pos2(a, content.min.y), pos2(b, content.max.y)), 0.0, t.in_out_shade);
         }
