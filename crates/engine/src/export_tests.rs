@@ -707,6 +707,38 @@ fn bulk_queue_names_are_unique_and_settings_are_shared() {
 }
 
 #[test]
+fn bulk_queue_null_fields_use_single_export_fallbacks() {
+    let mut s = demo();
+    let first = s.state.active_sequence.unwrap();
+    s.execute("file.newSequence", json!({"name": "Active Cut"})).unwrap();
+    let active = s.state.active_sequence.unwrap();
+    assert_ne!(first, active);
+    for sequence in [None, Some(first.0)] {
+        for optional in [
+            json!({}),
+            json!({"sequences": null}),
+            json!({"ranges": null}),
+            json!({"sequences": null, "ranges": null}),
+            json!({"sequences": null, "ranges": []}),
+        ] {
+            let mut params = json!({"format": "wav", "path": "fallback.wav", "range": "custom", "startSeconds": 0.25, "endSeconds": 0.75});
+            params.as_object_mut().unwrap().extend(optional.as_object().unwrap().clone());
+            if let Some(id) = sequence {
+                params["sequence"] = json!(id);
+            }
+            let before = s.export_queue.items.len();
+            s.execute("export.queue.add", params.clone()).unwrap_or_else(|error| panic!("{params}: {error}"));
+            assert_eq!(s.export_queue.items.len(), before + 1, "{params}");
+            let item = s.export_queue.items.last().unwrap();
+            assert_eq!(item.sequence.0, sequence.unwrap_or(active.0), "{params}");
+            let range = item.settings.range.unwrap();
+            assert_eq!(range.start, filmcraft_time::Tick::from_seconds_f64(0.25), "{params}");
+            assert_eq!(range.duration, filmcraft_time::Tick::from_seconds_f64(0.5), "{params}");
+        }
+    }
+}
+
+#[test]
 fn bulk_queue_rejects_hostile_batches_atomically() {
     use crate::export_tools::MAX_QUEUE_ITEMS;
     let mut s = demo();
@@ -719,6 +751,9 @@ fn bulk_queue_rejects_hostile_batches_atomically() {
     for params in [
         json!({"sequences": []}),
         json!({"sequences": "all"}),
+        json!({"sequences": false}),
+        json!({"sequences": 1}),
+        json!({"sequences": {}}),
         json!({"sequences": [first, "bad"]}),
         json!({"sequences": [first, -1]}),
         json!({"sequences": [first, 1.5]}),
@@ -727,6 +762,9 @@ fn bulk_queue_rejects_hostile_batches_atomically() {
         json!({"sequences": [first, u64::MAX]}),
         json!({"sequences": vec![first; MAX_QUEUE_ITEMS + 1]}),
         json!({"sequences": [first], "ranges": "entire"}),
+        json!({"sequences": [first], "ranges": false}),
+        json!({"sequences": [first], "ranges": 1}),
+        json!({"sequences": [first], "ranges": {}}),
         json!({"sequences": [first], "ranges": vec!["entire"; MAX_QUEUE_ITEMS + 1]}),
         json!({"sequences": [first, second], "ranges": vec!["entire"; MAX_QUEUE_ITEMS]}),
         json!({"sequences": [first], "ranges": vec!["entire"; MAX_QUEUE_ITEMS]}),

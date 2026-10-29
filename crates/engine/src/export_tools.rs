@@ -752,8 +752,8 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             }
             seqs
         }
+        None | Some(Value::Null) => vec![sequence_param(s, p, cmd)?],
         Some(_) => return Err(bad(cmd, format!("sequences must be an array of at most {MAX_QUEUE_ITEMS} ids"))),
-        None => vec![sequence_param(s, p, cmd)?],
     };
     if seqs.is_empty() {
         return Err(bad(cmd, "no sequences"));
@@ -766,8 +766,8 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let ranges: Vec<Option<&Value>> = match p.get("ranges") {
         Some(Value::Array(a)) if a.is_empty() => vec![p.get("range")],
         Some(Value::Array(a)) if a.len() <= MAX_QUEUE_ITEMS => a.iter().map(Some).collect(),
+        None | Some(Value::Null) => vec![p.get("range")],
         Some(_) => return Err(bad(cmd, format!("ranges must be an array of at most {MAX_QUEUE_ITEMS} ranges"))),
-        None => vec![p.get("range")],
     };
     let count = seqs.len().checked_mul(ranges.len()).ok_or_else(|| bad(cmd, "too many queued exports"))?;
     if s.export_queue.items.len().checked_add(count).is_none_or(|total| total > MAX_QUEUE_ITEMS) {
