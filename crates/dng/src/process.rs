@@ -333,12 +333,12 @@ pub fn develop_with(raw: &RawImage, p: &Params, neutral: &V3, matrix: &M3, o: &P
     if active(&p.opcodes.list3, false) {
         return with_list3(norm, aw, ah, spp, p, crop, o, &m, neutral);
     }
-    Ok(full(norm, aw, ah, spp, p.cfa.as_ref(), crop, o, &m))
+    Ok(full(norm, (aw, ah, spp), p.cfa.as_ref(), crop, o, &m))
 }
 
 /// Steps 5–7 at full resolution: demosaic, crop and colour, row by row without intermediate
 /// pictures for 2 × 2 Bayer patterns and LinearRaw.
-fn full(norm: Vec<f32>, aw: usize, ah: usize, spp: usize, cfa: Option<&Pattern>, (cx, cy, cw, ch): Rect, o: &ProcessOptions, m: &[[f32; 3]; 3]) -> Developed {
+fn full(norm: Vec<f32>, (aw, ah, spp): (usize, usize, usize), cfa: Option<&Pattern>, (cx, cy, cw, ch): Rect, o: &ProcessOptions, m: &[[f32; 3]; 3]) -> Developed {
     let mono = cfa.is_none() && spp == 1;
     let mut rgba = vec![0f32; cw * ch * 4];
     match cfa {

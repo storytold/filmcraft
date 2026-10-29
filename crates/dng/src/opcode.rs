@@ -668,8 +668,8 @@ mod tests {
         v.iter().flat_map(|x| x.to_be_bytes()).collect()
     }
 
-    fn area(t: u32, l: u32, b: u32, r: u32, plane: u32, planes: u32, rp: u32, cp: u32) -> Vec<u8> {
-        u(&[t, l, b, r, plane, planes, rp, cp])
+    fn area(rect_plane_pitch: [u32; 8]) -> Vec<u8> {
+        u(&rect_plane_pitch)
     }
 
     /// Run one opcode on a float picture (range 0–1).
@@ -718,7 +718,7 @@ mod tests {
         assert!(apply(std::slice::from_ref(&trim), &mut img, false).is_ok());
         assert!(apply(&[Opcode { flags: 0, ..trim }], &mut img, false).is_err());
         // preview quality skips flagged opcodes
-        let scale = Opcode { id: 12, version: 0x0103_0000, flags: 2, params: [area(0, 0, 2, 2, 0, 1, 1, 1), u(&[2]), f(&[0.5, 0.5])].concat() };
+        let scale = Opcode { id: 12, version: 0x0103_0000, flags: 2, params: [area([0, 0, 2, 2, 0, 1, 1, 1]), u(&[2]), f(&[0.5, 0.5])].concat() };
         apply(std::slice::from_ref(&scale), &mut img, true).unwrap();
         assert_eq!(img.data[0], 0.5);
         apply(&[scale], &mut img, false).unwrap();
@@ -734,7 +734,7 @@ mod tests {
         let orig = data.clone();
         // MapTable: 16-bit identity reversed (v → 1 − v)
         let table: Vec<u8> = (0..=65_535u32).rev().flat_map(|v| (v as u16).to_be_bytes()).collect();
-        run1(7, [area(0, 0, 2, 4, 1, 1, 1, 2), u(&[65_536]), table].concat(), &mut data, 4, 2, 2).unwrap();
+        run1(7, [area([0, 0, 2, 4, 1, 1, 1, 2]), u(&[65_536]), table].concat(), &mut data, 4, 2, 2).unwrap();
         for (i, (a, b)) in data.iter().zip(&orig).enumerate() {
             let (x, p) = ((i / 2) % 4, i % 2);
             let want = if p == 1 && x % 2 == 0 { 1.0 - (b * 65_535.0).round() / 65_535.0 } else { *b };
@@ -742,19 +742,19 @@ mod tests {
         }
         // MapPolynomial 0.1 + 0.5 x on everything
         let mut data = orig.clone();
-        run1(8, [area(0, 0, 2, 4, 0, 2, 1, 1), u(&[1]), d(&[0.1, 0.5])].concat(), &mut data, 4, 2, 2).unwrap();
+        run1(8, [area([0, 0, 2, 4, 0, 2, 1, 1]), u(&[1]), d(&[0.1, 0.5])].concat(), &mut data, 4, 2, 2).unwrap();
         for (a, b) in data.iter().zip(&orig) {
             assert!(close(*a, 0.1 + 0.5 * b));
         }
         // DeltaPerRow (rows 0, 1), ScalePerColumn (columns 1..3)
         let mut data = orig.clone();
-        run1(10, [area(0, 0, 2, 4, 0, 2, 1, 1), u(&[2]), f(&[0.01, -0.02])].concat(), &mut data, 4, 2, 2).unwrap();
+        run1(10, [area([0, 0, 2, 4, 0, 2, 1, 1]), u(&[2]), f(&[0.01, -0.02])].concat(), &mut data, 4, 2, 2).unwrap();
         for (i, (a, b)) in data.iter().zip(&orig).enumerate() {
             let want = (b + if i < 8 { 0.01 } else { -0.02 }).clamp(0.0, 1.0);
             assert!(close(*a, want), "{i}");
         }
         let mut data = orig.clone();
-        run1(13, [area(0, 1, 2, 3, 0, 2, 1, 1), u(&[2]), f(&[2.0, 0.5])].concat(), &mut data, 4, 2, 2).unwrap();
+        run1(13, [area([0, 1, 2, 3, 0, 2, 1, 1]), u(&[2]), f(&[2.0, 0.5])].concat(), &mut data, 4, 2, 2).unwrap();
         for (i, (a, b)) in data.iter().zip(&orig).enumerate() {
             let x = (i / 2) % 4;
             let want = match x {
@@ -766,11 +766,11 @@ mod tests {
         }
         // too few deltas for the rows is an error
         let mut data = orig.clone();
-        assert!(run1(10, [area(0, 0, 2, 4, 0, 2, 1, 1), u(&[1]), f(&[0.1])].concat(), &mut data, 4, 2, 2).is_err());
+        assert!(run1(10, [area([0, 0, 2, 4, 0, 2, 1, 1]), u(&[1]), f(&[0.1])].concat(), &mut data, 4, 2, 2).is_err());
         // zero pitch is an error, areas outside the picture are clamped
-        assert!(run1(12, [area(0, 0, 2, 4, 0, 1, 0, 1), u(&[0])].concat(), &mut data, 4, 2, 2).is_err());
+        assert!(run1(12, [area([0, 0, 2, 4, 0, 1, 0, 1]), u(&[0])].concat(), &mut data, 4, 2, 2).is_err());
         let mut data = orig.clone();
-        run1(12, [area(1, 3, 99, 99, 5, 9, 1, 1), u(&[1]), f(&[0.0])].concat(), &mut data, 4, 2, 2).unwrap();
+        run1(12, [area([1, 3, 99, 99, 5, 9, 1, 1]), u(&[1]), f(&[0.0])].concat(), &mut data, 4, 2, 2).unwrap();
         assert_eq!(data, orig, "plane 5 does not exist");
     }
 
@@ -780,7 +780,7 @@ mod tests {
         let (w, h) = (8, 8);
         let mut data = vec![0.25f32; w * h];
         let gains = f(&[1.0, 2.0, 3.0, 4.0]);
-        run1(9, [area(0, 0, 8, 8, 0, 1, 1, 1), u(&[2, 2]), d(&[0.5, 0.5, 0.0, 0.0]), u(&[1]), gains].concat(), &mut data, w, h, 1).unwrap();
+        run1(9, [area([0, 0, 8, 8, 0, 1, 1, 1]), u(&[2, 2]), d(&[0.5, 0.5, 0.0, 0.0]), u(&[1]), gains].concat(), &mut data, w, h, 1).unwrap();
         let g = |x: usize, y: usize| data[y * w + x] / 0.25;
         assert!(close(g(0, 0), 1.0));
         assert!(close(g(4, 0), 2.0), "{}", g(4, 0));
@@ -789,7 +789,7 @@ mod tests {
         assert!(close(g(7, 7), 4.0), "replicated past the map");
         // a map larger than its parameters is an error
         let mut data = vec![0.25f32; 4];
-        assert!(run1(9, [area(0, 0, 2, 2, 0, 1, 1, 1), u(&[1000, 1000]), d(&[0.1, 0.1, 0.0, 0.0]), u(&[1]), f(&[1.0])].concat(), &mut data, 2, 2, 1).is_err());
+        assert!(run1(9, [area([0, 0, 2, 2, 0, 1, 1, 1]), u(&[1000, 1000]), d(&[0.1, 0.1, 0.0, 0.0]), u(&[1]), f(&[1.0])].concat(), &mut data, 2, 2, 1).is_err());
     }
 
     #[test]
