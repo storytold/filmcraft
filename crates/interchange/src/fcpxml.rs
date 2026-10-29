@@ -137,6 +137,23 @@ struct Imp<'a, 'i, 'r> {
     effects: HashMap<String, String>,
 }
 
+/// Where an element's keyframe times start, the media time it starts at and its playback speed.
+#[derive(Clone, Copy)]
+struct LocalTiming {
+    local_start: Tick,
+    src_in: Tick,
+    speed: f64,
+}
+
+/// Where a written clip element sits: offset in its parent's local time, connected lane, and
+/// whether it is on the primary storyline.
+#[derive(Clone, Copy)]
+struct ClipPlacement {
+    offset: Tick,
+    lane: Option<i32>,
+    primary: bool,
+}
+
 /// Placement context of a storyline element.
 struct Ctx {
     seq_rate: FrameRate,
@@ -438,7 +455,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 if let Some(l) = el.attribute("label").and_then(Label::from_name) {
                     ti.label = l;
                 }
-                self.adjustments(&mut ti, el, local_start, src_in, speed, ctx, kind);
+                self.adjustments(&mut ti, el, LocalTiming { local_start, src_in, speed }, ctx, kind);
                 if !primary || kind == TrackKind::Audio {
                     ti.markers = self.markers(el, local_start, src_in, speed, ctx.seq_rate);
                 }
@@ -508,8 +525,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         out
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn adjustments(&mut self, ti: &mut TrackItem, el: Node, local_start: Tick, src_in: Tick, speed: f64, ctx: &Ctx, kind: TrackKind) {
+    fn adjustments(&mut self, ti: &mut TrackItem, el: Node, timing: LocalTiming, ctx: &Ctx, kind: TrackKind) {
+        let LocalTiming { local_start, src_in, speed } = timing;
         // keyframe time (element-local) -> media time
         let kt = |t: Tick| src_in + scaled(t - local_start, speed);
         let (fw, fh) = (ctx.frame.0 as f64, ctx.frame.1 as f64);
@@ -861,7 +878,7 @@ impl Exp<'_, '_> {
                     trans_after.push((els.len(), self.transition_xml(tr, tc0, rate)));
                 }
                 let audio = merged.get(&it.id).and_then(|a| seq.audio_tracks[0].item(*a));
-                let el = self.clip_el(it, audio, TrackKind::Video, tc0 + it.start, None, seq, true);
+                let el = self.clip_el(it, audio, TrackKind::Video, ClipPlacement { offset: tc0 + it.start, lane: None, primary: true }, seq);
                 els.push(el);
                 for tr in v1.transitions.iter().filter(|tr| tr.from == Some(it.id) && tr.to.is_none()) {
                     trans_after.push((els.len(), self.transition_xml(tr, tc0, rate)));
@@ -898,7 +915,7 @@ impl Exp<'_, '_> {
                     let local = els[pi].local + (it.start - els[pi].start);
                     let audio =
                         if kind == TrackKind::Video { merged.get(&it.id).and_then(|a| seq.audio_tracks.get(ti).and_then(|t| t.item(*a))) } else { None };
-                    let el = self.clip_el(it, audio, kind, local, Some(lane), seq, false);
+                    let el = self.clip_el(it, audio, kind, ClipPlacement { offset: local, lane: Some(lane), primary: false }, seq);
                     let s = self.render_el(&el, 0);
                     els[pi].children.push(s);
                 }
@@ -969,8 +986,8 @@ impl Exp<'_, '_> {
     }
 
     /// A clip element at `offset` (in its parent's local time).
-    #[allow(clippy::too_many_arguments)]
-    fn clip_el(&mut self, it: &TrackItem, audio: Option<&TrackItem>, kind: TrackKind, offset: Tick, lane: Option<i32>, seq: &Sequence, primary: bool) -> El {
+    fn clip_el(&mut self, it: &TrackItem, audio: Option<&TrackItem>, kind: TrackKind, at: ClipPlacement, seq: &Sequence) -> El {
+        let ClipPlacement { offset, lane, primary } = at;
         let rate = seq.settings.frame_rate;
         let base = base_item(self.p, it.item);
         let is_seq = matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_)));

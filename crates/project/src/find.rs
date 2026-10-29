@@ -123,7 +123,7 @@ pub fn column_text(p: &Project, it: &ProjectItem, column: &str) -> String {
         return it.metadata.get(key).cloned().unwrap_or_default();
     }
     let media = match &it.kind {
-        ItemKind::Media(m) => Some(m),
+        ItemKind::Media(m) => Some(m.as_ref()),
         ItemKind::Subclip { parent, .. } => p.item(*parent).and_then(|x| x.as_media()),
         _ => None,
     };

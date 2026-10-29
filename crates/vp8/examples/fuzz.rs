@@ -90,7 +90,7 @@ fn main() {
                 Ok(n) => decoded += n,
                 Err(e) => {
                     panics += 1;
-                    let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+                    let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(ToString::to_string)).unwrap_or_default();
                     eprintln!("PANIC {path} iteration {it} mode {mode}: {msg}");
                 }
             }

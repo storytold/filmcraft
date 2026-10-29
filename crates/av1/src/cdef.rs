@@ -3,7 +3,7 @@
 use crate::frame::{FrameBuf, RowBand};
 use crate::par::Pool;
 use crate::postfilter::bands;
-use crate::spec_tables::*;
+use crate::spec_tables::{CDEF_DIRECTIONS, CDEF_PRI_TAPS, CDEF_SEC_TAPS, CDEF_UV_DIR, DIV_TABLE};
 use crate::state::FrameState;
 
 /// Run CDEF on `fs.cur`; returns the CdefFrame, or None when no block is filtered (CdefFrame
@@ -55,7 +55,7 @@ fn cdef_block(fs: &FrameState, out: &mut [RowBand; 3], r: usize, c: usize, idx: 
     let var_str = if (var >> 6) != 0 { (31 - ((var >> 6) as u32).leading_zeros()).min(12) as i32 } else { 0 };
     pri = if var != 0 { (pri * (4 + var_str) + 8) >> 4 } else { 0 };
     let damping = cp.damping as i32 + coeff_shift as i32;
-    filter(fs, out, 0, r, c, pri, sec, damping, dir);
+    filter(fs, out, 0, (r, c), Strength { pri, sec, damping, dir });
     if fs.num_planes == 1 {
         return true;
     }
@@ -63,8 +63,9 @@ fn cdef_block(fs: &FrameState, out: &mut [RowBand; 3], r: usize, c: usize, idx: 
     let sec = (cp.uv_sec[idx] << coeff_shift) as i32;
     let dir = if pri == 0 { 0 } else { CDEF_UV_DIR[fs.ssx][fs.ssy][y_dir] as usize };
     let damping = cp.damping as i32 + coeff_shift as i32 - 1;
-    filter(fs, out, 1, r, c, pri, sec, damping, dir);
-    filter(fs, out, 2, r, c, pri, sec, damping, dir);
+    let st = Strength { pri, sec, damping, dir };
+    filter(fs, out, 1, (r, c), st);
+    filter(fs, out, 2, (r, c), st);
     true
 }
 
@@ -134,8 +135,17 @@ fn constrain(diff: i32, threshold: i32, adj: u32) -> i32 {
     if diff < 0 { -mag } else { mag }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn filter(fs: &FrameState, out: &mut [RowBand; 3], plane: usize, r: usize, c: usize, pri: i32, sec: i32, damping: i32, dir: usize) {
+/// Primary/secondary strengths, damping and direction for one plane of one 8x8 block.
+#[derive(Clone, Copy)]
+struct Strength {
+    pri: i32,
+    sec: i32,
+    damping: i32,
+    dir: usize,
+}
+
+fn filter(fs: &FrameState, out: &mut [RowBand; 3], plane: usize, (r, c): (usize, usize), st: Strength) {
+    let Strength { pri, sec, damping, dir } = st;
     if pri == 0 && sec == 0 {
         // Every tap contributes 0 and the clamp to [min, max] keeps x: CdefFrame = CurrFrame.
         return;
