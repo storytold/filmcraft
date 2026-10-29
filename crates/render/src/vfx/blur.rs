@@ -3,7 +3,7 @@
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::*;
+use super::{Affine, FxCtx, Image, Vec2, bv, chv, enc, fv, luma, over, pv, smoothstep};
 use crate::effects::gaussian;
 
 /// Radius of a regular `n`-gon (circumradius 1, rotated by `rot`) in direction `theta`;

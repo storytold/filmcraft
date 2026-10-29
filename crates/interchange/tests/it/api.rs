@@ -25,11 +25,11 @@ fn merge_reallocates_ids_and_keeps_links() {
     let mut src = Project::new("src");
     let a = media(&mut src, "/m/a.mov", true, true, r);
     let s = sequence(&mut src, "S", r, false);
-    let v1 = clip(&mut src, s, TrackKind::Video, 0, a, 0, 50, 0);
-    let a1 = clip(&mut src, s, TrackKind::Audio, 0, a, 0, 50, 0);
+    let v1 = clip(&mut src, s, TrackKind::Video, 0, a, 0..50, 0);
+    let a1 = clip(&mut src, s, TrackKind::Audio, 0, a, 0..50, 0);
     link(&mut src, s, &[v1, a1]);
-    let v2 = clip(&mut src, s, TrackKind::Video, 0, a, 50, 50, 100);
-    transition(&mut src, s, TrackKind::Video, 0, "cross_dissolve", Some(v1), Some(v2), 45, 10, TransitionAlign::CenterAtCut);
+    let v2 = clip(&mut src, s, TrackKind::Video, 0, a, 50..50 + (50), 100);
+    transition(&mut src, s, (TrackKind::Video, 0), "cross_dissolve", (Some(v1), Some(v2)), 45..45 + (10), TransitionAlign::CenterAtCut);
     let (bytes, _) = export(&src, s, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
     let (frag, _) = import(&bytes, Format::Fcp7Xml, None).unwrap();
 

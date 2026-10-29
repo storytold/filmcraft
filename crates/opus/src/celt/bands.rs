@@ -2,7 +2,7 @@
 //! (RFC 6716 §4.3.4 – §4.3.6).
 
 use super::rate::{Mode, QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, get_pulses};
-use super::tables::*;
+use super::tables::{E_MEANS, EBANDS, NB_EBANDS, ORDERY, SHORT_MDCT};
 use crate::range::{BITRES, RangeDecoder, ilog};
 
 pub const SPREAD_NONE: usize = 0;
@@ -71,7 +71,7 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
         x[i + stride] = c * x2 + s * x1;
         x[i] = c * x1 + ms * x2;
     }
-    if len >= 2 * stride + 1 {
+    if len > 2 * stride {
         for i in (0..=len - 2 * stride - 1).rev() {
             let x1 = x[i];
             let x2 = x[i + stride];
@@ -269,8 +269,48 @@ struct Split {
     qalloc: i32,
 }
 
+#[derive(Clone, Copy)]
+struct ThetaBand {
+    bb: usize,
+    b0: usize,
+    lm: i32,
+    stereo: bool,
+}
+
+struct QuantPartitionInput<'a> {
+    samples: usize,
+    bits: i32,
+    blocks: usize,
+    lowband: Option<&'a [f32]>,
+    lm: i32,
+    gain: f32,
+    fill: u32,
+}
+
+struct QuantBandInput<'a> {
+    samples: usize,
+    bits: i32,
+    blocks: usize,
+    lowband: Option<&'a mut [f32]>,
+    lm: i32,
+    lowband_out: Option<&'a mut [f32]>,
+    gain: f32,
+    fill: u32,
+}
+
+struct QuantBandStereoInput<'a> {
+    samples: usize,
+    bits: i32,
+    blocks: usize,
+    lowband: Option<&'a mut [f32]>,
+    lm: i32,
+    lowband_out: Option<&'a mut [f32]>,
+    fill: u32,
+}
+
 impl BandCtx<'_, '_, '_> {
-    fn compute_theta(&mut self, n: i32, b: &mut i32, bb: usize, b0: usize, lm: i32, stereo: bool, fill: &mut u32) -> Split {
+    fn compute_theta(&mut self, n: i32, b: &mut i32, band: ThetaBand, fill: &mut u32) -> Split {
+        let ThetaBand { bb, b0, lm, stereo } = band;
         let i = self.i;
         let pulse_cap = self.m.log_n[i] + lm * (1 << BITRES);
         let offset = (pulse_cap >> 1) - if stereo && n == 2 { QTHETA_OFFSET_TWOPHASE } else { QTHETA_OFFSET };
@@ -301,13 +341,13 @@ impl BandCtx<'_, '_, '_> {
                 if fm < (half * (half + 1)) >> 1 {
                     let it = (isqrt32(8 * fm + 1) - 1) >> 1;
                     fs = it + 1;
-                    fl = it * (it + 1) >> 1;
+                    fl = (it * (it + 1)) >> 1;
                     itheta = it as i32;
                 } else {
                     let q = qn as u32;
                     let it = (2 * (q + 1) - isqrt32(8 * (ft - fm - 1) + 1)) >> 1;
                     fs = q + 1 - it;
-                    fl = ft - ((q + 1 - it) * (q + 2 - it) >> 1);
+                    fl = ft - (((q + 1 - it) * (q + 2 - it)) >> 1);
                     itheta = it as i32;
                 }
                 self.dec.update(fl, fl + fs, ft);
@@ -362,8 +402,8 @@ impl BandCtx<'_, '_, '_> {
         1
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn quant_partition(&mut self, x: &mut [f32], n: usize, mut b: i32, mut bb: usize, lowband: Option<&[f32]>, mut lm: i32, gain: f32, mut fill: u32) -> u32 {
+    fn quant_partition(&mut self, x: &mut [f32], input: QuantPartitionInput<'_>) -> u32 {
+        let QuantPartitionInput { samples: n, bits: mut b, blocks: mut bb, lowband, mut lm, gain, mut fill } = input;
         let b0 = bb;
         let i = self.i;
         let cache = self.m.cache(lm, i);
@@ -376,7 +416,7 @@ impl BandCtx<'_, '_, '_> {
                 fill = (fill & 1) | (fill << 1);
             }
             bb = (bb + 1) >> 1;
-            let sp = self.compute_theta(n as i32, &mut b, bb, b0, lm, false, &mut fill);
+            let sp = self.compute_theta(n as i32, &mut b, ThetaBand { bb, b0, lm, stereo: false }, &mut fill);
             let mid = sp.imid as f32 / 32768.0;
             let side = sp.iside as f32 / 32768.0;
             let mut delta = sp.delta;
@@ -394,19 +434,25 @@ impl BandCtx<'_, '_, '_> {
             let mut rebalance = self.remaining_bits;
             let mut cm;
             if mbits >= sbits {
-                cm = self.quant_partition(xa, n, mbits, bb, lowband, lm, gain * mid, fill);
+                cm = self.quant_partition(xa, QuantPartitionInput { samples: n, bits: mbits, blocks: bb, lowband, lm, gain: gain * mid, fill });
                 rebalance = mbits - (rebalance - self.remaining_bits);
                 if rebalance > 3 << BITRES && sp.itheta != 0 {
                     sbits += rebalance - (3 << BITRES);
                 }
-                cm |= self.quant_partition(ya, n, sbits, bb, next_lowband2, lm, gain * side, fill >> bb) << (b0 >> 1);
+                cm |= self.quant_partition(
+                    ya,
+                    QuantPartitionInput { samples: n, bits: sbits, blocks: bb, lowband: next_lowband2, lm, gain: gain * side, fill: fill >> bb },
+                ) << (b0 >> 1);
             } else {
-                cm = self.quant_partition(ya, n, sbits, bb, next_lowband2, lm, gain * side, fill >> bb) << (b0 >> 1);
+                cm = self.quant_partition(
+                    ya,
+                    QuantPartitionInput { samples: n, bits: sbits, blocks: bb, lowband: next_lowband2, lm, gain: gain * side, fill: fill >> bb },
+                ) << (b0 >> 1);
                 rebalance = sbits - (rebalance - self.remaining_bits);
                 if rebalance > 3 << BITRES && sp.itheta != 16384 {
                     mbits += rebalance - (3 << BITRES);
                 }
-                cm |= self.quant_partition(xa, n, mbits, bb, lowband, lm, gain * mid, fill);
+                cm |= self.quant_partition(xa, QuantPartitionInput { samples: n, bits: mbits, blocks: bb, lowband, lm, gain: gain * mid, fill });
             }
             return cm;
         }
@@ -465,19 +511,8 @@ impl BandCtx<'_, '_, '_> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn quant_band(
-        &mut self,
-        x: &mut [f32],
-        n: usize,
-        b: i32,
-        mut bb: usize,
-        mut lowband: Option<&mut [f32]>,
-        lm: i32,
-        lowband_out: Option<&mut [f32]>,
-        gain: f32,
-        mut fill: u32,
-    ) -> u32 {
+    fn quant_band(&mut self, x: &mut [f32], input: QuantBandInput<'_>) -> u32 {
+        let QuantBandInput { samples: n, bits: b, blocks: mut bb, mut lowband, lm, lowband_out, gain, mut fill } = input;
         let n0 = n;
         let mut n_b = n;
         let b0_orig = bb;
@@ -519,7 +554,7 @@ impl BandCtx<'_, '_, '_> {
         {
             deinterleave_hadamard(lb, n_b >> recombine, b0 << recombine, long_blocks, &mut tmp);
         }
-        let mut cm = self.quant_partition(x, n, b, bb, lowband.as_deref(), lm, gain, fill);
+        let mut cm = self.quant_partition(x, QuantPartitionInput { samples: n, bits: b, blocks: bb, lowband: lowband.as_deref(), lm, gain, fill });
         if b0 > 1 {
             interleave_hadamard(x, n_b >> recombine, b0 << recombine, long_blocks, &mut tmp);
         }
@@ -547,24 +582,13 @@ impl BandCtx<'_, '_, '_> {
         cm & ((1u32 << bb) - 1)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn quant_band_stereo(
-        &mut self,
-        x: &mut [f32],
-        y: &mut [f32],
-        n: usize,
-        mut b: i32,
-        bb: usize,
-        lowband: Option<&mut [f32]>,
-        lm: i32,
-        lowband_out: Option<&mut [f32]>,
-        mut fill: u32,
-    ) -> u32 {
+    fn quant_band_stereo(&mut self, x: &mut [f32], y: &mut [f32], input: QuantBandStereoInput<'_>) -> u32 {
+        let QuantBandStereoInput { samples: n, bits: mut b, blocks: bb, lowband, lm, lowband_out, mut fill } = input;
         let orig_fill = fill;
         if n == 1 {
             return self.quant_band_n1(x, Some(y), lowband_out);
         }
-        let sp = self.compute_theta(n as i32, &mut b, bb, bb, lm, true, &mut fill);
+        let sp = self.compute_theta(n as i32, &mut b, ThetaBand { bb, b0: bb, lm, stereo: true }, &mut fill);
         let mid = sp.imid as f32 / 32768.0;
         let side = sp.iside as f32 / 32768.0;
         let mut cm;
@@ -583,11 +607,11 @@ impl BandCtx<'_, '_, '_> {
             }
             let sign = (1 - 2 * sign) as f32;
             if c {
-                cm = self.quant_band(y, n, mbits, bb, lowband, lm, lowband_out, 1.0, orig_fill);
+                cm = self.quant_band(y, QuantBandInput { samples: n, bits: mbits, blocks: bb, lowband, lm, lowband_out, gain: 1.0, fill: orig_fill });
                 x[0] = -sign * y[1];
                 x[1] = sign * y[0];
             } else {
-                cm = self.quant_band(x, n, mbits, bb, lowband, lm, lowband_out, 1.0, orig_fill);
+                cm = self.quant_band(x, QuantBandInput { samples: n, bits: mbits, blocks: bb, lowband, lm, lowband_out, gain: 1.0, fill: orig_fill });
                 y[0] = -sign * x[1];
                 y[1] = sign * x[0];
             }
@@ -607,19 +631,21 @@ impl BandCtx<'_, '_, '_> {
             self.remaining_bits -= sp.qalloc;
             let mut rebalance = self.remaining_bits;
             if mbits >= sbits {
-                cm = self.quant_band(x, n, mbits, bb, lowband, lm, lowband_out, 1.0, fill);
+                cm = self.quant_band(x, QuantBandInput { samples: n, bits: mbits, blocks: bb, lowband, lm, lowband_out, gain: 1.0, fill });
                 rebalance = mbits - (rebalance - self.remaining_bits);
                 if rebalance > 3 << BITRES && sp.itheta != 0 {
                     sbits += rebalance - (3 << BITRES);
                 }
-                cm |= self.quant_band(y, n, sbits, bb, None, lm, None, side, fill >> bb);
+                cm |= self
+                    .quant_band(y, QuantBandInput { samples: n, bits: sbits, blocks: bb, lowband: None, lm, lowband_out: None, gain: side, fill: fill >> bb });
             } else {
-                cm = self.quant_band(y, n, sbits, bb, None, lm, None, side, fill >> bb);
+                cm = self
+                    .quant_band(y, QuantBandInput { samples: n, bits: sbits, blocks: bb, lowband: None, lm, lowband_out: None, gain: side, fill: fill >> bb });
                 rebalance = sbits - (rebalance - self.remaining_bits);
                 if rebalance > 3 << BITRES && sp.itheta != 16384 {
                     mbits += rebalance - (3 << BITRES);
                 }
-                cm |= self.quant_band(x, n, mbits, bb, lowband, lm, lowband_out, 1.0, fill);
+                cm |= self.quant_band(x, QuantBandInput { samples: n, bits: mbits, blocks: bb, lowband, lm, lowband_out, gain: 1.0, fill });
             }
         }
         if n != 2 {
@@ -660,28 +686,50 @@ fn stereo_merge(x: &mut [f32], y: &mut [f32], mid: f32) {
 }
 
 /// Decodes all band shapes (`quant_all_bands`, decoder side).
-#[allow(clippy::too_many_arguments)]
-pub fn quant_all_bands(
-    m: &Mode,
-    start: usize,
-    end: usize,
-    x_buf: &mut [f32],
-    y_buf: Option<&mut [f32]>,
-    collapse_masks: &mut [u32],
-    pulses: &[i32; NB_EBANDS],
-    short_blocks: bool,
-    spread: usize,
-    mut dual_stereo: bool,
-    intensity: usize,
-    tf_res: &[i32; NB_EBANDS],
-    total_bits: i32,
-    mut balance: i32,
-    dec: &mut RangeDecoder,
-    lm: usize,
-    coded_bands: usize,
-    seed: &mut u32,
-    disable_inv: bool,
-) {
+pub struct QuantAllBandsInput<'a, 'd> {
+    pub mode: &'a Mode,
+    pub start: usize,
+    pub end: usize,
+    pub x_buf: &'a mut [f32],
+    pub y_buf: Option<&'a mut [f32]>,
+    pub collapse_masks: &'a mut [u32],
+    pub pulses: &'a [i32; NB_EBANDS],
+    pub short_blocks: bool,
+    pub spread: usize,
+    pub dual_stereo: bool,
+    pub intensity: usize,
+    pub tf_res: &'a [i32; NB_EBANDS],
+    pub total_bits: i32,
+    pub balance: i32,
+    pub decoder: &'a mut RangeDecoder<'d>,
+    pub lm: usize,
+    pub coded_bands: usize,
+    pub seed: &'a mut u32,
+    pub disable_inv: bool,
+}
+
+pub fn quant_all_bands(input: QuantAllBandsInput<'_, '_>) {
+    let QuantAllBandsInput {
+        mode: m,
+        start,
+        end,
+        x_buf,
+        y_buf,
+        collapse_masks,
+        pulses,
+        short_blocks,
+        spread,
+        mut dual_stereo,
+        intensity,
+        tf_res,
+        total_bits,
+        mut balance,
+        decoder: dec,
+        lm,
+        coded_bands,
+        seed,
+        disable_inv,
+    } = input;
     let mm = 1usize << lm;
     let bb = if short_blocks { mm } else { 1 };
     let norm_offset = mm * EBANDS[start] as usize;
@@ -790,13 +838,15 @@ pub fn quant_all_bands(
                 &mut scratch[..n]
             });
             let lo = if last { None } else { Some(&mut norm[out_off..out_off + n]) };
-            x_cm = ctx.quant_band(x, n, b / 2, bb, lb, lm as i32, lo, 1.0, x_cm);
+            x_cm =
+                ctx.quant_band(x, QuantBandInput { samples: n, bits: b / 2, blocks: bb, lowband: lb, lm: lm as i32, lowband_out: lo, gain: 1.0, fill: x_cm });
             let lb2 = effective_lowband.map(|e| {
                 scratch2[..n].copy_from_slice(&norm2[e..e + n]);
                 &mut scratch2[..n]
             });
             let lo2 = if last { None } else { Some(&mut norm2[out_off..out_off + n]) };
-            y_cm = ctx.quant_band(y, n, b / 2, bb, lb2, lm as i32, lo2, 1.0, y_cm);
+            y_cm =
+                ctx.quant_band(y, QuantBandInput { samples: n, bits: b / 2, blocks: bb, lowband: lb2, lm: lm as i32, lowband_out: lo2, gain: 1.0, fill: y_cm });
         } else {
             let lb = effective_lowband.map(|e| {
                 scratch[..n].copy_from_slice(&norm[e..e + n]);
@@ -805,9 +855,16 @@ pub fn quant_all_bands(
             let lo = if last { None } else { Some(&mut norm[out_off..out_off + n]) };
             if let Some(yb) = y_buf.as_deref_mut() {
                 let y = &mut yb[xo..xo + n];
-                x_cm = ctx.quant_band_stereo(x, y, n, b, bb, lb, lm as i32, lo, x_cm | y_cm);
+                x_cm = ctx.quant_band_stereo(
+                    x,
+                    y,
+                    QuantBandStereoInput { samples: n, bits: b, blocks: bb, lowband: lb, lm: lm as i32, lowband_out: lo, fill: x_cm | y_cm },
+                );
             } else {
-                x_cm = ctx.quant_band(x, n, b, bb, lb, lm as i32, lo, 1.0, x_cm | y_cm);
+                x_cm = ctx.quant_band(
+                    x,
+                    QuantBandInput { samples: n, bits: b, blocks: bb, lowband: lb, lm: lm as i32, lowband_out: lo, gain: 1.0, fill: x_cm | y_cm },
+                );
             }
             y_cm = x_cm;
         }
@@ -821,21 +878,23 @@ pub fn quant_all_bands(
 }
 
 /// Anti-collapse noise injection (RFC 6716 §4.3.5).
-#[allow(clippy::too_many_arguments)]
-pub fn anti_collapse(
-    x_buf: &mut [f32],
-    collapse_masks: &[u32],
-    lm: usize,
-    c: usize,
-    size: usize,
-    start: usize,
-    end: usize,
-    log_e: &[f32],
-    prev1: &[f32],
-    prev2: &[f32],
-    pulses: &[i32; NB_EBANDS],
-    mut seed: u32,
-) {
+pub struct AntiCollapseInput<'a> {
+    pub x_buf: &'a mut [f32],
+    pub collapse_masks: &'a [u32],
+    pub lm: usize,
+    pub channels: usize,
+    pub size: usize,
+    pub start: usize,
+    pub end: usize,
+    pub log_e: &'a [f32],
+    pub prev1: &'a [f32],
+    pub prev2: &'a [f32],
+    pub pulses: &'a [i32; NB_EBANDS],
+    pub seed: u32,
+}
+
+pub fn anti_collapse(input: AntiCollapseInput<'_>) {
+    let AntiCollapseInput { x_buf, collapse_masks, lm, channels: c, size, start, end, log_e, prev1, prev2, pulses, mut seed } = input;
     for i in start..end {
         let n0 = (EBANDS[i + 1] - EBANDS[i]) as usize;
         let depth = ((1 + pulses[i]) as u32 / n0 as u32) >> lm;
@@ -875,8 +934,19 @@ pub fn anti_collapse(
 }
 
 /// Multiplies the normalised shapes by the band energies (`denormalise_bands`).
-#[allow(clippy::too_many_arguments)]
-pub fn denormalise_bands(x: &[f32], freq: &mut [f32], band_log_e: &[f32], mut start: usize, mut end: usize, mm: usize, downsample: usize, silence: bool) {
+pub struct DenormaliseBandsInput<'a> {
+    pub x: &'a [f32],
+    pub freq: &'a mut [f32],
+    pub band_log_e: &'a [f32],
+    pub start: usize,
+    pub end: usize,
+    pub mm: usize,
+    pub downsample: usize,
+    pub silence: bool,
+}
+
+pub fn denormalise_bands(input: DenormaliseBandsInput<'_>) {
+    let DenormaliseBandsInput { x, freq, band_log_e, mut start, mut end, mm, downsample, silence } = input;
     let n = mm * SHORT_MDCT;
     let mut bound = mm * EBANDS[end] as usize;
     if downsample != 1 {

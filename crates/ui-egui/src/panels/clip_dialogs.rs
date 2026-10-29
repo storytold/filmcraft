@@ -41,7 +41,9 @@ use crate::state::ClipDialogDraft;
 type Elems = Vec<(String, egui::Rect, String)>;
 
 fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: impl Into<String>) {
-    elems.push((id.into(), r.rect, label.into()));
+    let label = label.into();
+    crate::widgets::accessible_name(r.clone(), label.clone());
+    elems.push((id.into(), r.rect, label));
 }
 
 /// Dialog title and automation prefix of a command's dialog.
@@ -271,11 +273,16 @@ fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &st
     });
 }
 
-fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, range: std::ops::RangeInclusive<f64>, suffix: &str) {
+struct NumberOptions {
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &'static str,
+}
+
+fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, options: NumberOptions) {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-        let r = ui.add(crate::widgets::number_drag(&mut v).range(range).suffix(suffix));
+        let r = ui.add(crate::widgets::number_drag(&mut v).range(options.range).suffix(options.suffix));
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
@@ -300,7 +307,7 @@ fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.clip_dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("clip-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("clip-dialog-before-drag"), &mut d);
     let Some((title, pre)) = meta(&d.command) else {
         app.ui.clip_dialog = None;
         return;
@@ -311,7 +318,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     // a never-saved project is saved through the Save dialog
     let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some();
     // the title is translated; the window keeps one id whatever the interface language
-    let id = egui::Id::new(("clip-dialog", pre));
+    let id = egui::Id::unique(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
@@ -363,20 +370,20 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
                 let has_v = p["video"].as_bool().unwrap_or(true);
                 ui.add_enabled_ui(has_v, |ui| {
-                    number(ui, &mut elems, pre, p, "width", tl!("Width:"), 16.0..=16384.0, " px");
-                    number(ui, &mut elems, pre, p, "height", tl!("Height:"), 16.0..=16384.0, " px");
-                    number(ui, &mut elems, pre, p, "fps", tl!("Frame Rate:"), 1.0..=240.0, " fps");
+                    number(ui, &mut elems, pre, p, "width", tl!("Width:"), NumberOptions { range: 16.0..=16384.0, suffix: " px" });
+                    number(ui, &mut elems, pre, p, "height", tl!("Height:"), NumberOptions { range: 16.0..=16384.0, suffix: " px" });
+                    number(ui, &mut elems, pre, p, "fps", tl!("Frame Rate:"), NumberOptions { range: 1.0..=240.0, suffix: " fps" });
                 });
                 text(ui, &mut elems, pre, p, "timecode", tl!("Media Start:"), 120.0);
-                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), 0.05..=86_400.0, " s");
+                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), NumberOptions { range: 0.05..=86_400.0, suffix: " s" });
             }
             "clip.nest" => {
                 // the name is ready to type over, and Enter accepts it
                 let mut v = p["name"].as_str().unwrap_or_default().to_string();
                 ui.horizontal(|ui| {
                     ui.label(tl!("Name:"));
-                    let id = egui::Id::new("nest-name");
-                    let r = ui.add(egui::TextEdit::singleline(&mut v).desired_width(240.0).id(id));
+                    let id = egui::Id::unique("nest-name");
+                    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut v).desired_width(240.0).id(id)), tl!("Name:"));
                     push(&mut elems, format!("{pre}.name"), &r, "Name:");
                     if r.changed() {
                         p["name"] = json!(v);
@@ -384,7 +391,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         action = Some("ok");
                     }
-                    let first = egui::Id::new("nest-name-focused");
+                    let first = egui::Id::unique("nest-name-focused");
                     if !ui.data(|d| d.get_temp::<bool>(first).unwrap_or(false)) {
                         ui.data_mut(|d| d.insert_temp(first, true));
                         r.request_focus();
@@ -515,7 +522,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             "clip.speedDuration" => {
-                number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), 0.01..=100_000.0, " %");
+                number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), NumberOptions { range: 0.01..=100_000.0, suffix: " %" });
                 // Duration follows the speed: the media shown stays the same
                 let (dur, was, fps) =
                     (d.info["duration"].as_i64().unwrap_or(0), d.info["speed"].as_f64().unwrap_or(1.0), d.info["fps"].as_f64().unwrap_or(24.0));
@@ -587,7 +594,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         action = Some("cancel");
     }
     if action.is_some() {
-        ctx.data_mut(|d| d.remove::<bool>(egui::Id::new("nest-name-focused")));
+        ctx.data_mut(|d| d.remove::<bool>(egui::Id::unique("nest-name-focused")));
     }
     match action {
         Some("cancel") => {

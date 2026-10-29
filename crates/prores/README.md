@@ -1,6 +1,6 @@
 # filmcraft-prores
 
-Clean-room Apple ProRes decoder and encoder in pure Rust, written from the public SMPTE RDD 36
+Clean-room Apple ProRes decoder and encoder in pure Rust, written from the public [SMPTE RDD 36:2022](https://pub.smpte.org/doc/rdd36/20220909-pub/rdd36-2022.pdf)
 bitstream description. Layer L0: depends only on `filmcraft-bitstream`, `thiserror` and (optional,
 feature `threads`, default on) `rayon`. Builds for `wasm32-unknown-unknown`; no `unsafe`.
 
@@ -94,6 +94,35 @@ noisy content; 4444 with an alpha disc) and writes them into a minimal test-only
 decodes them with `-xerror`, with no errors, and agrees with this decoder within ±1. HQ PSNR is
 69.9/69.2 dB (Y/C) on mandelbrot at 100% of the target rate. Busy content lands at 99.9–100.4%
 of the target.
+
+## Alpha bitstream conformance
+
+Every alpha difference is followed by a run code, including a final singleton
+(RDD 36:2022 §5.3.3, Tables 12–14). Omitting the final run produces a truncated
+alpha payload: FFmpeg may accept it, while macOS native HD decoding fails with AVFoundation `-11821` / underlying `-12137`. This affected
+both 4444 and 4444 XQ exports, including EffectCraft's alpha output
+([effectcraft#293](https://github.com/storytold/effectcraft/issues/293)).
+
+The encoder tests check exact singleton codewords at 8 and 16 bits, run-length
+boundaries through 2048 and split runs, final-value bit alignments, and complete
+encoded slices for both profiles and all four slice widths. A separate,
+bounds-checked parser follows the published syntax and requires every run and
+zero alignment bit; round-tripping through a permissive decoder alone cannot
+catch this defect.
+
+Native validation on Apple M5 / macOS 27.0.1 used 14 synthetic 1920×1080 clips:
+opaque, transparent, gradient, changing last pixel, moving block, noisy alpha,
+and RGB-only, for each 4444 profile. Before the fix, the gradient, last-pixel and
+noise cases failed in AVAssetReader (six clips); afterwards all 14 decoded all
+six frames. FFmpeg's decoded frame hashes are unchanged by the fix. Small
+128×32 clips passed even before the fix. Resolve itself and the reporter's
+M1 Pro / macOS 15.8 environment were not available for this check.
+
+EffectCraft 0.16.0's complete export pipeline was also tested using an animated
+synthetic PNG with varying alpha: 4444 / XQ × straight / premultiplied × motion
+blur off / on (eight six-frame HD movies). All eight failed native decoding with
+the pinned encoder, and all eight passed with this codec patched in. FFmpeg's
+decoded frame hashes remained identical for every before/after pair.
 
 ## Performance
 

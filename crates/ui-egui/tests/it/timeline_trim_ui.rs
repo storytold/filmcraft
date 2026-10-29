@@ -181,6 +181,67 @@ fn dragging_an_out_edge_inward_trims_the_clip() {
     assert_eq!(d.undo_steps(), undo0 + 1, "one undo step");
 }
 
+/// Duplicate frame markers stay inside a clip while its Out edge is dragged in, and follow the
+/// trim once it is released.
+#[test]
+fn duplicate_frame_markers_stay_inside_a_clip_being_trimmed() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let (item, start, source_in, duration) = {
+        let (_, it) = d.app().session.active_sequence().expect("sequence").find_item(ClipId(city)).expect("clip");
+        (it.item.0, it.start.0, it.source_in.0, it.duration.0)
+    };
+    d.exec("timeline.place", json!({"item": item, "track": "V2", "time": start, "sourceIn": source_in, "duration": duration, "audio": false}));
+    d.exec("sequence.showDuplicateFrameMarkers", json!({"on": true}));
+    d.frames(3);
+    let (x0, x1, y) = d.edges(city);
+    let by = ((x1 - x0) / 2.0).round();
+    let stripe_right = |d: &mut Driver| {
+        let els = d.ok("ui.elements", json!({"prefix": format!("timeline.duplicateFrames.{city}.")}));
+        els.as_array()
+            .expect("elements")
+            .iter()
+            .map(|e| (e["rect"][0].as_f64().expect("x") + e["rect"][2].as_f64().expect("w")) as f32)
+            .fold(f32::MIN, f32::max)
+    };
+    // the markers are worked out on a background thread
+    let t0 = std::time::Instant::now();
+    while stripe_right(&mut d) == f32::MIN && t0.elapsed().as_secs() < 30 {
+        d.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!((stripe_right(&mut d) - x1).abs() <= 2.0, "the stripe runs to the Out edge");
+    // press on the Out edge and move half the clip inward, without releasing
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    push(&mut d, egui::Event::PointerMoved(pos2(x1 - 3.0, y)));
+    d.frames(1);
+    push(&mut d, egui::Event::PointerButton { pos: pos2(x1 - 3.0, y), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    d.frames(1);
+    for i in 1..=by as usize {
+        push(&mut d, egui::Event::PointerMoved(pos2(x1 - 3.0 - i as f32, y)));
+        d.frames(1);
+    }
+    // (the painter's clip rect is rounded to whole pixels)
+    let body_right = |d: &mut Driver| {
+        let id = format!("timeline.clip.{city}");
+        let els = d.ok("ui.elements", json!({"prefix": id}));
+        let r = &els.as_array().expect("elements").iter().find(|e| e["id"] == id.as_str()).expect("clip")["rect"];
+        (r[0].as_f64().expect("x") + r[2].as_f64().expect("w")) as f32
+    };
+    let (during, right) = (stripe_right(&mut d), body_right(&mut d));
+    assert!(right < x1 - by / 2.0, "the clip is drawn trimmed: {right}");
+    assert!(during <= right + 1.5, "inside the trimmed clip during the drag: {during} > {right}");
+    push(
+        &mut d,
+        egui::Event::PointerButton { pos: pos2(x1 - 3.0 - by, y), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+    );
+    d.frames(3);
+    let (_, e1) = d.span(city);
+    assert!(e1 < start + duration, "trimmed");
+    let (after, right) = (stripe_right(&mut d), body_right(&mut d));
+    assert!(after <= right + 1.5, "after the trim: {after} > {right}");
+}
+
 /// Just right of a cut the clip on the right is grabbed: its In edge trims, and the clip on the
 /// left stays as it was. The left clip's Out edge used to claim both sides of the cut.
 #[test]
@@ -212,6 +273,49 @@ fn a_wobbly_click_on_an_edge_selects_the_edit_point() {
     let st = &d.app().session.state;
     assert!(st.edit_points.iter().any(|e| e.clip == ClipId(city) && e.out), "City_Night_Drive's Out edge is the edit point: {:?}", st.edit_points);
     assert!(!st.selection.contains(&ClipId(city)), "the clip is not selected");
+}
+
+/// Click a real rolling edge, then the Trim Monitor's +1 button: linked sound follows exactly once.
+fn linked_trim_monitor() -> Driver {
+    let mut d = Driver::demo();
+    let rate = d.app().session.sequence_rate();
+    let video = ClipId(d.v1_clip(CITY));
+    let q = d.app().session.active_sequence().unwrap();
+    let picture = q.find_item(video).unwrap().1;
+    let audio = q.audio_tracks[0].items.iter().find(|i| i.link.is_some() && i.link == picture.link).unwrap().id;
+    let cut = picture.end();
+    d.exec("tool.rolling", json!({}));
+    d.frames(4);
+    let (_, x, y) = d.edges(video.0);
+    d.drag(pos2(x - 2.0, y), pos2(x - 2.0, y), 1);
+    let points = &d.app().session.state.edit_points;
+    assert_eq!(points.len(), 2, "both linked edges selected: {points:?}");
+    assert!(points.iter().any(|e| e.clip == audio));
+    let before = d.app().session.project.clone();
+    d.ok("ui.click", json!({"id": "trimMonitor.forward"}));
+    d.frames(4);
+    for clip in [video, audio] {
+        assert_eq!(d.span(clip.0).1, (cut + rate.frame_duration()).0);
+    }
+    let after = d.app().session.project.clone();
+    d.exec("edit.undo", json!({}));
+    assert_eq!(*d.app().session.project, *before);
+    d.exec("edit.redo", json!({}));
+    assert_eq!(*d.app().session.project, *after);
+    d
+}
+
+/// #3085: the timeline gesture and Trim Monitor button keep picture and sound synchronized.
+#[test]
+fn trim_monitor_button_rolls_linked_audio_once() {
+    linked_trim_monitor();
+}
+
+/// Visual check of the linked edit brackets and Trim Monitor after one frame of rolling.
+#[test]
+#[ignore = "renders a screenshot; requires a GPU"]
+fn screenshot_linked_trim_monitor() {
+    linked_trim_monitor().screenshot("linked-trim-monitor");
 }
 
 /// A moved clip stays under the point it was grabbed by. It used to lag behind the pointer by the
@@ -363,6 +467,39 @@ fn an_edge_dragged_past_the_media_stops_at_its_end() {
     push(&mut d, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
     d.frames(2);
     assert_eq!(d.span(last).1, e0 + limit.0, "released where it was shown");
+}
+
+/// With the Rolling Edit tool, a cut dragged far past the end of the right clip stops while the
+/// drag is still in progress, at the same place the roll lands on release.
+#[test]
+fn a_cut_rolled_past_its_limit_stops_there() {
+    use filmcraft_ui_egui::panels::timeline::Drag;
+    let mut d = Driver::demo();
+    let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
+    d.ok("ui.menu.invoke", json!({"id": "tool.rolling"}));
+    let (cut, x1, y) = d.edges(dunes);
+    let (_, e0) = d.span(city);
+    let far = filmcraft_time::Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+    let limit = filmcraft_engine::commands::roll_delta(&d.app().session, ClipId(city), ClipId(dunes), far).expect("limit");
+    assert!(filmcraft_time::Tick::ZERO < limit && limit < far, "the roll has a limit: {limit:?}");
+    let (from, to) = (pos2(cut + 3.0, y), pos2(x1 + 100.0, y));
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    push(&mut d, egui::Event::PointerMoved(from));
+    d.frames(1);
+    push(&mut d, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    d.frames(1);
+    for i in 1..=60 {
+        push(&mut d, egui::Event::PointerMoved(from + (to - from) * (i as f32 / 60.0)));
+        d.frames(1);
+    }
+    match &d.app().tl.drag {
+        Some(Drag::Roll { delta, .. }) => assert_eq!(*delta, limit, "the rolled cut stops at the roll's limit"),
+        other => panic!("not rolling: {other:?}"),
+    }
+    push(&mut d, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    d.frames(2);
+    assert_eq!(d.span(city).1, e0 + limit.0, "released where it was shown");
+    assert_eq!(d.span(dunes).0, e0 + limit.0);
 }
 
 /// Dragging a picture in the Trim Monitor must not deadlock: the shift bookkeeping used to call
@@ -562,4 +699,34 @@ fn linked_video_drag_adds_video_and_audio_tracks() {
 #[test]
 fn linked_audio_drag_adds_audio_and_video_tracks() {
     move_existing_clip_to_a_new_track(true, true);
+}
+
+/// #3300: with Alt held, dragging the edge of one side of a linked clip trims only that side; the
+/// linked audio keeps its range. Without Alt the partner still follows.
+#[test]
+fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
+    for alt in [true, false] {
+        let mut d = Driver::demo();
+        let seq = d.app().session.active_sequence().expect("sequence");
+        let (video, sound) = seq.video_tracks[0]
+            .items
+            .iter()
+            .find_map(|v| {
+                let a = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|a| v.link.is_some() && a.link == v.link)?;
+                Some((v.id.0, a.id.0))
+            })
+            .expect("a linked clip on V1");
+        let (v0, a0) = (d.span(video), d.span(sound));
+        let (_, x1, y) = d.edges(video);
+        d.ok("ui.drag", json!({"from": {"x": x1 - 3.0, "y": y}, "to": {"x": x1 - 63.0, "y": y}, "steps": 20, "modifiers": {"alt": alt}}));
+        d.frames(2);
+        let v1 = d.span(video);
+        assert_eq!(v1.0, v0.0, "alt={alt}: the In point stays");
+        assert!(v1.1 < v0.1, "alt={alt}: the video's Out edge was trimmed: {v0:?} -> {v1:?}");
+        if alt {
+            assert_eq!(d.span(sound), a0, "Alt-trim leaves the linked audio alone");
+        } else {
+            assert_eq!(d.span(sound).1, a0.1 - (v0.1 - v1.1), "the linked audio follows a plain trim");
+        }
+    }
 }

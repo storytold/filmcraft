@@ -350,14 +350,8 @@ pub fn layer_uid(e: &EffectInstance) -> u64 {
 }
 
 /// Give every layer without a uid a fresh one (unique among `layers`).
-pub fn ensure_uids(layers: &mut [EffectInstance]) {
-    let mut next = layers.iter().map(layer_uid).max().unwrap_or(0) + 1;
-    for l in layers.iter_mut() {
-        if layer_uid(l) == 0 {
-            l.layer.get_or_insert_with(Default::default).uid = next;
-            next += 1;
-        }
-    }
+pub fn ensure_uids(layers: &mut [EffectInstance]) -> bool {
+    graphic::ensure_layer_uids(layers)
 }
 
 // ------------------------------------------------------------------------------------------------
