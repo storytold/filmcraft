@@ -357,9 +357,10 @@ pub fn decode(data: &[u8], max_samples: usize) -> Result<Decoded> {
                 }
                 let mut hufs = Vec::with_capacity(comps.len());
                 for c in &comps {
-                    hufs.push(tables.get(c.table).and_then(|t| t.as_ref()).ok_or(Error::Malformed("lossless JPEG: missing Huffman table"))?);
+                    hufs.push(tables.get(c.table).and_then(Option::as_ref).ok_or(Error::Malformed("lossless JPEG: missing Huffman table"))?);
                 }
-                let samples = scan(data, pos + len, &hufs, width, height, precision, predictor, pt, restart_interval)?;
+                let params = ScanParams { width, height, precision, predictor, pt, restart: restart_interval };
+                let samples = scan(data, pos + len, &hufs, &params)?;
                 return Ok(Decoded { width, height, components: comps.len(), precision, predictor, samples });
             }
             0xC0..=0xC2 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => {
@@ -369,6 +370,17 @@ pub fn decode(data: &[u8], max_samples: usize) -> Result<Decoded> {
         }
         pos += len;
     }
+}
+
+/// Frame and scan parameters needed to decode one scan.
+struct ScanParams {
+    width: usize,
+    height: usize,
+    precision: u8,
+    predictor: u8,
+    pt: u8,
+    /// Restart interval in samples per component (0 = none).
+    restart: usize,
 }
 
 /// The next difference (F.2.2.1 and H.1.2.2): category and extra bits from the combined table
@@ -391,7 +403,8 @@ fn difference(bits: &mut Bits, h: &Huffman) -> Result<i32> {
 }
 
 /// Decode the entropy-coded data of one scan (H.1.2).
-fn scan(data: &[u8], start: usize, hufs: &[&Huffman], width: usize, height: usize, precision: u8, predictor: u8, pt: u8, restart: usize) -> Result<Vec<u16>> {
+fn scan(data: &[u8], start: usize, hufs: &[&Huffman], params: &ScanParams) -> Result<Vec<u16>> {
+    let ScanParams { width, height, precision, predictor, pt, restart } = *params;
     let nc = hufs.len();
     let row_len = width * nc;
     if restart != 0 && !restart.is_multiple_of(width) {
