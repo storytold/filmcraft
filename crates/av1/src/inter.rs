@@ -927,7 +927,7 @@ mod tests {
     }
 
     /// The per-sample 8-tap process of 7.11.3.4 (unscaled) with the phase 0 taps of filter `f`.
-    fn spec_phase0(refp: &Plane, last_x: i32, last_y: i32, px: i32, py: i32, j: usize, i: usize, f: usize, rnd: (u32, u32, u32)) -> i32 {
+    fn spec_phase0(refp: &Plane, (last_x, last_y): (i32, i32), (px, py): (i32, i32), (j, i): (usize, usize), f: usize, rnd: (u32, u32, u32)) -> i32 {
         let taps = &SUBPEL_FILTERS[f][0];
         let mut s1 = 0;
         for t1 in 0..8 {
@@ -976,7 +976,7 @@ mod tests {
                         for i in 0..h {
                             for j in 0..w {
                                 let want =
-                                    spec_phase0(&refp, last_x, last_y, px, py, j, i, (w * 3 + h) % SUBPEL_FILTERS.len(), rnd).clamp(0, max as i32) as u16;
+                                    spec_phase0(&refp, (last_x, last_y), (px, py), (j, i), (w * 3 + h) % SUBPEL_FILTERS.len(), rnd).clamp(0, max as i32) as u16;
                                 assert_eq!(
                                     pred[i * PRED_STRIDE + j].clamp(0, max as i32) as u16,
                                     want,
