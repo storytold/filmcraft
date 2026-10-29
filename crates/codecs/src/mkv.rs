@@ -13,7 +13,7 @@
 //! timestamps can't express: their packets run on from one another (see [`audio_starts`]).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use filmcraft_color::{ColorInfo, Matrix, Transfer};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
@@ -27,6 +27,12 @@ use crate::gop::{GopCache, VideoSamples};
 use crate::stream_color::ColorCodes;
 use crate::video::VideoDecoder;
 use crate::{CodecError, make_video_decoder};
+
+mod index;
+#[cfg(test)]
+mod progressive_tests;
+
+use index::{AUDIO_MARGIN_NS, Tables, open_index};
 
 pub fn sniff(b: &[u8]) -> bool {
     b.len() >= 4 && b[..4] == [0x1A, 0x45, 0xDF, 0xA3]
@@ -44,8 +50,6 @@ struct MkvAudio {
     /// Index into `MkvFile::tracks`.
     track: usize,
     state: Mutex<AudioState>,
-    /// Packet start positions in source sample frames.
-    starts: Vec<i64>,
     /// Decoder pre-roll after a seek, in source sample frames (0: prime with one packet).
     preroll: i64,
 }
@@ -53,7 +57,13 @@ struct MkvAudio {
 pub struct MkvSource {
     info: MediaInfo,
     bytes: crate::Src,
-    file: MkvFile,
+    /// The sample tables and what is derived from them. Replaced as the rest of a file that was
+    /// opened before it had all arrived gets indexed ([`index`]); a request works on one snapshot.
+    tables: RwLock<Arc<Tables>>,
+    /// Serialises the indexing of more of the file.
+    grow: Mutex<()>,
+    /// The track timestamp media time zero stands for ([`media_origin`]), taken off every sample.
+    origin: i64,
     vtrack: Option<usize>,
     /// Video codec as an ISO-BMFF sample entry (for the decoder factories).
     ventry: Option<SampleEntry>,
@@ -346,7 +356,7 @@ impl MkvSource {
     /// Open from a random-access reader: only the index is read now, samples on demand.
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
-        let mut file = filmcraft_matroska::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        let mut file = open_index(&bytes)?;
         let vtrack = file.tracks.iter().position(|t| t.kind == TrackKind::Video && !t.samples.is_empty());
         // every audio track is a stream (the track count comes from the file: capped)
         let atracks: Vec<usize> = file
@@ -408,7 +418,8 @@ impl MkvSource {
                 explicit_color = Some(color);
             }
             let secs = duration.seconds();
-            let bitrate = (secs > 0.0).then(|| (t.samples.iter().map(|s| s.size as u64).sum::<u64>() as f64 * 8.0 / secs) as u64);
+            // not known before the whole file is indexed
+            let bitrate = (secs > 0.0 && file.index_end.is_none()).then(|| (t.samples.iter().map(|s| s.size as u64).sum::<u64>() as f64 * 8.0 / secs) as u64);
             let ((w, h), par) = if rotation % 2 == 1 { ((h, w), (v.pixel_aspect().1, v.pixel_aspect().0)) } else { ((w, h), v.pixel_aspect()) };
             VideoStreamInfo {
                 width: w,
@@ -435,7 +446,7 @@ impl MkvSource {
             file_size: Some(bytes.0.len()),
         };
         // `info.audio_streams[k]` was made from `atracks[k]`, so the two stay index-aligned
-        let audios: Vec<MkvAudio> = atracks
+        let (audios, starts): (Vec<MkvAudio>, Vec<Vec<i64>>) = atracks
             .iter()
             .zip(&info.audio_streams)
             .filter_map(|(&i, ainfo)| {
@@ -450,27 +461,41 @@ impl MkvSource {
                     _ => 0,
                 };
                 let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
-                Some(MkvAudio { track: i, state, starts, preroll })
+                Some((MkvAudio { track: i, state, preroll }, starts))
             })
-            .collect();
+            .unzip();
         // WebM transparency: VP8 / VP9 alpha in each block's BlockAdditional (ID 1)
         let alpha = vtrack.and_then(|i| file.tracks.get(i)).filter(|t| {
             matches!(t.codec, Codec::Vp8 | Codec::Vp9 { .. })
                 && t.video.as_ref().is_some_and(|v| v.alpha_mode != 0)
-                && t.samples.iter().any(|s| s.addition.is_some())
+                // while the index is incomplete the first blocks may not show it yet (growth adds them)
+                && (file.index_end.is_some() || t.samples.iter().any(|s| s.addition.is_some()))
         });
         let alpha = alpha.map(|t| Arc::new(crate::webm_alpha::AlphaLayer::new(bytes.clone(), t.samples.iter().map(|s| (s.pts, s.addition)))));
-        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), alpha, audios })
+        let tables = RwLock::new(Arc::new(Tables::new(file, starts, vtrack)));
+        let source = Self {
+            info,
+            bytes,
+            tables,
+            grow: Mutex::new(()),
+            origin,
+            vtrack,
+            ventry,
+            video: GopCache::new(explicit_color).with_rotation(rotation),
+            alpha,
+            audios,
+        };
+        Ok(source)
     }
 
-    fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
-        self.file.read_sample(&self.bytes, track, i).map_err(|e| CodecError::Container(e.to_string()))
+    fn read(&self, t: &Tables, track: usize, i: usize) -> crate::Result<Vec<u8>> {
+        t.file.read_sample(&self.bytes, track, i).map_err(|e| CodecError::Container(e.to_string()))
     }
 
     /// Whether sample `i` of a VP8 track is a hidden frame (`show_frame` 0, RFC 6386 9.1): only the
     /// first byte of the frame is read.
-    fn vp8_hidden(&self, track: usize, i: usize) -> bool {
-        let Some(t) = self.file.tracks.get(track) else { return false };
+    fn vp8_hidden(&self, tables: &Tables, track: usize, i: usize) -> bool {
+        let Some(t) = tables.file.tracks.get(track) else { return false };
         let Some(s) = t.samples.get(i) else { return false };
         let first = match t.frame_prefix(u64::from(s.size)).first() {
             Some(&b) => Some(b),
@@ -503,14 +528,16 @@ impl MkvSource {
     }
 
     /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).
-    fn audio_packet(&self, a: &MkvAudio, ainfo: &AudioStreamInfo, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
+    fn audio_packet(&self, tb: &Tables, stream: usize, ainfo: &AudioStreamInfo, st: &mut AudioState, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
+        let a = self.audios.get(stream).ok_or_else(|| CodecError::Unsupported("no audio stream".into()))?;
         if let Some(p) = st.packets.get(&i) {
             return Ok(p.clone());
         }
         let ti = a.track;
-        let track = self.file.tracks.get(ti).ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
-        let pk_start = a.starts.get(i).copied().ok_or_else(|| CodecError::Container("audio packet out of range".into()))?;
-        let data = self.read(ti, i)?;
+        let track = tb.file.tracks.get(ti).ok_or_else(|| CodecError::Unsupported("no audio track".into()))?;
+        let starts = tb.starts.get(stream).map(Vec::as_slice).unwrap_or_default();
+        let pk_start = starts.get(i).copied().ok_or_else(|| CodecError::Container("audio packet out of range".into()))?;
+        let data = self.read(tb, ti, i)?;
         let decoded = match &track.codec {
             Codec::Pcm { float, big_endian, bits } => {
                 let cfg = PcmConfig {
@@ -533,12 +560,12 @@ impl MkvSource {
                     let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
                     d.reset();
                     let from = if a.preroll > 0 {
-                        a.starts.partition_point(|&x| x <= pk_start.saturating_sub(a.preroll)).saturating_sub(1)
+                        starts.partition_point(|&x| x <= pk_start.saturating_sub(a.preroll)).saturating_sub(1)
                     } else {
                         i.saturating_sub(1)
                     };
                     for j in from..i {
-                        if let Ok(prev) = self.read(ti, j) {
+                        if let Ok(prev) = self.read(tb, ti, j) {
                             let _ = d.decode(&prev, 0);
                         }
                     }
@@ -559,24 +586,31 @@ impl MkvSource {
     }
 }
 
-/// The Matroska video track as a [`VideoSamples`] table.
+/// The Matroska video track as a [`VideoSamples`] table: one snapshot of the index.
 struct MkvVideo<'a> {
     src: &'a MkvSource,
+    tables: Arc<Tables>,
     track: usize,
+}
+
+impl MkvVideo<'_> {
+    fn track(&self) -> Option<&filmcraft_matroska::Track> {
+        self.tables.file.tracks.get(self.track)
+    }
 }
 
 impl VideoSamples for MkvVideo<'_> {
     fn count(&self) -> usize {
-        self.src.file.tracks[self.track].samples.len()
+        self.track().map_or(0, |t| t.samples.len())
     }
     fn pts(&self, i: usize) -> i64 {
-        self.src.file.tracks[self.track].samples[i].pts
+        self.track().and_then(|t| t.samples.get(i)).map_or(0, |s| s.pts)
     }
     fn sync_before(&self, i: usize) -> usize {
-        self.src.file.tracks[self.track].sync_sample_before(i)
+        self.track().map_or(0, |t| t.sync_sample_before(i))
     }
     fn sample_at(&self, t: i64) -> Option<usize> {
-        let track = &self.src.file.tracks[self.track];
+        let track = self.track()?;
         let i = track.sample_at_pts(t)?;
         if !matches!(track.codec, Codec::Vp8) {
             return Some(i);
@@ -586,17 +620,18 @@ impl VideoSamples for MkvVideo<'_> {
         // frame shows nothing, so its time asks for that next shown frame (as decoders that pass
         // the two on as one packet show it).
         let mut k = i;
-        while k + 1 < track.samples.len() && k < i + 8 && self.src.vp8_hidden(self.track, k) {
+        while k + 1 < track.samples.len() && k < i + 8 && self.src.vp8_hidden(&self.tables, self.track, k) {
             k += 1;
         }
         Some(k)
     }
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
-        self.src.read(self.track, i)
+        self.src.read(&self.tables, self.track, i)
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         let Some(e) = &self.src.ventry else {
-            return Err(CodecError::Unsupported(format!("no decoder for {} video", codec_label(&self.src.file.tracks[self.track].codec))));
+            let codec = self.track().map_or_else(|| "unknown".into(), |t| codec_label(&t.codec));
+            return Err(CodecError::Unsupported(format!("no decoder for {codec} video")));
         };
         let color = make_video_decoder(e)?;
         let Some(layer) = &self.src.alpha else { return Ok(color) };
@@ -616,9 +651,13 @@ impl MediaSource for MkvSource {
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
         let ti = self.vtrack.ok_or(MediaError::NoStream("video"))?;
         let t = req.time.max(Tick::ZERO);
-        let target = from_tick(&self.file.tracks[ti], t);
-        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], t - m));
-        Ok(self.video.frame_late(&MkvVideo { src: self, track: ti }, target, late)?)
+        let tables = self.tables();
+        let track = tables.file.tracks.get(ti).ok_or(MediaError::NoStream("video"))?;
+        let target = from_tick(track, t);
+        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(track, t - m));
+        // a picture past the indexed part of a file still arriving waits (the caller retries)
+        let tables = self.ensure(tables, |x| x.video_end.is_some_and(|end| target < end))?;
+        Ok(self.video.frame_late(&MkvVideo { src: self, tables, track: ti }, target, late)?)
     }
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
@@ -627,7 +666,6 @@ impl MediaSource for MkvSource {
 
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
         let a = self.audios.get(stream).ok_or(MediaError::NoStream("audio"))?;
-        let n_packets = self.file.tracks.get(a.track).ok_or(MediaError::NoStream("audio"))?.samples.len();
         let ainfo = self.info.audio_streams.get(stream).ok_or(MediaError::NoStream("audio"))?;
         let src_rate = ainfo.sample_rate;
         let ch = ainfo.channels.max(1) as usize;
@@ -638,15 +676,20 @@ impl MediaSource for MkvSource {
         let ratio = src_rate as f64 / sample_rate as f64;
         let s0 = (start as f64 * ratio).floor() as i64;
         let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
+        // the window's end in media time: the audio is there once some track is indexed past it
+        let window_end_ns = i128::from(s0.saturating_add(need_i64)) * 1_000_000_000 / i128::from(src_rate.max(1));
+        let tables = self.ensure(self.tables(), |x| x.reach_ns > window_end_ns + AUDIO_MARGIN_NS)?;
+        let starts = tables.starts.get(stream).map(Vec::as_slice).unwrap_or_default();
+        let n_packets = tables.file.tracks.get(a.track).ok_or(MediaError::NoStream("audio"))?.samples.len().min(starts.len());
         let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
-        let mut i = a.starts.partition_point(|&x| x <= s0).saturating_sub(1);
+        let mut i = starts.partition_point(|&x| x <= s0).saturating_sub(1);
         while i < n_packets {
-            let Some(&pk_start) = a.starts.get(i) else { break };
+            let Some(&pk_start) = starts.get(i) else { break };
             if pk_start >= s0.saturating_add(need_i64) {
                 break;
             }
-            let pk = self.audio_packet(a, ainfo, &mut st, i)?;
+            let pk = self.audio_packet(&tables, stream, ainfo, &mut st, i)?;
             for (c, dst) in src.iter_mut().enumerate() {
                 let Some(chan) = pk.get(c.min(pk.len().saturating_sub(1))) else { continue };
                 for (k, v) in chan.iter().enumerate() {

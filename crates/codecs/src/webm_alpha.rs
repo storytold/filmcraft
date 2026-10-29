@@ -13,7 +13,7 @@
 //! never fails the colour decode.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use filmcraft_frame::{PixelData, VideoFrame};
 
@@ -29,6 +29,13 @@ const MAX_PENDING: usize = 8;
 /// Where each sample's alpha frame is stored.
 pub(crate) struct AlphaLayer {
     src: crate::Src,
+    /// The tables grow while a file's index is completed (see [`AlphaLayer::extend`]): append only,
+    /// so an index stays valid.
+    table: RwLock<AlphaTable>,
+}
+
+#[derive(Default)]
+struct AlphaTable {
     /// Per sample, in file (decode) order.
     additions: Vec<Option<(u64, u32)>>,
     pts: Vec<i64>,
@@ -39,18 +46,38 @@ pub(crate) struct AlphaLayer {
 impl AlphaLayer {
     /// `samples`: (pts, addition) of every sample of the track, in file order.
     pub(crate) fn new(src: crate::Src, samples: impl Iterator<Item = (i64, Option<(u64, u32)>)>) -> Self {
-        let (mut additions, mut all_pts) = (Vec::new(), Vec::new());
-        let mut by_pts = HashMap::new();
-        for (i, (pts, add)) in samples.enumerate() {
-            additions.push(add);
-            all_pts.push(pts);
-            by_pts.entry(pts).or_insert(i);
+        let layer = Self { src, table: RwLock::default() };
+        layer.extend(samples);
+        layer
+    }
+
+    /// Append the (pts, addition) of the samples indexed since: the next ones in file order.
+    pub(crate) fn extend(&self, samples: impl Iterator<Item = (i64, Option<(u64, u32)>)>) {
+        let mut t = self.table.write().unwrap_or_else(PoisonError::into_inner);
+        for (pts, add) in samples {
+            let i = t.additions.len();
+            t.additions.push(add);
+            t.pts.push(pts);
+            t.by_pts.entry(pts).or_insert(i);
         }
-        Self { src, additions, pts: all_pts, by_pts }
+    }
+
+    fn index_of(&self, pts: i64) -> Option<usize> {
+        self.table.read().unwrap_or_else(PoisonError::into_inner).by_pts.get(&pts).copied()
+    }
+
+    fn pts_of(&self, i: usize) -> Option<i64> {
+        self.table.read().unwrap_or_else(PoisonError::into_inner).pts.get(i).copied()
+    }
+
+    /// Whether the sample with `pts` has an alpha frame.
+    fn has_frame(&self, pts: i64) -> bool {
+        let t = self.table.read().unwrap_or_else(PoisonError::into_inner);
+        t.by_pts.get(&pts).is_some_and(|&i| t.additions.get(i).is_some_and(Option::is_some))
     }
 
     fn read(&self, i: usize) -> Option<Vec<u8>> {
-        let (offset, size) = (*self.additions.get(i)?)?;
+        let (offset, size) = (*self.table.read().unwrap_or_else(PoisonError::into_inner).additions.get(i)?)?;
         let end = offset.checked_add(size as u64)?;
         if end > self.src.0.len() {
             return None;
@@ -99,7 +126,7 @@ impl AlphaDecoder {
     /// Decode the alpha frame of the sample with `pts`, first catching up from an alpha key frame
     /// when the sample doesn't follow the previous one.
     fn feed_alpha(&mut self, pts: i64) {
-        let Some(&i) = self.layer.by_pts.get(&pts) else {
+        let Some(i) = self.layer.index_of(pts) else {
             self.next = None;
             return;
         };
@@ -111,7 +138,7 @@ impl AlphaDecoder {
             let start = (i.saturating_sub(MAX_RESYNC)..=i).rev().find(|&k| is_key(k));
             if let Some(start) = start {
                 for k in start..i {
-                    let (Some(d), Some(&p)) = (self.layer.read(k), self.layer.pts.get(k)) else { continue };
+                    let (Some(d), Some(p)) = (self.layer.read(k), self.layer.pts_of(k)) else { continue };
                     match self.alpha.decode(&d, p) {
                         Ok(frames) => self.keep(frames),
                         Err(_) => break,
@@ -132,8 +159,7 @@ impl AlphaDecoder {
 
     /// Whether the alpha picture for `pts` can still come out of the alpha decoder.
     fn alpha_may_come(&self, pts: i64) -> bool {
-        let has_frame = self.layer.by_pts.get(&pts).is_some_and(|&i| self.layer.additions.get(i).is_some_and(|a| a.is_some()));
-        has_frame && self.next.is_some() && self.alpha_max.is_none_or(|m| m < pts)
+        self.layer.has_frame(pts) && self.next.is_some() && self.alpha_max.is_none_or(|m| m < pts)
     }
 
     /// Release held colour pictures, in order, as far as their alpha is settled. `all`: release

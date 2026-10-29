@@ -21,6 +21,14 @@ pub trait ByteReader: Send + Sync {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// Bytes from the start of the file that can be read right now without waiting: `len` for a
+    /// native file or a buffer (the default), the loaded front of a file that a web host is still
+    /// fetching. A container opener may index only that front (Matroska/WebM does) and the rest as
+    /// it arrives, instead of failing every read until the whole file is there. Never more than
+    /// [`ByteReader::len`]; may shrink when loaded data is evicted.
+    fn ready_prefix(&self) -> u64 {
+        self.len()
+    }
 }
 
 pub type SharedReader = Arc<dyn ByteReader>;

@@ -259,6 +259,15 @@ impl ByteReader for BlobReader {
     fn len(&self) -> u64 {
         self.size
     }
+    /// The chunks cached from the start of the file, back to back: what a container opener may
+    /// index without waiting (Matroska/WebM opens from the front of a file still arriving).
+    fn ready_prefix(&self) -> u64 {
+        let chunks = FS.with(|fs| {
+            let fs = fs.borrow();
+            (0..).take_while(|c| fs.chunks.contains_key(&(self.id, *c))).count() as u64
+        });
+        chunks.saturating_mul(CHUNK).min(self.size)
+    }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         if buf.is_empty() {
             return Ok(());
