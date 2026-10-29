@@ -17,7 +17,10 @@ use crate::cdf::Cdfs;
 use crate::frame::FrameBuf;
 use crate::header::{FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params};
 use crate::par::Pool;
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DIV_MULT, GOLDEN_FRAME, INTRA_FRAME, INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME,
+    LAST2_FRAME, MAX_FRAME_DISTANCE, MAX_OFFSET_HEIGHT, MAX_OFFSET_WIDTH, MFMV_STACK_SIZE, NUM_REF_FRAMES, PRIMARY_REF_NONE, REFMVS_LIMIT, REFS_PER_FRAME,
+};
 use crate::state::{FrameShared, FrameState, TileState};
 use crate::stats::{DecodeStats, Stage, Timer};
 use crate::tile::TileDecoder;
@@ -115,33 +118,36 @@ struct FrameJob {
 }
 
 /// A shown picture in output order.
-#[allow(clippy::large_enum_variant)]
 enum Output {
     Decoded(Arc<Slot<Arc<Picture>>>),
     /// show_existing_frame: built from the reference slot when it is finished.
-    Existing {
-        slot: Arc<FrameSlot>,
-        seq: SequenceHeader,
-        width: usize,
-        height: usize,
-        grain: FilmGrainParams,
-        apply_film_grain: bool,
-        pts: i64,
-    },
+    Existing(Box<ExistingOutput>),
+}
+
+/// The parts of a show_existing_frame output, kept behind a box so `Output` stays small.
+struct ExistingOutput {
+    slot: Arc<FrameSlot>,
+    seq: SequenceHeader,
+    width: usize,
+    height: usize,
+    grain: FilmGrainParams,
+    apply_film_grain: bool,
+    pts: i64,
 }
 
 impl Output {
     fn is_ready(&self) -> bool {
         match self {
             Output::Decoded(s) => s.is_set(),
-            Output::Existing { slot, .. } => slot.is_set(),
+            Output::Existing(e) => e.slot.is_set(),
         }
     }
 
     fn take(self) -> Result<Picture> {
         match self {
             Output::Decoded(s) => s.wait().map(|p| Arc::try_unwrap(p).unwrap_or_else(|p| (*p).clone())),
-            Output::Existing { slot, seq, width, height, grain, apply_film_grain, pts } => {
+            Output::Existing(e) => {
+                let ExistingOutput { slot, seq, width, height, grain, apply_film_grain, pts } = *e;
                 let rf = slot.wait()?;
                 Ok(output_picture(&seq, &rf, width, height, &grain, apply_film_grain, pts))
             }
@@ -496,7 +502,7 @@ impl Decoder {
             let idx = fh.frame_to_show_map_idx;
             let slot = self.ref_frames[idx].clone().ok_or(Error::Invalid("show_existing_frame of an empty slot"))?;
             let info = self.refs[idx].clone();
-            let o = Output::Existing {
+            let o = Output::Existing(Box::new(ExistingOutput {
                 slot: slot.clone(),
                 seq: seq.clone(),
                 width: info.upscaled_width as usize,
@@ -504,7 +510,7 @@ impl Decoder {
                 grain: fh.film_grain.clone(),
                 apply_film_grain: self.apply_film_grain,
                 pts: self.pts,
-            };
+            }));
             if fh.frame_type == KEY_FRAME as u8 {
                 // reference frame loading process (7.21) then refresh every slot (7.20)
                 self.lf_deltas = info.lf_deltas;

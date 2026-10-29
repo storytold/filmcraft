@@ -550,25 +550,14 @@ impl Decoder {
         // intra-picture split only adds its copies (measured: up to 11 % slower at 2 threads).
         let on = self.intra_parallel.unwrap_or(self.helpers >= MIN_INTRA_HELPERS);
         let helpers = if on { self.helpers } else { 0 };
-        self.dispatch(frame.clone(), sps, pps, layout, scaling, slices, meta.draft, helpers);
+        self.dispatch(PicJob { frame: frame.clone(), sps, pps, layout, scaling, slices, draft: meta.draft, helpers });
         self.poc_state.update(&first_sh, poc);
         let mut outs = Vec::new();
         self.dpb.insert(frame, poc, output, meta, &mut outs);
         self.out_queue.extend(outs);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn dispatch(
-        &mut self,
-        frame: FrameRef,
-        sps: Arc<Sps>,
-        pps: Arc<Pps>,
-        layout: Arc<Layout>,
-        scaling: Option<Arc<Vec<Vec<u8>>>>,
-        slices: Vec<SliceJob>,
-        draft: bool,
-        helpers: usize,
-    ) {
+    fn dispatch(&mut self, job: PicJob) {
         let shared = self.shared.clone();
         #[cfg(feature = "threads")]
         if let Some(pool) = &self.pool {
@@ -578,12 +567,11 @@ impl Decoder {
                     f.wait_complete();
                 }
             }
-            self.in_flight.push_back(frame.clone());
-            pool.spawn_fifo(move || run_job(frame, sps, pps, layout, scaling, slices, draft, helpers, shared));
+            self.in_flight.push_back(job.frame.clone());
+            pool.spawn_fifo(move || run_job(job, &shared));
             return;
         }
-        let _ = helpers;
-        run_job(frame, sps, pps, layout, scaling, slices, draft, 0, shared);
+        run_job(PicJob { helpers: 0, ..job }, &shared);
     }
 }
 
@@ -605,9 +593,8 @@ fn unescape_with_positions(data: &[u8]) -> (Vec<u8>, Vec<u32>) {
     (out, removed)
 }
 
-/// Decode all slices of one picture and publish its rows, in the picture's sample type.
-#[allow(clippy::too_many_arguments)]
-fn run_job(
+/// Everything needed to decode one picture on a worker.
+struct PicJob {
     frame: FrameRef,
     sps: Arc<Sps>,
     pps: Arc<Pps>,
@@ -615,28 +602,17 @@ fn run_job(
     scaling: Option<Arc<Vec<Vec<u8>>>>,
     slices: Vec<SliceJob>,
     draft: bool,
+    /// Helper threads for the intra-picture split (0 = decode the picture on this thread).
     helpers: usize,
-    shared: Arc<Shared>,
-) {
-    if stores_u8(frame.bit_depth, frame.bit_depth_c) {
-        run_job_as::<u8>(frame, sps, pps, layout, scaling, slices, draft, helpers, shared)
-    } else {
-        run_job_as::<u16>(frame, sps, pps, layout, scaling, slices, draft, helpers, shared)
-    }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_job_as<S: Sample>(
-    frame: FrameRef,
-    sps: Arc<Sps>,
-    pps: Arc<Pps>,
-    layout: Arc<Layout>,
-    scaling: Option<Arc<Vec<Vec<u8>>>>,
-    slices: Vec<SliceJob>,
-    draft: bool,
-    helpers: usize,
-    shared: Arc<Shared>,
-) {
+/// Decode all slices of one picture and publish its rows, in the picture's sample type.
+fn run_job(job: PicJob, shared: &Arc<Shared>) {
+    if stores_u8(job.frame.bit_depth, job.frame.bit_depth_c) { run_job_as::<u8>(job, shared) } else { run_job_as::<u16>(job, shared) }
+}
+
+fn run_job_as<S: Sample>(job: PicJob, shared: &Arc<Shared>) {
+    let PicJob { frame, sps, pps, layout, scaling, slices, draft, helpers } = job;
     let mut pic = PicState::<S>::new(frame.clone(), sps, pps, layout, scaling);
     pic.draft = draft;
     let metas = prepare_slices(&mut pic, &slices);
@@ -646,7 +622,7 @@ fn run_job_as<S: Sample>(
         let (wpp, tiles) = (pic.pps.entropy_coding_sync, pic.pps.tiles_enabled);
         let plan = crate::parallel::Plan::new(&pic.layout, wpp, tiles, &slices).or_else(|| crate::parallel::Plan::serial(&pic.layout, tiles));
         if let Some(plan) = plan {
-            crate::parallel::Job::run(pic, slices, metas, plan, helpers, shared);
+            crate::parallel::Job::run(pic, slices, metas, plan, helpers, shared.clone());
             return;
         }
     }

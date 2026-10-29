@@ -1337,7 +1337,10 @@ fn automate_to_sequence(s: &mut Session, p: &Value) -> Result<Value> {
     let mut result: Result<()> = Ok(());
     for (k, ((id, r), at)) in plan.iter().zip(&starts).enumerate() {
         let insert = method == "insert" && placement == "unnumberedMarkers";
-        match crate::commands::place_item(s, *id, *r, *at, vdest, adest, insert, "Automate to Sequence", None) {
+        match crate::commands::place_item(
+            s,
+            crate::commands::ItemPlacement { item: *id, range: *r, at: *at, vdest, adest, insert, label: "Automate to Sequence", audio_split: None },
+        ) {
             Ok(ids) => placed.push((k, ids)),
             Err(e) => {
                 result = Err(e);

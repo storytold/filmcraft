@@ -1,6 +1,9 @@
 use super::layout::Layout;
 use super::waveforms::draw_waveform;
-use super::*;
+use super::{
+    Align2, Arc, ClipId, Color32, DuplicateFrames, FilmcraftApp, FrameRate, HashMap, ItemId, Pos2, Rect, Sequence, Stroke, StrokeKind, ThumbnailMode, Tick,
+    TimeRange, Tokens, TrackItem, TrackKind, duplicate_frames, label_color, pos2, vec2,
+};
 
 /// (session revision, sequence, project address)
 pub(super) type DuplicatesKey = (u64, ItemId, usize);

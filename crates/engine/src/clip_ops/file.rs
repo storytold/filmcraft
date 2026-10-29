@@ -1,6 +1,9 @@
 use super::common::{collapse_history, item_rate, items_p, media_root};
 use super::enabled::is_clip_item;
-use super::*;
+use super::{
+    AudioChannels, BTreeMap, BinEntry, EngineError, FrameRate, ItemId, ItemKind, Label, MediaClip, MediaRef, Project, Result, Session, Tick, TimeRange, Value,
+    bad, bool_p, f64_p, json, parse_timecode, place_item, str_p, u64_p,
+};
 
 // ---------------------------------------------------------------------------------------------
 // File
@@ -47,7 +50,19 @@ pub(super) fn sequence_from_clip(s: &mut Session, p: &Value) -> Result<Value> {
         let still = s.prefs.timeline.still_duration(item_rate(&s.project, item));
         let Some(range) = item_range(&s.project, item, still) else { continue };
         let tg = s.targeting();
-        let ids = place_item(s, item, range, at, tg.video_dest, tg.audio_dest, false, "New Sequence From Clip", None)?;
+        let ids = place_item(
+            s,
+            crate::commands::ItemPlacement {
+                item,
+                range,
+                at,
+                vdest: tg.video_dest,
+                adest: tg.audio_dest,
+                insert: false,
+                label: "New Sequence From Clip",
+                audio_split: None,
+            },
+        )?;
         at = s.active_sequence().map(|q| q.duration()).unwrap_or(at);
         placed.extend(ids.iter().map(|c| c.0));
     }
@@ -172,7 +187,7 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
         let id = pr.add_item(
             &name,
             if has_v { Label::Iris } else { Label::Caribbean },
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::File { path: file_name },
                 info,
                 interpret: Default::default(),
@@ -182,7 +197,7 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
                 offline: true,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         if let Some(it) = pr.item_mut(id) {

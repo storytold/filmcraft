@@ -1,5 +1,5 @@
 use super::prefs::MediaCachePrefs;
-use super::*;
+use super::{Path, PathBuf, Session};
 
 // ------------------------------------------------------------------ media cache
 

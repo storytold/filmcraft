@@ -310,13 +310,25 @@ impl Face {
 
 struct Db {
     faces: Vec<Arc<Face>>,
+    /// Served by [`face`] if no face is registered (the bundled faces always are).
+    fallback: Arc<Face>,
     scanned: bool,
 }
 
 fn db() -> &'static RwLock<Db> {
     static DB: OnceLock<RwLock<Db>> = OnceLock::new();
     DB.get_or_init(|| {
-        let mut db = Db { faces: Vec::new(), scanned: false };
+        let info = FaceInfo {
+            family: "Inter".into(),
+            style: "Regular".into(),
+            weight: 400,
+            italic: false,
+            index: 0,
+            data: FaceData::Static(INTER_REGULAR),
+            origin: "bundled",
+        };
+        let fallback = Arc::new(Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() });
+        let mut db = Db { faces: Vec::new(), fallback, scanned: false };
         for b in [INTER_REGULAR, INTER_MEDIUM, INTER_SEMIBOLD, INTER_BOLD, INTER_ITALIC, JETBRAINS_MONO_REGULAR, NOTO_SERIF_REGULAR] {
             for n in read_faces_bytes(b) {
                 push(&mut db, info_from(n, FaceData::Static(b), "bundled"));
@@ -384,11 +396,10 @@ pub fn system_scanned() -> bool {
 
 /// A face by id (unknown ids give the default face).
 // The bundled faces are compiled in (`include_bytes!`) and registered when the database is
-// created, so `faces` is never empty.
-#[allow(clippy::expect_used)]
+// created, so `faces` is never empty; the fallback only covers a corrupt bundle.
 pub fn face(id: FaceId) -> Arc<Face> {
     let d = db().read().unwrap_or_else(PoisonError::into_inner);
-    d.faces.get(id).or_else(|| d.faces.first()).cloned().expect("bundled fonts present")
+    d.faces.get(id).or_else(|| d.faces.first()).unwrap_or(&d.fallback).clone()
 }
 
 /// All faces (bundled first).

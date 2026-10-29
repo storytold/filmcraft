@@ -273,11 +273,16 @@ fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &st
     });
 }
 
-fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, range: std::ops::RangeInclusive<f64>, suffix: &str) {
+struct NumberOptions {
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &'static str,
+}
+
+fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, options: NumberOptions) {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-        let r = ui.add(crate::widgets::number_drag(&mut v).range(range).suffix(suffix));
+        let r = ui.add(crate::widgets::number_drag(&mut v).range(options.range).suffix(options.suffix));
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
@@ -365,12 +370,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
                 let has_v = p["video"].as_bool().unwrap_or(true);
                 ui.add_enabled_ui(has_v, |ui| {
-                    number(ui, &mut elems, pre, p, "width", tl!("Width:"), 16.0..=16384.0, " px");
-                    number(ui, &mut elems, pre, p, "height", tl!("Height:"), 16.0..=16384.0, " px");
-                    number(ui, &mut elems, pre, p, "fps", tl!("Frame Rate:"), 1.0..=240.0, " fps");
+                    number(ui, &mut elems, pre, p, "width", tl!("Width:"), NumberOptions { range: 16.0..=16384.0, suffix: " px" });
+                    number(ui, &mut elems, pre, p, "height", tl!("Height:"), NumberOptions { range: 16.0..=16384.0, suffix: " px" });
+                    number(ui, &mut elems, pre, p, "fps", tl!("Frame Rate:"), NumberOptions { range: 1.0..=240.0, suffix: " fps" });
                 });
                 text(ui, &mut elems, pre, p, "timecode", tl!("Media Start:"), 120.0);
-                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), 0.05..=86_400.0, " s");
+                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), NumberOptions { range: 0.05..=86_400.0, suffix: " s" });
             }
             "clip.nest" => {
                 // the name is ready to type over, and Enter accepts it
@@ -517,7 +522,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             "clip.speedDuration" => {
-                number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), 0.01..=100_000.0, " %");
+                number(ui, &mut elems, pre, p, "speed", tl!("Speed:"), NumberOptions { range: 0.01..=100_000.0, suffix: " %" });
                 // Duration follows the speed: the media shown stays the same
                 let (dur, was, fps) =
                     (d.info["duration"].as_i64().unwrap_or(0), d.info["speed"].as_f64().unwrap_or(1.0), d.info["fps"].as_f64().unwrap_or(24.0));
