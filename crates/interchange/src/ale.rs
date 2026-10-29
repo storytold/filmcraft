@@ -242,7 +242,7 @@ mod tests {
             proxy: None,
             identity: None,
         };
-        p.add_item(name, Label::Iris, ItemKind::Media(clip), None)
+        p.add_item(name, Label::Iris, ItemKind::Media(Box::new(clip)), None)
     }
 
     #[test]

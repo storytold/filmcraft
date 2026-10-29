@@ -35,7 +35,7 @@ fn component_media_missing_picture_retains_sound_and_legacy_references_load() {
     let id = Arc::make_mut(&mut s.project).add_item(
         "partial",
         filmcraft_project::Label::Blue,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: MediaRef::Components { picture: Some(picture), channels: channels.clone() },
             info,
             interpret: Default::default(),
@@ -45,7 +45,7 @@ fn component_media_missing_picture_retains_sound_and_legacy_references_load() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let before = s.project.clone();
@@ -93,16 +93,7 @@ fn component_media_local_picture_audio_and_oracle() {
     let picture = picture.clone();
     assert_eq!(channels.len(), 2);
     let source = s.media.full_res_source(&s.project, id, &*s.services).unwrap();
-    for (index, c) in channels.iter().enumerate() {
-        let oracle =
-            std::process::Command::new("ffmpeg").args(["-v", "error", "-i", c.path.as_deref().unwrap(), "-map", "0:a:0", "-f", "f32le", "-"]).output().unwrap();
-        assert!(oracle.status.success());
-        let expected: Vec<f32> = oracle.stdout.as_chunks::<4>().0.iter().map(|x| f32::from_le_bytes(*x)).collect();
-        let actual = source.audio(0, 484000, 48000).unwrap();
-        assert!(expected.len() >= 484000);
-        assert!(expected.iter().any(|x| x.abs() > 0.01));
-        assert!(actual.channels[index].iter().zip(&expected).all(|(a, b)| (a - b).abs() < 1e-6));
-    }
+    assert_component_audio_oracle(&*source, channels);
     for frame in [0, 120, 21, 241, 87] {
         let actual = source.video_frame(FrameRequest::full(Tick::from_units(frame, 24))).unwrap();
         let filmcraft_frame::PixelData::Yuv8 { planes, .. } = &actual.data else { panic!("expected YUV8") };
@@ -138,14 +129,16 @@ fn component_media_local_picture_audio_and_oracle() {
     let (v, a) = (q.video_tracks[0].id, q.audio_tracks[0].id);
     let placed = crate::commands::place_item(
         &mut s,
-        id,
-        filmcraft_time::TimeRange::new(Tick::ZERO, duration),
-        Tick::ZERO,
-        Some(v),
-        Some(a),
-        false,
-        "Test placement",
-        None,
+        crate::commands::ItemPlacement {
+            item: id,
+            range: filmcraft_time::TimeRange::new(Tick::ZERO, duration),
+            at: Tick::ZERO,
+            vdest: Some(v),
+            adest: Some(a),
+            insert: false,
+            label: "Test placement",
+            audio_split: None,
+        },
     )
     .unwrap();
     assert_eq!(placed.len(), 2);
@@ -190,4 +183,17 @@ fn component_media_local_picture_audio_and_oracle() {
         );
     }
     eprintln!("Phase 12: picture+stereo source, full PCM, five picture seeks, timeline mixing and save/reopen passed");
+}
+
+fn assert_component_audio_oracle(source: &dyn filmcraft_media::MediaSource, channels: &[filmcraft_project::AudioComponent]) {
+    for (index, c) in channels.iter().enumerate() {
+        let oracle =
+            std::process::Command::new("ffmpeg").args(["-v", "error", "-i", c.path.as_deref().unwrap(), "-map", "0:a:0", "-f", "f32le", "-"]).output().unwrap();
+        assert!(oracle.status.success());
+        let expected: Vec<f32> = oracle.stdout.as_chunks::<4>().0.iter().map(|x| f32::from_le_bytes(*x)).collect();
+        let actual = source.audio(0, 484000, 48000).unwrap();
+        assert!(expected.len() >= 484000);
+        assert!(expected.iter().any(|x| x.abs() > 0.01));
+        assert!(actual.channels[index].iter().zip(&expected).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
 }

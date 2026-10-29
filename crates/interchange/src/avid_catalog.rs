@@ -310,46 +310,7 @@ pub fn plan_document(doc: &Document, mode: TransferMode) -> Result<Plan> {
                 }
             }
         }
-        // A placed motion effect is a baked clip: its retime lives in media the render produced.
-        // Claim that precompute master for it, so the bin shows the effect at its baked length
-        // bound to its own render, and the master is not also imported as a separate source.
-        let mut baked: BTreeMap<[u8; 32], Option<String>> = BTreeMap::new();
-        let mut unrendered = 0usize;
-        let mut incomplete = 0usize;
-        let mut contested = 0usize;
-        for m in mobs.iter().filter(|m| m["kind"] == "CompositionMob" && m["user_placed"] == true && m["usage_code"] == 6) {
-            match precompute_master(m, mobs) {
-                Ok(Some(p)) => {
-                    let id = full_identity(&p["id"])?;
-                    // Two effects sharing one render cannot both be it; neither is claimed, and
-                    // the precompute stays an ordinary source rather than taking one of the names.
-                    if baked.insert(id, Some(text(m, "name")?.to_owned())).is_some() {
-                        baked.insert(id, None);
-                        contested += 1;
-                    }
-                }
-                // Not rendered, so there is no baked media to show.
-                Ok(_) => unrendered += 1,
-                Err(PrecomputeSearchError::Incomplete) => incomplete += 1,
-            }
-        }
-        if contested > 0 {
-            result.warnings.push(format!(
-                "{}: {contested} rendered media are each claimed by more than one motion effect; none was transferred as a baked clip.",
-                out.name
-            ));
-        }
-        if unrendered > 0 {
-            result
-                .warnings
-                .push(format!("{}: {unrendered} motion effects have not been rendered, so they have no media of their own and were not imported.", out.name));
-        }
-        if incomplete > 0 {
-            result.warnings.push(format!(
-                "{}: {incomplete} motion effect render searches exceeded the identity or depth limit; their media could not be bound safely and they were not imported.",
-                out.name
-            ));
-        }
+        let baked = baked_motion_effects(mobs, &out.name, &mut result.warnings)?;
         let rate_evidence = crate::avid_sequence::offline_rate_evidence(mobs)?;
         let mut sources = BTreeMap::new();
         for m in mobs.iter().filter(|m| m["kind"] == "SourceMob" && m["live"] == true) {
@@ -374,39 +335,7 @@ pub fn plan_document(doc: &Document, mode: TransferMode) -> Result<Plan> {
             if membership(decoded)? != placed {
                 return Err(bad("catalog master identity or membership disagrees with decoded bin"));
             }
-            for field in ["name", "user", "length", "rate", "attributes"] {
-                if c.get(field) != decoded.get(field) {
-                    return Err(bad(format!("catalog master {field} disagrees with decoded bin")));
-                }
-            }
-            let decoded_tracks = array(decoded, "tracks")?;
-            let catalog_tracks = array(c, "tracks")?;
-            if catalog_tracks.len() != decoded_tracks.len()
-                || catalog_tracks.iter().zip(decoded_tracks).any(|(a, b)| ["index", "component", "properties"].iter().any(|k| a.get(k) != b.get(k)))
-            {
-                return Err(bad("catalog master tracks disagree with decoded bin"));
-            }
-            let user = c.get("user").and_then(Value::as_object).ok_or_else(|| bad("missing user metadata"))?;
-            if user.contains_key(SOURCE_KEY) {
-                return Err(bad("user metadata conflicts with reserved provenance key"));
-            }
-            for key in user.keys() {
-                if key.len() > MAX_TEXT || key.contains('\0') {
-                    return Err(bad("invalid metadata key"));
-                }
-            }
-            let tracks = array(c, "tracks")?;
-            if tracks.len() > 64 {
-                return Err(bad("too many master tracks"));
-            }
-            for t in tracks {
-                if t.get("index").and_then(Value::as_u64).filter(|n| *n > 0 && *n <= 65535).is_none() {
-                    return Err(bad("invalid master track number"));
-                }
-                if !matches!(t.get("status").and_then(Value::as_str), Some("present" | "absent" | "partial" | "ambiguous" | "unresolved")) {
-                    return Err(bad("invalid track availability"));
-                }
-            }
+            let tracks = validated_master_fields(c, decoded)?;
             let (duration, quantized) = duration(c)?;
             if quantized {
                 quantized_count = quantized_count.saturating_add(1);
@@ -415,21 +344,7 @@ pub fn plan_document(doc: &Document, mode: TransferMode) -> Result<Plan> {
             // masters its compositions reference, which Avid keeps in the file without placing
             // them; they are kept apart from the bin's own contents.
             if placed || mode == TransferMode::Sequences {
-                let mut source_descriptors = Vec::new();
-                let mut descriptor_ids = BTreeSet::new();
-                for r in tracks.iter().filter_map(|t| t["references"].as_array()).flatten() {
-                    if let Ok(id) = full_identity(&r["source_id"])
-                        && let Some(Some(m)) = sources.get(&id)
-                        && m["descriptor"].is_object()
-                    {
-                        if r.get("source_descriptor").is_some_and(|d| d != &m["descriptor"]) {
-                            return Err(bad("source descriptor disagrees with decoded live source mob"));
-                        }
-                        if descriptor_ids.insert(id) {
-                            source_descriptors.push(serde_json::json!({"id":m["id"],"descriptor":m["descriptor"]}));
-                        }
-                    }
-                }
+                let source_descriptors = validated_source_descriptors(tracks, &sources)?;
                 let picture_rate_evidence = full_identity(&c["id"]).ok().and_then(|id| rate_evidence.get(&id)).cloned().flatten();
                 // A claimed precompute is the motion effect's own media: it belongs in the bin
                 // under the effect's name, not among the sources the bin merely references.
@@ -672,7 +587,7 @@ fn add_master(project: &mut Project, bin: BinId, bin_name: &str, bin_uid: &str, 
     let mid = project.add_item(
         &c.name,
         if placed { Label::Lavender } else { Label::Tan },
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::File { path: String::new() },
             info,
             interpret: Interpretation::default(),
@@ -682,7 +597,7 @@ fn add_master(project: &mut Project, bin: BinId, bin_name: &str, bin_uid: &str, 
             offline: true,
             proxy: None,
             identity: None,
-        }),
+        })),
         Some(bin),
     );
     let item = project.item_mut(mid).ok_or_else(|| bad("new item missing"))?;
@@ -745,6 +660,105 @@ pub fn apply(project: &mut Project, plan: Plan, parent: Option<BinId>) -> Result
         imported.push(ImportedBin { bin: id, name, clips: count, referenced, subclips, referenced_subclips, compositions: b.compositions });
     }
     Ok(imported)
+}
+
+/// Collect only identity-matched live descriptors, checking any cached copy before use.
+fn validated_source_descriptors(tracks: &[Value], sources: &BTreeMap<[u8; 32], Option<&Value>>) -> Result<Vec<Value>> {
+    let mut source_descriptors = Vec::new();
+    let mut descriptor_ids = BTreeSet::new();
+    for r in tracks.iter().filter_map(|t| t["references"].as_array()).flatten() {
+        if let Ok(id) = full_identity(&r["source_id"])
+            && let Some(Some(m)) = sources.get(&id)
+            && m["descriptor"].is_object()
+        {
+            if r.get("source_descriptor").is_some_and(|d| d != &m["descriptor"]) {
+                return Err(bad("source descriptor disagrees with decoded live source mob"));
+            }
+            if descriptor_ids.insert(id) {
+                source_descriptors.push(serde_json::json!({"id":m["id"],"descriptor":m["descriptor"]}));
+            }
+        }
+    }
+    Ok(source_descriptors)
+}
+
+/// Validate catalog/decoded agreement before accepting user metadata or component tracks.
+fn validated_master_fields<'a>(c: &'a Value, decoded: &Value) -> Result<&'a [Value]> {
+    for field in ["name", "user", "length", "rate", "attributes"] {
+        if c.get(field) != decoded.get(field) {
+            return Err(bad(format!("catalog master {field} disagrees with decoded bin")));
+        }
+    }
+    let decoded_tracks = array(decoded, "tracks")?;
+    let catalog_tracks = array(c, "tracks")?;
+    if catalog_tracks.len() != decoded_tracks.len()
+        || catalog_tracks.iter().zip(decoded_tracks).any(|(a, b)| ["index", "component", "properties"].iter().any(|k| a.get(k) != b.get(k)))
+    {
+        return Err(bad("catalog master tracks disagree with decoded bin"));
+    }
+    let user = c.get("user").and_then(Value::as_object).ok_or_else(|| bad("missing user metadata"))?;
+    if user.contains_key(SOURCE_KEY) {
+        return Err(bad("user metadata conflicts with reserved provenance key"));
+    }
+    for key in user.keys() {
+        if key.len() > MAX_TEXT || key.contains('\0') {
+            return Err(bad("invalid metadata key"));
+        }
+    }
+    let tracks = array(c, "tracks")?;
+    if tracks.len() > 64 {
+        return Err(bad("too many master tracks"));
+    }
+    for t in tracks {
+        if t.get("index").and_then(Value::as_u64).filter(|n| *n > 0 && *n <= 65535).is_none() {
+            return Err(bad("invalid master track number"));
+        }
+        if !matches!(t.get("status").and_then(Value::as_str), Some("present" | "absent" | "partial" | "ambiguous" | "unresolved")) {
+            return Err(bad("invalid track availability"));
+        }
+    }
+    Ok(tracks)
+}
+
+/// Claim only complete, uncontested baked render identities; preserve diagnostics for the rest.
+fn baked_motion_effects(mobs: &[Value], bin_name: &str, warnings: &mut Vec<String>) -> Result<BTreeMap<[u8; 32], Option<String>>> {
+    // A placed motion effect is a baked clip: its retime lives in media the render produced.
+    // Claim that precompute master for it, so the bin shows the effect at its baked length
+    // bound to its own render, and the master is not also imported as a separate source.
+    let mut baked: BTreeMap<[u8; 32], Option<String>> = BTreeMap::new();
+    let mut unrendered = 0usize;
+    let mut incomplete = 0usize;
+    let mut contested = 0usize;
+    for m in mobs.iter().filter(|m| m["kind"] == "CompositionMob" && m["user_placed"] == true && m["usage_code"] == 6) {
+        match precompute_master(m, mobs) {
+            Ok(Some(p)) => {
+                let id = full_identity(&p["id"])?;
+                // Two effects sharing one render cannot both be it; neither is claimed, and
+                // the precompute stays an ordinary source rather than taking one of the names.
+                if baked.insert(id, Some(text(m, "name")?.to_owned())).is_some() {
+                    baked.insert(id, None);
+                    contested += 1;
+                }
+            }
+            // Not rendered, so there is no baked media to show.
+            Ok(_) => unrendered += 1,
+            Err(PrecomputeSearchError::Incomplete) => incomplete += 1,
+        }
+    }
+    if contested > 0 {
+        warnings
+            .push(format!("{}: {contested} rendered media are each claimed by more than one motion effect; none was transferred as a baked clip.", bin_name));
+    }
+    if unrendered > 0 {
+        warnings.push(format!("{}: {unrendered} motion effects have not been rendered, so they have no media of their own and were not imported.", bin_name));
+    }
+    if incomplete > 0 {
+        warnings.push(format!(
+                "{}: {incomplete} motion effect render searches exceeded the identity or depth limit; their media could not be bound safely and they were not imported.",
+                bin_name
+            ));
+    }
+    Ok(baked)
 }
 
 #[cfg(test)]

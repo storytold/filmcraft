@@ -84,7 +84,7 @@ fn component_audio_routes_missing_slots_ranges_and_rejects_wrong_identity() {
     let item = p.add_item(
         "Stereo",
         filmcraft_project::Label::Blue,
-        ItemKind::Media(filmcraft_project::MediaClip {
+        ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: MediaRef::Components { channels: partial, picture: None },
             info: info(),
             interpret: Default::default(),
@@ -94,7 +94,7 @@ fn component_audio_routes_missing_slots_ranges_and_rejects_wrong_identity() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let saved = filmcraft_format::encode(&p, false);
@@ -144,9 +144,9 @@ fn component_audio_binding_is_atomic_and_preserves_partial_stereo() {
         identity: None,
     };
     let p = Arc::make_mut(&mut s.project);
-    let good = p.add_item("good", filmcraft_project::Label::Blue, ItemKind::Media(media.clone()), None);
+    let good = p.add_item("good", filmcraft_project::Label::Blue, ItemKind::Media(Box::new(media.clone())), None);
     p.item_mut(good).unwrap().metadata.insert(filmcraft_interchange::avid_catalog::SOURCE_KEY.into(), evidence.to_string());
-    let invalid = p.add_item("invalid", filmcraft_project::Label::Blue, ItemKind::Media(media), None);
+    let invalid = p.add_item("invalid", filmcraft_project::Label::Blue, ItemKind::Media(Box::new(media)), None);
     let before = s.project.clone();
     for ids in [vec![good, good], vec![good, invalid]] {
         assert!(s.execute("media.bindAvidAudio", json!({"items":ids})).is_err());
@@ -189,14 +189,16 @@ fn component_audio_local_binding_placement_and_reopen() {
         let dest = s.project.sequence(seq).unwrap().audio_tracks[0].id;
         let inserted = crate::commands::place_item(
             &mut s,
-            stereo,
-            filmcraft_time::TimeRange::new(Tick::ZERO, Tick::from_units(5, 1)),
-            Tick::ZERO,
-            None,
-            Some(dest),
-            false,
-            "Test placement",
-            None,
+            crate::commands::ItemPlacement {
+                item: stereo,
+                range: filmcraft_time::TimeRange::new(Tick::ZERO, Tick::from_units(5, 1)),
+                at: Tick::ZERO,
+                vdest: None,
+                adest: Some(dest),
+                insert: false,
+                label: "Test placement",
+                audio_split: None,
+            },
         )
         .unwrap();
         assert_eq!(inserted.len(), expected_placements);
@@ -258,14 +260,16 @@ fn component_audio_local_audible_pcm_and_timeline() {
     let dest = s.project.sequence(seq).unwrap().audio_tracks[0].id;
     let inserted = crate::commands::place_item(
         &mut s,
-        item,
-        filmcraft_time::TimeRange::new(Tick::ZERO, duration),
-        Tick::ZERO,
-        None,
-        Some(dest),
-        false,
-        "Test placement",
-        None,
+        crate::commands::ItemPlacement {
+            item,
+            range: filmcraft_time::TimeRange::new(Tick::ZERO, duration),
+            at: Tick::ZERO,
+            vdest: None,
+            adest: Some(dest),
+            insert: false,
+            label: "Test placement",
+            audio_split: None,
+        },
     )
     .unwrap();
     assert_eq!(inserted.len(), 2, "Phase 11 has two mono source channels, not an Avid stereo pair");

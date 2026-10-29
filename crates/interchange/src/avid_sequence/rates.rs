@@ -1,5 +1,5 @@
 //! Bounded exact-clock evidence for automatic motion adapters.
-use super::*;
+use super::{BTreeMap, FrameRate, MAX_NODES, MAX_SEQUENCE_TRACKS, Result, Tick, Value, avid_catalog, bad, formats, json, list, number, rate, ticks, ticks_at};
 
 /// Strip only complete single-source sequences with zero-length padding, retaining frame
 /// counts in their original domain until the identified MXF rate is available.
@@ -166,6 +166,7 @@ pub(crate) fn offline_rate_evidence(mobs: &[Value]) -> Result<BTreeMap<[u8; 32],
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filmcraft_time::TICKS_PER_SECOND;
     fn adapter() -> Value {
         json!({"class":"SPED","media_kind":1,"rate":{"numerator":24,"denominator":1},"length":46,"unsupported":"component_semantics",
             "properties":{"effect_id":"EFF_TIMEWARP.MOTION_CTL","attributes":{"_MIXMATCH_MOTIONADAPTER":2},"speed_ratio":[1001,1250],"phase_offset":0,"offset_adjust":0.0,"new_source_calculation":false,"mc_mode":0},

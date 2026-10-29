@@ -1166,5 +1166,4 @@ pub fn commands() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
-#[path = "graphics_tests.rs"]
 mod tests;

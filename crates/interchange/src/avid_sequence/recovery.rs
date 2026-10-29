@@ -1,5 +1,7 @@
 //! Explicit best-effort recovery: preserve a known interval; never invent source identities.
-use super::*;
+use super::{
+    BinId, ClipPlan, Error, ItemId, MAX_NODES, MediaRef, Project, Result, SequencePlan, Tick, TrackKind, TrackPlan, Value, Walk, add, bad, formats, list, text,
+};
 impl Walk<'_> {
     pub(super) fn node(&mut self, c: &Value, start: Tick, depth: usize) -> Result<Vec<ClipPlan>> {
         match self.checked_node(c, start, depth) {
@@ -100,7 +102,7 @@ pub(super) fn placeholder(p: &mut Project, bin: BinId, kind: TrackKind, stereo: 
     let id = p.add_item(
         name,
         Label::Rose,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::File { path: String::new() },
             info: MediaInfo {
                 name: name.into(),
@@ -128,7 +130,7 @@ pub(super) fn placeholder(p: &mut Project, bin: BinId, kind: TrackKind, stereo: 
             offline: true,
             proxy: None,
             identity: None,
-        }),
+        })),
         Some(bin),
     );
     p.item_mut(id).ok_or_else(|| bad("placeholder disappeared"))?.metadata.insert("filmcraft:avid-import-error".into(), reason.into());

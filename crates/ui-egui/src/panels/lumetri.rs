@@ -106,7 +106,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.horizontal(|ui| {
                 ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Look")).color(t.text_dim)));
                 let mut sel = look;
-                egui::ComboBox::from_id_salt("lumetri-look")
+                craft_ui::ComboBox::from_id_salt("lumetri-look")
                     .selected_text(opts.get(look).map_or(tl!("None"), |o| crate::i18n::t(o)))
                     .width((ui.available_width() - 40.0).max(60.0))
                     .show_ui(ui, |ui| {
@@ -204,7 +204,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Show Mask")).color(t.text_dim)));
                 let mut sel = mask;
                 let modes = [tl!("Off"), tl!("Color/Gray"), tl!("Color/Black"), tl!("White/Black")];
-                egui::ComboBox::from_id_salt("hsl-mask").selected_text(modes[mask.min(3)]).show_ui(ui, |ui| {
+                craft_ui::ComboBox::from_id_salt("hsl-mask").selected_text(modes[mask.min(3)]).show_ui(ui, |ui| {
                     for (i, o) in modes.iter().enumerate() {
                         if ui.selectable_value(&mut sel, i, *o).changed() {
                             set(&mut actions, "hsl_show_mask", json!(i));
@@ -310,9 +310,11 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
     let mut rect = Rect::NOTHING;
     ui.horizontal(|ui| {
         ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim)));
-        let r = egui::ComboBox::from_id_salt(("lumetri-lut", param)).selected_text(shown).truncate().width((ui.available_width() - 40.0).max(60.0)).show_ui(
-            ui,
-            |ui| {
+        let r = craft_ui::ComboBox::from_id_salt(("lumetri-lut", param))
+            .selected_text(shown)
+            .truncate()
+            .width((ui.available_width() - 40.0).max(60.0))
+            .show_ui(ui, |ui| {
                 for (r, name) in &entries {
                     if ui.selectable_label(*r == cur, name).clicked() && *r != cur {
                         out.push((cmd, json!({"lut": r})));
@@ -322,8 +324,7 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
                 if ui.selectable_label(false, tl!("Browse…")).clicked() {
                     out.push((cmd, json!({"browse": true})));
                 }
-            },
-        );
+            });
         rect = r.response.rect;
     });
     app.auto.add(&format!("lumetri.{param}"), rect, label);

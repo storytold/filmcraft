@@ -1,5 +1,7 @@
 //! Metadata-only native AVB transfer. This does not synthesize a complete media-scan report.
-use super::*;
+use super::{
+    BTreeMap, BTreeSet, BinPlan, ClipPlan, Document, MAX_BYTES, MAX_TEXT, Plan, Result, SOURCE_KEY, Value, array, bad, bin_name, duration, full_identity,
+};
 use crate::avid_bin::{self, AttributeValue, Bin, Decoded, Mob};
 use serde_json::json;
 mod graph;
@@ -175,7 +177,9 @@ pub fn plan_native(bytes: &[u8], path: &str) -> Result<Plan> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::apply;
     use super::*;
+    use filmcraft_project::Project;
     #[test]
     fn a_non_attribute_metadata_reference_is_recorded_instead_of_failing_the_bin() {
         // Optional metadata referencing a class this reader does not decode is evidence, matching

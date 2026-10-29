@@ -576,20 +576,7 @@ fn offline_phase12_import_and_relink_preserve_exact_timeline() {
         filmcraft_format::encode(&disposable, false),
     )
     .unwrap();
-    let mut bindings = Vec::new();
-    for (id, item) in &s.project.items {
-        if let Some(m) = item.as_media()
-            && let filmcraft_project::MediaRef::Components { channels, picture } = &m.media
-        {
-            for (i, c) in channels.iter().enumerate() {
-                bindings.push(json!({"item":id,"component":{"kind":"audio","channel":i},"path":c.path}));
-            }
-            if let Some(c) = picture {
-                assert!(c.format_pending);
-                bindings.push(json!({"item":id,"component":{"kind":"picture"},"path":c.path}));
-            }
-        }
-    }
+    let bindings = offline_component_bindings(&s.project);
     s.services = Arc::new(FsServices);
     // Existing paths must not bypass pending picture format verification.
     assert_eq!(crate::relink::scan(&s.project, &s.media, &*s.services).len(), 2);
@@ -779,51 +766,7 @@ fn indexed_mxf_corroborates_full_audio_clock_before_binding_and_retains_raw_evid
     for (sr, frames, multiplier) in [(48000u32, 99i64, 4i64), (44100, 48, 1)] {
         let folder = root.join(sr.to_string());
         std::fs::create_dir_all(&folder).unwrap();
-        let (v, _) = fixture();
-        let mut v = with_audio_descriptors(v);
-        let samples = (i128::from(frames) * 1001 * i128::from(sr) / 24000) as usize;
-        let mut media = BTreeMap::new();
-        let mut identities = std::collections::BTreeSet::new();
-        let clip = &mut v["bins"][0]["catalog"]["clips"][0];
-        clip["length"] = json!(frames);
-        clip["rate"] = json!({"numerator":23976,"denominator":1000});
-        clip["workflow_evidence"] = json!("managed_avb_source_descriptors");
-        for (i, t) in clip["tracks"].as_array_mut().unwrap().iter_mut().enumerate() {
-            let ids = filmcraft_mxf::PackageIds::from_seed(&format!("clock-{sr}-{i}"), "test");
-            let id = json!({"raw":ids.file.0.iter().map(|b|format!("{b:02x}")).collect::<String>(),"byte_order":"big"});
-            identities.insert(ids.file.0);
-            let path = folder.join(format!("channel-{i}.mxf"));
-            let bytes = filmcraft_mxf::write_opatom_pcm(
-                &filmcraft_mxf::OpAtomPcm { sample_rate: sr, bits: 16, channels: 1, edit_rate: None, ids, timecode: None },
-                &vec![if i == 0 { 4000 } else { -8000 }; samples],
-            )
-            .unwrap();
-            std::fs::write(&path, &bytes).unwrap();
-            media.insert(path.to_str().unwrap().to_owned(), bytes);
-            t["component"]["source_id"] = id.clone();
-            t["component"]["length"] = json!(frames * multiplier);
-            t["component"]["rate"] = json!({"numerator":23976 * multiplier,"denominator":1000});
-            let r = &mut t["references"][0];
-            r["source_id"] = id;
-            r["length"] = json!(frames * multiplier);
-            r["rate"] = json!({"numerator":23976 * multiplier,"denominator":1000});
-            r["status"] = json!("unresolved");
-            r["managed_descriptor_verified"] = json!(true);
-            r["location_scope"] = json!("no_media_locations_scanned");
-            r["locations"] = json!([]);
-        }
-        v["bins"][0]["mobs"][0] = v["bins"][0]["catalog"]["clips"][0].clone();
-        for i in 0..2 {
-            let id = v["bins"][0]["mobs"][0]["tracks"][i]["references"][0]["source_id"].clone();
-            let d = &mut v["bins"][0]["mobs"][i + 2];
-            d["id"] = id.clone();
-            d["descriptor"]["locator"]["properties"]["mob_id"] = json!({"id_raw":id["raw"],"byte_order":"big"});
-            d["descriptor"]["sample_rate"] = json!(sr);
-            d["descriptor"]["edit_rate"] = json!(sr);
-            d["descriptor"]["average_bps"] = json!(sr * 2);
-            // Descriptor padding must not be used as the playable range.
-            d["descriptor"]["length"] = json!(samples + 132);
-        }
+        let (v, media, identities, samples) = audio_clock_fixture(sr, frames, multiplier, &folder);
         let (s, services) = session(&v, media.clone());
         let before = s.project.clone();
         let index = crate::component_relink::index_identities(identities.clone(), vec![folder.to_str().unwrap().into()], &*services, Arc::default()).unwrap();
@@ -944,4 +887,76 @@ fn indexed_mxf_corroborates_full_audio_clock_before_binding_and_retains_raw_evid
         }
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+fn offline_component_bindings(project: &filmcraft_project::Project) -> Vec<Value> {
+    let mut bindings = Vec::new();
+    for (id, item) in &project.items {
+        if let Some(m) = item.as_media()
+            && let filmcraft_project::MediaRef::Components { channels, picture } = &m.media
+        {
+            for (i, c) in channels.iter().enumerate() {
+                bindings.push(json!({"item":id,"component":{"kind":"audio","channel":i},"path":c.path}));
+            }
+            if let Some(c) = picture {
+                assert!(c.format_pending);
+                bindings.push(json!({"item":id,"component":{"kind":"picture"},"path":c.path}));
+            }
+        }
+    }
+    bindings
+}
+
+fn audio_clock_fixture(
+    sr: u32,
+    frames: i64,
+    multiplier: i64,
+    folder: &std::path::Path,
+) -> (Value, BTreeMap<String, Vec<u8>>, std::collections::BTreeSet<[u8; 32]>, usize) {
+    let (v, _) = fixture();
+    let mut v = with_audio_descriptors(v);
+    let samples = (i128::from(frames) * 1001 * i128::from(sr) / 24000) as usize;
+    let mut media = BTreeMap::new();
+    let mut identities = std::collections::BTreeSet::new();
+    let clip = &mut v["bins"][0]["catalog"]["clips"][0];
+    clip["length"] = json!(frames);
+    clip["rate"] = json!({"numerator":23976,"denominator":1000});
+    clip["workflow_evidence"] = json!("managed_avb_source_descriptors");
+    for (i, t) in clip["tracks"].as_array_mut().unwrap().iter_mut().enumerate() {
+        let ids = filmcraft_mxf::PackageIds::from_seed(&format!("clock-{sr}-{i}"), "test");
+        let id = json!({"raw":ids.file.0.iter().map(|b|format!("{b:02x}")).collect::<String>(),"byte_order":"big"});
+        identities.insert(ids.file.0);
+        let path = folder.join(format!("channel-{i}.mxf"));
+        let bytes = filmcraft_mxf::write_opatom_pcm(
+            &filmcraft_mxf::OpAtomPcm { sample_rate: sr, bits: 16, channels: 1, edit_rate: None, ids, timecode: None },
+            &vec![if i == 0 { 4000 } else { -8000 }; samples],
+        )
+        .unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        media.insert(path.to_str().unwrap().to_owned(), bytes);
+        t["component"]["source_id"] = id.clone();
+        t["component"]["length"] = json!(frames * multiplier);
+        t["component"]["rate"] = json!({"numerator":23976 * multiplier,"denominator":1000});
+        let r = &mut t["references"][0];
+        r["source_id"] = id;
+        r["length"] = json!(frames * multiplier);
+        r["rate"] = json!({"numerator":23976 * multiplier,"denominator":1000});
+        r["status"] = json!("unresolved");
+        r["managed_descriptor_verified"] = json!(true);
+        r["location_scope"] = json!("no_media_locations_scanned");
+        r["locations"] = json!([]);
+    }
+    v["bins"][0]["mobs"][0] = v["bins"][0]["catalog"]["clips"][0].clone();
+    for i in 0..2 {
+        let id = v["bins"][0]["mobs"][0]["tracks"][i]["references"][0]["source_id"].clone();
+        let d = &mut v["bins"][0]["mobs"][i + 2];
+        d["id"] = id.clone();
+        d["descriptor"]["locator"]["properties"]["mob_id"] = json!({"id_raw":id["raw"],"byte_order":"big"});
+        d["descriptor"]["sample_rate"] = json!(sr);
+        d["descriptor"]["edit_rate"] = json!(sr);
+        d["descriptor"]["average_bps"] = json!(sr * 2);
+        // Descriptor padding must not be used as the playable range.
+        d["descriptor"]["length"] = json!(samples + 132);
+    }
+    (v, media, identities, samples)
 }

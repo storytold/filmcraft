@@ -418,19 +418,7 @@ fn native_phase14_formats_timecode_and_mixed_rate_edits() {
         assert_eq!(q.duration(), rate.tick_of(frames));
         assert_eq!(q.video_tracks.len(), 1);
         assert_eq!(q.audio_tracks.len(), 2);
-        for (track, cuts) in [(&q.video_tracks[0], v1), (&q.audio_tracks[0], a1), (&q.audio_tracks[1], a1)] {
-            assert_eq!(track.items.len(), 2);
-            for (clip, (position, length)) in track.items.iter().zip(cuts) {
-                assert_eq!((clip.start, clip.duration), (rate.tick_of(position), rate.tick_of(length)));
-                assert_eq!(clip.speed, 1.0);
-                assert!(!s.project.item(clip.item).unwrap().as_media().unwrap().offline);
-            }
-        }
-        for (channel, track) in q.audio_tracks.iter().enumerate() {
-            for clip in &track.items {
-                assert_eq!(clip.source_channels, vec![channel as u16]);
-            }
-        }
+        assert_phase14_track_cuts(&s, q, rate, v1, a1);
         if rate == FrameRate::FPS_23_976 {
             assert_eq!(q.video_tracks[0].items[0].source_in, FrameRate::FPS_29_97.tick_of(87));
             assert_eq!(q.video_tracks[0].items[1].source_in, FrameRate::FPS_24.tick_of(109));
@@ -627,32 +615,7 @@ fn native_large_bin_indexes_before_binding_and_verifies_audio_ranges() {
             let tail = source.audio(count - 4, 8, rate).unwrap();
             assert!(head.channels.iter().flatten().all(|v| v.is_finite()));
             assert!(tail.channels.iter().all(|c| c[4..] == [0.0; 4]));
-            if let Ok(ffmpeg) = std::env::var("FILMCRAFT_AVID_FFMPEG") {
-                for (slot, channel) in channels.iter().enumerate() {
-                    let output = std::process::Command::new(&ffmpeg)
-                        .args([
-                            "-v",
-                            "error",
-                            "-i",
-                            channel.path.as_deref().unwrap(),
-                            "-map",
-                            "0:a:0",
-                            "-af",
-                            "atrim=start_sample=0:end_sample=8",
-                            "-f",
-                            "f32le",
-                            "-acodec",
-                            "pcm_f32le",
-                            "pipe:1",
-                        ])
-                        .output()
-                        .unwrap();
-                    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-                    assert_eq!(output.stdout.len(), 8 * 4);
-                    let expected: Vec<_> = output.stdout.as_chunks::<4>().0.iter().map(|v| f32::from_le_bytes(*v)).collect();
-                    assert_eq!(head.channels[slot], expected, "PCM oracle mismatch for slot {slot}");
-                }
-            }
+            assert_large_bin_audio_oracle(channels, &head);
             sampled += 1;
         }
     }
@@ -761,5 +724,50 @@ fn native_large_bins_prepare_import_and_roundtrip() {
             entry["sequences"],
             result["errors"].as_array().unwrap().len()
         );
+    }
+}
+
+fn assert_phase14_track_cuts(s: &Session, q: &filmcraft_project::Sequence, rate: filmcraft_time::FrameRate, v1: [(i64, i64); 2], a1: [(i64, i64); 2]) {
+    for (track, cuts) in [(&q.video_tracks[0], v1), (&q.audio_tracks[0], a1), (&q.audio_tracks[1], a1)] {
+        assert_eq!(track.items.len(), 2);
+        for (clip, (position, length)) in track.items.iter().zip(cuts) {
+            assert_eq!((clip.start, clip.duration), (rate.tick_of(position), rate.tick_of(length)));
+            assert_eq!(clip.speed, 1.0);
+            assert!(!s.project.item(clip.item).unwrap().as_media().unwrap().offline);
+        }
+    }
+    for (channel, track) in q.audio_tracks.iter().enumerate() {
+        for clip in &track.items {
+            assert_eq!(clip.source_channels, vec![channel as u16]);
+        }
+    }
+}
+
+fn assert_large_bin_audio_oracle(channels: &[filmcraft_project::AudioComponent], head: &filmcraft_frame::AudioBuffer) {
+    if let Ok(ffmpeg) = std::env::var("FILMCRAFT_AVID_FFMPEG") {
+        for (slot, channel) in channels.iter().enumerate() {
+            let output = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-v",
+                    "error",
+                    "-i",
+                    channel.path.as_deref().unwrap(),
+                    "-map",
+                    "0:a:0",
+                    "-af",
+                    "atrim=start_sample=0:end_sample=8",
+                    "-f",
+                    "f32le",
+                    "-acodec",
+                    "pcm_f32le",
+                    "pipe:1",
+                ])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            assert_eq!(output.stdout.len(), 8 * 4);
+            let expected: Vec<_> = output.stdout.as_chunks::<4>().0.iter().map(|v| f32::from_le_bytes(*v)).collect();
+            assert_eq!(head.channels[slot], expected, "PCM oracle mismatch for slot {slot}");
+        }
     }
 }

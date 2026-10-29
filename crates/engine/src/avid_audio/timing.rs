@@ -1,6 +1,6 @@
 //! Narrow full-source audio clock reconciliation, backed by identified MXF sample ranges.
 //! Decimal labels alone never authorize this interpretation, nor does stored essence padding.
-use super::*;
+use super::{Result, Services, TICKS_PER_SECOND, Tick, Value, bad, component_audio, direct_source, full_identity, json};
 use crate::component_relink::IdentityIndex;
 use filmcraft_media::MediaSource;
 use std::collections::BTreeMap;

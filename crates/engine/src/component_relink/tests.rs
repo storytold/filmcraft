@@ -12,7 +12,7 @@ fn fixture(name: &str) -> (Session, ItemId, Vec<filmcraft_project::AudioComponen
     let item = Arc::make_mut(&mut s.project).add_item(
         "Stereo",
         Label::Blue,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Components { channels: missing, picture: None },
             info: MediaInfo {
                 name: "Stereo".into(),
@@ -31,7 +31,7 @@ fn fixture(name: &str) -> (Session, ItemId, Vec<filmcraft_project::AudioComponen
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     (s, item, channels, dir)

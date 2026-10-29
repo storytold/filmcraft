@@ -1,5 +1,5 @@
 //! Conservative subclip transfer: prove a linear range and preserve per-track source routing.
-use super::*;
+use super::{BTreeMap, BTreeSet, Result, SubclipPlan, Tick, Value, array, bad, duration, full_identity, membership, text};
 
 struct Source {
     parent: [u8; 32],

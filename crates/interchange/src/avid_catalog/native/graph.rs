@@ -1,5 +1,5 @@
 //! Normalize native objects into the existing transfer contract. No file access or availability inference.
-use super::*;
+use super::{BTreeMap, BTreeSet, Bin, Decoded, Document, Evidence, MAX_BYTES, Result, Value, array, avid_bin, bad, full_identity, hex, json};
 use crate::avid_bin::{Component, DecimalRate, Descriptor, Field, Track};
 fn rate(r: DecimalRate) -> Result<Value> {
     let (n, d) = r.rational()?;

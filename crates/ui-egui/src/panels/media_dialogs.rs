@@ -89,7 +89,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS.to_vec();
             let hint = RelinkHint { command: id.to_string(), params: json!({"item": item.0}) };
             let id = id.to_string();
-            Some(app.pick(FileDialog::Relink { exts: exts.iter().map(|e| e.to_string()).collect(), hint }, move |app, paths| {
+            Some(app.pick(FileDialog::Relink { exts: exts.iter().map(ToString::to_string).collect(), hint }, move |app, paths| {
                 let Some(picked) = paths.into_iter().next() else { return Ok(Value::Null) };
                 app.session.execute(&id, json!({"item": item.0, "path": picked})).map_err(|e| e.to_string())
             }))
@@ -573,7 +573,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 None => "media.relink",
             };
             let hint = RelinkHint { command: command.into(), params };
-            app.pick_ui(FileDialog::Relink { exts: exts.iter().map(|e| e.to_string()).collect(), hint }, move |app, paths| {
+            app.pick_ui(FileDialog::Relink { exts: exts.iter().map(ToString::to_string).collect(), hint }, move |app, paths| {
                 let (Some(path), Some(mut d)) = (paths.into_iter().next(), app.ui.link_media.clone()) else { return };
                 // A delayed answer belongs to the row that opened the picker.
                 if d.selected_key != row.key() {

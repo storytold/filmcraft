@@ -43,7 +43,7 @@ fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
         identity: None,
     };
     let mut p = Project::new("fixture");
-    let item = p.add_item("scene", Label::Iris, ItemKind::Media(clip), None);
+    let item = p.add_item("scene", Label::Iris, ItemKind::Media(Box::new(clip)), None);
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 0, None);
     let mut v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, dur), rate).unwrap();
     for e in &mut v.effects {
@@ -214,7 +214,7 @@ fn source_transport_steps_every_frame_at_a_fractional_tick_rate() {
     let item = Arc::make_mut(&mut session.project).add_item(
         "31 fps source",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(generator),
             info: src.info().clone(),
             interpret: Default::default(),
@@ -224,7 +224,7 @@ fn source_transport_steps_every_frame_at_a_fractional_tick_rate() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     session.execute("source.open", json!({"item": item.0})).unwrap();
@@ -257,7 +257,7 @@ fn source_menu_steps_use_ordinals_for_explicit_targets_and_focus() {
         let item = Arc::make_mut(&mut session.project).add_item(
             "31 fps menu source",
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(generator),
                 info: src.info().clone(),
                 interpret: Default::default(),
@@ -267,7 +267,7 @@ fn source_menu_steps_use_ordinals_for_explicit_targets_and_focus() {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         session.execute("source.open", json!({"item": item.0})).unwrap();
@@ -333,7 +333,7 @@ fn zero_tick_frame_duration_source() -> (Driver, Tick) {
     let item = Arc::make_mut(&mut session.project).add_item(
         "Source with less than one tick per frame",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(generator),
             info: src.info().clone(),
             interpret: Default::default(),
@@ -343,7 +343,7 @@ fn zero_tick_frame_duration_source() -> (Driver, Tick) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     assert_eq!(filmcraft_engine::clip_ops::source_view(&session, item).unwrap().rate, rate);
@@ -387,7 +387,7 @@ fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
             let mut media = template.clone();
             media.media = MediaRef::File { path: format!("/missing/{}/clip-{n}.mov", "long-project-directory/".repeat(20)) };
             media.offline = true;
-            let id = p.add_item(&format!("Missing clip {n}"), Label::Iris, ItemKind::Media(media), None);
+            let id = p.add_item(&format!("Missing clip {n}"), Label::Iris, ItemKind::Media(Box::new(media)), None);
             s.offline.missing.push(id);
         }
         s.project = Arc::new(p);
@@ -569,7 +569,7 @@ fn component_project(root: &Path) -> (Session, filmcraft_engine::project::ItemId
     let id = Arc::make_mut(&mut session.project).add_item(
         "Stereo source",
         Label::Blue,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Components { channels, picture: None },
             info: MediaInfo {
                 name: "Stereo source".into(),
@@ -588,10 +588,15 @@ fn component_project(root: &Path) -> (Session, filmcraft_engine::project::ItemId
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     (session, id)
+}
+
+fn component_channels(d: &mut Driver, id: filmcraft_project::ItemId) -> Vec<filmcraft_project::AudioComponent> {
+    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    channels.clone()
 }
 
 /// A1 and A2 are separate relink targets even though both belong to one project item.
@@ -612,7 +617,7 @@ fn link_media_components_search_by_identity_and_offline_one_slot() {
     assert_eq!(d.label("linkMedia.status.1"), "Match found");
     assert_eq!(d.label("linkMedia.link"), "Link 2 files");
     assert!(d.label("linkMedia.nextStep").contains("still offline"));
-    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    let channels = component_channels(&mut d, id);
     assert!(channels.iter().all(|c| c.path.is_none()), "finding matches must not apply them");
     d.click("linkMedia.relinkOthers");
     assert_eq!(d.label("linkMedia.link"), "Link 1 file");
@@ -632,19 +637,7 @@ fn link_media_components_search_by_identity_and_offline_one_slot() {
     assert_eq!(draft.candidate, Some(0));
     assert_eq!(d.label("linkMedia.link"), "Link 1 file");
     d.snapshot("media-component-found");
-    std::fs::copy(root.join("renamed-1.mxf"), root.join("second-copy.mxf")).unwrap();
-    d.click("linkMedia.search");
-    d.wait_component_search();
-    let draft = d.app().ui.link_media.as_ref().unwrap();
-    assert_eq!(draft.candidates.len(), 2);
-    assert_eq!(draft.candidate, None, "duplicate copies must not silently select a path");
-    assert!(draft.message.contains("Multiple files"));
-    let candidate = draft.candidates.iter().position(|c| c.0.ends_with("renamed-1.mxf")).unwrap();
-    assert_eq!(d.label("linkMedia.status.0"), "Choose a copy");
-    assert!(d.ids("linkMedia.nextStep").is_empty());
-    d.click(&format!("linkMedia.candidate.{candidate}"));
-    assert_eq!(d.label("linkMedia.status.0"), "Copy selected");
-    assert_eq!(d.label("linkMedia.link"), "Link 1 file");
+    select_duplicate_component_copy(&mut d, &root);
     // An incomplete search must not suggest that a unique-looking result is ready to batch apply.
     std::fs::remove_file(root.join("second-copy.mxf")).unwrap();
     std::fs::write(root.join("corrupt.mxf"), b"invalid MXF").unwrap();
@@ -656,12 +649,12 @@ fn link_media_components_search_by_identity_and_offline_one_slot() {
     d.click("linkMedia.candidate.0");
     assert_eq!(d.label("linkMedia.link"), "Link 1 file");
     d.click("linkMedia.link");
-    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    let channels = component_channels(&mut d, id);
     assert!(channels[0].path.is_none());
     assert!(channels[1].path.as_ref().unwrap().ends_with("renamed-1.mxf"));
     assert!(d.app().ui.link_media.is_none());
     d.exec("edit.undo", json!({}));
-    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    let channels = component_channels(&mut d, id);
     assert!(channels.iter().all(|c| c.path.is_none()));
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -887,10 +880,26 @@ fn component_locate_async_preserves_identity_and_selected_slot() {
     assert_eq!(hint.params["channel"], 1);
     answer.send(vec![root.join("renamed-1.mxf").to_str().unwrap().into()]).unwrap();
     d.frames(3);
-    let MediaRef::Components { channels, .. } = &d.app().session.project.item(id).unwrap().as_media().unwrap().media else { panic!("component source") };
+    let channels = component_channels(&mut d, id);
     assert!(channels[0].path.is_none());
     assert!(channels[1].path.as_ref().unwrap().ends_with("renamed-1.mxf"));
     d.exec("edit.undo", json!({}));
     assert_eq!(d.app().session.project, before);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+fn select_duplicate_component_copy(d: &mut Driver, root: &std::path::Path) {
+    std::fs::copy(root.join("renamed-1.mxf"), root.join("second-copy.mxf")).unwrap();
+    d.click("linkMedia.search");
+    d.wait_component_search();
+    let draft = d.app().ui.link_media.as_ref().unwrap();
+    assert_eq!(draft.candidates.len(), 2);
+    assert_eq!(draft.candidate, None, "duplicate copies must not silently select a path");
+    assert!(draft.message.contains("Multiple files"));
+    let candidate = draft.candidates.iter().position(|c| c.0.ends_with("renamed-1.mxf")).unwrap();
+    assert_eq!(d.label("linkMedia.status.0"), "Choose a copy");
+    assert!(d.ids("linkMedia.nextStep").is_empty());
+    d.click(&format!("linkMedia.candidate.{candidate}"));
+    assert_eq!(d.label("linkMedia.status.0"), "Copy selected");
+    assert_eq!(d.label("linkMedia.link"), "Link 1 file");
 }

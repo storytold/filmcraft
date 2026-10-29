@@ -599,104 +599,7 @@ pub(crate) fn param_row(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     let id = egui::Id::unique(("pv", clip.0, idx, pkey));
-    let mut set: Option<Value> = None;
-    match (&pd.kind, &value) {
-        (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
-            let speed = ((soft_max - soft_min) / 400.0).max(0.01);
-            let (_, nv) = crate::widgets::hot_number(
-                &mut vui,
-                crate::i18n::t(pd.label),
-                id,
-                *v,
-                HotNumberOptions::new(speed, (*min, *max), *decimals as usize, unit, &t),
-            );
-            if let Some(nv) = nv {
-                set = Some(json!(nv));
-            }
-        }
-        (ParamKind::Angle, ParamValue::Float(v)) => {
-            let (_, nv) = crate::widgets::hot_number(&mut vui, crate::i18n::t(pd.label), id, *v, HotNumberOptions::new(0.5, (-36000.0, 36000.0), 1, "°", &t));
-            if let Some(nv) = nv {
-                set = Some(json!(nv));
-            }
-        }
-        (ParamKind::Point, ParamValue::Vec2(p)) => {
-            let (_, nx) = crate::widgets::hot_number(
-                &mut vui,
-                &format!("{} X", crate::i18n::t(pd.label)),
-                id.with("x"),
-                p.x,
-                HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, "", &t),
-            );
-            let (_, ny) = crate::widgets::hot_number(
-                &mut vui,
-                &format!("{} Y", crate::i18n::t(pd.label)),
-                id.with("y"),
-                p.y,
-                HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, "", &t),
-            );
-            if nx.is_some() || ny.is_some() {
-                set = Some(json!([nx.unwrap_or(p.x), ny.unwrap_or(p.y)]));
-            }
-        }
-        (ParamKind::Bool, ParamValue::Bool(b)) => {
-            let mut v = *b;
-            fit_to_row(&mut vui);
-            if crate::widgets::accessible_name(vui.checkbox(&mut v, ""), crate::i18n::t(pd.label)).changed() {
-                set = Some(json!(v));
-            }
-        }
-        (ParamKind::Choice(opts), ParamValue::Choice(c)) => {
-            let mut sel = *c as usize;
-            fit_to_row(&mut vui);
-            // (narrower when the effect list is narrow, so it stays left of the divider)
-            let w = vui.available_width().min(130.0);
-            let combo = egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(&mut vui, |ui| {
-                for (i, o) in opts.iter().enumerate() {
-                    if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
-                        set = Some(json!(i));
-                    }
-                }
-            });
-            crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
-        }
-        (ParamKind::Color, ParamValue::Color(c)) => {
-            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if egui::color_picker::color_edit_button_rgba(&mut vui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
-            }
-            // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
-            let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
-            let armed = app.ui.eyedropper.as_ref() == Some(&target);
-            let drop = icons::button(&mut vui, Icon::Eyedropper, 18.0, armed, &t, tl!("Eyedropper (pick a color from the Program monitor)"));
-            app.auto.add(&format!("effectControls.{}.{}.eyedropper", e.effect, pkey), drop.rect, "Eyedropper");
-            if drop.clicked() {
-                app.ui.eyedropper = if armed { None } else { Some(target) };
-            }
-        }
-        (ParamKind::Path, _) => {
-            crate::panels::masks::path_value(app, &mut vui, clip, idx, mask, actions);
-        }
-        (ParamKind::Text, ParamValue::Text(s)) if !pd.id.ends_with("_lut") => {
-            // edited in a buffer; committed (one undo step) when the field loses focus
-            let mut buf = vui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| s.clone());
-            let r = crate::widgets::accessible_name(vui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0)), crate::i18n::t(pd.label));
-            app.auto.add(&format!("effectControls.text.{}.{}", idx, pd.id), r.rect, pd.label);
-            if r.lost_focus() {
-                if buf != *s {
-                    set = Some(json!(buf));
-                }
-                vui.data_mut(|d| d.remove::<String>(id));
-            } else if r.has_focus() {
-                vui.data_mut(|d| d.insert_temp(id, buf));
-            } else {
-                vui.data_mut(|d| d.remove::<String>(id));
-            }
-        }
-        _ => {
-            vui.label(param_text(&app.session.project, pd.id, &value));
-        }
-    }
+    let set = param_value_widget(app, &mut vui, e, pd, &value, clip, idx, mask, pkey, id, t, actions);
     if let Some(v) = set {
         actions.push(("effects.setParam".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v}))));
     }
@@ -747,6 +650,119 @@ pub(crate) fn param_row(
             });
         }
     }
+}
+
+/// The value editor of one parameter row: number, point, checkbox, choice, colour (with the
+/// eyedropper), path or text field. Returns the edited value, if any.
+#[allow(clippy::too_many_arguments)]
+fn param_value_widget(
+    app: &mut FilmcraftApp,
+    vui: &mut egui::Ui,
+    e: &EffectInstance,
+    pd: &filmcraft_project::ParamDef,
+    value: &ParamValue,
+    clip: ClipId,
+    idx: usize,
+    mask: Option<usize>,
+    pkey: &str,
+    id: egui::Id,
+    t: Tokens,
+    actions: &mut Vec<(String, Value)>,
+) -> Option<Value> {
+    let mut set: Option<Value> = None;
+    match (&pd.kind, value) {
+        (ParamKind::Float { min, max, soft_min, soft_max, unit, decimals }, ParamValue::Float(v)) => {
+            let speed = ((soft_max - soft_min) / 400.0).max(0.01);
+            let (_, nv) =
+                crate::widgets::hot_number(vui, crate::i18n::t(pd.label), id, *v, HotNumberOptions::new(speed, (*min, *max), *decimals as usize, unit, &t));
+            if let Some(nv) = nv {
+                set = Some(json!(nv));
+            }
+        }
+        (ParamKind::Angle, ParamValue::Float(v)) => {
+            let (_, nv) = crate::widgets::hot_number(vui, crate::i18n::t(pd.label), id, *v, HotNumberOptions::new(0.5, (-36000.0, 36000.0), 1, "°", &t));
+            if let Some(nv) = nv {
+                set = Some(json!(nv));
+            }
+        }
+        (ParamKind::Point, ParamValue::Vec2(p)) => {
+            let (_, nx) = crate::widgets::hot_number(
+                vui,
+                &format!("{} X", crate::i18n::t(pd.label)),
+                id.with("x"),
+                p.x,
+                HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, "", &t),
+            );
+            let (_, ny) = crate::widgets::hot_number(
+                vui,
+                &format!("{} Y", crate::i18n::t(pd.label)),
+                id.with("y"),
+                p.y,
+                HotNumberOptions::new(1.0, (-100_000.0, 100_000.0), 1, "", &t),
+            );
+            if nx.is_some() || ny.is_some() {
+                set = Some(json!([nx.unwrap_or(p.x), ny.unwrap_or(p.y)]));
+            }
+        }
+        (ParamKind::Bool, ParamValue::Bool(b)) => {
+            let mut v = *b;
+            fit_to_row(vui);
+            if crate::widgets::accessible_name(vui.checkbox(&mut v, ""), crate::i18n::t(pd.label)).changed() {
+                set = Some(json!(v));
+            }
+        }
+        (ParamKind::Choice(opts), ParamValue::Choice(c)) => {
+            let mut sel = *c as usize;
+            fit_to_row(vui);
+            // (narrower when the effect list is narrow, so it stays left of the divider)
+            let w = vui.available_width().min(130.0);
+            let combo = craft_ui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(vui, |ui| {
+                for (i, o) in opts.iter().enumerate() {
+                    if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
+                        set = Some(json!(i));
+                    }
+                }
+            });
+            crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
+        }
+        (ParamKind::Color, ParamValue::Color(c)) => {
+            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            if egui::color_picker::color_edit_button_rgba(vui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
+                set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+            }
+            // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
+            let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
+            let armed = app.ui.eyedropper.as_ref() == Some(&target);
+            let drop = icons::button(vui, Icon::Eyedropper, 18.0, armed, &t, tl!("Eyedropper (pick a color from the Program monitor)"));
+            app.auto.add(&format!("effectControls.{}.{}.eyedropper", e.effect, pkey), drop.rect, "Eyedropper");
+            if drop.clicked() {
+                app.ui.eyedropper = if armed { None } else { Some(target) };
+            }
+        }
+        (ParamKind::Path, _) => {
+            crate::panels::masks::path_value(app, vui, clip, idx, mask, actions);
+        }
+        (ParamKind::Text, ParamValue::Text(s)) if !pd.id.ends_with("_lut") => {
+            // edited in a buffer; committed (one undo step) when the field loses focus
+            let mut buf = vui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| s.clone());
+            let r = crate::widgets::accessible_name(vui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0)), crate::i18n::t(pd.label));
+            app.auto.add(&format!("effectControls.text.{}.{}", idx, pd.id), r.rect, pd.label);
+            if r.lost_focus() {
+                if buf != *s {
+                    set = Some(json!(buf));
+                }
+                vui.data_mut(|d| d.remove::<String>(id));
+            } else if r.has_focus() {
+                vui.data_mut(|d| d.insert_temp(id, buf));
+            } else {
+                vui.data_mut(|d| d.remove::<String>(id));
+            }
+        }
+        _ => {
+            vui.label(param_text(&app.session.project, pd.id, value));
+        }
+    }
+    set
 }
 
 /// Shared by the lane diamonds and graph points: commands use media time and preserve the mask.
@@ -1151,12 +1167,6 @@ pub(crate) fn graph_rows(
     it: &TrackItem,
     actions: &mut Vec<(String, Value)>,
 ) {
-    let with_mask = |mut v: Value| -> Value {
-        if let Some(k) = mask {
-            v["mask"] = json!(k);
-        }
-        v
-    };
     let t = app.tokens;
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
     let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
@@ -1164,7 +1174,6 @@ pub(crate) fn graph_rows(
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
     let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
-    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = (lane.width() / 2.0).max(8.0) as usize;
@@ -1197,7 +1206,6 @@ pub(crate) fn graph_rows(
     ui.data_mut(|d| d.insert_temp(range_id, (lo, hi, frame)));
     let area = Rect::from_min_max(pos2(lane.min.x, vr.min.y + 4.0), pos2(lane.max.x, vr.max.y - 4.0));
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
-    let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
     let p = ui.painter();
     p.rect_filled(area, 0.0, t.keyframe_plot_bg);
     for g in 1..4 {
@@ -1242,6 +1250,42 @@ pub(crate) fn graph_rows(
     p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, tl!("Velocity"), Tokens::ui(11.0), t.text_dim);
     p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
     let p = p.clone();
+    // keyframes + handles
+    draw_graph_keyframes(app, ui, &p, clip, idx, mask, pd, param, it, lane, lo, hi, area, actions);
+}
+
+/// One parameter's keyframe diamonds on its graph, with the Bezier influence handles.
+#[allow(clippy::too_many_arguments)]
+fn draw_graph_keyframes(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    clip: ClipId,
+    idx: usize,
+    mask: Option<usize>,
+    pd: &filmcraft_project::ParamDef,
+    param: &filmcraft_project::Param,
+    it: &TrackItem,
+    lane: &Rect,
+    lo: f64,
+    hi: f64,
+    area: Rect,
+    actions: &mut Vec<(String, Value)>,
+) {
+    let t = app.tokens;
+    let speed = it.speed.abs().max(1e-6);
+    let dur = it.duration.0.max(1) as f64;
+    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
+    let x_of = |f: f32| lane.min.x + f * lane.width();
+    let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
+    let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
+    let dec = if let ParamKind::Float { decimals, .. } = pd.kind { decimals as usize } else { 1 };
+    let with_mask = |mut v: Value| -> Value {
+        if let Some(k) = mask {
+            v["mask"] = json!(k);
+        }
+        v
+    };
     // keyframes + handles
     let ks = &param.keyframes;
     for (i, k) in ks.iter().enumerate() {

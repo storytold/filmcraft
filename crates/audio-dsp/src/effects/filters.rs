@@ -3,7 +3,7 @@
 //! (Bessel / Butterworth / Chebyshev / elliptic designs) and the FFT Filter (frequency-sampled
 //! gain curve applied by STFT overlap-add).
 
-use super::eq::{BandBank, MAX_BANDS};
+use super::eq::{BandBank, BandSettings, MAX_BANDS};
 use super::stft::{Spectral, StftChannel, fft_size};
 use crate::biquad::{Biquad, FilterType};
 use crate::design::{self, Band, Family, MAX_SECTIONS, Prototype, Sections};
@@ -182,7 +182,7 @@ impl<const N: usize> GraphicEq<N> {
         let q = Self::q();
         for (i, &f) in Self::freqs().iter().enumerate() {
             let g = self.pv.v(Self::PARAMS[i].id);
-            self.bank.set_band(i, true, FilterType::Peaking, f, g, q, snap);
+            self.bank.set_band(i, BandSettings::new(true, FilterType::Peaking, f, g, q, snap));
         }
         self.out.set(db_to_gain(self.pv.v("gain")));
         if snap {
@@ -310,12 +310,12 @@ impl FullParametricEq {
         }
         for slot in 0..4 {
             let (on, q) = pass(hp_on, hp_s, slot);
-            self.bank.set_band(slot, on, FilterType::HighPass, hp_f, 0.0, q, snap);
+            self.bank.set_band(slot, BandSettings::new(on, FilterType::HighPass, hp_f, 0.0, q, snap));
             let (on, q) = pass(lp_on, lp_s, slot);
-            self.bank.set_band(11 + slot, on, FilterType::LowPass, lp_f, 0.0, q, snap);
+            self.bank.set_band(11 + slot, BandSettings::new(on, FilterType::LowPass, lp_f, 0.0, q, snap));
         }
         for (i, (on, kind, f, g, q)) in bands.into_iter().enumerate() {
-            self.bank.set_band(4 + i, on, kind, f, g, q, snap);
+            self.bank.set_band(4 + i, BandSettings::new(on, kind, f, g, q, snap));
         }
         self.out.set(db_to_gain(self.pv.v("master_gain")));
         if snap {
@@ -387,7 +387,7 @@ impl NotchFilter {
     fn apply_params(&mut self, snap: bool) {
         let q = NOTCH_Q[self.pv.idx("width").min(2)];
         for (i, ids) in NOTCH_IDS.iter().enumerate() {
-            self.bank.set_band(i, self.pv.on(ids[0]), FilterType::Cut, self.pv.v(ids[1]), self.pv.v(ids[2]), q, snap);
+            self.bank.set_band(i, BandSettings::new(self.pv.on(ids[0]), FilterType::Cut, self.pv.v(ids[1]), self.pv.v(ids[2]), q, snap));
         }
         if snap {
             self.bank.update_coeffs(true);

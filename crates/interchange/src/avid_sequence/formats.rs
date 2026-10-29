@@ -1,6 +1,6 @@
 //! Sequence raster and edit-clock interpretation. Format labels corroborate clocks;
 //! source media and motion-adapter input clocks remain in their own domains.
-use super::*;
+use super::{FrameRate, Result, SequenceSettings, Tick, Value, avid_catalog, bad, rate, ticks_at};
 
 #[derive(Clone, Copy)]
 pub(super) struct Clock {
@@ -117,6 +117,7 @@ pub(super) fn resolve(m: &Value, best_effort: bool) -> Result<Format> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn mob(label: &str, n: i64, d: i64) -> Value {
         json!({"attributes":{"SEQUERNCE_FORMAT_STRING":label},"rate":{"numerator":n,"denominator":d}})
     }
