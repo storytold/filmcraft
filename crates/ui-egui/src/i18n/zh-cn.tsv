@@ -3603,3 +3603,17 @@
 	No matching text.	没有匹配的文本。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。
+	Centering Grid	居中网格
+	Full Screen on Monitor	在显示器上全屏
+	Stabilize	稳定
+	Stabilizing	正在稳定
+	Rule of Thirds	三分法
+	Centre Cross	中心十字
+	Golden Ratio	黄金比例
+	Diagonals	对角线
+	Centering Grid Pattern	居中网格图案
+	Restore Program Monitor	恢复节目监视器
+	Choose the display for the full screen preview.	选择用于全屏预览的显示器。
+	{name} — {width} × {height} (Primary)	{name} — {width} × {height}（主显示器）
+	{name} — {width} × {height}	{name} — {width} × {height}
+	Monitor {n}	显示器 {n}
