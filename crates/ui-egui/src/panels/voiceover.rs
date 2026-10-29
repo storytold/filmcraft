@@ -249,7 +249,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.label(tl!("Source:"));
             let shown = if d.prefs.source.is_empty() { tl!("Default Input").to_string() } else { d.prefs.source.clone() };
             let previous_source = d.prefs.source.clone();
-            let cb = egui::ComboBox::from_id_salt("voiceover-source").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
+            let cb = craft_ui::ComboBox::from_id_salt("voiceover-source").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
                 let mut opts = vec![(String::new(), tl!("Default Input").to_string())];
                 opts.extend(d.devices.iter().map(|x| (x.clone(), x.clone())));
                 for (i, (val, label)) in opts.into_iter().enumerate() {
@@ -273,7 +273,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let n = u32::from(d.channels.clamp(1, 64));
             d.prefs.input_channel = d.prefs.input_channel.min(63);
             let cur = tlf!("Channel {n}", n = d.prefs.input_channel + 1);
-            let cb = egui::ComboBox::from_id_salt("voiceover-input").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
+            let cb = craft_ui::ComboBox::from_id_salt("voiceover-input").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
                 for c in 0..n.max(d.prefs.input_channel + 1) {
                     let label = tlf!("Channel {n}", n = c + 1);
                     let r = ui.selectable_label(d.prefs.input_channel == c, &label);

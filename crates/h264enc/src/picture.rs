@@ -189,6 +189,15 @@ const QPEL_SRC: [[(u8, u8, u8); 2]; 16] = [
     [(2, 1, 0), (1, 0, 1)],
 ];
 
+/// A `w` x `h` block at sample position (`x`, `y`) of a plane.
+#[derive(Clone, Copy, Debug)]
+pub struct McBlock {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+}
+
 impl RefPic {
     #[inline]
     fn plane(&self, p: u8) -> &Plane {
@@ -199,7 +208,8 @@ impl RefPic {
     }
 
     /// Luma prediction of a w x h block at picture position (x, y) displaced by `mv` (quarter samples).
-    pub fn mc_luma(&self, x: usize, y: usize, mv: Mv, w: usize, h: usize, out: &mut [u8], ostride: usize) {
+    pub fn mc_luma(&self, blk: McBlock, mv: Mv, out: &mut [u8], ostride: usize) {
+        let McBlock { x, y, w, h } = blk;
         let xi = x as isize + (mv.x as isize >> 2);
         let yi = y as isize + (mv.y as isize >> 2);
         let q = ((mv.y & 3) * 4 + (mv.x & 3)) as usize;
@@ -226,7 +236,9 @@ impl RefPic {
     }
 
     /// Chroma prediction (both planes) of a w x h chroma block at chroma position (x, y); mv in luma quarter units.
-    pub fn mc_chroma(&self, x: usize, y: usize, mv: Mv, w: usize, h: usize, out_u: &mut [u8], out_v: &mut [u8], ostride: usize) {
+    pub fn mc_chroma(&self, blk: McBlock, mv: Mv, out: (&mut [u8], &mut [u8]), ostride: usize) {
+        let McBlock { x, y, w, h } = blk;
+        let (out_u, out_v) = out;
         let xi = x as isize + (mv.x as isize >> 3);
         let yi = y as isize + (mv.y as isize >> 3);
         let fx = (mv.x & 7) as u32;
